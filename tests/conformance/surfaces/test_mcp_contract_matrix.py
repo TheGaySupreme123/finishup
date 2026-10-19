@@ -304,8 +304,8 @@ def test_descriptor_text_is_frozen_and_honest() -> None:
     assert tuple(TOOL_DESCRIPTORS) == ("policy", "strict")
     assert tuple(TOOL_DESCRIPTOR_DIGESTS) == ("policy", "strict")
     assert TOOL_DESCRIPTOR_SET_DIGEST == {
-        "policy": "sha256:cf32c2f257d131e7df23eabecf679dce8b03ef7ec27dcdacd287eef27b1976df",
-        "strict": "sha256:874768eec5a4eea76d50ebea2ab7516786a27b4ef2c1591d58d1e66b640bb718",
+        "policy": "sha256:067193c044e34c414959b0ff68054e41beeeffe44dcce90bd21f26b6861dd3dc",
+        "strict": "sha256:a07a3166b57d8679c77ff6f9aa8d5d158792a846c928e1f371b8d3e5d0da723e",
     }
     for profile, descriptors in TOOL_DESCRIPTORS.items():
         assert tuple(item.name for item in descriptors) == _EXPECTED_TOOL_NAMES
@@ -318,7 +318,7 @@ def test_descriptor_text_is_frozen_and_honest() -> None:
     assert "semantic_required when the user, effective policy or acceptance requires it" in (
         check_description
     )
-    assert "Omit mode to preserve the configured default" in check_description
+    assert "Omit mode to run in the task's review mode" in check_description
     respond_description = descriptor_for("respond").description
     # Issue #911: any in-chain frontier at or after the record is accepted, so the descriptor
     # never implies the exact check result frontier that sent agents hunting through history.

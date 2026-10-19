@@ -21,6 +21,7 @@ from finishup.config.models import OFFICIAL_OPENAI_ENDPOINT_PROFILE_ID, FinishUp
 from finishup.config.write import codex_subscription_runtime
 from finishup.domain.privacy import (
     AuthorizationScopeKind,
+    ConversationReview,
     DataClass,
     EgressChannel,
     PrivacyPolicy,
@@ -485,10 +486,14 @@ def _install_setup_stubs(
         "first_repository_available",
         "consumed",
     ] = "not_applicable",
+    conversations: list[ConversationReview] | None = None,
 ) -> None:
     """Stub only the I/O edges, leaving the real recipe and branch selection under test."""
 
     import finishup.cli.privacy_setup as module
+
+    if conversations is None:
+        conversations = []
 
     async def snapshot(_workspace_locator: object = None) -> object:
         return module.PrivacySetupSnapshot(
@@ -522,7 +527,7 @@ def _install_setup_stubs(
     def bindings() -> tuple[ProviderBinding | None, ProviderBinding | None]:
         return external, None
 
-    def render_options(*, recommended: object = None) -> None:
+    def render_options(*, recommended: object = None, **_: object) -> None:
         del recommended
 
     def render_review(_candidate: PrivacyPolicy) -> None:
@@ -537,6 +542,13 @@ def _install_setup_stubs(
     monkeypatch.setattr(module.typer, "confirm", confirm)
     monkeypatch.setattr(module, "_propose", propose)
     monkeypatch.setattr(module, "_decide", decide)
+
+    def conversation_prompt(default: ConversationReview) -> ConversationReview:
+        # ADR-049: a first AI-powered review grant asks how tasks use it; enter keeps the default.
+        conversations.append(default)
+        return default
+
+    monkeypatch.setattr(module, "_conversation_review_prompt", conversation_prompt)
 
 
 def _forbid_custom_sections(monkeypatch: pytest.MonkeyPatch, reason: str) -> None:
@@ -1363,3 +1375,20 @@ async def test_a_widening_commit_names_hosts_that_will_still_hold_every_check(
     assert any("finishup integrate <host> admission preview" in line for line in printed)
     # A widening never removes anything.
     assert (tmp_path / ".claude" / "settings.local.json").exists()
+
+
+def test_the_ai_listing_on_an_unreviewed_route_words_assisted_for_that_route(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Round 3 verification: Assisted is the default there but records no evidence requirement."""
+
+    import finishup.cli.privacy_setup as module
+
+    module._render_recipe_options(unreviewed_route=True)  # pyright: ignore[reportPrivateUsage]
+    output = capsys.readouterr().out
+    assert "requires eligible provider data-use evidence" not in output
+    assert "provider data-use facts are not reviewed" in output
+    assert "  3. Assisted review —" in output
+    assert "  4. Expanded review —" in output
+    module._render_recipe_options()  # pyright: ignore[reportPrivateUsage]
+    assert "requires eligible provider data-use evidence" in capsys.readouterr().out

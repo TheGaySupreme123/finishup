@@ -30,9 +30,11 @@ from finishup.domain.events import (
     SEMANTIC_INCLUDED_REFS_NOT_RECORDED_GAP,
     ActionKind,
     CheckChangeShownFiles,
+    CheckReviewMode,
     ClaimKind,
     DeliverableState,
     LedgerRecord,
+    ReviewMode,
     undeclared_reference_path_valid,
 )
 from finishup.domain.findings import (
@@ -54,6 +56,7 @@ from finishup.domain.findings import (
     is_limitation_request,
     semantic_provenance_to_json,
 )
+from finishup.domain.privacy import ConversationReview
 from finishup.domain.receipts import (
     CHECK_TIME_CHANGE_GAPS,
     CHECK_TIME_CHANGE_PATH_UNREPRESENTABLE_GAP,
@@ -123,6 +126,7 @@ from finishup.kernel.closure_class import (
     finding_closures,
     obligation_closures,
 )
+from finishup.kernel.closure_readiness import semantic_review_used
 from finishup.kernel.concern import (
     ConcernKey,
     concern_key,
@@ -198,6 +202,12 @@ from finishup.kernel.receipt_capacity import current_receipt_findings
 from finishup.kernel.receipt_prediction import predict_receipt_conclusion
 from finishup.kernel.reducers import replay
 from finishup.kernel.review_frame import agent_probe_only, finishup_process_state_only
+from finishup.kernel.review_mode import (
+    REQUESTED_BUT_LOCAL_REASONS,
+    ConversationReviewContext,
+    ConversationReviewMode,
+    conversation_review_mode,
+)
 from finishup.kernel.review_round import review_round_stopped
 from finishup.kernel.task_facts import (
     DECLARED_OUTPUT_NOT_REVIEWABLE_GAP,
@@ -723,6 +733,12 @@ def check_internal_json(result: CheckCommitResult) -> dict[str, JsonValue]:
             {}
             if (route_required := getattr(result, "semantic_route_required", None)) is None
             else {"semantic_route_required": route_required}
+        ),
+        # ADR-049: the conversation review mode this check ran in and why, when it was read.
+        **(
+            {}
+            if (review_mode := getattr(result, "review_mode", None)) is None
+            else {"review_mode": cast(CheckReviewMode, review_mode).as_wire()}
         ),
         "coverage": coverage_to_json(result.coverage),
         "versions": {
@@ -4779,6 +4795,226 @@ def _sorted_verdicts(
     return tuple(admitted[key] for key in sorted(admitted, key=str.encode))
 
 
+async def _conversation_review_context(
+    app: Application, runtime: TaskRuntime, request_id: str
+) -> ConversationReviewContext | None | Literal["unreadable"]:
+    """The owner's conversation setting and review availability for this task (ADR-049).
+
+    ``None`` when the application has no reader (a composition that predates the setting): the
+    check then keeps the released behaviour and records no review mode. ``"unreadable"`` when the
+    reader failed: the check fails closed (``_resolve_check_review_mode``).
+    """
+
+    reader = getattr(app, "conversation_review_context", None)
+    if not callable(reader):
+        return None
+    try:
+        context = await cast(
+            Callable[[TaskRuntime], Awaitable[ConversationReviewContext | None]], reader
+        )(runtime)
+    except Exception as exc:
+        record_unexpected_exception_without_raising(
+            exc,
+            component="check",
+            operation="conversation_review_context_failed",
+            request_id=request_id,
+        )
+        return "unreadable"
+    return context if type(context) is ConversationReviewContext else None
+
+
+async def _semantic_review_used_at(
+    runtime: TaskRuntime, request: CheckRequest, frozen: FrozenCase
+) -> bool:
+    """Whether the frozen prefix already used AI-powered review; read for the closing review only.
+
+    Only a ``final_review: true`` check that names no mode asks: in a task now running local, that
+    check is the closing review the task owes (ADR-049). A failed read says no, so the check runs
+    in the task's mode and the closing review stays owed rather than dispatched unasked.
+    """
+
+    if not request.final_review:
+        return False
+    try:
+        records = tuple(
+            [
+                record
+                async for record in runtime.ledger.load_events(
+                    runtime.session_id, through=frozen.case.frontier.sequence
+                )
+            ]
+        )
+    except Exception as exc:
+        record_unexpected_exception_without_raising(
+            exc, component="check", operation="review_used_read", request_id=request.request_id
+        )
+        return False
+    return semantic_review_used(records)
+
+
+async def _check_review_mode(
+    app: Application,
+    runtime: TaskRuntime,
+    request: CheckRequest,
+    *,
+    mode_explicit: bool,
+    frozen: FrozenCase,
+    route_profile: Literal["policy", "strict"],
+) -> tuple[CheckRequest, CheckReviewMode | None, Literal["disabled", "optional", "required"]]:
+    """``(request, recorded review mode, verification policy)`` this check runs with (ADR-049).
+
+    Kept out of ``execute_check_commit`` so the commit path stays analyzable; see
+    ``_resolve_check_review_mode`` for the rules.
+    """
+
+    resolved, review_mode, override = _resolve_check_review_mode(
+        request,
+        mode_explicit=mode_explicit,
+        frozen=frozen,
+        context=await _conversation_review_context(app, runtime, request.request_id),
+        route_profile=route_profile,
+        review_used=not mode_explicit and await _semantic_review_used_at(runtime, request, frozen),
+        review_enabled=app.verification_policy.semantic != "disabled",
+    )
+    return (
+        resolved,
+        review_mode,
+        app.verification_policy.semantic if override is None else override,
+    )
+
+
+def _requested_review(
+    request: CheckRequest,
+    conversation: ConversationReviewMode,
+    context: ConversationReviewContext,
+    *,
+    route_profile: Literal["policy", "strict"],
+    keeps_requirement: bool,
+) -> tuple[CheckRequest, CheckReviewMode, Literal["optional", "required"] | None]:
+    """A check's own request for AI-powered review (``source`` ``check_request``).
+
+    It runs under the effective privacy policy (which may still ask the owner per review), except
+    where the owner explicitly chose local only, where it runs local: a ``semantic_required``
+    request the caller named keeps its requirement there (``keeps_requirement``), so the missing
+    review stays an honest gap rather than a clean local result. On the strict route nothing can
+    dispatch, and the recorded mode says so.
+    """
+
+    if conversation.setting is ConversationReview.LOCAL_ONLY and (
+        context.setting_explicit or context.ai_review_available
+    ):
+        # The owner chose local checks only: an agent's one-check request does not opt in.
+        return (
+            request.model_copy(update={"mode": "deterministic_only"}),
+            CheckReviewMode(ReviewMode.LOCAL, "check_request", "owner_local_only"),
+            "required" if keeps_requirement else "optional",
+        )
+    if route_profile == "strict":
+        return request, CheckReviewMode(ReviewMode.LOCAL, "check_request", "route_local_only"), None
+    return request, CheckReviewMode(ReviewMode.AI_POWERED, "check_request"), None
+
+
+def _resolve_check_review_mode(
+    request: CheckRequest,
+    *,
+    mode_explicit: bool,
+    frozen: FrozenCase,
+    context: ConversationReviewContext | None | Literal["unreadable"],
+    route_profile: Literal["policy", "strict"] = "policy",
+    review_used: bool = False,
+    review_enabled: bool = True,
+) -> tuple[CheckRequest, CheckReviewMode | None, Literal["optional", "required"] | None]:
+    """``(request, recorded review mode, verification override)`` for one check (ADR-049).
+
+    A check that did not name its mode runs in its conversation's mode. A conversation local by a
+    choice its owner's setting allows runs ``deterministic_only`` on a route that did not require
+    AI-powered review (override ``optional``), so it completes at local coverage and discloses
+    that. Under the owner's "every task" setting a switch to local decides nothing: the check runs
+    as configured and a missing review stays the owner's required-review gap.
+
+    A ``final_review: true`` check that names no mode, in a task that already used AI-powered
+    review and now runs local, is the closing review the task owes (the Stop gate's instruction):
+    it is that check's own request. A check that names an AI-powered mode is that check's own
+    request (``_requested_review``). A check that names ``deterministic_only`` runs local; it
+    lowers the requirement only in a conversation local by choice. Without a context nothing
+    changes and no mode is recorded (``None`` override: the configured verification policy).
+
+    Upgrade rule: where the owner's policy predates the setting and the conversation recorded no
+    switch, the check keeps its released behaviour exactly and records no mode, so an existing
+    installation's checks and receipts are unchanged until the owner chooses a setting or an
+    agent switches the task.
+
+    Fail closed: where the owner's setting could not be read, a check that names no mode runs
+    local checks only under the configured requirement (a required review stays a bounding gap)
+    and records no mode; a check that named its mode keeps it, and the privacy gateway still
+    enforces the owner's policy at dispatch.
+    """
+
+    if context == "unreadable":
+        if mode_explicit:
+            return request, None, None
+        return request.model_copy(update={"mode": "deterministic_only"}), None, None
+    if context is None:
+        return request, None, None
+    conversation = conversation_review_mode(
+        frozen.case.projection,
+        context.setting,
+        ai_review_available=context.ai_review_available,
+        setting_explicit=context.setting_explicit,
+        route_allows_review=route_profile == "policy",
+        review_enabled=review_enabled,
+    )
+    if not context.setting_explicit and not conversation.switches:
+        return request, None, None
+    if (
+        not mode_explicit
+        and review_used
+        and request.final_review
+        and conversation.mode is ReviewMode.LOCAL
+    ):
+        # The closing review of a task that already used AI-powered review (review round 1).
+        if request.mode == "deterministic_only":
+            # The verification settings turn review off for checks that name no mode: the
+            # closing review cannot run here, and the recorded reason says so.
+            return (
+                request,
+                CheckReviewMode(ReviewMode.LOCAL, "check_request", "review_disabled"),
+                "optional" if conversation.local_by_choice else None,
+            )
+        return _requested_review(
+            request, conversation, context, route_profile=route_profile, keeps_requirement=False
+        )
+    if not mode_explicit:
+        switch = conversation.latest_switch if conversation.driven_by_switch else None
+        source = "conversation_switch" if switch is not None else "conversation_default"
+        switch_id = None if switch is None else switch.event_id
+        if conversation.mode is ReviewMode.LOCAL:
+            reason = (
+                conversation.local_reason
+                if conversation.local_reason in REQUESTED_BUT_LOCAL_REASONS
+                else None
+            )
+            return (
+                request.model_copy(update={"mode": "deterministic_only"}),
+                CheckReviewMode(ReviewMode.LOCAL, source, reason, switch_id),
+                "optional" if conversation.local_by_choice else None,
+            )
+        return request, CheckReviewMode(ReviewMode.AI_POWERED, source, None, switch_id), None
+    if request.mode == "deterministic_only":
+        return (
+            request,
+            CheckReviewMode(ReviewMode.LOCAL, "check_request"),
+            "optional" if conversation.local_by_choice else None,
+        )
+    return _requested_review(
+        request,
+        conversation,
+        context,
+        route_profile=route_profile,
+        keeps_requirement=request.mode == "semantic_required",
+    )
+
+
 def semantic_route_required(
     mode: str | None,
     policy_semantic: Literal["disabled", "optional", "required"],
@@ -5421,8 +5657,12 @@ async def execute_check_commit(
     route_profile: Literal["policy", "strict"] = "policy",
     host_profile: McpHostProfile = "generic",
     _state: Path | None = None,
+    mode_explicit: bool | None = None,
 ) -> CheckCommitResult | CheckAwaitingHuman:
     """Freeze, evaluate, rank, and atomically commit one check operation.
+
+    ``mode_explicit`` says whether the caller named the check mode. A check that did not runs in
+    its conversation's review mode (ADR-049); ``None`` reads it from the request.
 
     Returns ``CheckAwaitingHuman`` instead when the AI-powered review phase is suspended on a local
     disclosure decision: nothing is committed and the operation stays resumable.
@@ -5436,6 +5676,8 @@ async def execute_check_commit(
     # entrypoint equally honest for recovery/tests that call it directly: an omitted mode follows
     # the configured policy, so a disabled semantic route produces NOT_REQUESTED rather than an
     # unavailable semantic attempt. Optional/required routes retain their effective modes.
+    if mode_explicit is None:
+        mode_explicit = request.mode is not None
     if request.mode is None:
         request = request.model_copy(update={"mode": app.verification_policy.default_check_mode})
     if route_profile not in {"policy", "strict"}:
@@ -5547,6 +5789,17 @@ async def execute_check_commit(
             # The ledger replay is frozen; only the additive project-advice projection is current.
             return await _attach_current_project_advisory_notes(app, runtime.task_id, replayed)
         frozen = frozen_or_replay
+        # ADR-049: the conversation's review mode, read from the frozen prefix and the owner's
+        # setting. A local conversation runs this check with local checks only, on a route that
+        # did not require AI-powered review; the recorded mode says which and why.
+        request, check_review_mode, policy_semantic = await _check_review_mode(
+            app,
+            runtime,
+            request,
+            mode_explicit=mode_explicit,
+            frozen=frozen,
+            route_profile=route_profile,
+        )
         # The child preview and its coverage are evaluated from the same immutable parent prefix
         # that the check froze.  This is intentionally before semantic dispatch: a later child
         # sweep cannot alter this check's subject, and no child bundle is opened on this path.
@@ -5902,7 +6155,7 @@ async def execute_check_commit(
         }
         semantic_gap = _check_semantic_gap(
             request.mode,
-            app.verification_policy.semantic,
+            policy_semantic,
             semantic_result,
             route_profile=route_profile,
             host_profile=host_profile,
@@ -6011,7 +6264,7 @@ async def execute_check_commit(
         # bounds are limits or only disclosures: the same value the receipt reads back.
         route_requires_review, reviewer_reported_insufficiency = _route_and_insufficiency(
             request.mode,
-            app.verification_policy.semantic,
+            policy_semantic,
             route_profile=route_profile,
             host_profile=host_profile,
             state=_state,
@@ -6145,11 +6398,12 @@ async def execute_check_commit(
             # require review is written (``False``); a requiring route keeps today's bytes.
             "semantic_route_required": _recorded_route_required(
                 request.mode,
-                app.verification_policy.semantic,
+                policy_semantic,
                 route_profile=route_profile,
                 host_profile=host_profile,
                 _state=_state,
             ),
+            "review_mode": check_review_mode,
             # ADR-045: how each declared output file stood at this check and what was concluded
             # from it and from the earlier checks of the same path; empty when none was read.
             "deliverable_states": recorded_deliverables,
@@ -6249,8 +6503,12 @@ async def execute_check(
     route_profile: Literal["policy", "strict"] = "policy",
     host_profile: McpHostProfile = "generic",
     _state: Path | None = None,
+    mode_explicit: bool | None = None,
 ) -> CheckCommitResult | CheckAwaitingHuman | CheckInspection:
-    """Return the closed sink-independent result for the facade's sole projection step."""
+    """Return the closed sink-independent result for the facade's sole projection step.
+
+    ``mode_explicit`` is whether the caller named the mode; ``None`` reads it from the request.
+    """
 
     if request.mode == "inspect":
         # ADR-047: a read, routed like status. It never enters the commit pipeline below, so it
@@ -6261,6 +6519,8 @@ async def execute_check(
             cast("CheckInspectionApplication", app), request, route_profile=route_profile
         )
     # Omitted mode resolves via policy so recorded check events always carry a concrete mode.
+    if mode_explicit is None:
+        mode_explicit = request.mode is not None
     if request.mode is None:
         request = request.model_copy(update={"mode": app.verification_policy.default_check_mode})
     return await execute_check_commit(
@@ -6269,4 +6529,5 @@ async def execute_check(
         route_profile=route_profile,
         host_profile=host_profile,
         _state=_state,
+        mode_explicit=mode_explicit,
     )

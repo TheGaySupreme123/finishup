@@ -22,6 +22,7 @@ from finishup.domain.privacy import (
     CandidateContext,
     ClassifiedContext,
     ConsentSource,
+    ConversationReview,
     CredentialHeuristic,
     DataCategory,
     DataClass,
@@ -260,6 +261,22 @@ _SCOPE_KIND_RANK = {
 }
 
 
+def conversation_review_refuses(policy: PrivacyPolicy, purpose: str) -> bool:
+    """Whether the owner's explicit ``local_only`` refuses this LLM-inference purpose (ADR-049).
+
+    The owner chose local checks only for every task: no AI-powered review (and so no background
+    advice, which is review) leaves, whatever a check or a switch asked for. Enforced here, at the
+    gateway, as well as when a check resolves its mode, so a failed setting read or a narrowing
+    while a check is in flight cannot send a review. Only the explicit token refuses: a policy
+    that predates the setting keeps its released behaviour, and the fixed-literal credential
+    probe (no repository content) stays governed by its own consent.
+    """
+
+    return (
+        policy.conversation_review is ConversationReview.LOCAL_ONLY and purpose == _SEMANTIC_PURPOSE
+    )
+
+
 def semantic_policy_refusal(
     policy: PrivacyPolicy,
     binding: ProviderBinding,
@@ -279,6 +296,8 @@ def semantic_policy_refusal(
     )
     if policy.profile is PrivacyProfile.LOCAL_ONLY and binding.transport == "external":
         return PrivacyOutcome.BLOCKED_BY_POLICY, PrivacyReason.DESTINATION_NOT_ALLOWED
+    if conversation_review_refuses(policy, purpose):
+        return PrivacyOutcome.BLOCKED_BY_POLICY, PrivacyReason.POLICY_DENIED
     if not policy.network_egress_permitted or not llm.enabled:
         if binding.transport == "external":
             return PrivacyOutcome.CHANNEL_UNAVAILABLE, PrivacyReason.CHANNEL_UNAVAILABLE
@@ -1634,6 +1653,19 @@ class PrivacyCoordinator:
             effective = refreshed[0]
         else:
             effective = await self._policies.effective_policy(candidate.scope)
+        if conversation_review_refuses(effective.policy, candidate.purpose):
+            # The owner narrowed to local only while this case was being prepared.
+            return await self._complete_semantic_predispatch(
+                candidate,
+                effective,
+                PrivacyOutcome.BLOCKED_BY_POLICY,
+                PrivacyReason.POLICY_DENIED,
+                withheld_item_ids=minimized.withheld_item_ids,
+                redacted_span_count=minimized.redacted_span_count,
+                redacted_values=minimized.redacted_values,
+                scan_stage=ReceiptSecretScanStage.PREPARED_CASE,
+                scan_match_count=_minimized_scan_match_count(minimized),
+            )
         # The first classification is only a preflight. Policy, repository authority, and the
         # scanner profile may have changed while that case was being prepared, so re-run the
         # complete classifier/minimizer against the effective state immediately before reserving
@@ -1819,8 +1851,12 @@ class PrivacyCoordinator:
             )
 
         proposal = prepared.proposal
+        # ADR-049: where the owner chose that AI-powered review an agent turns on waits for
+        # them, every review asks the owner first, exactly like per-request confirmation.
         preview_required = (
-            policy.profile is PrivacyProfile.CONFIRM_EVERY_REQUEST or llm.preview_required
+            policy.profile is PrivacyProfile.CONFIRM_EVERY_REQUEST
+            or llm.preview_required
+            or policy.effective_conversation_review is ConversationReview.LOCAL_OWNER_APPROVAL
         )
         subject_digest = prepared.reservation.subject_digest
         if preview_required:

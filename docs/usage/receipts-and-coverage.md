@@ -71,7 +71,7 @@ Not honest:
 ## The trap: a clean local-only check
 
 A clean `deterministic_only` check is **not** an implementation review. A clean result means “no
-issue detected within deterministic coverage”, and a clean receipt says the same:
+issue detected within local coverage”, and a clean receipt says the same:
 `no_unresolved_deterministic_findings`. Where AI-powered review is required, a `deterministic_only`
 check records `semantic_review_not_requested` and that limitation keeps the receipt at
 `insufficient_coverage`. Where it is not required (it is optional or off, or the owner connected
@@ -81,7 +81,22 @@ that check's findings, the receipt notes that the check is current as of an earl
 note alone does not keep it from a clean conclusion. The receipt leads with its scope,
 review status and material limitations, followed by the finding count and frozen check totals.
 
-Omit `mode` to retain the configured verification default. Use `semantic_if_configured` only when
+**A task in local mode.** Where your setting starts tasks local (the recommended setup answer),
+a task that has not turned on AI-powered review checks with local checks only on a route that did
+not require review, so its receipt reaches a clean local conclusion and says that AI-powered review
+was not requested. The check, `status` and the receipt say which mode the task was in: whenever
+the applicable check recorded its mode, the receipt's limitations section ends with a sentence on
+how that check ran (for a local task, "ran local checks only (FinishUP); AI-powered review was not
+requested for this task"). When the task turned AI-powered review on or off, a sentence before it
+names each switch: its ledger sequence, its event id, the identity the ledger recorded for it (with
+how that identity was established) and the authority it declared. A check that recorded no mode
+(an installation that has not chosen a setting, in a task that never switched) adds nothing.
+Under "every task" an agent's switch to local is listed but changes nothing, and a task that used
+AI-powered review still gets its closing review before the receipt, even after going back to local
+checks.
+
+Omit `mode` to run in the task's review mode (the configured default where the task's mode was not
+recorded). Use `semantic_if_configured` only when
 review is known to be optional. If the user, policy, or acceptance requires AI-powered review,
 select `semantic_required` for the final check and subsequent final rechecks. Reserve
 `deterministic_only` for explicitly local or structural checks, or a user-authorized deliberate
@@ -410,7 +425,7 @@ returned, acknowledgements of observation-authored non-actionable findings, and 
 host and FinishUP itself add around any tool call. FinishUP does not count your own `status`,
 `read_guidance`, `receipt` or `check` calls, read-only reads, the host's stream bookkeeping
 (messages, reasoning, token counts) or a receipt you save into the workspace, so checking and then
-asking for the receipt keeps a deterministic receipt clean.
+asking for the receipt keeps a local receipt clean.
 
 If something after the check might have changed the work and FinishUP cannot tell (a script run, a
 test or build, a tool it cannot attribute), the receipt folds the check's coverage, including

@@ -142,6 +142,9 @@ def _progress_lines(lines: Sequence[str]) -> tuple[str, ...]:
 _MIN_QUEUE_ROWS: Final = MIN_CUSTOM_QUEUE_COUNT
 _MAX_QUEUE_ROWS: Final = LARGEST_SUPPORTED_QUEUE_COUNT
 _CAPACITY_UNCHANGED: Final = "Capacity was left unchanged."
+# First-run conversation answers that add AI-powered review (ADR-049): their privacy step lists
+# the AI-powered review recipes with their own recommendation.
+_ADD_ON_ANSWERS: Final = frozenset({"local_agent_opt_in", "local_owner_approval", "ai_powered"})
 _CAPACITY_LABELS: Final = frozenset({"standard", "larger", "largest", "custom"})
 _DETAILS: Final = frozenset({"focused", "detailed"})
 _LIMITING_DIMENSIONS: Final = frozenset({"count", "bytes", "oldest_age", "capture_backlog"})
@@ -606,9 +609,8 @@ class FinishUpTui(App[int]):
                     review = await self._ask_review_mode()
                     if review is None:
                         return
-                    if await self._connect_selected_host(
-                        option, route="policy" if review == "semantic" else "strict"
-                    ):
+                    # ADR-049: every answer registers the policy route.
+                    if await self._connect_selected_host(option, route="policy"):
                         await self._choose_storage(detection)
                         await self._run_initial_review(review, connected=True)
                     return
@@ -630,10 +632,9 @@ class FinishUpTui(App[int]):
                     return
                 step = 3
             else:
-                # The review answer decides which MCP command is registered, so it is asked
-                # before the registration -- and before the approval screen that shows that
-                # command. Registering first and asking after is how an AI-powered review install ends
-                # up on the strict route.
+                # The review answer is asked before the registration and the approval screen that
+                # shows its command. Every answer registers the policy route (ADR-049), so the
+                # owner can let an agent opt in later without re-registering.
                 review = await self._ask_review_mode(allow_back=True)
                 if review == BACK:
                     step = 2
@@ -645,20 +646,19 @@ class FinishUpTui(App[int]):
 
         assert option is not None
         assert codex_home is not None
-        if not await self._connect(
-            option, codex_home, "policy" if review == "semantic" else "strict"
-        ):
+        # ADR-049: every answer registers the policy route; the privacy policy decides egress.
+        if not await self._connect(option, codex_home, "policy"):
             return
         await self._choose_storage(detection)
         await self._run_initial_review(review, connected=True, option=option, codex_home=codex_home)
 
     async def _ask_review_mode(self, *, allow_back: bool = False) -> str | None:
-        """Ask the posture question only; applying the answer belongs to the caller.
+        """Ask how tasks use AI-powered review; applying the answer belongs to the caller.
 
-        AI-powered review is listed first, so it is where the cursor rests. That is a choice
-        about this question, not about what an installation seeds: the durable policy is still
-        ``local_only``, and this answer only leads to the provider binding, credential, and
-        separately reauthenticated policy commit that egress actually requires.
+        The same three answers as ``finishup setup run`` (ADR-049). The recommended first answer
+        is the owner's standing permission for an agent to turn on AI-powered review for one
+        task when it helps; it configures nothing on its own, and reaching egress still needs
+        the reviewer, its credential, and the separately reauthenticated privacy decision.
         """
 
         return await self.ask(
@@ -667,15 +667,20 @@ class FinishUpTui(App[int]):
                 title="How should FinishUP review work?",
                 options=[
                     Option(
-                        "semantic",
-                        "Add AI-powered review",
-                        "Recommended. Configure a provider, API key, and explicit privacy "
-                        "boundary.",
+                        "agent_opt_in",
+                        "FinishUP (recommended)",
+                        "Local checks; your agent can turn on AI-powered review for a task "
+                        "when it helps.",
                     ),
                     Option(
-                        "local",
-                        "Local only",
-                        "Local checks; nothing leaves this computer.",
+                        "local_only",
+                        "FinishUP, local only",
+                        "Local checks; agents may not turn on AI-powered review.",
+                    ),
+                    Option(
+                        "ai_powered",
+                        "AI-powered review on every task",
+                        "Set up a reviewer and the privacy policy it works within.",
                     ),
                 ],
                 hint="enter to choose · b to go back" if allow_back else "enter to choose",
@@ -693,12 +698,15 @@ class FinishUpTui(App[int]):
     ) -> None:
         # Only an explicit local answer finishes as local-only. Dismiss (None) is handled by
         # the first-run callers before storage or registration, so it must not fall through here.
-        if choice == "local":
+        if choice == "local_only":
+            await self._record_local_only()
             await self._finish_setup(connected=connected)
             return
-        if choice != "semantic":
+        if choice not in {"agent_opt_in", "ai_powered"}:
             return
-        await self.command_provider()
+        await self.command_provider(
+            conversation_review="local_agent_opt_in" if choice == "agent_opt_in" else "ai_powered"
+        )
         provider = await self.runtime.provider_posture()
         if (
             not provider.endpoint_bound
@@ -723,10 +731,10 @@ class FinishUpTui(App[int]):
     ) -> None:
         """Leave a coherent installation when AI-powered review setup does not complete.
 
-        AI-powered review was chosen, so the policy route is already registered. Returning here
-        without a decision leaves that route registered with no provider behind it and no setup
-        marker written -- an install that is neither local-only nor AI-powered. Offer the finish
-        that makes it one of the two.
+        AI-powered review was chosen and its setup did not complete. Returning here without a
+        decision leaves no setup marker written -- an install that is neither local-only nor
+        AI-powered. Offer the finish that makes it one of the two: the policy route stays
+        registered (ADR-049) and the privacy policy records local checks only.
         """
 
         choice = await self.ask(
@@ -737,7 +745,8 @@ class FinishUpTui(App[int]):
                     Option(
                         "local",
                         "Yes, finish as local only",
-                        "Registers the local-only command and completes setup.",
+                        "Records local checks only and completes setup; add AI-powered review "
+                        "later with /provider.",
                     ),
                     Option(
                         "leave",
@@ -758,16 +767,38 @@ class FinishUpTui(App[int]):
                 ),
             )
             return
-        # Re-registering the other route is a change to the project, so it goes through the
-        # same preview and approval as the first registration -- never a silent mutation.
-        if (
-            connected
-            and option is not None
-            and codex_home is not None
-            and not await self._connect(option, codex_home, "strict")
-        ):
-            return
+        del option, codex_home  # The policy route stays registered (ADR-049).
+        await self._record_local_only()
         await self._finish_setup(connected=connected)
+
+    async def _record_local_only(self) -> None:
+        """Record "local checks only; agents may not opt in" in the privacy policy (ADR-049).
+
+        The Private recipe with the explicit ``local_only`` conversation setting, through the
+        trusted questionnaire; it narrows, so no widening ceremony runs. Where the terminal cannot
+        open it, say the exact command instead.
+        """
+
+        try:
+            report = await self.hand_over_terminal(
+                lambda: self.runtime.run_privacy_setup("private", conversation_review="local_only")
+            )
+        except SuspendNotSupported:
+            self.say(
+                Level.UNPROVEN,
+                "This terminal cannot open the trusted privacy ceremony",
+                ("Run 'finishup privacy conversations local-only' from your shell.",),
+            )
+            return
+        except RuntimeError_ as error:
+            self._report(error)
+            return
+        if getattr(report, "outcome", "failed") not in {"configured", "unchanged"}:
+            self.say(
+                Level.UNPROVEN,
+                "Local checks only was not recorded",
+                ("Run 'finishup privacy conversations local-only' from your shell.",),
+            )
 
     async def _choose_harness(self, options: Sequence[HarnessOption]) -> HarnessOption | None:
         if not options:
@@ -1526,10 +1557,10 @@ class FinishUpTui(App[int]):
             return
         if option.host != "codex":
             review = await self._ask_review_mode()
-            if review is not None:
-                await self._connect_selected_host(
-                    option, route="policy" if review == "semantic" else "strict"
-                )
+            # ADR-049: every answer registers the policy route; the answer then sets up what it
+            # chose, exactly as first-run setup does (review round 1: it was asked and dropped).
+            if review is not None and await self._connect_selected_host(option, route="policy"):
+                await self._run_initial_review(review, connected=True)
             return
         if not await self._offer_package_upgrade_if_newer():
             return
@@ -1748,6 +1779,9 @@ class FinishUpTui(App[int]):
         if current.credential_heuristic_summary is not None:
             # Owner opt-out (issue #982): the same pair and sentence as `finishup status`.
             authority_lines.append(current.credential_heuristic_summary)
+        if current.conversation_review_summary is not None:
+            # ADR-049: how tasks use AI-powered review, in the wording status uses.
+            authority_lines.append(current.conversation_review_summary)
         self.say(
             Level.ACTIVE,
             "Privacy",
@@ -1859,7 +1893,9 @@ class FinishUpTui(App[int]):
             (f"Reason: {getattr(report, 'reason', 'privacy_setup_failed')}",),
         )
 
-    async def _command_codex_subscription(self, *, switch_account: bool = False) -> None:
+    async def _command_codex_subscription(
+        self, *, switch_account: bool = False, conversation_review: str | None = None
+    ) -> None:
         executable_default, home_default, model_default, effort_default = (
             self.runtime.codex_subscription_defaults()
         )
@@ -2023,8 +2059,17 @@ class FinishUpTui(App[int]):
             ),
         )
         try:
+            # ADR-049 review round 1: a first-run answer that adds AI-powered review lists the
+            # AI recipes (Assisted review by default), never the Private recommendation a
+            # subscription reviewer gets on its own.
             report = await self.hand_over_terminal(
-                lambda: self.runtime.run_privacy_setup("assisted_review", offer_recommended=True)
+                lambda: (
+                    self.runtime.run_privacy_setup(
+                        None, conversation_review=conversation_review, ai_review_add_on=True
+                    )
+                    if conversation_review in _ADD_ON_ANSWERS
+                    else self.runtime.run_privacy_setup("assisted_review", offer_recommended=True)
+                )
             )
         except (SuspendNotSupported, RuntimeError_) as error:
             if isinstance(error, RuntimeError_):
@@ -2221,7 +2266,13 @@ class FinishUpTui(App[int]):
             ),
         )
 
-    async def command_provider(self) -> None:
+    async def command_provider(self, conversation_review: str | None = None) -> None:
+        """Bind a reviewer, approve its privacy policy, then store its key.
+
+        ``conversation_review`` is a first-run answer already taken (ADR-049): the privacy
+        policy drafted here carries it and the questionnaire does not ask again.
+        """
+
         options = self.runtime.provider_options()
         chosen = await self.ask(
             SelectionView(
@@ -2270,7 +2321,7 @@ class FinishUpTui(App[int]):
             self.say(Level.OPTIONAL, "No provider was configured.")
             return
         if chosen == "codex_subscription":
-            await self._command_codex_subscription()
+            await self._command_codex_subscription(conversation_review=conversation_review)
             return
         if chosen == "codex_status":
             await self._command_codex_subscription_status()
@@ -2334,7 +2385,12 @@ class FinishUpTui(App[int]):
         try:
             # Authorize the exact provider channel before any credential-bearing probe can run.
             report = await self.hand_over_terminal(
-                lambda: self.runtime.run_privacy_setup(None, offer_recommended=True)
+                lambda: self.runtime.run_privacy_setup(
+                    None,
+                    offer_recommended=conversation_review not in _ADD_ON_ANSWERS,
+                    conversation_review=conversation_review,
+                    ai_review_add_on=conversation_review in _ADD_ON_ANSWERS,
+                )
             )
         except SuspendNotSupported:
             self.say(

@@ -84,6 +84,7 @@ from finishup.domain.values import (
 )
 from finishup.kernel.finding_todo import DEFAULT_FINDING_ATTEMPT_BUDGET, MAX_FINDING_ATTEMPT_BUDGET
 from finishup.kernel.lineage import LineageEvaluation
+from finishup.kernel.review_mode import ConversationReviewContext
 from finishup.observability.logging import (
     record_classified_exception_without_raising,
     record_unexpected_exception_without_raising,
@@ -937,6 +938,11 @@ class Application:
     # Read-only repository access for the check-time change (ADR-031). ``None`` in embedded and
     # test compositions: tasks then record no start base and checks bind no workspace source.
     change_capture: ChangeCapturePort | None = field(default=None, repr=False, compare=False)
+    # ADR-049: reads the owner's conversation setting and review availability for one task.
+    # ``None`` in embedded and test compositions: checks keep the released behaviour.
+    conversation_review_reader: (
+        Callable[[TaskRuntime], Awaitable[ConversationReviewContext | None]] | None
+    ) = field(default=None, repr=False, compare=False)
     _lineage_publish_lock: asyncio.Lock = field(init=False, repr=False, compare=False)
     # One ready service owns one runtime cache.  Serialize start admission so two concurrent
     # route rotations for the same bundle cannot race the runtime's single-writer lease while the
@@ -2455,6 +2461,8 @@ class Application:
                 inspection = replace(inspection, observations_awaited=observations_awaited)
             return inspection
         # Resolve omitted mode via policy so recorded check events carry the resolved value.
+        # Whether the caller named a mode decides whether the conversation's mode applies.
+        mode_explicit = request.mode is not None
         if request.mode is None:
             request = request.model_copy(
                 update={"mode": self.verification_policy.default_check_mode}
@@ -2477,6 +2485,7 @@ class Application:
                 request,
                 route_profile=route_profile,
                 host_profile=host_profile,
+                mode_explicit=mode_explicit,
             )
         if observations_awaited is not None and type(result) is CheckCommitResult:
             # Describes this call's wait only; nothing about it is recorded in the ledger.
@@ -2815,6 +2824,15 @@ class Application:
 
     def receipt_versions_for(self, runtime: TaskRuntime) -> ReceiptVersionSlice:
         return self.receipt_version_resolver(runtime)
+
+    async def conversation_review_context(
+        self, runtime: TaskRuntime
+    ) -> ConversationReviewContext | None:
+        """The owner's conversation setting for this task's repository (ADR-049)."""
+
+        if self.conversation_review_reader is None:
+            return None
+        return await self.conversation_review_reader(runtime)
 
     async def evaluate_semantic_check(
         self,
@@ -3229,6 +3247,9 @@ class ServiceReadyContext:
         default=None, repr=False, compare=False
     )
     change_capture: ChangeCapturePort | None = field(default=None, repr=False, compare=False)
+    conversation_review_context: (
+        Callable[[TaskRuntime], Awaitable[ConversationReviewContext | None]] | None
+    ) = field(default=None, repr=False, compare=False)
 
     def __post_init__(self) -> None:
         if (
@@ -3334,6 +3355,7 @@ class ReadyApplicationFactory:
                 host_lineage_registry=context.host_lineage_registry,
                 advice_semantic_supervisor=context.advice_semantic_supervisor,
                 change_capture=context.change_capture,
+                conversation_review_reader=context.conversation_review_context,
             )
             if context.reconcile_started_egress_attempts is not None:
                 # Before any supervisor can admit a new physical attempt, so a live in-flight

@@ -105,8 +105,10 @@ For a material repair, use one bounded status → repair → check → read → 
    observation-authored coverage limitation needs no response. A response is a disposition, not
    repair proof.
 4. Choose the final check mode deliberately: `semantic_required` for an explicit user, policy, or
-   acceptance requirement; omitted `mode` when relying on the configured default; and
-   `deterministic_only` only for explicitly local/structural work or a deliberate no-egress choice.
+   acceptance requirement; omitted `mode` to run in the task's review mode (`status`
+   `review_mode`; a `final_review: true` check in a task that already used AI-powered review runs
+   it); and `deterministic_only` only for explicitly local/structural work or a deliberate
+   no-egress choice.
 5. After the final check, respond only to the findings it returned that are still unanswered (a
    second response replaces the first), then read
    `status view=findings` with `filter.include_resolved: true` and `resolved`. “Not returned” is
@@ -184,7 +186,7 @@ Accepted children with unresolved actionable findings prevent clean completion w
 children and informational findings annotate. Open work, lost contact, abandonment, write-off,
 cancellation, and missing, unreadable, quarantined, or revoked child data remain named gaps.
 These limits do not prevent an honest incomplete receipt, and they do not prevent an unrelated
-qualifying repair of the parent's own deterministic findings. An issued receipt is immutable:
+qualifying repair of the parent's own local findings. An issued receipt is immutable:
 later child completion needs a new recorded manifest, qualifying parent check, and new receipt.
 
 A child receipt does not prove incorporation or successful integration. Those outcomes belong
@@ -227,10 +229,11 @@ status, never command text, so a still-red run can be named in `limitation_refs`
 Select `semantic_required` when the user explicitly requires AI-powered review, the effective
 verification policy requires it, or a named acceptance criterion requires an independent AI-powered
 judgment. Name that requirement before checking. Qualitative work alone does not make optional
-review mandatory. Omit `mode` when relying on the configured default. Use `semantic_if_configured`
-only when review is known to be optional. Use `deterministic_only` for explicitly local/structural
-work, a policy with AI-powered review disabled, or a deliberate no-egress choice, with the coverage
-limitation disclosed; do not choose it merely because a change is small or a follow-up is slow.
+review mandatory. Omit `mode` to run in the task's review mode (`status` `review_mode`). Use
+`semantic_if_configured` only when review is known to be optional. Use `deterministic_only` for
+explicitly local/structural work, a policy with AI-powered review disabled, or a deliberate
+no-egress choice, with the coverage limitation disclosed; do not choose it merely because a change
+is small or a follow-up is slow.
 Explicit modes are honored by the runtime; when review is required, select `semantic_required` in
 every subsequent check. Track that requirement only through `mode` and the receipt's AI-powered
 review status, never as a plan obligation or requested item: the check is the review, and an open
@@ -245,7 +248,7 @@ continuing the authorized task; it is not clean AI-powered review coverage. Pend
 approval is different: follow the exact continuation below, not the terminal fallback rules.
 
 
-A clean local-only check is not an implementation review: its receipt concludes `no_unresolved_deterministic_findings` at best. Where the route requires AI-powered review, `mode=deterministic_only` records `semantic_review_not_requested`, which bounds the receipt. Where it does not, the check records `semantic_route_required: false` and no review gap: it ran what you asked for. Omit `mode` to follow the configured default; use `semantic_if_configured` only for known-optional review, and disclose the limitation when local-only is deliberate. A check before your first material edit (no edit recorded and no workspace change observed, and not the closing review) also runs locally only, whatever the mode, and carries `semantic_review_deferred_before_first_edit`: nothing was sent, and the next check after an edit reviews as configured. Like `semantic_review_not_requested`, it bounds the receipt only where the route requires review; there, work that needs no edit still gets the closing review, which readiness asks for. Where review is optional it asks for nothing more than a local-only check. Reviewer challenges that something was never attempted while work is in progress, or about FinishUP's own state (a FinishUP tool call, a hook observation awaiting its result), are not recorded as findings; `semantic_process_state_filtered` discloses that they were filtered and never bounds the receipt.
+A clean local-only check is not an implementation review: its receipt concludes `no_unresolved_deterministic_findings` at best. Where the route requires AI-powered review, `mode=deterministic_only` records `semantic_review_not_requested`, which bounds the receipt. Where it does not, the check records `semantic_route_required: false` and no review gap: it ran what you asked for. Omit `mode` to run in the task's review mode (`status` `review_mode`); use `semantic_if_configured` only for known-optional review, and disclose the limitation when local-only is deliberate. A check before your first material edit (no edit recorded and no workspace change observed, and not the closing review) also runs locally only, whatever the mode, and carries `semantic_review_deferred_before_first_edit`: nothing was sent, and the next check after an edit reviews as configured. Like `semantic_review_not_requested`, it bounds the receipt only where the route requires review; there, work that needs no edit still gets the closing review, which readiness asks for. Where review is optional it asks for nothing more than a local-only check. Reviewer challenges that something was never attempted while work is in progress, or about FinishUP's own state (a FinishUP tool call, a hook observation awaiting its result), are not recorded as findings; `semantic_process_state_filtered` discloses that they were filtered and never bounds the receipt.
 
 A non-succeeding `semantic_status` is a coverage gap, not a failure to retry away.
 
@@ -623,7 +626,7 @@ request and report the unresolved start. These continuations do not authorize a 
 
 ### Unrelated command gaps and action-result repairs
 
-A readable deterministic `action_without_result` finding can resolve after a qualifying check
+A readable local `action_without_result` finding can resolve after a qualifying check
 of its accepted linked result when its explicit action relation is provably disjoint from every
 selected plan obligation requesting a command. The relation includes both the action's direct
 `obligation_refs` and a selected obligation's `resolution_evidence_refs → result → action` link.

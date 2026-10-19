@@ -1388,6 +1388,80 @@ unless the check asked for it; a strict process with Codex registration drift (#
 policy (issue #1021, ADR-040). Writers emit it only as `false`; a requiring route omits it, so those checks and
 every check an older build wrote keep their bytes and the blocking default.
 
+**Per-task review mode (ADR-049).** A task (a "conversation" in the code: one task and its
+sessions) switches between local checks only and AI-powered review with one
+`decision_recorded` **1.1.0** draft carrying the required `review_mode: "local" | "ai_powered"`
+(`ReviewMode`, `DECISION_REVIEW_MODE_SCHEMA_VERSION`); 1.0.0 refuses the field, and a decision
+rides 1.1.0 iff it carries it, so plain decisions keep their 1.0.0 bytes. Ordinary
+`cooperative_mcp|local_cli` `publish_work` admits it (event-draft 1.2.0). The owner's setting is
+`PrivacyPolicy.conversation_review` (`ConversationReview`: `local_only`, `local_owner_approval`,
+`local_agent_opt_in`, `ai_powered`; privacy-policy wire 1.2.0, written only when set, so every
+existing policy, meet and receipt digest is unchanged; `effective_conversation_review` reads an
+unset field as `ai_powered` where the inference channel is on and `local_only` where it is off).
+The diff vocabulary gains `("global", "conversation_review")`, rendered "Tasks and AI-powered
+review" in the Authorization group, ordered after `channel.preview_required`; a wider value is a
+widening, a narrower one a tightening. Composition: the repository row's explicit value decides,
+the installation value is only the default, any narrower composition keeps the setting that needs
+more of the owner. `local_owner_approval` makes every LLM-inference dispatch under that policy
+preview-required (`awaiting_human`, the `decide-disclosure` continuation). An explicit
+`local_only` refuses `semantic-review` egress at the gateway (`egress.conversation_review_refuses`,
+inside `semantic_policy_refusal` and again after the pre-dispatch policy refresh:
+`blocked_by_policy` / `policy_denied`). A repository-bound `privacy_propose_policy` never widens
+the machine member's `conversation_review` (`privacy_policy._machine_conversation_review`): an
+explicit row value stays; an unset row whose inference channel the proposal turns on takes
+`narrower_conversation_review(candidate.effective_conversation_review, local_agent_opt_in)`; a row
+already sending stays unset. `build_candidate_policy(..., first_grant=True)` (the chat grant path
+passes the snapshot's `grant_state == "missing"`) starts the setting at
+`_first_grant_conversation_default` (a first grant without network egress records an explicit
+`local_only` where the composed policy carries a setting, and none where nothing is inherited).
+`ai_review_available` also requires the repository's own grant
+(`repository_authority(scope).grant_state == "granted"`). `run_privacy_setup(...,
+ai_review_add_on_when_hybrid=True)` (`finishup --privacy`) switches to the add-on listing where
+`privacy_setup._agent_opt_in_needs_ai_recipes` holds (reviewer bound; first grant, or effective
+`local_agent_opt_in` / `local_owner_approval`). `run_conversation_review_change` walks
+`run_privacy_setup(conversation_review=..., ai_review_add_on=True)` for any setting but
+`local_only` where the repository has no grant (`local_terminal_required` without a terminal).
+`kernel/review_mode.py` owns `ReviewModeSwitch(event_id, sequence, mode, authority)`,
+`review_mode_switches(projection)` (unredacted, unsuperseded, ledger order),
+`ConversationReviewContext(setting, ai_review_available, setting_explicit)`,
+`conversation_review_mode(...)` / `conversation_review_mode_from_switches(...)` →
+`ConversationReviewMode(mode, requested, setting, switches, local_reason)` (properties
+`driven_by_switch`, false for a switch to local under `ai_powered`, and `local_by_choice`, never
+under `ai_powered`) with `local_reason` in `conversation_default`, `switched_to_local`,
+`owner_local_only`, `route_local_only`, `review_disabled`, `ai_review_not_set_up`; the resolver
+takes `review_enabled` (false where the verification policy is `disabled`).
+`Application.conversation_review_reader` / `ServiceReadyContext.conversation_review_context`
+supply the context (`None` in embedded and test compositions: checks keep the released
+behaviour; a reader that raises makes a check that names no mode fail closed to local checks with
+no recorded mode). `kernel/closure_readiness.semantic_review_used(records)` is the shared "already
+used AI-powered review" fact: a `final_review: true` check that names no mode, in such a task now
+running local, runs as its own request. `check_recorded` 1.4.0 and `check-result`
+1.4.0 carry optional `review_mode` (`CheckReviewMode`: `mode`; `source` =
+`conversation_default` | `conversation_switch` | `check_request`; optional `local_reason` =
+`owner_local_only` | `route_local_only` | `review_disabled` | `ai_review_not_set_up`, only on
+`mode: local`; a recorded `local_reason` makes the closing review current;
+`switch_event_id` exactly when `source` is `conversation_switch`). It is absent where the setting
+could not be read, and where the owner's policy predates the setting and the task recorded no
+switch (the upgrade rule: those checks keep their released behaviour and bytes). A local task's
+check that names no mode runs `deterministic_only` and records `semantic_route_required: false`.
+`status-result` 1.4.0 carries optional `review_mode` (`mode`, `requested`, `setting`,
+`setting_explicit`, `ai_review_available`, optional `local_reason`, `switch_event_id`,
+`switch_sequence`), read from
+the head projection on the serving route. Closure readiness (`execute_status`,
+`current_closure_readiness`) passes `semantic_review_required` false for a task that runs local by
+an explicit setting or its own switch (`_task_local_by_choice`, never under `ai_powered`). The
+receipt's `limitations_and_coverage` body ends with the review-mode sentences: "Review mode
+switches recorded for this task: ..." naming each switch's sequence, event id, recorded actor
+(`recorded by <actor_id> (<actor_type>, <assurance>)`) and `declared authority`, when the task
+recorded a switch; then "The applicable check ran ..." whenever the applicable check recorded a
+mode. A check that recorded no mode adds nothing. Renderings share `domain/review_mode_render.py`. CLI: `finishup privacy conversations
+agent-opt-in | owner-approval | local-only | ai-powered | status` (repository scope; widening needs
+the trusted terminal decision). First-run answers (`cli/setup.py` `ReviewChoice`):
+`agent_opt_in`, `local_only`, `ai_powered`, all on the `policy` route; the two that add review
+reach `run_privacy_setup(ai_review_add_on=True)` (`privacy_setup.adds_ai_review`,
+`PRIVATE_ADD_ON_WARNING`), and a repository's first grant asks the conversation question
+(`_with_conversation_question(..., first_grant=True)`).
+
 A `deterministic_only` check that follows a blocked or unavailable review carries that earlier
 code forward alongside `semantic_review_not_requested`. The stop-rules make a blocked review a
 coverage gap rather than a retry, so the fallback check is the expected next step; without the

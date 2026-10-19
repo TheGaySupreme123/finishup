@@ -231,6 +231,7 @@ from finishup.domain.privacy import (
     CandidateContext,
     CandidateContextItem,
     ChannelPolicy,
+    ConversationReview,
     DataCategory,
     DataClass,
     EgressChannel,
@@ -275,6 +276,7 @@ from finishup.domain.values import (
 from finishup.kernel.lineage import LineageEvaluation
 from finishup.kernel.policies.observation_advice import ObservationCompositionFact
 from finishup.kernel.projections import ProjectionState
+from finishup.kernel.review_mode import ConversationReviewContext
 from finishup.kernel.task_facts import register_command_identity_key
 from finishup.kernel.test_edit_visibility import preexisting_test_edits
 from finishup.observability.logging import (
@@ -6653,6 +6655,21 @@ async def provide_service_ready_context(
             return ObservationAdviceSemanticOutcome(
                 status="unavailable", failure_reason="authorization_missing"
             )
+        # ADR-049: background advice belongs to no conversation's switch, so it runs only where
+        # the owner chose AI-powered review in every conversation. Where conversations start
+        # local, nothing is sent in the background.
+        advice_policy_app = getattr(privacy, "policy_application", None)
+        if advice_policy_app is not None:
+            advice_effective = await advice_policy_app.policy_store.effective_policy(
+                repository_scope
+            )
+            if (
+                advice_effective.policy.effective_conversation_review
+                is not ConversationReview.AI_POWERED
+            ):
+                return ObservationAdviceSemanticOutcome(
+                    status="unavailable", failure_reason="authorization_missing"
+                )
         binding = await resolve_provider_binding()
         if binding is None:
             return ObservationAdviceSemanticOutcome(
@@ -6778,9 +6795,13 @@ async def provide_service_ready_context(
         # The exact binding, purpose and scope the dispatch below sends, judged by the egress
         # pipeline's own static policy leg (938-R1): a granted authority that does not name this
         # binding or purpose would be refused at dispatch, so it admits nothing here either.
+        # ADR-049 (review round 1): nor does a repository whose tasks start local, which the
+        # dispatch refuses too, so the hybrid writes no advice row.
         return (
             authority.grant_state == "granted"
             and candidate_binding is not None
+            and authority.effective.policy.effective_conversation_review
+            is ConversationReview.AI_POWERED
             and semantic_policy_refusal(
                 authority.effective.policy,
                 candidate_binding,
@@ -7433,6 +7454,83 @@ async def provide_service_ready_context(
     support_handlers.update(project_handlers)
 
     import_publication_authority = ImportPublicationAuthority(state_path=paths.state)
+    reviewer_bound = semantic_configured and provider_endpoint_bound
+
+    async def reviewer_credential_present() -> bool:
+        """Whether the bound reviewer's credential or subscription login is present (ADR-049).
+
+        The same structural facts provider status reads: an API credential in the vault, or a
+        structurally ready subscription runtime (memoized). An unreadable fact counts as present,
+        so a locked vault never strands an opted-in conversation locally; the check then reports
+        the provider outcome honestly.
+        """
+
+        try:
+            return (
+                await configured_provider_credential_present()
+                or await configured_fallback_credential_present()
+            )
+        except Exception:
+            return True
+
+    async def conversation_review_context(
+        task_runtime: TaskRuntime,
+    ) -> ConversationReviewContext | None:
+        """The owner's conversation setting and review availability for one task (ADR-049).
+
+        Read-only: the task route's repository commitment selects the effective policy the
+        reviewer would run under. A task with no repository-bound route can never send work for
+        review, so it reads the installation-wide setting and reports review unavailable; so does
+        a repository without a privacy grant of its own (review round 2): nothing can be sent for
+        review there until the owner approves one, whatever the installation row says. ``None``
+        when the task has no route or this composition has no policy application; the check then
+        keeps the released behaviour.
+        """
+
+        policy_application = getattr(privacy, "policy_application", None)
+        if policy_application is None:
+            return None
+        route = await catalog.resolve_route(task_runtime.session_id)
+        if route is None:
+            return None
+        if route.repository_privacy_commitment is None:
+            machine = await policy_application.policy_store.effective_policy(
+                AuthorizationScope(AuthorizationScopeKind.MACHINE, installation_id)
+            )
+            return ConversationReviewContext(
+                machine.policy.effective_conversation_review,
+                False,
+                machine.policy.conversation_review is not None,
+            )
+        scope = AuthorizationScope(
+            AuthorizationScopeKind.TASK,
+            installation_id,
+            route.repository_privacy_commitment,
+            route.task_id,
+        )
+        effective = await policy_application.policy_store.effective_policy(scope)
+        authority = await policy_application.policy_store.repository_authority(scope)
+        llm = next(
+            (
+                item
+                for item in effective.policy.channel_policies
+                if item.channel is EgressChannel.LLM_INFERENCE
+            ),
+            None,
+        )
+        available = (
+            reviewer_bound
+            and authority.grant_state == "granted"
+            and llm is not None
+            and llm.enabled
+            and await reviewer_credential_present()
+        )
+        return ConversationReviewContext(
+            effective.policy.effective_conversation_review,
+            available,
+            effective.policy.conversation_review is not None,
+        )
+
     return ServiceReadyContext(
         service_generation=service_generation,
         vault_generation=vault_generation,
@@ -7485,6 +7583,7 @@ async def provide_service_ready_context(
         host_lineage_registry=host_lineage_registry,
         reconcile_observation_losses=observation_coordinator.reconcile_task_selection_losses,
         change_capture=change_capture,
+        conversation_review_context=conversation_review_context,
     )
 
 

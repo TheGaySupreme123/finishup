@@ -10,9 +10,9 @@ Deliver every requested output at its path, even if an input looks inconsistent;
 
 # Guidance catalog
 
-Do not call `resources/list` or `list_mcp_resources` to find FinishUP guidance; a list failure is not a missing server or reason to read product source. If a body is empty or clipped, call `read_guidance` with the same URI and verify it. Only if that result is also empty, use installed `references/<name>.md` or the focused topic's parent index.
+Do not call `resources/list` or `list_mcp_resources` to find FinishUP guidance; a list failure is not a missing server or reason to read product source. If a body is empty or clipped, call `read_guidance` with the same URI. Only if that result is also empty, use installed `references/<name>.md` or the focused topic's parent index.
 
-Focused topics: `startup.md`, `recovery.md`, `publication.md`, `review.md`, `receipt.md`, `delegation.md`, `consent.md`, `page-delivery.md`. Heading topics like `finishup://guidance/workflow.md#start-and-resume` are a closed catalog: never invent an anchor.
+Focused topics: `startup.md`, `recovery.md`, `publication.md`, `review.md`, `receipt.md`, `delegation.md`, `consent.md`, `page-delivery.md`. Heading topics (`workflow.md#start-and-resume`) are a closed catalog: never invent an anchor.
 
 # Start contract
 
@@ -26,17 +26,17 @@ Never publish hidden reasoning or chain-of-thought, full prompts, transcripts, c
 
 # Review and closure
 
-Select `semantic_required` when the user, effective policy, or named acceptance criterion requires independent review; `semantic_if_configured` only if optional; `deterministic_only` only for local or no-egress work.
+Tasks may start local; `review.md`: when to turn on AI-powered review. Select `semantic_required` when the user, effective policy, or named acceptance criterion requires independent review; `semantic_if_configured` only if optional; `deterministic_only` only for local or no-egress work.
 
 Writes return frontier, ids and errors; a prior `status` read or `dry_run` is optional. Cite IDs you published; find native captures with `view=evidence` filter `strength=immutable_snapshot`, reusing only IDs a structural link ties to the claim. Omitted descriptions are a privacy setting, not missing evidence. For the picture, `check` `mode: inspect` (records nothing): what is left, whose move, what hooks saw, evidence-to-item links.
 
 `check` after the plan and each milestone; cite observed runs (`status view=results`). Publish claim/evidence before the final check; answer findings, check, and inspect resolved state. On a finding, change the work or record what it names; an unchanged recheck returns it. Recheck only after repair/material record. After `insufficient_packet`, go to the receipt; never use `deterministic_only` merely to shorten closure.
 
-Final prose and receipts lead with scope: evidence/checks covered, what was not verified, frontier, review status/reason, coverage limits; then actionable-unresolved, unanswered, and resolved-history counts. Never headline "no findings", "zero findings", "clean", or "verified". Keep the final answer no stronger than the receipt's weakest coverage.
+Final prose and receipts lead with scope: what checks covered, what was not verified, frontier, review status/reason, coverage limits; then actionable-unresolved, unanswered, and resolved-history counts. Never headline "no findings", "zero findings", "clean", or "verified". Keep the final answer no stronger than the receipt's weakest coverage.
 
 # Review dialogue
 
-Before the receipt run the closing review: `check` with `final_review: true`. Answer every AI-powered finding with `respond` and a reason (`acknowledged` requires one); for `requested_next_step: answer_question`, answer in the reason.
+Before the receipt run the closing review: `check` with `final_review: true`. Answer every AI-powered finding with `respond` and a reason; for `requested_next_step: answer_question`, answer in the reason.
 
 # Multi-agent work
 

@@ -171,9 +171,11 @@ def test_check_descriptor_states_the_bounded_standing_policy() -> None:
     assert "installed route binding and privacy policy" in description
 
 
-def test_check_mode_cue_preserves_the_configured_default_and_final_requirement() -> None:
+def test_check_mode_cue_names_the_task_review_mode_and_final_requirement() -> None:
     description = descriptor_for("check").description
-    assert "Omit mode to preserve the configured default" in description
+    # ADR-049 review round 1: an omitted mode runs in the task's review mode.
+    assert "Omit mode to run in the task's review mode (status review_mode" in description
+    assert "configured default" not in description
     assert "semantic_if_configured only when review is known to be optional" in description
     assert "including subsequent final checks" in description
     assert "Do not downgrade required review to finish" in description

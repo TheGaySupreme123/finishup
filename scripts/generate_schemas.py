@@ -356,7 +356,11 @@ _TASK_STATEMENT_EVENT_PAIRS: Final[tuple[tuple[str, str], ...]] = (
 )
 # Role- and directory-bearing obligations (issue #1002): a new version of a released family that
 # the unreleased event-draft 1.2.0 admits in place.
-_OBLIGATION_EVENT_PAIRS: Final[tuple[tuple[str, str], ...]] = (("obligation_published", "1.1.0"),)
+_OBLIGATION_EVENT_PAIRS: Final[tuple[tuple[str, str], ...]] = (
+    ("obligation_published", "1.1.0"),
+    # A conversation's review-mode switch (ADR-049) rides the same unreleased event draft.
+    ("decision_recorded", "1.1.0"),
+)
 
 
 def _privacy_policy_v1_2_schema(entry: _RegistryEntry) -> dict[str, JsonValue]:
@@ -419,6 +423,13 @@ def _privacy_policy_v1_2_schema(entry: _RegistryEntry) -> dict[str, JsonValue]:
     # written only when ``disabled``, so every policy without it keeps its bytes and digest; an
     # absent field means ``enforced``. Older wire versions cannot carry it.
     properties["credential_heuristic"] = {"enum": ["disabled", "enforced"], "type": "string"}
+    # How conversations start and whether an agent's switch to AI-powered review waits for the
+    # owner (ADR-049). Optional and written only when set, so every policy without it keeps its
+    # bytes and digest; absent means the released behaviour. Older wire versions cannot carry it.
+    properties["conversation_review"] = {
+        "enum": ["ai_powered", "local_agent_opt_in", "local_only", "local_owner_approval"],
+        "type": "string",
+    }
     return document
 
 
@@ -2247,6 +2258,7 @@ def _check_recorded_v1_4_schema(entry: _RegistryEntry) -> dict[str, JsonValue]:
     }
     _add_semantic_redacted_values(definitions, properties)
     _add_semantic_route_required(properties)
+    _add_check_review_mode(definitions, properties)
     _add_deliverable_states(definitions, properties)
     _admit_recorded_policy_identities(document)
     document["$id"] = SCHEMA_NAMESPACE + entry.relative_path
@@ -3364,6 +3376,57 @@ def _add_semantic_route_required(properties: dict[str, JsonValue]) -> None:
     properties["semantic_route_required"] = {"type": "boolean"}
 
 
+def _add_check_review_mode(
+    definitions: dict[str, JsonValue], properties: dict[str, JsonValue]
+) -> None:
+    """ADR-049: the conversation review mode one check ran in and why (unreleased 1.4.0).
+
+    Optional and additive: closed tokens and one event id, never prose. ``local_reason`` appears
+    only on a local check that was asked to run AI-powered review; ``switch_event_id`` exactly
+    when the conversation's own switch chose the mode.
+    """
+
+    definitions["check_review_mode"] = {
+        "additionalProperties": False,
+        "allOf": [
+            {
+                "if": {"properties": {"source": {"const": "conversation_switch"}}},
+                "then": {"required": ["switch_event_id"]},
+                "else": {"not": {"required": ["switch_event_id"]}},
+            },
+            {
+                "if": {"required": ["local_reason"]},
+                "then": {"properties": {"mode": {"const": "local"}}},
+            },
+        ],
+        "properties": {
+            "local_reason": {
+                "enum": [
+                    "ai_review_not_set_up",
+                    "owner_local_only",
+                    "review_disabled",
+                    "route_local_only",
+                ],
+                "type": "string",
+            },
+            "mode": {"enum": ["ai_powered", "local"], "type": "string"},
+            "source": {
+                "enum": ["check_request", "conversation_default", "conversation_switch"],
+                "type": "string",
+            },
+            "switch_event_id": {
+                "pattern": (
+                    "^evt_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+                ),
+                "type": "string",
+            },
+        },
+        "required": ["mode", "source"],
+        "type": "object",
+    }
+    properties["review_mode"] = {"$ref": "#/$defs/check_review_mode"}
+
+
 def _fact_lineage_definition() -> dict[str, JsonValue]:
     """ADR-045: where one derived fact came from. Closed tokens, counts and ids; never a path."""
 
@@ -3761,6 +3824,7 @@ def _check_result_v1_4_schema(entry: _RegistryEntry) -> dict[str, JsonValue]:
     values.sort(key=lambda item: str(item).encode("ascii"))
     _add_semantic_redacted_values(definitions, properties)
     _add_semantic_route_required(properties)
+    _add_check_review_mode(definitions, properties)
     _add_check_closure_verdict(definitions)
     definitions["fact_lineage"] = _fact_lineage_definition()
     properties["fact_lineage"] = _fact_lineage_array()
@@ -4939,6 +5003,7 @@ def _status_result_v1_4_schema(entry: _RegistryEntry) -> dict[str, JsonValue]:
     _add_review_input_continuation(definitions)
     _admit_current_launcher_heads(definitions)
     _add_status_credential_heuristic(definitions)
+    _add_status_review_mode(definitions)
     _add_status_requested_item_role(definitions)
     document["$id"] = SCHEMA_NAMESPACE + entry.relative_path
     _admit_recorded_policy_identities(document)
@@ -4968,6 +5033,55 @@ def _add_setup_credential_heuristic(definitions: dict[str, JsonValue]) -> None:
         properties = cast(dict[str, JsonValue], cast(dict[str, JsonValue], branch)["properties"])
         if "grant_state" in properties:
             properties["credential_heuristic"] = _credential_heuristic_pair_schema()
+
+
+def _add_status_review_mode(definitions: dict[str, JsonValue]) -> None:
+    """ADR-049: this conversation's review mode, the owner's setting and the latest switch.
+
+    Optional and additive, closed tokens and ids only. ``mode`` is what the next check runs in;
+    ``requested`` is the conversation's default or latest switch; ``local_reason`` says why a
+    conversation is local. ``setting_explicit`` is whether the owner chose ``setting`` (a policy
+    that predates it has the released reading). ``switch_event_id`` and ``switch_sequence`` name
+    the latest switch.
+    """
+
+    definitions["status_review_mode"] = {
+        "additionalProperties": False,
+        "properties": {
+            "ai_review_available": {"type": "boolean"},
+            "local_reason": {
+                "enum": [
+                    "ai_review_not_set_up",
+                    "conversation_default",
+                    "owner_local_only",
+                    "review_disabled",
+                    "route_local_only",
+                    "switched_to_local",
+                ],
+                "type": "string",
+            },
+            "mode": {"enum": ["ai_powered", "local"], "type": "string"},
+            "requested": {"enum": ["ai_powered", "local"], "type": "string"},
+            "setting": {
+                "enum": ["ai_powered", "local_agent_opt_in", "local_only", "local_owner_approval"],
+                "type": "string",
+            },
+            "setting_explicit": {"type": "boolean"},
+            "switch_event_id": {
+                "pattern": (
+                    "^evt_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+                ),
+                "type": "string",
+            },
+            "switch_sequence": {"pattern": "^(0|[1-9][0-9]{0,15})$", "type": "string"},
+        },
+        "required": ["ai_review_available", "mode", "requested", "setting", "setting_explicit"],
+        "type": "object",
+    }
+    success = cast(dict[str, JsonValue], definitions["success"])
+    cast(dict[str, JsonValue], success["properties"])["review_mode"] = {
+        "$ref": "#/$defs/status_review_mode"
+    }
 
 
 def _add_status_credential_heuristic(definitions: dict[str, JsonValue]) -> None:
@@ -6057,6 +6171,23 @@ def _publish_work_request_v1_2_schema(entry: _RegistryEntry) -> dict[str, JsonVa
         "operations/publish-work-request-1.1.0.schema.json",
         {"event-draft-1.1.0": "event-draft-1.2.0"},
     )
+
+
+def _decision_recorded_v1_1_schema(entry: _RegistryEntry) -> dict[str, JsonValue]:
+    """Add the required ``review_mode`` switch to the released decision shape (ADR-049).
+
+    Derived from the frozen 1.0.0 bytes; every other field is unchanged. A decision rides 1.1.0
+    iff it switches the conversation's review mode, so 1.1.0 requires the field.
+    """
+
+    document = _load_versioned_template(entry, "events/decision-recorded-1.0.0.schema.json")
+    properties = cast(dict[str, JsonValue], document["properties"])
+    properties["review_mode"] = {"enum": ["ai_powered", "local"], "type": "string"}
+    required = cast(list[JsonValue], document.setdefault("required", []))
+    if "review_mode" not in required:
+        required.append("review_mode")
+    document["title"] = f"Yoetz decision recorded {entry.schema_version}"
+    return document
 
 
 def _obligation_published_v1_1_schema(entry: _RegistryEntry) -> dict[str, JsonValue]:
@@ -9701,6 +9832,18 @@ _REGISTRY: Final[tuple[_RegistryEntry, ...]] = (
         ),
     ),
     _RegistryEntry(
+        "events/decision-recorded-1.1.0.schema.json",
+        "decision-recorded",
+        "1.1.0",
+        "event",
+        "event-payload",
+        lambda: (
+            __import__(
+                "finishup.domain.events", fromlist=["DecisionRecordedPayload"]
+            ).DecisionRecordedPayload
+        ),
+    ),
+    _RegistryEntry(
         "events/delegation-cancelled-1.0.0.schema.json",
         "delegation-cancelled",
         "1.0.0",
@@ -11295,6 +11438,8 @@ _BUILDER_OWNED_SCHEMA_PATHS: Final[frozenset[str]] = frozenset(
     {
         # Role- and directory-bearing obligations (issue #1002).
         "events/obligation-published-1.1.0.schema.json",
+        # The conversation review-mode switch (ADR-049).
+        "events/decision-recorded-1.1.0.schema.json",
         # The task-statement contracts (issue #908).
         "events/plan-published-1.1.0.schema.json",
         "events/plan-revised-1.1.0.schema.json",
@@ -11812,6 +11957,11 @@ def build_schema_documents(
             normalized = _frozen_schema(entry)
         elif entry.relative_path == "events/obligation-published-1.1.0.schema.json":
             normalized = _obligation_published_v1_1_schema(entry)
+        elif entry.relative_path == "events/decision-recorded-1.0.0.schema.json":
+            # Released: the domain model now also admits the 1.1.0 switch, so never re-derive it.
+            normalized = _frozen_schema(entry)
+        elif entry.relative_path == "events/decision-recorded-1.1.0.schema.json":
+            normalized = _decision_recorded_v1_1_schema(entry)
         elif entry.relative_path == "events/plan-published-1.1.0.schema.json":
             normalized = _with_required_task_statement(
                 entry, "events/plan-published-1.0.0.schema.json", title="Yoetz plan published"

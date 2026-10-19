@@ -23,6 +23,14 @@ A portable plugin is a carrier only, and its MCP ownership is mode-specific and 
 `plugin_managed` includes the selected `mcp.json` route; this plugin is the sole owner, so do not
 keep a duplicate native, project, user, or global registration.
 
+Turning on AI-powered review for one task (a `decision_recorded` 1.1.0 `review_mode` switch,
+[`review.md`](review.md)) is not a privacy decision and needs no new consent where the owner's
+setting is `local_agent_opt_in`: the owner gave that standing permission at setup. Under
+`local_owner_approval` each review still waits for the owner; under `local_only` the task stays
+local; under `ai_powered` every task is reviewed and a switch to local changes nothing. Only the
+owner changes the setting (`finishup privacy conversations`): through the trusted ceremony when it
+needs less of them, at once when it narrows.
+
 Activation, installation, registration, and a host approval do not prove that the route is live or
 that semantic review ran. Provider credentials require the repository grant and the exact
 provider/model/endpoint profile. Use [`request-templates.md`](request-templates.md#setup-and-consent)

@@ -3925,6 +3925,28 @@ def _validate_fact_lineage_models(values: tuple[FactLineageModel, ...] | None) -
     )
 
 
+class CheckReviewModeModel(_ClosedModel):
+    """ADR-049: the conversation review mode one check ran in and why. Closed tokens only."""
+
+    optional_non_null_fields = frozenset({"local_reason", "switch_event_id"})
+
+    mode: Literal["ai_powered", "local"]
+    source: Literal["check_request", "conversation_default", "conversation_switch"]
+    local_reason: (
+        Literal["ai_review_not_set_up", "owner_local_only", "review_disabled", "route_local_only"]
+        | None
+    ) = None
+    switch_event_id: EventIdWire | None = None
+
+    @model_validator(mode="after")
+    def _validate_review_mode(self) -> CheckReviewModeModel:
+        if (self.switch_event_id is not None) != (self.source == "conversation_switch"):
+            raise ValueError("check_review_mode_invalid")
+        if self.local_reason is not None and self.mode != "local":
+            raise ValueError("check_review_mode_invalid")
+        return self
+
+
 class CheckObservationsAwaitedModel(_ClosedModel):
     """Outcome of the optional pre-check wait for this task's hook rows (issue #1012)."""
 
@@ -4139,6 +4161,7 @@ class CheckSuccessModel(_ClosedModel):
             "semantic_withheld_items",
             "semantic_redacted_values",
             "semantic_route_required",
+            "review_mode",
             "fact_lineage",
             "review_input_manifest",
             "semantic_conclusion",
@@ -4189,6 +4212,8 @@ class CheckSuccessModel(_ClosedModel):
     # Issue #986: ``false`` only when the check's route did not require AI-powered review; absent
     # when it did or on results from older builds (the missing review then still blocks).
     semantic_route_required: bool | None = None
+    # ADR-049: the conversation review mode this check ran in (local or AI-powered) and why.
+    review_mode: CheckReviewModeModel | None = None
     # ADR-045: where each derived task fact this check carries came from (rule, obligation item,
     # observing check frontier, prior state). Absent when the check carries no such fact.
     fact_lineage: tuple[FactLineageModel, ...] = ()
@@ -5040,6 +5065,31 @@ class StatusCredentialHeuristicModel(_ClosedModel):
 
     repository: Literal["disabled", "enforced", "unknown"]
     machine_default: Literal["disabled", "enforced", "unknown"]
+
+
+class StatusReviewModeModel(_ClosedModel):
+    """ADR-049: this conversation's review mode, the owner's setting and the latest switch."""
+
+    optional_non_null_fields = frozenset({"local_reason", "switch_event_id", "switch_sequence"})
+
+    mode: Literal["ai_powered", "local"]
+    requested: Literal["ai_powered", "local"]
+    setting: Literal["ai_powered", "local_agent_opt_in", "local_only", "local_owner_approval"]
+    setting_explicit: bool
+    ai_review_available: bool
+    local_reason: (
+        Literal[
+            "ai_review_not_set_up",
+            "conversation_default",
+            "owner_local_only",
+            "review_disabled",
+            "route_local_only",
+            "switched_to_local",
+        ]
+        | None
+    ) = None
+    switch_event_id: EventIdWire | None = None
+    switch_sequence: CanonicalUInt64Wire | None = None
 
 
 class StatusPredictedReasonModel(_ClosedModel):
@@ -6188,6 +6238,8 @@ class StatusSuccessModel(_ClosedModel):
     # Owner opt-out state, visible before any check runs (issue #982). Absent when the service
     # did not compose it (for example a direct in-process application without privacy support).
     credential_heuristic: StatusCredentialHeuristicModel | None = None
+    # ADR-049: the conversation's review mode and the owner's setting, when composed.
+    review_mode: StatusReviewModeModel | None = None
 
     @model_validator(mode="before")
     @classmethod
@@ -6947,6 +6999,8 @@ _CHECK_STRUCTURAL_POINTERS: Final = (
     )
     # Issue #1012: closed state and count of the optional pre-check hook-row wait.
     + _prefix_leaf_patterns("/observations_awaited", ("pending_count", "state"))
+    # ADR-049: the review mode this check ran in. Closed tokens and one event id.
+    + _prefix_leaf_patterns("/review_mode", ("local_reason", "mode", "source", "switch_event_id"))
     # Issue #1048 (ADR-047): the read-only inspection branch. Every leaf is an id, a closed
     # token, a count, a requested-item index or a keyed command commitment; never text or paths.
     + _prefix_leaf_patterns(
@@ -7144,6 +7198,20 @@ _STATUS_COMMON_STRUCTURAL_POINTERS: Final = (
     )
     # Closed state tokens only (issue #982).
     + _prefix_leaf_patterns("/credential_heuristic", ("machine_default", "repository"))
+    # ADR-049: closed tokens, a boolean, one event id and one sequence.
+    + _prefix_leaf_patterns(
+        "/review_mode",
+        (
+            "ai_review_available",
+            "local_reason",
+            "mode",
+            "requested",
+            "setting",
+            "setting_explicit",
+            "switch_event_id",
+            "switch_sequence",
+        ),
+    )
 )
 
 _STATUS_ADVICE_STRUCTURAL_POINTERS: Final = (
@@ -7940,10 +8008,10 @@ def _build_result_leaf_rules() -> tuple[_ResultLeafRule, ...]:
         ):
             raise RuntimeError("invalid_result_leaf_classification")
     if (
-        len(result) != 1611
+        len(result) != 1623
     ):  # ... #1017 +3, #1027 +5, tb4n3 LO +9, W2-A +46, LF +34 (fact_lineage), W2-B +2,
         # tb4n4 #1044 +7 (closure_readiness.undeclared_references), #1048 +38 (inspection),
-        # #1047 +2 (follow_up_round)
+        # #1047 +2 (follow_up_round), ADR-049 +4 check / +8 status (review_mode)
         raise RuntimeError("incomplete_result_leaf_registry")
     return result
 

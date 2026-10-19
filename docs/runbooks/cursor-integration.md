@@ -702,7 +702,7 @@ Stale-verification advice is scoped to the logical tool call rather than the obs
 `edit_after_successful_check` finding with both phases as evidence. The reviewed post-only
 structural profile is unchanged and still reports one finding for its one observed phase; FinishUP
 does not fabricate a pre-event to complete a pair (issue #680).
-Built-in shell success is a host outcome, never a check: deterministic advice moves its
+Built-in shell success is a host outcome, never a check: local advice moves its
 verification baseline only on a current `passed` approved-check fact or an explicit success from a
 dedicated verification tool, and never on a routine read (issue #681). This host adds no reviewed
 check signal of its own, so a Cursor session with no approved check keeps
@@ -1974,7 +1974,7 @@ per-session interval on macOS, Linux and Windows through WSL 2. See
 resume and interval settings. The setting gates recovered pending work as well as new scheduling:
 while it resolves off, startup closes rows an earlier service left pending as `cancelled` with no
 provider identity (nothing sent), so re-enabling never replays them. Explicit checks and
-deterministic advice retain their independent behavior.
+local advice retain their independent behavior.
 
 Background review is also admitted only while a provider is usable: an endpoint bound, the machine
 policy admitting `llm_inference`, the configured credential present, and an ACTIVE task route
@@ -2145,3 +2145,82 @@ and `tests/integration/application/test_tb4n4_decision_id_replay.py` replay the 
 through the bridge validation, `read_guidance` dispatch, the kernel and the real publish operation;
 the tb4n4 exports themselves were not replayed, and a live Cursor transcript on macOS, Linux and
 WSL 2 is not recorded for this change.
+
+## Per-task review mode and agent opt-in (ADR-049)
+
+**Decision for Cursor: supported, the same MCP path as every host.** A task starts with local
+checks under the owner's recommended setting (`conversation_review = local_agent_opt_in`); the agent
+turns on AI-powered review for its own task with one `publish_work` draft, `decision_recorded`
+version `1.1.0` with `review_mode: "ai_powered"` (`"local"` turns it back off), and then checks
+without `mode`. `check` and `status` carry `review_mode`; the receipt names each switch. Guidance:
+`finishup://guidance/review.md` (when to turn it on, when to stay local, the exact draft). Nothing
+Cursor-specific is involved: no hook, skill or registration field changes.
+
+- **Owner setting.** `finishup privacy conversations agent-opt-in|owner-approval|local-only|ai-powered|status`
+  for the current repository; first-run setup records it from its three answers. Owner approval
+  makes each review the agent turns on wait for `finishup privacy decide-disclosure`, the same
+  `awaiting_human` path as **Ask every time**.
+- **Route.** Every interactive setup answer now registers the policy route. A registration made by
+  an earlier local-only setup is on the strict route: an opted-in task there (or any task under
+  "every task") runs local with `route_local_only`, and the check prints the fix,
+  `finishup setup run --route-profile policy`; the Cursor form is
+  `finishup setup run --host cursor-ide --route-profile policy` (`--host cursor-cli` for the Agent
+  CLI). Then start a fresh Cursor session. Non-interactive setup keeps the strict default for a
+  fresh registration.
+- **Not set up.** Where no reviewer or repository policy exists, an opted-in task runs local with
+  `ai_review_not_set_up` and the one-time owner commands (`finishup --set`, or
+  `finishup provider codex-subscription setup`, then `finishup --privacy`).
+- **Host auto-review.** A local-only owner on the policy route sends nothing, but `check` is still
+  advertised as open-world; an automatic reviewer that holds every `check` (see the host admission
+  section) holds these too until the owner grants admission or re-registers on the strict route.
+- **Upgrade.** A policy approved before the setting existed keeps its behaviour, and its checks and
+  receipts are unchanged, until the owner chooses a setting or an agent switches a task.
+- **Every task.** Under `ai_powered`, or a policy approved before the setting existed with its
+  inference channel on, a `review_mode: "local"` switch is recorded but changes nothing: checks
+  that omit `mode` still run AI-powered review, and a check that names `deterministic_only` keeps a
+  required review as a bounding gap (review round 1).
+- **Closing review.** A task that already used AI-powered review and now runs local (it switched
+  back, or one check named an AI-powered `mode`) still owes its closing review; the Stop gate's
+  `check` with `final_review: true` and no `mode` runs it (recorded `source: check_request`).
+  Where the owner has since chosen local only, that check records `owner_local_only` and the
+  closing review is no longer owed.
+- **Enforced at dispatch.** The privacy gateway refuses AI-powered review (and background advice)
+  under an explicit `local_only`, including a check already in flight when the owner narrows; a
+  failed read of the setting runs a check that omits `mode` local, with any required review left
+  as a bounding gap. Background advice is admitted only under `ai_powered`.
+- **Receipt and status.** Each switch names the actor the ledger recorded, its actor type and
+  assurance, and the declared authority; a task whose check recorded a mode says how it ran even
+  without a switch. A policy that predates the setting and reads as local only says AI-powered
+  review is not set up, not that agents may not opt in. Review turned off in the verification
+  settings has its own reason, `review_disabled`.
+- **First-run privacy.** The first and third setup answers list the privacy options with Assisted
+  review as the default (marked recommended only for a provider with reviewed data-use terms);
+  Private stays selectable and says that tasks stay local under it. The terminal interface's
+  `/connect` for Cursor (IDE or Agent CLI) now runs the chosen answer's setup after connecting, as
+  first run does (it asked the question and dropped the answer before).
+- **Other repositories (review round 2).** A fresh install's first repository grant gives the
+  installation row the hybrid (or the narrower answer), so another project or an independent clone
+  starts local; a repository without its own privacy grant reports "AI-powered review is not set
+  up for this repository" (`ai_review_available` false) and an opt-in there records
+  `ai_review_not_set_up` until the owner approves that repository's grant (terminal or chat; a chat
+  grant starts on the same first-grant default). Installations whose row already sent work keep
+  the released repository-grant handoff.
+- **Agent-driven setup.** Preview with `finishup setup run --host cursor-ide --route-profile
+  policy --non-interactive --json` (`--host cursor-cli` for the Agent CLI) for every answer;
+  without `--route-profile policy` a fresh non-interactive registration is strict and every task
+  stays local (`route_local_only`).
+- **Round 3.** In a repository without its own grant, `finishup privacy conversations
+  agent-opt-in` (or `owner-approval`) walks that repository's privacy grant with the setting
+  included (a local terminal is required; otherwise `local_terminal_required` and the command
+  names `finishup --privacy`). With a reviewer bound, `finishup --privacy` lists the AI-powered
+  review options (Assisted review by default) on a first grant and under agent opt-in or owner
+  approval. Switching back to local after the closing review costs one more closing review
+  (`review.md` says so). The MCP receipt summary's review-mode pointer is JSON-receipt only.
+  Same path on Cursor (IDE and Agent CLI); no host-specific change.
+- **Round 3 verification.** A first Private grant in a repository reads as local only (an explicit
+  `local_only` where it inherits an earlier repository's hybrid). `finishup --privacy`'s
+  AI-powered review listing words Assisted review for the route: on a route without reviewed
+  data-use terms it is the default, not recommended, and its draft records no evidence
+  requirement. Where the released carry-forward is pending, status says the installation's earlier
+  permission is carried forward when a task first starts in the repository.
+  Same on Cursor (IDE and Agent CLI).

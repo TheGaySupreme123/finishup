@@ -23,6 +23,7 @@ from finishup.domain.events import (
     CheckChangeShownFiles,
     CheckMode,
     CheckRecordedPayload,
+    CheckReviewMode,
     ClaimRecordedPayload,
     ClaimRecordedPayloadV1_1,
     ClaimRevisionMismatch,
@@ -4014,6 +4015,7 @@ class MemoryLedgerAdapter:
         semantic_redacted_values: tuple[SemanticRedactedValue, ...] = (),
         semantic_route_required: bool | None = None,
         deliverable_states: tuple[DeliverableState, ...] = (),
+        review_mode: CheckReviewMode | None = None,
     ) -> CheckCommitResult:
         key = (frozen.lease.writer_id, frozen.lease.operation_id)
         async with self._lock:
@@ -4131,6 +4133,7 @@ class MemoryLedgerAdapter:
             semantic_withheld_item_ids=semantic_withheld_item_ids,
             semantic_redacted_values=semantic_redacted_values,
             semantic_route_required=semantic_route_required,
+            review_mode=review_mode,
             deliverable_states=deliverable_states,
             review_input_manifest=review_input_manifest,
             totals=(
@@ -4276,6 +4279,7 @@ class MemoryLedgerAdapter:
             totals=check_payload.totals,
             semantic_redacted_values=check_payload.semantic_redacted_values,
             semantic_route_required=check_payload.semantic_route_required,
+            review_mode=check_payload.review_mode,
             deliverable_states=check_payload.deliverable_states,
         )
         canonical = canonical_encode(

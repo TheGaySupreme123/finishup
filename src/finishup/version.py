@@ -113,7 +113,8 @@ _RESOURCE_LIMIT: Final = 4_194_304
 # One independently reviewed cardinality tripwire guards the generated resource manifest. All
 # per-kind counts are derived from the manifest entries so adding a resource has exactly one
 # hand-authored count to review and the owning resource-ripple command can regenerate the rest.
-REVIEWED_RESOURCE_COUNT: Final = 308  # #1048: +1 canonical vector CAN-017 (check inspection)
+# ADR-049: +1 schema decision-recorded 1.1.0, +1 canonical review-mode vectors (CAN-018).
+REVIEWED_RESOURCE_COUNT: Final = 310
 _RESOURCE_KINDS: Final = frozenset(
     {
         "canonical_vector",
@@ -807,6 +808,7 @@ def build_version_manifest(*, include_optional_probes: bool = False) -> VersionM
                 in {
                     "check_recorded",
                     "claim_recorded",
+                    "decision_recorded",
                     "obligation_published",
                     "plan_published",
                     "plan_revised",

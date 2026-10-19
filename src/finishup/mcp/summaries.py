@@ -29,6 +29,11 @@ from finishup.domain.review_input_render import (
     has_agent_suppliable_missing,
     render_review_input_manifest_compact,
 )
+from finishup.domain.review_mode_render import (
+    check_review_mode_line,
+    review_mode_continuation,
+    status_review_mode_line,
+)
 from finishup.kernel.fact_lineage import FactLineage, lineage_from_wire, lineage_texts
 from finishup.legacy_names import LAUNCHER_NAME, LAUNCHER_NAMES
 from finishup.mcp.errors import VALIDATION_REASON_TOKENS
@@ -1444,10 +1449,10 @@ def _check_lead_variants(
         )
     if scoped_local_verdict:
         return (
-            "No issue detected within deterministic coverage; AI-powered review was not "
+            "No issue detected within local coverage; AI-powered review was not "
             f"requested; {counts}",
-            f"No issue detected within deterministic coverage; {counts}",
-            "No issue detected within deterministic coverage;",
+            f"No issue detected within local coverage; {counts}",
+            "No issue detected within local coverage;",
         )
     if status == "not_requested":
         return (
@@ -1653,6 +1658,17 @@ def summary_for_check(envelope: object) -> str:
     parts.append(
         render.guarded_one("withheld_items", lambda: _semantic_withheld_items_part(source))
     )
+    # ADR-049: the mode this check ran in; a task that asked for AI-powered review and still ran
+    # local gets the exact continuation as an instruction.
+    parts.append(
+        _opt(render.text("review_mode", lambda: _review_mode_clause(source)), priority=_P_STATE)
+    )
+    parts.append(
+        _opt(
+            render.text("review_mode_next", lambda: _review_mode_next_clause(source)),
+            priority=_P_ACTION,
+        )
+    )
     parts.extend(
         (
             _req(f"AI-powered review status/reason: {status}/{reason};"),
@@ -1676,6 +1692,69 @@ def summary_for_check(envelope: object) -> str:
         )
     )
     return _compose(parts)
+
+
+def _review_mode_clause(source: Mapping[str, JsonValue]) -> str:
+    """ADR-049: the check's review-mode line; closed tokens and an event id only."""
+
+    return check_review_mode_line(source.get("review_mode"))
+
+
+def _review_mode_next_clause(source: Mapping[str, JsonValue]) -> str:
+    review_mode = source.get("review_mode")
+    if not isinstance(review_mode, Mapping):
+        return ""
+    typed = cast(Mapping[str, JsonValue], review_mode)
+    if typed.get("mode") != "local":
+        return ""
+    continuation = review_mode_continuation(typed.get("local_reason"))
+    return "" if not continuation else f"Review mode next: {continuation}"
+
+
+def _status_review_mode_clause(source: Mapping[str, JsonValue]) -> str:
+    """ADR-049: the task's review mode and the owner's setting for status."""
+
+    return status_review_mode_line(source.get("review_mode"))
+
+
+# ADR-049: the receipt's review-mode sentences, recognised by their fixed openings only; the
+# summary points at them with closed wording and never carries their text.
+_RECEIPT_REVIEW_MODE_POINTERS: Final = (
+    (
+        "Review mode switches recorded for this task:",
+        "review mode switched in this task (limitations section names each switch);",
+    ),
+    (
+        "The applicable check ran local checks only (FinishUP)",
+        "review mode: local (FinishUP); limitations section says how the check ran;",
+    ),
+    (
+        "The applicable check ran with AI-powered review requested.",
+        "review mode: AI-powered review; limitations section says how the check ran;",
+    ),
+)
+
+
+def _receipt_review_mode_clause(source: Mapping[str, JsonValue]) -> str:
+    """ADR-049: a fixed pointer to the receipt's review-mode sentences; never their text."""
+
+    document = source.get("document")
+    if not isinstance(document, Mapping):
+        return ""
+    sections = cast(Mapping[str, JsonValue], document).get("sections")
+    if not isinstance(sections, (list, tuple)):
+        return ""
+    for raw in cast(Sequence[object], sections):
+        if not isinstance(raw, Mapping):
+            continue
+        section = cast(Mapping[str, object], raw)
+        body = section.get("body")
+        if section.get("key") != "limitations_and_coverage" or type(body) is not str:
+            continue
+        for opening, pointer in _RECEIPT_REVIEW_MODE_POINTERS:
+            if opening in body:
+                return pointer
+    return ""
 
 
 def _manifest_sentence(source: Mapping[str, JsonValue]) -> str:
@@ -1889,6 +1968,14 @@ def summary_for_status(envelope: object) -> str:
         _opt(
             render.text("credential_filter", lambda: _credential_heuristic_clause(source)),
             priority=_P_DISCLOSURE,
+        ),
+        _opt(
+            render.text("review_mode", lambda: _status_review_mode_clause(source)),
+            priority=_P_STATE,
+        ),
+        _opt(
+            render.text("review_mode_next", lambda: _review_mode_next_clause(source)),
+            priority=_P_ACTION,
         ),
     ]
     if view == "evidence":
@@ -2355,6 +2442,12 @@ def summary_for_receipt(envelope: object) -> str:
             )
         )
     parts.append(_list_part("gap codes: ", gap_codes, priority=_P_DISCLOSURE))
+    parts.append(
+        _opt(
+            render.text("review_mode", lambda: _receipt_review_mode_clause(source)),
+            priority=_P_DISCLOSURE,
+        )
+    )
     # Issue #1017: the result coverage counts live gaps only; gaps a later check cleared are
     # named apart (JSON document; markdown/text carry them in human_text).
     parts.append(

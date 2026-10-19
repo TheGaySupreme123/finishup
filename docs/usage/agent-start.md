@@ -11,8 +11,11 @@ curl -fsSL https://raw.githubusercontent.com/TheGaySupreme123/finishup/main/docs
 `https://finishup.dev/agent-start` is the intended future home; this file is the authority today.
 Codex, Claude Code, and Cursor share guided desktop connection setup. Use `finishup setup status
 --json` to discover installations, then `finishup setup run --host codex|claude|cursor-ide|cursor-cli
---non-interactive --json` to preview the selected connection. Present the project, review mode,
-scope and proposed changes in plain language. After approval, use the exact `next_step` command
+--route-profile policy --non-interactive --json` to preview the selected connection. Keep
+`--route-profile policy` for every review-mode answer and show the preview's `route_profile` (it
+must read `policy`): without it a fresh non-interactive registration is strict, and every task then
+stays local (`route_local_only`) until the connection is re-registered. Present the project, review
+mode, scope and proposed changes in plain language. After approval, use the exact `next_step` command
 returned by the preview, including its request ID and preview digest. `--accept` alone does not
 authorize unseen changes. Keep executable/configuration details available when needed; do not
 make the user enter paths that discovery already found. Use explicit path overrides for another
@@ -135,20 +138,30 @@ Guide these decisions in order:
    integration is skipped and everything else still works.
 2. **Project trust** (full-screen interface only) — applies to the whole repository root shown,
    not just the current folder; the prompt wizard folds trust into the approval in 4.
-3. **Review mode** — AI-powered review or local only. If the user explicitly wants AI-powered
-   review, recommend Expanded first for the deepest useful in-scope review and explain Assisted as
-   the lower-disclosure AI-powered option. This answer also picks the registered MCP route: policy
-   (`finishup mcp serve`) vs strict (`finishup mcp serve --semantic off`, which can never dispatch
-   external review). Local-only is zero-configuration and fully useful.
+3. **Review mode** — how tasks use AI-powered review. FinishUP's local checks run on every task
+   whichever answer they choose:
+   - **FinishUP (recommended)**: tasks start with local checks, and the agent turns on AI-powered
+     review for a task when it helps. Choosing it is the user's standing permission for that; the
+     privacy policy they approve still decides what may be sent.
+   - **FinishUP, local only**: agents may not turn on AI-powered review, and no reviewer is set
+     up. Zero-configuration and fully useful.
+   - **AI-powered review on every task**: every task is reviewed, as in earlier releases.
+
+   All three use the same MCP route (policy, `finishup mcp serve`), so the user can change the
+   answer later with `finishup privacy conversations` without reconnecting. The interactive
+   wizard registers it for every answer; a preview you run gets it from `--route-profile policy`.
 4. **Approve the exact proposed change** — project skill, plugin/hook sources, MCP registration;
    digest-bound, explicit, no default answer.
 5. **Secret storage** — system secure storage or a FinishUP passphrase. The full-screen interface
    asks; the prompt wizard uses secure storage automatically and offers a passphrase only when it
    is unavailable.
 
-If they choose AI-powered review, additionally choose a **provider and model** (reviewed presets, a
-custom HTTPS origin, or skip for now) and a **privacy policy** (five options, one recommended with
-its reason and trade-off). On a capable Codex route, the final repository grant decision can be an
+If they choose the first or third answer, additionally choose a **provider and model** (reviewed
+presets, a ChatGPT subscription, a custom HTTPS origin, or skip for now) and a **privacy policy**:
+the five options are listed with Assisted review as the default, marked recommended only for a
+provider route with reviewed data-use terms. Private stays selectable, but it sends nothing for
+review, so an agent's opt-in (or "every task") stays local under it until the user picks another
+option. On a capable Codex route, the final repository grant decision can be an
 exact current-chat approve or deny after the v6 before/after preview is shown; repository, policy,
 provider/model/endpoint, expiry, and replay drift all fail closed. An API provider credential still
 uses hidden local input or the one-shot warned chat credential path. A Codex subscription instead
@@ -181,27 +194,46 @@ recommendations. Each answer decides the next step; stop after each and wait.
 1. **Codex.** "I found Codex at `<path>` (or: I found no Codex). Connect FinishUP to it? Yes /
    No / (if several) which one." Recommend yes when one is found; with none, say integration is
    skipped and everything else still works.
-2. **Review mode.** "How should FinishUP review your work? (a) Local only: nothing leaves this
-   computer, no account or key needed, every local check works. (b) AI-powered review: an AI model
-   also reviews, which sends parts of your work to a provider you pick." Recommend local only for a
-   first install unless they already want model review; if they choose AI-powered review, recommend
-   Expanded first and name Assisted as the lower-disclosure option.
+2. **Review mode.** "How should your tasks use AI-powered review? FinishUP's local checks run on
+   every task either way. (a) FinishUP, recommended: tasks start local and I turn on AI-powered
+   review for a task when it helps, within the privacy policy you approve. (b) FinishUP, local
+   only: agents may not turn on AI-powered review; no account or key needed. (c) AI-powered review
+   on every task, as in earlier releases." Recommend (a). Under (a) and (c) an AI model also
+   reviews, which sends the parts of their work the privacy policy allows to a provider they pick;
+   under (b) no AI-powered review is set up. All three connect the agent the same way.
 3. **The exact change.** Show the preview (project skill, plugin and hook sources, MCP
    registration) and ask "Apply exactly this? Approve / Deny." No recommendation and no default:
    this one is theirs.
 4. **Secret storage**, only if the wizard reports system secure storage unavailable: "FinishUP needs
    a place for secrets. Use a passphrase you choose? You will type it in your terminal."
-5. **Provider and model**, only after AI-powered review: list the presets from
+5. **Provider and model**, only after answer (a) or (c): list the presets from
    `finishup provider catalog --json` with their suggested models and ask which one, or skip for
    now. Recommend the preset whose retention terms match what they told you about privacy.
-6. **Privacy policy**, only after AI-powered review: name the five options, recommend one with its
-   reason and trade-off, and ask which. Their choice is applied only through the terminal
+6. **Privacy policy**, only after answer (a) or (c): name the five options. Assisted review is the
+   default; recommend it with its reason and trade-off, and name Expanded as the deeper option.
+   With a ChatGPT subscription or another provider without reviewed data-use terms nothing is
+   marked recommended, so the choice is theirs: say so. Private sends nothing for review, so their
+   (a) or (c) answer would stay local under it. Their choice is applied only through the terminal
    ceremony or the exact prepared chat grant.
 7. **Credential**: never a question. Hand over the terminal for `finishup provider credential set`.
 
-When every answer is in, run the setup, verify (section 5), and report each layer separately.
-Setup is finished when the user's chosen mode is reached — local only is a finished state, not a
-fallback.
+When every answer is in, run the setup (the preview with `--route-profile policy`, whatever the
+answer; show its `route_profile`), then record the answer:
+
+- **(a)** The repository's first privacy grant records it, whether the user approves that grant
+  in the terminal (`finishup --privacy` lists the AI-powered review options with Assisted review
+  as the default) or as the exact prepared chat grant, unless an earlier choice is narrower: where
+  `finishup privacy conversations status` shows local only or owner approval, hand over the
+  terminal for `finishup privacy conversations agent-opt-in`.
+- **(b)** Hand over the terminal for `finishup privacy conversations local-only`. It applies at
+  once where the repository already has a grant, and otherwise walks the user through the Private
+  policy that records it.
+- **(c)** After the grant, hand over the terminal for `finishup privacy conversations ai-powered`:
+  it needs less of the user, so it takes the trusted local approval.
+
+`finishup privacy conversations status` confirms the result. Then verify (section 5) and report
+each layer separately. Setup is finished when the user's chosen answer is reached — local only is
+a finished state, not a fallback.
 
 ### Hand over the terminal like it is their first
 

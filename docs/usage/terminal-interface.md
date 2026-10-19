@@ -92,15 +92,20 @@ line above the active one:
    bytes). When the keyring is unusable — no store loaded, or a backend FinishUP does not approve for
    the vault — the option is disabled with that reason and the passphrase is offered. Change it
    later with `/service` or `finishup service rotate-passphrase`.
-7. **Review mode** — Local only, or Add AI-powered review.
-8. **AI-powered review setup, when selected** — an explicit choice between OpenAI API / compatible
-   API and Codex with ChatGPT subscription, followed by the matching secure API-key or Codex-owned
-   login flow and the trusted recommendation-first privacy ceremony.
+7. **Review mode** — the same three answers as `finishup setup run`: **FinishUP (recommended)**
+   (local checks; your agent can turn on AI-powered review for a task when it helps),
+   **FinishUP, local only** (agents may not turn it on), or **AI-powered review on every task**.
+   Every answer connects your agent the same way, so you can change it later without reconnecting.
+8. **AI-powered review setup, for the first and third answers** — an explicit choice between
+   OpenAI API / compatible API and Codex with ChatGPT subscription, followed by the matching secure
+   API-key or Codex-owned login flow and the trusted recommendation-first privacy ceremony, which
+   records your answer. Local only records itself through the same ceremony with the Private
+   policy.
 9. **Finish**, with each readiness layer stated separately.
 
-You are never required to configure a provider: Local only is complete and useful. If you choose
+You are never required to configure a provider: local only is complete and useful. If you choose
 AI-powered review, setup does not claim completion until provider credentials and privacy approval
-finish.
+finish; if they do not, it offers to finish as local only.
 
 If an MCP entry named `finishup` already exists and FinishUP does not own it, setup stops there. You can
 inspect it, continue locally, or read manual resolution steps. **There is no force-replace option
@@ -179,7 +184,10 @@ The last five are deliberately separate lines, because each can be true while th
 ### `/connect`
 
 Inspect the current connection, connect or repair it, or view the exact technical state. Any
-action that would change something shows the same preview and approval the first run does. When a
+action that would change something shows the same preview and approval the first run does. For
+Claude Code and Cursor it first asks how your tasks use AI-powered review, connects on the policy
+route, and then sets up what you chose, as the first run does; for Codex it keeps the connection's
+configured route (`finishup setup run --route-profile policy` re-registers a strict one). When a
 newer package is available under the durable `update_checks` policy, `/connect` offers upgrade
 first or continue with the running version before harness add/repair — it never reinstalls the same
 package bits to add a harness.
@@ -197,6 +205,12 @@ The posture is for the repository derived by the service from the interface sess
 directory. Branches and linked worktrees share the Git common root; independent clones do not. The
 screen shows machine ceiling, exact repository grant, and legacy migration state separately, and
 whether the task statement is sent. It never uses task `workspace_ref` as privacy scope.
+
+The screen also names how tasks use AI-powered review (agent opt-in, owner approval, local only,
+or every task) and the command that changes it, `finishup privacy conversations`. `/status`,
+`/check` and `/receipt` show the task's review mode the same way the command line does: a
+"Review mode: local (FinishUP)" or "Review mode: AI-powered review" line with the reason, and,
+when the task asked for AI-powered review and it could not run, what to do.
 
 This screen selects; it never authorizes. Choosing anything but *Keep current* suspends the
 interface and hands the controlling terminal to `finishup privacy setup`, and that trusted ceremony is

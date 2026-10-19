@@ -315,9 +315,7 @@ def test_the_check_core_survives_whatever_optional_fields_arrive(
         and envelope["semantic_status"] == "not_requested"
         and envelope["semantic_reason"] == "deterministic_mode"
     )
-    assert (
-        "No issue detected within deterministic coverage" if scoped else envelope["verdict"]
-    ) in text
+    assert ("No issue detected within local coverage" if scoped else envelope["verdict"]) in text
     assert (
         f"AI-powered review status/reason: {envelope['semantic_status']}/"
         f"{envelope['semantic_reason']}"
