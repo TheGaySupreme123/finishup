@@ -1,61 +1,40 @@
 # Agent start: installing FinishUP for your user
 
-Your user asked you to install and set up FinishUP. This page is the agent's version of
-[Install and first run](install-and-first-run.md): what you run yourself, what you ask the user,
-and where you hand over the terminal. Fetch the current version any time:
+You are setting up FinishUP for someone who may never have opened a terminal. Run the mechanical
+steps yourself, ask only the questions below, and hand over the terminal once, where a secret or an
+operating-system approval is needed. This page is the agent's version of
+[Install and first run](install-and-first-run.md). Fetch the current version any time:
 
 ```text
 curl -fsSL https://raw.githubusercontent.com/TheGaySupreme123/finishup/main/docs/usage/agent-start.md
 ```
 
-`https://finishup.dev/agent-start` is the intended future home; this file is the authority today.
-Codex, Claude Code, and Cursor share guided desktop connection setup. Use `finishup setup status
---json` to discover installations, then `finishup setup run --host codex|claude|cursor-ide|cursor-cli
---route-profile policy --non-interactive --json` to preview the selected connection. Keep
-`--route-profile policy` for every review-mode answer and show the preview's `route_profile` (it
-must read `policy`): without it a fresh non-interactive registration is strict, and every task then
-stays local (`route_local_only`) until the connection is re-registered. Present the project, review
-mode, scope and proposed changes in plain language. After approval, use the exact `next_step` command
-returned by the preview, including its request ID and preview digest. `--accept` alone does not
-authorize unseen changes. Keep executable/configuration details available when needed; do not
-make the user enter paths that discovery already found. Use explicit path overrides for another
-installation. Do not substitute a testing profile for the selected regular installation.
+## The short version
 
-The same host choice works with `setup status --host ... --project ... --json` and
-`setup disconnect --host ... --project ...`. Disconnect previews before changing anything and
-preserves FinishUP data. It also removes the project's FinishUP tool-approval entry, so the agent still
-starts normally in that project afterwards; if it cannot do that safely (an approval file it cannot
-read, or approval settings you added yourself), it stops before changing anything and says which
-file to fix. Other projects connected to the same agent installation keep working: a disconnect
-keeps what the projects FinishUP knows of still use, also when you run it again or for a project
-that was never connected, and among the setup commands only `setup disconnect --remove-shared`
-removes it for all of them (the preview names who stops using FinishUP). When FinishUP cannot verify which projects use those
-shared pieces, it keeps them; a Codex disconnect may then stop and ask you to connect the project
-you use again first. Connecting a project with another review mode changes it for the other
-projects of that Codex installation or Claude Code configuration; every setup preview says so,
-and an unattended `--accept` that would change them stops and asks for the reviewed preview. An
-unattended Codex setup that names no review mode keeps the one that Codex installation already
-uses (local only for a new one).
-For Codex, the preview also names other projects whose configuration uses the FinishUP server and says when it
-could not check them all. Claude/Cursor connection can require an OS-authenticated local prompt;
-hand the exact continuation to a trusted local terminal when your host cannot provide it.
-An installed or configured report is not a connected session: open a fresh native session in the
-selected project and demonstrate a successful FinishUP `start`. Treat observation permission,
-provider credentials and disclosure as separate choices. Desktop scope is macOS, Linux, and
-Windows through WSL 2. Any agent can also use FinishUP over MCP without an integration.
+1. **Check the platform** ([section 0](#0-check-the-platform-first--you-do-this)). macOS and Linux
+   run FinishUP directly; Windows runs it inside WSL 2.
+2. **Install** ([section 1](#1-install--you-do-this)). Install `uv` if it is missing, then run
+   `uv tool install --managed-python finishup`. No Python version to choose.
+3. **Ask which agents to connect.** All the ones found (recommended), or a few of them.
+4. **Ask how reviews should work.** FinishUP (recommended: local checks on every task, and you turn
+   on AI-powered review for a task when it helps), local only, or AI-powered review on every task.
+5. **Preview, then connect after the user approves.** Run
+   `finishup setup run --host all --route-profile policy --non-interactive --json` (or one
+   `--host` per chosen agent), show the preview in plain words, and on approval run the exact
+   `next_step` it returns.
+6. **If they turned on AI-powered review, ask how to reach a reviewer.** Their ChatGPT
+   subscription, an API key, or not now.
+7. **Hand over the terminal once** ([how](#hand-over-the-terminal-like-it-is-their-first)) for the
+   line that matches answer 4. Nothing in it asks about storage: FinishUP creates its vault by
+   itself and says where the key is kept. A key is typed there, hidden, never in chat.
+   - FinishUP (recommended): `finishup ai setup`
+   - Local only: `finishup setup vault && finishup ai off`
+   - Every task: `finishup ai setup && finishup privacy conversations ai-powered`
+8. **Verify** ([section 5](#5-verify-and-report-in-layers)). Open a fresh session in the project and
+   show a successful FinishUP `start`.
 
-Assume the user may never have opened a terminal. Explain each step in one plain sentence before
-you run it, and before the first decision read
-[Ask in chat when you have no question tool](#ask-in-chat-when-you-have-no-question-tool).
-
-Before an out-of-order setup retry, use `finishup setup status --next --operation local|review|connection`
-with the selected `--host`, `--host-path`, `--host-config-root`, and `--project`. The response names
-one next command bound to that runtime and project. Connection alone needs no provider sign-in;
-local use needs no provider; provider-backed privacy requires a configured binding first.
-A service-down preflight preserves an unclaimed pending approval, but never resurrects an approval
-already claimed, denied, cancelled, or expired. Continue only through the exact existing consent
-procedure. Never ask for a vault passphrase in chat. The terminal interface uses the same storage
-choices and common host connection preview; installation and activation remain separate facts.
+Ask one question per message and wait for each answer. Local only is a finished setup, not a
+failure. The sections below are the detail behind each step.
 
 ## 0. Check the platform first — you do this
 
@@ -208,6 +187,57 @@ If the host cannot attest the exact chat decision, tell the user to run **`finis
 **`finishup --privacy`** in their own terminal and continue after the terminal result. Do not change
 their selected recipe merely because the authority continuation moved to the terminal.
 
+### Connection details
+
+`https://finishup.dev/agent-start` is the intended future home; this file is the authority today.
+Codex, Claude Code, and Cursor share guided desktop connection setup. Use `finishup setup status
+--json` to discover installations, then `finishup setup run --host codex|claude|cursor-ide|cursor-cli
+--route-profile policy --non-interactive --json` to preview the selected connection. Keep
+`--route-profile policy` for every review-mode answer and show the preview's `route_profile` (it
+must read `policy`): without it a fresh non-interactive registration is strict, and every task then
+stays local (`route_local_only`) until the connection is re-registered. Present the project, review
+mode, scope and proposed changes in plain language. After approval, use the exact `next_step` command
+returned by the preview, including its request ID and preview digest. `--accept` alone does not
+authorize unseen changes. Keep executable/configuration details available when needed; do not
+make the user enter paths that discovery already found. Use explicit path overrides for another
+installation. Do not substitute a testing profile for the selected regular installation.
+
+The same host choice works with `setup status --host ... --project ... --json` and
+`setup disconnect --host ... --project ...`. Disconnect previews before changing anything and
+preserves FinishUP data. It also removes the project's FinishUP tool-approval entry, so the agent still
+starts normally in that project afterwards; if it cannot do that safely (an approval file it cannot
+read, or approval settings you added yourself), it stops before changing anything and says which
+file to fix. Other projects connected to the same agent installation keep working: a disconnect
+keeps what the projects FinishUP knows of still use, also when you run it again or for a project
+that was never connected, and among the setup commands only `setup disconnect --remove-shared`
+removes it for all of them (the preview names who stops using FinishUP). When FinishUP cannot verify which projects use those
+shared pieces, it keeps them; a Codex disconnect may then stop and ask you to connect the project
+you use again first. Connecting a project with another review mode changes it for the other
+projects of that Codex installation or Claude Code configuration; every setup preview says so,
+and an unattended `--accept` that would change them stops and asks for the reviewed preview. An
+unattended Codex setup that names no review mode keeps the one that Codex installation already
+uses (local only for a new one).
+For Codex, the preview also names other projects whose configuration uses the FinishUP server and says when it
+could not check them all. Claude/Cursor connection can require an OS-authenticated local prompt;
+hand the exact continuation to a trusted local terminal when your host cannot provide it.
+An installed or configured report is not a connected session: open a fresh native session in the
+selected project and demonstrate a successful FinishUP `start`. Treat observation permission,
+provider credentials and disclosure as separate choices. Desktop scope is macOS, Linux, and
+Windows through WSL 2. Any agent can also use FinishUP over MCP without an integration.
+
+Assume the user may never have opened a terminal. Explain each step in one plain sentence before
+you run it, and before the first decision read
+[Ask in chat when you have no question tool](#ask-in-chat-when-you-have-no-question-tool).
+
+Before an out-of-order setup retry, use `finishup setup status --next --operation local|review|connection`
+with the selected `--host`, `--host-path`, `--host-config-root`, and `--project`. The response names
+one next command bound to that runtime and project. Connection alone needs no provider sign-in;
+local use needs no provider; provider-backed privacy requires a configured binding first.
+A service-down preflight preserves an unclaimed pending approval, but never resurrects an approval
+already claimed, denied, cancelled, or expired. Continue only through the exact existing consent
+procedure. Never ask for a vault passphrase in chat. The terminal interface uses the same storage
+choices and common host connection preview; installation and activation remain separate facts.
+
 ### Ask in chat when you have no question tool
 
 Some hosts give you a structured question tool; others, Cursor's agent among them, do not. In a
@@ -227,9 +257,9 @@ makes a choice yours:
 Ask these in this order, one per message, in your own words but with these options and
 recommendations. Each answer decides the next step; stop after each and wait.
 
-1. **Codex.** "I found Codex at `<path>` (or: I found no Codex). Connect FinishUP to it? Yes /
-   No / (if several) which one." Recommend yes when one is found; with none, say integration is
-   skipped and everything else still works.
+1. **Agents.** "I found Claude Code and Codex (name what `finishup setup status --json` found).
+   Connect FinishUP to all of them, or choose which?" Recommend all. With none found, say
+   integration is skipped and everything else still works.
 2. **Review mode.** "How should your tasks use AI-powered review? FinishUP's local checks run on
    every task either way. (a) FinishUP, recommended: tasks start local and I turn on AI-powered
    review for a task when it helps, within the privacy policy you approve. (b) FinishUP, local
@@ -254,27 +284,27 @@ recommendations. Each answer decides the next step; stop after each and wait.
    marked recommended, so the choice is theirs: say so. Private sends nothing for review, so their
    (a) or (c) answer would stay local under it. Their choice is applied only through the terminal
    ceremony or the exact prepared chat grant.
-7. **Credential**, only on the API path: never ask for the key in chat. Tell the user to run
-   `finishup ai key` in their own terminal after the privacy step. It uses hidden input and stores
-   the key in the encrypted local vault. It accepts no key argument, environment variable or file.
+7. **Credential**, only on the API path: never ask for the key in chat. `finishup ai setup` asks
+   for it in the user's own terminal after the privacy step, and `finishup ai key` enters or
+   replaces it later. Both use hidden input and store the key in the encrypted local vault. It accepts no key argument, environment variable or file.
    ChatGPT sign-in belongs to Codex and needs no API key. If the user explicitly chooses the
    existing consent lane instead, first warn that chat may retain the key, offer terminal entry
    as the stronger alternative, and use only `finishup consent ... --provider-credential-stdin`
    for that one prepared, approved credential target. Never forward a key through MCP.
 
 When every answer is in, run the setup (the preview with `--route-profile policy`, whatever the
-answer; show its `route_profile`), then record the answer:
+answer; show its `route_profile`), then hand over the terminal once for the line that records the
+answer and creates the vault:
 
-- **(a)** The repository's first privacy grant records it, whether the user approves that grant
-  in the terminal (`finishup --privacy` lists the AI-powered review options with Assisted review
-  as the default) or as the exact prepared chat grant, unless an earlier choice is narrower: where
-  `finishup privacy conversations status` shows local only or owner approval, hand over the
-  terminal for `finishup privacy conversations agent-opt-in`.
-- **(b)** Hand over the terminal for `finishup privacy conversations local-only`. It applies at
-  once where the repository already has a grant, and otherwise walks the user through the Private
-  policy that records it.
-- **(c)** After the grant, hand over the terminal for `finishup privacy conversations ai-powered`:
-  it needs less of the user, so it takes the trusted local approval.
+- **(a)** `finishup ai setup`. It creates the vault, asks the reviewer question (ChatGPT
+  subscription, API key, or not now), and runs the privacy step whose grant records the answer.
+  Where `finishup privacy conversations status` later shows local only or owner approval from an
+  earlier choice, follow it with `finishup ai on`. The exact prepared chat grant can replace the
+  terminal privacy approval where your host supports it.
+- **(b)** `finishup setup vault && finishup ai off`. It applies at once where the repository
+  already has a grant, and otherwise walks the user through the Private policy that records it.
+- **(c)** `finishup ai setup && finishup privacy conversations ai-powered`: the second command
+  needs less of the user, so it takes the trusted local approval.
 
 `finishup privacy conversations status` confirms the result. Then verify (section 5) and report
 each layer separately. Setup is finished when the user's chosen answer is reached — local only is

@@ -80,18 +80,26 @@ def test_agent_start_lists_the_questions_in_order_with_recommendations() -> None
 
     assert "#### The questions, ready to ask" in guide
     for heading in (
-        "1. **Codex.**",
+        "1. **Agents.**",
         "2. **Review mode.**",
         "3. **The exact change.**",
         "4. **Secret storage**",
-        "5. **Provider and model**",
+        "5. **AI reviewer**",
         "6. **Privacy policy**",
-        "7. **Credential**: never a question",
+        "7. **Credential**, only on the API path: never ask for the key in chat",
     ):
         assert heading in guide, heading
     assert "No recommendation and no default" in guide
-    # Issue #1119: storage is never asked.
+    # Issue #1119: storage is never asked, and the short procedure precedes the reference.
     assert "4. **Secret storage**: never a question" in guide
+    assert guide.index("## The short version") < guide.index("## 0. Check the platform first")
+    for line in (
+        "uv tool install --managed-python finishup",
+        "finishup setup run --host all --route-profile policy --non-interactive --json",
+        "finishup ai setup",
+        "finishup setup vault && finishup ai off",
+    ):
+        assert line in guide, line
     assert "local only is a finished state, not a fallback" in guide
 
 
@@ -123,6 +131,8 @@ def test_copied_setup_prompt_matches_between_readme_and_landing() -> None:
     for sentence in (
         "If your sandbox blocks that fetch, ask me to approve it or to paste the guide.",
         "ask me each one and wait",
+        'follow "The short version" at the top',
+        "Never ask me for a key or password in chat",
     ):
         assert sentence in readme, sentence
         assert sentence in landing, sentence
