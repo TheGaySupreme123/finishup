@@ -500,7 +500,9 @@ for users and contributors. Release reproducibility is unchanged.
 - **uv.** `[tool.uv] required-version = ">=0.11.29"`. CI and the release workflow keep
   `version: "0.11.29"` in every `setup-uv` step and record it in the candidate, so release
   artifacts stay byte-reproducible. `test_build_tool_meets_the_minimum_version` replaces the
-  exact-version identity test.
+  exact-version identity test. A uv 0.12 front-end re-serializes `pyproject.toml` in a locally
+  built sdist and keeps the original as `pyproject.toml.orig`; the sdist allowlist admits that
+  one member only when its bytes equal the source `pyproject.toml`.
 - **Evidence and claims.** The release cell stays CPython 3.14.6: release evidence, the packaging
   suite and `docs/public-claims.json` keep naming it. PR CI adds `older-python`, which runs the
   bounded unit, property and conformance slice on 3.12 and 3.13 and feeds `pr-ci-required`.
