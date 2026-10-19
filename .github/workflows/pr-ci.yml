@@ -282,9 +282,13 @@ jobs:
   # unit-and-conformance — pure unit, bounded property examples, adapter conformance.
   # ---------------------------------------------------------------------------------------------
   unit-and-conformance:
-    name: unit-and-conformance
+    name: unit-and-conformance (shard ${{ matrix.shard }})
     runs-on: ubuntu-24.04
     timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [0, 1, 2, 3]
     permissions:
       contents: read
     env:
@@ -314,7 +318,9 @@ jobs:
 
       - name: Unit, property, and conformance (bounded, excludes fault/soak/live)
         run: |
-          uv run --locked pytest tests/unit tests/property tests/conformance \
+          uv run --locked python scripts/ci/run_test_shard.py \
+            --shard "${{ matrix.shard }}" --shards 4 \
+            --root tests/unit --root tests/property --root tests/conformance -- \
             -m "not fault and not soak and not live" -q --timeout=120
 
   # ---------------------------------------------------------------------------------------------
@@ -322,13 +328,14 @@ jobs:
   # release cell (issue #1119). The release cell stays CPython 3.14.6 in unit-and-conformance.
   # ---------------------------------------------------------------------------------------------
   older-python:
-    name: older-python (${{ matrix.python }})
+    name: older-python (${{ matrix.python }}, shard ${{ matrix.shard }})
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     strategy:
       fail-fast: false
       matrix:
         python: ["3.12", "3.13"]
+        shard: [0, 1, 2, 3]
     permissions:
       contents: read
     env:
@@ -358,7 +365,9 @@ jobs:
 
       - name: Unit, property, and conformance (bounded, excludes fault/soak/live)
         run: |
-          uv run --locked pytest tests/unit tests/property tests/conformance \
+          uv run --locked python scripts/ci/run_test_shard.py \
+            --shard "${{ matrix.shard }}" --shards 4 \
+            --root tests/unit --root tests/property --root tests/conformance -- \
             -m "not fault and not soak and not live" -q --timeout=120
 
   # ---------------------------------------------------------------------------------------------
@@ -584,9 +593,13 @@ jobs:
   # package-and-boundary — clean build, artifact inspection, install/verify, boundary scan.
   # ---------------------------------------------------------------------------------------------
   package-and-boundary:
-    name: package-and-boundary
+    name: package-and-boundary (shard ${{ matrix.shard }})
     runs-on: ubuntu-24.04
     timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [0, 1]
     permissions:
       contents: read
     steps:
@@ -621,7 +634,9 @@ jobs:
       - name: Inspect sdist/wheel allowlists, metadata, entry points, and resource bytes
         run: |
           uv run --locked python scripts/verify_resource_manifest.py --check
-          env -u FINISHUP_ISOLATED_ROOT -u YOETZ_ISOLATED_ROOT uv run --locked pytest tests/packaging \
+          env -u FINISHUP_ISOLATED_ROOT -u YOETZ_ISOLATED_ROOT \
+            uv run --locked python scripts/ci/run_test_shard.py \
+            --shard "${{ matrix.shard }}" --shards 2 --root tests/packaging -- \
             -m "not fault and not soak and not live" -q --timeout=180
 
       - name: Install the wheel outside the checkout

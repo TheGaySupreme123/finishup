@@ -13,6 +13,9 @@ succeed. Skipped, cancelled, or failed predecessors fail the aggregate.
 - Format, lint, and types: repository-pinned Ruff and npm Pyright, metadata/JSON hygiene, and
   checksum-verified actionlint 1.7.12 for every workflow. Workflow validation failures are fatal.
 - Unit, property, and conformance tests on CPython 3.14.6, plus Python 3.12 and 3.13.
+  Each interpreter uses four deterministic module shards; packaging uses two. The runner
+  partitions every tracked pytest module in the selected trees by its relative-path digest,
+  preserving the complete suite while keeping each job within its time budget.
 - Candidate wheel and sdist installation on Python 3.12, 3.13, and 3.14.6 with uv 0.11.29 and
   0.13.1. Each cell checks the actual interpreter and runs the installed CLI outside the checkout.
 - All integration families: storage, objects, application, closure, observation, providers,
