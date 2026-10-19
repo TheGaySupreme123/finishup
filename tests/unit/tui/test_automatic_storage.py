@@ -13,13 +13,18 @@ from finishup.tui.models import Detection
 
 
 def _app(
-    monkeypatch: pytest.MonkeyPatch, outcome: tuple[bool, str | None, str]
+    monkeypatch: pytest.MonkeyPatch,
+    outcome: tuple[bool, str | None, str],
+    *,
+    reachable: bool = True,
+    vault_mode: str | None = "uninitialized",
+    ready: bool = False,
 ) -> tuple[FinishUpTui, list[tuple[object, str, tuple[str, ...]]]]:
     app = FinishUpTui()
     said: list[tuple[object, str, tuple[str, ...]]] = []
 
     async def posture() -> SimpleNamespace:
-        return SimpleNamespace(reachable=True, vault_mode="uninitialized")
+        return SimpleNamespace(reachable=reachable, vault_mode=vault_mode, ready=ready)
 
     async def automatic() -> tuple[bool, str | None, str]:
         return outcome
@@ -66,3 +71,40 @@ async def test_a_vault_that_is_not_ready_says_so_and_names_the_retry(
     assert said[-1][1] == "Secure storage was not set up"
     assert "auto_unlock_entry_exists" in said[-1][2]
     assert "Run 'finishup setup vault' to try again." in said[-1][2]
+
+
+@pytest.mark.anyio
+async def test_a_stopped_service_still_gets_storage_set_up(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The automatic helper starts the service, so a stopped one is not an early return."""
+
+    app, said = _app(monkeypatch, (True, None, "platform_store"), reachable=False, vault_mode=None)
+
+    await app._choose_storage(Detection(None, None, False, False))  # pyright: ignore[reportPrivateUsage]
+
+    assert said[-1][1] == "Secure storage is set up"
+
+
+@pytest.mark.anyio
+async def test_a_locked_existing_vault_is_unlocked_rather_than_reported_set_up(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    app, said = _app(monkeypatch, (True, None, "owner_file"), vault_mode="passphrase")
+
+    await app._choose_storage(Detection(None, None, False, False))  # pyright: ignore[reportPrivateUsage]
+
+    assert said[-1][1] == "Secure storage is set up"
+
+
+@pytest.mark.anyio
+async def test_a_ready_vault_is_left_alone(monkeypatch: pytest.MonkeyPatch) -> None:
+    async def never_called() -> tuple[bool, str | None, str]:
+        raise AssertionError("a ready vault needs no setup")
+
+    app, said = _app(monkeypatch, (True, None, "owner_file"), vault_mode="os_keyring", ready=True)
+    monkeypatch.setattr(app.runtime, "set_up_storage_automatically", never_called)
+
+    await app._choose_storage(Detection(None, None, False, False))  # pyright: ignore[reportPrivateUsage]
+
+    assert said[-1][1] == "Secure storage is already set up"

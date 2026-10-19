@@ -4040,7 +4040,8 @@ async def _service_auto_unlock_status(json_output: bool) -> int:
         # Frozen legacy identifier (ADR-048): machine-readable report tag agents parse.
         "schema": "yoetz.auto-unlock-status/2",
         "state": state,
-        "custody": store.custody,
+        # Custody names where a stored entry lives; with no entry there is nothing to locate.
+        "custody": store.custody if "present" in slots.values() else None,
         "slots": dict(slots),
         "service_state": service_state,
         "service_state_reason": service_reason,

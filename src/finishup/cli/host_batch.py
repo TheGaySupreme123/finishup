@@ -306,6 +306,10 @@ def emit_batch(report: dict[str, JsonValue], *, json_output: bool) -> None:
     for row in members if isinstance(members, list) else []:
         if isinstance(row, dict):
             typer.echo(f"{row['host']}: {row['outcome']}")
+            status = row.get("status")
+            if row.get("outcome") == "status" and isinstance(status, dict):
+                typer.echo(f"  {status}")
+                typer.echo("  A fresh session is required to observe the connection.")
             if "reason" in row:
                 typer.echo(str(row["reason"]))
             launch = row.get("launch")

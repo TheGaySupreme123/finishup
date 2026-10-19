@@ -1298,18 +1298,10 @@ class FinishUpTui(App[int]):
         for a new vault, ``finishup setup vault --passphrase``.
         """
 
+        # A stopped service or a locked vault is not an early return: the automatic helper
+        # starts the service and creates or unlocks the vault, so first run ends with storage.
         posture = await self.runtime.vault_posture()
-        if not posture.reachable:
-            self.say(
-                Level.UNPROVEN,
-                "Secure storage was not set up",
-                (
-                    "The local service is not running yet.",
-                    "Start it with 'finishup service run', then use /service.",
-                ),
-            )
-            return
-        if posture.vault_mode not in {None, "uninitialized"}:
+        if posture.ready and posture.vault_mode not in {None, "uninitialized"}:
             self.say(Level.VERIFIED, "Secure storage is already set up")
             return
         try:

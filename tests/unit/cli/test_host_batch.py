@@ -396,6 +396,70 @@ def test_prompt_wizard_asks_review_once_for_all_selected_hosts(
     assert batch_hosts["applied"] == ["claude", "cursor-cli"]
 
 
+@pytest.mark.parametrize("ready", [True, False])
+def test_a_strict_batch_setup_completes_only_with_a_ready_vault(
+    batch_hosts: dict[str, Any],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    ready: bool,
+) -> None:
+    """An explicit strict route skips the review question but still needs a ready vault."""
+
+    from finishup.cli import setup
+
+    markers: list[str] = []
+    monkeypatch.setattr(setup, "_is_interactive_terminal", lambda: True)
+
+    def answer(*args: object, **kwargs: object) -> int:
+        return 1
+
+    def approve(*args: object, **kwargs: object) -> bool:
+        return True
+
+    monkeypatch.setattr("typer.prompt", answer)
+    monkeypatch.setattr("typer.confirm", approve)
+
+    def never_asked() -> str:
+        raise AssertionError("an explicit route profile asks no review question")
+
+    monkeypatch.setattr(setup, "_choose_review_mode", never_asked)
+    monkeypatch.setattr(setup, "_write_setup_marker", markers.append)
+
+    async def vault() -> setup.VaultReadiness:
+        return setup.VaultReadiness(ready, None if ready else "vault_not_ready", "owner_file", {})
+
+    monkeypatch.setattr(setup, "ensure_vault_ready", vault)
+
+    async def run() -> int:
+        return await setup.run_setup_wizard(
+            non_interactive=False,
+            codex_path=None,
+            codex_home=None,
+            accept=False,
+            json_output=False,
+            route_profile="strict",
+            project=tmp_path,
+        )
+
+    assert anyio.run(run) == (0 if ready else 20)
+    assert markers == (["complete"] if ready else [])
+    assert batch_hosts["applied"] == ["claude", "cursor-cli"]
+
+
+def test_text_batch_status_prints_each_member_status(capsys: pytest.CaptureFixture[str]) -> None:
+    from finishup.cli.host_batch import emit_batch
+
+    emit_batch(
+        {"members": [{"host": "claude", "outcome": "status", "status": {"configured": True}}]},
+        json_output=False,
+    )
+
+    out = capsys.readouterr().out
+    assert "claude: status" in out
+    assert "'configured': True" in out
+    assert "A fresh session is required" in out
+
+
 def test_prompt_subset_rejects_empty_out_of_range_and_non_numbers(
     batch_hosts: dict[str, Any],
     monkeypatch: pytest.MonkeyPatch,

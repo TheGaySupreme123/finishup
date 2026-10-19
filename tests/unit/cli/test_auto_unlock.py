@@ -541,6 +541,7 @@ async def test_a_deliberate_passphrase_vault_is_not_told_to_store_its_passphrase
 
     report = json.loads(capsys.readouterr().out)
     assert report["state"] == "absent"
+    assert report["custody"] is None
     assert report["next_command"] is None
     assert "auto-unlock enable" in report["note"]
     assert "repair" not in json.dumps(report)
