@@ -18,6 +18,11 @@ from hypothesis import HealthCheck, given, settings
 from hypothesis import strategies as st
 
 from finishup.domain.findings import CheckVerdict
+from finishup.domain.receipts import (
+    COORDINATOR_FAILURE_LIMITATION,
+    DEFERRED_BEFORE_FIRST_EDIT_TEXT,
+    SEMANTIC_REVIEW_DEFERRED_BEFORE_FIRST_EDIT_GAP,
+)
 from finishup.mcp import summaries
 from finishup.mcp.summaries import (
     MAX_SUMMARY_BYTES,
@@ -307,7 +312,7 @@ def test_every_builder_stays_in_its_bound_ascii_and_unraised(
 def test_the_check_core_survives_whatever_optional_fields_arrive(
     envelope: dict[str, Any],
 ) -> None:
-    """The verdict (or its scoped phrase), review status/reason and frontier digest always show."""
+    """The verdict, review outcome's contracted wording and frontier digest always show."""
 
     text = _prop(envelope, MAX_SUMMARY_BYTES)
     scoped = (
@@ -316,10 +321,20 @@ def test_the_check_core_survives_whatever_optional_fields_arrive(
         and envelope["semantic_reason"] == "deterministic_mode"
     )
     assert ("No issue detected within local coverage" if scoped else envelope["verdict"]) in text
-    assert (
-        f"AI-powered review status/reason: {envelope['semantic_status']}/"
-        f"{envelope['semantic_reason']}"
-    ) in text
+    # INTERFACES names fixed prose for pre-edit deferral and coordinator failure; those
+    # outcomes deliberately replace the generic status/reason clause.
+    if envelope["semantic_reason"] == "coordinator_failure":
+        assert COORDINATOR_FAILURE_LIMITATION in text
+    elif (
+        envelope["semantic_reason"] == "deferred_before_first_edit"
+        or SEMANTIC_REVIEW_DEFERRED_BEFORE_FIRST_EDIT_GAP in envelope["coverage"]["known_gaps"]
+    ):
+        assert DEFERRED_BEFORE_FIRST_EDIT_TEXT in text
+    else:
+        assert (
+            f"AI-powered review status/reason: {envelope['semantic_status']}/"
+            f"{envelope['semantic_reason']}"
+        ) in text
     frontier = envelope["result_frontier"]
     assert f"frontier: {frontier['sequence']}" in text
     if frontier["head_digest"].startswith("sha256:") or frontier["head_digest"] == "genesis":
