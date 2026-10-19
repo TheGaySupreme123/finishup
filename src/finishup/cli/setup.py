@@ -2770,7 +2770,7 @@ async def _interactive_provider_setup(
                             ):
                                 auto_store.discard_staged_initialization()
                         auto_passphrase = auto_store.stage_for_initialization()
-                        typer.echo("Secure vault setup (platform credential store auto-unlock)")
+                        typer.echo(_automatic_vault_line(auto_store.custody))
                         init_result = await initialize_passphrase_vault(bytearray(auto_passphrase))
                         if init_result.state == "ready" and init_result.reason == "succeeded":
                             try:
@@ -3134,13 +3134,41 @@ def _emit_codex_subscription_layer_report(*, privacy_outcome: str) -> None:
     typer.echo("The binding and the sign-in are not proof that an AI-powered review ran.")
 
 
+def _automatic_vault_line(custody: str) -> str:
+    if custody == "owner_file":
+        return (
+            "Secure vault setup: no system keychain on this machine, so the key is kept in a "
+            "file only your account can read"
+        )
+    return "Secure vault setup (platform credential store auto-unlock)"
+
+
+async def ensure_vault_ready() -> tuple[bool, str | None]:
+    """Create or unlock the vault with no question asked (issue #1119).
+
+    A new vault gets a generated passphrase kept in the system keychain, or in an owner-only
+    file where no keychain is usable. An existing vault is unlocked from that copy when one
+    exists; otherwise the human passphrase ceremony asks for it. Returns readiness and the
+    bounded reason when it is not ready.
+    """
+
+    service = await _service_reachability(start_if_absent=True)
+    if not service.get("reachable"):
+        return False, "service_unavailable"
+    service, result = await _interactive_provider_setup(service, storage_only=True)
+    reason = result.get("credential_reason")
+    ready = service.get("state") == "ready" and reason is None
+    return ready, None if ready else (reason if isinstance(reason, str) else "vault_not_ready")
+
+
 async def _run_local_only_privacy_setup(project: Path | None) -> int:
     """Record the owner's "local only; agents may not opt in" answer (ADR-049).
 
     The Private recipe with the explicit ``local_only`` conversation setting, through the same
     trusted questionnaire every privacy change uses. It narrows, so it applies without the
     widening ceremony. Without it a policy-route registration would keep the released check
-    behaviour of an installation that never chose.
+    behaviour of an installation that never chose. The vault is created first, so a local-only
+    setup ends ready rather than pointing at ``setup vault`` (issue #1119).
     """
 
     from finishup.cli.privacy_setup import run_privacy_setup
@@ -3150,6 +3178,10 @@ async def _run_local_only_privacy_setup(project: Path | None) -> int:
     service = await _service_reachability(start_if_absent=True)
     if not service.get("reachable"):
         typer.echo("privacy_setup_failed: service_unavailable", err=True)
+        return 20
+    ready, reason = await ensure_vault_ready()
+    if not ready:
+        typer.echo(f"vault_setup_incomplete: {reason}", err=True)
         return 20
     try:
         result = await run_privacy_setup(
@@ -3742,6 +3774,8 @@ async def run_setup_wizard(
         from finishup.cli.unlock import HumanCeremonyCliError
         from finishup.ports.control import ControlError
 
+        # Issue #1119: local only still ends with a ready vault, created with no question.
+        await ensure_vault_ready()
         try:
             privacy_result = await run_privacy_setup(
                 recipe_hint="private",
@@ -4110,14 +4144,39 @@ def _emit_human_report(report: dict[str, JsonValue]) -> None:
             typer.echo(f"  - {step}")
 
 
-async def run_vault_setup() -> int:
-    """Reuse the protected storage ceremony without configuring a model provider."""
+async def run_vault_setup(*, passphrase: bool = False) -> int:
+    """Reuse the protected storage ceremony without configuring a model provider.
+
+    By default a new vault is created with no question (issue #1119). ``passphrase`` instead
+    asks the owner to choose one on the trusted terminal and keeps no copy of it anywhere.
+    """
     if not _is_interactive_terminal():
         typer.echo(
             "trusted_console_required: run 'finishup setup vault' in your local terminal", err=True
         )
         return 2
     service = await _service_reachability(start_if_absent=True)
+    if passphrase:
+        if service.get("vault_mode") not in {None, "uninitialized"}:
+            typer.echo(
+                "vault_already_initialized: --passphrase applies only to a new vault. "
+                "Use 'finishup service rotate-passphrase' to change the passphrase.",
+                err=True,
+            )
+            return 2
+        from finishup.cli.unlock import HumanCeremonyCliError, initialize_passphrase_vault
+
+        typer.echo("Choose a FinishUP passphrase (hidden local-terminal input)")
+        try:
+            await initialize_passphrase_vault()
+        except HumanCeremonyCliError as error:
+            typer.echo(f"vault_setup_incomplete: {error.reason}", err=True)
+            return 20
+        typer.echo(
+            "Vault ready. FinishUP keeps no copy of this passphrase; you will type it after "
+            "each restart."
+        )
+        return 0
     service, result = await _interactive_provider_setup(service, storage_only=True)
     if service.get("state") != "ready" or result.get("credential_reason") is not None:
         typer.echo("Vault setup is incomplete. Inspect 'finishup setup status --next'.", err=True)

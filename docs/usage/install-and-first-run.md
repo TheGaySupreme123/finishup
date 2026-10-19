@@ -153,8 +153,9 @@ The connection-only path checks the selected host without requiring a provider o
 Use the command exactly as displayed: it retains the selected FinishUP installation and project.
 
 `finishup setup vault` initializes or unlocks only the selected installation's storage using the
-existing protected terminal ceremony. It diagnoses credential-store availability, retains the
-explicit passphrase fallback where needed, and stops before provider selection or privacy grants.
+existing protected terminal ceremony. A new vault gets a generated key kept in the system keychain,
+or in a file only your account can read where there is none; `--passphrase` lets you choose your
+own instead. It stops before provider selection or privacy grants.
 It requires a local interactive terminal; agents show that continuation without supplying secrets.
 
 If a service-dependent approval reports `ceremony_service_unavailable` before it is claimed,
@@ -196,11 +197,13 @@ Three things on Linux differ from macOS, and each is reported once, up front, by
   places answer it: `/doctor`, `finishup setup status --json`, and
   `finishup observe checks status --json` (per workspace). `finishup service status` reports the
   local service itself and stays silent about the sandbox.
-- **System secure storage needs a running Secret Service.** The "system keyring" choice at setup
-  means macOS Keychain on macOS and, on Linux, a Freedesktop Secret Service on your session bus
-  (GNOME Keyring, or KWallet through its Secret Service bridge). Headless sessions, servers, and
-  WSL usually have none. Setup then disables that option, states the reason, and offers a FinishUP
-  passphrase, which is the supported route there.
+- **Where the vault key is kept.** Setup keeps the vault key in macOS Keychain on macOS and, on
+  Linux, in a Freedesktop Secret Service on your session bus (GNOME Keyring, or KWallet through its
+  Secret Service bridge). Headless sessions, servers, and WSL usually have none. There, setup keeps
+  the key in a file only your account can read, and says so. That protects your FinishUP data from
+  other accounts on the machine, but not from programs running as you, and a backup of
+  FinishUP's folder includes the key. To type a passphrase after every restart instead, run
+  `finishup setup vault --passphrase` before your first setup.
 - **State stays on a local disk.** A state directory on a network or cross-machine filesystem
   is refused with `path_on_network_filesystem`; the message names the safe location.
 
@@ -239,8 +242,9 @@ Inside WSL, the [Linux](#linux) notes above apply, with these specifics:
   `virtiofs`) whose locking and durability FinishUP has not certified, so a state directory there — including one
   named by `FINISHUP_ISOLATED_ROOT` — is refused with `path_on_network_filesystem`. Your projects
   can live on a Windows drive; FinishUP's own state cannot.
-- **Choose a FinishUP passphrase.** A default WSL session has no Secret Service, so system secure
-  storage is unavailable and setup says why.
+- **No passphrase to choose.** A default WSL session has no Secret Service, so setup keeps the
+  vault key in a file only your Linux account can read (see [Linux](#linux) for what that does
+  and does not protect).
 - **Install bubblewrap** (`sudo apt install bubblewrap`) before trusting a check policy whose
   checks deny network.
 - **Windows-on-ARM laptops** run an aarch64 Ubuntu, which is an untested platform cell (see
@@ -275,11 +279,13 @@ Setup is a linear path inside the interface, each finished step collapsing into 
    bound to the exact preview and policy digests that were displayed: if either has moved, the
    apply refuses as stale rather than proceeding.
 5. **Installation activity**, with each step reported only once its postcondition was checked.
-6. **Secure storage** — the system keyring (macOS Keychain, or a running Secret Service on
-   Linux; see [Linux](#linux)), or a FinishUP passphrase. When the keyring is unusable the option is
-   disabled with the reason stated. A passphrase is entered on the
-   trusted terminal: input is masked with `*`, must be 16–1024 UTF-8 bytes with no control
-   characters, and the helper re-prompts after invalid or mismatched input. Later changes use
+6. **Secure storage**, with no question. FinishUP creates its vault and keeps the key in the system
+   keychain (macOS Keychain, or a running Secret Service on Linux). Where there is none (WSL,
+   headless Linux), it keeps the key in a file only your account can read, and the step says so;
+   see [Linux](#linux) for what that protects. Local-only setups get the same vault. To choose your
+   own passphrase instead, run `finishup setup vault --passphrase` before first setup: input is
+   masked with `*`, must be 16–1024 UTF-8 bytes with no control characters, FinishUP keeps no
+   copy, and you type it after every restart. Later changes use
    `finishup service rotate-passphrase` (or **Change the passphrase** under `/service`).
 7. **Review mode** — how your tasks use AI-powered review. Every answer keeps FinishUP's local
    checks on every task:

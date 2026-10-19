@@ -1946,6 +1946,13 @@ class FinishUpRuntime:
         except HumanCeremonyCliError as error:
             raise RuntimeError_(error.reason, "the passphrase could not be changed")
 
+    async def set_up_storage_automatically(self) -> tuple[bool, str | None]:
+        """Create or unlock the vault with no question (issue #1119); see ``ensure_vault_ready``."""
+
+        from finishup.cli.setup import ensure_vault_ready
+
+        return await ensure_vault_ready()
+
     async def initialize_system_keyring(self) -> None:
         from finishup.cli.unlock import HumanCeremonyCliError, retry_keyring
 

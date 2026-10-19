@@ -449,3 +449,43 @@ home's credential file. FinishUP may create the exact nonsecret config and retai
 must not read, parse, hash, copy, export, log, or place credential bytes in the vault. Rollback
 removes only the FinishUP binding; disconnect first requires Codex to confirm logout and otherwise
 fails honestly.
+
+## Owner-only file custody where no platform store is usable (2026-10-19, issue #1119)
+
+**Owner decision (2026-10-19).** First-run setup must not ask a non-technical user to invent a vault
+passphrase. On machines without a usable platform credential store (WSL 2, headless Linux, a
+container), the generated auto-unlock passphrase is therefore kept in owner-only files instead.
+This replaces the earlier rule that no file fallback exists. The owner chose this knowing it
+weakens the at-rest boundary on those machines.
+
+- **Custody.** `AutoUnlockPassphraseStore` keeps its entries, slots and every staging, promotion
+  and proof-based recovery rule. Only the backend changes: `OwnerOnlyFileCredentialStore`
+  (`finishup.adapters.keys.owner_file_store`) stores each slot as one file named by its digest
+  account under `<bundle>/auto-unlock/` (directory `0700`, files `0600`).
+  - Reads refuse anything that is not a regular, euid-owned, owner-only file, or that sits in a
+    directory failing the owner-only check. Symlinks are refused (`O_NOFOLLOW`).
+  - Writes are atomic: an exclusive temp file is fsynced, renamed into place, and the directory
+    is fsynced.
+  - Only the custody directory is created, and only inside an existing bundle root.
+  - Entry names are store-chosen digests; no user-controlled text reaches a path.
+- **Selection.** Existing file entries win, so an installation keeps its custody when a platform
+  store appears later. Otherwise an allowlisted platform store is used. The file is used only when
+  neither applies. `service auto-unlock status` reports `custody: platform_store | owner_file`.
+- **What it protects.** The file custody protects the vault against other accounts on the
+  machine. It does **not** protect against software running as the same user, which can read the
+  file. On those machines the vault's at-rest protection is equivalent to the account's file
+  permissions. A backup or copy of the state folder includes the key. User docs say this plainly.
+- **Choice and reverse path.**
+  - `finishup setup vault --passphrase` creates a new vault from a passphrase the owner types,
+    and keeps no copy of it.
+  - For an existing vault, `service rotate-passphrase` changes the passphrase but still keeps the
+    new value in the current custody. The atomic delete-plus-rewrap `disable` ceremony this ADR
+    already requires stays unimplemented; a follow-up under issue #1119 owns it.
+- **Unchanged.**
+  - The vault-root key never uses this backend; `os_keyring` mode still requires an approved
+    platform store.
+  - Secrets still never travel through argv, environment, config, stdin, logs, ordinary control
+    or MCP.
+  - A pre-existing entry still blocks initialization rather than being adopted.
+  - The agent-chat `vault_initialize` lane (ADR-015) now succeeds on these machines through the
+    same helper-generated secret.

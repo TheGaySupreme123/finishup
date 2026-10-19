@@ -51,7 +51,6 @@ from finishup.tui.models import (
     IntegrationPlan,
     LayerState,
     PrivacyChoice,
-    StorageChoice,
 )
 from finishup.tui.render import (
     render_detection,
@@ -1079,30 +1078,13 @@ class FinishUpTui(App[int]):
             return
 
     async def _choose_storage(self, detection: Detection) -> None:
-        choice = await self.ask(
-            SelectionView(
-                name="storage",
-                title="Where should FinishUP keep local secrets?",
-                options=[
-                    Option(
-                        StorageChoice.SYSTEM_KEYRING.value,
-                        "Use system secure storage",
-                        "Recommended. Unlocks automatically for the operating-system user.",
-                        disabled=not detection.secure_storage_available,
-                        disabled_reason=detection.secure_storage_reason
-                        or "not available on this machine",
-                    ),
-                    Option(
-                        StorageChoice.PASSPHRASE.value,
-                        "Use a FinishUP passphrase",
-                        "Enter a passphrase when FinishUP needs to unlock.",
-                    ),
-                ],
-                hint="enter to choose · esc to skip for now",
-            )
-        )
-        if choice is None:
-            return
+        """Create or unlock the vault with no question asked (issue #1119).
+
+        The key goes to the system keychain when one is usable, otherwise to a file only this
+        account can read. Choosing a personal passphrase stays available as an explicit command
+        for a new vault, ``finishup setup vault --passphrase``.
+        """
+
         posture = await self.runtime.vault_posture()
         if not posture.reachable:
             self.say(
@@ -1117,18 +1099,33 @@ class FinishUpTui(App[int]):
         if posture.vault_mode not in {None, "uninitialized"}:
             self.say(Level.VERIFIED, "Secure storage is already set up")
             return
-        if choice == StorageChoice.PASSPHRASE.value:
-            await self._run_confidential(
-                "Choose a FinishUP passphrase",
-                self.runtime.initialize_passphrase_vault,
-                fallback_command="finishup service initialize-passphrase",
+        try:
+            ready, reason = await self.hand_over_terminal(self.runtime.set_up_storage_automatically)
+        except SuspendNotSupported:
+            self.say(
+                Level.UNPROVEN,
+                "Secure storage was not set up",
+                ("Run this from your shell instead:", "", "    finishup setup vault"),
             )
-        else:
-            await self._run_confidential(
-                "Set up system secure storage",
-                self.runtime.initialize_system_keyring,
-                fallback_command=None,
+            return
+        except RuntimeError_ as error:
+            self.say(Level.BLOCKED, "Secure storage was not set up", (error.reason,))
+            return
+        if not ready:
+            self.say(
+                Level.BLOCKED,
+                "Secure storage was not set up",
+                (str(reason), "", "Run 'finishup setup vault' to try again."),
             )
+            return
+        where = (
+            "your system keychain"
+            if detection.secure_storage_available
+            else "a file only your account can read (no system keychain on this machine)"
+        )
+        self.say(
+            Level.VERIFIED, "Secure storage is set up", (f"The vault key is kept in {where}.",)
+        )
 
     async def hand_over_terminal(self, operation: Callable[[], Awaitable[Any]]) -> Any:
         """Run ``operation`` with the full-screen interface suspended.

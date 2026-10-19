@@ -31,6 +31,8 @@ class _Client:
 
 
 class _Store:
+    custody = "platform_store"
+
     def __init__(
         self,
         secret: bytearray | None,
@@ -128,6 +130,7 @@ async def test_auto_unlock_status_reports_service_verified_stale_without_secret(
 
     report = json.loads(capsys.readouterr().out)
     assert report == {
+        "custody": "platform_store",
         "next_command": "finishup service auto-unlock repair",
         "schema": "yoetz.auto-unlock-status/2",
         "service_state": "locked",

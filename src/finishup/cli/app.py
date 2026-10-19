@@ -3688,10 +3688,21 @@ def setup_disconnect(
 
 
 @setup_app.command("vault")
-def setup_vault() -> None:
+def setup_vault(
+    passphrase: Annotated[
+        bool,
+        typer.Option(
+            "--passphrase",
+            help=(
+                "For a new vault, choose your own passphrase instead of a generated one kept "
+                "in the system keychain or a private file. You type it after every restart."
+            ),
+        ),
+    ] = False,
+) -> None:
     """Initialize or unlock storage in a trusted terminal, without provider setup."""
     operation = _setup_operation("run_vault_setup")
-    _finish(run_async(operation))
+    _finish(run_async(lambda: operation(passphrase=passphrase)))
 
 
 @setup_app.command("status")
@@ -3931,6 +3942,7 @@ async def _service_auto_unlock_status(json_output: bool) -> int:
         # Frozen legacy identifier (ADR-048): machine-readable report tag agents parse.
         "schema": "yoetz.auto-unlock-status/2",
         "state": state,
+        "custody": store.custody,
         "slots": dict(slots),
         "service_state": service_state,
         "service_state_reason": service_reason,

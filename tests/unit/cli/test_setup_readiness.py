@@ -348,6 +348,84 @@ async def test_storage_only_command_refuses_noninteractive_before_service_probe(
     assert await setup.run_vault_setup() == 2
 
 
+@pytest.mark.anyio
+async def test_local_only_setup_creates_the_vault_before_privacy(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Issue #1119: a local-only answer ends with a ready vault, created with no question."""
+
+    order: list[str] = []
+
+    async def reachable(**_kwargs: object) -> dict[str, JsonValue]:
+        return {"reachable": True, "state": "locked", "vault_mode": "uninitialized"}
+
+    async def vault_ready() -> tuple[bool, str | None]:
+        order.append("vault")
+        return True, None
+
+    async def privacy(**_kwargs: object) -> SimpleNamespace:
+        order.append("privacy")
+        return SimpleNamespace(outcome="configured", reason=None)
+
+    monkeypatch.setattr(setup, "_service_reachability", reachable)
+    monkeypatch.setattr(setup, "ensure_vault_ready", vault_ready)
+    monkeypatch.setattr("finishup.cli.privacy_setup.run_privacy_setup", privacy)
+
+    assert await setup._run_local_only_privacy_setup(None) == 0  # pyright: ignore[reportPrivateUsage]
+    assert order == ["vault", "privacy"]
+
+
+@pytest.mark.anyio
+async def test_local_only_setup_stops_when_the_vault_is_not_ready(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def reachable(**_kwargs: object) -> dict[str, JsonValue]:
+        return {"reachable": True, "state": "locked", "vault_mode": "uninitialized"}
+
+    async def vault_blocked() -> tuple[bool, str | None]:
+        return False, "auto_unlock_entry_exists"
+
+    async def privacy(**_kwargs: object) -> SimpleNamespace:
+        raise AssertionError("privacy must not run without a ready vault")
+
+    monkeypatch.setattr(setup, "_service_reachability", reachable)
+    monkeypatch.setattr(setup, "ensure_vault_ready", vault_blocked)
+    monkeypatch.setattr("finishup.cli.privacy_setup.run_privacy_setup", privacy)
+
+    assert await setup._run_local_only_privacy_setup(None) == 20  # pyright: ignore[reportPrivateUsage]
+
+
+@pytest.mark.anyio
+async def test_vault_passphrase_option_uses_the_human_ceremony_only_for_a_new_vault(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[str] = []
+    monkeypatch.setattr(setup, "_is_interactive_terminal", lambda: True)
+
+    async def uninitialized(**_kwargs: object) -> dict[str, JsonValue]:
+        return {"reachable": True, "state": "locked", "vault_mode": "uninitialized"}
+
+    async def human_ceremony(passphrase: bytearray | None = None) -> object:
+        calls.append("human" if passphrase is None else "supplied")
+        return object()
+
+    async def automatic(*_args: object, **_kwargs: object) -> object:
+        raise AssertionError("--passphrase must not generate or store a passphrase")
+
+    monkeypatch.setattr(setup, "_service_reachability", uninitialized)
+    monkeypatch.setattr("finishup.cli.unlock.initialize_passphrase_vault", human_ceremony)
+    monkeypatch.setattr(setup, "_interactive_provider_setup", automatic)
+    assert await setup.run_vault_setup(passphrase=True) == 0
+    assert calls == ["human"]
+
+    async def initialized(**_kwargs: object) -> dict[str, JsonValue]:
+        return {"reachable": True, "state": "ready", "vault_mode": "passphrase"}
+
+    monkeypatch.setattr(setup, "_service_reachability", initialized)
+    assert await setup.run_vault_setup(passphrase=True) == 2
+    assert calls == ["human"]
+
+
 def test_module_continuation_preserves_venv_interpreter_spelling(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

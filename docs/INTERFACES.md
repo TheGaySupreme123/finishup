@@ -4011,6 +4011,14 @@ as a typed orphan that `finishup service auto-unlock status` distinguishes
 resolves by proof, so retry never fails on `auto_unlock_entry_exists` from an abandoned
 same-attempt entry.
 
+`finishup service auto-unlock status` (`yoetz.auto-unlock-status/2`) also carries
+`custody: platform_store | owner_file` (issue #1119, ADR-008 amendment 2026-10-19). `owner_file`
+means the scoped secret lives in FinishUP's owner-only files under `<bundle>/auto-unlock/`, used
+only where no platform credential store is usable. `finishup setup vault --passphrase` creates a
+new vault from an owner-typed passphrase and keeps no copy; it refuses an initialized vault
+with `vault_already_initialized`. A local-only first run creates the vault with no question
+before its privacy step and stops with `vault_setup_incomplete: <reason>` when it cannot.
+
 A `repository_privacy_grant` result is commit-aware (issue #519). The service records the
 durable policy transition before it sends the correlated ceremony result, so when only the
 trailing close confirmation is missing, wrong, or lost with the connection, the confidential

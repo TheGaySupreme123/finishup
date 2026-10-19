@@ -86,7 +86,8 @@ On Windows:
 5. Keep FinishUP's state on the Linux filesystem: install and run from the WSL home, and never point
    `FINISHUP_ISOLATED_ROOT` or an instance root at a Windows drive under `/mnt/<letter>`. FinishUP
    refuses such a path with `path_on_network_filesystem`; the project itself may live anywhere.
-6. Expect no system keyring in WSL: choose the FinishUP passphrase at the secure-storage question.
+6. Expect no system keyring in WSL. Setup creates the vault anyway and keeps its key in a file
+   only the user's Linux account can read; there is no passphrase question.
    Ask the user to run `sudo apt install bubblewrap` if they will trust a check policy whose
    checks deny network; without it those checks are rejected `sandbox_unavailable`. On a
    Windows-on-ARM machine the Ubuntu is aarch64, an untested platform cell: `finishup version --json`

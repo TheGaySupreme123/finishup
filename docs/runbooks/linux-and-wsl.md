@@ -349,7 +349,8 @@ proof on every load:
 | `keyring.backends.kwallet.DBusKeyring` | not approved | accepted | KWallet's own D-Bus API; lock/unlock semantics not reviewed for the root key (ADR-008) |
 | `keyring.backends.libsecret.Keyring` | not approved | accepted | libsecret binding of the same service; the Secret Service backend is the reviewed path |
 | `keyring.backends.Windows.WinVaultKeyring` | not approved | accepted | native Windows is not a supported host |
-| anything else (`fail`, `null`, `chainer`, file-based `keyrings.alt`) | not approved | rejected | no plaintext or file fallback exists |
+| FinishUP owner-only file (`finishup.adapters.keys.owner_file_store.OwnerOnlyFileCredentialStore`) | not approved | accepted | used only when no backend above is usable; `0600` files under `<bundle>/auto-unlock/`; protects against other accounts, not against software running as you (ADR-008, 2026-10-19) |
+| anything else (`fail`, `null`, `chainer`, file-based `keyrings.alt`) | not approved | rejected | never selected; FinishUP's own owner-only file is used instead |
 
 ADR-008 grounds the root-key boundary in the Secret Service protocol's explicit locked/unlocked
 object model and Apple's Keychain data-protection classes; the KWallet and libsecret backends are
@@ -365,9 +366,13 @@ For Secret Service, approval also requires a successful ten-second bounded D-Bus
 availability probe. The probe reads no credential and never unlocks or creates a collection;
 it does not prove that a later credential operation will succeed.
 
-Headless Linux sessions and WSL 2 normally have no session D-Bus and no Secret Service daemon, so
-the vault passphrase is the supported route there; `finishup service auto-unlock enable` remains
-available only where an accepted backend is loaded. Capability CI runs `platform-key-matrix` on
+Headless Linux sessions and WSL 2 normally have no session D-Bus and no Secret Service daemon. Setup
+there creates the vault with no question and keeps its generated passphrase in FinishUP's owner-only
+file (row above; `finishup service auto-unlock status` reports `custody: owner_file`). That file
+protects the vault from other accounts, not from software running as the same user. To type a
+passphrase after every restart instead, create the vault with `finishup setup vault --passphrase`
+before first setup. `finishup service auto-unlock enable` saves an existing human passphrase into
+the same custody. Capability CI runs `platform-key-matrix` on
 `ubuntu-24.04` with a desktop Secret Service; headless Linux and WSL 2 keyring evidence is
 **outstanding**.
 

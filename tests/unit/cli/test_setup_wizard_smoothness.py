@@ -455,9 +455,15 @@ def _codex_only(
             outcome="configured", profile="private", proposal_id=None, reason=None
         )
 
+    vault_calls: list[str] = []
+
     async def provider(
         service: dict[str, object], **kwargs: object
     ) -> tuple[dict[str, object], dict[str, object]]:
+        if kwargs.get("storage_only"):
+            # Issue #1119: a local-only answer creates the vault with no question.
+            vault_calls.append("storage_only")
+            return service, {"binding": "skipped", "credential": "skipped"}
         run.workspaces["provider"] = kwargs.get("project")
         before_credential = cast(Callable[[], Awaitable[str | None]], kwargs["before_credential"])
         await before_credential()
@@ -577,9 +583,15 @@ def test_codex_only_setup_keeps_the_folder_the_user_typed(
     async def ready(**_kwargs: object) -> dict[str, object]:
         return {"reachable": True, "state": "ready"}
 
+    vault_calls: list[str] = []
+
     async def provider(
         service: dict[str, object], **kwargs: object
     ) -> tuple[dict[str, object], dict[str, object]]:
+        if kwargs.get("storage_only"):
+            # Issue #1119: a local-only answer creates the vault with no question.
+            vault_calls.append("storage_only")
+            return service, {"binding": "skipped", "credential": "skipped"}
         run.workspaces["provider"] = kwargs.get("project")
         before_credential = cast(Callable[[], Awaitable[str | None]], kwargs["before_credential"])
         assert await before_credential() is None
@@ -603,6 +615,7 @@ def test_codex_only_setup_keeps_the_folder_the_user_typed(
         expected |= {"provider", "provider_status"}
     assert set(run.workspaces) == expected
     assert all(value == project.resolve() for value in run.workspaces.values())
+    assert vault_calls == (["storage_only"] if review == "local_only" else [])
 
 
 def test_the_api_key_credential_target_names_the_folder_the_user_typed(

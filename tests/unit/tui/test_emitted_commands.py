@@ -159,4 +159,15 @@ def test_the_passphrase_fallback_is_the_initialize_ceremony_not_an_unlock_flag()
     assert _resolve(("service", "initialize-passphrase")) is not None
     app_source = (_TUI / "app.py").read_text(encoding="utf-8")
     assert "service unlock --initialize" not in app_source
-    assert app_source.count('fallback_command="finishup service initialize-passphrase"') == 2
+    assert app_source.count('fallback_command="finishup service initialize-passphrase"') == 1
+
+
+def test_first_run_storage_needs_no_question_and_names_a_real_fallback() -> None:
+    """Issue #1119: the storage step asks nothing; its fallback and opt-out commands exist."""
+
+    app_source = (_TUI / "app.py").read_text(encoding="utf-8")
+    assert "Where should FinishUP keep local secrets?" not in app_source
+    assert "    finishup setup vault" in app_source
+    vault = _resolve(("setup", "vault"))
+    assert vault is not None
+    assert "--passphrase" in {opt for param in vault.params for opt in param.opts}

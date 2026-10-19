@@ -20,6 +20,10 @@ from typing import Final, Protocol, cast
 
 import keyring
 
+from finishup.adapters.keys.owner_file_store import (
+    OWNER_FILE_BACKEND_ID,
+    OwnerOnlyFileCredentialStore,
+)
 from finishup.adapters.keys.vault_passphrase import VaultPassphraseError, validate_passphrase_view
 from finishup.config.paths import PathSafetyError, ensure_owner_only_dir
 from finishup.domain.values import validate_sha256_digest
@@ -60,8 +64,11 @@ _AUTO_UNLOCK_BACKENDS: Final = frozenset(
         "keyring.backends.kwallet.DBusKeyring",
         "keyring.backends.libsecret.Keyring",
         "keyring.backends.macOS.Keyring",
+        OWNER_FILE_BACKEND_ID,
     }
 )
+# Custody directory for the owner-only file fallback, inside the scoped bundle root (#1119).
+_OWNER_FILE_DIRECTORY: Final = "auto-unlock"
 _APPROVED_BACKENDS: Final = frozenset(
     {"keyring.backends.macOS.Keyring", "keyring.backends.SecretService.Keyring"}
 )
@@ -310,8 +317,28 @@ def _overwrite(value: bytearray) -> None:
         value[index] = 0
 
 
+def _default_auto_unlock_backend(bundle: Path) -> object:
+    """Choose where the scoped auto-unlock secret lives for this bundle (issue #1119).
+
+    Existing owner-file entries win, so an installation that started without a platform store
+    keeps its custody when one appears later. Otherwise an allowlisted platform store is used;
+    only when none is usable does the owner-only file take over.
+    """
+
+    owner_file = OwnerOnlyFileCredentialStore(bundle / _OWNER_FILE_DIRECTORY)
+    if owner_file.has_entries():
+        return owner_file
+    platform_backend = keyring.get_keyring()
+    if _backend_id_of(platform_backend) in _AUTO_UNLOCK_BACKENDS:
+        return platform_backend
+    return owner_file
+
+
 class AutoUnlockPassphraseStore:
     """Platform-credential-store persistence for one FinishUP vault passphrase.
+
+    Where no platform store is usable, the same entries live in owner-only files under the
+    bundle root instead (``custody == "owner_file"``; ADR-008 amendment 2026-10-19).
 
     The keyring username is a digest of the absolute service bundle path, so independent FinishUP
     data roots never share an auto-unlock secret and the filesystem path is not disclosed to the
@@ -332,7 +359,11 @@ class AutoUnlockPassphraseStore:
     def __init__(self, bundle_path: object, *, backend: object | None = None) -> None:
         if not isinstance(bundle_path, Path) or not bundle_path.is_absolute():
             raise ValueError("auto_unlock_scope_invalid")
-        self._backend = backend if backend is not None else keyring.get_keyring()
+        self._backend = (
+            backend
+            if backend is not None
+            else _default_auto_unlock_backend(Path(os.path.abspath(bundle_path)))
+        )
         self._backend_id = f"{type(self._backend).__module__}.{type(self._backend).__qualname__}"
         encoded = os.fsencode(os.path.abspath(bundle_path))
         self._username = "bundle-" + hashlib.sha256(encoded).hexdigest()
@@ -413,6 +444,14 @@ class AutoUnlockPassphraseStore:
         """
 
         return _AUTO_UNLOCK_SERVICE_NAME, self._username
+
+    @property
+    def custody(self) -> str:
+        """``owner_file`` for the file fallback, ``platform_store`` otherwise."""
+
+        if isinstance(self._backend, OwnerOnlyFileCredentialStore):
+            return "owner_file"
+        return "platform_store"
 
     @property
     def available(self) -> bool:
