@@ -118,7 +118,7 @@ recreates it as yours. Likewise, `finishup instance create --bind-runtime` needs
 installation, so on someone else's installation it stops with `runtime_pin_unwritable` and keeps
 nothing; run it again once FinishUP is installed as you.
 
-`uvx finishup` works for a one-off run, but do not connect an agent from it: a one-off
+`uvx --python 3.14 finishup` works for a one-off run, but do not connect an agent from it: a one-off
 run lives in `uv`'s cache, and connecting an agent binds the agent to that exact launcher. If you
 are a coding agent installing FinishUP on a user's behalf, follow [Agent start](agent-start.md)
 instead — setup's questions require the human's own terminal. With `uv` already installed,

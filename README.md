@@ -90,7 +90,7 @@ uv tool install --managed-python --python 3.14 finishup
 npx finishup
 
 # One-off run without installing (needs uv: https://docs.astral.sh/uv/)
-uvx finishup
+uvx --python 3.14 finishup
 ```
 
 FinishUP runs on Python 3.12, 3.13 or 3.14. You do not need to have one: `uv` downloads Python
