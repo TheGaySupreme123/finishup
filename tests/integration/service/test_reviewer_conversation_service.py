@@ -11,11 +11,12 @@ from __future__ import annotations
 
 import json
 import subprocess
-from collections.abc import Mapping
-from dataclasses import replace
+from collections.abc import AsyncGenerator, Mapping
+from contextlib import asynccontextmanager
+from dataclasses import dataclass, replace
 from pathlib import Path
 from types import SimpleNamespace
-from typing import cast
+from typing import Any, cast
 
 import pytest
 
@@ -27,6 +28,7 @@ from finishup.adapters.integrations.observation_local import LocalObservationSto
 from finishup.adapters.providers.openai_responses_factory import OpenAIResponsesExternalFactory
 from finishup.adapters.providers.reviewer_reply import REVIEWER_REPLY_SCHEMAS
 from finishup.adapters.repository_identity import resolve_repository_privacy_context
+from finishup.application.egress import PrivacyCoordinator
 from finishup.application.privacy_policy import (
     DecidePrivacyPolicyRequest,
     PolicyDecisionRequired,
@@ -39,8 +41,15 @@ from finishup.cli.render import render_human_check
 from finishup.config.models import FinishUpConfig
 from finishup.config.write import fireworks_provider
 from finishup.domain.findings import SamplingParams
-from finishup.domain.privacy import AuthorizationScope, AuthorizationScopeKind, ProviderBinding
+from finishup.domain.privacy import (
+    AuthorizationScope,
+    AuthorizationScopeKind,
+    EgressChannel,
+    PrivacyPolicy,
+    ProviderBinding,
+)
 from finishup.domain.receipts import receipt_document_from_json, render_receipt_human
+from finishup.domain.reviewer_reads import reviewer_record_from_wire
 from finishup.mcp.summaries import render_check_reviewer_output
 from finishup.ports.control import ControlClientKind, ControlMethod, WorkspaceLocator
 from finishup.ports.keys import MacKeyPurpose
@@ -61,6 +70,7 @@ from finishup.protocol.models import (
     CheckRequest,
     CheckResultModel,
     CheckSuccessModel,
+    DataCategory,
     PublishWorkRequest,
     ReceiptRequest,
     SemanticStatus,
@@ -123,9 +133,38 @@ _REPLIES: tuple[dict[str, JsonValue], ...] = (
 )
 
 
-async def test_one_review_reads_three_times_then_concludes_on_every_surface(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+@dataclass
+class _Review:
+    """One prepared review in a running ready service; ``check`` runs the reviewed check."""
+
+    service: Any
+    started: Any
+    repository: Any
+    common: dict[str, JsonValue]
+    check_body: dict[str, JsonValue]
+    exchanges: list[tuple[str, tuple[tuple[str, str], ...]]]
+    payloads: list[bytes]
+    # The task-scope policy the harness serves; a test may narrow it mid-review.
+    task_policy: list[EffectivePrivacyPolicy]
+
+    async def check(self) -> Any:
+        return await self.service.app.check(
+            CheckRequest.model_validate(self.check_body),
+            repository_privacy_context=self.repository,
+        )
+
+
+@asynccontextmanager
+async def _reviewing(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    replies: tuple[dict[str, JsonValue], ...] = _REPLIES,
+    *,
+    policy: PrivacyPolicy = _ROOMY,
+    timeout_seconds: int = 60,
+) -> AsyncGenerator[_Review]:
+    """A ready service, a git workspace, a task with its statement and a connected provider."""
+
     workspace = (tmp_path / "work").resolve()
     workspace.mkdir()
     (workspace / "calc.py").write_text("def add(a, b):\n    return a + b\n")
@@ -138,9 +177,12 @@ async def test_one_review_reads_three_times_then_concludes_on_every_surface(
         ("-c", "user.name=t", "-c", "user.email=t@example.invalid", "commit", "-qm", "base"),
     ):
         subprocess.run(("git", *argv), cwd=workspace, check=True, capture_output=True)
-    provider = fireworks_provider(model="accounts/fireworks/models/minimax-m3")
+    provider = fireworks_provider(
+        model="accounts/fireworks/models/minimax-m3", timeout_seconds=timeout_seconds
+    )
     exchanges: list[tuple[str, tuple[tuple[str, str], ...]]] = []
-    replies = list(_REPLIES)
+    payloads: list[bytes] = []
+    queued = list(replies)
 
     def build_evaluator(
         _factory: OpenAIResponsesExternalFactory,
@@ -153,6 +195,7 @@ async def test_one_review_reads_three_times_then_concludes_on_every_surface(
             exchange = reviewer_exchange(media_type, payload, REVIEWER_REPLY_SCHEMAS)
             assert exchange is not None, "every review dispatch is a reviewer exchange"
             exchanges.append((media_type, exchange.history))
+            payloads.append(payload)
             provenance = ProviderAttemptProvenance(
                 provider=binding.provider_id,
                 endpoint_profile_id=binding.endpoint_profile_id,
@@ -169,7 +212,7 @@ async def test_one_review_reads_three_times_then_concludes_on_every_surface(
                 provider_request_id=f"scripted-{len(exchanges)}",
                 request_commitment="hmac-sha256:" + "7" * 64,
             )
-            return SemanticResultReply(replies.pop(0), provenance)
+            return SemanticResultReply(queued.pop(0), provenance)
 
         return SimpleNamespace(evaluate=evaluate)
 
@@ -180,11 +223,14 @@ async def test_one_review_reads_three_times_then_concludes_on_every_surface(
         original_effective_policy = policy_store.effective_policy
         # A ceiling with room for the packet and three reads: the minimal profile's 4,096 tokens
         # leave this conversation room for one read, and the reviewer is then offered none.
-        widened = _ROOMY
+        task_policy = [EffectivePrivacyPolicy(policy, 2, policy.policy_digest)]
+
+        task_scopes: list[AuthorizationScope] = []
 
         async def effective_policy(_store: object, scope: AuthorizationScope) -> object:
             if scope.kind is AuthorizationScopeKind.TASK:
-                return EffectivePrivacyPolicy(widened, 2, widened.policy_digest)
+                task_scopes.append(scope)
+                return task_policy[-1]
             return await original_effective_policy(scope)
 
         monkeypatch.setattr(type(policy_store), "effective_policy", effective_policy)
@@ -231,10 +277,11 @@ async def test_one_review_reads_three_times_then_concludes_on_every_surface(
             "max_findings": "3",
             "policy_packs": ["work-integrity/0.3.0"],
         }
-        # Without a statement the check waits for one; the same request then resumes the review.
-        first = await service.app.check(
-            CheckRequest.model_validate(check_body), repository_privacy_context=repository
+        review = _Review(
+            service, started, repository, common, check_body, exchanges, payloads, task_policy
         )
+        # Without a statement the check waits for one; the same request then resumes the review.
+        first = await review.check()
         assert getattr(first, "state") == "awaiting_input"
         await service.app.publish_work(
             PublishWorkRequest.model_validate(
@@ -264,10 +311,39 @@ async def test_one_review_reads_three_times_then_concludes_on_every_surface(
             ),
             repository_privacy_context=repository,
         )
-        await _widen_and_connect(service, INSTALLATION_ID, repository.commitment, provider)
-        checked = await service.app.check(
-            CheckRequest.model_validate(check_body), repository_privacy_context=repository
-        )
+        await _widen_and_connect(service, INSTALLATION_ID, repository.commitment, provider, policy)
+        # From here the task sees exactly the repository policy the owner just approved, as the
+        # service does: reads, exchanges and a resumed approval all name the one policy.
+        authority = await policy_store.repository_authority(task_scopes[-1])
+        task_policy.append(authority.effective)
+        yield review
+
+
+def _narrow(effective: EffectivePrivacyPolicy, category: DataCategory) -> EffectivePrivacyPolicy:
+    """``effective`` with ``category`` removed from the reviewer channel, as a new generation."""
+
+    channels = tuple(
+        replace(c, allowed_categories=tuple(x for x in c.allowed_categories if x is not category))
+        if c.channel is EgressChannel.LLM_INFERENCE
+        else c
+        for c in effective.policy.channel_policies
+    )
+    narrowed = replace(
+        effective.policy,
+        channel_policies=channels,
+        version=effective.policy.version + 1,
+        policy_digest="sha256:" + "7" * 64,
+    )
+    return EffectivePrivacyPolicy(narrowed, effective.generation + 1, narrowed.policy_digest)
+
+
+async def test_one_review_reads_three_times_then_concludes_on_every_surface(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    async with _reviewing(tmp_path, monkeypatch) as review:
+        service, started, common = review.service, review.started, review.common
+        check_body, exchanges, repository = review.check_body, review.exchanges, review.repository
+        checked = await review.check()
         assert type(checked).__name__ == "CheckCommitResult", checked
         assert getattr(checked, "semantic_status") is SemanticStatus.SUCCEEDED
 
@@ -341,7 +417,11 @@ async def test_one_review_reads_three_times_then_concludes_on_every_surface(
 
 
 async def _widen_and_connect(
-    service: object, installation_id: str, commitment: str, provider: object
+    service: object,
+    installation_id: str,
+    commitment: str,
+    provider: object,
+    policy: PrivacyPolicy = _ROOMY,
 ) -> None:
     """The owner's trusted steps: widen this repository's policy and store a provider key."""
 
@@ -353,7 +433,7 @@ async def _widen_and_connect(
         AuthorizationScopeKind.WORKSPACE, installation_id, commitment
     )
     authority = await policy_app.policy_store.repository_authority(repository_scope)
-    candidate = replace(_ROOMY, effective_scope=repository_scope, created_at=clock.now_utc())
+    candidate = replace(policy, effective_scope=repository_scope, created_at=clock.now_utc())
     proposed = await privacy_propose_policy(
         policy_app,
         ProposePrivacyPolicyRequest(
@@ -406,3 +486,87 @@ async def _widen_and_connect(
         ),
         2.0,
     )
+
+
+_FINAL_REPLY = _REPLIES[-1]
+async def _tighten_repository(review: _Review, category: DataCategory) -> None:
+    """The owner's own tightening of this repository's grant: ``category`` no longer leaves."""
+
+    policy_app = review.service.app.privacy.policy_application
+    scope = AuthorizationScope(
+        AuthorizationScopeKind.WORKSPACE, INSTALLATION_ID, review.repository.commitment
+    )
+    authority = await policy_app.policy_store.repository_authority(scope)
+    current = authority.effective
+    tightened = await privacy_propose_policy(
+        policy_app,
+        ProposePrivacyPolicyRequest(
+            current.effective_digest,
+            replace(
+                _narrow(current, category).policy,
+                effective_scope=scope,
+                created_at=review.service.clock.now_utc(),
+            ),
+            authority.authority_digest,
+            scope,
+        ),
+    )
+    assert not isinstance(tightened, PolicyDecisionRequired), "a tightening needs no decision"
+    after = await policy_app.policy_store.repository_authority(scope)
+    assert after.effective.generation > current.generation
+
+
+async def test_a_tightened_repository_category_ends_the_review_before_a_read_is_resent(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """R1: the gateway never resends a read whose category the owner has since withdrawn."""
+
+    replies = (_read_file("calc.py"), _read_file("test_calc.py"), _FINAL_REPLY)
+    async with _reviewing(tmp_path, monkeypatch, replies) as review:
+        admit = PrivacyCoordinator.admit_reviewer_read
+        tightened: list[int] = []
+
+        async def admit_then_tighten(self: PrivacyCoordinator, *args: Any, **kwargs: Any) -> object:
+            reason = await admit(self, *args, **kwargs)
+            if reason is None and not tightened:
+                # The read result is admitted; before the next exchange the owner tightens the
+                # real repository policy (a new generation the gateway's registry follows).
+                await _tighten_repository(review, DataCategory.REPOSITORY_EXCERPT)
+                tightened.append(len(review.payloads))
+            return reason
+
+        monkeypatch.setattr(PrivacyCoordinator, "admit_reviewer_read", admit_then_tighten)
+        checked = await review.check()
+    assert tightened == [1]
+    # Only the first exchange left: the read result of calc.py was never sent.
+    assert len(review.payloads) == 1
+    assert getattr(checked, "semantic_status") is SemanticStatus.BLOCKED_BY_POLICY
+    record = reviewer_record_from_wire(getattr(checked, "reviewer", None))
+    assert record is not None and record.ended == "reviewer_exchange_not_sent"
+    assert record.exchanges == 2 and record.reads[0].disclosure is None
+
+
+async def test_a_narrowed_task_policy_ends_the_conversation_before_its_next_turn(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """R1: a retained read's category, rechecked before each turn, ends the review honestly."""
+
+    replies = (_read_file("calc.py"), _FINAL_REPLY)
+    async with _reviewing(tmp_path, monkeypatch, replies) as review:
+        admit = PrivacyCoordinator.admit_reviewer_read
+
+        async def admit_then_narrow(self: PrivacyCoordinator, *args: Any, **kwargs: Any) -> object:
+            reason = await admit(self, *args, **kwargs)
+            if reason is None:
+                review.task_policy.append(
+                    _narrow(review.task_policy[-1], DataCategory.REPOSITORY_EXCERPT)
+                )
+            return reason
+
+        monkeypatch.setattr(PrivacyCoordinator, "admit_reviewer_read", admit_then_narrow)
+        checked = await review.check()
+    assert len(review.payloads) == 1  # the read result was never sent
+    assert getattr(checked, "semantic_status") is SemanticStatus.BLOCKED_BY_POLICY
+    record = reviewer_record_from_wire(getattr(checked, "reviewer", None))
+    assert record is not None and record.ended == "authorization_changed"
+    assert record.exchanges == 1 and record.reads[0].disclosure is None

@@ -21,6 +21,7 @@ from finishup.adapters.providers.reviewer_reply import REVIEWER_LOOP_INSTRUCTION
 from finishup.application.egress import (
     PrivacyCoordinator,
     ReviewerExchangeFrame,
+    ReviewerHistory,
     SemanticEgressAwaitingHuman,
     SemanticEgressBlocked,
     SemanticEgressProviderOutcome,
@@ -133,13 +134,14 @@ async def run_reviewer(
     """
 
     reads = 0 if resume_first else MAX_READS
+    retained = ReviewerHistory()
     broker = ReviewerBroker(
         job_id=job_id,
         case=case,
         roots=roots,
         store=steps,
         admit=lambda elements, envelope: privacy.admit_reviewer_read(
-            first_request_id, scope, binding, elements, envelope
+            first_request_id, scope, binding, elements, envelope, retained
         ),
         max_reads=reads,
     )
@@ -158,7 +160,7 @@ async def run_reviewer(
             return rendered
 
         roots_held = tuple(sorted(broker.history_roots, key=str.encode))
-        frame = ReviewerExchangeFrame(media_type, render, roots_held)
+        frame = ReviewerExchangeFrame(media_type, render, roots_held, retained)
         if not results and resume_first:
             result = await privacy.resume(
                 first_request_id,
@@ -180,7 +182,7 @@ async def run_reviewer(
         raise ReviewerModelError("reviewer_exchange_not_sent")
 
     async def admissible(held: frozenset[str]) -> bool:
-        return await privacy.reviewer_history_current(scope, binding, held)
+        return await privacy.reviewer_history_current(scope, binding, held, retained)
 
     session = ReviewerSession(job_id, deadline)
     async with ReviewerExchangeModel(binding, dispatch, session) as model:

@@ -7,7 +7,7 @@ import base64
 import hashlib
 from collections import Counter
 from collections.abc import Awaitable, Callable, Iterable
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta
 from enum import StrEnum
 from typing import TYPE_CHECKING, cast
@@ -111,6 +111,7 @@ __all__ = [
     "PrivacyCoordinator",
     "RepositoryGrantAdmission",
     "ReviewerExchangeFrame",
+    "ReviewerHistory",
     "SemanticEgressReply",
     "SemanticEgressAwaitingHuman",
     "SemanticEgressAttemptUnknown",
@@ -378,12 +379,71 @@ def reviewer_history_admissible(
     binding: ProviderBinding,
     scope_kind: AuthorizationScopeKind,
     roots: Iterable[str | None],
+    retained: Iterable[tuple[DataCategory, DataClass]] = (),
 ) -> bool:
-    """Whether a review conversation holding bytes read beneath ``roots`` may go on (#1118)."""
+    """Whether a review conversation holding bytes read beneath ``roots`` may go on (#1118).
 
-    return semantic_policy_refusal(policy, binding, _SEMANTIC_PURPOSE, scope_kind) is None and all(
-        root is None or root in policy.admitted_input_roots for root in roots
+    ``retained`` is the category and data class of every read element the conversation already
+    carries; each must still be inside the binding's ceiling, as the packet's own items are.
+    """
+
+    if semantic_policy_refusal(policy, binding, _SEMANTIC_PURPOSE, scope_kind) is not None:
+        return False
+    if binding.transport == "local_af_unix":
+        categories, classes = policy.local_model_categories, policy.local_model_data_classes
+    else:
+        llm = next(
+            item for item in policy.channel_policies if item.channel is EgressChannel.LLM_INFERENCE
+        )
+        categories, classes = llm.allowed_categories, llm.allowed_data_classes
+    return all(root is None or root in policy.admitted_input_roots for root in roots) and all(
+        category in categories
+        and data_class in classes
+        and data_class is not DataClass.SECRET_OR_CRYPTOGRAPHIC
+        for category, data_class in retained
     )
+
+
+@dataclass(slots=True)
+class ReviewerHistory:
+    """What the read results one review conversation retains were admitted under (#1118).
+
+    Every admitted read element keeps its category and data class; each must stay inside the
+    current ceiling before every read, turn and exchange. The conversation is also bound to the
+    one effective policy (generation and digest) its exchanges are admitted under, the policy the
+    gateway's consume fence binds: once it carries read results, an exchange under any other
+    policy is refused. A provider keeps what it was sent, so either way the conversation ends
+    honestly incomplete and nothing more is sent. The packet is re-admitted on every exchange.
+    """
+
+    policy: tuple[int, str] | None = None
+    retained: set[tuple[DataCategory, DataClass]] = field(
+        default_factory=set[tuple[DataCategory, DataClass]]
+    )
+
+    def holds(
+        self,
+        policy: PrivacyPolicy,
+        binding: ProviderBinding,
+        scope_kind: AuthorizationScopeKind,
+        roots: Iterable[str | None],
+    ) -> bool:
+        return reviewer_history_admissible(policy, binding, scope_kind, roots, self.retained)
+
+    def admit_exchange(
+        self,
+        effective: EffectivePrivacyPolicy,
+        binding: ProviderBinding,
+        scope_kind: AuthorizationScopeKind,
+        roots: Iterable[str | None],
+    ) -> bool:
+        current = (effective.generation, effective.effective_digest)
+        if self.retained and self.policy not in (None, current):
+            return False
+        if not self.holds(effective.policy, binding, scope_kind, roots):
+            return False
+        self.policy = current
+        return True
 
 
 @dataclass(frozen=True, slots=True)
@@ -440,6 +500,9 @@ class ReviewerExchangeFrame:
     media_type: str
     render: Callable[[bytes], bytes]
     input_roots: tuple[str, ...] = ()
+    # The policy binding of the read results the conversation carries; admission refuses the
+    # exchange when it no longer holds, so the consume fence sees only that one policy digest.
+    history: ReviewerHistory | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -1181,11 +1244,14 @@ class PrivacyCoordinator:
         binding: ProviderBinding,
         elements: tuple[tuple[DataCategory, bytes, str | None], ...],
         envelope: bytes,
+        history: ReviewerHistory | None = None,
     ) -> str | None:
         """``None`` when a reviewer read result may be sent, else why it is withheld (#1118).
 
         Each element is admitted as the packet's items are, and must pass unchanged; then the exact
-        encoded ``envelope`` is scanned. No channel grant: the gateway admits the exchange.
+        encoded ``envelope`` is scanned. No channel grant: the gateway admits the exchange. An
+        admitted result joins ``history``: its elements' categories and data classes, and the
+        policy they were admitted under, which every later read and exchange must still match.
         """
 
         items = tuple(
@@ -1197,8 +1263,10 @@ class PrivacyCoordinator:
             request_id, channel, None, purpose, scope, None, binding, items
         )
         effective = await self._policies.effective_policy(scope)
-        roots = (root for _kind, _text, root in elements)
-        if not reviewer_history_admissible(effective.policy, binding, scope.kind, roots):
+        roots = tuple(root for _kind, _text, root in elements)
+        if not reviewer_history_admissible(effective.policy, binding, scope.kind, roots) or (
+            history is not None and not history.holds(effective.policy, binding, scope.kind, roots)
+        ):
             return "authorization_changed"
         classified = self._classifier.classify(candidate, effective)
         decision = self._semantic_decision(classified, effective, binding)
@@ -1218,14 +1286,25 @@ class PrivacyCoordinator:
             or self._classifier.scan_exact_bytes(envelope, credential_heuristic=heuristic)
         ):
             return "privacy_withheld"
+        if history is not None:
+            history.retained.update(
+                (item.candidate.category, item.data_class) for item in classified.items
+            )
         return None
 
     async def reviewer_history_current(
-        self, scope: AuthorizationScope, binding: ProviderBinding, roots: Iterable[str]
+        self,
+        scope: AuthorizationScope,
+        binding: ProviderBinding,
+        roots: Iterable[str],
+        history: ReviewerHistory | None = None,
     ) -> bool:
         """Whether a review conversation holding bytes read beneath ``roots`` may go on (#1118)."""
 
         effective = await self._policies.effective_policy(scope)
+        roots = tuple(roots)
+        if history is not None:
+            return history.holds(effective.policy, binding, scope.kind, roots)
         return reviewer_history_admissible(effective.policy, binding, scope.kind, roots)
 
     async def close(self) -> None:
@@ -1937,6 +2016,27 @@ class PrivacyCoordinator:
             )
         packet_bytes = minimized.prepared_bytes
         frame = self._reviewer_frame
+        if frame is not None and (
+            frame.history is not None
+            and not frame.history.admit_exchange(
+                effective, binding, candidate.scope.kind, frame.input_roots
+            )
+        ):
+            # #1118: the read results this conversation carries were admitted under another
+            # policy, or a category, data class or root they hold is no longer allowed. The
+            # provider keeps what it was sent, so the conversation ends here: nothing is sent.
+            return await self._complete_semantic_predispatch(
+                candidate,
+                effective,
+                PrivacyOutcome.BLOCKED_BY_POLICY,
+                PrivacyReason.POLICY_DENIED,
+                decision=decision,
+                withheld_item_ids=minimized.withheld_item_ids,
+                redacted_span_count=minimized.redacted_span_count,
+                redacted_values=minimized.redacted_values,
+                scan_stage=ReceiptSecretScanStage.PREPARED_CASE,
+                scan_match_count=_minimized_scan_match_count(minimized),
+            )
         if frame is not None:
             # #1118: the approved packet travels inside the reviewer conversation. The whole
             # conversation is the disclosed payload, so ceilings, the proposal and the gateway's
