@@ -66,6 +66,44 @@ def test_every_tracked_module_parses_with_the_floor_grammar() -> None:
     assert failures == []
 
 
+def _is_frozen(node: ast.ClassDef) -> bool:
+    return any(
+        isinstance(decorator, ast.Call)
+        and any(
+            keyword.arg == "frozen"
+            and isinstance(keyword.value, ast.Constant)
+            and keyword.value.value is True
+            for keyword in decorator.keywords
+        )
+        for decorator in node.decorator_list
+    )
+
+
+def _base_name(base: ast.expr) -> str:
+    if isinstance(base, ast.Name):
+        return base.id
+    return base.attr if isinstance(base, ast.Attribute) else ""
+
+
+def test_frozen_slotted_dataclasses_have_no_plain_subclass() -> None:
+    # Before Python 3.14, ``slots=True`` rebuilds the class while the generated frozen
+    # ``__setattr__`` keeps a ``super()`` bound to the discarded original. A plain subclass whose
+    # attributes are assigned (``__traceback__`` when an error crosses a ``@contextmanager``)
+    # then raises ``TypeError`` and masks the real error.
+    failures: list[str] = []
+    for path in _tracked_python_files():
+        tree = ast.parse(path.read_bytes(), filename=str(path))
+        classes = [node for node in ast.walk(tree) if isinstance(node, ast.ClassDef)]
+        frozen_slotted = {node.name for node in classes if _is_slotted(node) and _is_frozen(node)}
+        for node in classes:
+            if node.decorator_list:
+                continue
+            for base in node.bases:
+                if _base_name(base) in frozen_slotted:
+                    failures.append(f"{path.relative_to(_ROOT)}:{node.lineno} {node.name}")
+    assert failures == []
+
+
 def test_slotted_dataclasses_name_their_class_in_super() -> None:
     # Before Python 3.14, ``slots=True`` rebuilds the class, so a zero-argument ``super()``
     # inside it binds the discarded original and raises ``TypeError`` at call time.

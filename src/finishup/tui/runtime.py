@@ -553,8 +553,8 @@ def _host_entries() -> tuple[DoctorEntry, ...]:
                 "is an untested platform cell"
             ),
             remediation=(
-                "FinishUP is certified on macOS arm64 and Linux x86-64 (glibc 2.28+) with Python "
-                "3.14; it installed here but nothing has been proven on this cell, so expect no "
+                "FinishUP is certified on macOS arm64 and Linux x86-64 (glibc 2.28+) with CPython "
+                "3.14.6; it installed here but nothing has been proven on this cell, so expect no "
                 "support claim"
             ),
         )

@@ -610,7 +610,9 @@ class IntegrationResult:
         validate_sha256_digest(self.preview_digest)
 
 
-@dataclass(frozen=True, slots=True)
+# No slots=True: before Python 3.14 it rebuilds the class, and the generated frozen __setattr__
+# then raises TypeError for the subclass's interpreter-owned __traceback__ (issue #1119).
+@dataclass(frozen=True)
 class _IntegrationErrorFields(Exception):
     reason: IntegrationReason
     safe_details: Mapping[str, JsonValue]

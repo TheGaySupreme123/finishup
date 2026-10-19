@@ -1517,12 +1517,12 @@ jobs:
           PATH="${{ runner.temp }}/shims:$PATH" \
             node "${{ runner.temp }}/npm-published/package/bin/finishup.js" version --json
           expected_uv="$(printf '%s\n%s' "--version" \
-            "tool install --quiet --python 3.14 finishup==${{ needs.validate-release-source.outputs.version }}")"
+            "tool install --quiet --compile-bytecode --managed-python finishup==${{ needs.validate-release-source.outputs.version }}")"
           [ "$(cat "${{ runner.temp }}/uv-args")" = "$expected_uv" ] || {
             echo "::error::published npm launcher did not install the exact PyPI version as a uv tool"
             exit 1
           }
-          [ "$(cat "${{ runner.temp }}/uvx-args")" = "--python 3.14 finishup version --json" ] || {
+          [ "$(cat "${{ runner.temp }}/uvx-args")" = "finishup version --json" ] || {
             echo "::error::published npm launcher did not run the installed tool through uvx"
             exit 1
           }
@@ -1810,12 +1810,12 @@ jobs:
           chmod +x "${{ runner.temp }}/transitional-shims/uv" "${{ runner.temp }}/transitional-shims/uvx"
           PATH="${{ runner.temp }}/transitional-shims:$PATH" \
             node "${{ runner.temp }}/transitional-npm-published/package/bin/yoetz.js" status
-          expected_uv="$(printf '%s\n%s' "--version" "tool install --quiet --python 3.14 yoetz==${version}")"
+          expected_uv="$(printf '%s\n%s' "--version" "tool install --quiet --managed-python yoetz==${version}")"
           [ "$(cat "${{ runner.temp }}/transitional-uv-args")" = "$expected_uv" ] || {
             echo "::error::published yoetz npm launcher did not install the exact yoetz version"
             exit 1
           }
-          [ "$(cat "${{ runner.temp }}/transitional-uvx-args")" = "--python 3.14 yoetz status" ] || {
+          [ "$(cat "${{ runner.temp }}/transitional-uvx-args")" = "yoetz status" ] || {
             echo "::error::published yoetz npm launcher did not run the installed tool through uvx"
             exit 1
           }

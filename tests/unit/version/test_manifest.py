@@ -8,9 +8,11 @@ from jsonschema import Draft202012Validator
 from finishup.ports.diagnostics import StartupCheckOutcome
 from finishup.protocol.schemas import load_schema_catalog, request_result_schema_versions
 from finishup.version import (
+    PLATFORM_CELL_UNTESTED,
     REVIEWED_RESOURCE_COUNT,
     ResourceIntegrityError,
     build_version_manifest,
+    platform_cell,
     read_verified_resource,
     verify_resource_manifest,
     version_manifest_json,
@@ -25,9 +27,14 @@ def test_development_manifest_is_truthful_and_complete() -> None:
     assert manifest.codex_capability_profiles == ()
     assert manifest.service_capabilities == ()
     assert dict(manifest.subject_state_capabilities) == {"status": "absent"}
-    assert manifest.limitations == (
-        "development_unverified",
-        "mcp_capability_unverified",
+    # The host's own cell decides the platform limitation; the older-python CI lane and any
+    # 3.14 patch but 3.14.6 run as an untested cell (issue #1119).
+    platform_limitation = () if platform_cell().certified else (PLATFORM_CELL_UNTESTED,)
+    assert manifest.limitations == tuple(
+        sorted(
+            ("development_unverified", "mcp_capability_unverified", *platform_limitation),
+            key=str.encode,
+        )
     )
     # 54 since the review-packet-row 2.0.0 provider contract (outbound-case role).
     assert len(manifest.request_result_schema_versions) == 54
