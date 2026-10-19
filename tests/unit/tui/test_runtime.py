@@ -305,6 +305,16 @@ def test_host_entries_report_platform_sandbox_and_storage_without_mutating(
     from finishup.tui import runtime as runtime_module
     from finishup.tui.models import LayerState
 
+    # The older-python CI lane runs this too; certify whichever interpreter is running so only
+    # the patched OS/CPU decides the platform line (issue #1119).
+    monkeypatch.setattr(
+        version_module,
+        "_CERTIFIED_PYTHON",
+        (
+            version_module.platform.python_implementation(),
+            tuple(version_module.sys.version_info[:3]),
+        ),
+    )
     monkeypatch.setattr(version_module.platform, "system", lambda: "Linux")
     monkeypatch.setattr(version_module.platform, "machine", lambda: "aarch64")
     monkeypatch.setattr(
