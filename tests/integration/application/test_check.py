@@ -107,6 +107,7 @@ from finishup.ports.objects import ObjectKind, ObjectMetadata, ObjectRef
 from finishup.ports.runtime import BundleRuntimePort, OwnershipFence, RouteCommand, TaskRuntime
 from finishup.ports.semantic import (
     MissingForAssessment,
+    MissingForAssessmentKind,
     ReviewerChallenge,
     SamplingParams,
     SemanticJudgment,
@@ -114,7 +115,14 @@ from finishup.ports.semantic import (
 from finishup.protocol.coverage import EvidenceImmutability
 from finishup.protocol.errors import ProtocolValueError, PublicErrorCode, PublicOperationError
 from finishup.protocol.ids import IdKind
-from finishup.protocol.models import CheckRequest, CheckScopeModel, SemanticReason, SemanticStatus
+from finishup.protocol.models import (
+    MAX_MISSING_REASON_BYTES,
+    MAX_REVIEW_TEXT_BYTES,
+    CheckRequest,
+    CheckScopeModel,
+    SemanticReason,
+    SemanticStatus,
+)
 from finishup.protocol.redacted_values import SemanticRedactedValue
 
 _TASK = "tsk_30000000-0000-4000-8000-000000000001"
@@ -2077,6 +2085,46 @@ async def test_insufficient_packet_names_each_missing_item_as_a_check_limitation
             "target_refs": (str(clm(1)),),
         },
     )
+
+
+@pytest.mark.anyio
+async def test_a_maximum_summary_never_erases_residual_reasons() -> None:
+    """#1118 unit 4 review R3: the reviewer's summary is clipped first, so each kept request keeps
+    its own words even beside a maximum valid summary and several maximum-size reasons."""
+
+    kinds: tuple[MissingForAssessmentKind, ...] = (
+        "command_identity",
+        "other",
+        "plan_or_claim_text",
+        "prior_finding_context",
+        "task_statement",
+        "verification_output",
+    )
+    reasons = {
+        kind: (f"NEED_{index}: " + "é" * MAX_MISSING_REASON_BYTES)[: MAX_MISSING_REASON_BYTES // 2]
+        for index, kind in enumerate(kinds)
+    }
+    assert all(len(reason.encode()) <= MAX_MISSING_REASON_BYTES for reason in reasons.values())
+    app = _App(semantic=True)
+    app.ledger.frozen = replace(app.ledger.frozen, case=_missing_case())
+    judgment = SemanticJudgment(
+        "insufficient_packet",
+        (),
+        review_summary="S" * MAX_REVIEW_TEXT_BYTES,
+        missing_for_assessment=tuple(
+            MissingForAssessment(kind, (), reasons[kind]) for kind in kinds
+        ),
+    )
+    app.semantic_result = replace(_succeeded(judgment), unsuppliable_missing_kinds=tuple(kinds))
+    await execute_check_commit(app, _request("semantic_required"))
+
+    summary = str(app.ledger.last_review_summary)
+    assert len(summary.encode()) <= MAX_REVIEW_TEXT_BYTES
+    head, _, tail = summary.partition("\n\nWhat the reviewer still needs")
+    assert head.startswith("S" * 128) and head.endswith(" [truncated]")
+    for index, kind in enumerate(kinds):
+        assert f"{index + 1}. {kind} (no named target): NEED_{index}: " + "é" * 64 in tail
+    assert tail.count(" [truncated]") == len(kinds)
 
 
 @pytest.mark.anyio
