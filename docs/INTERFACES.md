@@ -1981,8 +1981,8 @@ Two further check-path operations describe a review that did reach a provider:
 `semantic_restatements_suppressed`, `semantic_challenges_advisory` (routine correctness notes,
 #1042), `semantic_agent_criteria` (#1043), `semantic_prior_rulings_set_aside`,
 `semantic_rulings_disputed_after_rebuttal`, `semantic_findings_selected`,
-`semantic_findings_suppressed`. A third operation, `semantic_review_follow_up`, is appended once
-per in-check follow-up round (#1047) with `semantic_follow_up_round`, `semantic_follow_up_items`,
+`semantic_findings_suppressed`. A third operation, `semantic_review_follow_up`, was appended once
+per in-check follow-up round (#1047; no round runs since #1118, so new checks never write it) with `semantic_follow_up_round`, `semantic_follow_up_items`,
 `semantic_follow_up_refs_added` (sources the round's packet showed whole for the first time) and
 `semantic_follow_up_parts_added` (excerpt parts it carried that no earlier packet of the check
 carried, tb4n5). Every one of these is a closed field of both the stderr sink and
@@ -9176,7 +9176,8 @@ table `semantic_progress` (bundle schema 15, migration `0015`); ledger port meth
 `begin_semantic_progress(job_id, queued_at, deadline_at)` (insert once; replay is a no-op),
 `advance_semantic_progress(handle, phase, observed_at) -> bool` (only the active attempt of a
 leased job, only forward, never `terminal`), and `load_semantic_progress(writer_id, operation_id)`.
-A check with in-check follow-up rounds (#1047) owns one job per round: the load reads the live
+A check with recorded in-check follow-up rounds (#1047; none is created since #1118) owns one job
+per round: the load reads the live
 job, else the latest round's, the review the check records, by the `follow_up.round` its frozen
 `semantic-case/2` object names (none for the check's own review); attempt count and job id order
 only jobs of one round, never a later round behind an earlier one.
@@ -9797,7 +9798,9 @@ recorded no item leaves it standing); snapshots omit the key when absent. The ne
 as the timeline item `prior-missing-for-assessment` with `supplied_since` refs. The check result's
 optional `missing_for_assessment` (check-result 1.3.0, unreleased, additive) and the MCP and CLI
 check text list each item and its availability; status, TUI and receipts carry the gap codes. The
-reviewer's reason stays in the encrypted durable semantic response object.
+reviewer's reason is never a structural field: the whole judgment stays in the encrypted durable
+semantic response object, and since #1118 unit 4 each kept item's reason is also appended to the
+fenced, privacy-projected `review_summary` ("What the reviewer still needs").
 
 In-check follow-up (issue #1047, ADR-006). **Superseded by #1118 unit 4: checks no longer start
 follow-up rounds; the reviewer reads permitted evidence itself ("Reviewer loop"). What follows
@@ -9965,7 +9968,8 @@ content, paths, or content hashes.
 
 ### Reviewer loop (issue #1118 unit 2)
 
-Not yet wired to a provider route (unit 3); the in-check follow-up loop stays active until unit 4.
+Every admitted semantic review job runs this loop ("Reviewer service wiring" below); the in-check
+follow-up loop is deleted.
 
 - Reply contract: `schemas/findings/reviewer-reply-1.0.0.schema.json`, built by
   `adapters.providers.reviewer_reply.reviewer_reply_schema(*, reads_allowed, strict=False)` from
@@ -11765,8 +11769,9 @@ selects a session, and only a completed turn is retained; a cancelled or timed-o
 up. An exchange holds the session lock, a closed
 session admits no exchange and retains nothing, and `aclose` waits for the exchange in flight before
 cleaning up. A completed Codex turn reports `runtime_evidence.process_cleanup = "retained"`, and
-`ReviewerSession.aclose()` returns the closing cleanup outcome. That value is domain-only until
-exchange evidence is persisted, which needs a `runtime-attempt-evidence` schema bump.
+`ReviewerSession.aclose()` returns the closing cleanup outcome. The service replaces `retained` in
+the final exchange's evidence with that outcome before anything is persisted, so
+`runtime-attempt-evidence` 1.1.0 is unchanged and `retained` never reaches a stored record.
 
 `complete(history, schema, deadline=)` returns the reply object. It raises the decoder's
 `ReviewerReplyInvalid("output_not_json")` only for a completed answer that is not one JSON object
@@ -11779,3 +11784,55 @@ with the closed stage, failure class or status (for example
 one provider binding; a reply from another endpoint profile or model raises
 `reviewer_exchange_route_mismatch`, so a review never moves to another, separately billed route.
 The loop appends each reply to the history exactly as the model returned it (canonical JSON).
+
+### Reviewer service wiring and delivery (issue #1118 integration, ADR-006)
+
+`application.reviewer_run.run_reviewer(privacy, job_id=, case=, roots=, steps=, binding=, scope=,
+deadline=, first_request_id=, new_request_id=, candidate_for=, dispatch_guard=, resume_first=,
+clock=, read_room=) -> ReviewerRun(result, record, citable_refs, text_by_ref, paths)` runs one job
+attempt. The composition calls it for every attempt when its privacy object is the
+`PrivacyCoordinator` (a non-coordinator test double keeps the one-dispatch shape), with
+`steps = SqliteLedger.review_steps(handle)`, the attempt's `provider_request_id` for the first
+exchange, the job's read roots and `read_room = reviewer_read_room(channel_prepared_limit(policy),
+sent)`. The attempt runner is given `max_retries=0` for it.
+
+- `PrivacyCoordinator.evaluate_semantic(candidate, deadline, *, dispatch_guard=None, exchange=None)`
+  and `resume(..., exchange=None)` take a `ReviewerExchangeFrame(media_type, render, input_roots)`.
+  With a frame, the pipeline minimizes the case as before, then `render(approved_packet)` gives the
+  payload (the packet as the first user turn, the read catalog as the second); the payload is
+  rescanned (a finding blocks `never_send_detected`), becomes the proposal's prepared bytes, meets
+  the channel's byte and token ceilings, and is sent under `media_type`. The excerpt-limit check
+  still reads the packet. `input_roots` join the case's for the consume fence.
+- A `SemanticResultReply` maps to `SemanticEgressReply(result, fields, disclosure,
+  provider_input_manifest_failure)`: `success(SemanticResultSuccess)` and
+  `outcome(SemanticResultInvalid | SemanticResultTimeout)` build the conversation's terminal egress
+  result with the exchange's proposal, authorization, receipt and request commitment; the
+  disclosure is read from the packet turn (`ports.semantic.reviewer_packet_bytes`).
+- `PrivacyCoordinator.reviewer_history_current(scope, binding, roots)` is the loop's
+  per-continuation recheck.
+- `service.semantic_ceiling.reviewer_packet_limit(policy)` (the packet's planning ceiling:
+  `(channel_prepared_limit - REVIEWER_FRAME_BYTES) * 4 // 5`, `REVIEWER_FRAME_BYTES = 8192`) and
+  `reviewer_read_room(limit, sent)` (`(limit - sent - 2048) * 4 // 5`); `ReviewerBroker.total` is
+  lowered to `used + read_room` after each exchange, and `max_reads=0` is used for a review resumed
+  after the owner's approval.
+- Read roots (`ReadRoot`): `w1` the workspace, refused where `probe_requested_paths` does not answer
+  `ignored=False`, citable under the packet's excerpt refs; `o<n>` an admitted outside root with the
+  task-declared paths beneath it (`declared`), and `s<n>` the same root served from the first kept
+  snapshot set with files beneath it, citable under the task statement's refs. None when the policy
+  withholds `repository_excerpt`.
+- `domain.reviewer_reads.ReviewerRecord(exchanges, reads, ended, cleanup)` and
+  `ReviewerRead(call, action, status, reason, source, root, standing, baseline, lines,
+  result_bytes, result_digest, disclosure)`; `as_wire()` gives canonical decimal-string counts;
+  `reviewer_record_from_wire` returns `None` for anything else; `render_reviewer_lines(record)` is
+  the one text rendering (CLI and TUI check text through `cli.render.render_check_review_lines`,
+  MCP text through `mcp.summaries.render_check_reviewer_output`, and the receipt's version and
+  policy section). `source` is `src_` plus 24 hex of SHA-256 over job id, alias and path for a
+  file read, else the case item id; `disclosure` is the privacy receipt of the exchange that first
+  carried the result (`None` if none did); `ended` is the loop's closed stop reason, `None` for a
+  final judgment.
+- Wire: optional `reviewer` (`$defs/reviewer_record`, `$defs/reviewer_read`) on the check-result
+  1.5.0 success branch and on check-recorded 1.4.0/1.5.0, in place (unreleased). Its leaves are
+  public structural in the result-leaf registry. `CheckCommitResult.reviewer` and
+  `FinalSemanticEvaluation.reviewer` carry it in process; `FinalSemanticEvaluation`
+  `reviewer_citable_refs` and `reviewer_paths` stay in process and in the encrypted
+  `yoetz.semantic-response/1` object (`reviewer`, `reviewer_paths`).

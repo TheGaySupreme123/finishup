@@ -751,7 +751,9 @@ permission to claim the work is verified. Existing findings and coverage limitat
 
 Before it judges, the reviewer may read up to three permitted items itself: a section of the
 packet, recorded ledger rows of this task, or a task file in the workspace or in a folder the owner
-admitted. Each read is bounded, privacy-checked and recorded. So do not republish a file FinishUP
+admitted (workspace files only in a Git repository, never Git-ignored ones). Each read is bounded,
+privacy-checked, sent in its own exchange within the owner's channel limits, and recorded in the
+check result and receipt. So do not republish a file FinishUP
 already holds, or output it already recorded, only to put it in front of the reviewer; supply only
 what does not exist yet (a run you never recorded, a result, a claim, a plan). The review summary
 lists what the reviewer still needs in its own words ("What the reviewer still needs"): advisory

@@ -2390,8 +2390,8 @@ coverage, not proof that the specification is complete or the verification estab
 
 ### The reviewer loop: one read or the final judgment per turn (2026-10-19, issue #1118 unit 2)
 
-Status: accepted for the controller, broker and reply contract; provider wiring is unit 3 and the
-old in-check follow-up loop stays the active path until unit 4 replaces it.
+Status: accepted. Every admitted semantic review job now runs this loop (see "Service wiring and
+delivery" below); the old in-check follow-up loop is deleted.
 
 FinishUP owns a small verifying loop. Each model turn returns exactly one reply under
 `findings/reviewer-reply-1.0.0`: `read_packet_section`, `read_ledger` or `read_file` (the round-1
@@ -2512,11 +2512,11 @@ a request:
   satisfied), never success or a local fallback.
 - **No more in-check follow-up rounds.** `check._review_follow_up` (insufficient -> re-rank ->
   rebuild the whole packet -> a new job, up to three rounds at half the excerpt budget) is deleted;
-  the reviewer loop's own reads replace it, and the loop instruction drops the `follow_up_round` and
-  cite-to-re-raise rules for one short rule (read first; re-raise only with a reason). The
-  evaluator and case builder still decode and render recorded follow-up jobs and manifests for old
-  ledgers; their composition path is retired once the loop is wired through the evaluator
-  (unit 3).
+  the reviewer loop's own reads replace it. The one-shot instruction, which only background advice
+  still sends, drops the `follow_up_round` paragraph and the cite-to-re-raise rule for one short rule
+  (re-raise only with a reason that says what is still missing). No follow-up job or manifest is
+  written any more; the composition still recovers a recorded follow-up job through its base job,
+  and the case builder still decodes and renders recorded follow-up manifests for old ledgers.
 - **Verification oracles follow `cd` (AIP-2).** Operands of a recorded verification command
   resolve against a plain literal `cd`/`pushd` statement (after the start, `;`, a newline or a
   chained `cd ... &&`, and before `&&`, `;`, a newline or the end). Any other change (a pipeline,
@@ -2524,3 +2524,61 @@ a request:
   omitted and `verification_input_directory_unresolved` is disclosed. **Task-statement paths keep
   `./` (AIP-5)**: `./x` is the workspace-relative `x`, and `../x` is refused instead of becoming
   `/x`.
+
+### Service wiring and delivery (2026-10-19, issue #1118 integration)
+
+Every semantic review job the service admits runs `ReviewerLoop` and `ReviewerBroker` over the
+route's completion adapter, as `async with ReviewerExchangeModel(binding, dispatch,
+ReviewerSession(job_id, deadline))` (`application/reviewer_run.py`). Background advice and the
+credential probe keep their one-shot dispatch; no check uses it.
+
+- **Each exchange is one privacy-coordinator dispatch.** The case items are classified, minimized
+  and scanned exactly as for the old one-shot packet. The approved packet then becomes the first
+  user turn of the conversation, followed by a read catalog (the service-issued root aliases, each
+  with its standing, baseline and what it covers: the workspace, or the task-declared paths
+  beneath an owner-admitted outside root, current or as kept). The exact conversation bytes are
+  scanned again, proposed, authorized and sent under the reviewer media type; the consume fence
+  checks the outside roots of the packet items and of every read the conversation carries. The
+  first exchange uses the attempt's provider request id; each later exchange gets a new one, its
+  own proposal, receipt and one-use transport.
+- **Every byte sent counts against the channel ceiling**: the loop instruction, the packet (as a
+  JSON string, so escaping grows it), the catalog, the replies and the reads. The packet is planned
+  below the ceiling less an 8 KiB frame, then a fifth for escaping; after each exchange the reads
+  may add only what the sent conversation leaves (less 2 KiB, then a fifth), and when that is under
+  the 1 KiB minimum the reviewer is offered only the final judgment. A conversation that still
+  outgrows the ceiling is refused whole at the next exchange, never trimmed.
+- **Read roots.** `w1` is the workspace: the trusted walk's exclusions plus Git's ignore answer
+  (an unanswerable ignore state refuses the path; outside a Git repository every workspace read is
+  refused). `o<n>` is an owner-admitted outside root limited to the task-declared paths beneath it,
+  read now; `s<n>` serves the copies kept at task start or first admission. No root is offered where
+  the policy withholds repository excerpts. Workspace text is citable under the refs of the
+  packet's excerpts, outside text under the task statement's.
+- **Durable steps and attempts.** `SqliteLedger.review_steps(handle)` is the step store. A review
+  conversation is one physical attempt: the outer retry and repair are off for it, and a retry or
+  fallback dispatch of the same job finds its steps and ends `interrupted` rather than resuming.
+- **Owner approval.** Under an ask-every-time policy the first exchange waits for the owner like
+  the one-shot packet did; the resumed review sends exactly the approved conversation and is
+  offered no reads, since each further exchange would need its own approval. A later exchange that
+  needs approval ends the review blocked.
+- **One terminal result.** A final judgment becomes an ordinary egress success, so the existing
+  `validate_semantic_judgment` fence runs over the packet's citable refs joined with the refs the
+  reads sent. An exchange's own blocked, awaiting or provider outcome ends the review as that
+  outcome. Otherwise the loop's reason maps to closed results: `format_invalid`, `read_limit` and
+  `turn_limit` to `invalid`, `deadline` to `timeout`, `authorization_changed` to blocked by policy,
+  and an earlier run of the job, an uncaptured step or a lost lease to `outcome_unknown`. The
+  provenance is the final exchange's: its token usage is that exchange's (Codex reports its
+  thread's cumulative usage), not a sum.
+- **Cleanup.** `ReviewerSession.aclose()`'s outcome replaces the in-session `retained` value in the
+  final runtime evidence, so `process_cleanup` stays within runtime-attempt-evidence 1.1.0 and no
+  schema bump was needed.
+- **The record.** A bounded `ReviewerRecord` is built from the conversation's own service
+  envelopes: exchanges, and per read the action, status, reason, an opaque source identity (a
+  job-keyed commitment of root alias and path for a file, else the case item id), root alias,
+  standing, baseline, line span, result bytes and digest, and the privacy receipt of the exchange
+  that first sent it; plus why the conversation ended and the session cleanup. It is optional
+  `reviewer` on check-result 1.5.0 and check-recorded 1.4.0 (both unreleased, extended in place),
+  so the check result, a same-id replay, status recovery of the result and receipts all read it.
+  Each file read's alias and path stays only in the encrypted review response. CLI and TUI text,
+  MCP text and receipts render the same lines; receipts carry this structural record, never
+  reviewer prose. As before, the text a read sent is not persisted, so a judgment recovered from
+  the durable response (without dispatch) cannot cite read text.

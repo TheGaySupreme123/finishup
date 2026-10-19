@@ -16,7 +16,7 @@ Codex is enough: the next `setup` or `repair` adopts the newer release without a
 | Platforms | macOS arm64 (`@openai/codex-darwin-arm64`), Linux x86_64 (`@openai/codex-linux-x64`); x86_64 WSL2 Linux userspace follows Linux (WSL smoke pending); no native Windows |
 | Capability profile | `codex-evaluator/capability/v3` (v2 bindings move through `repair`) |
 | Isolated config SHA-256 | `bd8fffe5abd02d085c13213ab2f5aaefe362c85e8a354f4fd79a58938ce9740c` (`support/codex-evaluator/config.toml`) |
-| Reviewer-loop releases | `0.162.1` only (multi-turn reviewer sessions; other admitted releases keep one-shot review) |
+| Reviewer-loop releases | `0.162.1` only. Every check review is a reviewer conversation since #1118, so on another admitted release a check's review ends unavailable (`capability_evidence_stale`); only background advice still uses one-shot sessions there |
 | Evidence expires | `2026-11-30T00:00:00Z` (this FinishUP release's reviewed subset and probe) |
 | Transport | app-server v2, stdio JSONL |
 | Credential authority | `external_runtime_oauth` |

@@ -568,14 +568,22 @@ command that differs from the one observed. Every provider — the Codex subscri
 OpenAI-compatible endpoints — gets the same instructions. Track a required review by choosing
 `semantic_required` for each check, not as a plan item.
 
-When the reviewer cannot assess the packet, FinishUP no longer resends the packet inside the check.
-Before it judges, the reviewer may choose up to three reads of its own: a part of the packet,
-recorded records of this task, or a task file in the workspace or in a folder you admitted. Each
-read is at most 8 KiB, all reads together at most 24 KiB, and each passes the same policy, limits
-and never-send rules as the packet. What it read is recorded. Use local-only review or withhold
-repository excerpts to stop file reads; remove an admitted folder to stop reads from it. Whatever
-the reviewer still needs comes back to the agent, with the reviewer's own reason in the review
-summary.
+Every AI-powered review is a short conversation. The reviewer gets the packet and a list of what it
+may read, and before it judges it may choose up to three reads of its own: a part of the packet,
+records of this task, or a task file in the workspace (a Git repository; files Git ignores are
+refused) or in a folder you admitted, limited to the files the task names there. Each read is at
+most 8 KiB and all reads together at most 24 KiB, and each passes the same policy, limits and
+never-send rules as the packet. Each further turn of the conversation is sent with its own privacy
+check and receipt, and the whole conversation, packet and reads included, must fit your channel
+limits: with tight limits the reviewer gets fewer reads or none. If your policy asks before every
+review, you approve the first turn as before and that review runs without reads. FinishUP no longer
+resends a rebuilt packet inside the check.
+
+What the reviewer read is recorded: the check result and the receipt list each read (its kind,
+outcome, folder alias, line span, size and the privacy receipt that sent it, never a path or
+content), and why a conversation stopped early. Use local-only review or withhold repository
+excerpts to stop file reads; remove an admitted folder to stop reads from it. Whatever the reviewer
+still needs comes back to the agent, with the reviewer's own reason in the review summary.
 
 AI-powered output is advisory, provenance-labeled, and fenced by fixed rules. It never silently
 becomes local-check truth, and it never upgrades a coverage claim.
@@ -586,10 +594,11 @@ sent text word for word; otherwise the quote is removed and the result says so. 
 cites only material the review did not carry becomes no finding, but its wording is added to the
 review summary as an unverified concern, so the agent still sees it.
 
-If a fallback endpoint is approved and the primary could not serve — repeated timeouts,
-connection failures, or rate limits, a quota exhaustion, or a missing credential — the same
-approved packet goes to the fallback as a fresh attempt with its own authorization and privacy
-receipt; under Metadata only that is its own foreground approval. An answer the primary actually
+A review conversation gets one attempt and is never retried or resumed. If a fallback endpoint is
+approved and the primary cannot be resolved at all (for example, its credential is missing), the
+conversation runs on the fallback. If the primary fails once the review has started, the fallback
+does not start a second conversation for the same check: the review ends incomplete (outcome
+unknown), and the next check reviews again. An answer the primary actually
 gave is never re-asked elsewhere. The result and receipt then name the fallback as the provider,
 model, and endpoint that served and carry `fallback_from`: the primary, how many attempts it was
 given, and the exact reason it was abandoned. The markdown and text receipts say which endpoint
