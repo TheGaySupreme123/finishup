@@ -3637,3 +3637,54 @@ async def test_reviewer_steps_are_lease_guarded_keyed_and_durable() -> None:
     )
     with pytest.raises(ReviewStepRefused):  # a superseded attempt can no longer write
         await steps.capture("read", 1, b"{}")
+
+
+@pytest.mark.anyio
+async def test_reviewer_steps_need_the_live_durable_lease() -> None:
+    """#1118 R2-1: expiry, not only takeover, stops a step; renewal is read from the ledger."""
+
+    class _AdvancingClock:
+        def __init__(self) -> None:
+            self.now = datetime(2026, 7, 19, 12, 0, tzinfo=UTC)
+
+        def now_utc(self) -> datetime:
+            return self.now
+
+        def monotonic_seconds(self) -> float:
+            return 1.0
+
+    command = ledger_command(request_suffix="f")
+    adapter = sqlite_ledger(command)
+    clock = _AdvancingClock()
+    adapter._clock = clock  # pyright: ignore[reportPrivateUsage]
+    await adapter.append_batch(command)
+    lease = await _semantic_wait_lease(adapter, command, "req_00000000-0000-4000-8000-0000000000df")
+    case_ref = await _object_ref(
+        adapter, command, ObjectKind.SEMANTIC_CASE, semantic_case_digest="sha256:" + "f" * 64
+    )
+    job = await adapter.enqueue_semantic_job(lease, "sha256:" + "f" * 64, case_ref)
+    handle = await adapter.claim_semantic_job(lease, job.job_id)
+    steps = adapter.review_steps(handle)
+    await steps.reserve("turn", 1, b"turn")
+    # A handle whose generation or owner generation is not the durable one writes nothing.
+    for stale in (
+        replace(handle, lease_generation=handle.lease_generation + 1),
+        replace(handle, owner_generation="0"),
+        replace(handle, lease_owner_id="svc_other"),
+    ):
+        with pytest.raises(ReviewStepRefused):
+            await adapter.review_steps(stale).capture("turn", 1, b"{}")
+    # Renewed before expiry: the stale handle's own expiry does not stop the write.
+    clock.now = handle.lease_expires_at - timedelta(seconds=1)
+    renewed = await adapter.renew_leases(lease)
+    assert renewed.lease_expires_at > handle.lease_expires_at
+    clock.now = handle.lease_expires_at + timedelta(seconds=1)
+    await steps.capture("turn", 1, b"{}")
+    await steps.reserve("read", 1, b"{}")
+    # Expired with no other worker claiming the job: neither reserve nor capture is recorded.
+    clock.now = renewed.lease_expires_at
+    with pytest.raises(ReviewStepRefused):
+        await steps.reserve("turn", 2, b"turn")
+    with pytest.raises(ReviewStepRefused):
+        await steps.capture("read", 1, b"{}")
+    assert await steps.usage() == (2, 1)

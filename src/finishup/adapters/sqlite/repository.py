@@ -2698,13 +2698,21 @@ class SqliteLedger:
             kind.encode(),
         )
         commitment = await self._objects.commitment_for(domain + data, ObjectKind.SEMANTIC_RESPONSE)
+        # The durable lease, not the handle's copy of it: renewal moves the expiry, and an expired
+        # lease writes nothing even before another worker reclaims the job.
         lease = (
-            "EXISTS (SELECT 1 FROM semantic_jobs WHERE job_id=? AND state='leased' "
-            "AND active_attempt_id=? AND lease_generation=?)"
+            "EXISTS (SELECT 1 FROM semantic_jobs j JOIN operations o USING(writer_id,operation_id) "
+            "WHERE j.job_id=? AND j.state='leased' AND j.active_attempt_id=? "
+            "AND j.lease_generation=? AND j.lease_owner_id=? AND j.owner_generation=? "
+            "AND o.state='pending' AND o.lease_owner_id=j.lease_owner_id "
+            "AND o.owner_generation=j.owner_generation "
+            "AND min(j.lease_expires_at,o.lease_expires_at)>?)"
         )
-        held = (handle.job_id, handle.attempt_id, handle.lease_generation)
         await self._ensure_recovered()
         async with self._lock:
+            now = format_rfc3339_millis(self._terminal_at())
+            fence = (handle.lease_owner_id, handle.owner_generation, now)
+            held = (handle.job_id, handle.attempt_id, handle.lease_generation, *fence)
             if capture:
                 changed = self._progress_write_locked(
                     "UPDATE semantic_review_steps SET capture_commitment=?,capture_bytes=? "
