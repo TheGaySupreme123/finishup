@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import math
 import re
+from contextvars import ContextVar
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from typing import TYPE_CHECKING, Final, Literal, Protocol, cast
@@ -41,6 +43,12 @@ from finishup.kernel.deterministic_checks import (
 )
 from finishup.kernel.policies.research_evidence import RESEARCH_EVIDENCE_FACT_CODES
 from finishup.kernel.policies.work_integrity import WORK_INTEGRITY_FACT_CODES
+from finishup.protocol.canonical import (
+    JsonValue,
+    canonical_digest,
+    canonical_encode,
+    strict_json_parse,
+)
 from finishup.protocol.coverage import Coverage, EvidenceImmutability
 from finishup.protocol.errors import ProtocolValueError
 from finishup.protocol.ids import IdKind, validate_id
@@ -88,6 +96,17 @@ __all__ = [
     "Deadline",
     "ExcerptDigestProvenance",
     "ProviderAttemptProvenance",
+    "CURRENT_REVIEWER_SESSION",
+    "REVIEWER_EXCHANGE_MEDIA_TYPES",
+    "ReviewerExchange",
+    "ReviewerMessage",
+    "ReviewerReplySchemas",
+    "ReviewerSession",
+    "ReviewerSessionHold",
+    "SemanticResultReply",
+    "decode_reviewer_exchange",
+    "encode_reviewer_exchange",
+    "reviewer_exchange",
     "ExternalRuntimeAuthority",
     "MissingForAssessment",
     "RuntimeAttemptEvidence",
@@ -2100,6 +2119,159 @@ class SemanticResultUnavailable:
         )
 
 
+# -- reviewer completion exchanges (#1118 unit 3, ADR-006) ----------------------------------------
+# One reviewer-loop completion is one ordinary gateway dispatch. Its approved payload is the whole
+# canonical linear history: a JSON array of ``{"content", "role"}`` messages, a system message
+# first, then user and assistant turns ending with user. Two user turns may follow each other (the
+# loop's format-repair notice never echoes the malformed reply); two assistant turns may not. The
+# case media type names which reply schema the provider must enforce: every branch, or the final
+# judgment only.
+type ReviewerMessage = tuple[Literal["system", "user", "assistant"], str]
+REVIEWER_EXCHANGE_MEDIA_TYPES: Final = {
+    "turn": "application/vnd.finishup.reviewer-turn+json",
+    "final": "application/vnd.finishup.reviewer-final+json",
+}
+# System, packet, three action/observation pairs, and one format-repair notice (plus, at most,
+# the malformed turn's own pair when a route keeps it).
+_MAX_REVIEWER_MESSAGES: Final = 12
+
+
+def encode_reviewer_exchange(history: tuple[ReviewerMessage, ...]) -> bytes:
+    payload = canonical_encode([{"content": text, "role": role} for role, text in history])
+    decode_reviewer_exchange(payload)
+    return payload
+
+
+def decode_reviewer_exchange(payload: bytes) -> tuple[ReviewerMessage, ...]:
+    """The validated history; anything but the closed shape is refused."""
+
+    error = ValueError("reviewer_exchange_invalid")
+    try:
+        raw = strict_json_parse(payload)
+    except ProtocolValueError, ValueError:
+        raise error from None
+    if type(raw) is not list or not 2 <= len(raw) <= _MAX_REVIEWER_MESSAGES:
+        raise error
+    messages: list[ReviewerMessage] = []
+    for index, item in enumerate(cast(list[JsonValue], raw)):
+        if type(item) is not dict:
+            raise error
+        fields = cast(dict[str, JsonValue], item)
+        role, text = fields.get("role"), fields.get("content")
+        if set(fields) != {"content", "role"} or type(text) is not str or not text:
+            raise error
+        if index == 0 and role == "system":
+            messages.append(("system", text))
+        elif index > 0 and role == "user":
+            messages.append(("user", text))
+        elif index > 1 and role == "assistant" and messages[-1][0] == "user":
+            messages.append(("assistant", text))
+        else:
+            raise error
+    if messages[-1][0] != "user":
+        raise error
+    return tuple(messages)
+
+
+@dataclass(frozen=True, slots=True)
+class ReviewerReplySchemas:
+    """The two provider-wire reply schemas composition installs (owned by the reply contract)."""
+
+    turn: dict[str, JsonValue]
+    final: dict[str, JsonValue]
+
+
+@dataclass(frozen=True, slots=True)
+class ReviewerExchange:
+    """One exchange's history, reply schema and their digests, computed once per dispatch."""
+
+    history: tuple[ReviewerMessage, ...]
+    schema: dict[str, JsonValue]
+    prompt_digest: str
+    schema_digest: str
+
+
+def reviewer_exchange(
+    media_type: str, payload: bytes, schemas: ReviewerReplySchemas | None
+) -> ReviewerExchange | None:
+    """The reviewer exchange a case carries, or ``None`` for a one-shot case.
+
+    Rendering and every outcome, early failures included, name this instruction and schema.
+    """
+
+    if media_type not in REVIEWER_EXCHANGE_MEDIA_TYPES.values():
+        return None
+    if schemas is None:
+        raise ValueError("reviewer_schema_unavailable")
+    history = decode_reviewer_exchange(payload)
+    schema = schemas.turn if media_type == REVIEWER_EXCHANGE_MEDIA_TYPES["turn"] else schemas.final
+    instruction = history[0][1].encode("utf-8")
+    prompt_digest = "sha256:" + hashlib.sha256(instruction).hexdigest()
+    return ReviewerExchange(history, schema, prompt_digest, canonical_digest(schema))
+
+
+class ReviewerSessionHold(Protocol):
+    """Provider state one review keeps between exchanges (a Codex thread)."""
+
+    async def aclose(self) -> str: ...
+
+
+class ReviewerSession:
+    """One review's provider session, owned by its immutable review identity.
+
+    The reviewer facade binds it to every dispatch of its review through
+    ``CURRENT_REVIEWER_SESSION`` and closes it on every exit. An exchange runs under ``lock``; a
+    closed session admits no exchange and retains nothing, and ``aclose`` waits for the exchange
+    in flight before it cleans up the held state. Transcript content never selects a session.
+    """
+
+    __slots__ = ("closed", "deadline", "held", "lock", "review_id")
+
+    def __init__(self, review_id: str, deadline: Deadline) -> None:
+        self.review_id, self.deadline = review_id, deadline
+        self.held: ReviewerSessionHold | None = None
+        self.closed = False
+        self.lock = asyncio.Lock()
+
+    async def aclose(self) -> str | None:
+        """Close the session; the held state's cleanup outcome, if any was held."""
+
+        self.closed = True
+        async with self.lock:
+            held, self.held = self.held, None
+            return None if held is None else await held.aclose()
+
+
+CURRENT_REVIEWER_SESSION: Final[ContextVar[ReviewerSession | None]] = ContextVar(
+    "finishup_reviewer_session", default=None
+)
+
+
+@dataclass(frozen=True, slots=True)
+class SemanticResultReply:
+    """One completed reviewer turn: the parsed structured reply, not yet decoded.
+
+    Branch and argument validation belong to the reply decoder; nothing here is executable.
+    """
+
+    reply: dict[str, JsonValue]
+    provenance: ProviderAttemptProvenance
+
+    def __post_init__(self) -> None:
+        if type(self.reply) is not dict:
+            raise ValueError("reviewer_reply_invalid")
+        _validate_result_provenance(
+            self.provenance, SemanticStatus.SUCCEEDED, SemanticReason.SEMANTIC_COMPLETED
+        )
+
+    @classmethod
+    def parse(cls, raw: bytes, provenance: ProviderAttemptProvenance) -> SemanticResultReply:
+        parsed = strict_json_parse(raw)
+        if type(parsed) is not dict:
+            raise ValueError("reviewer_reply_not_object")
+        return cls(cast(dict[str, JsonValue], parsed), provenance)
+
+
 type SemanticResult = (
     SemanticResultSuccess
     | SemanticResultRefused
@@ -2107,6 +2279,7 @@ type SemanticResult = (
     | SemanticResultInvalid
     | SemanticResultLate
     | SemanticResultUnavailable
+    | SemanticResultReply
 )
 
 

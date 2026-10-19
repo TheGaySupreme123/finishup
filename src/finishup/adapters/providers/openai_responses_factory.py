@@ -26,7 +26,11 @@ from finishup.config.models import (
 from finishup.domain.privacy import ApprovedOutboundCase, ProviderBinding
 from finishup.ports.clock import ClockPort
 from finishup.ports.secret_memory import ProviderAttemptAuthBinding, ProviderCredentialHandle
-from finishup.ports.semantic import ExternalRuntimeAuthority, SemanticEvaluatorPort
+from finishup.ports.semantic import (
+    ExternalRuntimeAuthority,
+    ReviewerReplySchemas,
+    SemanticEvaluatorPort,
+)
 
 __all__ = [
     "OpenAIResponsesExternalFactory",
@@ -126,12 +130,13 @@ class OpenAIResponsesExternalFactory:
     profile: OpenAIProfile
     clock: ClockPort
     credential_authority: str = "finishup_vault_api_credential"
+    reply_schemas: ReviewerReplySchemas | None = None
 
     def __post_init__(self) -> None:
         self._last_rendered: RenderedOpenAIRequest | None = None
 
     def render(self, case: ApprovedOutboundCase) -> bytes:
-        rendered = render_case(case)
+        rendered = render_case(case, self.reply_schemas)
         self._last_rendered = rendered
         return rendered.body
 
@@ -159,7 +164,9 @@ class OpenAIResponsesExternalFactory:
             port=self.profile.port,
             path=self.profile.path,
         )
-        return OpenAIResponsesEvaluator(self.profile, transport, self.clock)
+        return OpenAIResponsesEvaluator(
+            self.profile, transport, self.clock, reply_schemas=self.reply_schemas
+        )
 
 
 def external_factory_builders_from_config(

@@ -14,12 +14,32 @@ Codex is enough: the next `setup` or `repair` adopts the newer release without a
 |---|---|
 | Eligible releases | stable OpenAI Codex npm `X.Y.Z` at or above the floor `0.157.1`; prereleases are never eligible |
 | Platforms | macOS arm64 (`@openai/codex-darwin-arm64`), Linux x86_64 (`@openai/codex-linux-x64`); x86_64 WSL2 Linux userspace follows Linux (WSL smoke pending); no native Windows |
-| Capability profile | `codex-evaluator/capability/v2` |
-| Isolated config SHA-256 | `c11ecc6c60e5618ca1b988760ef643250527757a34ef2cbb9d393306236593da` (`support/codex-evaluator/config.toml`) |
+| Capability profile | `codex-evaluator/capability/v3` (v2 bindings move through `repair`) |
+| Isolated config SHA-256 | `bd8fffe5abd02d085c13213ab2f5aaefe362c85e8a354f4fd79a58938ce9740c` (`support/codex-evaluator/config.toml`) |
+| Reviewer-loop releases | `0.162.1` only (multi-turn reviewer sessions; other admitted releases keep one-shot review) |
 | Evidence expires | `2026-11-30T00:00:00Z` (this FinishUP release's reviewed subset and probe) |
 | Transport | app-server v2, stdio JSONL |
 | Credential authority | `external_runtime_oauth` |
 | Upstream-body observability | `unavailable` |
+
+### Reviewer-loop isolation (#1118 unit 3)
+
+Profile v3 adds three restrictions to every session, one-shot or loop: `initialize` sets
+`experimentalApi: true` only so `thread/start` can send `environments: []`, which leaves no
+environment for shell, patch or file tools; the isolated config and launch overrides disable the
+`update_plan` and `experimental_request_user_input` utilities. A reviewer-loop session reuses one
+ephemeral thread across `turn/start` calls, sends only the new admitted input, and supplies the
+reply `outputSchema` on every turn. Any plan or compaction event, server request, native warning,
+reroute or tool item ends the turn and cleans up the process. The thread lives only in the review's
+own session, and the review closes it on every exit, including a deadline, a revoked admission or a
+second malformed answer; a close waits for the turn in flight. It is never resumed. A turn that
+completes after the review's deadline is not used (`deadline_expired`). The deadline also bounds
+launch and every stdin write and stdout read, so a runtime that stops reading cannot hold the
+review or its close; cleanup runs after the deadline. A cancelled or timed-out turn is cleaned up,
+never kept for the next exchange. Not established yet: an authorized native cell proving `environments: []` persists
+across turns and that no non-environment utility runs internally. Until that cell passes for a
+release, only `0.162.1` (source-reviewed) runs the loop, and other releases refuse reviewer
+exchanges with `capability_evidence_stale` instead of falling back to another route.
 
 ### The check
 
@@ -33,7 +53,8 @@ request is involved:
 2. **Code-mode host.** `codex-code-mode-host` must sit beside the native executable:
    `codex_runtime_code_mode_host_missing`.
 3. **Reviewed protocol subset.** The binary writes its app-server v2 schema with
-   `codex app-server generate-json-schema --out <scratch>`. FinishUP checks structurally that every
+   `codex app-server generate-json-schema --experimental --out <scratch>` (v3: the experimental
+   `thread/start.environments` field must be present). FinishUP checks structurally that every
    request it sends (`initialize`, `account/read`, `model/list`, `account/login/*`,
    `account/logout`, `thread/start`, `turn/start`, `turn/interrupt`) and every response,
    notification field, JSON type and value it reads is still there. Additive methods,

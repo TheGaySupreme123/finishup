@@ -41,7 +41,11 @@ from finishup.config.models import ExternalRuntimeProfileConfig, ProviderProfile
 from finishup.domain.privacy import ApprovedOutboundCase, ProviderBinding
 from finishup.ports.clock import ClockPort
 from finishup.ports.secret_memory import ProviderAttemptAuthBinding, ProviderCredentialHandle
-from finishup.ports.semantic import ExternalRuntimeAuthority, SemanticEvaluatorPort
+from finishup.ports.semantic import (
+    ExternalRuntimeAuthority,
+    ReviewerReplySchemas,
+    SemanticEvaluatorPort,
+)
 
 __all__ = [
     "CHAT_COMPLETIONS_ENDPOINT_PROFILES",
@@ -129,12 +133,13 @@ class ChatCompletionsExternalFactory:
     profile: ChatCompletionsProfile
     clock: ClockPort
     credential_authority: str = "finishup_vault_api_credential"
+    reply_schemas: ReviewerReplySchemas | None = None
 
     def __post_init__(self) -> None:
         self._last_rendered: RenderedChatCompletionsRequest | None = None
 
     def render(self, case: ApprovedOutboundCase) -> bytes:
-        rendered = render_case(case, self.profile)
+        rendered = render_case(case, self.profile, self.reply_schemas)
         self._last_rendered = rendered
         return rendered.body
 
@@ -162,7 +167,9 @@ class ChatCompletionsExternalFactory:
             port=self.profile.port,
             path=self.profile.path,
         )
-        return ChatCompletionsEvaluator(self.profile, transport, self.clock)
+        return ChatCompletionsEvaluator(
+            self.profile, transport, self.clock, reply_schemas=self.reply_schemas
+        )
 
 
 def external_factory_builders_from_config(

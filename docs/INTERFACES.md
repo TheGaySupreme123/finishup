@@ -7489,7 +7489,8 @@ still reports the credential connected. A `ready` binding on a host installation
 
 The evaluator is admitted by capability, not by one pinned build (ADR-006 capability amendment,
 2026-10-13): any stable Codex release at or above `0.157.1` whose retained bytes pass the check
-(profile `codex-evaluator/capability/v2`). A passed check commits
+(profile `codex-evaluator/capability/v3`; v3 adds the experimental `thread/start.environments`
+subset fact and the plan/user-input utility disables, #1118 unit 3). A passed check commits
 `yoetz.codex-evaluator-capability/1` (`capability.json`) beside the retained runtime:
 `capability_profile`, `runtime_floor`, `runtime_version`, `source_identity`,
 `platform` (`os`, `architecture`), `executable_sha256`, `code_mode_host_sha256`,
@@ -11706,3 +11707,60 @@ recorded verification-limit decision retain the derived `unresolved_verification
 check/readiness gap (`closure_readiness.acceptance_risk` names them). The receipt and MCP summary
 explicitly name the affected obligations ("Acceptance provenance not established for ..."). The
 receipt remains coverage-bounded; Stop is never blocked on it.
+
+### Reviewer completion exchanges (issue #1118 unit 3, ADR-006)
+
+One reviewer-loop completion is one ordinary gateway dispatch with its own admission, rendered-body
+scan, root fence, consume, owed receipt and one-use credential or runtime authority. Its approved
+payload is the canonical history `encode_reviewer_exchange(history)`: a JSON array of
+`{"content", "role"}` messages, `system` first, then `user` and `assistant` turns ending with
+`user`, at most 12 messages. A user turn may follow a user turn (the loop's format-repair notice
+never echoes the malformed reply); an assistant turn may not follow an assistant turn. `ApprovedOutboundCase.media_type` (or the local case's media type)
+selects the reply schema: `application/vnd.finishup.reviewer-turn+json` (every reply branch) or
+`application/vnd.finishup.reviewer-final+json` (final judgment only). Composition installs both
+provider-wire schemas as `ReviewerReplySchemas` (`REVIEWER_REPLY_SCHEMAS`, the strict
+`findings/reviewer-reply-1.0.0` forms); without them a route refuses the exchange.
+
+| Route | Request | Refusal |
+|---|---|---|
+| Responses | `input` is the payload verbatim, `text.format` the reply schema, `store:false` kept, no tools | no schemas installed |
+| Chat Completions | `messages` is the payload verbatim, strict `response_format`, no functions or tool calls; the SDK posts the canonical rendered body itself, so the exact-body guard sees the audited bytes | `prompt_only` endpoints (unavailable, never relabelled) |
+| Local model | one frame `{"messages", "protocol": "finishup-reviewer-completion-1", "reply_schema"}` | a profile naming any other protocol (and a completion profile receiving a one-shot case) |
+| Codex subscription | one ephemeral thread per review, held in its `ReviewerSession`; each later turn sends only the new user message, with `outputSchema` every turn | releases outside `REVIEWER_LOOP_REVIEWED_RELEASES` (`0.162.1`), no or a closed session, a continuation that does not extend the held thread (`case_invalid`), plan/compaction/tool/request/warning events |
+
+A completed turn returns `SemanticResultReply(reply, provenance)`: the parsed reply object, not
+yet decoded. `reviewer_exchange(media_type, payload, schemas)` computes the exchange's history,
+reply schema, and instruction and schema digests once per dispatch; the rendered request and every
+outcome, early failures included, carry those digests. Branch and argument validation stay with the
+reply decoder. The gateway records a reply as `completed`. Each route bounds the whole exchange,
+local send and receive included, by the original deadline, and an answer that completes after it is
+never a reply: Responses and Chat return `late`, local returns `timeout`, and Codex reports the
+post-acknowledgement `deadline_expired` stage. Codex bounds launch and every send and receive,
+stdin writes included, by that deadline; process cleanup runs after it, outside the inference
+budget. The loop also discards an answer that returns after the deadline.
+
+A review owns one `ReviewerSession(review_id, deadline)`. `ReviewerExchangeModel(binding, dispatch,
+session)` is the loop's `ReviewerModel`, used as `async with`: every dispatch runs with the session
+in `CURRENT_REVIEWER_SESSION` (the gateway must evaluate in that context), and leaving the block
+closes the session on every exit. The Codex adapter keeps its thread only in that session. It
+continues only when the history extends exactly what the thread holds, on the same profile and
+deadline: the thread with its answer, or, after an answer the loop's decoder rejected and left out
+of its history, the thread before that answer (the one format repair). Transcript content never
+selects a session, and only a completed turn is retained; a cancelled or timed-out one is cleaned
+up. An exchange holds the session lock, a closed
+session admits no exchange and retains nothing, and `aclose` waits for the exchange in flight before
+cleaning up. A completed Codex turn reports `runtime_evidence.process_cleanup = "retained"`, and
+`ReviewerSession.aclose()` returns the closing cleanup outcome. That value is domain-only until
+exchange evidence is persisted, which needs a `runtime-attempt-evidence` schema bump.
+
+`complete(history, schema, deadline=)` returns the reply object. It raises the decoder's
+`ReviewerReplyInvalid("output_not_json")` only for a completed answer that is not one JSON object
+(API `response_schema` from a completed generation, Codex `output_not_json` or `output_empty`):
+the one repair. A Responses generation whose status is not `completed` (for example `failed`) is
+`unavailable` before its output is read, and its provider error text is not kept. Truncation,
+output limits and every other failed, refused, late or uncertain turn raise `ReviewerModelError`
+with the closed stage, failure class or status (for example
+`reviewer_exchange_response_content` or `reviewer_exchange_output_oversize`). The model is bound to
+one provider binding; a reply from another endpoint profile or model raises
+`reviewer_exchange_route_mismatch`, so a review never moves to another, separately billed route.
+The loop appends each reply to the history exactly as the model returned it (canonical JSON).

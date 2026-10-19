@@ -16,6 +16,7 @@ recorded, every profile here is configured, not live-verified.
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import importlib
 import re
@@ -30,7 +31,7 @@ from finishup.adapters.providers.openai_responses import (
     SEMANTIC_REVIEW_INSTRUCTION,
     STRICT_JUDGMENT_JSON_SCHEMA,
     OneAttemptCredentialTransport,
-    normalize_judgment,
+    normalize_answer_text,
 )
 from finishup.domain.findings import SamplingParams, SemanticFailureClass
 from finishup.domain.privacy import (
@@ -43,13 +44,14 @@ from finishup.ports.clock import ClockPort
 from finishup.ports.semantic import (
     Deadline,
     ProviderAttemptProvenance,
+    ReviewerExchange,
+    ReviewerReplySchemas,
     SemanticResult,
     SemanticResultInvalid,
-    SemanticResultLate,
     SemanticResultRefused,
-    SemanticResultSuccess,
     SemanticResultTimeout,
     SemanticResultUnavailable,
+    reviewer_exchange,
 )
 from finishup.protocol.canonical import (
     JsonValue,
@@ -200,8 +202,29 @@ class RenderedChatCompletionsRequest:
 
 
 def _build_body_object(
-    case: ApprovedOutboundCase, profile: ChatCompletionsProfile
+    case: ApprovedOutboundCase,
+    profile: ChatCompletionsProfile,
+    exchange: ReviewerExchange | None = None,
 ) -> dict[str, JsonValue]:
+    if exchange is not None:
+        # One reviewer-loop exchange (#1118 unit 3): ordinary system/user/assistant messages, the
+        # approved history verbatim, no functions or tool calls. A prompt-only endpoint cannot
+        # constrain the reply branch, so it is refused rather than relabelled as enforced.
+        if profile.structured_output_enforcement != "provider_enforced":
+            raise ValueError("chat_completions_reviewer_schema_unavailable")
+        return {
+            "model": case.provider_binding.model_id,
+            "messages": strict_json_parse(case.payload),
+            "max_tokens": OPENAI_MAX_OUTPUT_TOKENS,
+            "response_format": {
+                "type": "json_schema",
+                "json_schema": {
+                    "name": "finishup_reviewer_reply",
+                    "strict": True,
+                    "schema": exchange.schema,
+                },
+            },
+        }
     try:
         payload_text = case.payload.decode("utf-8")
     except UnicodeDecodeError as exc:
@@ -235,7 +258,9 @@ def _build_body_object(
 
 
 def render_case(
-    case: ApprovedOutboundCase, profile: ChatCompletionsProfile
+    case: ApprovedOutboundCase,
+    profile: ChatCompletionsProfile,
+    reply_schemas: ReviewerReplySchemas | None = None,
 ) -> RenderedChatCompletionsRequest:
     """Deterministically convert an approved external case into a rendered request.
 
@@ -249,23 +274,23 @@ def render_case(
         raise TypeError("chat_completions_case_invalid")
     if type(profile) is not ChatCompletionsProfile:
         raise TypeError("chat_completions_profile_invalid")
+    return _render(case, profile, reviewer_exchange(case.media_type, case.payload, reply_schemas))
+
+
+def _render(
+    case: ApprovedOutboundCase, profile: ChatCompletionsProfile, exchange: ReviewerExchange | None
+) -> RenderedChatCompletionsRequest:
     if case.provider_binding.transport != "external":
         raise ValueError("chat_completions_case_binding_invalid")
 
-    body = canonical_encode(_build_body_object(case, profile))
+    body = canonical_encode(_build_body_object(case, profile, exchange))
     if len(body) > OPENAI_MAX_RESPONSE_BODY_BYTES:
         raise ValueError("chat_completions_rendered_body_too_large")
 
-    prompt_digest = (
-        "sha256:" + hashlib.sha256(case.payload).hexdigest()
-        if case.purpose == "credential-probe"
-        else _PROMPT_DIGEST
-    )
-    schema_digest = (
-        canonical_digest({"kind": "credential-probe", "version": 1})
-        if case.purpose == "credential-probe"
-        else _SCHEMA_DIGEST
-    )
+    prompt_digest, schema_digest = _digests(exchange)
+    if case.purpose == "credential-probe":
+        prompt_digest = "sha256:" + hashlib.sha256(case.payload).hexdigest()
+        schema_digest = canonical_digest({"kind": "credential-probe", "version": 1})
     return RenderedChatCompletionsRequest(
         body=body,
         body_sha256="sha256:" + hashlib.sha256(body).hexdigest(),
@@ -278,6 +303,12 @@ def render_case(
     )
 
 
+def _digests(exchange: ReviewerExchange | None) -> tuple[str, str]:
+    if exchange is None:
+        return _PROMPT_DIGEST, _SCHEMA_DIGEST
+    return exchange.prompt_digest, exchange.schema_digest
+
+
 def _provenance(
     profile: ChatCompletionsProfile,
     status: SemanticStatus,
@@ -286,15 +317,17 @@ def _provenance(
     latency_ms: int,
     provider_request_id: str | None = None,
     failure_class: SemanticFailureClass | None = None,
+    exchange: ReviewerExchange | None = None,
 ) -> ProviderAttemptProvenance:
+    prompt_digest, schema_digest = _digests(exchange)
     return ProviderAttemptProvenance(
         provider=profile.provider_id,
         endpoint_profile_id=profile.endpoint_profile_id,
         endpoint_profile_version=profile.endpoint_profile_version,
         model=profile.model,
         sdk_version="2.46.0",
-        prompt_digest=_PROMPT_DIGEST,
-        schema_digest=_SCHEMA_DIGEST,
+        prompt_digest=prompt_digest,
+        schema_digest=schema_digest,
         policy_digest=policy_digest,
         privacy_policy_digest=policy_digest,
         sampling_params=SamplingParams(OPENAI_MAX_OUTPUT_TOKENS),
@@ -320,6 +353,7 @@ def normalize_response(
     policy_digest: str,
     latency_ms: int,
     late: bool = False,
+    exchange: ReviewerExchange | None = None,
 ) -> SemanticResult:
     """Classify one provider response into the closed AI-powered review result union.
 
@@ -337,136 +371,69 @@ def normalize_response(
     if type(provider_request_id) is not str:
         provider_request_id = None
 
+    def prov(
+        status: SemanticStatus, failure: SemanticFailureClass | None = None
+    ) -> ProviderAttemptProvenance:
+        return _provenance(
+            profile,
+            status,
+            policy_digest=policy_digest,
+            latency_ms=latency_ms,
+            provider_request_id=provider_request_id,
+            failure_class=failure,
+            exchange=exchange,
+        )
+
     choice = _first_choice(response)
     message = getattr(choice, "message", None)
 
     refusal = getattr(message, "refusal", None)
     if type(refusal) is str and refusal:
-        return SemanticResultRefused(
-            _provenance(
-                profile,
-                SemanticStatus.REFUSED,
-                policy_digest=policy_digest,
-                latency_ms=latency_ms,
-                provider_request_id=provider_request_id,
-            )
-        )
+        return SemanticResultRefused(prov(SemanticStatus.REFUSED))
 
     finish_reason = getattr(choice, "finish_reason", None)
     if finish_reason == "content_filter":
-        return SemanticResultRefused(
-            _provenance(
-                profile,
-                SemanticStatus.REFUSED,
-                policy_digest=policy_digest,
-                latency_ms=latency_ms,
-                provider_request_id=provider_request_id,
-            )
-        )
+        return SemanticResultRefused(prov(SemanticStatus.REFUSED))
     if finish_reason == "length":
         # Truncated output is the Chat Completions spelling of Responses `incomplete`: content
         # invalidity from the output token cap, not a transport/deadline timeout.
         truncated_text = getattr(message, "content", None)
         truncated_size = len(truncated_text.encode("utf-8")) if type(truncated_text) is str else 0
         return SemanticResultInvalid(
-            _provenance(
-                profile,
-                SemanticStatus.INVALID,
-                policy_digest=policy_digest,
-                latency_ms=latency_ms,
-                provider_request_id=provider_request_id,
-                failure_class=SemanticFailureClass.RESPONSE_CONTENT,
-            ),
+            prov(SemanticStatus.INVALID, SemanticFailureClass.RESPONSE_CONTENT),
             raw_size=truncated_size,
         )
 
-    raw_text = getattr(message, "content", None)
-    if type(raw_text) is not str or not raw_text:
-        return SemanticResultInvalid(
-            _provenance(
-                profile,
-                SemanticStatus.INVALID,
-                policy_digest=policy_digest,
-                latency_ms=latency_ms,
-                provider_request_id=provider_request_id,
-                failure_class=SemanticFailureClass.RESPONSE_SCHEMA,
-            ),
-            raw_size=len(raw_text) if type(raw_text) is str else 0,
-        )
-    raw_bytes = raw_text.encode("utf-8")
-    if len(raw_bytes) > OPENAI_MAX_RESPONSE_BODY_BYTES:
-        return SemanticResultInvalid(
-            _provenance(
-                profile,
-                SemanticStatus.INVALID,
-                policy_digest=policy_digest,
-                latency_ms=latency_ms,
-                provider_request_id=provider_request_id,
-                failure_class=SemanticFailureClass.RESPONSE_CONTENT,
-            ),
-            raw_size=OPENAI_MAX_RESPONSE_BODY_BYTES + 1,
-        )
-    try:
-        judgment = normalize_judgment(strict_json_parse(raw_bytes), require_part2=True)
-    except ValueError, TypeError, LookupError:
-        return SemanticResultInvalid(
-            _provenance(
-                profile,
-                SemanticStatus.INVALID,
-                policy_digest=policy_digest,
-                latency_ms=latency_ms,
-                provider_request_id=provider_request_id,
-                failure_class=SemanticFailureClass.RESPONSE_SCHEMA,
-            ),
-            raw_size=len(raw_bytes),
-        )
-
-    if late:
-        return SemanticResultLate(
-            _provenance(
-                profile,
-                SemanticStatus.LATE,
-                policy_digest=policy_digest,
-                latency_ms=latency_ms,
-                provider_request_id=provider_request_id,
-            )
-        )
-    return SemanticResultSuccess(
-        judgment,
-        _provenance(
-            profile,
-            SemanticStatus.SUCCEEDED,
-            policy_digest=policy_digest,
-            latency_ms=latency_ms,
-            provider_request_id=provider_request_id,
-        ),
+    return normalize_answer_text(
+        getattr(message, "content", None), prov, late=late, reply=exchange is not None
     )
 
 
 def classify_provider_failure(
-    error: BaseException, profile: ChatCompletionsProfile, *, policy_digest: str, latency_ms: int
+    error: BaseException,
+    profile: ChatCompletionsProfile,
+    *,
+    policy_digest: str,
+    latency_ms: int,
+    exchange: ReviewerExchange | None = None,
 ) -> SemanticResult:
     """Map a native provider/transport failure to the public taxonomy without leaking its text."""
 
-    if isinstance(error, httpx.TimeoutException):
-        return SemanticResultTimeout(
-            _provenance(
-                profile,
-                SemanticStatus.TIMEOUT,
-                policy_digest=policy_digest,
-                latency_ms=latency_ms,
-                failure_class=SemanticFailureClass.TIMEOUT,
-            )
+    def prov(status: SemanticStatus, failure: SemanticFailureClass) -> ProviderAttemptProvenance:
+        return _provenance(
+            profile,
+            status,
+            policy_digest=policy_digest,
+            exchange=exchange,
+            latency_ms=latency_ms,
+            failure_class=failure,
         )
+
+    if isinstance(error, httpx.TimeoutException | TimeoutError):
+        return SemanticResultTimeout(prov(SemanticStatus.TIMEOUT, SemanticFailureClass.TIMEOUT))
     if isinstance(error, httpx.TransportError):
         return SemanticResultUnavailable(
-            _provenance(
-                profile,
-                SemanticStatus.UNAVAILABLE,
-                policy_digest=policy_digest,
-                latency_ms=latency_ms,
-                failure_class=SemanticFailureClass.TRANSPORT,
-            )
+            prov(SemanticStatus.UNAVAILABLE, SemanticFailureClass.TRANSPORT)
         )
 
     status_code = getattr(error, "status_code", None)
@@ -487,16 +454,7 @@ def classify_provider_failure(
         failure_class = SemanticFailureClass.UNSUPPORTED_PROFILE
     elif type(status_code) is int and status_code >= 500:
         failure_class = SemanticFailureClass.PROVIDER_OUTAGE
-
-    return SemanticResultUnavailable(
-        _provenance(
-            profile,
-            SemanticStatus.UNAVAILABLE,
-            policy_digest=policy_digest,
-            latency_ms=latency_ms,
-            failure_class=failure_class,
-        )
-    )
+    return SemanticResultUnavailable(prov(SemanticStatus.UNAVAILABLE, failure_class))
 
 
 class ChatCompletionsEvaluator:
@@ -508,7 +466,7 @@ class ChatCompletionsEvaluator:
     internal retry, and no credential in any reusable client, header, log, or exception.
     """
 
-    __slots__ = ("_clock", "_profile", "_safety_margin_seconds", "_transport")
+    __slots__ = ("_clock", "_profile", "_reply_schemas", "_safety_margin_seconds", "_transport")
 
     def __init__(
         self,
@@ -517,6 +475,7 @@ class ChatCompletionsEvaluator:
         clock: ClockPort,
         *,
         safety_margin_seconds: float = 0.0,
+        reply_schemas: ReviewerReplySchemas | None = None,
     ) -> None:
         if type(profile) is not ChatCompletionsProfile:
             raise TypeError("chat_completions_profile_invalid")
@@ -528,6 +487,7 @@ class ChatCompletionsEvaluator:
         self._transport = transport
         self._clock = clock
         self._safety_margin_seconds = safety_margin_seconds
+        self._reply_schemas = reply_schemas
 
     async def evaluate(self, case: ApprovedProviderCase, deadline: Deadline) -> SemanticResult:
         if type(case) is not ApprovedOutboundCase:
@@ -535,6 +495,7 @@ class ChatCompletionsEvaluator:
         if type(deadline) is not Deadline:
             raise TypeError("chat_completions_deadline_invalid")
 
+        exchange = reviewer_exchange(case.media_type, case.payload, self._reply_schemas)
         now_monotonic = self._clock.monotonic_seconds()
         remaining = deadline.remaining_seconds(now_monotonic) - self._safety_margin_seconds
         if deadline.expired(now_monotonic) or remaining <= 0.0:
@@ -545,10 +506,16 @@ class ChatCompletionsEvaluator:
                     policy_digest=case.policy_digest,
                     latency_ms=0,
                     failure_class=SemanticFailureClass.TIMEOUT,
+                    exchange=exchange,
                 )
             )
 
-        body_object = _build_body_object(case, self._profile)
+        # The SDK kwargs are the canonical rendering itself, so the one-attempt transport's
+        # exact-body comparison sees the bytes the gateway audited (as in the Responses adapter).
+        rendered_body = strict_json_parse(_render(case, self._profile, exchange).body)
+        if type(rendered_body) is not dict:
+            raise ValueError("chat_completions_rendered_body_invalid")
+        body_object = cast(dict[str, Any], rendered_body)
 
         try:
             openai_module = importlib.import_module("openai")
@@ -560,6 +527,7 @@ class ChatCompletionsEvaluator:
                     policy_digest=case.policy_digest,
                     latency_ms=0,
                     failure_class=SemanticFailureClass.UNSUPPORTED_PROFILE,
+                    exchange=exchange,
                 )
             )
 
@@ -573,18 +541,35 @@ class ChatCompletionsEvaluator:
                 http_client=http_client,
             )
             try:
-                response = await client.chat.completions.create(**body_object)
+                # The whole exchange, not only each HTTP operation, ends at the deadline.
+                response = await asyncio.wait_for(
+                    client.post(
+                        "/chat/completions",
+                        cast_to=openai_module.types.chat.ChatCompletion,
+                        body=body_object,
+                    ),
+                    remaining,
+                )
             finally:
                 await client.close()
         except Exception as exc:  # noqa: BLE001 - classified below, never re-raised raw
             elapsed_ms = max(0, int((self._clock.monotonic_seconds() - now_monotonic) * 1_000))
             return classify_provider_failure(
-                exc, self._profile, policy_digest=case.policy_digest, latency_ms=elapsed_ms
+                exc,
+                self._profile,
+                policy_digest=case.policy_digest,
+                latency_ms=elapsed_ms,
+                exchange=exchange,
             )
         finally:
             await http_client.aclose()
 
-        elapsed_ms = max(0, int((self._clock.monotonic_seconds() - now_monotonic) * 1_000))
+        finished = self._clock.monotonic_seconds()
         return normalize_response(
-            response, self._profile, policy_digest=case.policy_digest, latency_ms=elapsed_ms
+            response,
+            self._profile,
+            policy_digest=case.policy_digest,
+            latency_ms=max(0, int((finished - now_monotonic) * 1_000)),
+            late=deadline.expired(finished),
+            exchange=exchange,
         )

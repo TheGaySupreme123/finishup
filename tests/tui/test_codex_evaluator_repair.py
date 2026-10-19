@@ -56,7 +56,7 @@ class _RepairRuntime(FakeRuntime):
             ],
             "executable_path_after": "/var/lib/finishup/external-runtimes/codex-evaluator/x/codex",
             "capability_profile_before": "codex-evaluator/0.157.1/v2",
-            "capability_profile_after": "codex-evaluator/capability/v2",
+            "capability_profile_after": "codex-evaluator/capability/v3",
         }
 
     async def repair_codex_subscription(self) -> dict[str, object]:
@@ -105,7 +105,7 @@ async def test_repair_shows_what_changes_and_runs_only_after_approval(
         assert view is not None
         body = " ".join(getattr(view, "body", ()) or getattr(view, "_body", ()))
         assert "codex_runtime_executable_changed" in body
-        assert "codex-evaluator/0.157.1/v2 -> codex-evaluator/capability/v2" in body
+        assert "codex-evaluator/0.157.1/v2 -> codex-evaluator/capability/v3" in body
         assert "(Codex 0.162.1)" in body
         assert "1 older release(s) remain as fallbacks" in body
         assert "never signs in" in body

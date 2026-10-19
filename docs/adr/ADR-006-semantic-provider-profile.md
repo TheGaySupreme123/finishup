@@ -2444,3 +2444,38 @@ requirement is judged on the tested portion with the rest stated as a limitation
 whose source is unavailable is judged on its captured output, and an agent-supplied command is never
 the hook-observed one; an image or binary is not assessable and is not a `missing_for_assessment`
 request. Each miss class of the offline accuracy cases is bound to one of its directives.
+
+## Amendment: reviewer-loop provider completions (2026-10-19, issue #1118 unit 3)
+
+The reviewer loop asks the model for one structured reply per turn; every route serves it as an
+ordinary completion, never as a provider function call. Each completion is a separate gateway
+dispatch, so each continuation gets its own exact-body admission, consume and one-use transport;
+a consumed handle is never reused. The approved payload is the whole linear history and appears
+verbatim in every rendered body. Responses keeps `store:false` and sends no tools. Chat Completions
+sends plain messages; a `prompt_only` endpoint cannot constrain the reply branch and is refused, not
+relabelled. The local daemon contract is versioned (`finishup-reviewer-completion-1`); the old
+one-payload protocol cannot serve the loop.
+
+Codex is used as the model only. Capability profile v3 applies to every Codex session:
+`initialize` opts into the experimental API solely to send `thread/start.environments: []`, which
+disables environment access, so shell, patch and file tools have no environment to register or
+read from; `[tools.update_plan]` and `[tools.experimental_request_user_input]` are disabled in the
+isolated config and launch overrides; the protocol subset is generated with `--experimental` and
+must carry `ThreadStartParams.environments`. `features.stable_environment_tools` is not set, because
+releases below 0.162.1 do not define it under `--strict-config`; with no environment it has nothing
+to expose. A reviewer session keeps one ephemeral thread, sends only the new admitted input, and
+sends the reply `outputSchema` on every turn. Plan or compaction events, server requests, native
+warnings, reroutes and tool items end it. No dynamic tools, MCP server, `turn/steer`, resume or
+fork is used. The thread belongs to the review's `ReviewerSession`, keyed by the review's identity
+rather than by transcript content. The reviewer facade closes it on every exit of the review, and a
+close waits for the turn in flight. A policy change ends the review at the loop's per-continuation
+admission recheck, which closes the session. Every exchange, on every route, ends at the review's
+original deadline, and a late answer is never used; for Codex the bound covers launch and every
+pipe write and read, and cleanup runs after it. Only a completed Codex turn stays in the session.
+After a reply the loop's decoder rejects, the session continues from the thread before that reply,
+so the one format repair reaches the model without echoing the rejected action. Only a completed
+generation can earn that repair: a failed or unfinished Responses generation ends the review. Only release 0.162.1, whose source was reviewed, runs the
+loop until an authorized native capability cell shows `environments: []` persists across turns.
+This is not proof that no internal Codex utility can execute; an absolute guarantee still needs
+stronger upstream suppression. A route that cannot serve the loop fails closed. Nothing falls back
+to a separately billed API.

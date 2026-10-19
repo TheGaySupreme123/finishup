@@ -70,16 +70,22 @@ from finishup.observability.semantic_context import report_semantic_progress
 from finishup.ports.clock import ClockPort
 from finishup.ports.secret_memory import ProviderAttemptAuthBinding
 from finishup.ports.semantic import (
+    CURRENT_REVIEWER_SESSION,
     Deadline,
     ExternalRuntimeAuthority,
     ProviderAttemptProvenance,
+    ReviewerMessage,
+    ReviewerReplySchemas,
+    ReviewerSession,
     SemanticEvaluatorPort,
     SemanticResult,
     SemanticResultInvalid,
     SemanticResultRefused,
+    SemanticResultReply,
     SemanticResultSuccess,
     SemanticResultTimeout,
     SemanticResultUnavailable,
+    reviewer_exchange,
 )
 from finishup.ports.semantic_budget import (
     LEGACY_SEMANTIC_BUDGET_PROFILE,
@@ -159,6 +165,12 @@ standalone_web_search = false
 tool_suggest = false
 view_image = false
 workspace_dependencies = false
+
+[tools.experimental_request_user_input]
+enabled = false
+
+[tools.update_plan]
+enabled = false
 """
 
 _CONFIG_SHA256: Final = "sha256:" + hashlib.sha256(CODEX_EVALUATOR_CONFIG.encode()).hexdigest()
@@ -223,7 +235,6 @@ def _codex_output_schema(value: JsonValue) -> JsonValue:
 _CODEX_JUDGMENT_JSON_SCHEMA: Final = cast(
     dict[str, JsonValue], _codex_output_schema(cast(JsonValue, STRICT_JUDGMENT_JSON_SCHEMA))
 )
-_OUTPUT_SCHEMA_SHA256: Final = canonical_digest(_CODEX_JUDGMENT_JSON_SCHEMA)
 _MAX_MESSAGE_BYTES: Final = 1_048_576
 # Streamed agent-message and reasoning deltas each arrive as one notification, so a content-rich
 # judgment can legitimately cross several hundred events. Every event is still bounded by
@@ -386,7 +397,18 @@ _LAUNCH_OVERRIDES: Final = (
     'model_provider="openai"',
     'otel.environment="none"',
     'sandbox_mode="read-only"',
+    "tools.experimental_request_user_input.enabled=false",
+    "tools.update_plan.enabled=false",
     'web_search="disabled"',
+)
+# Releases whose multi-turn reviewer session was reviewed from source (#1118 unit 3); any other
+# refuses a reviewer exchange (never falls back). Extend only after a capability cell.
+REVIEWER_LOOP_REVIEWED_RELEASES: Final = frozenset({"0.162.1"})
+# A reviewer turn may produce only these items: a plan or a context compaction would replace or
+# extend the known linear history with something FinishUP never inspected, so either ends it.
+_REVIEWER_ITEM_TYPES: Final = frozenset({"agentMessage", "reasoning", "userMessage"})
+_REVIEWER_FORBIDDEN_METHODS: Final = frozenset(
+    {"item/plan/delta", "thread/compacted", "turn/plan/updated"}
 )
 
 
@@ -785,8 +807,9 @@ class _CodexProcess:
         request: dict[str, object] = {"id": request_id, "method": method}
         if params is not None:
             request["params"] = dict(params)
-        await self.send(request)
         request_deadline = asyncio.get_running_loop().time() + timeout
+        # The bound covers the write too: a runtime that stops reading stdin cannot hold it.
+        await asyncio.wait_for(self.send(request), max(0.001, timeout))
         for _ in range(_MAX_EVENT_COUNT):
             remaining = request_deadline - asyncio.get_running_loop().time()
             if remaining <= 0:
@@ -1098,7 +1121,9 @@ async def _require_model(
     raise ValueError("codex_model_unavailable")
 
 
-async def _initialize(runtime: _CodexProcess, profile: CodexAppServerProfile) -> None:
+async def _initialize(
+    runtime: _CodexProcess, profile: CodexAppServerProfile, timeout: float = 10.0
+) -> None:
     result = await runtime.request(
         0,
         "initialize",
@@ -1109,15 +1134,15 @@ async def _initialize(runtime: _CodexProcess, profile: CodexAppServerProfile) ->
                 "version": "0.1.0",
             },
             "capabilities": {
-                "experimentalApi": False,
+                "experimentalApi": True,
                 "mcpServerOpenaiFormElicitation": False,
                 "requestAttestation": False,
             },
         },
-        10.0,
+        timeout,
     )
     _validate_initialize(profile, result)
-    await runtime.send({"method": "initialized"})
+    await asyncio.wait_for(runtime.send({"method": "initialized"}), max(0.001, timeout))
 
 
 async def codex_account_status(profile: CodexAppServerProfile) -> CodexRuntimeStatus:
@@ -1171,15 +1196,22 @@ async def codex_account_status(profile: CodexAppServerProfile) -> CodexRuntimeSt
 
 
 def _thread_start_params(
-    runtime: _CodexProcess, profile: CodexAppServerProfile
+    runtime: _CodexProcess,
+    profile: CodexAppServerProfile,
+    instructions: str = SEMANTIC_REVIEW_INSTRUCTION,
 ) -> dict[str, object]:
-    """The one isolated, ephemeral, read-only thread request a review and its probe both send."""
+    """The one isolated, ephemeral, read-only thread request a review and its probe both send.
+
+    ``environments: []`` (experimental, hence ``experimentalApi``) leaves no environment for shell,
+    patch or file tools (#1118 unit 3, ADR-006).
+    """
 
     return {
         "approvalPolicy": "never",
         "approvalsReviewer": "user",
-        "baseInstructions": SEMANTIC_REVIEW_INSTRUCTION,
+        "baseInstructions": instructions,
         "cwd": str(runtime.workdir),
+        "environments": [],
         "ephemeral": True,
         "model": profile.model,
         "modelProvider": "openai",
@@ -2014,6 +2046,11 @@ _FAILURE_STAGE_BY_TOKEN: Final[Mapping[str, str]] = {
     "codex_app_server_remote_control_state_invalid": "predisclosure_event_forbidden",
     "codex_app_server_remote_control_not_disabled": "predisclosure_event_forbidden",
     "codex_runtime_case_invalid": "case_invalid",
+    "codex_reviewer_runtime_unreviewed": "capability_evidence_stale",
+    "reviewer_schema_unavailable": "capability_evidence_stale",
+    "codex_reviewer_session_unknown": "case_invalid",
+    "reviewer_exchange_invalid": "case_invalid",
+    "reviewer_reply_not_object": "output_not_json",
     "codex_turn_ack_invalid": "turn_ack_invalid",
     "codex_app_server_tool_request_forbidden": "tool_request_forbidden",
     "codex_app_server_event_forbidden": "event_forbidden",
@@ -2110,6 +2147,24 @@ def _classify_runtime_exception(
     )
 
 
+@dataclass(eq=False, slots=True)
+class _ReviewerThread:
+    """The Codex thread one review holds between exchanges, in its ``ReviewerSession`` only."""
+
+    profile: CodexAppServerProfile
+    runtime: _CodexProcess
+    thread_id: str
+    auth_mode: Literal["chatgpt"] | None
+    plan_type: str | None
+    token_usage: RuntimeTokenUsage | None
+    # The histories a next exchange may extend: the thread with its answer, and, after an answer
+    # the loop's decoder rejected and left out of its history, the same thread before that answer.
+    prefixes: tuple[tuple[ReviewerMessage, ...], ...]
+
+    async def aclose(self) -> str:
+        return await _cleanup_guaranteed(self.runtime)
+
+
 @dataclass(slots=True)
 class CodexAppServerEvaluator:
     profile: CodexAppServerProfile
@@ -2118,8 +2173,20 @@ class CodexAppServerEvaluator:
     clock: ClockPort
     # ``None`` is the legacy single-effort selection (the final profile).
     budget: CodexReviewBudget | None = None
+    reply_schemas: ReviewerReplySchemas | None = None
 
     async def evaluate(self, case: ApprovedProviderCase, deadline: Deadline) -> SemanticResult:
+        """One attempt; a reviewer exchange runs under its review's session lock (#1118 unit 3)."""
+
+        session = CURRENT_REVIEWER_SESSION.get()
+        if session is None:
+            return await self._evaluate(case, deadline, None)
+        async with session.lock:
+            return await self._evaluate(case, deadline, session)
+
+    async def _evaluate(
+        self, case: ApprovedProviderCase, deadline: Deadline, session: ReviewerSession | None
+    ) -> SemanticResult:
         if (
             type(case) is not ApprovedOutboundCase
             or type(deadline) is not Deadline
@@ -2156,56 +2223,87 @@ class CodexAppServerEvaluator:
         failure_class = SemanticFailureClass.UNSUPPORTED_PROFILE
         failure_stage: str | None = None
         raw_size = 0
+        exchange = None
+        held: _ReviewerThread | None = None
+        reply: dict[str, JsonValue] | None = None
+        instruction_sha256 = _INSTRUCTION_SHA256
+        output_schema = _CODEX_JUDGMENT_JSON_SCHEMA
+        instructions = SEMANTIC_REVIEW_INSTRUCTION
+        turn_text: str | None = None
+        turn_completed = False
         try:
+            exchange = reviewer_exchange(case.media_type, case.payload, self.reply_schemas)
+            if exchange is not None:
+                # One reviewer-loop exchange (#1118 unit 3). Only a reviewed release runs it.
+                instructions, turn_text = exchange.history[0][1], exchange.history[-1][1]
+                instruction_sha256 = exchange.prompt_digest
+                output_schema = cast(
+                    dict[str, JsonValue], _codex_output_schema(cast(JsonValue, exchange.schema))
+                )
             self.profile.verify_capability_evidence(self.clock.now_utc())
-            await report_semantic_progress(SemanticProgressPhase.RUNTIME_STARTING)
-            runtime = await _launch(self.profile)
-            initialize = await runtime.request(
-                0,
-                "initialize",
-                {
-                    "clientInfo": {
-                        "name": "finishup_semantic_evaluator",
-                        "title": "FinishUP bounded AI-powered evaluator",
-                        "version": "0.1.0",
-                    },
-                    "capabilities": {
-                        "experimentalApi": False,
-                        "mcpServerOpenaiFormElicitation": False,
-                        "requestAttestation": False,
-                    },
-                },
-                _remaining(deadline, self.clock),
+            if exchange is not None:
+                if self.profile.runtime_version not in REVIEWER_LOOP_REVIEWED_RELEASES:
+                    raise ValueError("codex_reviewer_runtime_unreviewed")
+                # The review's own session, never transcript content, selects the thread; the
+                # history must extend exactly what that thread holds, on the same profile.
+                held_any = None if session is None else session.held
+                held = held_any if isinstance(held_any, _ReviewerThread) else None
+                if (
+                    session is None
+                    or session.closed
+                    or session.deadline != deadline
+                    or held is not held_any
+                    or (held is None) != (len(exchange.history) == 2)
+                    or (held is not None and held.profile != self.profile)
+                    or (held is not None and exchange.history[:-1] not in held.prefixes)
+                ):
+                    raise ValueError("codex_reviewer_session_unknown")
+                if held is not None:
+                    session.held = None  # this turn owns the runtime until it retains it again
+                    runtime, thread_id = held.runtime, held.thread_id
+                    auth_mode, plan_type = held.auth_mode, held.plan_type
+                    token_usage = held.token_usage
+            if held is None:
+                await report_semantic_progress(SemanticProgressPhase.RUNTIME_STARTING)
+                # A launch cancelled by the deadline cleans up its own process (``_launch``).
+                runtime = await asyncio.wait_for(
+                    _launch(self.profile), _remaining(deadline, self.clock)
+                )
+                await _initialize(runtime, self.profile, _remaining(deadline, self.clock))
+                await report_semantic_progress(SemanticProgressPhase.ACCOUNT_MODEL_VALIDATION)
+                account_result = await runtime.request(
+                    1,
+                    "account/read",
+                    {"refreshToken": False},
+                    _remaining(deadline, self.clock),
+                )
+                auth_mode, plan_type = _account(account_result)
+                await _require_model(
+                    runtime,
+                    self.profile,
+                    _remaining(deadline, self.clock),
+                    (budget.reasoning_effort,),
+                )
+                thread_result = await runtime.request(
+                    30,
+                    "thread/start",
+                    _thread_start_params(
+                        runtime,
+                        self.profile,
+                        instructions,
+                    ),
+                    _remaining(deadline, self.clock),
+                )
+                thread_id = _validate_thread(runtime, self.profile, thread_result)
+                await _close_predisclosure_window(runtime, _remaining(deadline, self.clock))
+            assert runtime is not None and thread_id is not None
+            case_text = (
+                case.payload.decode("utf-8", errors="strict") if turn_text is None else turn_text
             )
-            _validate_initialize(self.profile, initialize)
-            await runtime.send({"method": "initialized"})
-            await report_semantic_progress(SemanticProgressPhase.ACCOUNT_MODEL_VALIDATION)
-            account_result = await runtime.request(
-                1,
-                "account/read",
-                {"refreshToken": False},
-                _remaining(deadline, self.clock),
-            )
-            auth_mode, plan_type = _account(account_result)
-            await _require_model(
-                runtime,
-                self.profile,
-                _remaining(deadline, self.clock),
-                (budget.reasoning_effort,),
-            )
-            thread_result = await runtime.request(
-                30,
-                "thread/start",
-                _thread_start_params(runtime, self.profile),
-                _remaining(deadline, self.clock),
-            )
-            thread_id = _validate_thread(runtime, self.profile, thread_result)
-            await _close_predisclosure_window(runtime, _remaining(deadline, self.clock))
-            case_text = case.payload.decode("utf-8", errors="strict")
             strict_json_parse(case.payload)
             case_disclosed = True
             turn_result = await runtime.request(
-                31,
+                31 if exchange is None else 100 + len(exchange.history),
                 "turn/start",
                 {
                     "approvalPolicy": "never",
@@ -2213,7 +2311,7 @@ class CodexAppServerEvaluator:
                     "effort": budget.reasoning_effort,
                     "input": [{"type": "text", "text": case_text}],
                     "model": self.profile.model,
-                    "outputSchema": _CODEX_JUDGMENT_JSON_SCHEMA,
+                    "outputSchema": output_schema,
                     "personality": "none",
                     "sandboxPolicy": {"type": "readOnly", "networkAccess": False},
                     "summary": "none",
@@ -2246,6 +2344,8 @@ class CodexAppServerEvaluator:
                     raise ValueError("codex_app_server_tool_request_forbidden")
                 method = message.get("method")
                 if type(method) is not str or method not in _ALLOWED_NOTIFICATION_METHODS:
+                    raise ValueError("codex_app_server_event_forbidden")
+                if exchange is not None and method in _REVIEWER_FORBIDDEN_METHODS:
                     raise ValueError("codex_app_server_event_forbidden")
                 if method == "account/rateLimits/updated":
                     try:
@@ -2316,6 +2416,8 @@ class CodexAppServerEvaluator:
                     item_type, text, phase = _notification_item(message)
                     if item_type not in _ALLOWED_ITEM_TYPES:
                         raise ValueError("codex_app_server_tool_event_forbidden")
+                    if exchange is not None and item_type not in _REVIEWER_ITEM_TYPES:
+                        raise ValueError("codex_app_server_event_forbidden")
                     if method == "item/completed" and item_type == "agentMessage":
                         if phase is not None and phase not in _AGENT_MESSAGE_PHASES:
                             raise ValueError("codex_app_server_event_forbidden")
@@ -2333,6 +2435,9 @@ class CodexAppServerEvaluator:
                     raise ValueError("codex_app_server_completion_invalid")
                 if completed.get("status") != "completed" or completed.get("error") is not None:
                     raise _turn_failure(completed.get("error"))
+                turn_completed = True
+                if deadline.expired(self.clock.monotonic_seconds()):
+                    raise TimeoutError  # an answer after the review's deadline is never used
                 candidates = final_texts if final_texts else untagged_texts
                 if len(candidates) != 1:
                     raise ValueError("codex_app_server_agent_message_count")
@@ -2342,7 +2447,14 @@ class CodexAppServerEvaluator:
                     raise ValueError("codex_app_server_output_oversize")
                 raw_bytes = raw.encode("utf-8")
                 final_output_sha256 = _sha256_bytes(raw_bytes)
-                judgment = normalize_judgment(strict_json_parse(raw_bytes), require_part2=True)
+                if exchange is None:
+                    judgment = normalize_judgment(strict_json_parse(raw_bytes), require_part2=True)
+                else:
+                    # Only the completed final message is a reply; the loop decodes its branch.
+                    parsed = strict_json_parse(raw_bytes)
+                    if type(parsed) is not dict:
+                        raise ValueError("reviewer_reply_not_object")
+                    reply = cast(dict[str, JsonValue], parsed)
                 break
             else:
                 raise ValueError("codex_app_server_event_limit")
@@ -2354,20 +2466,40 @@ class CodexAppServerEvaluator:
                 error, turn_acknowledged=turn_acknowledged, launched=runtime is not None
             )
         finally:
-            try:
+            if (
+                exchange is not None
+                and session is not None
+                and not session.closed
+                and runtime is not None
+                and thread_id is not None
+                and turn_completed
+                and failure in (None, "invalid")
+            ):
+                # Only a completed turn keeps the thread in its review's session for the next
+                # exchange (never a cancelled or timed-out one); the session closes it on every exit.
+                prefixes: tuple[tuple[ReviewerMessage, ...], ...] = (exchange.history,)
+                if reply is not None:
+                    answer = ("assistant", canonical_encode(reply).decode())
+                    prefixes = ((*exchange.history, answer), exchange.history)
+                session.held = _ReviewerThread(
+                    self.profile, runtime, thread_id, auth_mode, plan_type, token_usage, prefixes
+                )
+                cleanup = "retained"
+            else:
                 try:
-                    if runtime is not None:
-                        await report_semantic_progress(SemanticProgressPhase.CLEANUP)
+                    try:
+                        if runtime is not None:
+                            await report_semantic_progress(SemanticProgressPhase.CLEANUP)
+                    finally:
+                        if (
+                            runtime is not None
+                            and thread_id is not None
+                            and turn_id is not None
+                            and failure
+                        ):
+                            await _interrupt(runtime, thread_id, turn_id)
                 finally:
-                    if (
-                        runtime is not None
-                        and thread_id is not None
-                        and turn_id is not None
-                        and failure
-                    ):
-                        await _interrupt(runtime, thread_id, turn_id)
-            finally:
-                cleanup = await _cleanup_guaranteed(runtime)
+                    cleanup = await _cleanup_guaranteed(runtime)
 
         if cleanup == "failed" and failure is None:
             failure = "post_ack_unknown" if turn_acknowledged else "unavailable"
@@ -2386,8 +2518,8 @@ class CodexAppServerEvaluator:
             launcher_sha256=self.profile.launcher_sha256,
             isolated_config_sha256=self.profile.isolated_config_sha256,
             disclosed_case_sha256=_sha256_bytes(case.payload),
-            instruction_sha256=_INSTRUCTION_SHA256,
-            output_schema_sha256=_OUTPUT_SCHEMA_SHA256,
+            instruction_sha256=instruction_sha256,
+            output_schema_sha256=canonical_digest(output_schema),
             selection_sha256=budget.selection_sha256(self.profile.model),
             upstream_body_observability="unavailable",
             auth_mode=auth_mode,
@@ -2424,8 +2556,8 @@ class CodexAppServerEvaluator:
             endpoint_profile_version=self.profile.endpoint_profile_version,
             model=self.profile.model,
             sdk_version=f"codex-app-server-{self.profile.runtime_version}",
-            prompt_digest=_INSTRUCTION_SHA256,
-            schema_digest=_OUTPUT_SCHEMA_SHA256,
+            prompt_digest=instruction_sha256,
+            schema_digest=canonical_digest(output_schema),
             policy_digest=case.policy_digest,
             privacy_policy_digest=case.policy_digest,
             sampling_params=SamplingParams(budget.output_limit),
@@ -2436,6 +2568,8 @@ class CodexAppServerEvaluator:
             failure_class=None if failure is None else failure_class,
             runtime_evidence=evidence,
         )
+        if failure is None and reply is not None:
+            return SemanticResultReply(reply, provenance)
         if failure is None:
             assert judgment is not None
             return SemanticResultSuccess(judgment, provenance)
@@ -2453,6 +2587,7 @@ class CodexAppServerExternalFactory:
     profile: CodexAppServerProfile
     clock: ClockPort
     credential_authority: Literal["external_runtime_oauth"] = "external_runtime_oauth"
+    reply_schemas: ReviewerReplySchemas | None = None
 
     def __post_init__(self) -> None:
         self._last_case_digest: str | None = None
@@ -2488,7 +2623,14 @@ class CodexAppServerExternalFactory:
         budget = self.profile.review_budget(
             current_semantic_budget_profile(), background=current_semantic_background()
         )
-        return CodexAppServerEvaluator(self.profile, binding, credential, self.clock, budget)
+        return CodexAppServerEvaluator(
+            self.profile,
+            binding,
+            credential,
+            self.clock,
+            budget,
+            reply_schemas=self.reply_schemas,
+        )
 
 
 def codex_factory_builders_from_config(

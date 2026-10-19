@@ -342,7 +342,9 @@ class RuntimeAttemptEvidence:
     final_output_sha256: str | None
     case_disclosed: bool
     turn_acknowledged: bool
-    process_cleanup: Literal["not_started", "terminated", "killed", "failed"]
+    # ``retained``: a reviewer-loop exchange left its scoped Codex session running for the next
+    # exchange (#1118 unit 3); the exchange that ends the session reports the real cleanup.
+    process_cleanup: Literal["not_started", "terminated", "killed", "failed", "retained"]
     failure_stage: str | None = None
     token_usage: RuntimeTokenUsage | None = None
 
@@ -391,7 +393,13 @@ class RuntimeAttemptEvidence:
             raise ProtocolValueError("invalid_runtime_attempt_evidence")
         if self.turn_acknowledged and not self.case_disclosed:
             raise ProtocolValueError("invalid_runtime_attempt_evidence")
-        if self.process_cleanup not in {"not_started", "terminated", "killed", "failed"}:
+        if self.process_cleanup not in {
+            "not_started",
+            "terminated",
+            "killed",
+            "failed",
+            "retained",
+        }:
             raise ProtocolValueError("invalid_runtime_attempt_evidence")
         if self.failure_stage is not None and (
             type(self.failure_stage) is not str or self.failure_stage not in RUNTIME_FAILURE_STAGES

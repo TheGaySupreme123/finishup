@@ -89,6 +89,7 @@ from finishup.ports.semantic import (
     SemanticResultInvalid,
     SemanticResultLate,
     SemanticResultRefused,
+    SemanticResultReply,
     SemanticResultSuccess,
     SemanticResultTimeout,
     SemanticResultUnavailable,
@@ -524,7 +525,7 @@ type SemanticEgressResult = (
 def _semantic_result_outcome(
     result: SemanticResult,
 ) -> tuple[PrivacyOutcome, PrivacyReason | None]:
-    if type(result) is SemanticResultSuccess:
+    if type(result) is SemanticResultSuccess or type(result) is SemanticResultReply:
         return PrivacyOutcome.COMPLETED, None
     if type(result) is SemanticResultRefused:
         return PrivacyOutcome.PROVIDER_REFUSED, PrivacyReason.PROVIDER_REFUSED
