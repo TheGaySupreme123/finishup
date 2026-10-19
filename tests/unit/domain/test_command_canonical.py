@@ -244,7 +244,8 @@ def test_notes_are_a_narrow_non_counting_class() -> None:
     assert notes_artifact_name("/app/NOTES.md")
     assert notes_artifact_name("todo.txt")
     assert not notes_artifact_name("/app/README.md")
-    assert not notes_artifact_name("/app/run.log")  # a log may be the deliverable
+    # c152c9972 (#1100, ADR-042): a log name is a notes name; a declared output overrides it.
+    assert notes_artifact_name("/app/run.log")
     assert classify_write_path("/app/NOTES.md", workspace="/app", inside=True) == "notes"
     assert classify_write_path("/app/solve.py", workspace="/app", inside=True) == "workspace"
     assert edit_write_scope(["notes"]) == "notes"

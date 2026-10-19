@@ -422,7 +422,10 @@ async def test_matching_or_omitted_context_digest_is_supported_and_mirrored(
     app, runtime, projects = _composition((current, evidence))
     result = object()
 
-    async def execute(_app: Application, _request: PublishWorkRequest) -> object:
+    # #1118 unit 1: the service also passes its outside-input snapshot capture.
+    async def execute(
+        _app: Application, _request: PublishWorkRequest, _capture: object = None
+    ) -> object:
         return result
 
     monkeypatch.setattr(service_module, "execute_publish_work", execute)

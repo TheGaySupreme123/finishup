@@ -1093,6 +1093,9 @@ def test_case_bound_trims_a_synthetic_excerpt_onto_its_linked_subject(
         omissions,
         gaps,
         fixed_item_ids=set(),
+        # d0781f890 (#1108): no narrative to omit first, and no protected diff floor here.
+        narrative_lists=(),
+        diff_floor=0,
     )
     assert dropped == 1
     assert gaps == {"content_unselected"}
@@ -1128,6 +1131,8 @@ def test_case_bound_trims_a_synthetic_excerpt_onto_its_linked_subject(
         kept,
         set(),
         fixed_item_ids=set(),
+        narrative_lists=(),
+        diff_floor=0,
     )
     assert kept[0].subject_ref == str(evd(1))
     # A recorded source that is not a ledger subject still raises. Subject validation is unchanged.
