@@ -107,6 +107,7 @@ from finishup.ports.objects import ObjectKind, ObjectMetadata, ObjectRef
 from finishup.ports.runtime import BundleRuntimePort, OwnershipFence, RouteCommand, TaskRuntime
 from finishup.ports.semantic import (
     MissingForAssessment,
+    MissingForAssessmentKind,
     ReviewerChallenge,
     SamplingParams,
     SemanticJudgment,
@@ -114,7 +115,14 @@ from finishup.ports.semantic import (
 from finishup.protocol.coverage import EvidenceImmutability
 from finishup.protocol.errors import ProtocolValueError, PublicErrorCode, PublicOperationError
 from finishup.protocol.ids import IdKind
-from finishup.protocol.models import CheckRequest, CheckScopeModel, SemanticReason, SemanticStatus
+from finishup.protocol.models import (
+    MAX_MISSING_REASON_BYTES,
+    MAX_REVIEW_TEXT_BYTES,
+    CheckRequest,
+    CheckScopeModel,
+    SemanticReason,
+    SemanticStatus,
+)
 from finishup.protocol.redacted_values import SemanticRedactedValue
 
 _TASK = "tsk_30000000-0000-4000-8000-000000000001"
@@ -2057,6 +2065,14 @@ async def test_insufficient_packet_names_each_missing_item_as_a_check_limitation
     assert app.ledger.last_missing == checked.missing_for_assessment
     assert app.ledger.last_conclusion == "insufficient_packet"
     wire = check_internal_json(checked)
+    # #1118 unit 4 (AIM-1): each kept request's own reason reaches the agent in the fenced
+    # summary; the invented target's reason does not, and no structural field carries reasons.
+    summary = str(app.ledger.last_review_summary)
+    assert "What the reviewer still needs" in summary
+    assert f"verification_output ({clm(1)}): test output absent" in summary
+    assert "command_identity (no named target): which command ran is not shown" in summary
+    assert "invented target" not in summary
+    assert "test output absent" not in str(wire["missing_for_assessment"])
     assert wire["missing_for_assessment"] == (
         {
             "availability": "structurally_unavailable_on_this_host",
@@ -2069,6 +2085,46 @@ async def test_insufficient_packet_names_each_missing_item_as_a_check_limitation
             "target_refs": (str(clm(1)),),
         },
     )
+
+
+@pytest.mark.anyio
+async def test_a_maximum_summary_never_erases_residual_reasons() -> None:
+    """#1118 unit 4 review R3: the reviewer's summary is clipped first, so each kept request keeps
+    its own words even beside a maximum valid summary and several maximum-size reasons."""
+
+    kinds: tuple[MissingForAssessmentKind, ...] = (
+        "command_identity",
+        "other",
+        "plan_or_claim_text",
+        "prior_finding_context",
+        "task_statement",
+        "verification_output",
+    )
+    reasons = {
+        kind: (f"NEED_{index}: " + "é" * MAX_MISSING_REASON_BYTES)[: MAX_MISSING_REASON_BYTES // 2]
+        for index, kind in enumerate(kinds)
+    }
+    assert all(len(reason.encode()) <= MAX_MISSING_REASON_BYTES for reason in reasons.values())
+    app = _App(semantic=True)
+    app.ledger.frozen = replace(app.ledger.frozen, case=_missing_case())
+    judgment = SemanticJudgment(
+        "insufficient_packet",
+        (),
+        review_summary="S" * MAX_REVIEW_TEXT_BYTES,
+        missing_for_assessment=tuple(
+            MissingForAssessment(kind, (), reasons[kind]) for kind in kinds
+        ),
+    )
+    app.semantic_result = replace(_succeeded(judgment), unsuppliable_missing_kinds=tuple(kinds))
+    await execute_check_commit(app, _request("semantic_required"))
+
+    summary = str(app.ledger.last_review_summary)
+    assert len(summary.encode()) <= MAX_REVIEW_TEXT_BYTES
+    head, _, tail = summary.partition("\n\nWhat the reviewer still needs")
+    assert head.startswith("S" * 128) and head.endswith(" [truncated]")
+    for index, kind in enumerate(kinds):
+        assert f"{index + 1}. {kind} (no named target): NEED_{index}: " + "é" * 64 in tail
+    assert tail.count(" [truncated]") == len(kinds)
 
 
 @pytest.mark.anyio
@@ -2120,10 +2176,14 @@ async def test_insufficient_packet_naming_nothing_records_none_and_says_so() -> 
 
 @pytest.mark.anyio
 @pytest.mark.parametrize("cites_new_material", [False, True])
-async def test_supplied_item_is_not_listed_again_unless_the_reviewer_cites_the_new_material(
+async def test_a_supplied_item_the_reviewer_asks_for_again_stays_listed(
     cites_new_material: bool,
 ) -> None:
-    """Scripted provider: the agent answered the prior request, the reviewer asks again."""
+    """Scripted provider: the agent answered the prior request, the reviewer asks again.
+
+    Owner decision B (#1118 unit 4): the linked supply counts as supplied (disclosed), but the
+    reviewer's repeat is never erased by it.
+    """
 
     app = _App(semantic=True)
     app.ledger.frozen = replace(app.ledger.frozen, case=_missing_case(pending=True, supplied=True))
@@ -2147,10 +2207,11 @@ async def test_supplied_item_is_not_listed_again_unless_the_reviewer_cites_the_n
         ]
         assert "semantic_missing_already_supplied" not in gaps
     else:
-        # The repeat is dropped and disclosed: the agent sees nothing it can add for it.
-        assert checked.missing_for_assessment == ()
+        # The repeat is kept; the earlier supply is disclosed, not called non-convergent.
+        assert [item.target_refs for item in checked.missing_for_assessment] == [targets]
         assert "semantic_missing_already_supplied" in gaps
-        assert "semantic_missing_agent_suppliable" not in gaps
+        assert "semantic_missing_non_convergent" not in gaps
+        assert "still cannot assess" in str(app.ledger.last_review_summary)
 
 
 @pytest.mark.anyio
@@ -2312,7 +2373,8 @@ async def test_a_fresh_diff_answers_a_captured_edit_only_for_the_path_it_records
     checked = await execute_check_commit(app, _request("semantic_required"))
     gaps = set(checked.coverage.known_gaps)
     if diff_path in {"src/a.py", "/work/repo/src/a.py"}:
-        assert checked.missing_for_assessment == ()
+        # Owner decision B (#1118 unit 4): supplied, disclosed, and the repeat still stands.
+        assert len(checked.missing_for_assessment) == 1
         assert "semantic_missing_already_supplied" in gaps
     else:
         assert [item.target_refs for item in checked.missing_for_assessment] == [(str(evd(1)),)]

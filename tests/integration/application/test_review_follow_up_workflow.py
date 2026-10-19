@@ -1,4 +1,6 @@
-"""One check answers the reviewer's own request and asks again (issue #1047).
+"""An insufficient review is one dispatch; the request returns to the agent (#1118 unit 4).
+
+The automatic in-check follow-up of issue #1047 is deleted.
 
 The real application, ledger and check commit with a hermetic reviewer that builds the real review
 case: the first packet has room for one excerpt and carries the newer of two recorded test
@@ -31,9 +33,7 @@ from finishup.application.semantic_case import (
 )
 from finishup.domain.findings import Finding, SemanticDispatchKind, SemanticProvenance
 from finishup.domain.privacy import ReviewContextProfile, ReviewSelectionPolicy
-from finishup.domain.review_input_render import render_review_input_manifest_lines
 from finishup.domain.values import JsonObject, freeze_json
-from finishup.mcp.summaries import summary_for_check
 from finishup.ports.ledger import CheckCommitResult, FrozenCase
 from finishup.ports.semantic import (
     MissingForAssessment,
@@ -41,12 +41,10 @@ from finishup.ports.semantic import (
     SemanticCase,
     SemanticJudgment,
 )
-from finishup.protocol.canonical import canonical_encode, strict_json_parse
+from finishup.protocol.canonical import strict_json_parse
 from finishup.protocol.models import (
     CheckRequest,
     PublishWorkRequest,
-    ReceiptRequest,
-    ReviewInputManifestModel,
     SemanticReason,
     SemanticStatus,
 )
@@ -183,7 +181,7 @@ def _evidence(event: int, evidence: str, at: str, text: str) -> dict[str, object
     }
 
 
-async def test_one_check_adds_the_requested_output_and_records_the_answer_on_it() -> None:
+async def test_an_insufficient_review_is_one_dispatch_and_returns_the_request() -> None:
     app, _policy = await build_projection_application("optional", seed=_SEED, max_findings=5)
     reviewer = _Reviewer()
     app = replace(app, semantic_evaluator=reviewer)
@@ -238,51 +236,14 @@ async def test_one_check_adds_the_requested_output_and_records_the_answer_on_it(
     )
 
     assert type(checked) is CheckCommitResult
-    # Two dispatches: the check's own packet, then the follow-up with the requested output.
-    assert [None if item is None else item.round for item in reviewer.follow_ups] == [None, 1]
-    shown = [
-        {item.source_ref for item in case.items if item.section == "excerpt"}
-        for case in reviewer.cases
-    ]
-    assert shown == [{_NEWER}, {_OLDER}]
+    # #1118 unit 4: one dispatch. No follow-up job rebuilds the packet; the reviewer's request
+    # goes back to the agent with its own reason in the fenced summary.
+    assert [None if item is None else item.round for item in reviewer.follow_ups] == [None]
     assert checked.semantic_status is SemanticStatus.SUCCEEDED
-    assert checked.semantic_conclusion == "no_material_discrepancy"
-    assert checked.missing_for_assessment == ()
+    assert checked.semantic_conclusion == "insufficient_packet"
+    assert [item.kind for item in checked.missing_for_assessment] == ["verification_output"]
     manifest = checked.review_input_manifest
     assert manifest is not None
-    assert manifest["follow_up_round"] == 1
-    rows = cast(tuple[JsonObject, ...], manifest["missing_inputs"])
-    assert [
-        (row["kind"], row["status"], tuple(cast(tuple[str, ...], row["supplied_refs"])))
-        for row in rows
-    ] == [("verification_output", "supplied", (_OLDER,))]
-
-    # The check wire (MCP structured content and the CLI) carries the round; the CLI renders it
-    # from the public model exactly as the receipt does.
+    assert "follow_up_round" not in manifest
     wire = check_internal_json(checked)
-    public = ReviewInputManifestModel.model_validate(
-        strict_json_parse(canonical_encode(wire["review_input_manifest"]))
-    )
-    assert public.follow_up_round == 1
-    cli_lines = render_review_input_manifest_lines(public.model_dump(mode="json", by_alias=True))
-    assert "follow-up round 1 of 3" in cli_lines[0]
-    assert "follow-up round 1 of 3" in summary_for_check(wire)
-
-    for offset, receipt_format in enumerate(("json", "markdown", "text")):
-        receipt = await app.receipt(
-            ReceiptRequest.model_validate(
-                {
-                    **request_base(protocol_id("req_", _SEED + 20 + offset)),
-                    "task_id": started.task_id,
-                    "session_id": started.session_id,
-                    "writer_id": started.writer_id,
-                    "expected_frontier": frontier_json(checked.result_frontier),
-                    "format": receipt_format,
-                    "include": "standard",
-                    "redaction_profile": "full_local",
-                }
-            )
-        )
-        rendered = str(receipt)
-        assert "follow-up round 1 of 3" in rendered
-        assert "verification_output=supplied; targets 1; supplied 1" in rendered
+    assert "What the reviewer still needs" in str(wire.get("review_summary"))

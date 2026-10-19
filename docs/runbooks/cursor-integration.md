@@ -2912,6 +2912,8 @@ observed run never answers `command_identity`; a respond counts only for a findi
 description never counts. Verified by
 `tests/unit/mcp/test_codex_structured_head.py::test_cursor_canonical_copy_lists_agent_next_first_or_second`.
 
+**Residual requests on Cursor (#1118 unit 4). Host decision: supported.** As on every host, the reviewer's own reason for each residual request reaches the agent inside the fenced `review_summary` ("What the reviewer still needs"), never in `agent_next` or the structural item; a linked supply no longer erases a reviewer's repeat (`semantic_missing_already_supplied` discloses it); and a `semantic_required` check stops at the same round limits, reading `incomplete_check`. The reviewer's own reads (up to three, bounded and privacy-checked) run in the service, not in the host, so they behave the same here; the provider route that serves them is a separate role (ADR-006). Recovery's `check_outcome` stays structural and omits the reason. The canonical text copy carries the reviewer section after the structural summary.
+
 
 ## Total reviewer packet budget (AIP-3/AIP-4, issue #1108)
 

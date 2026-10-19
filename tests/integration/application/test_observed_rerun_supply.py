@@ -443,5 +443,9 @@ async def test_an_observed_rerun_answers_the_request_on_the_next_check() -> None
         )
     )
     third = await _check(app, started, supplied.result_frontier, _SEED + 70)
-    assert third.missing_for_assessment == ()
-    assert "semantic_missing_already_supplied" in third.coverage.known_gaps
+    # #1118 unit 4 (AIM-5): two insufficient reviews in a row with no edit since stop the round
+    # for a required check too. Publishing the output does not re-arm it, so this check skips the
+    # unchanged redispatch and reads incomplete_check instead of asking a third time.
+    assert third.semantic_status is SemanticStatus.NOT_REQUESTED
+    assert "semantic_review_skipped_insufficient_packet" in third.coverage.known_gaps
+    assert third.verdict.value == "incomplete_check"

@@ -1888,6 +1888,13 @@ its `-part-NN` parts, not the source file; renderings say "of the captured item"
   reviewer could not tell whether the agent changed it (issue #1118 unit 1, ADR-031 amendment;
   `ready_composition._with_baseline_gap`). A closed disclosure code with no path; it is
   classified like `task_input_outside_not_admitted` (G4c disclosure, AI-powered baseline only).
+- `verification_input_directory_unresolved` — a recorded verification command named a file after
+  a directory change FinishUP cannot follow (`cd -`, `cd $X`, `cd` with no or several operands, a
+  `..` above the workspace, `popd`, a `cd` in a pipeline, behind a condition or an assignment
+  prefix, a subshell or compound command), so that oracle was left out rather than read as a
+  same-named file elsewhere (#1118 unit 4, AIP-2). Only a plain literal `cd`/`pushd` statement is
+  followed: `cd tests && pytest check.py` (or `;` or a newline) names `tests/check.py`. A closed
+  disclosure code with no path, classified like `task_input_baseline_unavailable`.
 - `task_input_outside_not_admitted` — the recipe carries task inputs and the task itself names an
   absolute file or folder outside the workspace that no `admitted_input_roots` entry covers (not a
   declared output, not in a system, scratch, log, cache, output, package-state, `bin` or
@@ -9690,11 +9697,15 @@ elsewhere; 1.0.0 stays frozen. Like the rulings, the list is read backward: a re
 names nothing (a local model or prompt-only host) keeps its conclusion and rulings with no items and
 discloses `semantic_missing_items_rejected`. A malformed item still rejects the reply. The check
 fence trims targets to the packet's `citable_refs`, as it trims a ruling's cited refs, dropping an
-item left with none (`semantic_missing_items_rejected`), and drops an item whose earlier request was
-answered by material recorded since unless the reviewer cites that material
-(`semantic_missing_already_supplied`). If the same target is named again without related agent
+item left with none (`semantic_missing_items_rejected`). An item whose earlier request was answered
+by material recorded since is kept (owner decision B, #1118 unit 4: a linked item counts as
+supplied, but the reviewer may still re-raise it) and discloses `semantic_missing_already_supplied`
+instead of `semantic_missing_non_convergent`. Each kept item's own `reason` reaches the agent only
+inside the fenced `review_summary`, under a fixed "What the reviewer still needs" header, with its
+targets trimmed to the same fence; it never enters `missing_for_assessment`, `agent_next`, a log or
+a structural record. If the same target is named again without related agent
 publication, the item remains actionable and adds `semantic_missing_non_convergent`; a genuinely
-new target is evaluated independently. "Answered" is judged per named target: a repeat is dropped
+new target is evaluated independently. "Answered" is judged per named target: a repeat reads as already supplied
 only when the earlier request named every one of its targets and each has new agent-published
 material directly tied to it. For an action, result or evidence target that is a result of the named
 action or of another run of the same command (text compared with whitespace collapsed; a hook run's
@@ -9732,7 +9743,7 @@ one command), its observed results and the captured `tool_output` of that run (w
 cites, or the late capture the observation writer linked to its action event when the Codex
 session-stream copy committed first) answer it; an observed result's own status-line summary is
 never output, observed rows never answer `command_identity` (they hold no command text), and a
-repeat is dropped as already supplied on observed material only when the sent packet carried its
+repeat reads as already supplied on observed material only when the sent packet carried its
 output whole (citable, and one excerpt or parts covering it; output clipped to a first part keeps
 the item and its in-check follow-up). A captured-output target linked to its run's action event
 names that run as a cited capture does, and of the four `supplied_since` refs per item the
@@ -9788,11 +9799,14 @@ optional `missing_for_assessment` (check-result 1.3.0, unreleased, additive) and
 check text list each item and its availability; status, TUI and receipts carry the gap codes. The
 reviewer's reason stays in the encrypted durable semantic response object.
 
-In-check follow-up (issue #1047, ADR-006). While a review concludes `insufficient_packet` and names
+In-check follow-up (issue #1047, ADR-006). **Superseded by #1118 unit 4: checks no longer start
+follow-up rounds; the reviewer reads permitted evidence itself ("Reviewer loop"). What follows
+describes recorded follow-up jobs and manifests, which old ledgers keep and FinishUP still decodes
+and renders.** While a review concludes `insufficient_packet` and names
 a `current_diff_for_path`, `verification_output`, `command_identity` or (since issue #1102) `other`
 item that the fence kept as
 `agent_suppliable` or `yoetz_limit_packet_room` and whose targets FinishUP holds rows for
-(`application.missing_for_assessment.plan_review_follow_up`; `FOLLOW_UP_KINDS`;
+(a planner deleted by #1118 unit 4; `FOLLOW_UP_KINDS`;
 `ReviewFollowUp`), the same `check` rebuilds the case with those rows' excerpts ranked first within
 `follow_up_byte_budget` (half the approved `max_total_excerpt_bytes`, shared by every round) and
 asks again, at most `MAX_REVIEW_FOLLOW_UP_ROUNDS` (3) times and only when the rebuilt packet carries
@@ -9800,7 +9814,7 @@ a requested excerpt no earlier packet of the check carried. A target resolves to
 an `evt_` target recorded, and for a run its results, its action and the evidence they cite;
 redacted rows never count. A `verification_output` or `other` item (`OBSERVED_FOLLOW_UP_KINDS`) may
 also name hook-captured output of the newest run of each command those targets name
-(`observed_command_output_refs`), and a `current_diff_for_path` or `other` item
+(the same planner), and a `current_diff_for_path` or `other` item
 (`SECTION_FOLLOW_UP_KINDS`) the current check-time change sections of a named edit's paths. An
 `other` item is answered only from those recorded sources; one naming only an obligation, claim,
 plan or the statement plans no round, and the reviewer's reason never chooses content. Selection
@@ -10179,7 +10193,8 @@ citation resolves to the evidence or result that event recorded before the after
 The open `unassessable` round is bounded: `review_round.unassessable_review_exhausted` stops the
 review round (`semantic_review_skipped_insufficient_packet`) after two completed reviews in a row
 ruled one finding `unassessable` with no edit since, or four in a row; the finding stays open and
-unresolved; a `semantic_required` check still runs its review.
+unresolved. A `semantic_required` check obeys the same stop (#1118 unit 4) and then reads
+`incomplete_check`.
 The resolution explanation of a latched row names it whatever the latest disposition, with no repair
 instruction; `respond` on it, or on a `verified_resolved` row, returns `finding_terminal` with a
 message that says nothing is owed. A

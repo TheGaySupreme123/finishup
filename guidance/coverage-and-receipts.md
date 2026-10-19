@@ -687,16 +687,13 @@ refs, and whether it is `agent_suppliable`, `structurally_unavailable_on_this_ho
 (unsupported data type, packet room): never your work and never a blocker; verify it yourself.
 Never reshape a deliverable to fit the reviewer. What answers each kind is in
 [workflow](workflow.md#missing-review-content-and-concrete-repair-attempts). If only FinishUP limits
-remain, the reviewer named none (`semantic_missing_items_rejected`), or
-`semantic_missing_already_supplied` says it repeated a request after you published or re-ran material for it,
-report the named limitation instead. A verification or `other` follow-up may include observed test, build, lint, or typecheck output the agent ran, marked observed, only under the gates in that workflow section (Private sends nothing; a command the agent did not run is never included); an `other` request is answered only from what FinishUP recorded for the run or edit it names, and one about anything else stays yours to supply. A named
+remain, or the reviewer named none (`semantic_missing_items_rejected`),
+report the named limitation instead. When `semantic_missing_already_supplied` says the reviewer asked again after you published or re-ran material for it, the item stays listed: read what the review summary says it still needs, supply exactly that once if it exists, and otherwise report the limitation. The reviewer reads recorded runs, observed output and workspace files itself, under the owner's privacy settings (Private sends nothing); what FinishUP never recorded stays yours to supply. A named
 item is a check limitation, never a finding.
 
-FinishUP may already have answered part of the request inside the same check: when the reviewer names
-recorded run output, an exact command or a captured edit the packet had no room for, FinishUP sends the
-packet again with that content first, up to three times. A manifest with `follow_up_round` shows the
-recorded review answered such a follow-up; its `missing_inputs` name what FinishUP added
-(`supplied_refs`). Do not publish it again; `missing_for_assessment` lists what remained.
+An older receipt's manifest may show `follow_up_round`: earlier versions resent the packet inside
+the check with requested content first. Current checks do not; the reviewer reads what it needs
+instead, and `missing_for_assessment` lists what remained.
 
 If `missing_for_assessment` names an `agent_suppliable` item you can supply, publish exactly that item once, linked to any named target, then `check` again. If it is already supplied, or it is a packet, type or authority limit, go to the receipt and state that specific limit. Only new material counts; tie it to any named target. The structured
 `overall_next` projection names that action and its bounded target refs (which may be empty for a

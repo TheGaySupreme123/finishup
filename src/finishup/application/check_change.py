@@ -86,6 +86,7 @@ __all__ = [
     "statement_input_paths",
     "task_input_paths",
     "verification_input_paths",
+    "verification_inputs_unresolved",
     "CheckChangeOutcome",
     "capture_structural_check_change",
     "capture_check_time_change",
@@ -965,8 +966,31 @@ _SPACED_JOINING_WORDS: Final = frozenset(
 )
 
 
+_DOT_RELATIVE_HEAD: Final = re.compile(r"[:!?*]*(?P<head>\.\.?/)")
+
+
+def _trim_statement_word(word: str) -> str:
+    """Strip sentence punctuation around a word without changing the path it names (AIP-5).
+
+    A leading ``./`` is kept as the workspace-relative path it names (``./docs/spec.md`` is
+    ``docs/spec.md``); a leading ``../`` is refused (empty) rather than stripped to a different
+    absolute path (``../shared/spec.md`` is never ``/shared/spec.md``). ``./`` alone stays ``./``.
+    """
+
+    value = word.rstrip(_STATEMENT_WORD_EDGE)
+    head = _DOT_RELATIVE_HEAD.match(value)
+    if head is None:
+        return value.lstrip(_STATEMENT_WORD_EDGE)
+    value = value[head.start("head") :]
+    if value.startswith("../"):
+        return ""
+    while value.startswith("./") and len(value) > 2:
+        value = value[2:]
+    return value
+
+
 def _statement_file_word(word: str) -> str | None:
-    value = word.strip(_STATEMENT_WORD_EDGE)
+    value = _trim_statement_word(word)
     if not value or "://" in value or value.endswith("/") or len(value) > 1_024:
         return None
     name = value.rsplit("/", 1)[-1]
@@ -1007,7 +1031,7 @@ def _spaced_candidate(value: str) -> tuple[str, bool] | None:
     only when the whole value names nothing there (``drop_space_cut_words``).
     """
 
-    value = value.strip(_STATEMENT_WORD_EDGE)
+    value = _trim_statement_word(value)
     if " /" in value:
         value = value[value.index(" /") + 1 :]
     words = value.split(" ")
@@ -1094,7 +1118,7 @@ def _statement_words(text: str) -> list[tuple[str, bool]]:
             if fragment.end() <= start:
                 words.append((text_value, False))
             elif tail and fragment.end() >= end:
-                kept = text_value.strip(_STATEMENT_WORD_EDGE)
+                kept = _trim_statement_word(text_value)
                 if _names_a_file(kept) or (kept.endswith("/") and "/" in kept.rstrip("/")):
                     words.append((text_value, True))
     return words
@@ -1159,6 +1183,15 @@ def verification_input_paths(projection: ProjectionState) -> tuple[str, ...]:
     input. A test the agent wrote or changed is therefore never read here; it is in the change.
     """
 
+    candidates: list[str] = []
+    for command in _verification_commands(projection):
+        candidates.extend(_verification_operands(command)[0])
+    return tuple(dict.fromkeys(candidates))[:_MAX_VERIFICATION_INPUT_CANDIDATES]
+
+
+def _verification_commands(projection: ProjectionState) -> list[str]:
+    """Recorded verification commands with a readable result, newest latest run first."""
+
     # Each command is ranked by its latest run, so a re-run moves its files ahead of a command run
     # in between.
     latest: dict[str, int] = {}
@@ -1179,19 +1212,136 @@ def verification_input_paths(projection: ProjectionState) -> tuple[str, ...]:
         if command not in latest and not command_is_verification(command):
             continue
         latest[command] = max(latest.get(command, row.source_frontier), row.source_frontier)
-    candidates: list[str] = []
-    for command, _ in sorted(latest.items(), key=lambda run: (-run[1], run[0])):
-        try:
-            words = shlex.split(command, posix=True)
-        except ValueError:
+    return [command for command, _ in sorted(latest.items(), key=lambda run: (-run[1], run[0]))]
+
+
+def verification_inputs_unresolved(projection: ProjectionState) -> bool:
+    """Whether a verification command named a file in a directory FinishUP cannot resolve (AIP-2).
+
+    Such an operand is never read as a guessed workspace-root file; the check discloses
+    ``verification_input_directory_unresolved`` instead. Same commands as
+    ``verification_input_paths``.
+    """
+
+    return any(_verification_operands(command)[1] for command in _verification_commands(projection))
+
+
+_SHELL_PUNCTUATION: Final = "();<>|&\n"
+_SHELL_OPERATOR: Final = re.compile(r"&&|\|\||;;|>>|>&|&>|[;|&()<>\n]")
+_SHELL_CONTROL: Final = frozenset({"&&", "||", ";", ";;", "|", "&", "\n", "(", ")"})
+_SHELL_REDIRECT: Final = frozenset({">", ">>", "<", ">&", "&>"})
+# A directory change counts only as a plain statement: after the start, ``;``, a newline or an
+# ``&&`` that follows another such change, and before ``&&``, ``;``, a newline or the end.
+_PLAIN_BEFORE: Final = frozenset({";", "\n"})
+_PLAIN_AFTER: Final = frozenset({"&&", ";", "\n"})
+_DIRECTORY_CHANGE: Final = frozenset({"cd", "pushd", "popd"})
+_SHELL_COMPOUND: Final = frozenset(
+    {"if", "then", "elif", "else", "fi", "for", "while", "until", "do", "done", "case", "esac"}
+    | {"select", "function", "{", "}", "!", "[[", "eval", "source", ".", "exec"}
+)
+_ASSIGNMENT: Final = re.compile(r"[A-Za-z_][A-Za-z0-9_]*=")
+
+
+def _shell_words(command: str) -> list[str] | None:
+    """``command`` split like a shell into words and single control operators, or ``None``."""
+
+    lexer = shlex.shlex(command, posix=True, punctuation_chars=_SHELL_PUNCTUATION)
+    lexer.whitespace = " \t\r"
+    lexer.whitespace_split = True
+    try:
+        raw = list(lexer)
+    except ValueError:
+        return None
+    words: list[str] = []
+    for word in raw:
+        if word and all(char in _SHELL_PUNCTUATION for char in word):
+            words.extend(_SHELL_OPERATOR.findall(word))
+        else:
+            words.append(word)
+    return words
+
+
+def _verification_operands(command: str) -> tuple[list[str], bool]:
+    """Literal file operands of one recorded command, resolved against its directory (AIP-2).
+
+    Only a narrow literal subset is modelled. The command splits like a shell at control
+    operators and newlines. A ``cd``/``pushd`` to a plain relative or absolute directory moves the
+    operand base only as a plain statement (``cd tests && pytest x.py``, ``cd tests; ...``). Any
+    other directory change (``cd -``, ``cd $X``, ``cd ~``, a ``..`` that leaves the workspace,
+    ``popd``, one in a pipeline, behind a condition or an assignment prefix) and any subshell or
+    compound command make later operands unresolvable: they are omitted and reported (second
+    value), never read as a same-named file at the workspace root. A published action records no
+    working directory, so the base starts at the workspace root. Redirection targets are not
+    operands.
+    """
+
+    words = _shell_words(command)
+    if words is None:
+        return [], False
+    found: list[str] = []
+    unresolved = False
+    base: str | None = ""
+    segment: list[str] = []
+    before: str | None = None
+    chained = False
+    for word in (*words, "\n"):
+        if word not in _SHELL_CONTROL:
+            segment.append(word)
             continue
-        for word in words[1:]:
-            if word.startswith("-"):
+        assigned = 0
+        while assigned < len(segment) and _ASSIGNMENT.match(segment[assigned]):
+            assigned += 1
+        head, operands = (
+            (segment[assigned], segment[assigned + 1 :]) if segment[assigned:] else ("", [])
+        )
+        plain = (before is None or before in _PLAIN_BEFORE or (before == "&&" and chained)) and (
+            word in _PLAIN_AFTER
+        )
+        chained = False
+        if head in _DIRECTORY_CHANGE:
+            if head == "popd" or assigned or not plain:
+                base = None
+            else:
+                base = _joined_directory(base, operands[0] if len(operands) == 1 else None)
+                chained = True
+            operands = []
+        elif head in _SHELL_COMPOUND:
+            base = None
+        segment = []
+        before = word
+        redirected = False
+        for operand in operands:
+            if redirected or operand in _SHELL_REDIRECT or operand.startswith("-"):
+                redirected = operand in _SHELL_REDIRECT
                 continue
-            value = _statement_file_word(_PYTEST_NODE_SUFFIX.sub("", word).removeprefix("./"))
-            if value is not None and _input_path(value) and "." in value.rsplit("/", 1)[-1]:
-                candidates.append(value)
-    return tuple(dict.fromkeys(candidates))[:_MAX_VERIFICATION_INPUT_CANDIDATES]
+            literal = _PYTEST_NODE_SUFFIX.sub("", operand)
+            if _statement_file_word(literal.removeprefix("../")) is None:
+                continue
+            joined = _joined_directory(base, literal)
+            value = None if joined is None else _statement_file_word(joined)
+            if value is None or not _input_path(value) or "." not in value.rsplit("/", 1)[-1]:
+                unresolved = unresolved or joined is None
+                continue
+            found.append(value)
+        if word in {"(", ")", ";;"}:
+            base = None
+    return found, unresolved
+
+
+def _joined_directory(base: str | None, path: str | None) -> str | None:
+    """``path`` beneath ``base``, normalized; ``None`` when it cannot be known or leaves the
+    workspace (an unknown base, a non-literal path, or a ``..`` above the workspace root)."""
+
+    if base is None or path is None or path.startswith("-") or not _input_path(path):
+        return None
+    if path.startswith("/"):
+        return os.path.normpath(path)
+    joined = os.path.normpath(f"{base}/{path}" if base else path)
+    if joined == ".":
+        return ""
+    if joined == ".." or joined.startswith("../"):
+        return None
+    return joined
 
 
 def review_input_paths(
@@ -1279,7 +1429,7 @@ def _task_input_candidates(
             # unchanged files and reads the ones most related to the change; outside it, only a
             # root the owner admitted lists one. A no-slash ``/app/vllm`` keeps its place above:
             # the read decides by what the path is.
-            folder = word.strip(_STATEMENT_WORD_EDGE) if value is None else value
+            folder = _trim_statement_word(word) if value is None else value
             if _statement_directory(folder):
                 directories.append(folder)
                 (cut if split else alone).add(folder)

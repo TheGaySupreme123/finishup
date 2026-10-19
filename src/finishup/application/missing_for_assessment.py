@@ -92,10 +92,8 @@ __all__ = [
     "excerpt_span_key",
     "excerpt_span_whole",
     "OBSERVED_COMMAND_OUTPUT_SPAN_PREFIX",
-    "observed_command_output_refs",
     "observed_enrichment_refs",
     "observed_image_evidence",
-    "plan_review_follow_up",
     "review_missing_for_assessment",
     "supplied_since",
     "unsupported_data_type",
@@ -354,13 +352,10 @@ FOLLOW_UP_KINDS: Final = frozenset(
     {"command_identity", "current_diff_for_path", "other", "verification_output"}
 )
 # The follow-up kinds the check-time change's current sections of a named edit answer, and those
-# hook-observed output of a named run answers (issues #1079, #1102). The planner and the packet's
-# selection read these same sets.
+# hook-observed output of a named run answers (issues #1079, #1102). The packet's selection
+# reads these sets.
 SECTION_FOLLOW_UP_KINDS: Final = frozenset({"current_diff_for_path", "other"})
 OBSERVED_FOLLOW_UP_KINDS: Final = frozenset({"other", "verification_output"})
-# Only content FinishUP holds and did not show: a target the agent could supply or one the packet
-# had no room for. A privacy-withheld, redacted or unsupported target is never re-sent.
-_FOLLOW_UP_AVAILABILITIES: Final = frozenset({AGENT_SUPPLIABLE, FINISHUP_LIMIT_PACKET_ROOM})
 
 
 @dataclass(frozen=True, slots=True)
@@ -512,328 +507,6 @@ class ReviewFollowUp:
 
         seen = self.seen_parts
         return frozenset(part for part in parts if not excerpt_span_covered(part, seen))
-
-
-def plan_review_follow_up(
-    projection: ProjectionState,
-    allowed: frozenset[str],
-    requested: Iterable[MissingForAssessmentItem],
-    *,
-    previous: ReviewFollowUp | None,
-    shown_refs: frozenset[str] | None,
-    privacy_withheld_refs: frozenset[str] = frozenset(),
-    shown_parts: frozenset[str] | None = None,
-    section_parts: Mapping[str, frozenset[str]] | None = None,
-) -> ReviewFollowUp | None:
-    """The next in-check follow-up round, or ``None`` when FinishUP has nothing it may add (#1047).
-
-    ``requested`` is the latest ``insufficient_packet`` request, already fenced and classified by
-    ``review_missing_for_assessment``. Only a ``FOLLOW_UP_KINDS`` item the agent could supply or
-    the packet had no room for, naming targets FinishUP holds rows for, is answered here; every
-    other item stays the agent's (or FinishUP's disclosed) business exactly as before. A round runs
-    only while the reviewer still names such an item, fewer than ``MAX_REVIEW_FOLLOW_UP_ROUNDS``
-    rounds ran, and some requested source is neither shown whole by the first packet nor
-    completed already: a source the first packet showed only in part still has parts to add
-    (tb4n5). ``shown_refs`` (what the first sent packet's excerpts held whole) is ``None`` when it
-    is unknown: then nothing can be called added, so no round runs. ``shown_parts`` are the
-    excerpt parts that packet carried (``None``: none known). ``privacy_withheld_refs`` are the
-    refs the latest sent packet withheld under a privacy rule; they join ``added_refs``, since
-    sending them again would only spend a round. ``section_parts`` maps each captured edit's
-    evidence ref to the check-time change sections of the paths it changed
-    (``semantic_case.current_section_parts``): a ``current_diff_for_path`` (or ``other``)
-    request for that edit is still owed while some of those bytes no packet carried, even when
-    the edit itself was shown whole. Whether a round's packet really adds a part is decided once
-    it is composed (``semantic_case.follow_up_new_parts``). A ``verification_output`` (or
-    ``other``) item also names hook-captured output of the newest run of each command its
-    targets name. That output stays owed until a sent packet carried its observed span, even
-    when a digest of the same evidence was shown whole. Selection, not this planner, applies the
-    repository-excerpt gate. An ``other`` item (issue #1102) is answered from exactly these
-    recorded sources; its reviewer-written reason never chooses content.
-    """
-
-    if previous is not None and previous.round >= MAX_REVIEW_FOLLOW_UP_ROUNDS:
-        return None
-    shown = previous.shown_refs if previous is not None else shown_refs
-    if shown is None:
-        return None
-    items = list(() if previous is None else previous.items)
-    known = {(item.kind, item.target_refs) for item in items}
-    asked = False
-    for entry in requested:
-        if (
-            entry.kind not in FOLLOW_UP_KINDS
-            or entry.availability not in _FOLLOW_UP_AVAILABILITIES
-            or not entry.target_refs
-        ):
-            continue
-        sources = _recorded_sources(projection, entry.target_refs, allowed)
-        if entry.kind in OBSERVED_FOLLOW_UP_KINDS:
-            # Maintainer-approved (issue #1079; ``other``, #1102): hook-captured output of a
-            # command this target names may ride the follow-up. Selection still applies the
-            # repository excerpt gate, the privacy policy and the existing byte limits.
-            sources |= observed_command_output_refs(projection, entry.target_refs, allowed)
-        if not sources:
-            continue
-        asked = True
-        key = (entry.kind, entry.target_refs)
-        if key in known or len(items) >= MAX_MISSING_FOR_ASSESSMENT:
-            continue
-        known.add(key)
-        items.append(ReviewFollowUpItem(entry.kind, entry.target_refs, sources))
-    if not asked or not items:
-        return None
-    added: frozenset[str] = frozenset() if previous is None else previous.added_refs
-    added |= privacy_withheld_refs & frozenset(ref for item in items for ref in item.source_refs)
-    follow_up = ReviewFollowUp(
-        1 if previous is None else previous.round + 1,
-        tuple(items),
-        shown,
-        added,
-        shown_parts=(
-            previous.shown_parts if previous is not None else (shown_parts or frozenset())
-        ),
-        added_parts=frozenset() if previous is None else previous.added_parts,
-    )
-    observed_refs = frozenset(
-        ref
-        for item in follow_up.items
-        if item.kind in OBSERVED_FOLLOW_UP_KINDS
-        for ref in observed_command_output_refs(projection, item.target_refs, allowed)
-    )
-    if (
-        not follow_up.source_refs - shown - added
-        and not _current_section_pending(follow_up, section_parts or {})
-        and not _observed_output_pending(follow_up, observed_refs)
-    ):
-        return None
-    return follow_up
-
-
-def _current_section_pending(
-    follow_up: ReviewFollowUp, section_parts: Mapping[str, frozenset[str]]
-) -> bool:
-    """Whether a ``current_diff_for_path`` (or ``other``, #1102) item's current file sections
-    still have bytes no packet of the check carried (tb4n5).
-
-    The current section of a path an edit changed comes from the check-time change, not from
-    the edit's own rows, so it can be owed even when the first packet showed the edit whole.
-    Judged per requested path, never by whether any other bytes of the change remain unseen.
-    """
-
-    seen = follow_up.seen_parts
-    return any(
-        not excerpt_span_covered(key, seen)
-        for item in follow_up.items
-        if item.kind in SECTION_FOLLOW_UP_KINDS
-        for ref in item.source_refs
-        for key in section_parts.get(ref, ())
-    )
-
-
-def _observed_output_pending(follow_up: ReviewFollowUp, observed_refs: frozenset[str]) -> bool:
-    """Whether a verification-output item still owes marked hook-captured command output.
-
-    A digest excerpt of the same evidence can be shown whole while the captured bytes were
-    not. The marked follow-up excerpt uses ``OBSERVED_COMMAND_OUTPUT_SPAN_PREFIX``, so the
-    round stays owed until a sent packet carried that span. Evidence the target does not
-    name, and evidence that is not hook-captured command output, is never in ``observed_refs``.
-    """
-
-    seen = follow_up.seen_parts
-    prefix = OBSERVED_COMMAND_OUTPUT_SPAN_PREFIX
-    return any(
-        not any(part.startswith(f"{prefix}{ref}#") for part in seen)
-        for ref in observed_refs & follow_up.source_refs
-    )
-
-
-def _recorded_sources(
-    projection: ProjectionState, targets: Iterable[str], allowed: frozenset[str]
-) -> frozenset[str]:
-    """The recorded rows whose excerpts carry what ``targets`` name (see ``ReviewFollowUpItem``).
-
-    Only action, result and evidence rows can carry an excerpt. A target that names none of them
-    and records none (an obligation, or the event that carried the task statement) is no source:
-    a request naming only such targets is the agent's to answer, and planning a round for it only
-    rebuilt the case to send nothing (tb4n5 react-lead-form, 19:35:05).
-    """
-
-    refs = set(targets)
-    enrichments = observed_enrichment_refs(projection)
-    for family in (projection.actions, projection.results, projection.evidence):
-        for key, row in family.items():
-            if str(row.source_event_id) in refs:
-                refs.add(str(key))
-    named = frozenset(refs)
-    for key, row in projection.results.items():
-        payload = row.payload
-        if payload is None or row.redacted:
-            continue
-        if str(key) in named or str(payload.action_id) in named:
-            action = projection.actions.get(payload.action_id)
-            refs.update(
-                (str(key), str(payload.action_id), *(str(ref) for ref in payload.evidence_refs))
-            )
-            if action is not None:
-                refs.update(enrichments.get(str(action.source_event_id), ()))
-    rows = {
-        str(key)
-        for family in (projection.actions, projection.results, projection.evidence)
-        for key in family
-    }
-    return frozenset(refs & allowed & rows) - _redacted_refs(projection)
-
-
-def observed_command_output_refs(
-    projection: ProjectionState, targets: Iterable[str], allowed: frozenset[str]
-) -> frozenset[str]:
-    """Hook-captured output of commands ``targets`` name, for a verification-output follow-up.
-
-    Only evidence a command result cites, stamped ``observation_captured``, allowed, and not
-    redacted. The newest run of each named command wins. A readable command action that no
-    readable result cites occupies that command: a tombstoned result no longer names its action,
-    so an older capture is not substituted. A tombstoned action has no command text left and
-    cannot occupy a key. A command with no run key (``omitted:structural``) identifies nothing
-    and is not included: unrelated commands must not be grouped, and a keyless capture is not
-    auto-supplied. Output of a command the targets do not name, and tool output an edit or file
-    read recorded, is never included. This names refs only; whether the bytes may leave is the
-    repository excerpt gate in selection.
-    """
-
-    named = {ref for ref in targets if type(ref) is str}
-    if not named:
-        return frozenset()
-    evidence_events = {
-        str(ref): str(row.source_event_id) for ref, row in projection.evidence.items()
-    }
-    enrichments = observed_enrichment_refs(projection)
-    # A later result of the same action (a Codex session-stream outcome correction of the hook's
-    # ``unknown`` result, #1105) is the same run: it carries the output its earlier result cites.
-    action_evidence: dict[str, set[str]] = {}
-    for row in projection.results.values():
-        if row.payload is not None:
-            action_evidence.setdefault(str(row.payload.action_id), set()).update(
-                str(ref) for ref in row.payload.evidence_refs
-            )
-    claim_supports: list[frozenset[str]] = []
-    for claim_ref, row in projection.claims.items():
-        payload = row.payload
-        if payload is None or row.redacted:
-            continue
-        if str(claim_ref) not in named and str(row.source_event_id) not in named:
-            continue
-        claim_supports.append(frozenset(str(ref) for ref in payload.supporting_refs))
-
-    # ``(key, frontier, result ref, evidence refs, redacted, directly named, related)``.
-    # A redacted newest run still occupies the command so an older capture is not substituted.
-    # The result payload is what named the action, so a tombstone cannot cite it; the readable
-    # action occupies the key instead.
-    runs: list[tuple[_RunKey | None, int, str, tuple[str, ...], bool, bool, bool]] = []
-    cited_actions: set[object] = set()
-    for result_ref, row in projection.results.items():
-        payload = row.payload
-        if payload is None:
-            continue
-        cited_actions.add(payload.action_id)
-        action_row = projection.actions.get(payload.action_id)
-        if (
-            action_row is None
-            or action_row.payload is None
-            or action_row.redacted
-            or action_row.payload.action_kind is not ActionKind.COMMAND
-        ):
-            continue
-        action = action_row.payload
-        key = _run_key(action)
-        evidence_refs = tuple(
-            sorted(
-                {
-                    *action_evidence.get(str(payload.action_id), ()),
-                    *enrichments.get(str(action_row.source_event_id), ()),
-                },
-                key=str.encode,
-            )
-        )
-        tokens = {
-            str(result_ref),
-            str(row.source_event_id),
-            str(payload.action_id),
-            str(action_row.source_event_id),
-            *evidence_refs,
-            *(evidence_events.get(ref, "") for ref in evidence_refs),
-        }
-        tokens.discard("")
-        direct = bool(named & tokens)
-        related = any(str(ref) in named for ref in action.obligation_refs) or any(
-            supports & tokens for supports in claim_supports
-        )
-        if key is None:
-            # No identity: do not group this run with any other, and do not auto-supply it.
-            continue
-        runs.append(
-            (
-                key,
-                row.source_frontier,
-                str(result_ref),
-                evidence_refs,
-                row.redacted,
-                direct,
-                related,
-            )
-        )
-    for action_ref, action_row in projection.actions.items():
-        if action_ref in cited_actions:
-            continue
-        action_payload = action_row.payload
-        if (
-            action_payload is None
-            or action_row.redacted
-            or action_payload.action_kind is not ActionKind.COMMAND
-        ):
-            continue
-        key = _run_key(action_payload)
-        if key is None:
-            continue
-        tokens = {str(action_ref), str(action_row.source_event_id)}
-        runs.append(
-            (
-                key,
-                action_row.source_frontier,
-                str(action_ref),
-                (),
-                True,
-                bool(named & tokens),
-                any(str(ref) in named for ref in action_payload.obligation_refs)
-                or any(supports & tokens for supports in claim_supports),
-            )
-        )
-
-    named_keys = {run[0] for run in runs if run[0] is not None and (run[5] or run[6])}
-    newest: dict[_RunKey, tuple[int, bytes, tuple[str, ...], bool]] = {}
-    for key, frontier, result_ref, evidence_refs, redacted, _direct, _related in runs:
-        if key is None or key not in named_keys:
-            continue
-        current = newest.get(key)
-        rank = (frontier, result_ref.encode("ascii"))
-        if current is None or rank > (current[0], current[1]):
-            newest[key] = (frontier, rank[1], evidence_refs, redacted)
-
-    chosen: list[str] = []
-    for _frontier, _result_id, evidence_refs, redacted in newest.values():
-        if not redacted:
-            chosen.extend(evidence_refs)
-
-    redacted_refs = _redacted_refs(projection)
-    kept: set[str] = set()
-    by_ref = {str(ref): row for ref, row in projection.evidence.items()}
-    for ref in chosen:
-        if ref not in allowed or ref in redacted_refs:
-            continue
-        row = by_ref.get(ref)
-        if row is None or row.redacted or row.payload is None or not _hook_observed(row.payload):
-            continue
-        kept.add(ref)
-    return frozenset(kept)
 
 
 def observed_enrichment_refs(projection: ProjectionState) -> dict[str, tuple[str, ...]]:
@@ -1876,9 +1549,10 @@ def review_missing_for_assessment(
     reviewer named nothing the packet held.
     An ``insufficient_packet`` that named no item at all discloses the same gap.
     An item the prior review already requested and the agent answered since, target by target,
-    is dropped unless the reviewer cites that newer material
-    (``semantic_missing_already_supplied``), so the same request cannot loop; only new material
-    directly tied to a target answers it (see ``_Links``; ``captured_edit_paths`` as in
+    is kept and disclosed as ``semantic_missing_already_supplied`` (owner decision B, #1118 unit
+    4): a linked publication counts as supplied, never as proof the reviewer's need was met, and
+    the round limits stop an unchanged repeat; only new material directly tied to a target
+    answers it (see ``_Links``; ``captured_edit_paths`` as in
     ``supplied_since``). A hook-observed re-run answers only an output request
     (``verification_output`` or ``other``) and only when this packet carried its output (W6,
     ADR-006 amendment): the captured tool output the run produced among the citable refs and
@@ -1976,9 +1650,15 @@ def review_missing_for_assessment(
                 )
             )
         )
-        if any(_answered(prior, prior_answers, refs) for prior, prior_answers in matching_prior):
+        # Owner decision B (#1118 unit 4): material linked to the earlier request counts as
+        # supplied, but it never proves the reviewer's need met. The repeat is kept, with the
+        # reviewer's reason in the fenced summary, and the supply is disclosed; the round limits,
+        # not this projection, end an unchanged repeat.
+        supplied_repeat = any(
+            _answered(prior, prior_answers, refs) for prior, prior_answers in matching_prior
+        )
+        if supplied_repeat:
             gaps.add(SEMANTIC_MISSING_ALREADY_SUPPLIED_GAP)
-            continue
         availability = (
             STRUCTURALLY_UNAVAILABLE
             if entry.kind in unsuppliable_kinds or set(refs) & (redacted | privacy_withheld_refs)
@@ -1990,7 +1670,7 @@ def review_missing_for_assessment(
                 change_clipped=change_clipped,
             )
         )
-        if matching_prior and availability == AGENT_SUPPLIABLE:
+        if matching_prior and availability == AGENT_SUPPLIABLE and not supplied_repeat:
             # The reviewer named only an earlier target set and no directly related publication
             # answered it. It stays the agent's work (a run never recorded is still owed), with
             # the non-convergent disclosure; the review round itself stops after the one retry

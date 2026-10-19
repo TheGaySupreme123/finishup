@@ -133,6 +133,8 @@ _CHANGED = frozenset(
         # #1118 unit 1: an outside input sent as current bytes with no kept copy; a disclosure on
         # the same terms.
         "task_input_baseline_unavailable",
+        # #1118 unit 4 (AIP-2): an oracle left out for an unresolvable directory; same terms.
+        "verification_input_directory_unresolved",
     }
 )
 _CARRIED = frozenset(_GUARDED_AT_BASE)
@@ -145,7 +147,8 @@ def test_the_classification_is_a_view_of_the_table_with_the_same_readiness_group
     # deliverable_references_ambiguous_name; #1019 r2 added advice_semantic_preview_required)
     # + the #1079 unresolved verification limit + 3 readiness-only finding tokens + the #1102
     # task_input_outside_not_admitted disclosure + the #1118 task_input_baseline_unavailable one.
-    assert len(GAP_EFFECT_TABLE) == 224
+    # + the #1118 unit 4 verification_input_directory_unresolved one.
+    assert len(GAP_EFFECT_TABLE) == 225
     for code, group in GAP_CLASSIFICATION.items():
         assert GAP_EFFECT_TABLE[code].readiness is group, code
     assert {row.why for row in GAP_EFFECT_TABLE.values()} <= set(GAP_EFFECT_WHY)
@@ -154,7 +157,8 @@ def test_the_classification_is_a_view_of_the_table_with_the_same_readiness_group
 def test_exactly_the_documented_rows_are_marked_changed() -> None:
     changed = {code for code, row in GAP_EFFECT_TABLE.items() if row.changed}
     assert changed == _CHANGED
-    assert len(changed) == 43
+    # +1: the #1118 unit 4 verification_input_directory_unresolved disclosure.
+    assert len(changed) == 44
 
 
 @pytest.mark.parametrize("route_requires_review", [False, True])

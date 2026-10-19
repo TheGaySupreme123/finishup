@@ -1857,3 +1857,42 @@ async def test_a_finding_the_reviewer_keeps_unassessable_stops_the_round_and_sta
     assert projection_snapshot(replay(_records(session.app))) == projection_snapshot(
         _live_projection(session.app)
     )
+
+
+async def test_a_required_review_stops_at_the_round_limits_and_ends_incomplete() -> None:
+    """#1118 unit 4 (AIM-5): ``semantic_required`` checks obey the same two-in-a-row stop. The
+    unchanged packet is not redispatched, and the stopped required review ends
+    ``incomplete_check`` with the skip disclosed, never success or a local fallback."""
+
+    seed = 5200
+    reviewer = _Reviewer(
+        [_challenge_obligation] + [_unassessable_first_finding] * 2 + [_no_challenges] * 5
+    )
+    session, frontier = await _session(reviewer, seed)
+    first = await _check(session, frontier, seed + 10)
+    raised = _semantic(first)
+    at = frontier_json(first.result_frontier)
+    repair, repaired = await _repair(session, at, seed + 15)
+    answered = await session.app.respond(
+        RespondRequest.model_validate(
+            {
+                **_respond_wire(
+                    session, repaired, at, raised, seed + 20, "acknowledged", "Recorded."
+                ),
+                "evidence_refs": [repair],
+            }
+        )
+    )
+    frontier = frontier_json(answered.result_frontier)
+    for round_seed in (seed + 30, seed + 40):
+        checked = await _check(session, frontier, round_seed)
+        assert checked.semantic_status is SemanticStatus.SUCCEEDED
+        frontier = frontier_json(checked.result_frontier)
+    assert len(reviewer.cases) == 3
+    for round_seed in (seed + 50, seed + 60, seed + 70):
+        checked = await _check(session, frontier, round_seed)
+        assert checked.semantic_status is SemanticStatus.NOT_REQUESTED
+        assert "semantic_review_skipped_insufficient_packet" in checked.coverage.known_gaps
+        assert checked.verdict.value == "incomplete_check"
+        frontier = frontier_json(checked.result_frontier)
+    assert len(reviewer.cases) == 3

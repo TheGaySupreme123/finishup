@@ -20,9 +20,9 @@ from builders.codex_replay import (
     session_start,
     sweep_all,
 )
+from builders.review_manifests import follow_up_round, run_sources
 from finishup.adapters.integrations.codex_session_stream import SessionStreamReader
 from finishup.adapters.integrations.observation_local import STREAM_MAPPING_VERSION
-from finishup.application.missing_for_assessment import plan_review_follow_up
 from finishup.application.semantic_content import resolve_captured_semantic_content
 from finishup.cli.observe_hooks import ServiceConnector, handle_observe
 from finishup.domain.events import EvidenceRecordedPayload, ResultRecordedPayload
@@ -190,17 +190,17 @@ async def test_plain_bash_f1_capture_and_stream_overlap(tmp_path: Path, stream_f
     # New evidence retains its action lineage and same-phase authenticated eligibility.
     assert any(item.observed_command == "pytest -q" for item in resolved.content)
     assert all(item.manifest.content_kind.value != "tool_input" for item in resolved.content)
-    from unit.application.test_review_follow_up import _build, _provider_contents, _requested, _send
+    from unit.application.test_review_follow_up import _build, _provider_contents, _send
 
-    result_id = next(iter(frozen.case.projection.results))
-    follow_up = plan_review_follow_up(
-        frozen.case.projection,
-        frozenset(map(str, frozen.case.allowed_ids)),
-        (_requested("verification_output", str(result_id), availability="agent_suppliable"),),
-        previous=None,
-        shown_refs=frozenset(),
+    result_id = str(next(iter(frozen.case.projection.results)))
+    allowed = frozenset(map(str, frozen.case.allowed_ids))
+    follow_up = follow_up_round(
+        (
+            "verification_output",
+            (result_id,),
+            run_sources(frozen.case.projection, result_id, allowed),
+        )
     )
-    assert follow_up is not None
     built = _build(
         frozen.case,
         follow_up=follow_up,

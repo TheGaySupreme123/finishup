@@ -126,8 +126,8 @@ _SUPPLY_LIMIT: Final = (
     "is a packet, type or authority limit, go to the receipt and state that specific limit."
 )
 _OBSERVED_OUTPUT: Final = (
-    "Verification follow-ups include observed test, build, lint, or typecheck output only when a "
-    "repository excerpt would be sent."
+    "Observed test, build, lint, or typecheck output reaches the reviewer only when a repository "
+    "excerpt would be sent."
 )
 # W6 (#1107, ADR-006 amendment): a re-run FinishUP observed counts only once its output reaches
 # the reviewer; a respond counts only for a finding target, a description never.

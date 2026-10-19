@@ -89,3 +89,24 @@ def test_the_findings_counted_in_the_json_are_the_findings_named_in_the_text() -
     for row in json_wire["findings"]:
         assert row["finding_id"] in text
     assert f"findings returned: {len(json_wire['findings'])}" in text
+
+
+def test_the_reviewers_residual_reason_reaches_the_mcp_text_and_the_cli() -> None:
+    """#1118 unit 4 (AIM-1): two different needs of one kind no longer read alike; the reason
+    travels in the fenced reviewer summary on both text surfaces, never in the structural item."""
+
+    reason = "Section 4 of spec/API.md is not in the packet."
+    summary = (
+        "Could not assess.\n\nWhat the reviewer still needs (its own words; advisory and "
+        f"unverified):\n1. other (no named target): {reason}"
+    )
+    json_wire, text, cli = _agreed(
+        "insufficient_coverage",
+        review_summary=summary,
+        missing_for_assessment=[
+            {"kind": "other", "target_refs": [], "availability": "agent_suppliable"}
+        ],
+    )
+    assert reason in text
+    assert reason in cli
+    assert reason not in json.dumps(json_wire["missing_for_assessment"])

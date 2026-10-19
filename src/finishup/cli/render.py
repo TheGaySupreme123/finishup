@@ -523,6 +523,10 @@ def render_human_check(result: CheckSuccessModel) -> str:
         # Issue #907: a check limitation, never a finding. Recheck only after supplying an
         # agent-suppliable item; otherwise report the limitation.
         lines.extend(render_missing_for_assessment_lines(result.missing_for_assessment))
+        if isinstance(result.review_summary, str):
+            # #1118 unit 4 (AIM-1): the reviewer's own words on what it still needs live in the
+            # privacy-projected summary; shown here as advisory text, never as an instruction.
+            lines.append("Reviewer summary (advisory): " + result.review_summary)
     if result.semantic_withheld_items:
         lines.append("Withheld review items (the reviewer continued without them):")
         for item in result.semantic_withheld_items:

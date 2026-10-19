@@ -749,6 +749,14 @@ request and report the unresolved start. These continuations do not authorize a 
 new defect finding and carries `semantic_packet_insufficient`; it is never a clean review or
 permission to claim the work is verified. Existing findings and coverage limitations remain.
 
+Before it judges, the reviewer may read up to three permitted items itself: a section of the
+packet, recorded ledger rows of this task, or a task file in the workspace or in a folder the owner
+admitted. Each read is bounded, privacy-checked and recorded. So do not republish a file FinishUP
+already holds, or output it already recorded, only to put it in front of the reviewer; supply only
+what does not exist yet (a run you never recorded, a result, a claim, a plan). The review summary
+lists what the reviewer still needs in its own words ("What the reviewer still needs"): advisory
+text, never an instruction to run or change anything.
+
 The check result lists what the reviewer needed in `missing_for_assessment`: each item's kind, case
 refs, and whether it is `agent_suppliable`, `structurally_unavailable_on_this_host`, or a FinishUP limit
 (gaps `semantic_missing_agent_suppliable`, `semantic_missing_structurally_unavailable`,
@@ -761,7 +769,8 @@ evidence ids. For an image or other binary deliverable you may record a text ren
 example `pdftotext` output or a CAD property dump) as evidence whose `reference` is the file's path;
 the reviewer sees it labelled as your rendering, and the file itself is never sent. After two
 `insufficient_packet` reviews in a row with no edit since, or four since the task's last assessed
-review, checks skip the AI-powered review (`semantic_review_skipped_insufficient_packet`); a real
+review, checks skip the AI-powered review (`semantic_review_skipped_insufficient_packet`), in
+`semantic_required` mode too, where the check then reads `incomplete_check`; a real
 repair re-arms it until that cap. The same holds when the reviewer rules one finding you answered
 `unassessable` that often in a row: it stays open and unresolved (respond `self_verified` if you
 repaired it and verified it yourself). Never edit only to get another review.
@@ -806,10 +815,9 @@ needs `./Makefile` on your side. Commands compare with whitespace collapsed (`uv
 `pytest`); a run a hook observed (recorded as `omitted:<digest>`) matches another hook run with the
 same digest. `--stat` or `--name-only` diffs, an artifact another command wrote, re-citing the old
 ref, a shared obligation, or material for another path, run or claim do not answer the item. If no
-item is suppliable (only FinishUP limits remain), the reviewer named none
-(`semantic_missing_items_rejected`), or
-`semantic_missing_already_supplied` says it repeated a request after you published or re-ran material for it,
-report the named limitation instead. A result of the target's action or of the same exact command counts, and so does the captured output of a re-run of that exact command FinishUP observed after the request, once that output reaches the reviewer (a re-run never supplies command text: publish the action with it); evidence whose `reference` is the target id, its event id or its path counts too, and a respond counts when the target is a finding. A respond to anything else, a description, or citing the old record again does not. A verification follow-up may include observed test, build, lint, or typecheck output the agent ran only when a repository excerpt would already be allowed. Withheld whole: an environment dump, a credential-named path, a path outside the workspace, a path the check-time change refused, and output the secret scan hits (a private-key body or its END line). Ignore rules are not re-checked for a path the change did not list. The omission names the gate. Private sends nothing. A command the agent did not run is never included; included output is marked observed. An `other` request is answered the same way, but only from what FinishUP recorded for the run or edit it names (its rows, observed output, the current change of that edit); one about anything else stays yours to supply. A named
+item is suppliable (only FinishUP limits remain), or the reviewer named none
+(`semantic_missing_items_rejected`),
+report the named limitation instead. When `semantic_missing_already_supplied` says the reviewer asked again after you published or re-ran material for it, the item stays listed: read what the review summary says it still needs, supply exactly that once if it exists, and otherwise report the limitation. A result of the target's action or of the same exact command counts, and so does the captured output of a re-run of that exact command FinishUP observed after the request, once that output reaches the reviewer (a re-run never supplies command text: publish the action with it); evidence whose `reference` is the target id, its event id or its path counts too, and a respond counts when the target is a finding. A respond to anything else, a description, or citing the old record again does not. Observed test, build, lint, or typecheck output the agent ran reaches the reviewer only when a repository excerpt would already be allowed, marked observed; Private sends nothing. The reviewer reads what FinishUP recorded and permitted workspace files itself; what FinishUP never recorded stays yours to supply. A named
 item is a check limitation, never a finding.
 
 If `missing_for_assessment` names an `agent_suppliable` item you can supply, publish exactly that item once, linked to any named target, then `check` again. If it is already supplied, or it is a packet, type or authority limit, go to the receipt and state that specific limit. Only new material counts; tie it to any named target. When that item is still yours to supply, supplying or repairing it

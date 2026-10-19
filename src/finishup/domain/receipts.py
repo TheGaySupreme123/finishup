@@ -189,6 +189,7 @@ __all__ = [
     "check_time_change_gap_sentence",
     "TASK_FACT_GAP_SENTENCES",
     "TASK_INPUT_BASELINE_UNAVAILABLE_GAP",
+    "VERIFICATION_INPUT_DIRECTORY_UNRESOLVED_GAP",
     "TASK_INPUT_OUTSIDE_NOT_ADMITTED_GAP",
     "TASK_INPUT_OUTSIDE_NOT_ADMITTED_SHORT_SENTENCE",
     "check_time_change_unavailable_reason_gap",
@@ -481,6 +482,10 @@ TASK_INPUT_OUTSIDE_NOT_ADMITTED_GAP: Final = "task_input_outside_not_admitted"
 # copy from the task's start or from when the task first named it, so whether the agent changed it
 # is unknown. A closed disclosure code with no path, on the same terms as the one above.
 TASK_INPUT_BASELINE_UNAVAILABLE_GAP: Final = "task_input_baseline_unavailable"
+# #1118 unit 4 (AIP-2): a verification command named a file after a directory change FinishUP
+# cannot resolve (``cd -``, ``cd $X``, a subshell), so that oracle was left out rather than read
+# as a same-named file elsewhere. A closed disclosure code with no path, on the same terms.
+VERIFICATION_INPUT_DIRECTORY_UNRESOLVED_GAP: Final = "verification_input_directory_unresolved"
 # The bounded MCP summary's shorter form of that code's sentence; it still names the owner's step.
 TASK_INPUT_OUTSIDE_NOT_ADMITTED_SHORT_SENTENCE: Final = (
     "Review lacked a task-named file or folder outside the workspace; only the owner can admit"
@@ -523,6 +528,12 @@ def check_time_change_gap_sentence(code: str) -> str | None:
             "Review read a task-named file outside the workspace as it is now. FinishUP kept no"
             " copy from when the task started or first named it, so the reviewer could not tell"
             " whether the agent changed it."
+        )
+    if code == VERIFICATION_INPUT_DIRECTORY_UNRESOLVED_GAP:
+        return (
+            "A recorded verification command named a file after a directory change FinishUP"
+            " could not follow, so review did not receive that file rather than a same-named"
+            " file from another directory."
         )
     if code == CHECK_TIME_CHANGE_PATH_UNREPRESENTABLE_GAP:
         return (

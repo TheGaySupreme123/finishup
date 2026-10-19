@@ -676,10 +676,11 @@ seven are not all proven agreed repairs; the admission hole and the terminal tex
   turned into a dispute by this: it stays open, the receipt reads `unresolved_findings_remain` and
   discloses the skip, closure readiness demands no further review, and the gap is a FinishUP limit,
   so the agent may answer `self_verified` for a repair it verified itself. A recorded edit re-arms
-  one more review until the cap of four. As for insufficient packets, a `semantic_required` check
-  still runs the review the user or policy requires; the bound stops the reviews FinishUP would
-  otherwise keep requesting. (The tb4n5 Codex check reproduced the unbounded form: budget 2,
-  seven completed reviews, eight provider calls.)
+  one more review until the cap of four. As for insufficient packets, the bound applies to a
+  `semantic_required` check too (#1118 unit 4, AIM-5, superseding the earlier exemption): it skips
+  the redispatch, discloses the same code and reads `incomplete_check`, never success or a local
+  fallback (ADR-006). (The tb4n5 Codex check reproduced the unbounded form: budget 2, seven
+  completed reviews, eight provider calls.)
 - No-repeat protection is unchanged: an acknowledgement with a reason still counts as a rebuttal
   (owner, 2026-10-13); a held-open ruling or a restatement of the concern over it that cites
   nothing newer still latches the dispute; a restatement that contradicts a `fixed` ruling still

@@ -26,13 +26,12 @@ from builders.policy_cases import (
     record,
     res,
 )
+from builders.review_manifests import follow_up_round
 from finishup.application.missing_for_assessment import (
     OBSERVED_COMMAND_OUTPUT_SPAN_PREFIX,
     ReviewFollowUp,
     ReviewFollowUpItem,
     excerpt_span_whole,
-    observed_command_output_refs,
-    plan_review_follow_up,
     review_missing_for_assessment,
 )
 from finishup.application.semantic_case import (
@@ -64,9 +63,7 @@ from finishup.domain.events import (
     ClaimKind,
     ClaimRecordedPayload,
     EvidenceContentAvailability,
-    EvidenceDigestBinding,
     EvidenceDigestProvenance,
-    EvidenceDigestSubject,
     EvidenceKind,
     EvidenceRecordedPayload,
     MissingForAssessmentItem,
@@ -227,184 +224,29 @@ def _excerpt_refs(semantic: SemanticCase) -> frozenset[str]:
     return frozenset(item.source_ref for item in semantic.items if item.section == "excerpt")
 
 
-def _requested(kind: str, *targets: str, availability: str = "yoetz_limit_packet_room"):
-    return MissingForAssessmentItem(kind=kind, target_refs=targets, availability=availability)
-
-
-# --- The planner: what FinishUP may answer, and when it stops -------------------------------------
-
-
-def test_a_run_request_resolves_to_the_run_its_output_and_its_command() -> None:
-    case, _refs = _verification_case(20)
-    first = _build(case)
-    shown = _excerpt_refs(first)
-    assert str(evd(1)) not in shown
-
-    follow_up = plan_review_follow_up(
-        case.projection,
-        frozenset(str(ref) for ref in case.allowed_ids),
-        (_requested("verification_output", str(res(1)), availability="agent_suppliable"),),
-        previous=None,
-        shown_refs=shown,
-    )
-
-    assert follow_up is not None
-    assert follow_up.round == 1
-    assert follow_up.shown_refs == shown
-    assert follow_up.added_refs == frozenset()
-    (item,) = follow_up.items
-    assert (item.kind, item.target_refs) == ("verification_output", (str(res(1)),))
-    assert item.source_refs == {str(res(1)), str(act(1)), str(evd(1))}
-
-
-def test_an_event_target_names_the_rows_it_recorded() -> None:
-    case, _refs = _verification_case(20)
-    # The result was recorded by evt(3) (``record`` numbers each row's event).
-    follow_up = plan_review_follow_up(
-        case.projection,
-        frozenset(str(ref) for ref in case.allowed_ids),
-        (_requested("verification_output", str(evt(3))),),
-        previous=None,
-        shown_refs=frozenset(),
-    )
-    assert follow_up is not None
-    assert {str(res(1)), str(evd(1)), str(act(1))} <= follow_up.items[0].source_refs
-
-
-@pytest.mark.parametrize(
-    "item",
-    [
-        # Kinds FinishUP never answers itself: they stay the agent's, exactly as before.
-        _requested("task_statement", str(clm(1)), availability="agent_suppliable"),
-        _requested("plan_or_claim_text", str(clm(1)), availability="agent_suppliable"),
-        # ``other`` naming only a claim: no recorded row carries it (issue #1102).
-        _requested("other", str(clm(1)), availability="agent_suppliable"),
-        # Content the packet may never carry is never re-sent.
-        _requested(
-            "verification_output", str(res(1)), availability="structurally_unavailable_on_this_host"
-        ),
-        _requested(
-            "verification_output", str(res(1)), availability="yoetz_limit_unsupported_data_type"
-        ),
-        # An item naming no target cannot be bound to a recorded row.
-        _requested("verification_output", availability="agent_suppliable"),
-    ],
-)
-def test_requests_finishup_cannot_answer_leave_the_check_unchanged(
-    item: MissingForAssessmentItem,
-) -> None:
-    case, _refs = _verification_case(20)
-    assert (
-        plan_review_follow_up(
-            case.projection,
-            frozenset(str(ref) for ref in case.allowed_ids),
-            (item,),
-            previous=None,
-            shown_refs=frozenset(),
-        )
-        is None
-    )
-
-
-def test_no_round_runs_when_everything_requested_was_already_shown_or_unknown() -> None:
-    case, _refs = _verification_case(20)
-    allowed = frozenset(str(ref) for ref in case.allowed_ids)
-    request = (_requested("verification_output", str(res(1))),)
-    everything = frozenset({str(res(1)), str(act(1)), str(evd(1))})
-    assert (
-        plan_review_follow_up(
-            case.projection, allowed, request, previous=None, shown_refs=everything
-        )
-        is None
-    )
-    # The first packet could not be read: nothing can be called added, so nothing is sent.
-    assert (
-        plan_review_follow_up(case.projection, allowed, request, previous=None, shown_refs=None)
-        is None
-    )
-
-
-def test_rounds_accumulate_in_request_order_and_stop_at_the_bound() -> None:
-    case, _refs = _verification_case(20)
-    allowed = frozenset(str(ref) for ref in case.allowed_ids)
-    first = plan_review_follow_up(
-        case.projection,
-        allowed,
-        (_requested("verification_output", str(res(1))),),
-        previous=None,
-        shown_refs=frozenset(),
-    )
-    assert first is not None
-    after_first = replace(first, added_refs=frozenset({str(evd(1))}))
-    second = plan_review_follow_up(
-        case.projection,
-        allowed,
-        (
-            _requested("verification_output", str(res(1))),
-            _requested("command_identity", str(act(1))),
-        ),
-        previous=after_first,
-        shown_refs=frozenset({"ignored"}),
-    )
-    assert second is not None
-    assert second.round == 2
-    # The earlier item keeps its place; the first packet's shown set and the added refs carry.
-    assert [(item.kind, item.target_refs) for item in second.items] == [
-        ("verification_output", (str(res(1)),)),
-        ("command_identity", (str(act(1)),)),
-    ]
-    assert second.shown_refs == frozenset()
-    assert second.added_refs == frozenset({str(evd(1))})
-    last = replace(second, round=MAX_REVIEW_FOLLOW_UP_ROUNDS)
-    assert (
-        plan_review_follow_up(
-            case.projection,
-            allowed,
-            (_requested("verification_output", str(res(1))),),
-            previous=last,
-            shown_refs=frozenset(),
-        )
-        is None
-    )
-
-
-def test_a_repeated_request_with_nothing_left_to_add_ends_the_follow_up() -> None:
-    case, _refs = _verification_case(20)
-    allowed = frozenset(str(ref) for ref in case.allowed_ids)
-    first = plan_review_follow_up(
-        case.projection,
-        allowed,
-        (_requested("verification_output", str(res(1))),),
-        previous=None,
-        shown_refs=frozenset({str(act(1)), str(res(1))}),
-    )
-    assert first is not None
-    added = replace(first, added_refs=frozenset({str(evd(1))}))
-    assert (
-        plan_review_follow_up(
-            case.projection,
-            allowed,
-            (_requested("verification_output", str(res(1))),),
-            previous=added,
-            shown_refs=None,
-        )
-        is None
-    )
-
-
 # --- The packet: requested excerpts first, within a bounded share ------------------------------
 
 
+def _run(number: int, action: int | None = None) -> set[str]:
+    """The rows one recorded run holds: its result, action and cited evidence."""
+
+    return {str(res(number)), str(act(number if action is None else action)), str(evd(number))}
+
+
 def _follow_up(case: DeterministicCase, shown: frozenset[str]) -> ReviewFollowUp:
-    follow_up = plan_review_follow_up(
-        case.projection,
-        frozenset(str(ref) for ref in case.allowed_ids),
-        (_requested("verification_output", str(res(1))),),
-        previous=None,
-        shown_refs=shown,
+    return follow_up_round(("verification_output", (str(res(1)),), _run(1)), shown=shown)
+
+
+def _edit_round(
+    shown: frozenset[str] | None,
+    shown_parts: frozenset[str] | None,
+    kind: str = "current_diff_for_path",
+) -> ReviewFollowUp:
+    """A round asking for the captured edit ``evd(1)`` after a first packet showed ``shown``."""
+
+    return follow_up_round(
+        (kind, (str(evd(1)),), {str(evd(1))}), shown=shown, shown_parts=shown_parts
     )
-    assert follow_up is not None
-    return follow_up
 
 
 def test_the_follow_up_packet_carries_the_requested_output_and_says_so() -> None:
@@ -648,15 +490,9 @@ def test_a_request_for_a_later_part_of_an_omitted_captured_group_is_answered() -
     assert str(evd(21)) in semantic_case_packet_view(first).citable_refs
     shown = sent_excerpt_content_refs(first, _provider_manifest(_send(first)))
     assert shown is not None and str(evd(21)) not in shown
-    follow_up = plan_review_follow_up(
-        case.projection,
-        frozenset(str(ref) for ref in case.allowed_ids),
-        (_requested("verification_output", str(evd(21))),),
-        previous=None,
-        shown_refs=shown,
+    follow_up = follow_up_round(
+        ("verification_output", (str(evd(21)),), {str(evd(21))}), shown=shown
     )
-    assert follow_up is not None
-    assert follow_up.items[0].source_refs == {str(evd(21))}
 
     again = _build(
         case,
@@ -716,23 +552,11 @@ def test_every_part_of_a_group_is_linked_even_when_citing_claims_fill_the_bound(
     sent = _provider_manifest(_send(semantic))
     shown = sent_excerpt_content_refs(semantic, sent)
     assert shown is not None and str(evd(21)) in shown
-    # Shown whole: the group's one excerpt part was sent, so nothing of it is left to add and a
-    # request naming the second part sends no round (tb4n5: judged per part, not per ref).
+    # Shown whole: the group's one excerpt part was sent (tb4n5: judged per part, not per ref).
     shown_parts = sent_excerpt_parts(semantic, sent)
     assert shown_parts is not None
     ((group_part,),) = [[key for key in shown_parts if key.startswith(f"{evd(20)}#")]]
     assert group_part.startswith(f"{evd(20)}#0-")
-    assert (
-        plan_review_follow_up(
-            case.projection,
-            allowed,
-            (_requested("verification_output", str(evd(21))),),
-            previous=None,
-            shown_refs=shown,
-            shown_parts=shown_parts,
-        )
-        is None
-    )
 
 
 def test_an_ordinary_excerpt_keeps_its_first_sixteen_links_in_byte_order() -> None:
@@ -750,40 +574,8 @@ def test_an_ordinary_excerpt_keeps_its_first_sixteen_links_in_byte_order() -> No
     assert plain.linked_subject_refs == tuple(sorted(every & allowed, key=str.encode)[:16])
 
 
-def test_a_ref_a_sent_packet_withheld_under_a_privacy_rule_never_justifies_a_round() -> None:
-    """Privacy withholds the same row from every packet of the check, so it is not sent again."""
-
-    case, _refs = _verification_case(20)
-    allowed = frozenset(str(ref) for ref in case.allowed_ids)
-    request = (_requested("verification_output", str(res(1))),)
-    shown = frozenset({str(res(1)), str(act(1))})
-    held = frozenset({str(evd(1))})
-    assert (
-        plan_review_follow_up(
-            case.projection,
-            allowed,
-            request,
-            previous=None,
-            shown_refs=shown,
-            privacy_withheld_refs=held,
-        )
-        is None
-    )
-    # Withheld for room (no privacy rule), the output is still FinishUP's to send.
-    room = plan_review_follow_up(case.projection, allowed, request, previous=None, shown_refs=shown)
-    assert room is not None and room.added_refs == frozenset()
-    # A later round's packet withheld it under a privacy rule: no further round is sent for it.
-    assert (
-        plan_review_follow_up(
-            case.projection,
-            allowed,
-            request,
-            previous=room,
-            shown_refs=None,
-            privacy_withheld_refs=held | {str(evd(9))},
-        )
-        is None
-    )
+def test_a_request_for_any_part_of_a_privacy_withheld_group_is_a_privacy_limit() -> None:
+    """Privacy withholds a captured group whole, so a request naming any part is that limit."""
 
     # A captured group withheld whole: its omission row names only the lead evidence, yet the
     # rule withheld every part with it, so naming the second part reads like naming the lead.
@@ -827,18 +619,6 @@ def test_a_ref_a_sent_packet_withheld_under_a_privacy_rule_never_justifies_a_rou
         assert [item.availability for item in classified.items] == [
             "structurally_unavailable_on_this_host"
         ]
-    for target in (str(evd(20)), str(evd(21))):
-        assert (
-            plan_review_follow_up(
-                group_case.projection,
-                frozenset(str(ref) for ref in group_case.allowed_ids),
-                (_requested("verification_output", target, availability="agent_suppliable"),),
-                previous=None,
-                shown_refs=shown,
-                privacy_withheld_refs=withheld,
-            )
-            is None
-        )
 
 
 def test_a_follow_up_value_is_bounded() -> None:
@@ -961,7 +741,6 @@ def test_a_partly_shown_capture_adds_its_next_parts_never_the_one_shown() -> Non
 
     case, captured, scope = _split_capture_case()
     selection = _small_parts()
-    allowed = frozenset(str(ref) for ref in case.allowed_ids)
     first = _build(
         case, selection=selection, captured_content=captured, captured_content_scope=scope
     )
@@ -976,18 +755,9 @@ def test_a_partly_shown_capture_adds_its_next_parts_never_the_one_shown() -> Non
     assert shown is not None and shown_parts is not None
     assert str(evd(1)) not in shown  # shown only in part
     assert parts[_part_id(1)] in shown_parts and parts[_part_id(2)] not in shown_parts
-    request = (_requested("current_diff_for_path", str(evd(1))),)
 
-    follow_up = plan_review_follow_up(
-        case.projection,
-        allowed,
-        request,
-        previous=None,
-        shown_refs=shown,
-        shown_parts=shown_parts,
-    )
+    follow_up = _edit_round(shown, shown_parts)
 
-    assert follow_up is not None and follow_up.shown_parts == shown_parts
     again = _build(
         case,
         follow_up=follow_up,
@@ -1013,10 +783,7 @@ def test_a_partly_shown_capture_adds_its_next_parts_never_the_one_shown() -> Non
     assert round_one is not None
     after = replace(follow_up, added_parts=follow_up.unseen(round_one))
     assert after.added_parts == {again_parts[_part_id(number)] for number in (2, 3, 4)}
-    second = plan_review_follow_up(
-        case.projection, allowed, request, previous=after, shown_refs=None
-    )
-    assert second is not None and second.round == 2
+    second = replace(after, round=2)
     repeat = _build(
         case,
         follow_up=second,
@@ -1034,35 +801,12 @@ def test_a_partly_shown_capture_adds_its_next_parts_never_the_one_shown() -> Non
 def test_a_privacy_withheld_part_is_never_served_again() -> None:
     case, captured, scope = _split_capture_case()
     selection = _small_parts()
-    allowed = frozenset(str(ref) for ref in case.allowed_ids)
     first = _build(
         case, selection=selection, captured_content=captured, captured_content_scope=scope
     )
     sent = _send_except(first, frozenset({_part_id(2), _part_id(3), _part_id(4)}))
-    request = (_requested("current_diff_for_path", str(evd(1))),)
-    # A privacy rule withheld the capture from a sent packet: that rule holds for every packet.
-    assert (
-        plan_review_follow_up(
-            case.projection,
-            allowed,
-            request,
-            previous=None,
-            shown_refs=sent_excerpt_content_refs(first, sent),
-            shown_parts=sent_excerpt_parts(first, sent),
-            privacy_withheld_refs=frozenset({str(evd(1))}),
-        )
-        is None
-    )
-    # A round that would carry only a category the channel withholds is never sent either.
-    follow_up = plan_review_follow_up(
-        case.projection,
-        allowed,
-        request,
-        previous=None,
-        shown_refs=sent_excerpt_content_refs(first, sent),
-        shown_parts=sent_excerpt_parts(first, sent),
-    )
-    assert follow_up is not None
+    # A round that would carry only a category the channel withholds is never sent.
+    follow_up = _edit_round(sent_excerpt_content_refs(first, sent), sent_excerpt_parts(first, sent))
     again = _build(
         case,
         follow_up=follow_up,
@@ -1141,7 +885,6 @@ def test_a_stale_edit_request_is_answered_with_the_current_section_from_the_chan
     added ``leadStore.ts``; only the frozen change held the current file."""
 
     case, captured, scope, change = _stale_edit_case()
-    allowed = frozenset(str(ref) for ref in case.allowed_ids)
     section_parts = _section_parts(case, captured, scope, change)
     text = change.capture.text
     start = text.index(f"diff --git a/{_LEAD}".encode())
@@ -1156,19 +899,9 @@ def test_a_stale_edit_request_is_answered_with_the_current_section_from_the_chan
     assert shown is not None and shown_parts is not None
     assert str(evd(1)) in shown  # the stale edit itself was shown whole
     assert b"CURRENT_LEAD_STORE_MARKER" not in _send(first)
-    request = (_requested("current_diff_for_path", str(evd(1))),)
 
-    follow_up = plan_review_follow_up(
-        case.projection,
-        allowed,
-        request,
-        previous=None,
-        shown_refs=shown,
-        shown_parts=shown_parts,
-        section_parts=section_parts,
-    )
+    follow_up = _edit_round(shown, shown_parts)
 
-    assert follow_up is not None
     again = _build(
         case,
         follow_up=follow_up,
@@ -1199,22 +932,11 @@ def test_a_stale_edit_request_is_answered_with_the_current_section_from_the_chan
     # The change's own leading parts still come first.
     assert again.packet.targeted_excerpts[0].excerpt_item_id == "change-check-time-001"
 
-    # Served once: nothing more is owed for that path, so no later round is even planned.
     round_one = sent_excerpt_parts(again, sent_again)
     assert round_one is not None
     after = replace(follow_up, added_parts=follow_up.unseen(round_one))
-    assert (
-        plan_review_follow_up(
-            case.projection,
-            allowed,
-            request,
-            previous=after,
-            shown_refs=None,
-            section_parts=section_parts,
-        )
-        is None
-    )
-    # A round that had to be built anyway keeps the section in place and never counts it new.
+    # Served once: a later round that had to be built anyway keeps the section in place and
+    # never counts it new.
     repeat = _build(
         case,
         follow_up=replace(after, round=2),
@@ -1230,22 +952,11 @@ def _current_diff_follow_up():
     """The stale-edit follow-up the #1077 reproductions build a second case from."""
 
     case, captured, scope, change = _stale_edit_case()
-    allowed = frozenset(str(ref) for ref in case.allowed_ids)
-    section_parts = _section_parts(case, captured, scope, change)
     first = _build(
         case, captured_content=captured, captured_content_scope=scope, check_time_change=change
     )
     sent = _provider_manifest(_send(first))
-    follow_up = plan_review_follow_up(
-        case.projection,
-        allowed,
-        (_requested("current_diff_for_path", str(evd(1))),),
-        previous=None,
-        shown_refs=sent_excerpt_content_refs(first, sent),
-        shown_parts=sent_excerpt_parts(first, sent),
-        section_parts=section_parts,
-    )
-    assert follow_up is not None
+    follow_up = _edit_round(sent_excerpt_content_refs(first, sent), sent_excerpt_parts(first, sent))
     return case, captured, scope, change, follow_up
 
 
@@ -1442,37 +1153,6 @@ def test_case_bound_trims_a_synthetic_excerpt_onto_its_linked_subject(
     assert skipped == []
 
 
-def test_a_current_section_the_first_packet_carried_plans_no_round() -> None:
-    """Checker P3 (tb4n5 fix review): the planner asks per requested path, so a section the
-    first packet already carried never costs a rebuild just to find nothing new."""
-
-    case, captured, scope, change = _stale_edit_case(lead_first=True)
-    allowed = frozenset(str(ref) for ref in case.allowed_ids)
-    first = _build(
-        case, captured_content=captured, captured_content_scope=scope, check_time_change=change
-    )
-    first_sent = _provider_manifest(_send(first))
-    assert b"CURRENT_LEAD_STORE_MARKER" in _send(first)
-    shown_parts = sent_excerpt_parts(first, first_sent)
-    assert shown_parts is not None
-    # Other bytes of the change are still unseen; the requested path's are not.
-    change_keys = [key for key in shown_parts if key.startswith("check-time-change#")]
-    assert change_keys and not excerpt_span_whole(change_keys[0], change_keys)
-
-    assert (
-        plan_review_follow_up(
-            case.projection,
-            allowed,
-            (_requested("current_diff_for_path", str(evd(1))),),
-            previous=None,
-            shown_refs=sent_excerpt_content_refs(first, first_sent),
-            shown_parts=shown_parts,
-            section_parts=_section_parts(case, captured, scope, change),
-        )
-        is None
-    )
-
-
 def test_a_served_current_section_is_part_of_the_raising_inventory() -> None:
     """Checker P1 (tb4n5 fix review): the follow-up packet showed the current ``leadStore.ts``
     through ``change-section-011``, but the shown-file record counted only the change's leading
@@ -1481,21 +1161,13 @@ def test_a_served_current_section_is_part_of_the_raising_inventory() -> None:
     not covered."""
 
     case, captured, scope, change = _stale_edit_case()
-    allowed = frozenset(str(ref) for ref in case.allowed_ids)
     first = _build(
         case, captured_content=captured, captured_content_scope=scope, check_time_change=change
     )
     first_sent = _provider_manifest(_send(first))
-    follow_up = plan_review_follow_up(
-        case.projection,
-        allowed,
-        (_requested("current_diff_for_path", str(evd(1))),),
-        previous=None,
-        shown_refs=sent_excerpt_content_refs(first, first_sent),
-        shown_parts=sent_excerpt_parts(first, first_sent),
-        section_parts=_section_parts(case, captured, scope, change),
+    follow_up = _edit_round(
+        sent_excerpt_content_refs(first, first_sent), sent_excerpt_parts(first, first_sent)
     )
-    assert follow_up is not None
     again = _build(
         case,
         follow_up=follow_up,
@@ -1568,43 +1240,12 @@ async def test_a_repair_that_never_showed_the_served_file_does_not_cover_the_rai
     assert gapped.covers(gapped)
 
 
-def test_a_request_naming_only_rows_finishup_does_not_hold_plans_no_round() -> None:
-    """tb4n5 react-lead-form 19:35:05: a request naming an obligation and the event that carried
-    the task statement (no action, result or evidence row) rebuilt the case to send nothing."""
-
-    case, _refs = _verification_case(20)
-    targets = (str(evt(500)), "obl_00000000-0000-4000-8000-000000000099")
-    allowed = frozenset(str(ref) for ref in case.allowed_ids) | frozenset(targets)
-
-    assert (
-        plan_review_follow_up(
-            case.projection,
-            allowed,
-            (_requested("verification_output", *targets, availability="agent_suppliable"),),
-            previous=None,
-            shown_refs=frozenset(),
-        )
-        is None
-    )
-    # A target that names a recorded run still resolves to the run's rows only.
-    follow_up = plan_review_follow_up(
-        case.projection,
-        allowed,
-        (_requested("verification_output", *sorted((str(res(1)), *targets))),),
-        previous=None,
-        shown_refs=frozenset(),
-    )
-    assert follow_up is not None
-    assert follow_up.items[0].source_refs == {str(res(1)), str(act(1)), str(evd(1))}
-
-
 def test_parts_compare_by_byte_interval_so_a_different_split_never_counts_twice() -> None:
     """A narrowed case may split one source differently; the bytes, not part numbers, decide."""
 
     from finishup.application.missing_for_assessment import (
         excerpt_span_covered,
         excerpt_span_key,
-        excerpt_span_whole,
     )
 
     ref = str(evd(1))
@@ -1640,7 +1281,6 @@ def test_a_narrowed_selection_keeps_the_identity_of_a_byte_identical_part() -> N
     case, captured, scope = _split_capture_case()
     wide = _small_parts()
     narrow = replace(wide, max_excerpts=2)
-    allowed = frozenset(str(ref) for ref in case.allowed_ids)
     first = _build(case, selection=wide, captured_content=captured, captured_content_scope=scope)
     narrowed = _build(
         case, selection=narrow, captured_content=captured, captured_content_scope=scope
@@ -1651,15 +1291,7 @@ def test_a_narrowed_selection_keeps_the_identity_of_a_byte_identical_part() -> N
     total = int(wide_parts[_part_id(1)].rsplit("/", 1)[1])
     assert total == len(captured[0].content)  # the capture's own length, not the selection's
     sent = _send_except(first, frozenset({_part_id(2), _part_id(3), _part_id(4)}))
-    follow_up = plan_review_follow_up(
-        case.projection,
-        allowed,
-        (_requested("current_diff_for_path", str(evd(1))),),
-        previous=None,
-        shown_refs=sent_excerpt_content_refs(first, sent),
-        shown_parts=sent_excerpt_parts(first, sent),
-    )
-    assert follow_up is not None
+    follow_up = _edit_round(sent_excerpt_content_refs(first, sent), sent_excerpt_parts(first, sent))
 
     again = _build(
         case,
@@ -1732,20 +1364,11 @@ def test_admission_that_drops_every_new_part_leaves_the_request_pending_and_send
 
     case, captured, scope = _split_capture_case()
     selection = _small_parts()
-    allowed = frozenset(str(ref) for ref in case.allowed_ids)
     first = _build(
         case, selection=selection, captured_content=captured, captured_content_scope=scope
     )
     sent = _send_except(first, frozenset({_part_id(2), _part_id(3), _part_id(4)}))
-    follow_up = plan_review_follow_up(
-        case.projection,
-        allowed,
-        (_requested("current_diff_for_path", str(evd(1))),),
-        previous=None,
-        shown_refs=sent_excerpt_content_refs(first, sent),
-        shown_parts=sent_excerpt_parts(first, sent),
-    )
-    assert follow_up is not None
+    follow_up = _edit_round(sent_excerpt_content_refs(first, sent), sent_excerpt_parts(first, sent))
     again = _build(
         case,
         follow_up=follow_up,
@@ -1805,167 +1428,10 @@ _RUFF_OUTPUT = b"RUFF_NOT_THIS_COMMAND\n"
 _EDIT_OUTPUT = b"EDIT_TOOL_OUTPUT\n"
 
 
-def _hook_evidence(number: int, frontier: int) -> EvidenceProjectionRecord:
-    return evidence_record(
-        EvidenceRecordedPayload(
-            evd(number),
-            EvidenceKind.OTHER,
-            EvidenceImmutability.IMMUTABLE_SNAPSHOT,
-            _WHEN,
-            captured_object_id=object_id(f"obj_00000000-0000-4000-8000-{number:012x}"),
-            content_digest="sha256:" + f"{number:064x}",
-            description="Observation-captured tool output",
-            digest_binding=EvidenceDigestBinding(
-                subject=EvidenceDigestSubject.BOUNDED_EXCERPT,
-                content_availability=EvidenceContentAvailability.CAPTURED,
-                byte_count=4,
-                provenance=EvidenceDigestProvenance.OBSERVATION_CAPTURED,
-            ),
-        ),
-        frontier,
-    )
-
-
-def _command_projection() -> DeterministicCase:
-    """Two pytest runs, a different command, an edit, and one redacted newer pytest capture."""
-
-    actions = {
-        act(11): record(
-            ActionRecordedPayload(
-                act(11),
-                ActionKind.COMMAND,
-                "ran",
-                command="pytest -q",
-                obligation_refs=(obl(1),),
-            ),
-            11,
-        ),
-        act(21): record(
-            ActionRecordedPayload(
-                act(21),
-                ActionKind.COMMAND,
-                "ran",
-                command="pytest -q",
-                obligation_refs=(obl(1),),
-            ),
-            21,
-        ),
-        act(31): record(
-            ActionRecordedPayload(act(31), ActionKind.COMMAND, "ran", command="ruff check"),
-            31,
-        ),
-        act(41): record(ActionRecordedPayload(act(41), ActionKind.EDIT, "edited"), 41),
-        act(51): record(
-            ActionRecordedPayload(
-                act(51), ActionKind.COMMAND, "ran", command="omitted:" + "sha256:" + "a" * 64
-            ),
-            51,
-        ),
-        act(61): record(
-            ActionRecordedPayload(
-                act(61), ActionKind.COMMAND, "ran", command="omitted:" + "sha256:" + "a" * 64
-            ),
-            61,
-        ),
-        act(71): record(
-            ActionRecordedPayload(act(71), ActionKind.COMMAND, "ran", command="omitted:structural"),
-            71,
-        ),
-    }
-    results = {
-        res(12): record(
-            ResultRecordedPayload(
-                res(12), act(11), ResultOutcome.FAILURE, evidence_refs=(evd(12),)
-            ),
-            12,
-        ),
-        res(22): record(
-            ResultRecordedPayload(
-                res(22), act(21), ResultOutcome.SUCCESS, evidence_refs=(evd(22),)
-            ),
-            22,
-        ),
-        res(32): record(
-            ResultRecordedPayload(
-                res(32), act(31), ResultOutcome.SUCCESS, evidence_refs=(evd(32),)
-            ),
-            32,
-        ),
-        res(42): record(
-            ResultRecordedPayload(
-                res(42), act(41), ResultOutcome.SUCCESS, evidence_refs=(evd(42),)
-            ),
-            42,
-        ),
-        res(52): record(
-            ResultRecordedPayload(
-                res(52), act(51), ResultOutcome.FAILURE, evidence_refs=(evd(52),)
-            ),
-            52,
-        ),
-        res(62): record(
-            ResultRecordedPayload(
-                res(62), act(61), ResultOutcome.SUCCESS, evidence_refs=(evd(62),)
-            ),
-            62,
-        ),
-        res(72): record(
-            ResultRecordedPayload(
-                res(72), act(71), ResultOutcome.SUCCESS, evidence_refs=(evd(72),)
-            ),
-            72,
-        ),
-    }
-    evidence = {
-        evd(12): _hook_evidence(12, 13),
-        evd(22): _hook_evidence(22, 23),
-        evd(32): _hook_evidence(32, 33),
-        evd(42): _hook_evidence(42, 43),
-        evd(52): _hook_evidence(52, 53),
-        evd(62): _hook_evidence(62, 63),
-        evd(72): _hook_evidence(72, 73),
-    }
-    supports = tuple(sorted((evd(12), evd(22)), key=lambda ref: str(ref).encode()))
-    return make_case(
-        actions=actions,
-        results=results,
-        evidence=evidence,
-        claims={
-            clm(1): record(
-                ClaimRecordedPayload(clm(1), ClaimKind.COMPLETION, "tests pass", supports),
-                3,
-            )
-        },
-        extra_refs=(clm(1), obl(1)),
-    )
-
-
-def test_observed_command_output_names_only_the_newest_run_of_a_named_command() -> None:
-    case = _command_projection()
-    allowed = frozenset(str(ref) for ref in case.allowed_ids)
-    named = observed_command_output_refs(case.projection, (str(res(12)),), allowed)
-    assert named == {str(evd(22))}
-    assert observed_command_output_refs(case.projection, (str(obl(1)),), allowed) == {str(evd(22))}
-    assert observed_command_output_refs(case.projection, (str(clm(1)),), allowed) == {str(evd(22))}
-    assert observed_command_output_refs(case.projection, (str(res(32)),), allowed) == {str(evd(32))}
-    assert observed_command_output_refs(case.projection, (str(evd(42)),), allowed) == frozenset()
-    assert observed_command_output_refs(case.projection, (str(res(52)),), allowed) == {str(evd(62))}
-    assert observed_command_output_refs(case.projection, (str(res(72)),), allowed) == frozenset()
-    redacted = replace(case.projection.evidence[evd(22)], redacted=True, payload=None)
-    blocked = replace(
-        case,
-        projection=replace(
-            case.projection, evidence={**case.projection.evidence, evd(22): redacted}
-        ),
-    )
-    assert observed_command_output_refs(blocked.projection, (str(res(12)),), allowed) == frozenset()
-
-
 def test_a_tombstoned_newest_result_occupies_its_command() -> None:
     """A redacted newest result keeps its command, so the older capture is not sent."""
 
     case, captured, scope = _capture_scene()
-    allowed = frozenset(str(ref) for ref in case.allowed_ids)
     tombstoned = replace(case.projection.results[res(22)], payload=None, redacted=True)
     blocked = replace(
         case,
@@ -1973,16 +1439,7 @@ def test_a_tombstoned_newest_result_occupies_its_command() -> None:
             case.projection, results={**case.projection.results, res(22): tombstoned}
         ),
     )
-    assert observed_command_output_refs(blocked.projection, (str(res(12)),), allowed) == frozenset()
-    assert observed_command_output_refs(blocked.projection, (str(res(22)),), allowed) == frozenset()
-    follow_up = plan_review_follow_up(
-        blocked.projection,
-        allowed,
-        (_requested("verification_output", str(res(12)), availability="agent_suppliable"),),
-        previous=None,
-        shown_refs=frozenset(),
-    )
-    assert follow_up is not None
+    follow_up = follow_up_round(("verification_output", (str(res(12)),), _run(12, action=11)))
     built = _build(
         blocked,
         follow_up=follow_up,
@@ -2043,29 +1500,6 @@ def test_clipped_observed_output_re_neutralises_a_forged_label_on_the_tail() -> 
     assert len(labelled) == 2
     assert labelled[1].startswith("[finishup: ")
     assert labelled[1].endswith(" bytes elided here; head and tail kept]")
-
-
-def test_a_shown_digest_still_owes_marked_command_output_until_that_span_is_sent() -> None:
-    case = _command_projection()
-    allowed = frozenset(str(ref) for ref in case.allowed_ids)
-    request = (_requested("verification_output", str(res(12)), availability="agent_suppliable"),)
-    shown = {str(res(12)), str(act(11)), str(evd(12)), str(evd(22))}
-    follow_up = plan_review_follow_up(
-        case.projection, allowed, request, previous=None, shown_refs=frozenset(shown)
-    )
-    assert follow_up is not None
-    assert str(evd(22)) in follow_up.source_refs
-    assert str(evd(32)) not in follow_up.source_refs
-    prefix = f"{OBSERVED_COMMAND_OUTPUT_SPAN_PREFIX}{evd(22)}#"
-    done = plan_review_follow_up(
-        case.projection,
-        allowed,
-        request,
-        previous=None,
-        shown_refs=frozenset(follow_up.source_refs),
-        shown_parts=frozenset({prefix + "0-4/4"}),
-    )
-    assert done is None
 
 
 def _capture_scene(
@@ -2199,16 +1633,9 @@ def _observed_follow_up(
     shown: frozenset[str] | None = None,
     kind: str = "verification_output",
 ) -> ReviewFollowUp:
-    allowed = frozenset(str(ref) for ref in case.allowed_ids)
-    follow_up = plan_review_follow_up(
-        case.projection,
-        allowed,
-        (_requested(kind, str(res(12)), availability="agent_suppliable"),),
-        previous=None,
-        shown_refs=frozenset() if shown is None else shown,
-    )
-    assert follow_up is not None
-    return follow_up
+    # The newest run of the same command (``res(22)``) holds the hook-captured output ``evd(22)``.
+    sources = _run(12, action=11) | {str(evd(22))}
+    return follow_up_round((kind, (str(res(12)),), sources), shown=shown)
 
 
 def _assisted() -> ReviewSelectionPolicy:
@@ -2493,18 +1920,9 @@ def _privacy_follow_up(
     *,
     kind: str = "verification_output",
 ) -> ReviewFollowUp:
-    allowed = frozenset(str(ref) for ref in case.allowed_ids)
-    follow_up = plan_review_follow_up(
-        case.projection,
-        allowed,
-        tuple(
-            _requested(kind, str(res(number)), availability="agent_suppliable")
-            for number, _command in targets
-        ),
-        previous=None,
-        shown_refs=frozenset(),
+    follow_up = follow_up_round(
+        *((kind, (str(res(number)),), _run(number, action=number - 1)) for number, _ in targets)
     )
-    assert follow_up is not None
     return follow_up
 
 
@@ -2647,39 +2065,6 @@ def test_a_published_summary_that_does_not_fit_is_omitted_inside_the_existing_bu
     assert excerpt_bytes <= 32
 
 
-def test_late_observed_evidence_links_only_to_its_original_run() -> None:
-    case = _command_projection()
-    projection = case.projection
-    action = projection.actions[act(21)]
-    late = _hook_evidence(82, 83)
-    assert late.payload is not None
-    linked = evidence_record(replace(late.payload, reference=str(action.source_event_id)), 83)
-    enriched = replace(projection, evidence={**projection.evidence, evd(82): linked})
-    allowed = frozenset(str(ref) for ref in case.allowed_ids) | {str(evd(82))}
-    assert observed_command_output_refs(enriched, (str(res(22)),), allowed) == {
-        str(evd(22)),
-        str(evd(82)),
-    }
-    # An asserted reference or a reference to the previous run cannot lend this output.
-    assert linked.payload is not None
-    for payload in (
-        replace(linked.payload, digest_binding=None),
-        replace(linked.payload, reference=str(projection.actions[act(11)].source_event_id)),
-    ):
-        refused = replace(
-            enriched, evidence={**enriched.evidence, evd(82): evidence_record(payload, 83)}
-        )
-        assert observed_command_output_refs(refused, (str(res(22)),), allowed) == {str(evd(22))}
-    redacted = replace(
-        enriched,
-        results={
-            **enriched.results,
-            res(22): replace(enriched.results[res(22)], payload=None, redacted=True),
-        },
-    )
-    assert observed_command_output_refs(redacted, (str(res(22)),), allowed) == frozenset()
-
-
 def test_a_digest_alias_never_answers_for_another_commands_run() -> None:
     """PR #1086 review R1-01 probe: an agent row claiming to be ``pytest tests/private_case.py``
     output, carrying the digest of the authentic ``ruff check`` capture, must not make that
@@ -2728,14 +2113,7 @@ def test_a_digest_alias_never_answers_for_another_commands_run() -> None:
         evidence={**case.projection.evidence, evd(99): evidence_record(alias, 92)},
         extra_refs=(*case.allowed_ids, evd(99), act(99), res(99)),
     )
-    follow_up = plan_review_follow_up(
-        mixed.projection,
-        frozenset(str(ref) for ref in mixed.allowed_ids),
-        (_requested("verification_output", str(res(99)), availability="agent_suppliable"),),
-        previous=None,
-        shown_refs=frozenset(),
-    )
-    assert follow_up is not None
+    follow_up = follow_up_round(("verification_output", (str(res(99)),), _run(99)))
 
     semantic = _build(
         mixed,
@@ -2761,23 +2139,6 @@ def test_a_digest_alias_never_answers_for_another_commands_run() -> None:
 
 
 def test_an_other_request_naming_a_run_is_answered_from_its_rows_and_observed_output() -> None:
-    case, _refs = _verification_case(20)
-    allowed = frozenset(str(ref) for ref in case.allowed_ids)
-    sources = {
-        kind: plan_review_follow_up(
-            case.projection,
-            allowed,
-            (_requested(kind, str(res(1)), availability="agent_suppliable"),),
-            previous=None,
-            shown_refs=frozenset(),
-        )
-        for kind in ("verification_output", "other")
-    }
-    answered = sources["other"]
-    assert answered is not None and sources["verification_output"] is not None
-    assert answered.items[0].kind == "other"
-    assert answered.items[0].source_refs == sources["verification_output"].items[0].source_refs
-
     scene, captured, scope = _capture_scene()
     follow_up = _observed_follow_up(scene, kind="other")
     built = _build(
@@ -2801,21 +2162,15 @@ def test_an_other_request_naming_a_run_is_answered_from_its_rows_and_observed_ou
 
 def test_an_other_request_naming_an_edit_is_answered_with_its_current_section() -> None:
     case, captured, scope, change = _stale_edit_case()
-    allowed = frozenset(str(ref) for ref in case.allowed_ids)
-    section_parts = _section_parts(case, captured, scope, change)
     first = _build(
         case, captured_content=captured, captured_content_scope=scope, check_time_change=change
     )
     first_sent = _provider_manifest(_send(first))
 
-    follow_up = plan_review_follow_up(
-        case.projection,
-        allowed,
-        (_requested("other", str(evd(1))),),
-        previous=None,
-        shown_refs=sent_excerpt_content_refs(first, first_sent),
-        shown_parts=sent_excerpt_parts(first, first_sent),
-        section_parts=section_parts,
+    follow_up = _edit_round(
+        sent_excerpt_content_refs(first, first_sent),
+        sent_excerpt_parts(first, first_sent),
+        kind="other",
     )
 
     # The edit itself was shown whole; only its current section in the change is still owed.
@@ -2832,36 +2187,6 @@ def test_an_other_request_naming_an_edit_is_answered_with_its_current_section() 
     ]
     assert len(sections) == 1 and b"CURRENT_LEAD_STORE_MARKER" in sections[0].content
     assert sections[0].linked_subject_refs == (str(evd(1)),)
-
-
-def test_an_other_request_naming_only_an_obligation_or_the_statement_plans_no_round() -> None:
-    case, _refs = _verification_case(20)
-    targets = tuple(sorted((str(evt(500)), str(obl(1)), str(clm(1)))))
-    allowed = frozenset(str(ref) for ref in case.allowed_ids) | frozenset(targets)
-
-    for request in (
-        (_requested("other", *targets, availability="agent_suppliable"),),
-        # Content the packet may never carry is never re-sent, whatever the kind.
-        (_requested("other", str(res(1)), availability="structurally_unavailable_on_this_host"),),
-        (_requested("other", str(res(1)), availability="yoetz_limit_unsupported_data_type"),),
-    ):
-        assert (
-            plan_review_follow_up(
-                case.projection, allowed, request, previous=None, shown_refs=frozenset()
-            )
-            is None
-        )
-    # Everything the named run holds was shown whole already: nothing to add, no round.
-    assert (
-        plan_review_follow_up(
-            case.projection,
-            allowed,
-            (_requested("other", str(res(1)), availability="agent_suppliable"),),
-            previous=None,
-            shown_refs=frozenset({str(res(1)), str(act(1)), str(evd(1))}),
-        )
-        is None
-    )
 
 
 def test_an_other_request_obeys_every_auto_supply_gate() -> None:
