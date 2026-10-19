@@ -70,7 +70,11 @@ from finishup.ports.semantic import (
     encode_reviewer_exchange,
     reviewer_exchange,
 )
-from finishup.protocol.canonical import JsonValue, canonical_digest, strict_json_parse
+from finishup.protocol.canonical import (
+    JsonValue,
+    canonical_digest,
+    strict_json_parse,
+)
 
 pytestmark = pytest.mark.anyio
 
@@ -911,3 +915,29 @@ async def test_r3_review_exit_closes_the_thread_when_admission_is_denied(
         ).run()  # fmt: skip
         assert outcome.reason == "authorization_changed" and cleanups == []
     assert cleanups == [runtime]
+
+
+# -- review round 2 regressions (F1-F3) ------------------------------------------------------------
+
+
+async def test_f3_failed_responses_generation_ends_without_another_inference() -> None:
+    seen: list[bytes] = []
+
+    class _Failed(_Capture):
+        async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
+            self.bodies.append(await request.aread())
+            error = {"code": "server_error", "message": "scripted fixture"}
+            payload: dict[str, object] = {"id": "resp_1", "status": "failed", "error": error}
+            payload["output"] = []
+            return httpx.Response(200, request=request, json=payload)
+
+    async def dispatch(payload: bytes, media_type: str, deadline: Deadline) -> SemanticResult:
+        seen.append(payload)
+        capture = _Failed("responses") if len(seen) == 1 else _Capture("responses")
+        history = decode_reviewer_exchange(payload)
+        result, *_ = await _api_evaluate("responses", history, capture, _Clock())
+        return result
+
+    outcome = await _loop(dispatch, _Clock())
+    assert outcome.status == "incomplete" and len(seen) == 1
+    assert outcome.reason == "reviewer_exchange_unavailable"

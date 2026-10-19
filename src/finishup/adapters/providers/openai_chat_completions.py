@@ -31,7 +31,7 @@ from finishup.adapters.providers.openai_responses import (
     SEMANTIC_REVIEW_INSTRUCTION,
     STRICT_JUDGMENT_JSON_SCHEMA,
     OneAttemptCredentialTransport,
-    normalize_judgment,
+    normalize_answer_text,
 )
 from finishup.domain.findings import SamplingParams, SemanticFailureClass
 from finishup.domain.privacy import (
@@ -48,10 +48,7 @@ from finishup.ports.semantic import (
     ReviewerReplySchemas,
     SemanticResult,
     SemanticResultInvalid,
-    SemanticResultLate,
     SemanticResultRefused,
-    SemanticResultReply,
-    SemanticResultSuccess,
     SemanticResultTimeout,
     SemanticResultUnavailable,
     reviewer_exchange,
@@ -407,36 +404,9 @@ def normalize_response(
             raw_size=truncated_size,
         )
 
-    raw_text = getattr(message, "content", None)
-    if type(raw_text) is not str or not raw_text:
-        return SemanticResultInvalid(
-            prov(SemanticStatus.INVALID, SemanticFailureClass.RESPONSE_SCHEMA),
-            raw_size=len(raw_text) if type(raw_text) is str else 0,
-        )
-    raw_bytes = raw_text.encode("utf-8")
-    if len(raw_bytes) > OPENAI_MAX_RESPONSE_BODY_BYTES:
-        return SemanticResultInvalid(
-            prov(SemanticStatus.INVALID, SemanticFailureClass.RESPONSE_CONTENT),
-            raw_size=OPENAI_MAX_RESPONSE_BODY_BYTES + 1,
-        )
-    succeeded = prov(SemanticStatus.SUCCEEDED)
-    try:
-        result: SemanticResult = (
-            SemanticResultReply.parse(raw_bytes, succeeded)
-            if exchange is not None
-            else SemanticResultSuccess(
-                normalize_judgment(strict_json_parse(raw_bytes), require_part2=True), succeeded
-            )
-        )
-    except ValueError, TypeError, LookupError:
-        return SemanticResultInvalid(
-            prov(SemanticStatus.INVALID, SemanticFailureClass.RESPONSE_SCHEMA),
-            raw_size=len(raw_bytes),
-        )
-
-    if late:
-        return SemanticResultLate(prov(SemanticStatus.LATE))
-    return result
+    return normalize_answer_text(
+        getattr(message, "content", None), prov, late=late, reply=exchange is not None
+    )
 
 
 def classify_provider_failure(
@@ -449,27 +419,21 @@ def classify_provider_failure(
 ) -> SemanticResult:
     """Map a native provider/transport failure to the public taxonomy without leaking its text."""
 
-    if isinstance(error, httpx.TimeoutException | TimeoutError):
-        return SemanticResultTimeout(
-            _provenance(
-                profile,
-                SemanticStatus.TIMEOUT,
-                policy_digest=policy_digest,
-                exchange=exchange,
-                latency_ms=latency_ms,
-                failure_class=SemanticFailureClass.TIMEOUT,
-            )
+    def prov(status: SemanticStatus, failure: SemanticFailureClass) -> ProviderAttemptProvenance:
+        return _provenance(
+            profile,
+            status,
+            policy_digest=policy_digest,
+            exchange=exchange,
+            latency_ms=latency_ms,
+            failure_class=failure,
         )
+
+    if isinstance(error, httpx.TimeoutException | TimeoutError):
+        return SemanticResultTimeout(prov(SemanticStatus.TIMEOUT, SemanticFailureClass.TIMEOUT))
     if isinstance(error, httpx.TransportError):
         return SemanticResultUnavailable(
-            _provenance(
-                profile,
-                SemanticStatus.UNAVAILABLE,
-                policy_digest=policy_digest,
-                exchange=exchange,
-                latency_ms=latency_ms,
-                failure_class=SemanticFailureClass.TRANSPORT,
-            )
+            prov(SemanticStatus.UNAVAILABLE, SemanticFailureClass.TRANSPORT)
         )
 
     status_code = getattr(error, "status_code", None)
@@ -490,17 +454,7 @@ def classify_provider_failure(
         failure_class = SemanticFailureClass.UNSUPPORTED_PROFILE
     elif type(status_code) is int and status_code >= 500:
         failure_class = SemanticFailureClass.PROVIDER_OUTAGE
-
-    return SemanticResultUnavailable(
-        _provenance(
-            profile,
-            SemanticStatus.UNAVAILABLE,
-            policy_digest=policy_digest,
-            exchange=exchange,
-            latency_ms=latency_ms,
-            failure_class=failure_class,
-        )
-    )
+    return SemanticResultUnavailable(prov(SemanticStatus.UNAVAILABLE, failure_class))
 
 
 class ChatCompletionsEvaluator:

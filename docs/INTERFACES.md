@@ -11715,8 +11715,7 @@ outcome, early failures included, carry those digests. Branch and argument valid
 reply decoder. The gateway records a reply as `completed`. Each route bounds the whole exchange,
 local send and receive included, by the original deadline, and an answer that completes after it is
 never a reply: Responses and Chat return `late`, local returns `timeout`, and Codex reports the
-post-acknowledgement `deadline_expired` stage. The loop also discards an answer that returns after
-the deadline.
+post-acknowledgement `deadline_expired` stage. The loop also discards an answer that returns after the deadline.
 
 A review owns one `ReviewerSession(review_id, deadline)`. `ReviewerExchangeModel(binding, dispatch,
 session)` is the loop's `ReviewerModel`, used as `async with`: every dispatch runs with the session
@@ -11731,7 +11730,9 @@ exchange evidence is persisted, which needs a `runtime-attempt-evidence` schema 
 
 `complete(history, schema, deadline=)` returns the reply object. It raises the decoder's
 `ReviewerReplyInvalid("output_not_json")` only for a completed answer that is not one JSON object
-(API `response_schema`, Codex `output_not_json` or `output_empty`): the one repair. Truncation,
+(API `response_schema` from a completed generation, Codex `output_not_json` or `output_empty`):
+the one repair. A Responses generation whose status is not `completed` (for example `failed`) is
+`unavailable` before its output is read, and its provider error text is not kept. Truncation,
 output limits and every other failed, refused, late or uncertain turn raise `ReviewerModelError`
 with the closed stage, failure class or status (for example
 `reviewer_exchange_response_content` or `reviewer_exchange_output_oversize`). The model is bound to

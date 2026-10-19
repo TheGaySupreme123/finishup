@@ -2448,7 +2448,8 @@ fork is used. The thread belongs to the review's `ReviewerSession`, keyed by the
 rather than by transcript content. The reviewer facade closes it on every exit of the review, and a
 close waits for the turn in flight. A policy change ends the review at the loop's per-continuation
 admission recheck, which closes the session. Every exchange, on every route, ends at the review's
-original deadline, and a late answer is never used. Only release 0.162.1, whose source was
+original deadline, and a late answer is never used. Only a completed generation can earn the one
+format repair: a failed or unfinished Responses generation ends the review. Only release 0.162.1, whose source was
 reviewed, runs the loop until an authorized native capability cell shows `environments: []` persists across turns.
 This is not proof that no internal Codex utility can execute; an absolute guarantee still needs
 stronger upstream suppression. A route that cannot serve the loop fails closed. Nothing falls back

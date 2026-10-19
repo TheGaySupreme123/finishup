@@ -16,7 +16,7 @@ import asyncio
 import hashlib
 import importlib
 import re
-from collections.abc import AsyncIterator, Mapping
+from collections.abc import AsyncIterator, Callable, Mapping
 from dataclasses import dataclass
 from types import MappingProxyType
 from typing import Any, Final, Literal, Protocol, cast
@@ -105,6 +105,7 @@ __all__ = [
     "RenderedOpenAIRequest",
     "RenderedRequest",
     "classify_provider_failure",
+    "normalize_answer_text",
     "normalize_judgment",
     "normalize_response",
     "owner_declared_data_use_profile",
@@ -1990,8 +1991,8 @@ def normalize_response(
 ) -> SemanticResult:
     """Classify one provider response into the closed AI-powered review result union.
 
-    Inspection order is fixed: explicit refusal surface first, deadline/cancellation next,
-    parse/schema validity next, and late-arrival state last.
+    Inspection order is fixed: explicit refusal surface first, then the generation status (only a
+    completed generation is an answer), parse/schema validity next, and late-arrival state last.
 
     ``policy_digest`` is the policy digest that authorized this dispatch, carried by the approved
     case. The adapter never mints one of its own; the outbound gateway rebinds it authoritatively
@@ -2033,12 +2034,30 @@ def normalize_response(
             prov(SemanticStatus.INVALID, SemanticFailureClass.RESPONSE_CONTENT),
             raw_size=incomplete_size,
         )
+    if status != "completed":
+        # A failed or unfinished generation is no answer: it ends closed, before output syntax is
+        # read, so it can never pass as a malformed answer. Its error text is never kept.
+        return SemanticResultUnavailable(
+            prov(SemanticStatus.UNAVAILABLE, SemanticFailureClass.PROVIDER_OUTAGE)
+        )
+    return normalize_answer_text(
+        getattr(response, "output_text", None), prov, late=late, reply=exchange is not None
+    )
 
-    raw_text = getattr(response, "output_text", None)
+
+type _Provenance = Callable[
+    [SemanticStatus, SemanticFailureClass | None], ProviderAttemptProvenance
+]
+
+
+def normalize_answer_text(
+    raw_text: object, prov: _Provenance, *, late: bool, reply: bool
+) -> SemanticResult:
+    """Classify one completed API answer's text: size, then parse, then late arrival."""
+
     if type(raw_text) is not str or not raw_text:
         return SemanticResultInvalid(
-            prov(SemanticStatus.INVALID, SemanticFailureClass.RESPONSE_SCHEMA),
-            raw_size=len(raw_text) if type(raw_text) is str else 0,
+            prov(SemanticStatus.INVALID, SemanticFailureClass.RESPONSE_SCHEMA), raw_size=0
         )
     raw_bytes = raw_text.encode("utf-8")
     if len(raw_bytes) > OPENAI_MAX_RESPONSE_BODY_BYTES:
@@ -2046,12 +2065,12 @@ def normalize_response(
             prov(SemanticStatus.INVALID, SemanticFailureClass.RESPONSE_CONTENT),
             raw_size=OPENAI_MAX_RESPONSE_BODY_BYTES + 1,
         )
-    succeeded = prov(SemanticStatus.SUCCEEDED)
+    succeeded = prov(SemanticStatus.SUCCEEDED, None)
     try:
         # A reviewer turn returns the parsed reply; its branch is decoded by the loop.
         result: SemanticResult = (
             SemanticResultReply.parse(raw_bytes, succeeded)
-            if exchange is not None
+            if reply
             else SemanticResultSuccess(
                 normalize_judgment(strict_json_parse(raw_bytes), require_part2=True), succeeded
             )
@@ -2061,10 +2080,7 @@ def normalize_response(
             prov(SemanticStatus.INVALID, SemanticFailureClass.RESPONSE_SCHEMA),
             raw_size=len(raw_bytes),
         )
-
-    if late:
-        return SemanticResultLate(prov(SemanticStatus.LATE))
-    return result
+    return SemanticResultLate(prov(SemanticStatus.LATE, None)) if late else result
 
 
 def classify_provider_failure(
@@ -2077,27 +2093,21 @@ def classify_provider_failure(
 ) -> SemanticResult:
     """Map a native provider/transport failure to the public taxonomy without leaking its text."""
 
-    if isinstance(error, httpx.TimeoutException | TimeoutError):
-        return SemanticResultTimeout(
-            _provenance(
-                profile,
-                SemanticStatus.TIMEOUT,
-                policy_digest=policy_digest,
-                exchange=exchange,
-                latency_ms=latency_ms,
-                failure_class=SemanticFailureClass.TIMEOUT,
-            )
+    def prov(status: SemanticStatus, failure: SemanticFailureClass) -> ProviderAttemptProvenance:
+        return _provenance(
+            profile,
+            status,
+            policy_digest=policy_digest,
+            exchange=exchange,
+            latency_ms=latency_ms,
+            failure_class=failure,
         )
+
+    if isinstance(error, httpx.TimeoutException | TimeoutError):
+        return SemanticResultTimeout(prov(SemanticStatus.TIMEOUT, SemanticFailureClass.TIMEOUT))
     if isinstance(error, httpx.TransportError):
         return SemanticResultUnavailable(
-            _provenance(
-                profile,
-                SemanticStatus.UNAVAILABLE,
-                policy_digest=policy_digest,
-                exchange=exchange,
-                latency_ms=latency_ms,
-                failure_class=SemanticFailureClass.TRANSPORT,
-            )
+            prov(SemanticStatus.UNAVAILABLE, SemanticFailureClass.TRANSPORT)
         )
 
     status_code = getattr(error, "status_code", None)
@@ -2114,17 +2124,7 @@ def classify_provider_failure(
         failure_class = SemanticFailureClass.RATE_LIMITED
     elif type(status_code) is int and status_code >= 500:
         failure_class = SemanticFailureClass.PROVIDER_OUTAGE
-
-    return SemanticResultUnavailable(
-        _provenance(
-            profile,
-            SemanticStatus.UNAVAILABLE,
-            policy_digest=policy_digest,
-            exchange=exchange,
-            latency_ms=latency_ms,
-            failure_class=failure_class,
-        )
-    )
+    return SemanticResultUnavailable(prov(SemanticStatus.UNAVAILABLE, failure_class))
 
 
 class _BoundedResponseByteStream(httpx.AsyncByteStream):
