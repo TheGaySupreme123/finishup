@@ -302,7 +302,7 @@ def _codex_config_enables_legacy_plugin(path: Path) -> bool | None:
         return None
     try:
         parsed = tomllib.loads(raw.decode("utf-8"))
-    except UnicodeError, tomllib.TOMLDecodeError:
+    except (UnicodeError, tomllib.TOMLDecodeError):
         return None
     plugins = parsed.get("plugins")
     if plugins is None:

@@ -28,7 +28,7 @@ def _legacy_tool_extras() -> tuple[str, ...] | None:
 
     try:
         return legacy_tool_extras(read_uv_receipt(installation_prefix()))
-    except OSError, ValueError:
+    except (OSError, ValueError):
         return None
 
 
@@ -56,7 +56,7 @@ def run_upgrade(
 
             typer.echo(not_owned_refusal(hook=False).rstrip("\n"), err=True)
             return 2
-        except OSError, ValueError:
+        except (OSError, ValueError):
             typer.echo(
                 "Runtime cleanup could not safely complete; running sessions were not stopped.",
                 err=True,
@@ -93,7 +93,7 @@ def run_upgrade(
         return 0
     try:
         outcome = execute_package_upgrade()
-    except OSError, ValueError:
+    except (OSError, ValueError):
         outcome = "runtime_identity_unavailable"
     typer.echo(f"\nPackage step: {outcome}")
     if outcome == "package_already_current":

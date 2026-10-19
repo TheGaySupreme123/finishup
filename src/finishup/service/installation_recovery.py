@@ -1101,7 +1101,7 @@ class InstallationRecoverySetStore:
                 and selected
                 and metadata.mode is InstallationRecoveryMode.SELF_CONTAINED
             )
-        except FileNotFoundError, OSError, TypeError, ValueError:
+        except (FileNotFoundError, OSError, TypeError, ValueError):
             return False
 
     def status(

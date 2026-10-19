@@ -408,7 +408,7 @@ def normalize_response(
         )
     try:
         judgment = normalize_judgment(strict_json_parse(raw_bytes), require_part2=True)
-    except ValueError, TypeError, LookupError:
+    except (ValueError, TypeError, LookupError):
         return SemanticResultInvalid(
             _provenance(
                 profile,

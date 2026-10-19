@@ -942,7 +942,7 @@ def _kill_process_group(process: subprocess.Popen[bytes]) -> bool:
     confirmed = True
     try:
         os.killpg(group, signal.SIGKILL)
-    except ProcessLookupError, PermissionError:
+    except (ProcessLookupError, PermissionError):
         # Already gone, or (macOS) members still exiting; the bounded check below decides.
         pass
     except OSError:

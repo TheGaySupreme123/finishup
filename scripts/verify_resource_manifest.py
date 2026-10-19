@@ -2229,7 +2229,7 @@ def sync_resource_tree(
     if previous_manifest.is_file() and not previous_manifest.is_symlink():
         try:
             previous_document = strict_json_parse(previous_manifest.read_bytes())
-        except TypeError, ValueError:
+        except (TypeError, ValueError):
             previous_document = None
         if isinstance(previous_document, Mapping):
             previous_entries = previous_document.get("entries")

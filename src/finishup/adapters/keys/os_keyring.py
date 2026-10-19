@@ -169,7 +169,7 @@ def _secret_service_available() -> bool:
             timeout=10,
             check=False,
         )
-    except OSError, subprocess.SubprocessError:
+    except (OSError, subprocess.SubprocessError):
         return False
     return result.returncode == 0
 
@@ -483,7 +483,7 @@ class AutoUnlockPassphraseStore:
                     validate=True,
                 )
             )
-        except binascii.Error, TypeError, ValueError:
+        except (binascii.Error, TypeError, ValueError):
             return None, "auto_unlock_rejected"
         canonical = base64.urlsafe_b64encode(value).rstrip(b"=").decode("ascii")
         if encoded != canonical:

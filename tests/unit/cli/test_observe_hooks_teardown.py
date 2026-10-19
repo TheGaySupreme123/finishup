@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import io
 import json
-from collections.abc import Awaitable, Callable
+from collections.abc import Callable, Coroutine
 from pathlib import Path
 from typing import cast
 
@@ -62,7 +62,7 @@ def test_native_teardown_persists_end_and_outbox_without_advice_refresh(
         drains.append(kwargs)
 
     def run_async(factory: object) -> object:
-        return asyncio.run(cast(Callable[[], Awaitable[object]], factory)())
+        return asyncio.run(cast(Callable[[], Coroutine[object, object, object]], factory)())
 
     monkeypatch.setattr(LocalObservationStore, "refresh_advice", forbidden_advice)
     monkeypatch.setattr(observe_hooks, "_drain_outbox", defer_drain)

@@ -127,6 +127,26 @@ def test_observation_has_no_environment_or_service_override_surface() -> None:
     assert service_override.value.safe_name == "observation.enabled"
 
 
+@pytest.mark.parametrize(
+    ("text", "position"),
+    [
+        # End of document: 3.12/3.13 say only "(at end of document)" (issue #1119).
+        ("profile = [", (1, 12)),
+        # A quoted key repeating the position words must not spoof the reported position.
+        ('[a]\n["(at line 999, column 777)"]\n["(at line 999, column 777)"]\n', (3, 29)),
+    ],
+)
+def test_toml_error_positions_match_on_every_supported_python(
+    tmp_path: Path, text: str, position: tuple[int, int]
+) -> None:
+    config = tmp_path / "config.toml"
+    config.write_text(text)
+    with pytest.raises(ConfigError) as invalid:
+        load_config({}, {}, config)
+    assert invalid.value.reason_code == "config_toml_invalid"
+    assert (invalid.value.line, invalid.value.column) == position
+
+
 def test_toml_parser_size_and_release_probe_rules(tmp_path: Path) -> None:
     duplicate = tmp_path / "duplicate.toml"
     duplicate.write_text('profile="strict-local"\nprofile="test-fake"\n')

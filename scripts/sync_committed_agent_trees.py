@@ -90,7 +90,7 @@ def _recorded_extras(existing: Mapping[str, bytes], marker_name: str, extras: se
                 "sha256:" + hashlib.sha256(data).hexdigest()
             ):
                 return False
-    except ValueError, TypeError, UnicodeError:
+    except (ValueError, TypeError, UnicodeError):
         return False
     return True
 

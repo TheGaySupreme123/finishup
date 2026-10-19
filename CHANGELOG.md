@@ -10,6 +10,17 @@ Public-alpha release candidate; publication remains gated by #785 and by the ren
 gates on #1056. This heading takes the release date when 0.3.0 is tagged. See
 [release notes](docs/releases/v0.3.0.md) for changes and validation limits.
 
+### Easier installation (#1119)
+
+- **Runs on Python 3.12, 3.13 and 3.14, with any uv from 0.11.29.** The install is now
+  `uv tool install --managed-python --python 3.14 finishup`: no exact patch to type, and uv fetches
+  Python 3.14 when the machine has none, whatever other Pythons are installed. `--python 3.14` keeps
+  uv 0.13 and later off their new default, Python 3.15, which FinishUP's dependencies cannot install
+  on yet. The npm launcher makes the same install.
+  Releases stay certified on CPython 3.14.6; any other interpreter runs and reports itself as an
+  untested cell (`platform_cell_untested`, `/doctor` "not proven"). The `<3.15` ceiling stays until
+  the locked native dependencies publish Python 3.15 wheels.
+
 ### Yoetz is now FinishUP
 
 - **The product is renamed FinishUP** (#1055, [ADR-048](docs/adr/ADR-048-finishup-rebrand-and-frozen-legacy-identifiers.md)).

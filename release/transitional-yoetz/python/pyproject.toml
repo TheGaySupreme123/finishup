@@ -20,7 +20,7 @@ name = "yoetz"
 version = "0.3.0"
 description = "Deprecated name of FinishUP: installs finishup and keeps the yoetz command for one release"
 readme = "README.md"
-requires-python = ">=3.14,<3.15"
+requires-python = ">=3.12,<3.15"
 license = "Apache-2.0"
 license-files = ["LICENSE"]
 authors = [{ name = "Shay Ben Shabtay" }]
@@ -28,6 +28,8 @@ classifiers = [
     "Development Status :: 7 - Inactive",
     "Environment :: Console",
     "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
     "Programming Language :: Python :: 3.14",
 ]
 dependencies = ["finishup==0.3.0"]

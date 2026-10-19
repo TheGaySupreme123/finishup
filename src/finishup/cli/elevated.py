@@ -249,7 +249,7 @@ async def review_elevated() -> dict[str, JsonValue]:
             try:
                 _render_review(console, observed)
                 selected = console.read_choice("Decision [approve/deny]: ", (b"approve", b"deny"))
-            except TrustedConsoleError, KeyboardInterrupt:
+            except (TrustedConsoleError, KeyboardInterrupt):
                 # Cancellation after displaying the review remains single-use. Availability
                 # preflight is the only new non-consuming path for a valid approval.
                 pending = claim_pending_for_review(for_console=True, expected_pending=observed)
@@ -464,7 +464,7 @@ async def _service_vault_state() -> tuple[str, str] | None:
             status = await client.service_status()
         finally:
             await client.close()
-    except ControlError, OSError, TypeError, ValueError:
+    except (ControlError, OSError, TypeError, ValueError):
         return None
     return status.state.value, status.vault_mode
 

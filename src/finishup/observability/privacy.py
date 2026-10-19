@@ -546,7 +546,7 @@ def _python_attribute_assignment_spans(data: bytes) -> tuple[tuple[int, int], ..
     try:
         source = data.decode("utf-8")
         tree = ast.parse(source, mode="exec")
-    except RecursionError, UnicodeDecodeError, SyntaxError, ValueError:
+    except (RecursionError, UnicodeDecodeError, SyntaxError, ValueError):
         return ()
     lines = source.splitlines(keepends=True)
     line_offsets: list[int] = []
@@ -1047,7 +1047,7 @@ def prepare_persisted_plaintext(
         return PersistenceScanResult(False, b"", True, ())
     try:
         findings = scan_for_sensitive_content(data, canaries=canaries)
-    except PrivacyFenceError, TypeError, ValueError:
+    except (PrivacyFenceError, TypeError, ValueError):
         return PersistenceScanResult(False, b"", True, ())
     high = _high_confidence_findings(findings)
     kinds = tuple(dict.fromkeys(finding.kind for finding in high))

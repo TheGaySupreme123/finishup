@@ -253,7 +253,7 @@ async def _writer(
                 await _write_all(fd, item.payload)
                 if item.done is not None:
                     item.done.set()
-    except anyio.ClosedResourceError, anyio.EndOfStream:
+    except (anyio.ClosedResourceError, anyio.EndOfStream):
         await anyio.sleep(0)
 
 
@@ -271,7 +271,7 @@ async def _outbound_forwarder(
                 root = message.message.root
                 if isinstance(root, types.JSONRPCResponse | types.JSONRPCError):
                     tracker.response_finished()
-    except anyio.BrokenResourceError, anyio.ClosedResourceError:
+    except (anyio.BrokenResourceError, anyio.ClosedResourceError):
         await anyio.sleep(0)
 
 
@@ -332,7 +332,7 @@ async def _reader(
                     if isinstance(message.message.root, types.JSONRPCRequest):
                         tracker.request_started()
                     await inbound.send(message)
-    except anyio.BrokenResourceError, anyio.ClosedResourceError:
+    except (anyio.BrokenResourceError, anyio.ClosedResourceError):
         await anyio.sleep(0)
 
 

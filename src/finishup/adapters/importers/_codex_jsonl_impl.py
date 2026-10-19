@@ -304,7 +304,7 @@ def parse_codex_jsonl_from_offset(
             continue
         try:
             value = _parse_json_line(line.content)
-        except TypeError, ValueError, UnicodeError:
+        except (TypeError, ValueError, UnicodeError):
             statuses.append(ImportLineStatus.MALFORMED)
             reason = "malformed_line"
             if line.ordinal == lines[-1].ordinal and not line.terminated:
@@ -416,7 +416,7 @@ def _int64(value: object) -> bool:
 def _json_value(value: object) -> bool:
     try:
         _validate_json_tree(value)
-    except TypeError, ValueError, UnicodeError:
+    except (TypeError, ValueError, UnicodeError):
         return False
     return True
 
@@ -624,7 +624,7 @@ def parse_codex_jsonl(source: bytes, profile: CodexCapabilityProfile) -> CodexPa
             continue
         try:
             value = _parse_json_line(line.content)
-        except TypeError, ValueError, UnicodeError:
+        except (TypeError, ValueError, UnicodeError):
             statuses.append(ImportLineStatus.MALFORMED)
             reason = "malformed_line"
             if line.ordinal == len(lines) and not line.terminated:

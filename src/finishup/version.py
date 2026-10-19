@@ -94,6 +94,10 @@ _CERTIFIED_PLATFORM_CELLS: Final[Mapping[tuple[str, str], str]] = MappingProxyTy
         ("Linux", "amd64"): "manylinux_2_28_x86_64",
     }
 )
+# The release cell's exact interpreter, matching the CPython 3.14.6 claim in public-claims.json.
+# ``requires-python`` admits 3.12 and 3.13, and uv may pick another 3.14 patch (issue #1119);
+# CI runs the unit suites on several, but release evidence covers only this one.
+_CERTIFIED_PYTHON: Final = ("CPython", (3, 14, 6))
 PLATFORM_CELL_UNTESTED: Final = "platform_cell_untested"
 _VERSION_WIRE_PATTERN: Final = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._+/-]{0,63}$")
 _PROFILE_ID_WIRE_PATTERN: Final = re.compile(r"^[a-z0-9][a-z0-9._/-]{0,127}$")
@@ -322,12 +326,17 @@ class VersionManifest:
 
 @dataclass(frozen=True, slots=True)
 class PlatformCell:
-    """The host's (OS, architecture) cell against ADR-007's advertised matrix."""
+    """The host's (OS, architecture, CPython minor) cell against ADR-007's advertised matrix.
+
+    ``python_version`` names the interpreter (``3.14.6``, or ``PyPy 3.14.6``); it is not part of
+    the wire shape.
+    """
 
     os_name: str
     machine: str
     certified: bool
     cell: str | None
+    python_version: str = ".".join(str(part) for part in _CERTIFIED_PYTHON[1])
 
     def as_json(self) -> dict[str, JsonValue]:
         certified_cells: list[JsonValue] = [
@@ -347,12 +356,24 @@ def platform_cell(
     os_name: str | None = None,
     machine: str | None = None,
     libc: tuple[str, str] | None = None,
+    python: tuple[int, int, int] | None = None,
+    implementation: str | None = None,
 ) -> PlatformCell:
     """Classify this host (or the given one) as a certified or an untested platform cell."""
 
     resolved_os = (platform.system() or sys.platform) if os_name is None else os_name
     resolved_machine = (platform.machine() or "unknown") if machine is None else machine
+    resolved_python = (
+        (sys.version_info.major, sys.version_info.minor, sys.version_info.micro)
+        if python is None
+        else python
+    )
+    resolved_implementation = (
+        platform.python_implementation() if implementation is None else implementation
+    )
     cell = _CERTIFIED_PLATFORM_CELLS.get((resolved_os, resolved_machine))
+    if (resolved_implementation, resolved_python) != _CERTIFIED_PYTHON:
+        cell = None
     if cell is not None and resolved_os == "Linux":
         libc_name, libc_version = platform.libc_ver() if libc is None else libc
         match = re.fullmatch(r"([0-9]+)\.([0-9]+)(?:\.[0-9]+)*", libc_version)
@@ -367,6 +388,10 @@ def platform_cell(
         machine=resolved_machine,
         certified=cell is not None,
         cell=cell,
+        python_version=(
+            ("" if resolved_implementation == "CPython" else f"{resolved_implementation} ")
+            + ".".join(str(part) for part in resolved_python)
+        ),
     )
 
 
@@ -992,7 +1017,7 @@ def verify_resource_manifest(manifest: VersionManifest) -> tuple[StartupCheckRes
             raise ResourceIntegrityError("version_resource_identity_mismatch")
         for entry in installed.entries:
             read_verified_resource(entry.logical_name)
-    except ResourceIntegrityError, OSError, ValueError:
+    except (ResourceIntegrityError, OSError, ValueError):
         return (
             StartupCheckResult(
                 "resources.manifest",

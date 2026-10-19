@@ -247,7 +247,7 @@ def _lookup_private_group(uid: int, gid: int) -> bool:
         if any(int(entry[3]) == gid and int(entry[2]) != uid for entry in accounts):
             return False
         matching = [entry for entry in groups if int(entry[2]) == gid]
-    except IndexError, ValueError:
+    except (IndexError, ValueError):
         return False
     if len(matching) != 1 or len(matching[0]) < 4 or matching[0][0] != owner_name:
         return False

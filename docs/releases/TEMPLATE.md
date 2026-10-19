@@ -39,7 +39,7 @@ One short paragraph: what can no longer go wrong, or what is now possible, and f
 uv tool install --managed-python --python 3.14.6 "finishup==X.Y.Z"
 ```
 
-For a one-off run: `uvx "finishup==X.Y.Z"`. With `uv` already installed: `npx finishup@X.Y.Z` (the npm
+For a one-off run: `uvx --python 3.14 "finishup==X.Y.Z"`. With `uv` already installed: `npx finishup@X.Y.Z` (the npm
 package is a dependency-free launcher for the exact PyPI distribution).
 
 ## Release integrity

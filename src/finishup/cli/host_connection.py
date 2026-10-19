@@ -460,7 +460,7 @@ def _codex_leftover(config_root: Path | None, project: Path) -> dict[str, JsonVa
                 selected if selected is not None else host_config_root("codex"), project
             )
         )
-    except OSError, ValueError:
+    except (OSError, ValueError):
         return {}
 
 
@@ -553,7 +553,7 @@ def _registered_codex_route(home: Path) -> str | None:
 
     try:
         config = read_bounded_toml(home / "config.toml") or {}
-    except OSError, ValueError:
+    except (OSError, ValueError):
         return None
     servers = config.get("mcp_servers")
     entry = (
@@ -590,7 +590,7 @@ def _codex_unverified_step(
             else host_config_root("codex")
         )
         possible = possible_projects(home)
-    except OSError, ValueError, IntegrationError:
+    except (OSError, ValueError, IntegrationError):
         home, possible = None, ()
     names = ", ".join(possible) if possible else "other projects"
     target = [
@@ -641,7 +641,7 @@ def _selected_root(host: str, config_root: Path | None) -> Path | None:
             if config_root is not None
             else host_config_root(cast(SetupHost, host))
         )
-    except OSError, ValueError, RuntimeError:
+    except (OSError, ValueError, RuntimeError):
         return None
 
 
@@ -653,7 +653,7 @@ def _lock_unavailable_step(host: str, config_root: Path | None) -> str:
     root = _selected_root(host, config_root)
     try:
         folder = None if root is None else str(lock_path_for(root).parent)
-    except OSError, ValueError, RuntimeError:
+    except (OSError, ValueError, RuntimeError):
         folder = None
     where = f" ({folder})" if folder is not None else ""
     return (
@@ -727,7 +727,7 @@ def _codex_duplicate_step(config_root: Path | None, project: Path) -> str:
             else host_config_root("codex")
         )
         existing = project_registered_elsewhere(home, project)
-    except OSError, ValueError:
+    except (OSError, ValueError):
         home, existing = None, None
     if existing is None or home is None:
         return (

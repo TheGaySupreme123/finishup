@@ -221,7 +221,7 @@ def _platform_dirs(app_name: str) -> PlatformDirs:
 def _anchor_present(path: Path) -> bool:
     try:
         path.lstat()
-    except FileNotFoundError, NotADirectoryError:
+    except (FileNotFoundError, NotADirectoryError):
         return False
     except OSError:
         # An anchor that cannot be examined is not proven absent.
@@ -597,7 +597,7 @@ def _check_owner_and_mode(path: Path, probe: _PathProbe) -> None:
         raise PathSafetyError("path_not_owned")
     try:
         mode = stat.S_IMODE(facts.st_mode)
-    except AttributeError, TypeError, ValueError:
+    except (AttributeError, TypeError, ValueError):
         probe.diagnostic("path_mode_unavailable")
         return
     if mode & 0o077:

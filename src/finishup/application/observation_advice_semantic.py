@@ -276,7 +276,7 @@ def observation_advice_to_candidate_context(
             or tuple(cast(list[str], packet["coverage_gaps"])) != attempt.coverage_gaps
         ):
             raise ValueError("observation_advice_packet_invalid")
-    except TypeError, ValueError, UnicodeDecodeError:
+    except (TypeError, ValueError, UnicodeDecodeError):
         return CandidateContext(
             request_id,
             EgressChannel.LLM_INFERENCE,

@@ -51,7 +51,7 @@ async def replay_off_loop(records: tuple[LedgerRecord, ...]) -> ProjectionState:
         # Join the worker so no replay outlives the request; it exits at the next record.
         try:
             await worker
-        except ReplayCancelled, ValueError:
+        except (ReplayCancelled, ValueError):
             pass
         raise
     return worker.result()

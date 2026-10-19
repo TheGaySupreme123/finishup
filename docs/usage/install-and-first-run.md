@@ -55,18 +55,23 @@ The npm command, `npx finishup`, starts setup directly.
 Install the latest published version through Python via [`uv`](https://docs.astral.sh/uv/):
 
 ```text
-uv tool install --compile-bytecode --managed-python --python 3.14.6 finishup
+uv tool install --managed-python --python 3.14 finishup
 finishup
 ```
 
-**Python.** FinishUP needs Python 3.14 and `uv` provides it: with `--managed-python` it downloads
-the exact interpreter on demand, so it does not matter which other Pythons are installed, which
-one `python3` resolves to, or whether pyenv, Homebrew, or a system Python is on your `PATH`. The
+**Python.** FinishUP runs on Python 3.12, 3.13 or 3.14 and `uv` provides one: with
+`--managed-python --python 3.14` it downloads Python 3.14 on demand (keep `--python 3.14`: uv 0.13
+and later otherwise pick Python 3.15, which FinishUP's dependencies cannot install on yet), so it
+does not matter which
+other Pythons are installed, which one `python3` resolves to, or whether pyenv, Homebrew, or a system Python is on your `PATH`. The
 install is unaffected by them and touches none of them. Only two configurations block it, and both
 say so in the error: `uv` configured never to download Pythons (`python-downloads = "never"`), and
 `uv` configured to use system interpreters only (`python-preference = "only-system"`) on a machine
-without 3.14. `pip install finishup` or `pipx install finishup` on an older Python cannot work; the
-package requires 3.14, and a pip that resolves it anyway is not installing FinishUP.
+without Python 3.12 to 3.14. Releases are certified on CPython 3.14.6. On any other interpreter
+(3.12, 3.13, or another 3.14 patch) FinishUP runs and is tested, but reports itself as an
+untested cell (see [Linux](#linux)). Prefer `uv` over
+`pip` or `pipx`: a shared or system Python is often writable by other accounts, which FinishUP
+refuses (below).
 
 **Git.** FinishUP reads your repository with the system Git, the first `git` in `/bin` or
 `/usr/bin`, never one that only your shell's `PATH` puts first (a conda or Homebrew Git, for
@@ -94,7 +99,7 @@ connection (MCP) and the hooks then stop with `release_runtime_group_writable` o
 for your installation, of the form
 
 ```bash
-chmod -R go-w ~/.local/share/uv/tools/finishup ~/.local/share/uv/python/cpython-3.14.6-<platform>
+chmod -R go-w ~/.local/share/uv/tools/finishup ~/.local/share/uv/python/cpython-<version>-<platform>
 ```
 
 To keep a later reinstall private from the start, run `umask 022` in that shell before
@@ -171,7 +176,8 @@ marketplace conflict still requires inspecting the project; changing the home do
 ## Linux
 
 FinishUP runs on macOS and Linux. The certified cells are macOS 11 or later on Apple silicon and
-glibc 2.28 or later Linux on x86-64. The package also installs on other Linux architectures, such
+glibc 2.28 or later Linux on x86-64, both with CPython 3.14.6; the same machines on any other
+Python (3.12, 3.13, or another 3.14 patch) count as untested cells too. The package also installs on other Linux architectures, such
 as aarch64 (Raspberry Pi, Graviton, Asahi, or WSL on a Windows-on-ARM laptop); those installs are
 untested, not presumed compatible: `finishup version --json` lists `platform_cell_untested` under
 `limitations`, `finishup setup status --json` reports the cell, and `/doctor` shows the platform line
@@ -213,7 +219,7 @@ every command except `finishup version`, `--version`, and `--help` then refuses 
    ```text
    curl -LsSf https://astral.sh/uv/install.sh | sh
    source "$HOME/.local/bin/env"
-   uv tool install --compile-bytecode --managed-python --python 3.14.6 finishup
+   uv tool install --managed-python --python 3.14 finishup
    finishup
    ```
 

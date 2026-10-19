@@ -449,7 +449,7 @@ def _cursor_observed_members(
                 # Marker-recorded launchers keep a member's legacy entry provably ours (ADR-048).
                 known_launchers=known_launchers,
             )["state"]
-        except mcp.CursorProjectMcpError, OSError, ValueError:
+        except (mcp.CursorProjectMcpError, OSError, ValueError):
             continue
         # Frozen legacy identifier (ADR-048): ``yoetz_owned`` is a released state value.
         if state == "yoetz_owned":

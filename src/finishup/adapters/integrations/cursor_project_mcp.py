@@ -351,7 +351,7 @@ def _document(raw: bytes | None) -> dict[str, JsonValue]:
         if "mcpServers" in document and not isinstance(document["mcpServers"], Mapping):
             raise _fail("config_invalid")
         return document
-    except TypeError, ValueError:
+    except (TypeError, ValueError):
         raise _fail("config_invalid") from None
 
 
@@ -410,7 +410,7 @@ def recorded_cursor_launchers(cursor_config_root: Path) -> tuple[tuple[str, ...]
         try:
             raw = _read(path)
             marker = None if raw is None else strict_json_parse(raw)
-        except CursorProjectMcpError, TypeError, ValueError:
+        except (CursorProjectMcpError, TypeError, ValueError):
             continue
         if not isinstance(marker, Mapping):
             continue

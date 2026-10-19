@@ -371,7 +371,7 @@ def read_applied_route(*, _state: Path | None = None) -> dict[str, object] | Non
 
     try:
         path = _store_path(_state)
-    except OSError, PathSafetyError, ValueError:
+    except (OSError, PathSafetyError, ValueError):
         return None
     try:
         facts = path.lstat()
@@ -383,7 +383,7 @@ def read_applied_route(*, _state: Path | None = None) -> dict[str, object] | Non
         ):
             return None
         raw = path.read_bytes()
-    except OSError, PathSafetyError, ValueError:
+    except (OSError, PathSafetyError, ValueError):
         return None
     if not raw or len(raw) > _MAX_STORE_BYTES:
         return None
@@ -405,19 +405,19 @@ def clear_applied_route(*, _state: Path | None = None) -> None:
 
     try:
         path = _store_path(_state)
-    except OSError, PathSafetyError, ValueError:
+    except (OSError, PathSafetyError, ValueError):
         return
     try:
         # Fast path: clearing an absent record must not create state directories.
         if not path.exists() or path.is_symlink():
             return
-    except OSError, PathSafetyError, ValueError:
+    except (OSError, PathSafetyError, ValueError):
         return
     try:
         with _store_lock(path):
             try:
                 facts = path.lstat()
-            except FileNotFoundError, NotADirectoryError:
+            except (FileNotFoundError, NotADirectoryError):
                 return
             except OSError:
                 return

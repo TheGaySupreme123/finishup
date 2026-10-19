@@ -384,7 +384,7 @@ def parse_codex_rollout_jsonl_from_offset(
             continue
         try:
             value = _redact_json_tree(_parse_json_line(line.content))
-        except TypeError, ValueError, UnicodeError:
+        except (TypeError, ValueError, UnicodeError):
             statuses.append(ImportLineStatus.MALFORMED)
             reason = "malformed_line"
             if line.ordinal == lines[-1].ordinal and not line.terminated:

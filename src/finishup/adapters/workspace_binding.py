@@ -120,7 +120,7 @@ def _candidate_path(raw: object, *, cwd: Path, home: Path) -> Path | None:
         return None
     try:
         path = _absolute_lexical(text, cwd, home=home)
-    except OSError, RuntimeError, ValueError:
+    except (OSError, RuntimeError, ValueError):
         return None
     if path == Path(path.anchor) or path == home:
         return None

@@ -811,7 +811,7 @@ def observe_plugin_managed_mcp(project_root: Path) -> PluginManagedMcpObservatio
         parent = _plugin_parent(root, create=False)
         current = _observe_managed_route(parent / _PLUGIN_DIRECTORY, legacy=False)
         legacy = _observe_managed_route(parent / _LEGACY_PLUGIN_DIRECTORY, legacy=True)
-    except OSError, PluginArtifactError, ValueError:
+    except (OSError, PluginArtifactError, ValueError):
         return PluginManagedMcpObservation(McpOwnershipState.AMBIGUOUS, None, False)
     if legacy.ownership_state is McpOwnershipState.AMBIGUOUS:
         return legacy
@@ -903,7 +903,7 @@ def _canonical_native_tree_digest(
         return None
     try:
         files = _safe_tree_files(path)
-    except OSError, PluginArtifactError:
+    except (OSError, PluginArtifactError):
         return None
     if files != canonical_members:
         return None
@@ -924,7 +924,7 @@ def _inspect_legacy(parent: Path) -> tuple[Literal["absent", "owned", "foreign"]
         return "foreign", None
     try:
         files = _safe_tree_files(legacy)
-    except OSError, PluginArtifactError:
+    except (OSError, PluginArtifactError):
         return "foreign", None
     marker = _parsed_marker(files)
     if (

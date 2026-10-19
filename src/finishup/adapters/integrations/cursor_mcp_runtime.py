@@ -193,7 +193,7 @@ def _valid_project_selector(value: str) -> bool:
         return False
     try:
         selector = Path(value)
-    except OSError, ValueError:
+    except (OSError, ValueError):
         return False
     # Match the bridge's lexical authority checks without probing the filesystem here.  Runtime
     # classification identifies the argv shape only; existence, ownership, symlink safety, and
@@ -422,7 +422,7 @@ def _linux_snapshots(
                 if line.startswith("PPid:"):
                     ppid_by_pid[pid] = int(line.split(":", 1)[1].strip())
                     break
-        except OSError, ValueError:
+        except (OSError, ValueError):
             continue
     for path in pid_dirs:
         if len(classified) > _MAX_PROCESSES:
@@ -497,7 +497,7 @@ def _darwin_snapshots(
             shell=False,
             timeout=2,
         )
-    except OSError, ValueError, subprocess.SubprocessError:
+    except (OSError, ValueError, subprocess.SubprocessError):
         return None
     if comm_table.returncode != 0 or arg_table.returncode != 0:
         return None
@@ -546,5 +546,5 @@ class OsCursorMcpProcesses:
             if linux is not None:
                 return linux
             return _darwin_snapshots(self.expected_launcher)
-        except OSError, ValueError, TimeoutError:
+        except (OSError, ValueError, TimeoutError):
             return None

@@ -497,7 +497,7 @@ def _structural_receipt_id(value: object) -> str | None:
         return None
     try:
         return validate_id(IdKind.EGRESS_RECEIPT, value)
-    except TypeError, ValueError:
+    except (TypeError, ValueError):
         return None
 
 
@@ -515,7 +515,7 @@ def _record_skipped_receipt_row(reason: str, request_id: object) -> None:
     if type(request_id) is str:
         try:
             structural_request_id = validate_id(IdKind.REQUEST, request_id)
-        except TypeError, ValueError:
+        except (TypeError, ValueError):
             structural_request_id = None
     record_public_error_without_raising(
         component="privacy_audit",

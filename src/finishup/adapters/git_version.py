@@ -126,7 +126,7 @@ def git_version(
             timeout=timeout_seconds,
             check=False,
         )
-    except OSError, subprocess.SubprocessError:
+    except (OSError, subprocess.SubprocessError):
         return None
     if completed.returncode != 0:
         return None

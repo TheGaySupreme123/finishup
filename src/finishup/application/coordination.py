@@ -1354,7 +1354,7 @@ def structured_plan_identity(
             # becoming a cross-repository overlap.
             selected["repository_commitment"] = repository
         return canonical_digest(selected)
-    except CoordinationError, TypeError, ValueError:
+    except (CoordinationError, TypeError, ValueError):
         return None
 
 

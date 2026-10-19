@@ -19,6 +19,7 @@ from pathlib import Path
 from typing import Final, cast
 
 import pytest
+from packaging.version import Version
 
 _REPO_ROOT: Final = Path(__file__).resolve().parents[2]
 _BUILD_TIMEOUT: Final = 120
@@ -38,12 +39,18 @@ def _project_name_and_version() -> tuple[str, str]:
     return name, version
 
 
-def _pinned_uv_version() -> str:
+def _minimum_uv_version() -> Version:
     document = _load_pyproject()
     tool = cast(dict[str, object], document["tool"])
     uv_section = cast(dict[str, object], tool["uv"])
     required = cast(str, uv_section["required-version"])
-    return required.removeprefix("==")
+    assert required.startswith(">="), f"uv requirement {required!r} is not a minimum"
+    return Version(required.removeprefix(">="))
+
+
+def _reported_uv_version(reported: str) -> Version:
+    # ``uv --version`` prints ``uv <version> (<commit> <date> <target>)``.
+    return Version(reported.split()[1])
 
 
 def _git(*arguments: str) -> str:
@@ -220,29 +227,27 @@ def test_reproducible_across_varied_hash_seed_and_timestamp(
     assert _sha256(first.wheel) == _sha256(second.wheel)
 
 
-def test_build_tool_is_the_exact_pinned_version() -> None:
+def test_build_tool_meets_the_minimum_version() -> None:
+    # Users and contributors need only a uv at or above the floor (issue #1119); CI and the
+    # release workflow pin one exact uv so release artifacts stay reproducible.
     completed = subprocess.run(  # noqa: S603 - fixed argv, no shell, trusted local uv binary
         ["uv", "--version"], capture_output=True, check=True, timeout=_GIT_TIMEOUT
     )
     reported = completed.stdout.decode("utf-8").strip()
-    pinned = _pinned_uv_version()
-    assert pinned in reported, f"pinned uv {pinned!r} does not match installed {reported!r}"
+    minimum = _minimum_uv_version()
+    assert _reported_uv_version(reported) >= minimum, (
+        f"uv {reported!r} is older than the required minimum {minimum}"
+    )
 
 
-def test_unpinned_build_tool_would_be_detected(
-    tmp_path_factory: pytest.TempPathFactory,
-) -> None:
-    """A build tool reporting any version other than the pinned one must fail this identity check.
+def test_older_build_tool_would_be_detected() -> None:
+    """A uv one release below the floor must fail the minimum check, and the floor itself pass."""
 
-    This does not invoke a second uv binary (only one is available); it proves the comparison
-    itself is sensitive to a single-character version drift, so a genuinely unpinned tool cannot
-    pass silently.
-    """
-
-    pinned = _pinned_uv_version()
-    drifted = pinned[:-1] + ("0" if pinned[-1] != "0" else "1")
-    assert drifted != pinned
-    assert drifted not in f"uv {pinned} (abc)"
+    minimum = _minimum_uv_version()
+    major, minor, micro = minimum.release[:3]
+    older = f"{major}.{minor}.{micro - 1}" if micro else f"{major}.{minor - 1}.999"
+    assert _reported_uv_version(f"uv {older} (abc 2026-01-01 aarch64-apple-darwin)") < minimum
+    assert _reported_uv_version(f"uv {minimum} (abc 2026-01-01 aarch64-apple-darwin)") >= minimum
 
 
 def test_single_byte_artifact_mutation_breaks_digest_equality(

@@ -695,7 +695,7 @@ def _load_cursor_aliases(path: Path) -> dict[str, str]:
         if path.is_symlink() or path.stat().st_size > 65_536:
             return {}
         loaded = json.loads(path.read_bytes())
-    except OSError, ValueError:
+    except (OSError, ValueError):
         return {}
     if not isinstance(loaded, dict):
         return {}
@@ -764,7 +764,7 @@ def _bind_cursor_session_alias(conversation: str, session: str, *, _state: Path 
             os.replace(temporary, path)
         finally:
             os.close(lock_descriptor)
-    except OSError, PathSafetyError, ValueError:
+    except (OSError, PathSafetyError, ValueError):
         return
 
 
@@ -1320,7 +1320,7 @@ def _task_lane_for_result(
             identity=task_id,
             identity_kind="task",
         )
-    except ProtocolValueError, TypeError, ValueError:
+    except (ProtocolValueError, TypeError, ValueError):
         return None
     child_mapping = load_mapping(task_lane, _state=_state)
     if child_mapping is not None and child_mapping.finishup_task_id == task_id:
@@ -1373,7 +1373,7 @@ def _child_lane_rollout(
             identity=child_id,
             identity_kind="host",
         )
-    except ProtocolValueError, TypeError, ValueError:
+    except (ProtocolValueError, TypeError, ValueError):
         return None
     if expected_lane != lane.effective_session_id:
         return None
@@ -1484,7 +1484,7 @@ def _resolve_observation_lane(
                 identity=child_id,
                 identity_kind="host",
             )
-        except ProtocolValueError, TypeError, ValueError:
+        except (ProtocolValueError, TypeError, ValueError):
             child_lane = None
         if child_lane is not None:
             child_mapping = load_mapping(child_lane, _state=_state)
@@ -2175,7 +2175,7 @@ def _visible_content_chunks(
         elif isinstance(value, Mapping) or type(value) in {tuple, list}:
             try:
                 selected.append((kind, label, canonical_encode(value)))
-            except ProtocolValueError, TypeError, ValueError:
+            except (ProtocolValueError, TypeError, ValueError):
                 return
 
     # Native edit arguments are visible task content (#883). They are captured once, from the
@@ -2510,7 +2510,7 @@ async def _try_service_ingest(
         stage = "response_decode"
         try:
             return observation_ingest_result_from_json(raw)
-        except ProtocolValueError, TypeError, ValueError:
+        except (ProtocolValueError, TypeError, ValueError):
             return ObservationControlFailure(
                 ObservationIngestDisposition.REJECTED,
                 "control_frame_invalid",
@@ -2522,7 +2522,7 @@ async def _try_service_ingest(
             )
     except ControlError as error:
         return observation_control_failure(error)
-    except ProtocolValueError, TypeError, ValueError:
+    except (ProtocolValueError, TypeError, ValueError):
         reason = "invalid_request" if stage == "request_encode" else "frame_invalid"
         return ObservationControlFailure(
             ObservationIngestDisposition.REJECTED,
@@ -3235,7 +3235,7 @@ async def _try_auto_start(
         if recovery_mapping is not None:
             request_body["session_id"] = recovery_mapping.finishup_session_id
         request = StartRequest.model_validate(request_body)
-    except ValidationError, ValueError, TypeError:
+    except (ValidationError, ValueError, TypeError):
         # An authoring defect in this function, never a runtime condition: it
         # must be visible, not collapsed into an absent mapping.
         return AutoAttachOutcome(None, "auto_attach_request_invalid")
@@ -3450,7 +3450,7 @@ def _load_recovery_candidate(session_id: str, *, _state: Path | None) -> _Recove
         if path.is_symlink():
             return None
         return _RecoveryCandidate(mapping, path.stat().st_mtime_ns)
-    except OSError, ProtocolValueError:
+    except (OSError, ProtocolValueError):
         return None
 
 
@@ -3654,7 +3654,7 @@ def _prune_surplus_ended_session_bindings(
             if path.is_symlink():
                 return (0, 0, session_id.encode())
             return (1, path.stat().st_mtime_ns, session_id.encode())
-        except OSError, ProtocolValueError:
+        except (OSError, ProtocolValueError):
             return (0, 0, session_id.encode())
 
     ended.sort(key=_rank)
@@ -6698,7 +6698,7 @@ def _bounded_outcome_mapping(value: object) -> Mapping[str, JsonValue] | None:
         return None
     try:
         parsed = strict_json_parse(encoded)
-    except ProtocolValueError, TypeError, ValueError:
+    except (ProtocolValueError, TypeError, ValueError):
         return None
     return cast(Mapping[str, JsonValue], parsed) if isinstance(parsed, Mapping) else None
 
@@ -6979,7 +6979,7 @@ def _codex_result_object(
             parse_float=_drop_json_float,
             parse_constant=_reject_json_constant,
         )
-    except ValueError, RecursionError:
+    except (ValueError, RecursionError):
         return None
     if not isinstance(parsed, dict):
         return None

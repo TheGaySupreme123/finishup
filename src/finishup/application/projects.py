@@ -3170,7 +3170,7 @@ class ProjectApplication:
             participants = await cast(Callable[[str], Awaitable[object | None]], loader)(
                 detection_id
             )
-        except CoordinationError, ProjectCommandError:
+        except (CoordinationError, ProjectCommandError):
             return None
         from finishup.application.coordination import CoordinationParticipant
 
@@ -3524,7 +3524,7 @@ class ProjectApplication:
             return None
         try:
             detection = await cast(Callable[[str], Awaitable[object | None]], loader)(detection_id)
-        except CoordinationError, ProjectCommandError:
+        except (CoordinationError, ProjectCommandError):
             return None
         if (
             type(detection) is not CoordinationDetection
@@ -3780,7 +3780,7 @@ class ProjectApplication:
             }
             if not resource_ids <= set(detection.resource_identities):
                 raise ValueError("coordination_detail_identity_mismatch")
-        except CoordinationError, ProjectCommandError, TypeError, ValueError:
+        except (CoordinationError, ProjectCommandError, TypeError, ValueError):
             return CoordinationResourceProjection(
                 detection.detection_id,
                 project_id_value,

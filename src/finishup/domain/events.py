@@ -2442,7 +2442,7 @@ class ClaimRecordedPayloadV1_1(ClaimRecordedPayload):
     supersedes_claim_refs: tuple[ClaimId, ...] = ()
 
     def __post_init__(self) -> None:
-        super().__post_init__()
+        super(ClaimRecordedPayloadV1_1, self).__post_init__()
         limitations = _id_tuple(self.limitation_refs, result_id, field="limitation_refs")
         superseded = _id_tuple(
             self.supersedes_claim_refs,

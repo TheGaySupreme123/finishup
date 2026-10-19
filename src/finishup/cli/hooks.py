@@ -994,7 +994,7 @@ def bind_start_mapping_outcome(
             writer_id=writer_id,
             last_frontier=_frontier_from_start(result),
         )
-    except ProtocolValueError, TypeError, ValueError:
+    except (ProtocolValueError, TypeError, ValueError):
         return "start_bind_invalid_ids"
     existing, parent_pending = _mapping_state_before_start(codex_session_id, _state=_state)
     child_identity, identity_supplied, identity_valid = _child_identity_from_payload(payload)
@@ -1042,7 +1042,7 @@ def bind_start_mapping_outcome(
                         last_frontier=result_mapping.last_frontier,
                     )
                 )
-            except ProtocolValueError, TypeError, ValueError:
+            except (ProtocolValueError, TypeError, ValueError):
                 return "start_bind_child_lane_unbound"
         else:
             return "start_bind_child_lane_unbound"
@@ -1080,7 +1080,7 @@ def bind_start_mapping_outcome(
                         last_frontier=result_mapping.last_frontier,
                     )
                 )
-            except ProtocolValueError, TypeError, ValueError:
+            except (ProtocolValueError, TypeError, ValueError):
                 return "start_bind_child_lane_unbound"
         else:
             return "start_bind_child_lane_unbound"
@@ -1110,7 +1110,7 @@ def bind_start_mapping_outcome(
                     identity=child_identity,
                     identity_kind="host",
                 )
-            except ProtocolValueError, TypeError, ValueError:
+            except (ProtocolValueError, TypeError, ValueError):
                 return "start_bind_child_lane_unbound"
             prior_child = load_mapping(child_lane, _state=_state)
             if prior_child is not None and prior_child.finishup_task_id != task_id:

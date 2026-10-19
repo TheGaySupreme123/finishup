@@ -39,7 +39,7 @@ def probe_version(executable: Path) -> str | None:
             timeout=5,
             check=False,
         )
-    except OSError, subprocess.SubprocessError:
+    except (OSError, subprocess.SubprocessError):
         return None
     if completed.returncode:
         return None

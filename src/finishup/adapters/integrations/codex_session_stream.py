@@ -194,7 +194,7 @@ def rollout_filename_matches_token(filename: str | Path, token: str) -> bool:
         return False
     try:
         name = Path(filename).name
-    except TypeError, ValueError:
+    except (TypeError, ValueError):
         return False
     lower_name = name.lower()
     for suffix in _JSONL_SUFFIXES:
@@ -282,7 +282,7 @@ def _decode_oversized_partial(
         tag, line_start_raw, prefix_digest_raw = value[len(_OVERSIZED_PARTIAL_PREFIX) :].split(b":")
         line_start = int(line_start_raw.decode("ascii"))
         prefix_digest = prefix_digest_raw.decode("ascii")
-    except UnicodeError, ValueError:
+    except (UnicodeError, ValueError):
         raise ValueError("session_stream_partial_invalid") from None
     body = line_start_raw + b":" + prefix_digest_raw
     context = (
@@ -628,7 +628,7 @@ class CodexSessionStreamLocator:
     def _is_beneath(path: Path, root: Path) -> bool:
         try:
             path.relative_to(root.resolve(strict=False))
-        except OSError, ValueError:
+        except (OSError, ValueError):
             return False
         return True
 
@@ -860,7 +860,7 @@ def read_codex_child_rollout_header(path: Path) -> CodexChildRolloutHeaderResult
         parsed = parse_codex_rollout_jsonl_from_offset(
             bytes(collected), None, start_ordinal=1, require_admission=True
         )
-    except ProtocolValueError, TypeError, ValueError:
+    except (ProtocolValueError, TypeError, ValueError):
         return _CHILD_HEADER_UNREADABLE
     if parsed.profile is None or len(parsed.records) != 1:
         return _CHILD_HEADER_UNREADABLE
@@ -927,7 +927,7 @@ def _stream_classification_payload(
     if type(raw_arguments) is str:
         try:
             parsed = strict_json_parse(raw_arguments.encode("utf-8"))
-        except ProtocolValueError, TypeError, ValueError, UnicodeError:
+        except (ProtocolValueError, TypeError, ValueError, UnicodeError):
             parsed = None
         if isinstance(parsed, Mapping):
             payload["tool_input"] = cast(JsonObject, parsed)
@@ -1092,7 +1092,7 @@ def _stream_read_protection_probe(
         return None, None
     try:
         protected = reader(workspace_commitment, session_commitment, probe)
-    except AttributeError, OSError, ProtocolValueError, TypeError, ValueError:
+    except (AttributeError, OSError, ProtocolValueError, TypeError, ValueError):
         return None, None
     if protected is not True:
         return None, None
@@ -1101,7 +1101,7 @@ def _stream_read_protection_probe(
         return probe, None
     try:
         reference = reference_reader(workspace_commitment, session_commitment, probe)
-    except AttributeError, OSError, ProtocolValueError, TypeError, ValueError:
+    except (AttributeError, OSError, ProtocolValueError, TypeError, ValueError):
         reference = None
     return probe, reference if type(reference) is str else None
 
@@ -2035,7 +2035,7 @@ def _code_mode_cell_fact(record: CodexParsedRecord) -> CodeModeCellFact | None:
     if type(raw) is str and len(raw) <= 4096:
         try:
             arguments = strict_json_parse(raw.encode("utf-8"))
-        except ProtocolValueError, TypeError, ValueError, UnicodeError:
+        except (ProtocolValueError, TypeError, ValueError, UnicodeError):
             arguments = None
     elif isinstance(raw, Mapping):
         arguments = raw
@@ -2284,7 +2284,7 @@ def _session_rollout_decisions(
             if callable(evicted)
             else ()
         )
-    except AttributeError, OSError, ProtocolValueError, TypeError, ValueError:
+    except (AttributeError, OSError, ProtocolValueError, TypeError, ValueError):
         return None
     return _rollout_item_decisions(envelopes, session_commitment, open_calls)
 
@@ -2334,7 +2334,7 @@ def _deliver_pending_rollout_item(
             store.settle_pending_rollout_item(
                 workspace_commitment, item.session_commitment, item.source_identity
             )
-        except AttributeError, OSError, ProtocolValueError, TypeError, ValueError:
+        except (AttributeError, OSError, ProtocolValueError, TypeError, ValueError):
             return False
         return True
     frontier = store.get_stream_cursor(workspace_commitment, item.session_commitment)
@@ -2382,7 +2382,7 @@ def _deliver_pending_rollout_item(
             store.settle_pending_rollout_item(
                 workspace_commitment, item.session_commitment, item.source_identity
             )
-    except AttributeError, OSError, ProtocolValueError, TypeError, ValueError:
+    except (AttributeError, OSError, ProtocolValueError, TypeError, ValueError):
         return False
     return True
 
@@ -2407,7 +2407,7 @@ def _release_decided_rollout_items(
     try:
         aged = cast(tuple[PendingRolloutItem, ...], ager(workspace_commitment))
         own = cast(tuple[PendingRolloutItem, ...], lister(workspace_commitment, session_commitment))
-    except AttributeError, OSError, ProtocolValueError, TypeError, ValueError:
+    except (AttributeError, OSError, ProtocolValueError, TypeError, ValueError):
         return True
     # A session that stopped storing rows (a crash, or a call that never finishes) cannot
     # decide its items any more; after a bounded number of workspace reconciles they are
@@ -2437,7 +2437,7 @@ def _release_decided_rollout_items(
                     store.settle_pending_rollout_item(
                         workspace_commitment, session_commitment, item.source_identity
                     )
-                except AttributeError, OSError, ProtocolValueError, TypeError, ValueError:
+                except (AttributeError, OSError, ProtocolValueError, TypeError, ValueError):
                     return False
                 continue
             if not _deliver_pending_rollout_item(
@@ -2446,7 +2446,7 @@ def _release_decided_rollout_items(
                 return False
     try:
         remaining = cast(tuple[PendingRolloutItem, ...], lister(workspace_commitment))
-    except AttributeError, OSError, ProtocolValueError, TypeError, ValueError:
+    except (AttributeError, OSError, ProtocolValueError, TypeError, ValueError):
         return True
     for item in remaining[: max(0, len(remaining) - MAX_PENDING_ROLLOUT_ITEMS)]:
         if not _deliver_pending_rollout_item(store, workspace_commitment, item, unpaired=True):
@@ -2487,7 +2487,7 @@ def release_held_rollout_items_for_check(
 
     try:
         items = store.pending_rollout_items(workspace_commitment)
-    except AttributeError, OSError, ProtocolValueError, TypeError, ValueError:
+    except (AttributeError, OSError, ProtocolValueError, TypeError, ValueError):
         return ()
     current = time.time() if now is None else now
     held: list[str] = []
@@ -2555,7 +2555,7 @@ def _code_mode_cell_held(
             )
             is True
         )
-    except AttributeError, OSError, ProtocolValueError, TypeError, ValueError:
+    except (AttributeError, OSError, ProtocolValueError, TypeError, ValueError):
         return False
 
 
@@ -2583,7 +2583,7 @@ def _note_code_mode_wait(
         return True
     try:
         note(workspace_commitment, session_commitment, wait_call, fact.cell_id)
-    except AttributeError, OSError, ProtocolValueError, TypeError, ValueError:
+    except (AttributeError, OSError, ProtocolValueError, TypeError, ValueError):
         return False
     return True
 
@@ -2637,7 +2637,7 @@ def _owed_code_mode_cell_outputs(
             wait_call,
             tool_items_recorded=tool_items_recorded,
         )
-    except AttributeError, OSError, ProtocolValueError, TypeError, ValueError:
+    except (AttributeError, OSError, ProtocolValueError, TypeError, ValueError):
         return None
     return () if owed is None else (cast(tuple[str, ObservationEnvelope], owed),)
 
@@ -2691,7 +2691,7 @@ def _deliver_held_cell_output(
             settle = getattr(store, "settle_code_mode_cell_output", None)
             if callable(settle):
                 settle(workspace_commitment, cell_key)
-    except AttributeError, OSError, ProtocolValueError, TypeError, ValueError:
+    except (AttributeError, OSError, ProtocolValueError, TypeError, ValueError):
         return False
     return True
 
@@ -2746,7 +2746,7 @@ def _note_code_mode_nested_item(
             finishup_owned=finishup_owned,
             tool_item=tool_item,
         )
-    except AttributeError, OSError, ProtocolValueError, TypeError, ValueError:
+    except (AttributeError, OSError, ProtocolValueError, TypeError, ValueError):
         return False
     return True
 
@@ -2778,7 +2778,7 @@ def _close_pre_only_attempt(
             session_commitment,
             _token(envelope.structural_payload.get("tool_call_id")),
         )
-    except AttributeError, OSError, ProtocolValueError, TypeError, ValueError:
+    except (AttributeError, OSError, ProtocolValueError, TypeError, ValueError):
         return
 
 
@@ -2792,7 +2792,7 @@ def _code_mode_pass_snapshot(
         return None
     try:
         value = snapshot(workspace_commitment, session_commitment)
-    except AttributeError, OSError, ProtocolValueError, TypeError, ValueError:
+    except (AttributeError, OSError, ProtocolValueError, TypeError, ValueError):
         return None
     return value if type(value) is int and value > 0 else None
 
@@ -2814,7 +2814,7 @@ def _settle_code_mode_pass(
         return
     try:
         settle(workspace_commitment, session_commitment, snapshot)
-    except AttributeError, OSError, ProtocolValueError, TypeError, ValueError:
+    except (AttributeError, OSError, ProtocolValueError, TypeError, ValueError):
         pass
 
 
@@ -2918,7 +2918,7 @@ def _stream_selection_context(
         if mapping is None or authority is None or not authority.active:
             return envelope, ""
         epoch = store.selection_epoch(workspace_commitment)
-    except AttributeError, OSError, ProtocolValueError, TypeError, ValueError:
+    except (AttributeError, OSError, ProtocolValueError, TypeError, ValueError):
         return envelope, ""
     structural = cast(Mapping[str, JsonValue], envelope.structural_payload)
     annotated = JsonObject(
@@ -2972,7 +2972,7 @@ def _stream_selection_pressure(
         return None
     try:
         return updater(workspace_commitment, session_commitment)
-    except AttributeError, OSError, ProtocolValueError, TypeError, ValueError:
+    except (AttributeError, OSError, ProtocolValueError, TypeError, ValueError):
         return False
 
 
@@ -2994,7 +2994,7 @@ def _stream_selection_history_gaps(
         return ()
     try:
         inherited = cast(tuple[object, ...], lookup(workspace_commitment, envelope))
-    except AttributeError, OSError, ProtocolValueError, TypeError, ValueError:
+    except (AttributeError, OSError, ProtocolValueError, TypeError, ValueError):
         return ()
     if type(inherited) is not tuple:
         return ()
@@ -3141,7 +3141,7 @@ def _reconcile_session_stream_path(
                 force=True,
                 material_boundary=True,
             )
-        except AttributeError, OSError, ProtocolValueError, TypeError, ValueError:
+        except (AttributeError, OSError, ProtocolValueError, TypeError, ValueError):
             boundary_ok = False
         if not boundary_ok:
             delivery_blocked = True
@@ -3218,7 +3218,7 @@ def _reconcile_session_stream_path(
                 force=not optional_routine,
                 material_boundary=not optional_routine,
             )
-        except AttributeError, OSError, ProtocolValueError, TypeError, ValueError:
+        except (AttributeError, OSError, ProtocolValueError, TypeError, ValueError):
             flush_ok = False
         if not flush_ok:
             delivery_blocked = True
@@ -3340,7 +3340,7 @@ def _reconcile_session_stream_path(
                     note_pending(
                         workspace_commitment, session_commitment, codex_session_id, envelope
                     )
-                except AttributeError, OSError, ProtocolValueError, TypeError, ValueError:
+                except (AttributeError, OSError, ProtocolValueError, TypeError, ValueError):
                     # The cursor must not pass an item whose later decision could not persist.
                     delivery_blocked = True
                     break
@@ -3409,7 +3409,7 @@ def _reconcile_session_stream_path(
                     newly_observed=result.disposition.value == "accepted",
                     replayable=True,
                 )
-            except AttributeError, OSError, ProtocolValueError, TypeError, ValueError:
+            except (AttributeError, OSError, ProtocolValueError, TypeError, ValueError):
                 admitted = False
             if not admitted:
                 # The local envelope is retained, but its source position is
@@ -3428,7 +3428,7 @@ def _reconcile_session_stream_path(
                 if callable(consume):
                     try:
                         consume(workspace_commitment, session_commitment, read_protection_probe)
-                    except AttributeError, OSError, ProtocolValueError, TypeError, ValueError:
+                    except (AttributeError, OSError, ProtocolValueError, TypeError, ValueError):
                         pass
         elif result.disposition.value == "accepted" and not cell_wrapper:
             # Self-observation suppression is intentional selection, not a
@@ -3438,7 +3438,7 @@ def _reconcile_session_stream_path(
             if callable(note_omission):
                 try:
                     note_omission(workspace_commitment)
-                except AttributeError, OSError, ProtocolValueError, TypeError, ValueError:
+                except (AttributeError, OSError, ProtocolValueError, TypeError, ValueError):
                     # The source cursor must not pass an accepted input when
                     # its intentional-omission accounting could not commit.
                     delivery_blocked = True

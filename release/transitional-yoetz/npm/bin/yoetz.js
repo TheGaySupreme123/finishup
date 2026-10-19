@@ -39,7 +39,7 @@ function main() {
     fail([
       "yoetz: the 'uv' tool is required and was not found on PATH.",
       "",
-      "Yoetz is now FinishUP. It runs on Python 3.14 and this launcher only delegates to the",
+      "Yoetz is now FinishUP. It runs on Python 3.12 or later and this launcher only delegates to the",
       `Python distribution 'yoetz==${version}'. It never installs anything itself,`,
       "so uv has to be present first.",
       "",
@@ -71,7 +71,7 @@ function main() {
   // No `--force`: if uv refuses, the user decides what to replace.
   const install = spawnSync(
     "uv",
-    ["tool", "install", "--quiet", "--python", "3.14", `yoetz==${version}`],
+    ["tool", "install", "--quiet", "--managed-python", "--python", "3.14", `yoetz==${version}`],
     { stdio: "inherit", shell: false },
   );
   if (install.error || install.status !== 0) {
@@ -83,9 +83,9 @@ function main() {
       "",
       `Reported: ${reported}`,
       "",
-      "Nothing was replaced or removed. FinishUP needs Python 3.14; uv downloads it on demand",
-      "unless Python downloads are disabled in your uv configuration. The message above names",
-      `the exact cause. See ${INSTALL_DOCS}`,
+      "Nothing was replaced or removed. FinishUP needs Python 3.12 to 3.14; uv downloads one",
+      "on demand unless Python downloads are disabled in your uv configuration. The message",
+      `above names the exact cause. See ${INSTALL_DOCS}`,
       `To move to the new name instead, see ${MIGRATION_DOCS}`,
     ]);
     return;
@@ -94,7 +94,7 @@ function main() {
   // A versionless `uvx yoetz` runs the installed tool environment, never a cache-backed one.
   const result = spawnSync(
     "uvx",
-    ["--python", "3.14", "yoetz", ...process.argv.slice(2)],
+    ["yoetz", ...process.argv.slice(2)],
     { stdio: "inherit", shell: false },
   );
 

@@ -705,7 +705,7 @@ class EncryptedFilesObjectStore:
                         continue
                     try:
                         validate_id(IdKind.OBJECT, path.name)
-                    except TypeError, ValueError:
+                    except (TypeError, ValueError):
                         continue
                     if path.parent.name != path.name[4:6]:
                         continue

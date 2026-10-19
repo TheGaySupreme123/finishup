@@ -29,7 +29,7 @@ def handle_startup_context(
         cue = prefix.split("\n\n", 2)[1].strip()
         if "finishup://guidance/workflow.md" not in cue:
             raise ValueError("startup_context_guidance_incomplete")
-    except OSError, UnicodeError, IndexError, ValueError:
+    except (OSError, UnicodeError, IndexError, ValueError):
         cue = (
             "For material work, read finishup://guidance/workflow.md with read_guidance, "
             "then follow its current startup and recovery procedure before substantive work. "

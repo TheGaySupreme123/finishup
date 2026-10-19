@@ -22,7 +22,7 @@ transcript, or one successful `check`, is never grounds for a blanket compatibil
 | CLI contract / MCP SDK / MCP protocol | `version --json` (MCP SDK `mcp==1.28.1`, protocol negotiated against the latest published revision) |
 | Codex exact tested executable set and JSONL importer format profiles | `version --json`, `fixtures/imports/codex/` |
 | Optional provider adapter / profile / model / SDK | `version --json`, provider capability fixtures |
-| Python / OS / CPU / ABI / APSW / SQLite source and build options / filesystem / key backend | `version --json` (Python `>=3.14,<3.15`, APSW `3.53.3.1`, SQLite source ID pinned in ADR-003) |
+| Python / OS / CPU / ABI / APSW / SQLite source and build options / filesystem / key backend | `version --json` (Python `>=3.12,<3.15`, certified cell 3.14, APSW `3.53.3.1`, SQLite source ID pinned in ADR-003) |
 
 `version --json`, the installed resource manifest, bundle metadata, and the release
 capability/support matrices are the sole authorities. No prose table in this document is itself

@@ -624,7 +624,7 @@ def setup_marker_present() -> bool:
 
     try:
         return setup_marker_path().is_file()
-    except PathSafetyError, OSError:
+    except (PathSafetyError, OSError):
         # An unsafe or unreadable state directory must never trigger the wizard.
         return True
 
@@ -634,7 +634,7 @@ def should_offer_first_run() -> bool:
 
     try:
         interactive = sys.stdin.isatty() and sys.stdout.isatty()
-    except OSError, ValueError:
+    except (OSError, ValueError):
         return False
     return interactive and not setup_marker_present()
 
@@ -717,7 +717,7 @@ def _integration_layers(workspace: Path | None = None) -> dict[str, JsonValue]:
 def _is_interactive_terminal() -> bool:
     try:
         return sys.stdin.isatty() and sys.stdout.isatty()
-    except OSError, ValueError:
+    except (OSError, ValueError):
         return False
 
 
@@ -783,7 +783,7 @@ def _write_setup_marker(outcome: str) -> bool:
             os.write(descriptor, payload)
         finally:
             os.close(descriptor)
-    except PathSafetyError, OSError:
+    except (PathSafetyError, OSError):
         return False
     return True
 
@@ -1018,7 +1018,7 @@ def _shared_route_change_members(
     try:
         home = resolve_codex_home(codex_home).absolute()
         verified, possible = other_members(home, project)
-    except OSError, ValueError, IntegrationError:
+    except (OSError, ValueError, IntegrationError):
         return (), (), True
     return verified, possible, False
 
@@ -2973,7 +2973,7 @@ async def _interactive_provider_setup(
 
         try:
             status_before = await provider_status_report()
-        except OSError, ValueError:
+        except (OSError, ValueError):
             status_before = {}
         observed_before = status_before.get("credential_connected")
         credential_before = observed_before if type(observed_before) is bool else None
@@ -3011,7 +3011,7 @@ async def _interactive_provider_setup(
     try:
         repository_snapshot = await get_privacy_setup_snapshot(project)
         repository_commitment = repository_snapshot.bound_scope.get("workspace_ref_commitment")
-    except ControlError, OSError, ValueError:
+    except (ControlError, OSError, ValueError):
         repository_commitment = None
     if type(repository_commitment) is not str:
         provider_report["credential_reason"] = "repository_privacy_scope_unavailable"
@@ -3055,7 +3055,7 @@ async def _interactive_provider_setup(
 
             try:
                 status_after = await provider_status_report()
-            except OSError, ValueError:
+            except (OSError, ValueError):
                 status_after = {}
             observed_after = status_after.get("credential_connected")
             credential_after = observed_after if type(observed_after) is bool else None
@@ -3195,7 +3195,7 @@ async def run_provider_setup(
 
         try:
             provider_choice = provider_preset(provider_choice).choice
-        except ConfigError, TypeError:
+        except (ConfigError, TypeError):
             return _usage_failure("--provider must name a reviewed provider preset")
     if not _is_interactive_terminal():
         return _usage_failure("--set requires a local terminal for hidden credential input")
@@ -3735,7 +3735,7 @@ async def run_setup_wizard(
                 # credential ceremony fails or returns an ambiguous result.
                 try:
                     semantic_status = await provider_status_report(workspace_locator=codex_project)
-                except ControlError, OSError, ValueError:
+                except (ControlError, OSError, ValueError):
                     semantic_status = None
     elif interactive and review_mode == "local_only":
         from finishup.cli.privacy_setup import run_privacy_setup
