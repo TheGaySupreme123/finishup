@@ -6028,6 +6028,10 @@ def _privacy_gated_semantic_evaluator(
                                 # Ask-every-time: each further exchange would need its own
                                 # approval, so the review offers no reads from its first exchange.
                                 reads=0 if semantic_preview_required(policy) else MAX_READS,
+                                # Opaque read-source ids are the installation's keyed commitment.
+                                source_commitment=lambda data: runtime.objects.commitment_for(
+                                    data, ObjectKind.SEMANTIC_RESPONSE
+                                ),
                                 read_room=lambda sent: reviewer_read_room(
                                     channel_prepared_limit(policy), sent
                                 ),

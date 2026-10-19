@@ -11,7 +11,6 @@ fence, recovery and receipts apply to it unchanged.
 
 from __future__ import annotations
 
-import hashlib
 import json
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass, replace
@@ -65,6 +64,7 @@ __all__ = ["PACKET_TURN", "ReviewerRun", "reviewer_catalog", "run_reviewer"]
 # approved, followed by the read catalog.
 PACKET_TURN: Final = "[FinishUP review packet]"
 _INVALID_ENDINGS: Final = frozenset({"format_invalid", "read_limit", "turn_limit"})
+_SOURCE_DOMAIN: Final = b"finishup/reviewer-read-source/v1\x00"
 
 
 @dataclass(frozen=True, slots=True)
@@ -124,6 +124,7 @@ async def run_reviewer(
     dispatch_guard: Callable[[], Awaitable[bool]] | None,
     resume_pending: str | None,
     clock: Callable[[], float],
+    source_commitment: Callable[[bytes], Awaitable[str]],
     reads: int = MAX_READS,
     read_room: Callable[[int], int] = lambda _sent: MAX_TOTAL_BYTES,
 ) -> ReviewerRun:
@@ -134,6 +135,8 @@ async def run_reviewer(
     of a first exchange that waited for the owner before anything was sent: that exchange is
     resumed once, in the turn it already reserved, by its exact prepared identity. ``read_room``
     says how many read bytes the channel ceiling leaves after a conversation of that many bytes.
+    ``source_commitment`` is the installation's keyed object commitment; a file read's opaque
+    source id is derived from it, so the id cannot be recomputed from a guessed path.
     """
 
     retained = ReviewerHistory()
@@ -207,7 +210,18 @@ async def run_reviewer(
         )
         outcome = await loop.run()
         cleanup = await session.aclose()
-    record, paths = _record(job_id, outcome, results, carried, cleanup)
+    record, paths = _record(outcome, results, carried, cleanup)
+    sources: dict[int, str] = {}
+    for call, path in paths.items():
+        keyed = await source_commitment(_SOURCE_DOMAIN + f"{job_id}\x00{path}".encode())
+        sources[call] = "src_" + keyed.rpartition(":")[2][:24]
+    record = replace(
+        record,
+        reads=tuple(
+            replace(read, source=sources[read.call]) if read.call in sources else read
+            for read in record.reads
+        ),
+    )
     return ReviewerRun(
         _terminal(outcome, results, first_request_id, cleanup),
         record,
@@ -265,7 +279,6 @@ def _terminal(
 
 
 def _record(
-    job_id: str,
     outcome: ReviewOutcome,
     results: list[SemanticEgressResult],
     carried: Mapping[int, int],
@@ -290,10 +303,10 @@ def _record(
         args = cast(dict[str, object], reply["args"])
         source = cast(str | None, None if prov is None else prov.get("source_ref"))
         if reply["action"] == "read_file":
+            # Its opaque source id is the keyed commitment ``run_reviewer`` derives from this.
             alias, path = cast(str, args["root_id"]), cast(str, args["path"])
             paths[call] = f"{alias}:{path}"
-            key = f"{job_id}\x00{alias}\x00{path}".encode()
-            source = "src_" + hashlib.sha256(key).hexdigest()[:24]
+            source = None
         line_span = None if prov is None else prov.get("line_span")
         lines = (
             None
