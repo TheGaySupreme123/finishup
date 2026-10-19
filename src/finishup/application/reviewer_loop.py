@@ -26,10 +26,11 @@
 # SOFTWARE.
 """The reviewer loop: a linear history, one read or the final judgment per turn (#1118 unit 2).
 
-At most three reads, then only the final judgment. One format repair for the whole review; a
-second malformed reply, a read after the cap, a revoked binding, a lost lease or the deadline ends
-the review incomplete. Every model turn, the repair and every read is a durable job step, reserved
-before it runs; a job that already holds steps is not resumed. A failed turn is never retried.
+At most three reads, then only the final judgment. One format repair for the whole review, for a
+completed answer that is not one JSON object or not a valid reply; a second malformed reply, a read
+after the cap, a revoked binding, a lost lease or the deadline ends the review incomplete. Every
+model turn, the repair and every read is a durable job step, reserved before it runs; a job that
+already holds steps is not resumed. A failed turn is never retried.
 """
 
 from __future__ import annotations
@@ -137,12 +138,21 @@ class ReviewerLoop:
                 await self.store.reserve("turn", turn, b"turn" if reads else b"final")
                 self.remaining()
                 schema = reviewer_reply_schema(reads_allowed=reads, strict=True)
-                parsed = await self.model.complete(
-                    tuple(self.messages), schema, deadline=self.deadline
+                invalid: ReviewerReplyInvalid | None = None
+                try:
+                    parsed = await self.model.complete(
+                        tuple(self.messages), schema, deadline=self.deadline
+                    )
+                except ReviewerReplyInvalid as e:  # completed, but not one JSON object
+                    invalid, parsed = e, None
+                captured = {"invalid": invalid.code} if invalid is not None else parsed
+                await self.store.capture(
+                    "turn", turn, json.dumps(captured, sort_keys=True).encode()
                 )
-                await self.store.capture("turn", turn, json.dumps(parsed, sort_keys=True).encode())
                 self.remaining()  # an answer that arrives after the deadline is not used
                 try:
+                    if invalid is not None:
+                        raise invalid
                     reply = decode_reviewer_reply(parsed)
                 except ReviewerReplyInvalid as e:
                     if repaired:
