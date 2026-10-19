@@ -1066,8 +1066,8 @@ def test_guided_setup_offers_account_switch(
 
     anyio.run(module.prompt_codex_subscription_setup)
 
-    assert prompt_defaults["Exact model"] == "gpt-6-luna"
-    assert prompt_defaults["Final review reasoning effort"] == "high"
+    assert prompt_defaults["Exact model"] == "gpt-6.1-sol"
+    assert prompt_defaults["Final review reasoning effort"] == "medium"
     assert any(item.startswith("Continue to Codex sign-in") for item in confirms)
     assert any("switch ChatGPT account" in item for item in confirms)
     assert captured == [True]
@@ -1733,25 +1733,27 @@ def test_cli_status_accepts_a_valid_storage_data_dir_configuration(
     assert "internal_error" not in result.stderr
 
 
-def test_cli_setup_recommends_luna_and_keeps_independent_high_effort() -> None:
+def test_cli_setup_suggests_medium_final_effort_for_a_new_binding() -> None:
     from finishup.cli.app import provider_codex_subscription_setup
 
     params = inspect.signature(provider_codex_subscription_setup).parameters
     assert params["model"].default is None
-    # ``None`` resolves to high for a new binding and preserves an existing binding's effort.
+    # ``None`` resolves to medium for a new binding and preserves an existing binding's effort.
     assert params["reasoning_effort"].default is None
     assert params["executable"].default is None
-    assert module.default_codex_subscription_reasoning_effort() == "high"
+    assert module.default_codex_subscription_reasoning_effort() == "medium"
 
 
-def test_default_subscription_model_recommends_luna_or_preserves_existing_binding(
+def test_default_subscription_model_suggests_sol_or_preserves_existing_binding(
     tmp_path: Path,
 ) -> None:
     absent = tmp_path / "absent.toml"
-    assert module.default_codex_subscription_model(absent) == "gpt-6-luna"
+    assert module.default_codex_subscription_model(absent) == "gpt-6.1-sol"
+    assert module.codex_subscription_model_is_suggested(absent) is True
 
     target = _bound_config_file(tmp_path, _binding(tmp_path / "codex", tmp_path / "home"))
     assert module.default_codex_subscription_model(target) == "gpt-5.6-sol"
+    assert module.codex_subscription_model_is_suggested(target) is False
 
 
 # --- issue #571: routine/final budget choices survive setup -------------------------------------
@@ -1924,3 +1926,123 @@ def test_preview_rejects_an_unsupported_routine_effort(
             reasoning_effort="high",
             routine_reasoning_effort="turbo",
         )
+
+
+# --- suggested model: gpt-6.1-sol/medium, falling back only when Codex does not list it ----------
+
+
+def _catalog_setup(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    *,
+    listed: frozenset[str],
+    existing: ExternalRuntimeProfileConfig | None = None,
+) -> tuple[list[ExternalRuntimeProfileConfig], list[str]]:
+    written = _budget_setup(monkeypatch, tmp_path, existing)
+    probed: list[str] = []
+
+    def build_profile(binding: ExternalRuntimeProfileConfig) -> ExternalRuntimeProfileConfig:
+        return binding
+
+    async def model_listed(profile: ExternalRuntimeProfileConfig) -> bool:
+        probed.append(profile.model)
+        return profile.model in listed
+
+    monkeypatch.setattr(module, "_profile", build_profile)
+    monkeypatch.setattr(module, "codex_model_listed", model_listed)
+    return written, probed
+
+
+async def _setup_model(tmp_path: Path, model: str, *, suggestion: bool) -> Mapping[str, object]:
+    return await module.codex_subscription_setup(
+        executable=tmp_path / "codex",
+        codex_home=tmp_path / "dedicated-home",
+        model=model,
+        reasoning_effort="medium",
+        login_mode="browser",
+        open_browser=False,
+        switch_account=False,
+        model_is_suggestion=suggestion,
+    )
+
+
+@pytest.mark.anyio
+async def test_suggested_model_is_bound_when_codex_lists_it(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    written, probed = _catalog_setup(
+        monkeypatch, tmp_path, listed=frozenset({"gpt-6.1-sol", "gpt-6-luna"})
+    )
+
+    result = await _setup_model(tmp_path, "gpt-6.1-sol", suggestion=True)
+
+    assert probed == ["gpt-6.1-sol"]
+    assert [(item.model, item.reasoning_effort) for item in written] == [("gpt-6.1-sol", "medium")]
+    assert "model_fallback_from" not in result
+
+
+@pytest.mark.anyio
+async def test_suggested_model_falls_back_clearly_when_an_older_codex_does_not_list_it(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # Codex 0.157.1's model/list offers gpt-6-luna but not gpt-6.1-sol.
+    written, probed = _catalog_setup(monkeypatch, tmp_path, listed=frozenset({"gpt-6-luna"}))
+
+    result = await _setup_model(tmp_path, "gpt-6.1-sol", suggestion=True)
+
+    assert probed == ["gpt-6.1-sol", "gpt-6-luna"]
+    assert [(item.model, item.reasoning_effort) for item in written] == [("gpt-6-luna", "medium")]
+    assert result["model"] == "gpt-6-luna"
+    assert result["model_fallback_from"] == "gpt-6.1-sol"
+    out = capsys.readouterr().out
+    assert "does not list the suggested model gpt-6.1-sol" in out
+    assert "using gpt-6-luna instead" in out
+
+
+@pytest.mark.anyio
+async def test_suggestion_is_kept_when_the_fallback_is_not_listed_either(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    # Nothing is silently substituted for an unlisted fallback; admission at sign-in decides.
+    written, probed = _catalog_setup(monkeypatch, tmp_path, listed=frozenset())
+
+    result = await _setup_model(tmp_path, "gpt-6.1-sol", suggestion=True)
+
+    assert probed == ["gpt-6.1-sol", "gpt-6-luna"]
+    assert [item.model for item in written] == ["gpt-6.1-sol"]
+    assert "model_fallback_from" not in result
+
+
+@pytest.mark.anyio
+async def test_an_explicit_model_is_never_substituted(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    written, probed = _catalog_setup(monkeypatch, tmp_path, listed=frozenset({"gpt-6-luna"}))
+
+    await _setup_model(tmp_path, "gpt-6.1-sol", suggestion=False)
+
+    assert probed == []
+    assert [item.model for item in written] == ["gpt-6.1-sol"]
+
+
+@pytest.mark.anyio
+async def test_an_existing_binding_keeps_its_model_on_upgrade(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    existing = _binding(tmp_path / "codex", tmp_path / "dedicated-home")
+    written, probed = _catalog_setup(
+        monkeypatch, tmp_path, listed=frozenset({"gpt-6-luna"}), existing=existing
+    )
+
+    await _setup_model(tmp_path, existing.model, suggestion=True)
+
+    assert probed == []
+    assert [item.model for item in written] == [existing.model]
+
+
+def test_model_unavailable_failures_name_a_next_step() -> None:
+    line = module.subscription_failure_line(ValueError("codex_model_unavailable"))
+    assert line.startswith("codex_subscription: codex_model_unavailable: ")
+    assert "--model" in line
+    effort = module.subscription_failure_line(ValueError("codex_reasoning_effort_unavailable"))
+    assert "--reasoning-effort" in effort

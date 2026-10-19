@@ -1,5 +1,5 @@
 <p align="center">
-  <a href="https://finishup.dev"><img src="https://raw.githubusercontent.com/TheGaySupreme123/finishup/main/landing/public/assets/finishup-lockup.png" alt="FinishUP" width="320"></a>
+  <a href="https://finishup.dev"><img src="https://raw.githubusercontent.com/TheGaySupreme123/finishup/main/docs/assets/finishup-logo.png" alt="FinishUP" width="360"></a>
 </p>
 
 <h1 align="center">Agents claim they're done.<br>FinishUP checks if they actually did.</h1>
@@ -22,8 +22,8 @@
 </p>
 
 > [!NOTE]
-> **FinishUP was formerly named Yoetz.** Existing Yoetz installations keep their data, settings and
-> connected agents; see [Upgrading from Yoetz](docs/usage/upgrading.md#upgrading-from-yoetz).
+> **FinishUP was previously called Yoetz.** Existing Yoetz installations keep their data, settings and connected agents; see
+> [Upgrading from Yoetz](docs/usage/upgrading.md#upgrading-from-yoetz).
 
 FinishUP is a local-first, open-source system for recording structured work evidence, checking it
 with local checks, and producing **honest receipts about what was and was not verified**.

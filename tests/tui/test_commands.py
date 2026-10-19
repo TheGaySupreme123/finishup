@@ -627,6 +627,80 @@ async def test_provider_switch_preserves_existing_subscription_model_when_omitte
     ]
 
 
+async def test_provider_offers_the_suggested_codex_model_and_marks_it_as_a_suggestion(
+    make_app: MakeApp,
+) -> None:
+    runtime = FakeRuntime()
+    runtime.codex_subscription_defaults = lambda: (  # type: ignore[method-assign]
+        "/opt/codex/codex",
+        "/var/lib/finishup/codex-home",
+        "gpt-6.1-sol",
+        "medium",
+    )
+    app = make_app(runtime=runtime)
+    async with app.run_test(size=WIDE) as pilot:
+        await pilot.pause()
+        await run_command(pilot, app, "/provider")
+        view = app.open_view
+        assert view is not None
+        view.filter("switch")  # type: ignore[attr-defined]
+        await pilot.press("enter")
+        await pilot.pause()
+        for _ in range(5):  # three entries, final and routine effort
+            await pilot.press("enter")
+            await pilot.pause()
+        view = app.open_view
+        assert view is not None
+        body = " ".join(getattr(view, "body", ()) or getattr(view, "_body", ()))
+        assert "gpt-6.1-sol (suggested; gpt-6-luna if this codex does not list it)" in (
+            body.casefold()
+        )
+        await pilot.press("up")
+        await pilot.pause()
+        await pilot.press("enter")
+        await pilot.pause()
+
+    assert [item[2:4] for item in runtime.subscription_setups] == [("gpt-6.1-sol", "medium")]
+    assert runtime.subscription_model_suggestions == [True]
+
+
+async def test_provider_promises_no_fallback_to_an_existing_binding_on_the_suggested_model(
+    make_app: MakeApp,
+) -> None:
+    # An existing binding keeps its model exactly; only a new binding's suggestion can fall back.
+    runtime = FakeRuntime()
+    runtime.codex_subscription_defaults = lambda: (  # type: ignore[method-assign]
+        "/opt/codex/codex",
+        "/var/lib/finishup/codex-home",
+        "gpt-6.1-sol",
+        "medium",
+    )
+    runtime.subscription_model_is_suggested = False
+    app = make_app(runtime=runtime)
+    async with app.run_test(size=WIDE) as pilot:
+        await pilot.pause()
+        await run_command(pilot, app, "/provider")
+        view = app.open_view
+        assert view is not None
+        view.filter("switch")  # type: ignore[attr-defined]
+        await pilot.press("enter")
+        await pilot.pause()
+        for _ in range(5):  # three entries, final and routine effort
+            await pilot.press("enter")
+            await pilot.pause()
+        view = app.open_view
+        assert view is not None
+        body = " ".join(getattr(view, "body", ()) or getattr(view, "_body", ()))
+        assert "model: gpt-6.1-sol" in body.casefold()
+        assert "suggested" not in body.casefold()
+        await pilot.press("up")
+        await pilot.pause()
+        await pilot.press("enter")
+        await pilot.pause()
+
+    assert runtime.subscription_model_suggestions == [False]
+
+
 async def test_provider_discloses_and_reports_a_reused_codex_login(make_app: MakeApp) -> None:
     """Setup on a home Codex already reports signed in reuses it and says so (#534)."""
 

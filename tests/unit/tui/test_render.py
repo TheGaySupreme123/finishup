@@ -55,6 +55,7 @@ def test_welcome_shows_the_wordmark_only_when_the_terminal_can_hold_it() -> None
     assert finishup_mark(MIN_ASCII_WIDTH) != ()
     assert finishup_mark(MIN_ASCII_WIDTH - 1) == ()
     assert "Welcome to FinishUP" in "\n".join(render_welcome(NARROW))
+    assert "FinishUP was previously called Yoetz." in " ".join(render_welcome(WIDE))
 
 
 def test_welcome_renders_at_wide_and_narrow_widths(assert_snapshot: Snapshot) -> None:

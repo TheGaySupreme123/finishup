@@ -153,6 +153,7 @@ class FakeRuntime:
     subscription_actions: list[str] = field(default_factory=lambda: [])
     subscription_setups: list[tuple[str, str, str, str, bool]] = field(default_factory=lambda: [])
     subscription_routine_efforts: list[str | None] = field(default_factory=lambda: [])
+    subscription_model_suggestions: list[bool] = field(default_factory=lambda: [])
     checks: list[tuple[str, CheckMode]] = field(default_factory=lambda: [])
     opened: list[str] = field(default_factory=lambda: [])
     progress_reads: list[str] = field(default_factory=lambda: [])
@@ -362,6 +363,10 @@ class FakeRuntime:
         return "/opt/codex/codex", "/var/lib/finishup/codex-home", "gpt-5.6-luna", "high"
 
     subscription_routine_default: str | None = "medium"
+    subscription_model_is_suggested: bool = True
+
+    def codex_subscription_model_is_suggested(self) -> bool:
+        return self.subscription_model_is_suggested
 
     def codex_subscription_routine_default(self) -> str | None:
         return self.subscription_routine_default
@@ -397,8 +402,10 @@ class FakeRuntime:
         *,
         switch_account: bool = False,
         routine_reasoning_effort: str | None = None,
+        model_is_suggestion: bool = False,
     ) -> dict[str, object]:
         action = "switch" if switch_account else "setup"
+        self.subscription_model_suggestions.append(model_is_suggestion)
         self.subscription_routine_efforts.append(routine_reasoning_effort)
         self.subscription_actions.append(action)
         self.subscription_setups.append(

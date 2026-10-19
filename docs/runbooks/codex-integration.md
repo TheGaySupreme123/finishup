@@ -2760,3 +2760,44 @@ Codex-specific is involved: no hook, skill or registration field changes.
   requirement. Where the released carry-forward is pending, status says the installation's earlier
   permission is carried forward when a task first starts in the repository.
   Same on Codex.
+
+## Setup refresh and suggested reviewer model (FinishUP 0.3, #1067)
+
+Decision for Codex: supported. The shared setup path changed, and every item below
+applies on macOS, Linux and Windows through WSL 2.
+
+- **Agent list and Codex list.** The guided agent list (shown in a terminal whenever Claude Code or
+  Cursor is installed; on a machine with only Codex the Codex wizard runs instead) shows each
+  installation's executable path, says one agent is connected per run, and defaults to the Codex a
+  plain `codex` command resolves to on `PATH` rather than the first path in sort order. On a machine
+  with only Codex, the Codex wizard's list of installations uses the same default. Codex plan
+  summaries were already plain sentences; unchanged.
+- **Suggested reviewer model.** Codex-subscription AI-powered review suggests `gpt-6.1-sol` at
+  `medium` (final and routine) for a new binding, falling back to `gpt-6-luna` with a printed
+  reason when the Codex FinishUP runs does not list it (ADR-006 amendment of 2026-10-14). The
+  evaluator is a separate Codex runtime, never the connected agent, so this is the same path on
+  every host. An explicit `--model` and an existing binding are never substituted.
+- **Project folder first.** `finishup setup run` checks the project folder before the review and
+  privacy questions; on a machine where only Codex is installed (or with `--codex-path`) it does so
+  before the Codex wizard's first question. Run from the home folder, the filesystem root or a
+  symlinked path, a terminal user may type a project folder, and registration, the privacy step
+  (local-only, or the provider's disclosure policy) and an API key's repository binding then use
+  that folder; otherwise setup stops with `workspace_locator_invalid` and a next step (it used to
+  fail as `internal_error` after every answer).
+- **After a Codex-subscription sign-in.** The guided provider step reports the Codex-held credential
+  (`external_runtime_oauth`) as ready instead of `Credential: unknown` with exit 20, shows the bound
+  model and any fallback, asks no API-key verification question, and prints its own layer report
+  (the sign-in stays in the dedicated evaluator home; no live review is demonstrated) instead of the
+  API-key vault report. A declined or failed privacy step is incomplete on every provider path
+  (`finishup --set`, the guided connection and the Codex-only wizard): exit 20, its reason, and a
+  `finishup --privacy` next step, plus the credential step when an API key was never stored, with no
+  setup marker written. A completed step ends with "start a fresh agent session" instead of the
+  former Codex-only "Preview Codex MCP registration again".
+- **Ambiguous or missing installation.** Connect and disconnect name the installations to pass
+  with `--host-path` (or say none was found) instead of the misleading "trusted local terminal"
+  step.
+
+Verification: `tests/unit/cli/test_setup_wizard_smoothness.py`,
+`tests/unit/cli/test_host_connection.py` and `tests/unit/cli/test_codex_subscription.py`. The vault
+and provider steps of `finishup setup run` were not walked end to end for this change (the
+sandbox walk had no macOS keychain), and no native Codex session was recorded for it.

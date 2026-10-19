@@ -410,6 +410,7 @@ def _wire_composed_provider_setup(
         credential_probe_authorized: bool = False,
         update_checks_override: bool | None = None,
         conversation_review: ConversationReview | None = None,
+        workspace_locator: Path | None = None,
         ai_review_add_on: bool = False,
     ) -> SimpleNamespace:
         state["conversation_review"] = conversation_review
@@ -431,7 +432,8 @@ def _wire_composed_provider_setup(
             reason=None,
         )
 
-    async def provider_status() -> dict[str, object]:
+    async def provider_status(*, workspace_locator: Path | None = None) -> dict[str, object]:
+        del workspace_locator
         state["status_reads"] = cast(int, state["status_reads"]) + 1
         if state["status_reads"] == 1:
             return {"credential_connected": False}
@@ -949,8 +951,9 @@ def test_semantic_first_run_lists_the_ai_review_recipes_for_the_privacy_draft(
         provider_choice: str | None = None,
         model: str | None = None,
         before_credential: Callable[[], Awaitable[str | None]] | None = None,
+        project: Path | None = None,
     ) -> tuple[dict[str, object], dict[str, object]]:
-        del provider_choice, model
+        del provider_choice, model, project
         assert before_credential is not None
         # None means the privacy step did not block the credential step.
         assert await before_credential() is None
@@ -963,6 +966,7 @@ def test_semantic_first_run_lists_the_ai_review_recipes_for_the_privacy_draft(
         credential_probe_authorized: bool = False,
         update_checks_override: bool | None = None,
         conversation_review: ConversationReview | None = None,
+        workspace_locator: Path | None = None,
         ai_review_add_on: bool = False,
     ) -> SimpleNamespace:
         privacy_calls.append(
@@ -982,7 +986,8 @@ def test_semantic_first_run_lists_the_ai_review_recipes_for_the_privacy_draft(
             reason=None,
         )
 
-    async def provider_status() -> dict[str, object]:
+    async def provider_status(*, workspace_locator: Path | None = None) -> dict[str, object]:
+        del workspace_locator
         return {"semantic_ready": True}
 
     monkeypatch.setattr(setup_module, "_is_interactive_terminal", lambda: True)
@@ -1982,8 +1987,9 @@ def test_provider_setup_success_reports_layers_without_ready_overclaim(
         provider_choice: str | None = None,
         model: str | None = None,
         before_credential: Callable[[], Awaitable[str | None]] | None = None,
+        project: Path | None = None,
     ) -> tuple[dict[str, object], dict[str, object]]:
-        del provider_choice, model
+        del provider_choice, model, project
         assert before_credential is not None
         # None means the privacy step did not block the credential step.
         assert await before_credential() is None
@@ -2778,8 +2784,9 @@ def test_set_reports_the_underlying_privacy_reason_rather_than_a_generic_block(
         provider_choice: str | None = None,
         model: str | None = None,
         before_credential: Callable[[], Awaitable[str | None]] | None = None,
+        project: Path | None = None,
     ) -> tuple[dict[str, object], dict[str, object]]:
-        del provider_choice, model
+        del provider_choice, model, project
         assert before_credential is not None
         reason = await before_credential()
         return service, {

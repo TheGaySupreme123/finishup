@@ -34,10 +34,14 @@ __all__ = [
     "MCP_SERVER_NAMES",
     "PRODUCT_NAME",
     "REPOSITORY_DIRECTORY",
+    "RENAME_NOTE",
 ]
 
 PRODUCT_NAME: Final = "FinishUP"
 LEGACY_PRODUCT_NAME: Final = "Yoetz"
+# The one sentence every user-facing surface uses to acknowledge the rename (README, docs, CLI
+# help, the terminal interface, package descriptions, release notes).
+RENAME_NOTE: Final = f"{PRODUCT_NAME} was previously called {LEGACY_PRODUCT_NAME}."
 
 # Platform directory application name (state, data, config, cache, runtime roots).
 APP_NAME: Final = "finishup"

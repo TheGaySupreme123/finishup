@@ -1736,3 +1736,21 @@ packet only lacked room for.
   Structural progress (`status view=operation`, and the terminal interface that renders it)
   follows the live round, else the latest round by the round its case object names, never by
   attempt count or random job id.
+
+### Suggested Codex model and listed fallback (2026-10-14, FinishUP 0.3 relaunch)
+
+New Codex-subscription bindings are offered `gpt-6.1-sol` with final and routine effort `medium`.
+Released 0.2.x setups offered `gpt-5.6-luna` with final effort `high` (unreleased 0.3 builds
+briefly `gpt-6-luna` at `high`). The suggestion does not widen
+admission:
+
+1. **Listed or not offered.** Before any sign-in, setup asks the admitted runtime's own
+   `model/list` whether it offers the suggested model with the selected efforts. This needs no
+   `account/read` and sends no task content. When the model is not listed, setup binds
+   `gpt-6-luna` with the same efforts, says so, and reports `model_fallback_from`. The admitted
+   Codex `0.157.1` catalog does not list `gpt-6.1-sol`. If the fallback is not listed either,
+   nothing is substituted, and sign-in admission refuses with `codex_model_unavailable`.
+2. **Only the suggestion falls back.** An explicit `--model` and an existing binding's model are
+   bound exactly or refused. Upgrades keep every existing binding's model and efforts.
+3. **Admission is unchanged.** Sign-in, status and every review still prove the exact model and
+   efforts against Codex's catalog.

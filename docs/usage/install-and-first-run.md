@@ -1,5 +1,7 @@
 # Install and first run
 
+FinishUP was previously called Yoetz. Already using Yoetz? See [Upgrading from Yoetz](upgrading.md#upgrading-from-yoetz) instead.
+
 Choose an installed Codex, Claude Code, Cursor IDE or Cursor Agent CLI, select your project and
 review mode, then approve the connection preview. FinishUP handles each agent's installation steps
 and tells you when a fresh session or a local authentication prompt is needed. Exact installation
