@@ -13,10 +13,8 @@ import landingPackage from "../../package.json";
 const SITE = "https://finishup.dev";
 const GITHUB = "https://github.com/TheGaySupreme123/finishup";
 const DOCS = `${GITHUB}/tree/main/docs/usage`;
-const PYPI = "https://pypi.org/project/finishup/";
-const NPM = "https://www.npmjs.com/package/finishup";
-const PYPI_COMMAND = "uv tool install --managed-python --python 3.14.6 finishup";
-const NPM_COMMAND = "npx finishup";
+// PyPI and npm installs are documented here; the page sends people to it rather than repeating it.
+const INSTALL_GUIDE = `${GITHUB}/blob/main/docs/usage/install-and-first-run.md`;
 const CONTACT_EMAIL = "support@finishup.dev";
 const VERSION = landingPackage.version;
 const AGENT_PROMPT = `I want to install FinishUP (${GITHUB}). Start by fetching its agent install guide and follow it exactly:
@@ -54,14 +52,14 @@ const plan = [
 const END_HOLD = 0.6;
 const STORY_SCREENS = plan.reduce((sum, [, len]) => sum + (len as number), 0) + END_HOLD;
 
-// The sunrise is a benchmark: one model on Codex alone, then with FinishUP's AI-powered
-// review. The two scores are drawn in dots beside the sun and count up from the first to the
-// second as the reader scrolls (see particles.js); the scene also writes them out as text for
-// screen readers and the static story. The page reads the figures from here only.
+// The sunrise is a benchmark: one model on Codex as it was tested on the suite, then tested
+// again with FinishUP. The two scores are drawn in dots beside the sun and count up from the
+// first to the second as the reader scrolls (see particles.js); the scene also writes them out
+// as text for screen readers and the static story. The page reads the figures from here only.
 // PLACEHOLDER BENCHMARK NUMBERS: the owner replaces them by hand before launch. 60/80 are
-// stand-ins, not results; fill in the run's model, suite and scores. tests/page.test.mjs keeps
-// this marker required while any of the restored values is unchanged.
-const BENCH = { model: "GPT 6.1 Sol", suite: "DeepSWE", scores: ["60", "80"] };
+// stand-ins, not results; fill in the run's model and scores (the suite is Terminal-Bench 4).
+// tests/page.test.mjs keeps this marker required while any of the restored values is unchanged.
+const BENCH = { model: "GPT 6.1 Sol", suite: "Terminal-Bench 4", scores: ["60", "80"] };
 // PLACEHOLDER PAPER LINK: the owner replaces it by hand before launch.
 const PAPER_URL = "[PAPER URL]";
 ---
@@ -102,10 +100,10 @@ const PAPER_URL = "[PAPER URL]";
       <div class="nav-inner">
         <a class="lockup" href="#top" aria-label="FinishUP home"><img src="/assets/finishup-lockup.png" alt="FinishUP" height="32" /></a>
         <nav class="nav-links" aria-label="Site">
-          <a class="lnk" href="#install">Install</a>
+          <a class="lnk" href={INSTALL_GUIDE} target="_blank" rel="noopener">Install</a>
           <a class="lnk" href={DOCS} target="_blank" rel="noopener">Docs</a>
           <a class="lnk" href={GITHUB} target="_blank" rel="noopener">GitHub</a>
-          <button class="motion-toggle" id="motion-toggle" type="button" aria-label="Pause animation and read the static story" title="Pause animation" aria-pressed="false" hidden><svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M6 4h4v16H6zm8 0h4v16h-4z" /></svg></button>
+          <button class="motion-toggle" id="motion-toggle" type="button" aria-controls="story" aria-label="Pause animation" hidden>Pause</button>
           <button class="btn sm add-agent" type="button" aria-label="Set up with your agent" data-prompt={AGENT_PROMPT} hidden>Set up</button>
         </nav>
       </div>
@@ -123,7 +121,7 @@ const PAPER_URL = "[PAPER URL]";
               <div class="actions">
                 <button class="btn add-agent" type="button" data-prompt={AGENT_PROMPT} hidden>Set up with your agent</button>
                 <a class="btn quiet" href={GITHUB} target="_blank" rel="noopener"><svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12 .5C5.65.5.5 5.65.5 12c0 5.08 3.29 9.39 7.86 10.91.58.1.79-.25.79-.56v-2c-3.2.7-3.87-1.37-3.87-1.37-.52-1.33-1.28-1.69-1.28-1.69-1.05-.71.08-.7.08-.7 1.16.08 1.77 1.19 1.77 1.19 1.03 1.77 2.7 1.26 3.36.96.1-.75.4-1.26.73-1.55-2.55-.29-5.24-1.28-5.24-5.68 0-1.26.45-2.28 1.19-3.09-.12-.29-.52-1.46.11-3.05 0 0 .97-.31 3.17 1.18a11 11 0 0 1 5.78 0c2.2-1.49 3.17-1.18 3.17-1.18.63 1.59.23 2.76.11 3.05.74.81 1.19 1.83 1.19 3.09 0 4.41-2.69 5.38-5.25 5.67.41.36.78 1.06.78 2.14v3.17c0 .31.21.67.8.56C20.21 21.39 23.5 17.08 23.5 12 23.5 5.65 18.35.5 12 .5z" /></svg> Visit our GitHub</a>
-                <noscript><a class="btn" href={`${GITHUB}/blob/main/docs/usage/install-and-first-run.md`}>Install and setup guide</a></noscript>
+                <noscript><a class="btn" href={INSTALL_GUIDE}>Install and setup guide</a></noscript>
               </div>
             </div>
           </div>
@@ -149,14 +147,18 @@ const PAPER_URL = "[PAPER URL]";
           <div class="copy side" data-copy="bench">
               <div class="copy-right wide">
                 {/* PLACEHOLDER BENCHMARK NUMBERS: the model, suite, scores and paper link come from BENCH and PAPER_URL above; the owner replaces them by hand before launch. */}
-                <p class="stanza">We tested {BENCH.model} on <span class="nowrap"><span class="tag"><img src="/assets/openai.svg" alt="" width="22" height="22" />Codex</span>,</span> scored on <span class="nowrap"><span class="tag wordmark">{BENCH.suite}</span><span class="bench-dot" id="bench-dot">.</span></span> <span class="nowrap reveal" id="bench-with" aria-hidden="true">with <img class="fup-mark" src="/assets/finishup-mark.png" alt="" />FinishUP</span><span class="dot-word" aria-hidden="true"></span></p>
-                <p class="bench-result"><span class="nowrap"><strong>{BENCH.scores[0]}%</strong> on Codex alone.</span> <span class="nowrap"><strong>{BENCH.scores[1]}%</strong> with FinishUP</span> <span class="nowrap">AI-powered review.</span></p>
+                <p class="stanza">{BENCH.model} on <span class="nowrap"><span class="tag"><img src="/assets/openai.svg" alt="" width="22" height="22" />Codex</span></span> was tested on <span class="nowrap"><span class="tag wordmark">{BENCH.suite}</span>.</span> <span class="reveal then" id="bench-with" aria-hidden="true">Now we test it with <span class="nowrap"><img class="fup-mark" src="/assets/finishup-mark.png" alt="" />FinishUP.</span></span></p>
+                <p class="bench-result"><span class="nowrap"><strong>{BENCH.scores[0]}%</strong> on Codex alone.</span> <span class="nowrap"><strong>{BENCH.scores[1]}%</strong> with FinishUP.</span></p>
                 <a class="paper" href={PAPER_URL} target="_blank" rel="noopener">Read the full paper <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M7 17 17 7M8 7h9v9" /></svg></a>
               </div>
           </div>
           <div class="copy foot" data-copy="end">
             <div class="copy-center">
-              <h2 class="display">FinishUP is<br /><strong>free.</strong></h2>
+              <div class="end-title">
+                {/* The artwork draws the FinishUP lockup into this room, as the subject of the line below */}
+                <span class="dot-lockup" aria-hidden="true"></span>
+                <h2 class="display"><span class="end-subject">FinishUP </span>is <strong>free.</strong></h2>
+              </div>
               <p class="stanza center sub">Open source. Local checks on your computer.</p>
               <p class="review-note">Optional AI-powered review may incur provider charges.</p>
               <div class="actions">
@@ -170,34 +172,13 @@ const PAPER_URL = "[PAPER URL]";
         <div class="spacer" aria-hidden="true"></div>
       </div>
 
-      <section class="install" id="install" aria-labelledby="install-title">
-        <div class="install-inner">
-          <h2 class="display" id="install-title">Make it yours.</h2>
-          <p class="install-intro">For Codex, Claude Code and Cursor on macOS, Linux and Windows through WSL 2.</p>
-          <p class="install-intro">Both options need <a href="https://docs.astral.sh/uv/getting-started/installation/">uv</a>. The npm launcher also needs Node.js.</p>
-          <div class="install-options">
-            <div class="install-option">
-              <h3><a href={PYPI}>PyPI</a></h3>
-              <pre><code>{PYPI_COMMAND}</code></pre>
-              <button class="btn install-copy" type="button" data-command={PYPI_COMMAND} data-next="After installation finishes, run finishup in your terminal to start setup." hidden>Install with PyPI</button>
-              <p>After installation, run <code>finishup</code> to start setup.</p>
-            </div>
-            <div class="install-option">
-              <h3><a href={NPM}>npm</a></h3>
-              <pre><code>{NPM_COMMAND}</code></pre>
-              <button class="btn install-copy" type="button" data-command={NPM_COMMAND} data-next="Paste this command into your terminal and press Enter to install and start setup." hidden>Install with npm</button>
-              <p>Makes the same persistent Python installation and starts setup.</p>
-            </div>
-          </div>
-          <a href={`${GITHUB}/blob/main/docs/usage/install-and-first-run.md`}>Install and setup guide</a>
-        </div>
-      </section>
     </main>
 
     <footer class="footer">
       <div class="footer-inner">
         <a class="lockup" href="#top" aria-label="FinishUP home"><img src="/assets/finishup-lockup.png" alt="FinishUP" height="28" /></a>
         <nav class="footer-links" aria-label="Footer">
+          <a href={INSTALL_GUIDE} target="_blank" rel="noopener">Install</a>
           <a href={DOCS} target="_blank" rel="noopener">Docs</a>
           <a href={`mailto:${CONTACT_EMAIL}`}>Contact us</a>
           <a href={GITHUB} target="_blank" rel="noopener">GitHub</a>
@@ -210,8 +191,7 @@ const PAPER_URL = "[PAPER URL]";
       <span class="ok" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5" /></svg></span>
       <div>
         <p id="toast-title">Copied.</p>
-        <p class="sub" id="toast-sub"></p>
-        <pre id="toast-command" hidden></pre>
+        <p class="sub"><span id="toast-sub"></span><a href={INSTALL_GUIDE} target="_blank" rel="noopener">as shown on GitHub</a>.</p>
       </div>
       <button class="close" type="button" id="toast-close" aria-label="Dismiss"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6 6 18M6 6l12 12" /></svg></button>
     </div>
@@ -227,8 +207,9 @@ const PAPER_URL = "[PAPER URL]";
       const narrow = window.matchMedia("(max-width: 719px)");
       const canvas = document.getElementById("particles") as HTMLCanvasElement | null;
       const story = document.getElementById("story");
-      const copies = Array.from(document.querySelectorAll<HTMLElement>(".copy"));
       const motionToggle = document.getElementById("motion-toggle") as HTMLButtonElement | null;
+      const copies = Array.from(document.querySelectorAll<HTMLElement>(".copy"));
+      const mainContent = document.getElementById("main-content");
       const planEl = document.getElementById("story-plan");
       const plan: [string, number][] = planEl ? JSON.parse(planEl.textContent || "[]") : [];
       // The benchmark figures come from BENCH in the frontmatter (PLACEHOLDER until the owner
@@ -237,17 +218,39 @@ const PAPER_URL = "[PAPER URL]";
       const scoresEl = document.getElementById("bench-scores");
       const scores: string[] = scoresEl ? JSON.parse(scoresEl.textContent || "[]") : [];
       const benchWith = document.getElementById("bench-with");
-      const benchDot = document.getElementById("bench-dot");
-      const tierSlot = document.querySelector<HTMLElement>('[data-copy="bench"] .dot-word');
-      let paused = false;
+      const lockupSlot = document.querySelector<HTMLElement>('[data-copy="end"] .dot-lockup');
       let pageActive = true;
+      // Set when the artwork cannot draw (no context, or WebGL lost for good): the static story.
+      let artFailed = false;
+      let userPaused = false;
+      let layoutFits = true;
       let stopStory = () => {};
+
+      // Leave room for the copy's drift. If any scene cannot fit, let the whole story
+      // flow as text instead of clipping it inside the sticky stage.
+      function copyFits() {
+        if (!canvas || !story) return false;
+        const stage = canvas.getBoundingClientRect();
+        return Array.from(story.querySelectorAll<HTMLElement>(".hero-top, .hero-bottom, .copy-right, .copy-center")).every((el) => {
+          const r = el.getBoundingClientRect();
+          return r.top >= stage.top + 24 && r.bottom <= stage.bottom - 24
+            && r.left >= stage.left && r.right <= stage.right;
+        });
+      }
 
       function syncPresentation() {
         stopStory();
         stopStory = () => {};
-        const animated = pageActive && !paused && !reduced.matches && !forced.matches && !compact.matches
-          && !!canvas?.getContext("2d") && !!story && plan.length > 0;
+        // Canvas support is checked without taking a context: a canvas that hands out a 2D
+        // context can never give the artwork WebGL.
+        const canAnimate = pageActive && !artFailed && !reduced.matches && !forced.matches && !compact.matches && layoutFits
+          && !!canvas && typeof CanvasRenderingContext2D !== "undefined" && !!story && plan.length > 0;
+        const animated = canAnimate && !userPaused;
+        if (motionToggle) {
+          motionToggle.hidden = !canAnimate;
+          motionToggle.textContent = userPaused ? "Play" : "Pause";
+          motionToggle.setAttribute("aria-label", userPaused ? "Play animation" : "Pause animation");
+        }
         story?.classList.toggle("animated", animated);
         const spacer = story?.querySelector<HTMLElement>(".spacer");
         if (spacer && story) {
@@ -262,17 +265,31 @@ const PAPER_URL = "[PAPER URL]";
           el.classList.add("on");
         }
         benchWith?.classList.remove("on");
-        benchDot?.classList.remove("off");
-        if (motionToggle) {
-          motionToggle.hidden = reduced.matches || forced.matches || compact.matches;
-          motionToggle.setAttribute("aria-pressed", String(paused));
-          motionToggle.setAttribute("aria-label", paused ? "Play animated story" : "Pause animation and read the static story");
-          motionToggle.title = paused ? "Play animation" : "Pause animation";
-          motionToggle.querySelector("path")?.setAttribute("d", paused ? "M8 4v16l12-8z" : "M6 4h4v16H6zm8 0h4v16h-4z");
-        }
         if (!animated || !canvas || !story) return;
+        if (!copyFits()) {
+          layoutFits = false;
+          syncPresentation();
+          return;
+        }
 
-        const art = mountParticles(canvas, { count: narrow.matches ? 2600 : 5500, scores, plan });
+        // The 2D budget, and the denser one for browsers that can draw the dots with WebGL. The
+        // WebGL count follows the area the artwork covers (the engine's px per scene unit,
+        // squared): about 12k on a phone, 60k on a laptop and above. In development,
+        // ?dots=<count> tries another budget live.
+        const tryDots = import.meta.env.DEV ? Number(new URLSearchParams(location.search).get("dots")) : 0;
+        const unit = innerWidth < 720 ? innerWidth * 0.42 : Math.min(innerWidth, innerHeight) * 0.46;
+        const glCount = tryDots > 0 ? tryDots : Math.round(Math.max(12000, Math.min(60000, 60000 * (unit / 368) ** 2)));
+        // drawTier: false: the sunrise shows the scores only, with no tier word in dots.
+        const art = mountParticles(canvas, {
+          count: narrow.matches ? 2600 : 5500, glCount, scores, plan, drawTier: false,
+          onUnavailable: () => { artFailed = true; syncPresentation(); },
+        });
+        if (art.renderer === "none") {
+          artFailed = true;
+          art.destroy();
+          syncPresentation();
+          return;
+        }
         let raf = 0;
         let mounted = true;
         const start: Record<string, [number, number]> = {};
@@ -319,22 +336,22 @@ const PAPER_URL = "[PAPER URL]";
           // Keyboard focus stays in a visible scene when a scroll changes the story.
           const focused = document.activeElement;
           if (focused instanceof HTMLElement && focused.closest(".copy[inert]")) {
-            const target = active?.querySelector<HTMLElement>("a, button") ?? motionToggle;
+            const target = active?.querySelector<HTMLElement>("a, button") ?? mainContent;
             target?.focus({ preventScroll: true });
           }
-          // The benchmark line stays put; "with FinishUP" appears at the sunrise's second stop.
+          // The benchmark line stays put; "Now we test it with FinishUP." appears at the
+          // sunrise's second stop.
           if (start.sun) {
             const second = (screens - start.sun[0]) / start.sun[1] >= 0.5;
             benchWith?.classList.toggle("on", second);
-            benchDot?.classList.toggle("off", second);
           }
-          // The artwork draws "AI-powered" in dots into the room the benchmark line leaves for
-          // it. The slot moves with the copy's drift, fonts and images, so it is measured after
-          // this update's writes, on scroll, resize and load only: no frame loop of its own.
-          if (tierSlot) {
-            const c = canvas.getBoundingClientRect();
-            const r = tierSlot.getBoundingClientRect();
-            art.setTier(r.left + r.width / 2 - c.left, r.top + r.height / 2 - c.top, r.width, r.height);
+          // The artwork draws the closing lockup in dots into the room above "is free.". The
+          // slot moves with the copy's drift, fonts and images, so it is measured after this
+          // update's writes, on scroll, resize and load only: no frame loop of its own.
+          const c = canvas.getBoundingClientRect();
+          if (lockupSlot) {
+            const r = lockupSlot.getBoundingClientRect();
+            art.setLockup(r.left + r.width / 2 - c.left, r.top + r.height / 2 - c.top, r.width, r.height);
           }
           art.setScroll(screens);
         };
@@ -355,28 +372,39 @@ const PAPER_URL = "[PAPER URL]";
           art.destroy();
         };
       }
-      motionToggle?.addEventListener("click", () => {
-        paused = !paused;
-        // Changing presentations starts at the hero, rather than keeping a scroll
-        // offset measured against a different story height.
-        window.scrollTo({ top: 0, behavior: "instant" });
-        syncPresentation();
-      });
       reduced.addEventListener("change", syncPresentation);
       forced.addEventListener("change", syncPresentation);
       compact.addEventListener("change", syncPresentation);
       narrow.addEventListener("change", syncPresentation);
+      // Recheck after fonts settle or the viewport changes, without remounting artwork
+      // on every resize when the animated layout still fits.
+      function syncLayout() {
+        if (!layoutFits || (story?.classList.contains("animated") && !copyFits())) {
+          layoutFits = true;
+          syncPresentation();
+        }
+      }
+      window.addEventListener("resize", syncLayout);
+      document.fonts?.ready.then(syncLayout).catch(() => {});
+      motionToggle?.addEventListener("click", () => {
+        userPaused = !userPaused;
+        syncPresentation();
+      });
       window.addEventListener("pagehide", () => { pageActive = false; stopStory(); });
-      window.addEventListener("pageshow", () => { pageActive = true; syncPresentation(); });
+      window.addEventListener("pageshow", (e) => {
+        if (!e.persisted && pageActive) return; // the first load, already presented
+        pageActive = true;
+        syncPresentation();
+      });
       syncPresentation();
 
       // --- Copy the agent setup prompt ---
       const toast = document.getElementById("toast");
       const toastTitle = document.getElementById("toast-title");
       const toastSub = document.getElementById("toast-sub");
-      const toastCommand = document.getElementById("toast-command");
       const toastClose = document.getElementById("toast-close");
       let hideTimer = 0;
+      let toastHovered = false;
       async function copyText(text: string): Promise<boolean> {
         if (!text) return false;
         try {
@@ -386,38 +414,35 @@ const PAPER_URL = "[PAPER URL]";
           return false;
         }
       }
-      function show(title: string, sub: string, command = "") {
+      // The toast's second line ends with the link to the install guide on GitHub.
+      function show(title: string, sub: string) {
         if (!toast || !toastTitle || !toastSub) return;
         toastTitle.textContent = title;
         toastSub.textContent = sub;
-        if (toastCommand) {
-          toastCommand.textContent = command;
-          toastCommand.hidden = !command;
-        }
         toast.hidden = false;
-        window.clearTimeout(hideTimer);
-        hideTimer = window.setTimeout(() => { toast.hidden = true; }, 9000);
+        hideSoon();
       }
+      // The toast leaves on its own after a while, but never while the pointer or keyboard
+      // focus is on it (its link has to stay reachable).
+      function hideSoon() {
+        window.clearTimeout(hideTimer);
+        if (toastHovered || toast?.contains(document.activeElement)) return;
+        hideTimer = window.setTimeout(() => {
+          if (toast && !toastHovered && !toast.contains(document.activeElement)) toast.hidden = true;
+        }, 9000);
+      }
+      toast?.addEventListener("pointerenter", () => { toastHovered = true; window.clearTimeout(hideTimer); });
+      toast?.addEventListener("focusin", () => window.clearTimeout(hideTimer));
+      toast?.addEventListener("pointerleave", () => { toastHovered = false; hideSoon(); });
+      toast?.addEventListener("focusout", (e) => { if (!toast.contains(e.relatedTarget as Node | null)) hideSoon(); });
       toastClose?.addEventListener("click", () => { if (toast) toast.hidden = true; });
       for (const el of Array.from(document.querySelectorAll<HTMLButtonElement>(".add-agent"))) {
         el.hidden = false;
         el.addEventListener("click", async () => {
           const ok = await copyText(el.dataset.prompt ?? "");
           show(
-            ok ? "Copied. Paste it into your agent." : "Copy blocked by the browser.",
-            ok ? "Codex, Claude Code or Cursor fetch the install guide and walk you through setup." : "Open the docs for the install command.",
-          );
-        });
-      }
-      for (const el of Array.from(document.querySelectorAll<HTMLButtonElement>(".install-copy"))) {
-        el.hidden = false;
-        el.addEventListener("click", async () => {
-          const command = el.dataset.command ?? "";
-          const ok = await copyText(command);
-          show(
-            ok ? "Copied. Paste this into your terminal and press Enter." : "Copy blocked. Select the command below to copy it.",
-            el.dataset.next ?? "",
-            command,
+            ok ? "Copied the setup instructions for your agent." : "Copy blocked by the browser.",
+            ok ? "Paste them into Codex, Claude Code or Cursor. Or install with PyPI or npm, " : "Install with PyPI or npm instead, ",
           );
         });
       }
