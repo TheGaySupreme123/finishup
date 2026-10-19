@@ -2597,13 +2597,21 @@ class SqliteLedger:
         await self._sync_after_mutation()
         return result
 
-    def _progress_write_locked(self, statement: str, parameters: tuple[str | int, ...]) -> int:
-        """Run one progress statement in its own owner-fenced write transaction."""
+    def _progress_write_locked(
+        self,
+        statement: str,
+        parameters: tuple[str | int, ...] | Callable[[], tuple[str | int, ...]],
+    ) -> int:
+        """Run one progress statement in its own owner-fenced write transaction.
+
+        Callable ``parameters`` are built inside the transaction, after the writer lock is held,
+        so a time they sample cannot predate a wait for that lock.
+        """
 
         self._db.execute("BEGIN IMMEDIATE")
         try:
             self._verify_owner()
-            self._db.execute(statement, parameters)
+            self._db.execute(statement, parameters() if callable(parameters) else parameters)
             changed = self._db.changes()
             self._db.execute("COMMIT")
         except BaseException:
@@ -2703,22 +2711,26 @@ class SqliteLedger:
             "AND min(j.lease_expires_at,o.lease_expires_at)>?)"
         )
         await self._ensure_recovered()
-        async with self._lock:
+
+        def held() -> tuple[str | int, ...]:
+            # Sampled under the writer lock: a lease that expires during the wait writes nothing.
             now = format_rfc3339_millis(self._terminal_at())
             fence = (handle.lease_owner_id, handle.owner_generation, now)
-            held = (handle.job_id, handle.attempt_id, handle.lease_generation, *fence)
+            return (handle.job_id, handle.attempt_id, handle.lease_generation, *fence)
+
+        async with self._lock:
             if capture:
                 changed = self._progress_write_locked(
                     "UPDATE semantic_review_steps SET capture_commitment=?,capture_bytes=? "
                     "WHERE job_id=? AND kind=? AND ordinal=? AND capture_commitment IS NULL AND "
                     + lease,
-                    (commitment, len(data), handle.job_id, kind, ordinal, *held),
+                    lambda: (commitment, len(data), handle.job_id, kind, ordinal, *held()),
                 )
             else:
                 changed = self._progress_write_locked(
                     "INSERT INTO semantic_review_steps(job_id,kind,ordinal,selector_commitment) "
                     f"SELECT ?,?,?,? WHERE {lease} ON CONFLICT DO NOTHING",
-                    (handle.job_id, kind, ordinal, commitment, *held),
+                    lambda: (handle.job_id, kind, ordinal, commitment, *held()),
                 )
         if changed != 1:
             raise ReviewStepRefused("review_step_refused")

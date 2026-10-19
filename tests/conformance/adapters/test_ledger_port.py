@@ -3688,3 +3688,64 @@ async def test_reviewer_steps_need_the_live_durable_lease() -> None:
     with pytest.raises(ReviewStepRefused):
         await steps.capture("read", 1, b"{}")
     assert await steps.usage() == (2, 1)
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("capture", [False, True])
+async def test_reviewer_step_lease_time_is_read_after_the_writer_wait(
+    tmp_path: Path, capture: bool
+) -> None:
+    """#1118 R3-1: a lease that expires while the step waits for the SQLite writer lock is
+    refused; the comparison time is read after ``BEGIN IMMEDIATE``, not before it."""
+
+    class _Clock:
+        now = datetime(2026, 7, 19, 12, 0, tzinfo=UTC)
+
+        def now_utc(self) -> datetime:
+            return self.now
+
+        def monotonic_seconds(self) -> float:
+            return 1.0
+
+    command = ledger_command(request_suffix="e")
+    adapter = sqlite_ledger(command)
+    clock = _Clock()
+    adapter._clock = clock  # pyright: ignore[reportPrivateUsage]
+    await adapter.append_batch(command)
+    lease = await _semantic_wait_lease(adapter, command, "req_00000000-0000-4000-8000-0000000000de")
+    case_ref = await _object_ref(
+        adapter, command, ObjectKind.SEMANTIC_CASE, semantic_case_digest="sha256:" + "e" * 64
+    )
+    job = await adapter.enqueue_semantic_job(lease, "sha256:" + "e" * 64, case_ref)
+    handle = await adapter.claim_semantic_job(lease, job.job_id)
+    steps = adapter.review_steps(handle)
+    if capture:
+        await steps.reserve("turn", 1, b"turn")
+    # A file-backed copy so a second connection can hold the writer lock.
+    target = apsw.Connection(str(tmp_path / "isolated.sqlite3"))
+    with target.backup("main", adapter._db, "main") as backup:  # pyright: ignore[reportPrivateUsage]
+        backup.step()
+    adapter._db = target  # pyright: ignore[reportPrivateUsage]
+    blocker = apsw.Connection(str(tmp_path / "isolated.sqlite3"))
+    blocker.execute("BEGIN IMMEDIATE")
+    clock.now = handle.lease_expires_at - timedelta(milliseconds=1)
+    waits: list[int] = []
+
+    def expire_then_release(count: int) -> bool:
+        waits.append(count)
+        clock.now = handle.lease_expires_at + timedelta(seconds=1)
+        blocker.execute("ROLLBACK")
+        return True
+
+    target.set_busy_handler(expire_then_release)
+    try:
+        with pytest.raises(ReviewStepRefused):
+            if capture:
+                await steps.capture("turn", 1, b"{}")
+            else:
+                await steps.reserve("turn", 1, b"turn")
+        assert waits == [0]
+        assert await steps.usage() == ((1, 1) if capture else (0, 0))
+    finally:
+        blocker.close()
+        target.close()
