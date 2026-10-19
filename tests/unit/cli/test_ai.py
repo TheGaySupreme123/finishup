@@ -281,6 +281,81 @@ def test_a_cancelled_key_entry_restores_the_working_model(
     assert "previous model is active again" in result.output
 
 
+def _model_switch_harness(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Path:
+    config_path = tmp_path / "config.toml"
+    write_config_toml(
+        FinishUpConfig(
+            profile="local-openai", provider=official_openai_provider(model="gpt-6.1-sol")
+        ),
+        path=config_path,
+    )
+    import finishup.config.write as writers
+
+    real_snapshot = writers.config_write_snapshot
+    real_write = writers.write_config_toml_if_unchanged
+
+    def write(config: FinishUpConfig, *, expected_bytes: bytes | None) -> Path:
+        return real_write(config, path=config_path, expected_bytes=expected_bytes)
+
+    monkeypatch.setattr(writers, "config_write_snapshot", lambda: real_snapshot(config_path))
+    monkeypatch.setattr(writers, "write_config_toml_if_unchanged", write)
+    return config_path
+
+
+def test_a_cancelled_key_never_overwrites_a_concurrent_settings_change(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Review round 2 of #1119: rollback replaces only what `ai model` itself wrote."""
+
+    import typer
+
+    from finishup.config.load import load_config
+
+    config_path = _model_switch_harness(monkeypatch, tmp_path)
+
+    def concurrent_change_then_cancel() -> None:
+        current = load_config({}, {}, config_path)
+        changed = current.model_copy(
+            update={"observation": current.observation.model_copy(update={"enabled": False})}
+        )
+        write_config_toml(changed, path=config_path)
+        raise typer.Exit(130)
+
+    monkeypatch.setattr(ai, "key", concurrent_change_then_cancel)
+    result = CliRunner().invoke(cli.app, ["ai", "model", "gpt-6-astra"])
+
+    after = load_config({}, {}, config_path)
+    assert result.exit_code == 130
+    assert after.observation.enabled is False
+    assert after.provider is not None and after.provider.model == "gpt-6-astra"
+    assert "settings changed meanwhile" in result.output
+
+
+def test_a_rollback_without_a_ready_service_says_so(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    import typer
+
+    _model_switch_harness(monkeypatch, tmp_path)
+    reloads: list[bool] = []
+
+    async def restart(**_: object) -> dict[str, object]:
+        reloads.append(True)
+        # The first reload (after the switch) is ready; the rollback's is not.
+        return {"reachable": True, "state": "ready" if len(reloads) == 1 else "locked"}
+
+    def cancelled_key() -> None:
+        raise typer.Exit(130)
+
+    monkeypatch.setattr(setup, "restart_service_for_semantic_composition", restart)
+    monkeypatch.setattr(ai, "key", cancelled_key)
+    result = CliRunner().invoke(cli.app, ["ai", "model", "gpt-6-astra"])
+
+    assert result.exit_code == 130
+    assert "not ready to use it yet" in result.output
+    assert "active again" not in result.output
+
+
 def test_reviewer_question_has_three_plain_choices_and_reasks_invalid_input(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:

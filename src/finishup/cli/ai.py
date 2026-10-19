@@ -320,6 +320,7 @@ def model(
         write_config_toml_if_unchanged,
     )
 
+    written_bytes: bytes | None = None
     try:
         config, expected_bytes = config_write_snapshot()
         endpoint = primary_external_endpoint(config)
@@ -367,6 +368,9 @@ def model(
             updated = config.model_copy(update={"provider": updated_provider})
             # Full config validation and a locked preimage comparison precede replacement.
             write_config_toml_if_unchanged(updated, expected_bytes=expected_bytes)
+            # The exact bytes this command wrote: a rollback may replace only these, never a
+            # change another writer made while the key prompt was open.
+            _written, written_bytes = config_write_snapshot()
     except (ConfigError, OSError, ValueError):
         _fail("Model setup did not complete. Check the model ID and run finishup ai status.")
     try:
@@ -392,28 +396,46 @@ def model(
     except (typer.Exit, typer.Abort, KeyboardInterrupt) as stopped:
         if isinstance(stopped, typer.Exit) and stopped.exit_code == 0:
             raise
-        _restore_previous_model(config)
+        _restore_previous_model(config, written_bytes)
         raise
 
 
-def _restore_previous_model(previous: object) -> None:
+def _restore_previous_model(previous: object, written_bytes: bytes | None) -> None:
     """Put the working model back when the new model's key was not entered (review of #1119).
 
     The old key stays bound to the old model, so restoring the binding restores a working
-    reviewer instead of leaving a model active without a key.
+    reviewer instead of leaving a model active without a key. The restore replaces only the
+    configuration this command wrote; if anything else changed it meanwhile, it stops and says so.
     """
 
     from finishup.cli.setup import restart_service_for_semantic_composition
-    from finishup.config.write import config_write_snapshot, write_config_toml_if_unchanged
+    from finishup.config.write import write_config_toml_if_unchanged
 
     try:
-        _current, current_bytes = config_write_snapshot()
-        write_config_toml_if_unchanged(cast(Any, previous), expected_bytes=current_bytes)
-        _run(restart_service_for_semantic_composition)
-    except (ConfigError, ControlError, OSError, ValueError):
+        write_config_toml_if_unchanged(cast(Any, previous), expected_bytes=written_bytes)
+    except ConfigError:
+        typer.echo(
+            "Key entry did not finish, and the settings changed meanwhile, so the previous model "
+            "was not restored automatically. Run finishup ai model to choose it again.",
+            err=True,
+        )
+        return
+    except OSError:
         typer.echo(
             "Key entry did not finish, and the previous model could not be restored "
             "automatically. Run finishup ai model to choose it again.",
+            err=True,
+        )
+        return
+    try:
+        service = _run(restart_service_for_semantic_composition)
+    except (ControlError, OSError, ValueError):
+        service = {}
+    if service.get("state") != "ready":
+        typer.echo(
+            "Key entry did not finish, so the previous model is selected again with its stored "
+            "key, but FinishUP is not ready to use it yet: run finishup service unlock, then "
+            "finishup ai status.",
             err=True,
         )
         return
