@@ -8,6 +8,7 @@ judgment is the existing provider judgment, validated by ``normalize_judgment``.
 
 from __future__ import annotations
 
+from functools import cache
 from typing import Final, cast
 
 from pydantic import TypeAdapter, ValidationError
@@ -78,16 +79,7 @@ def _build(reads_allowed: bool) -> dict[str, JsonValue]:
     }
 
 
-_SCHEMAS: Final = {
-    (reads, strict): cast(
-        dict[str, JsonValue],
-        strict_output_schema(cast(JsonValue, _build(reads))) if strict else _build(reads),
-    )
-    for reads in (True, False)
-    for strict in (True, False)
-}
-
-
+@cache
 def reviewer_reply_schema(*, reads_allowed: bool, strict: bool = False) -> dict[str, JsonValue]:
     """The reply schema; with no read allowance left, its only branch is the final judgment.
 
@@ -95,7 +87,8 @@ def reviewer_reply_schema(*, reads_allowed: bool, strict: bool = False) -> dict[
     enforces what that form drops.
     """
 
-    return _SCHEMAS[(reads_allowed, strict)]
+    built = _build(reads_allowed)
+    return cast(dict[str, JsonValue], strict_output_schema(built)) if strict else built
 
 
 def decode_reviewer_reply(parsed: JsonValue) -> ReviewerActionModel | SemanticJudgment:

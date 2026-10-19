@@ -656,3 +656,107 @@ async def test_byte_totals_never_exceed_the_review_allowance() -> None:
     assert total <= 24_576 and results[-1]["bytes_remaining"] == 24_576 - total
     prov = cast(dict[str, JsonValue], _data(results[0])["provenance"])
     assert prov["baseline"] == "admission_time" and prov["source_ref"] == "sjb_1:read:1"
+
+
+# Review round 2 (R2-2, R2-3, R2-5, R2-6): each probe asserting a defect now asserts the fix.
+
+
+@pytest.mark.anyio
+async def test_a_listing_sends_whole_names_and_resumes_at_the_first_omitted(
+    tmp_path: Path,
+) -> None:
+    # R2-3: entries are indivisible; a name is never shortened into one that does not exist.
+    names = [f"{i:02d}-{'x' * 180}.txt" for i in range(25)]
+    for name in names:
+        (tmp_path / name).write_text("t")
+    root = ReadRoot("w1", str(tmp_path.resolve()), subject_refs=(_CLM,))
+    page = _read("read_file", root_id="w1", path=".", mode="list", cursor=None, max_bytes=1024)
+
+    def next_page(history: tuple[Turn, ...]) -> JsonValue:
+        cursor = _observations(history)[0]["next_cursor"]
+        return _read("read_file", root_id="w1", path=".", mode="list", cursor=cursor)
+
+    loop, broker, _model, _ = _setup(page, next_page, _FINAL, roots=(root,))
+    first, second = _observations((await loop.run()).history)
+    sent = [e["name"] for e in cast(list[dict[str, str]], _data(first)["entries"])]
+    assert sent == names[: len(sent)] and 0 < len(sent) < 25
+    assert cast(int, first["result_utf8_bytes"]) <= 1024 and first["status"] == "partial"
+    following = [e["name"] for e in cast(list[dict[str, str]], _data(second)["entries"])]
+    assert following[0] == names[len(sent)] and set(following) <= set(names)
+    assert broker.text_by_ref[_CLM] == sent + following
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("mode", ["text", "list"])
+async def test_a_read_that_completes_past_its_local_stop_is_discarded(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mode: str
+) -> None:
+    # R2-2: the last chunk or the listing's completion crosses the 5-second stop. The result is
+    # not used; this is a check after the blocking call returns, not preemption of it.
+    import finishup.adapters.task_input_read as reader
+    import finishup.application.reviewer_broker as broker_module
+
+    (tmp_path / "a.txt").write_text("ordinary text")
+    action = (
+        _text("w1", "a.txt", 1, 1)
+        if mode == "text"
+        else _read("read_file", root_id="w1", path=".", mode="list", cursor=None)
+    )
+    steps = _Steps()
+    loop, broker, _model, _ = _setup(
+        action, _FINAL, roots=(ReadRoot("w1", str(tmp_path.resolve())),), steps=steps
+    )
+    now = [1.0]
+    loop.clock = lambda: now[0]
+    target = (reader.os, "read") if mode == "text" else (broker_module, "list_beneath")
+    original = getattr(*target)
+
+    def slow(*args: object, **kwargs: object) -> object:
+        value = original(*args, **kwargs)
+        now[0] = 7.0  # the local stop is 1 + 5; the job deadline is far away
+        return value
+
+    monkeypatch.setattr(*target, slow)
+    outcome = await loop.run()
+    assert (outcome.status, outcome.reason, _observations(outcome.history)) == (
+        "incomplete",
+        "deadline",
+        [],
+    )
+    assert steps.rows[("read", 1)][1] is None and "ordinary" not in str(broker.text_by_ref)
+
+
+@pytest.mark.anyio
+async def test_citations_follow_the_advertised_refs_and_the_fallback_fits(
+    tmp_path: Path,
+) -> None:
+    # R2-5: twenty refs bound to one file; the result advertises 16 and only those are citable.
+    # R2-6: when no data fits, the fallback carries no refs and stays within max_bytes.
+    (tmp_path / "a.txt").write_text("ordinary text")
+    refs = tuple(f"clm_00000000-0000-4000-8000-{i:012d}" for i in range(1, 21))
+    root = ReadRoot("w1", str(tmp_path.resolve()), subject_refs=refs)
+    for budget in (8192, 1024):
+        read = _text("w1", "a.txt", 1, 1, max_bytes=budget)
+        loop, broker, _model, _ = _setup(read, _FINAL, roots=(root,))
+        case = replace(broker._case, frontier_refs=broker._case.frontier_refs | frozenset(refs))  # pyright: ignore[reportPrivateUsage]
+        loop.broker = ReviewerBroker(
+            job_id="sjb_1",
+            case=case,
+            roots=(root,),
+            store=broker.store,
+            admit=broker._admit,  # pyright: ignore[reportPrivateUsage]
+        )
+        outcome = await loop.run()
+        (result,) = _observations(outcome.history)
+        advertised = set(cast(list[str], result["citable_refs"]))
+        assert outcome.citable_refs == advertised == set(outcome.text_by_ref)
+        assert cast(int, result["result_utf8_bytes"]) <= budget
+        if budget == 8192:
+            assert len(advertised) == 16 and result["status"] == "ok"
+        else:
+            assert (result["status"], result["reason"], result["data"]) == (
+                "unavailable",
+                "byte_budget",
+                None,
+            )
+            assert advertised == set() and result["next_cursor"] is None

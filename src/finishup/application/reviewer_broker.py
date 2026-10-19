@@ -4,8 +4,10 @@
 frozen review case, including what the bounded packet cut. ``read_file`` reads a line span or one
 directory listing beneath a service-issued root alias: the workspace, an owner-admitted outside
 root limited to the task-declared paths, or a snapshot of one. A result is fitted into its byte
-room first; then each element it carries is admitted unchanged, and its exact encoding is scanned.
-Spans, cursors and citable text come from what was fitted and sent, nothing else. At most three
+room first (a listed entry is whole or left for the cursor, never shortened); then each element it
+carries is admitted unchanged, and its exact encoding is scanned. Spans, cursors and citable text
+come from what was fitted and sent, nothing else. A read that completes past its local stop is
+discarded, not used; that is a check after each blocking call, not preemption of one. At most three
 reads, 8 KiB each and 24 KiB in all, each reserved durably before it runs and never refunded.
 """
 
@@ -14,9 +16,14 @@ from __future__ import annotations
 import re
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass, field
-from typing import Final, cast
+from typing import Final, Literal, cast
 
-from finishup.adapters.task_input_read import clear_cut, list_beneath, read_text_beneath
+from finishup.adapters.task_input_read import (
+    ReadDeadline,
+    clear_cut,
+    list_beneath,
+    read_text_beneath,
+)
 from finishup.ports.change_capture import TaskInputSnapshotSet
 from finishup.ports.semantic import ReviewStepStore, SemanticCase, SemanticCaseItem
 from finishup.protocol.canonical import JsonValue, canonical_digest, canonical_encode
@@ -35,7 +42,7 @@ __all__ = ["MAX_READS", "ReadElement", "ReadRoot", "ReviewerBroker"]
 MAX_READS: Final = 3
 MAX_RESULT_BYTES: Final = 8192
 MAX_TOTAL_BYTES: Final = 24_576
-MIN_ROOM: Final = 1024  # one whole result envelope; below it only the final judgment remains
+MIN_ROOM: Final = 1024  # past any envelope without data; below it only the final judgment remains
 _TEXT_BYTES: Final = 6144
 _MAX_RECORDS: Final = 8
 _PACKET_SECTIONS: Final = {
@@ -55,7 +62,6 @@ _LEDGER_VIEWS: Final = {
     "obligations": {"obligation"},
     "command_output": {"command", "test", "failure"},
 }
-_AGENT_SECTIONS: Final = frozenset({"goal", "obligation", "claim", "decision"})
 
 # What admission sees of a result: each element's category, exact bytes and outside root.
 type ReadElement = tuple[DataCategory, bytes, str | None]
@@ -83,7 +89,10 @@ class ReadRoot:
 
 @dataclass(slots=True)
 class _Piece:
-    """One content-bearing element of a result, ``source[start:end]``; ``end < stop`` is a cut."""
+    """One content-bearing element of a result, ``source[start:end]``; ``end < stop`` is a cut.
+
+    A listed entry (``ref`` its kind) is never cut: it is sent whole or left for the cursor.
+    """
 
     source: bytes
     start: int
@@ -144,6 +153,8 @@ class ReviewerBroker:
             selected = self._ledger(args.view, args.refs, args.cursor)
         else:
             selected = self._packet(cast(ReadPacketSectionArgsModel, args))
+        if expired():  # completed past its local stop: discarded, never retained or sent
+            raise ReadDeadline("reviewer_read_deadline")
         room = min(MAX_RESULT_BYTES, args.max_bytes, MAX_TOTAL_BYTES - self.used)
         encoded = await self._result(tool_ref, ordinal, selected, room)
         self.used += len(encoded)
@@ -153,15 +164,21 @@ class ReviewerBroker:
     async def _result(self, tool_ref: str, ordinal: int, selected: _Selected, room: int) -> bytes:
         """Fit the selection into ``room``, admit exactly what fits, and record what was sent."""
 
-        def envelope(status: str, reason: str | None = None, data: JsonValue = None) -> bytes:
+        def envelope(
+            status: str,
+            reason: str | None = None,
+            data: JsonValue = None,
+            refs: list[str] | None = None,
+            cursor: str | None = None,
+        ) -> bytes:
             body: dict[str, JsonValue] = {
                 "tool_ref": tool_ref,
                 "call_index": ordinal,
                 "status": status,
                 "reason": reason,
-                "snapshot_ref": tool_ref if pieces and pieces[0].prov["root_id"] else case_id,
-                "citable_refs": list[JsonValue](refs),
-                "truncated": cut,
+                "snapshot_ref": tool_ref if data is not None and file else self._case.case_id,
+                "citable_refs": list[JsonValue](refs or ()),
+                "truncated": status == "partial",
                 "next_cursor": cursor,
                 "calls_remaining": MAX_READS - ordinal,
                 "data": data,
@@ -177,28 +194,21 @@ class ReviewerBroker:
                 size = len(encoded)
             return encoded
 
-        case_id, pieces, refs, cut, cursor = (
-            self._case.case_id,
-            list[_Piece](),
-            list[str](),
-            False,
-            None,
-        )
         if len(selected) == 2:
             return envelope(*selected)
         shape, pieces, page, left = selected
-        count = len(pieces)
-        for piece in pieces:  # an even share of the text room first, then the exact fit
+        count, file = len(pieces), pieces[0].prov["root_id"] is not None
+        for piece in pieces if shape != "list" else ():  # an even share of the text room first
             share = min(_TEXT_BYTES, room) // count
-            piece.end = _head(piece.source, min(piece.stop, piece.start + share))
+            piece.end = _clear(piece.source, min(piece.stop, piece.start + share), "head")
+        refs, cites, cursor, encoded = list[str](), dict[str, list[str]](), None, b""
         while pieces := [piece for piece in pieces if piece.end > piece.start]:
             more = left > 0 or len(pieces) < count
             cut = more or any(piece.end < piece.stop for piece in pieces)
-            refs = sorted({ref for piece in pieces for ref in piece.citable})[:16]
-            if page is not None and more:
-                cursor = f"c{ordinal}"
-                self._cursors[cursor] = (page[0], page[1], page[2] + len(pieces))
-            encoded = envelope("partial" if cut else "ok", None, _data(shape, pieces))
+            data, cites = _data(shape, pieces)
+            refs = sorted(cites)[:16]  # the citation is what the result advertises, nothing more
+            cursor = f"c{ordinal}" if page is not None and more else None
+            encoded = envelope("partial" if cut else "ok", None, data, refs, cursor)
             over = len(encoded) - room
             if over <= 0:
                 break
@@ -206,21 +216,19 @@ class ReviewerBroker:
             if shape == "list" or (len(pieces) > 1 and last.end - last.start <= over + 64):
                 pieces.pop()
             else:
-                last.end = _head(last.source, max(last.start, last.end - over - 8))
+                last.end = _clear(last.source, max(last.start, last.end - over - 8), "head")
         else:
-            cut, cursor = False, None
             return envelope("unavailable", "byte_budget")
         elements = tuple((piece.category, piece.text, piece.root) for piece in pieces)
         reason = await self._admit(elements, encoded)
         if reason is not None:
-            pieces, refs, cut, cursor = [], [], False, None
             return envelope("denied", reason)
-        for piece in pieces:  # only what the result carries is citable or binds the history
-            for ref in piece.citable:
-                self.cited_refs.add(ref)
-                self.text_by_ref.setdefault(ref, []).append(piece.text.decode())
-            if piece.root is not None:
-                self.history_roots.add(piece.root)
+        if page is not None and cursor is not None:  # resumes at the first entry not sent
+            self._cursors[cursor] = (page[0], page[1], page[2] + len(pieces))
+        for ref in refs:  # only what the result carries is citable or binds the history
+            self.cited_refs.add(ref)
+            self.text_by_ref.setdefault(ref, []).extend(cites[ref])
+        self.history_roots.update(piece.root for piece in pieces if piece.root is not None)
         return encoded
 
     def _page(self, selector: str, version: str, cursor: str | None) -> int | tuple[str, str]:
@@ -232,7 +240,11 @@ class ReviewerBroker:
         return bound[2] if bound[1] == version else ("stale", "source_changed")
 
     def _item(self, item: SemanticCaseItem, offset: int) -> _Piece:
-        standing = "agent_assertion" if item.section in _AGENT_SECTIONS else "finishup_record"
+        standing = (
+            "agent_assertion"
+            if item.section in _PACKET_SECTIONS["agent_account"]
+            else "finishup_record"
+        )
         if item.section == "task_statement":
             standing = "task_transcription"
         prov: dict[str, JsonValue] = {
@@ -242,7 +254,7 @@ class ReviewerBroker:
             "standing": standing,
         }
         refs = tuple(r for r in (item.source_ref, *item.linked_subject_refs) if r in self._allowed)
-        start, stop = _tail(item.content, offset), len(item.content)
+        start, stop = _clear(item.content, offset, "tail"), len(item.content)
         root = dict(self._case.input_roots).get(item.item_id)
         return _Piece(
             item.content, start, stop, refs, prov, item.item_id, None, root, item.category
@@ -328,12 +340,8 @@ class ReviewerBroker:
             page = children[start : start + args.max_entries]
             if not page:
                 return ("unavailable", "not_recorded")
-            pieces = [
-                _Piece(n.encode(), 0, len(n.encode()), refs, prov, "directory" if d else "file")
-                for n, d in page
-            ]
-            for piece in pieces:
-                piece.root = root.input_root
+            kinds = [(n.encode(), "directory" if d else "file") for n, d in page]
+            pieces = [_Piece(n, 0, len(n), refs, prov, k, None, root.input_root) for n, k in kinds]
             return ("list", pieces, (selector, version, start), len(children) - start - len(page))
         if snap is not None:
             read = None if path not in kept else (kept[path], len(kept[path]))
@@ -357,40 +365,35 @@ class ReviewerBroker:
         return ("text", [piece], None, 0)
 
 
-def _data(shape: str, pieces: list[_Piece]) -> JsonValue:
-    """The result ``data`` of exactly the fitted pieces, spans and lines included."""
+def _data(shape: str, pieces: list[_Piece]) -> tuple[JsonValue, dict[str, list[str]]]:
+    """The result ``data`` of exactly the fitted pieces, and the text it sends for each ref."""
 
-    def prov(piece: _Piece) -> dict[str, JsonValue]:
-        text, lines = piece.text, None
+    items: list[JsonValue] = []
+    cites: dict[str, list[str]] = {}
+    for piece in pieces:
+        text = piece.text.decode()
+        for ref in piece.citable:
+            cites.setdefault(ref, []).append(text)
+        if shape == "list":
+            items.append({"name": text, "kind": piece.ref})
+            continue
+        lines = None
         if piece.line is not None:
-            last = piece.line + text.count(b"\n") - text.endswith(b"\n")
+            last = piece.line + text.count("\n") - text.endswith("\n")
             lines = {"start": piece.line, "end_inclusive": last}
         span = {"start": piece.start, "end_exclusive": piece.end}
-        return {**piece.prov, "span": span, "line_span": lines}
-
-    if shape == "records":
-        records = [{"ref": p.ref, "text": p.text.decode(), "provenance": prov(p)} for p in pieces]
-        return {"records": cast(list[JsonValue], records)}
+        item = {"text": text, "provenance": {**piece.prov, "span": span, "line_span": lines}}
+        items.append(item if shape == "text" else {"ref": piece.ref, **item})
     if shape == "list":
-        entries = [{"name": p.text.decode(), "kind": p.ref} for p in pieces]
         unspanned = pieces[0].prov | {"span": None, "line_span": None}
-        return {"entries": cast(list[JsonValue], entries), "provenance": unspanned}
-    return {"text": pieces[0].text.decode(), "provenance": prov(pieces[0])}
+        return {"entries": items, "provenance": unspanned}, cites
+    return ({"records": items} if shape == "records" else items[0]), cites
 
 
-def _head(content: bytes, end: int) -> int:
-    """``end`` moved back clear of a credential and onto a UTF-8 sequence boundary."""
+def _clear(content: bytes, at: int, edge: Literal["head", "tail"]) -> int:
+    """``at`` moved clear of a credential and onto a UTF-8 boundary: back for a head, on for a tail."""
 
-    end = clear_cut(content, min(end, len(content)), "head")
-    while 0 < end < len(content) and content[end] & 0xC0 == 0x80:
-        end -= 1
-    return end
-
-
-def _tail(content: bytes, start: int) -> int:
-    """``start`` moved forward clear of a credential and onto a UTF-8 sequence boundary."""
-
-    start = clear_cut(content, min(start, len(content)), "tail")
-    while start < len(content) and content[start] & 0xC0 == 0x80:
-        start += 1
-    return start
+    at = clear_cut(content, min(at, len(content)), edge)
+    while 0 < at < len(content) and content[at] & 0xC0 == 0x80:
+        at += -1 if edge == "head" else 1
+    return at

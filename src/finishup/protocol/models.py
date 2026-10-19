@@ -2672,6 +2672,8 @@ _ReviewerMaxBytes = Annotated[int, Field(ge=1024, le=8192)]  # one whole result 
 
 
 class _ReviewerArgsModel(_ClosedModel):
+    max_bytes: _ReviewerMaxBytes = 8192
+
     @model_validator(mode="before")
     @classmethod
     def _null_means_default(cls, value: object) -> object:
@@ -2693,7 +2695,6 @@ class ReadPacketSectionArgsModel(_ReviewerArgsModel):
     ]
     item_ref: _ReviewerRef
     offset: Annotated[int, Field(ge=0, le=4_194_304)]
-    max_bytes: _ReviewerMaxBytes = 8192
 
 
 class ReadLedgerArgsModel(_ReviewerArgsModel):
@@ -2703,7 +2704,6 @@ class ReadLedgerArgsModel(_ReviewerArgsModel):
         Field(min_length=1, max_length=4, json_schema_extra={"uniqueItems": True}),
     ]
     cursor: _ReviewerCursor
-    max_bytes: _ReviewerMaxBytes = 8192
 
     @model_validator(mode="after")
     def _unique_refs(self) -> ReadLedgerArgsModel:
@@ -2717,7 +2717,6 @@ class ReadFileTextArgsModel(_ReviewerArgsModel):
     mode: Literal["text"]
     start_line: Annotated[int, Field(ge=1, le=1_000_000)]
     line_count: Annotated[int, Field(ge=1, le=200)]
-    max_bytes: _ReviewerMaxBytes = 8192
 
 
 class ReadFileListArgsModel(_ReviewerArgsModel):
@@ -2726,7 +2725,6 @@ class ReadFileListArgsModel(_ReviewerArgsModel):
     mode: Literal["list"]
     cursor: _ReviewerCursor
     max_entries: Annotated[int, Field(ge=1, le=32)] = 32
-    max_bytes: _ReviewerMaxBytes = 8192
 
 
 class ReviewerPacketActionModel(_ClosedModel):

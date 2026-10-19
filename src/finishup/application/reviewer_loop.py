@@ -113,51 +113,65 @@ class ReviewerLoop:
         self.deadline, self.clock = deadline, clock
         self.instruction, self.packet = instruction, packet
         self.history_admissible = history_admissible
-        self.final_reserve_seconds = final_reserve_seconds
+        self.reserve = final_reserve_seconds
         self.messages: list[Turn] = []
         self.n_calls = 0
-        self.repaired = False
-        self.reads_offered = False
 
     async def run(self) -> ReviewOutcome:
-        """Run step() until the final judgment or an exit."""
+        """Query the model and run its one read until the final judgment or an exit."""
         self.messages = [Turn("system", self.instruction), Turn("user", self.packet)]
+        repaired = False
         try:
             steps, uncaptured = await self.store.usage()
             if steps:  # no resume in v1: an earlier run of this job ends it
                 return self.exit("uncaptured_step" if uncaptured else "interrupted")
             while True:
+                self.remaining()
+                if self.n_calls >= MAX_MODEL_TURNS:
+                    return self.exit("turn_limit")
+                # Revocation wins: every binding the history holds is rechecked before each turn.
+                if not await self.history_admissible(frozenset(self.broker.history_roots)):
+                    return self.exit("authorization_changed")
+                reads = self.broker.reads_allowed() and self.remaining() > self.reserve
+                self.n_calls = turn = self.n_calls + 1
+                await self.store.reserve("turn", turn, b"turn" if reads else b"final")
+                self.remaining()
+                schema = reviewer_reply_schema(reads_allowed=reads, strict=True)
+                parsed = await self.model.complete(
+                    tuple(self.messages), schema, deadline=self.deadline
+                )
+                await self.store.capture("turn", turn, json.dumps(parsed, sort_keys=True).encode())
+                self.remaining()  # an answer that arrives after the deadline is not used
                 try:
-                    judgment = await self.step()
+                    reply = decode_reviewer_reply(parsed)
                 except ReviewerReplyInvalid as e:
-                    if self.repaired:
+                    if repaired:
                         return self.exit("format_invalid")
-                    self.repaired = True
-                    note = FORMAT_ERROR.format(code=e.code)
+                    repaired, note = True, FORMAT_ERROR.format(code=e.code)
                     await self.store.reserve("repair", 1, e.code.encode())
                     await self.store.capture("repair", 1, note.encode())
-                    self.messages.append(Turn("user", note))
+                    self.messages.append(Turn("user", note))  # the malformed text is not echoed
                     continue
-                if judgment is not None:
-                    return self.exit(None, judgment)
+                # The validated reply exactly as the model returned it: a provider holding its own
+                # copy of the thread (Codex) checks the history against it (unit 3).
+                self.messages.append(Turn("assistant", canonical_encode(parsed).decode()))
+                if isinstance(reply, SemanticJudgment):
+                    return self.exit(None, reply)
+                if not reads:
+                    return self.exit("read_limit")  # no observation, no extra budget
+                left = self.remaining() - self.reserve
+                if left <= 0:
+                    return self.exit("deadline")  # the model's turn spent the read's time
+                stop_at = self.clock() + min(LOCAL_READ_SECONDS, left)
+                observation = await self.broker.execute(reply, lambda: self.clock() >= stop_at)
+                self.remaining()
+                self.messages.append(Turn("user", observation))
         except ReviewerModelError as e:
             return self.exit(e.code)
         except ReadDeadline:
             return self.exit("deadline")
         except ReviewStepRefused:
             return self.exit("step_refused")
-
-    def exit(self, code: str | None, judgment: SemanticJudgment | None = None) -> ReviewOutcome:
-        texts = {ref: tuple(texts) for ref, texts in self.broker.text_by_ref.items()}
-        status: Literal["final", "incomplete"] = "final" if judgment is not None else "incomplete"
-        refs = frozenset(self.broker.cited_refs)
-        return ReviewOutcome(
-            status, judgment, code, tuple(self.messages), self.n_calls, refs, texts
-        )
-
-    async def step(self) -> SemanticJudgment | None:
-        """Query the model, execute its read."""
-        return await self.execute_actions(await self.query())
 
     def remaining(self) -> float:
         """Seconds left; the deadline is checked after every await, never consumed late."""
@@ -166,42 +180,10 @@ class ReviewerLoop:
             raise ReviewerModelError("deadline")
         return self.deadline.remaining_seconds(now)
 
-    async def query(self) -> JsonValue:
-        self.remaining()
-        if self.n_calls >= MAX_MODEL_TURNS:
-            raise ReviewerModelError("turn_limit")
-        # Revocation wins: every binding the history holds is rechecked before each continuation.
-        if not await self.history_admissible(frozenset(self.broker.history_roots)):
-            raise ReviewerModelError("authorization_changed")
-        reads = self.broker.reads_allowed() and self.remaining() > self.final_reserve_seconds
-        self.n_calls += 1
-        self.reads_offered = reads
-        await self.store.reserve("turn", self.n_calls, b"turn" if reads else b"final")
-        self.remaining()
-        parsed = await self.model.complete(
-            tuple(self.messages),
-            reviewer_reply_schema(reads_allowed=reads, strict=True),
-            deadline=self.deadline,
+    def exit(self, code: str | None, judgment: SemanticJudgment | None = None) -> ReviewOutcome:
+        status: Literal["final", "incomplete"] = "final" if judgment is not None else "incomplete"
+        texts = {ref: tuple(texts) for ref, texts in self.broker.text_by_ref.items()}
+        refs = frozenset(self.broker.cited_refs)
+        return ReviewOutcome(
+            status, judgment, code, tuple(self.messages), self.n_calls, refs, texts
         )
-        await self.store.capture("turn", self.n_calls, json.dumps(parsed, sort_keys=True).encode())
-        self.remaining()  # an answer that arrives after the deadline is not used
-        return parsed
-
-    async def execute_actions(self, parsed: JsonValue) -> SemanticJudgment | None:
-        """Decode the one reply; run a read and append its observation, or finish."""
-        reply = decode_reviewer_reply(parsed)
-        # The assistant turn is the validated reply exactly as the model returned it: a provider
-        # holding its own copy of the thread (Codex) checks the history against it (unit 3).
-        self.messages.append(Turn("assistant", canonical_encode(parsed).decode()))
-        if isinstance(reply, SemanticJudgment):
-            return reply
-        if not self.reads_offered:
-            raise ReviewerModelError("read_limit")  # no observation, no extra budget
-        left = self.remaining() - self.final_reserve_seconds
-        if left <= 0:
-            raise ReviewerModelError("deadline")  # the model's turn spent the read's time
-        stop_at = self.clock() + min(LOCAL_READ_SECONDS, left)
-        observation = await self.broker.execute(reply, lambda: self.clock() >= stop_at)
-        self.remaining()
-        self.messages.append(Turn("user", observation))
-        return None

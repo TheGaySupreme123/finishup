@@ -9967,7 +9967,8 @@ Not yet wired to a provider route (unit 3); the in-check follow-up loop stays ac
   packet_refs, packet_text)`; `execute(action, expired) -> str` returns the round-1 result envelope
   (`tool_ref` `<job>:read:<n>`, `call_index`, `status`, closed `reason`, `citable_refs`,
   `result_utf8_bytes`, `result_digest`, `bytes_remaining`, `next_cursor`, `data` with `text`,
-  `records` or `entries` and `provenance` `source_ref`/`root_id`/`baseline`/`standing`/spans).
+  `records` or whole `entries` and `provenance` `source_ref`/`root_id`/`baseline`/`standing`/spans).
+  `cited_refs`/`text_by_ref` hold exactly each admitted result's advertised `citable_refs`.
   `ReadRoot(alias, path, input_root, declared, excluded, subject_refs, snapshot, refuse)` is a
   service-issued alias. `admit(elements, envelope) -> reason | None` takes `ReadElement`
   `(category, bytes, input_root)` tuples. `history_roots` lists every outside root the conversation
@@ -9978,7 +9979,8 @@ Not yet wired to a provider route (unit 3); the in-check follow-up loop stays ac
 - Admission: `PrivacyCoordinator.admit_reviewer_read(request_id, scope, binding, elements, envelope)
   -> str | None` and `egress.reviewer_history_admissible(policy, binding, scope_kind, roots)`.
   Reads: `task_input_read.read_text_beneath`, `list_beneath` (both take `expired` and raise
-  `ReadDeadline`) and `clear_cut`.
+  `ReadDeadline`) and `clear_cut`; the broker raises `ReadDeadline` too when a read completes past
+  its local stop.
 
 ### Review dialogue record (issue #905)
 

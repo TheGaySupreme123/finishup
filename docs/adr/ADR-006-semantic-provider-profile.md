@@ -2405,12 +2405,16 @@ observation. One format repair is allowed per review, and the malformed text is 
 second malformed reply, a failed or uncertain model turn, a lost lease, or a binding that no longer
 holds ends the review incomplete. The shared deadline is checked after every await: a reply that
 arrives late is not used, a read is not started inside the final reserve, and a local read stops at
-five seconds or the reserve, whichever is first (a read in progress checks it per chunk and per
-listed entry). Before every continuation the loop rechecks local-only review, the route's policy
+five seconds or the reserve, whichever is first: a read in progress checks it per chunk and per
+listed entry, and again when it completes, so a read that completes late is discarded, never sent
+or retained. That bounds what is used, not wall time: a blocked OS call is not preempted. Before every continuation the loop rechecks local-only review, the route's policy
 refusal and every outside root the conversation holds bytes from, so a removed root ends it.
 
 A read result is fitted into its byte room first (`max_bytes` is at least 1,024, one whole
-envelope); spans, line spans, `truncated` and `next_cursor` describe exactly the fitted data. Then
+envelope); spans, line spans, `truncated` and `next_cursor` describe exactly the fitted data. Text is
+cut at a safe boundary; a listed entry is sent whole or left for the cursor, which resumes at the
+first entry not sent, so a name is never shortened. When nothing fits, the result is
+`unavailable`/`byte_budget` with no data, refs or cursor, within `max_bytes`. Then
 each content-bearing element (text, record text, listed name) goes through
 `PrivacyCoordinator.admit_reviewer_read` as one item: the packet's classification, category and
 data-class ceiling, never-send rules and root binding. An element the minimizer would change in any
@@ -2424,7 +2428,8 @@ owner-admitted outside root limited to the task-declared subset, or a kept snaps
 applies the same rules to every child and inspects at most 128 entries. Cursors are opaque, issued
 by the broker and bound to their selector and source version: a forged or rebound cursor is
 `denied`/`invalid_request`, a changed source `stale`/`source_changed`. The loop's outcome carries the
-citation union of the packet as sent and every admitted result as sent; the existing
+citation union of the packet as sent and every admitted result as sent: exactly the refs a result
+advertises in its `citable_refs` (at most 16), each with only the text that result carried; the existing
 `validate_semantic_judgment` fence checks the final judgment against it. An admitted result is not a
 channel grant: each exchange that carries it is admitted at the gateway on its own.
 
