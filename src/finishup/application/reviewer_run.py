@@ -150,9 +150,13 @@ async def run_reviewer(
     catalog = reviewer_catalog(roots, reads)
     results: list[SemanticEgressResult] = []
     sent: list[int] = []
+    # Read call -> the exchange (index into ``results``) that first carried its result, recorded
+    # when that exchange was sent; a result no sent exchange carried has no disclosure.
+    carried: dict[int, int] = {}
 
     async def dispatch(payload: bytes, media_type: str, limit: Deadline) -> SemanticResult:
         history = decode_reviewer_exchange(payload)
+        calls = [call for role, text in history[2:] if (call := _read_call(role, text))]
 
         def render(packet: bytes) -> bytes:
             rendered = encode_reviewer_exchange(
@@ -177,6 +181,9 @@ async def run_reviewer(
                 candidate_for(rid), limit, dispatch_guard=dispatch_guard, exchange=frame
             )
         results.append(result)
+        if _receipt(result) is not None:
+            for call in calls:
+                carried.setdefault(call, len(results) - 1)
         if sent:  # what the next exchanges may still add under the channel ceiling
             broker.total = min(MAX_TOTAL_BYTES, broker.used + read_room(sent[-1]))
         if type(result) is SemanticEgressReply or type(result) is SemanticEgressProviderOutcome:
@@ -200,7 +207,7 @@ async def run_reviewer(
         )
         outcome = await loop.run()
         cleanup = await session.aclose()
-    record, paths = _record(job_id, outcome, results, cleanup)
+    record, paths = _record(job_id, outcome, results, carried, cleanup)
     return ReviewerRun(
         _terminal(outcome, results, first_request_id, cleanup),
         record,
@@ -261,6 +268,7 @@ def _record(
     job_id: str,
     outcome: ReviewOutcome,
     results: list[SemanticEgressResult],
+    carried: Mapping[int, int],
     cleanup: str | None,
 ) -> tuple[ReviewerRecord, dict[int, str]]:
     """The bounded record of what the conversation read, built from its own service envelopes."""
@@ -292,7 +300,7 @@ def _record(
             if not isinstance(line_span, dict)
             else (cast(int, line_span["start"]), cast(int, line_span["end_inclusive"]))
         )
-        carrier = results[call] if call < len(results) else None
+        carrier = results[carried[call]] if call in carried else None
         reads.append(
             ReviewerRead(
                 call=call,
@@ -311,6 +319,22 @@ def _record(
         )
     ended = None if outcome.status == "final" else outcome.reason
     return ReviewerRecord(len(results), tuple(reads), ended, cleanup), paths
+
+
+def _read_call(role: str, text: str) -> int | None:
+    """The call index of a read result envelope in the history, else ``None``."""
+
+    if role != "user" or not text.startswith('{"'):
+        return None
+    try:
+        envelope = json.loads(text)
+    except ValueError:
+        return None
+    if not isinstance(envelope, dict):
+        return None
+    body = cast(dict[str, object], envelope)
+    call = body.get("call_index")
+    return call if type(call) is int and "tool_ref" in body else None
 
 
 def _provenance(data: object) -> dict[str, object] | None:
