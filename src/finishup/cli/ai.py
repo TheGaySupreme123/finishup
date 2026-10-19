@@ -368,7 +368,7 @@ def _change_mode(setting: ConversationReview) -> None:
         )
     if setting is ConversationReview.LOCAL_ONLY:
         typer.echo(
-            "AI-powered review is off here; the key stays stored. FinishUP has no individual key-removal ceremony; revoke the key with your provider to invalidate it."
+            "AI-powered review is off here; the key stays stored. Use finishup ai forget-key to remove it locally; revoke the key with your provider to invalidate it."
         )
     else:
         typer.echo(
@@ -421,6 +421,7 @@ def model(
     from finishup.config.write import (
         PROVIDER_PRESETS,
         config_write_snapshot,
+        render_config_toml,
         write_config_toml_if_unchanged,
     )
 
@@ -470,22 +471,37 @@ def model(
             )
             updated_provider = endpoint.model_copy(update={"model": selected})
             updated = config.model_copy(update={"provider": updated_provider})
+            # The exact bytes this command writes, computed from the same rendering the locked
+            # write uses rather than re-read afterwards: a rollback may replace only these, never
+            # a change another writer made after the write lock was released.
+            written_bytes = render_config_toml(updated).encode("utf-8")
             # Full config validation and a locked preimage comparison precede replacement.
             write_config_toml_if_unchanged(updated, expected_bytes=expected_bytes)
-            # The exact bytes this command wrote: a rollback may replace only these, never a
-            # change another writer made while the key prompt was open.
-            _written, written_bytes = config_write_snapshot()
     except (ConfigError, OSError, ValueError):
         _fail("Model setup did not complete. Check the model ID and run finishup ai status.")
     try:
         service = _run(restart_service_for_semantic_composition)
     except (ControlError, OSError, ValueError):
+        service = None
+    if service is not None and service.get("state") == "locked":
+        # A passphrase vault with no stored copy locks on every restart; unlock it here so key
+        # entry is reached instead of leaving the new model selected without a key.
+        from finishup.cli.unlock import HumanCeremonyCliError, unlock_vault
+
+        try:
+            unlocked = _run(unlock_vault)
+        except (ControlError, HumanCeremonyCliError, OSError, ValueError):
+            unlocked = None
+        if getattr(unlocked, "state", None) == "ready":
+            service = {**service, "state": "ready"}
+    if service is None or service.get("state") != "ready":
+        if written_bytes is not None:
+            # Put the working model back so a later `ai model` with this ID is not "unchanged"
+            # while its key was never entered.
+            _restore_previous_model(config, written_bytes)
+            raise typer.Exit(20)
         _fail(
-            "The model was saved, but the service could not reload it. Run finishup ai status before entering its key."
-        )
-    if service.get("state") != "ready":
-        _fail(
-            "The model was saved, but FinishUP is not ready. Unlock it and run finishup ai key for this model; the old key stays stored."
+            "The model was saved, but FinishUP is not ready. Unlock it and run finishup ai status."
         )
     if isinstance(endpoint, ExternalRuntimeProfileConfig):
         typer.echo(

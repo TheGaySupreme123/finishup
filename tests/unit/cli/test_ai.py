@@ -194,7 +194,8 @@ def test_ai_mode_commands_reuse_the_reauthenticated_policy_path(
     assert calls == [setting]
     if command == "off":
         assert "key stays stored" in result.output.lower()
-        assert "no" in result.output.lower() and "remov" in result.output.lower()
+        assert "finishup ai forget-key" in result.output
+        assert "no individual key-removal" not in result.output
 
 
 def test_ai_setup_reuses_the_guided_flow(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -428,6 +429,64 @@ def test_a_rollback_without_a_ready_service_says_so(
     assert result.exit_code == 130
     assert "not ready to use it yet" in result.output
     assert "active again" not in result.output
+
+
+def test_a_locked_restart_is_unlocked_and_reaches_key_entry(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Review of #1123: a passphrase vault locks on restart; unlock it, then ask for the key."""
+
+    from finishup.cli import unlock
+    from finishup.config.load import load_config
+
+    config_path = _model_switch_harness(monkeypatch, tmp_path)
+    keys: list[str] = []
+
+    async def restart(**_: object) -> dict[str, object]:
+        return {"reachable": True, "state": "locked"}
+
+    async def unlocked(*_: object) -> object:
+        return SimpleNamespace(state="ready")
+
+    def key() -> None:
+        provider = load_config({}, {}, config_path).provider
+        assert provider is not None
+        keys.append(provider.model)
+
+    monkeypatch.setattr(setup, "restart_service_for_semantic_composition", restart)
+    monkeypatch.setattr(unlock, "unlock_vault", unlocked)
+    monkeypatch.setattr(ai, "key", key)
+    result = CliRunner().invoke(cli.app, ["ai", "model", "gpt-6-astra"])
+
+    assert result.exit_code == 0, result.output
+    assert keys == ["gpt-6-astra"]
+
+
+def test_a_restart_that_stays_locked_restores_the_previous_model(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    from finishup.cli import unlock
+    from finishup.config.load import load_config
+
+    config_path = _model_switch_harness(monkeypatch, tmp_path)
+
+    async def restart(**_: object) -> dict[str, object]:
+        return {"reachable": True, "state": "locked"}
+
+    async def still_locked(*_: object) -> object:
+        return SimpleNamespace(state="locked")
+
+    def never_key() -> None:
+        raise AssertionError("key entry needs a ready service")
+
+    monkeypatch.setattr(setup, "restart_service_for_semantic_composition", restart)
+    monkeypatch.setattr(unlock, "unlock_vault", still_locked)
+    monkeypatch.setattr(ai, "key", never_key)
+    result = CliRunner().invoke(cli.app, ["ai", "model", "gpt-6-astra"])
+
+    provider = load_config({}, {}, config_path).provider
+    assert result.exit_code == 20
+    assert provider is not None and provider.model == "gpt-6.1-sol"
 
 
 def test_reviewer_question_has_three_plain_choices_and_reasks_invalid_input(
