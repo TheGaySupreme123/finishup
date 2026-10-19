@@ -578,6 +578,12 @@ def test_a_directory_another_account_may_write_admits_nothing_beneath_it(
     root = os.fspath(shared)
     forms = shared / "legacy_app" / "forms"
     values = (f"{root}/legacy_app/forms/Form1.frm",)
+    # The private-group answer below is deliberately false. Keep unrelated fixture nodes
+    # unshared even when the runner creates them with umask 0002.
+    for directory in (shared, shared / "legacy_app", forms):
+        directory.chmod(0o755)
+    for file in (shared / "spec.md", shared / "legacy_app" / "Module1.bas", forms / "Form1.frm"):
+        file.chmod(0o644)
     with patch("finishup.config.foreign_write.owner_private_group", return_value=False):
         forms.chmod(0o770)
         assert read_outside_inputs((root,), values) == ()

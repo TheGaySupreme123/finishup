@@ -307,19 +307,33 @@ def test_every_builder_stays_in_its_bound_ascii_and_unraised(
 def test_the_check_core_survives_whatever_optional_fields_arrive(
     envelope: dict[str, Any],
 ) -> None:
-    """The verdict (or its scoped phrase), review status/reason and frontier digest always show."""
+    """The verdict, review outcome disclosure and frontier digest always show."""
 
     text = _prop(envelope, MAX_SUMMARY_BYTES)
+    deferred = (
+        envelope["semantic_reason"] == "deferred_before_first_edit"
+        or "semantic_review_deferred_before_first_edit" in envelope["coverage"]["known_gaps"]
+    )
     scoped = (
         envelope["verdict"] == "no_issue_detected"
         and envelope["semantic_status"] == "not_requested"
         and envelope["semantic_reason"] == "deterministic_mode"
+        and not deferred
     )
     assert ("No issue detected within local coverage" if scoped else envelope["verdict"]) in text
-    assert (
-        f"AI-powered review status/reason: {envelope['semantic_status']}/"
-        f"{envelope['semantic_reason']}"
-    ) in text
+    # INTERFACES requires these disclosures in place of the raw pair (#1046, #1077).
+    if envelope["semantic_reason"] == "coordinator_failure":
+        assert (
+            "AI-powered review failed inside FinishUP (coordinator_failure). "
+            "This is a fault in FinishUP, not in the work under review or the provider."
+        ) in text
+    elif deferred:
+        assert "AI-powered review is on; it starts after your first edit." in text
+    else:
+        assert (
+            f"AI-powered review status/reason: {envelope['semantic_status']}/"
+            f"{envelope['semantic_reason']}"
+        ) in text
     frontier = envelope["result_frontier"]
     assert f"frontier: {frontier['sequence']}" in text
     if frontier["head_digest"].startswith("sha256:") or frontier["head_digest"] == "genesis":

@@ -19,7 +19,11 @@ _KEY = b"w" * 32
 
 
 def _store(tmp_path: Path) -> WorkspaceFingerprintStore:
-    return WorkspaceFingerprintStore(tmp_path / "state" / "fp", _KEY)
+    """File-walk and settlement tests assume no lingering writer, independent of the runner."""
+
+    return WorkspaceFingerprintStore(
+        tmp_path / "state" / "fp", _KEY, lingering=lambda _window, _root: False
+    )
 
 
 def _granted(tmp_path: Path) -> WorkspaceFingerprintStore:
@@ -220,12 +224,20 @@ def test_a_metadata_move_without_a_known_digest_is_conservatively_changed(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     root = _workspace(tmp_path)
+    target = root / "README.md"
     monkeypatch.setattr(fingerprint, "RACY_WINDOW_NS", -(10**18))
     store = _store(tmp_path)
+
+    def move_metadata() -> None:
+        before = target.stat()
+        # A current-time touch may leave timestamps equal; force the metadata move under test.
+        os.utime(target, ns=(before.st_atime_ns, before.st_mtime_ns + 2_000_000_000))
+        assert target.stat().st_mtime_ns > before.st_mtime_ns
+
     # Cold cache, nothing racy: no digest was taken, so a touch cannot be told from a write.
-    assert _around(store, root, lambda: os.utime(root / "README.md")) == "changed"
+    assert _around(store, root, move_metadata) == "changed"
     # The post snapshot hashed the moved entry, so the next touch is recognised as metadata only.
-    assert _around(store, root, lambda: os.utime(root / "README.md")) == "unchanged"
+    assert _around(store, root, move_metadata) == "unchanged"
 
 
 def test_vcs_internal_churn_is_skipped_but_vcs_configuration_is_compared(tmp_path: Path) -> None:
@@ -658,7 +670,7 @@ def test_a_child_left_running_in_the_workspace_makes_the_comparison_unavailable(
 
     root = _workspace(tmp_path)
     (root / "deliverable.txt").write_text("reviewed")
-    store = _store(tmp_path)
+    store = WorkspaceFingerprintStore(tmp_path / "state" / "fp", _KEY)
     assert store.capture_before(str(root), "call", deadline=time.monotonic() + 10) is None
     with not_a_child_subreaper():
         release_write, done_read = launch_lingering_worker(root)
@@ -678,7 +690,7 @@ def test_a_child_left_running_elsewhere_does_not_block_the_comparison(tmp_path: 
     root = _workspace(tmp_path)
     elsewhere = tmp_path / "elsewhere"
     elsewhere.mkdir()
-    store = _store(tmp_path)
+    store = WorkspaceFingerprintStore(tmp_path / "state" / "fp", _KEY)
     assert store.capture_before(str(root), "call", deadline=time.monotonic() + 10) is None
     release_write, done_read = launch_lingering_worker(elsewhere)
     try:

@@ -75,7 +75,7 @@ def test_observation_limitation_findings_never_block_and_need_no_wait() -> None:
         "Observation-authored findings that are not actionable (priority 3",
         "They never block the receipt and never count in `unanswered_finding_count` or "
         "`findings_unanswered`, so they need no response.",
-        "acknowledge one once with `acknowledged`",
+        "To note the disclosure, answer one once `acknowledged` with a short reason",
         "never resolves the finding",
         "a standing gap such as `unpaired_event` does not recover within the session",
     ):

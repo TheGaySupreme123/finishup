@@ -19,6 +19,7 @@ from __future__ import annotations
 import hashlib
 import os
 import subprocess
+import sys
 import zipfile
 from dataclasses import dataclass
 from pathlib import Path
@@ -63,13 +64,14 @@ def warm_wheelhouse_cache(built_dist: _BuiltDist) -> None:
     a wheelhouse. Every test in this module then installs with --offline against that capture."""
 
     warm_dir = built_dist.directory.parent / "warm-venv"
-    subprocess.run(
-        ["uv", "venv", "--python", "3.14", str(warm_dir)],
+    created = subprocess.run(
+        ["uv", "venv", "--python", sys.executable, str(warm_dir)],
         capture_output=True,
         timeout=120,
         check=False,
     )
-    subprocess.run(
+    assert created.returncode == 0, created.stderr.decode("utf-8", errors="replace")
+    installed = subprocess.run(
         [
             "uv",
             "pip",
@@ -84,10 +86,29 @@ def warm_wheelhouse_cache(built_dist: _BuiltDist) -> None:
         timeout=180,
         check=False,
     )
+    assert installed.returncode == 0, installed.stderr.decode("utf-8", errors="replace")
 
 
 def _offline_env(home: Path) -> dict[str, str]:
-    return {**os.environ, "HOME": str(home), "UV_CACHE_DIR": _real_cache_dir()}
+    return {
+        **os.environ,
+        "HOME": str(home),
+        "UV_CACHE_DIR": _real_cache_dir(),
+        "UV_PYTHON_DOWNLOADS": "never",
+    }
+
+
+def _create_offline_venv(venv: Path, env: dict[str, str]) -> None:
+    # Changing HOME hides uv-managed interpreters. Resolve no version here: use the interpreter
+    # already running this test, and deny downloads during environment creation as well.
+    created = subprocess.run(
+        ["uv", "venv", "--offline", "--python", sys.executable, str(venv)],
+        capture_output=True,
+        timeout=60,
+        env=env,
+        check=False,
+    )
+    assert created.returncode == 0, created.stderr.decode("utf-8", errors="replace")
 
 
 def _offline_venv_install(
@@ -96,13 +117,7 @@ def _offline_venv_install(
     env = _offline_env(home)
     if extra_env:
         env.update(extra_env)
-    subprocess.run(
-        ["uv", "venv", "--python", "3.14", str(venv)],
-        capture_output=True,
-        timeout=60,
-        env=env,
-        check=False,
-    )
+    _create_offline_venv(venv, env)
     return subprocess.run(
         [
             "uv",
@@ -243,14 +258,8 @@ def test_missing_dependency_wheel_in_an_empty_cache_fails_closed(
     venv = tmp_path / "venv"
     home = tmp_path / "home"
     home.mkdir()
-    env = {**os.environ, "HOME": str(home), "UV_CACHE_DIR": str(empty_cache)}
-    subprocess.run(
-        ["uv", "venv", "--python", "3.14", str(venv)],
-        capture_output=True,
-        timeout=60,
-        env=env,
-        check=False,
-    )
+    env = {**_offline_env(home), "UV_CACHE_DIR": str(empty_cache)}
+    _create_offline_venv(venv, env)
     result = subprocess.run(
         [
             "uv",
@@ -289,14 +298,8 @@ def test_missing_dependency_wheel_never_falls_back_to_a_source_build(
     venv = tmp_path / "venv"
     home = tmp_path / "home"
     home.mkdir()
-    env = {**os.environ, "HOME": str(home), "UV_CACHE_DIR": str(empty_cache)}
-    subprocess.run(
-        ["uv", "venv", "--python", "3.14", str(venv)],
-        capture_output=True,
-        timeout=60,
-        env=env,
-        check=False,
-    )
+    env = {**_offline_env(home), "UV_CACHE_DIR": str(empty_cache)}
+    _create_offline_venv(venv, env)
     result = subprocess.run(
         [
             "uv",
@@ -333,13 +336,7 @@ def test_wrong_platform_apsw_wheel_fails_before_install(
     home = tmp_path / "home"
     home.mkdir()
     env = _offline_env(home)
-    subprocess.run(
-        ["uv", "venv", "--python", "3.14", str(venv)],
-        capture_output=True,
-        timeout=60,
-        env=env,
-        check=False,
-    )
+    _create_offline_venv(venv, env)
     foreign_platform = (
         "x86_64-manylinux_2_28" if os.uname().machine == "arm64" else "aarch64-apple-darwin"
     )
@@ -403,13 +400,7 @@ def test_corrupted_wheel_fails_exact_hash_verification_before_any_install(
     home = tmp_path / "home"
     home.mkdir()
     env = _offline_env(home)
-    subprocess.run(
-        ["uv", "venv", "--python", "3.14", str(venv)],
-        capture_output=True,
-        timeout=60,
-        env=env,
-        check=False,
-    )
+    _create_offline_venv(venv, env)
     result = subprocess.run(
         [
             "uv",
@@ -458,13 +449,7 @@ def test_correct_hash_matching_the_real_wheel_installs_cleanly(
     home = tmp_path / "home"
     home.mkdir()
     env = _offline_env(home)
-    subprocess.run(
-        ["uv", "venv", "--python", "3.14", str(venv)],
-        capture_output=True,
-        timeout=60,
-        env=env,
-        check=False,
-    )
+    _create_offline_venv(venv, env)
     result = subprocess.run(
         [
             "uv",

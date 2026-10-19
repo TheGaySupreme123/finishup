@@ -118,6 +118,13 @@ jobs:
       - name: Check dependency locks without modifying them
         run: uv sync --locked --all-extras --group dev
 
+      - name: Use a private temporary root for runtime and storage tests
+        run: |
+          test_tmp="${RUNNER_TEMP}/finishup-test-tmp"
+          mkdir -p "$test_tmp"
+          chmod 700 "$test_tmp"
+          echo "TMPDIR=$test_tmp" >> "$GITHUB_ENV"
+
       - name: Verify generated schemas and packaged resources reached a fixed point
         run: uv run --locked python scripts/sync_resource_ripple.py --check
 
@@ -225,6 +232,13 @@ jobs:
       - name: uv sync --locked
         run: uv sync --locked --all-extras --group dev
 
+      - name: Use a private temporary root for runtime and storage tests
+        run: |
+          test_tmp="${RUNNER_TEMP}/finishup-test-tmp"
+          mkdir -p "$test_tmp"
+          chmod 700 "$test_tmp"
+          echo "TMPDIR=$test_tmp" >> "$GITHUB_ENV"
+
       - name: Install Node (locked major/patch)
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
@@ -302,6 +316,13 @@ jobs:
       - name: uv sync --locked
         run: uv sync --locked --all-extras --group dev
 
+      - name: Use a private temporary root for runtime and storage tests
+        run: |
+          test_tmp="${RUNNER_TEMP}/finishup-test-tmp"
+          mkdir -p "$test_tmp"
+          chmod 700 "$test_tmp"
+          echo "TMPDIR=$test_tmp" >> "$GITHUB_ENV"
+
       - name: Isolate HOME/XDG/FinishUP app data inside job temp directory
         run: |
           iso="${RUNNER_TEMP}/finishup-home"
@@ -345,6 +366,13 @@ jobs:
 
       - name: uv sync --locked
         run: uv sync --locked --all-extras --group dev
+
+      - name: Use a private temporary root for runtime and storage tests
+        run: |
+          test_tmp="${RUNNER_TEMP}/finishup-test-tmp"
+          mkdir -p "$test_tmp"
+          chmod 700 "$test_tmp"
+          echo "TMPDIR=$test_tmp" >> "$GITHUB_ENV"
 
       - name: Isolate HOME/XDG/FinishUP app data inside job temp directory
         run: |
@@ -441,6 +469,13 @@ jobs:
       - name: uv sync --locked (test runner tooling only)
         run: uv sync --locked --group dev
 
+      - name: Use a private temporary root for runtime and storage tests
+        run: |
+          test_tmp="${RUNNER_TEMP}/finishup-test-tmp"
+          mkdir -p "$test_tmp"
+          chmod 700 "$test_tmp"
+          echo "TMPDIR=$test_tmp" >> "$GITHUB_ENV"
+
       - name: Isolate HOME/XDG/FinishUP app data inside job temp directory
         run: |
           iso="${RUNNER_TEMP}/finishup-home"
@@ -516,6 +551,13 @@ jobs:
 
       - name: uv sync --locked
         run: uv sync --locked --all-extras --group dev
+
+      - name: Use a private temporary root for runtime and storage tests
+        run: |
+          test_tmp="${RUNNER_TEMP}/finishup-test-tmp"
+          mkdir -p "$test_tmp"
+          chmod 700 "$test_tmp"
+          echo "TMPDIR=$test_tmp" >> "$GITHUB_ENV"
 
       - name: uv build --no-sources (clean exported candidate)
         run: |

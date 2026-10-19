@@ -243,6 +243,8 @@ async def test_a_checkout_root_owns_is_never_handed_to_git(
     app = tmp_path.resolve() / "app"
     _repository(app)
     app.chmod(0o755)
+    # The synthetic owner has no private group; do not inherit group write from umask 0002.
+    (app / ".git").chmod(0o755)
     present_owners(monkeypatch, {app: SUPERUSER, app / ".git": SUPERUSER})
 
     def no_git(*_args: object, **_kwargs: object) -> str | None:
@@ -275,6 +277,8 @@ async def test_a_checkout_root_owns_has_one_identity_from_any_directory_in_it(
     _repository(app)
     (app / "src" / "deep").mkdir(parents=True)
     app.chmod(0o755)
+    # The synthetic owner has no private group; do not inherit group write from umask 0002.
+    (app / ".git").chmod(0o755)
     present_owners(monkeypatch, {app: SUPERUSER, app / ".git": SUPERUSER})
 
     def no_git(*_args: object, **_kwargs: object) -> str | None:

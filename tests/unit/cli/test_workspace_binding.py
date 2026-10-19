@@ -426,6 +426,9 @@ def test_a_root_owned_gitfile_counts_only_when_nobody_could_have_linked_it(
     app.mkdir()
     gitfile = app / ".git"
     gitfile.write_text("gitdir: /private/git/worktree\n", encoding="utf-8")
+    # Simulated root has no account/private group; the marker must be unshared regardless
+    # of the runner's umask so only its link count decides this case.
+    gitfile.chmod(0o644)
     if links == 2:
         os.link(gitfile, tmp_path.resolve() / "elsewhere")
     app.chmod(0o1777)

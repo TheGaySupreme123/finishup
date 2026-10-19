@@ -68,17 +68,37 @@ def _tree_digests(root: Path) -> dict[str, str]:
     }
 
 
+def _home_env(home: Path) -> dict[str, str]:
+    # HOME alone does not rebase inherited XDG paths or a product isolation override.
+    # All probes and package-manager children must select this test's own application data.
+    return {
+        **{
+            name: value
+            for name, value in os.environ.items()
+            if not name.startswith(("FINISHUP_", "YOETZ_", "XDG_"))
+        },
+        "HOME": str(home),
+        "XDG_CACHE_HOME": str(home / ".cache"),
+        "XDG_CONFIG_HOME": str(home / ".config"),
+        "XDG_DATA_HOME": str(home / ".local" / "share"),
+        "XDG_RUNTIME_DIR": str(home / ".run"),
+        "XDG_STATE_HOME": str(home / ".local" / "state"),
+    }
+
+
 def _bundle_root(python: Path, home: Path) -> Path:
     probe = "from finishup.config.paths import bundle_root; print(bundle_root())"
     result = subprocess.run(
         [str(python), "-c", probe],
         capture_output=True,
         timeout=30,
-        env={**os.environ, "HOME": str(home)},
+        env=_home_env(home),
         check=False,
     )
     assert result.returncode == 0, result.stderr
-    return Path(result.stdout.decode("utf-8").strip())
+    bundle = Path(result.stdout.decode("utf-8").strip())
+    assert bundle.resolve().is_relative_to(home.resolve()), "bundle escaped the per-test HOME"
+    return bundle
 
 
 def _tool_install(
@@ -95,7 +115,7 @@ def _tool_install(
     wheels = sorted(dist_dir.glob("*.whl"))
     assert len(wheels) == 1
     spec = str(wheels[0]) + (f"[{','.join(extras)}]" if extras else "")
-    # Overriding HOME isolates the *application's* paths (bundle_root() etc.), but uv's own
+    # Rebase HOME/XDG together for the application's paths (bundle_root() etc.), but uv's own
     # download cache must keep resolving to the real, already-warm shared cache -- otherwise an
     # --offline install has nothing to install from. Pin UV_CACHE_DIR to the real cache explicitly.
     real_cache_dir = (
@@ -104,8 +124,7 @@ def _tool_install(
         .strip()
     )
     env = {
-        **os.environ,
-        "HOME": str(home),
+        **_home_env(home),
         "UV_TOOL_DIR": str(tool_dir),
         "UV_TOOL_BIN_DIR": str(bin_dir),
         "UV_CACHE_DIR": real_cache_dir,
@@ -322,8 +341,7 @@ def test_uninstalling_an_absent_tool_fails_without_touching_the_bundle(
     home = root / "home"
     home.mkdir(parents=True)
     env = {
-        **os.environ,
-        "HOME": str(home),
+        **_home_env(home),
         "UV_TOOL_DIR": str(root / "tool"),
         "UV_TOOL_BIN_DIR": str(root / "bin"),
     }

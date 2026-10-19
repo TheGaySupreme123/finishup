@@ -74,6 +74,7 @@ def _clean_env(home: Path) -> dict[str, str]:
     env = {name: value for name, value in os.environ.items() if not name.startswith("FINISHUP_")}
     env["HOME"] = str(home)
     env["UV_CACHE_DIR"] = _real_cache_dir()
+    env["UV_PYTHON_DOWNLOADS"] = "never"
     return env
 
 
@@ -86,7 +87,7 @@ def _tool_install(dist_dir: Path, root: Path, home: Path) -> tuple[Path, dict[st
     assert len(wheels) == 1
 
     def _install(offline: bool) -> subprocess.CompletedProcess[bytes]:
-        args = ["uv", "tool", "install", "--python", "3.14.6"]
+        args = ["uv", "tool", "install", "--python", sys.executable]
         if offline:
             args.append("--offline")
         args += ["--find-links", str(dist_dir), str(wheels[0])]
@@ -371,7 +372,11 @@ def test_permanent_install_and_two_pinned_snapshots_coexist_and_dispose_independ
         )
         refused = _cli(b_exe, ["service", "run"], env)
         assert refused.returncode == 20
-        assert refused.stderr.startswith(b"installation_identity_mismatch:")
+        # Startup diagnostics may precede the typed CLI refusal (#1040).
+        assert any(
+            line.startswith(b"installation_identity_mismatch:")
+            for line in refused.stderr.splitlines()
+        )
         assert b"Traceback" not in refused.stderr
         pin_path.write_bytes(original_pin)
         restarted = _json(b_exe, ["service", "restart"], env)

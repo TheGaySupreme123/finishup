@@ -77,10 +77,14 @@ def _tool_install(dist_dir: Path, root: Path, home: Path) -> tuple[Path, dict[st
         "UV_TOOL_DIR": str(tool_dir),
         "UV_TOOL_BIN_DIR": str(bin_dir),
         "UV_CACHE_DIR": _real_cache_dir(),
+        "UV_PYTHON_DOWNLOADS": "never",
     }
 
     def _install(offline: bool) -> subprocess.CompletedProcess[bytes]:
-        args = ["uv", "tool", "install", "--python", "3.14.6"]
+        # Reuse the interpreter already running pytest. Looking up a version after changing
+        # HOME can download a second managed Python into the ambient-home tree we digest;
+        # its own startup bytecode then looks like a FinishUP isolation leak.
+        args = ["uv", "tool", "install", "--python", sys.executable]
         if offline:
             args.append("--offline")
         args += ["--find-links", str(dist_dir), spec]
