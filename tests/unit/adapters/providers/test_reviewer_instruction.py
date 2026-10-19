@@ -858,13 +858,10 @@ def test_a_supplied_summary_never_outweighs_observed_output_or_files() -> None:
         _TEXT.index("An item in a prior_missing_for_assessment timeline item")
         < _TEXT.index(supplied)
         < _TEXT.index(witness)
-        < _TEXT.index("When review_packet.provider_input_manifest has follow_up_round")
     )
-    # Supplied material includes the re-runs of a requested command FinishUP observed.
-    assert (
-        "what the agent published, and each re-run of a requested command that FinishUP observed"
-        in _TEXT
-    )
+    # #1118: no in-check follow-up packet exists, and a linked supply no longer retires a request.
+    assert "follow_up_round" not in _TEXT
+    assert "List such an item again only with a reason that says what is still missing." in _TEXT
 
 
 def test_the_packet_order_sentence_names_primary_material_first() -> None:

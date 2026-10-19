@@ -236,6 +236,11 @@ PACKET_GAP_GLOSSARY: Final[Mapping[str, str]] = MappingProxyType(
         "task_statement_not_authorized": "the privacy policy withheld the user's task statement",
         "task_statement_not_supplied": "no task statement or readable task title was recorded",
         "task_statement_unavailable": "the packet does not carry the user's task statement",
+        # #1118 unit 1 (AIP-1): an outside input sent as its current bytes, with no kept copy.
+        "task_input_baseline_unavailable": (
+            "a task input outside the workspace was read as it is now, with no copy kept when the "
+            "task started, so whether the agent changed it is unknown"
+        ),
         # Issue #1102: a task-named input outside the workspace the owner has not admitted.
         "task_input_outside_not_admitted": (
             "a file or folder the task names lies outside the workspace and the owner has not "
@@ -743,10 +748,10 @@ SEMANTIC_REVIEW_INSTRUCTION: Final = "\n\n".join(
             "judge those files from the change. With insufficient_packet, list each "
             "item you needed in missing_for_assessment: its kind, the packet refs it concerns (only "
             "from citable_refs), and a short reason. An item in a prior_missing_for_assessment "
-            "timeline item lists in supplied_since the material of that kind recorded since for "
-            "its target_refs (any such material when it names none): what the agent published, and "
-            "each re-run of a requested command that FinishUP observed; list it again only if you "
-            "cite one of those refs and say why it is still insufficient. An excerpt whose item_id "
+            "timeline item is an earlier request; supplied_since names the material of that kind "
+            "recorded for its target_refs since: what the agent published, and each re-run of a "
+            "requested command that FinishUP observed. List such an item again only with a reason "
+            "that says what is still missing. An excerpt whose item_id "
             "begins excerpt-supplied- is a result summary the agent published to answer a "
             "request: the agent's account of the run, not FinishUP's capture of it. Judge it as "
             "that account against the code and any captured output; alone it is not support, but "
@@ -754,13 +759,6 @@ SEMANTIC_REVIEW_INSTRUCTION: Final = "\n\n".join(
             "summary. When the packet also carries observed output, the check-time change or the "
             "file that answers the same request, that material is the witness: judge from it, and "
             "never withhold support because the agent's own answer was a summary.",
-            # Issue #1047: an in-check follow-up says what FinishUP added for the reviewer's request.
-            "When review_packet.provider_input_manifest has follow_up_round, this packet answers "
-            "the missing_for_assessment you returned earlier in this same check: each of its "
-            "missing_inputs rows is one item you asked for, and supplied_refs name the recorded "
-            "excerpts FinishUP added to this packet for it (status pending: it could add none). "
-            "Judge with them; list such an item again only if you cite those refs and say why they "
-            "are still insufficient.",
             # n7 RC6c (#1108): how to tell FinishUP's capture of a run from the agent's account of
             # it, and what the agent-disclosures row is (ADR-040 amendment).
             "An excerpt that begins [FinishUP: observed output captured by a host hook (evidence "
