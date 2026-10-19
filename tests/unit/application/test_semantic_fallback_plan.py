@@ -17,6 +17,7 @@ from finishup.application.semantic_attempts import (
     attempt_accounting_to_json,
     endpoint_role_for_ordinal,
     is_fallback_licensing_outcome,
+    one_conversation_plan,
 )
 from finishup.ports.ledger import SemanticAttemptRecord, SemanticJobRecord
 from finishup.ports.objects import ObjectKind, ObjectMetadata, ObjectRef
@@ -321,3 +322,21 @@ def test_accounting_without_a_plan_is_unchanged() -> None:
     assert plain.endpoint_attempts == ()
     assert plain.exhausted is True
     assert "endpoint_attempts" not in attempt_accounting_to_json(plain)
+
+
+def test_one_conversation_plan_spends_one_attempt_and_engages_only_before_dispatch() -> None:
+    """#1118 R3: a persisted pairing with retry budgets runs as one conversation per endpoint."""
+
+    persisted = _plan(primary_retries=2, fallback_retries=2)
+    plan = one_conversation_plan(persisted)
+    assert (plan.primary.max_retries, plan.fallback.max_retries) == (0, 0)
+    assert plan.predispatch_only and plan.primary.provider_id == persisted.primary.provider_id
+    # A dispatched primary that fails with any licensing class keeps the job on the primary:
+    # its conversation may have disclosed, so no second conversation starts on the fallback.
+    for code in _LICENSING:
+        assert endpoint_role_for_ordinal(_rows(code), plan, 2) == "primary"
+    # A primary that could not be resolved before any attempt still goes to the fallback.
+    unresolved = one_conversation_plan(_plan(predispatch=SemanticReason.CREDENTIAL_UNAVAILABLE))
+    assert endpoint_role_for_ordinal((), unresolved, 1) == "fallback"
+    with pytest.raises(ValueError, match="semantic_fallback_plan_invalid"):
+        SemanticFallbackPlan(_primary(), _fallback(), None, cast(bool, "yes"))

@@ -174,6 +174,7 @@ from finishup.application.semantic_attempts import (
     SemanticEndpointPlan,
     SemanticFallbackPlan,
     attempt_accounting_from_rows,
+    one_conversation_plan,
     run_durable_semantic_attempts,
     status_for_semantic_reason,
 )
@@ -5339,6 +5340,15 @@ def _privacy_gated_semantic_evaluator(
                 provider = provider if provider is not None else fallback_binding
                 assert provider is not None  # one of the two resolved above
                 operation_max_retries = max_retries
+            if type(privacy) is PrivacyCoordinator:
+                # #1118: a review conversation is one physical attempt on one endpoint, for a new
+                # job and for one persisted with retry budgets. The fallback serves only a primary
+                # that was never dispatched; once the primary's conversation may have disclosed
+                # anything, no second conversation starts.
+                operation_max_retries = 0
+                fallback_plan = (
+                    None if fallback_plan is None else one_conversation_plan(fallback_plan)
+                )
             # The opt-out reaches only an external reviewer (owner decision, 2026-10-07).
             credential_heuristic_disabled = (
                 credential_heuristic_disabled and provider.transport == "external"
@@ -6209,9 +6219,7 @@ def _privacy_gated_semantic_evaluator(
                     primary_deadline=primary_deadline,
                     fallback_timeout_seconds=execution.fallback_timeout_seconds,
                     now_utc=clock.now_utc,
-                    # #1118: a review conversation is one physical attempt. A failure after its
-                    # first exchange ends it incomplete; the job's steps are never resumed.
-                    max_retries=0 if type(privacy) is PrivacyCoordinator else operation_max_retries,
+                    max_retries=operation_max_retries,
                     now_monotonic=clock.monotonic_seconds,
                     dispatch=_dispatch_for(provider),
                     publish_success_response=_publish_success,

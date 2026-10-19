@@ -23,7 +23,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Awaitable, Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timedelta
 from typing import Final, Literal, Protocol
 
@@ -57,6 +57,7 @@ __all__ = [
     "endpoint_role_for_ordinal",
     "final_status_after_exhaustion",
     "is_fallback_licensing_outcome",
+    "one_conversation_plan",
     "is_repairable_semantic_outcome",
     "is_retriable_semantic_outcome",
     "max_physical_attempts",
@@ -170,6 +171,9 @@ class SemanticFallbackPlan:
     primary: SemanticEndpointPlan
     fallback: SemanticEndpointPlan
     primary_predispatch_reason: SemanticReason | None = None
+    # #1118: a reviewer conversation may have disclosed on any exchange, so a failure of the
+    # dispatched primary never engages the fallback; only ``primary_predispatch_reason`` does.
+    predispatch_only: bool = False
 
     def __post_init__(self) -> None:
         if (
@@ -182,6 +186,8 @@ class SemanticFallbackPlan:
         if self.primary_predispatch_reason is not None and (
             type(self.primary_predispatch_reason) is not SemanticReason
         ):
+            raise ValueError("semantic_fallback_plan_invalid")
+        if type(self.predispatch_only) is not bool:
             raise ValueError("semantic_fallback_plan_invalid")
 
     def endpoint(self, role: EndpointRole) -> SemanticEndpointPlan:
@@ -286,6 +292,18 @@ class _EndpointWalk:
         return "fallback" if self.engaged else "primary"
 
 
+def one_conversation_plan(plan: SemanticFallbackPlan) -> SemanticFallbackPlan:
+    """``plan`` for one reviewer conversation (#1118): one attempt per endpoint, and the fallback
+    engaged only for a primary that was never dispatched."""
+
+    return replace(
+        plan,
+        primary=replace(plan.primary, max_retries=0),
+        fallback=replace(plan.fallback, max_retries=0),
+        predispatch_only=True,
+    )
+
+
 def is_fallback_licensing_outcome(status: SemanticStatus, reason: SemanticReason) -> bool:
     """Whether a terminal primary outcome licenses dispatching the fallback endpoint (#582)."""
 
@@ -312,7 +330,7 @@ def _walk_endpoints(
             fallback_attempts += 1
             continue
         primary_attempts += 1
-        if code is None or code not in _FALLBACK_LICENSING_REASONS:
+        if code is None or code not in _FALLBACK_LICENSING_REASONS or plan.predispatch_only:
             continue
         licensing_failures += 1
         if (

@@ -31,6 +31,7 @@ from finishup.domain.privacy import (
     ConsentSource,
     EgressAuthorization,
     EgressChannel,
+    PrivacyPolicy,
     ProviderBinding,
 )
 from finishup.domain.reviewer_reads import render_reviewer_lines
@@ -137,9 +138,11 @@ class _Audit(MemoryPrivacyAudit):
 class _ScriptedGateway:
     """The provider behind the real gateway contract: one scripted reply per exchange."""
 
-    def __init__(self, *replies: dict[str, JsonValue]) -> None:
+    def __init__(self, *replies: dict[str, JsonValue] | Callable[..., object]) -> None:
+        # A reply, or a callable of (case, provenance) that returns the provider's result.
         self.replies = list(replies)
         self.exchanges: list[tuple[str, tuple[tuple[str, str], ...]]] = []
+        self.bindings: list[ProviderBinding] = []
 
     async def reconcile_repository_policy(self, *args: object, **kwargs: object) -> None:
         return None
@@ -151,11 +154,13 @@ class _ScriptedGateway:
         exchange = reviewer_exchange(case.media_type, case.payload, REVIEWER_REPLY_SCHEMAS)
         assert exchange is not None, "every review dispatch is a reviewer exchange"
         self.exchanges.append((case.media_type, exchange.history))
+        binding = case.provider_binding
+        self.bindings.append(binding)
         provenance = ProviderAttemptProvenance(
-            provider=_BINDING.provider_id,
-            endpoint_profile_id=_BINDING.endpoint_profile_id,
-            endpoint_profile_version=_BINDING.endpoint_profile_version,
-            model=_BINDING.model_id,
+            provider=binding.provider_id,
+            endpoint_profile_id=binding.endpoint_profile_id,
+            endpoint_profile_version=binding.endpoint_profile_version,
+            model=binding.model_id,
             sdk_version="0.0.0",
             prompt_digest=exchange.prompt_digest,
             schema_digest=exchange.schema_digest,
@@ -166,7 +171,10 @@ class _ScriptedGateway:
             status=SemanticStatus.SUCCEEDED,
             request_commitment="hmac-sha256:" + "6" * 64,
         )
-        return SemanticResultReply(self.replies.pop(0), provenance)
+        reply = self.replies.pop(0)
+        if callable(reply):
+            return reply(case, provenance)
+        return SemanticResultReply(reply, provenance)
 
     async def close(self) -> None:
         return None
@@ -181,7 +189,12 @@ class _Probe:
 
 
 async def _run(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *replies: dict[str, JsonValue]
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    *replies: dict[str, JsonValue] | Callable[..., object],
+    policy: PrivacyPolicy | None = None,
+    primary: ProviderBinding | None = _BINDING,
+    **evaluator_options: object,
 ) -> tuple[FinalSemanticEvaluation, _ScriptedGateway, TaskRuntime]:
     work = tmp_path / "work"
     work.mkdir(mode=0o700)
@@ -195,7 +208,7 @@ async def _run(
     command = append_command()
     adapter = sqlite_adapter(command)
     frozen, runtime = await non_dispatch._durable_semantic_case(adapter)  # pyright: ignore[reportPrivateUsage]
-    policy = minimal_external_policy()
+    policy = policy or minimal_external_policy()
     effective = EffectivePrivacyPolicy(policy, 1, policy.policy_digest)
     store = non_dispatch._PolicyStore(effective, repository_granted=True)  # pyright: ignore[reportPrivateUsage]
     gateway = _ScriptedGateway(*replies)
@@ -218,8 +231,8 @@ async def _run(
     )
     coordinator._policy_app = SimpleNamespace(policy_store=store)  # type: ignore[assignment]  # pyright: ignore
 
-    async def resolve_provider() -> ProviderBinding:
-        return _BINDING
+    async def resolve_provider() -> ProviderBinding | None:
+        return primary
 
     factory = cast(
         Callable[..., Callable[..., Awaitable[FinalSemanticEvaluation]]],
@@ -236,6 +249,7 @@ async def _run(
         ),
         ready_composition_module.IdPort(),
         change_capture=_Probe(),
+        **evaluator_options,
     )
     return await evaluator(frozen, (), runtime), gateway, runtime
 
