@@ -53,6 +53,7 @@ from finishup.domain.privacy import (
 )
 from finishup.domain.receipts import receipt_document_from_json, render_receipt_human
 from finishup.domain.reviewer_reads import reviewer_record_from_wire
+from finishup.kernel.receipt_builder import REVIEWER_ADVISORY_LABEL
 from finishup.mcp.summaries import render_check_reviewer_output
 from finishup.ports.control import ControlClientKind, ControlMethod, WorkspaceLocator
 from finishup.ports.keys import MacKeyPurpose
@@ -412,7 +413,39 @@ async def test_one_review_reads_three_times_then_concludes_on_every_surface(
         markdown = render_receipt_human(document, markdown=True)
         for rendered in (text, markdown, canonical_encode(getattr(receipt, "document")).decode()):
             assert "Reviewer reads: 3 of 3" in rendered
-            assert "calc.py" not in rendered
+            # The structural read record names no path; the owner's full_local receipt carries
+            # the reviewer's own summary as one fenced advisory item.
+            reads_line = next(line for line in rendered.split(". ") if "Reviewer reads" in line)
+            assert "calc.py" not in reads_line
+            assert REVIEWER_ADVISORY_LABEL + "Read calc.py and test_calc.py" in rendered
+        # The agent's view of the same owner receipt goes through the result-boundary privacy
+        # projection: under this policy reviewer prose is withheld there, and says so.
+        markdown_body: dict[str, JsonValue] = {
+            **common,
+            "request_id": new_id(IdKind.REQUEST),
+            "session_id": started.session_id,
+            "writer_id": started.writer_id,
+            "expected_frontier": dict(getattr(checked, "result_frontier").as_wire().items()),
+            "task_id": started.task_id,
+            "format": "markdown",
+            "redaction_profile": "full_local",
+            "include": "full",
+        }
+        owner_markdown = await service.app.receipt(
+            ReceiptRequest.model_validate(markdown_body), repository_privacy_context=repository
+        )
+        assert REVIEWER_ADVISORY_LABEL in getattr(owner_markdown, "human_text")
+        agent_view = await project_case(
+            service.app,
+            ProjectionCase("receipt", ControlMethod.RECEIPT, markdown_body, owner_markdown),
+            7120,
+        )
+        assert agent_view["human_text"] == {
+            "omitted": True,
+            "category": "finding_summary",
+            "reason": agent_view["human_text"]["reason"],  # type: ignore[index]
+        }
+        assert "/human_text" in agent_view["privacy_projection"]["omitted_pointers"]  # type: ignore[index]
         print("\n--- CLI text ---\n" + cli_text)
         print("\n--- MCP reviewer text ---\n" + mcp_text)
         print("\n--- receipt text (version and policy identity) ---")

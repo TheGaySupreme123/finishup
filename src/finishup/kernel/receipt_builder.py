@@ -1103,6 +1103,11 @@ def _apply_profile(
         ReceiptRedactionProfile.DEFAULT_LOCAL_EXPORT,
         ReceiptRedactionProfile.REDACTED_SHARE,
     }:
+        if _reviewer_advisory_text(context.applicable_check) is not None:
+            # #1118: the reviewer's summary is withheld from export views, with an explicit item.
+            counts[
+                (ReceiptRedactionCategory.FINDING_DETAIL, ReceiptRedactionReason.POLICY_REDACTED)
+            ] += 1
         cleared = sum(obligation.summary is not None for obligation in obligations)
         if cleared:
             counts[
@@ -1980,13 +1985,57 @@ def _provider_manifest_spec_status(check: CheckRecordedPayload | None) -> str | 
 def _reviewer_sentence(check: CheckRecordedPayload | None) -> str:
     """#1118: what the applicable check's reviewer conversation read, as FinishUP recorded it.
 
-    Closed tokens, counts, aliases and opaque ids only; the reviewer's own summary stays on the
-    check result, under its privacy projection, and never enters a receipt.
+    Closed tokens, counts, aliases and opaque ids only. The reviewer's own summary is not part of
+    this structural sentence; it travels as its own fenced item (``_reviewer_advisory_item``).
     """
 
     record = None if check is None else reviewer_record_from_wire(check.reviewer)
     lines = render_reviewer_lines(record)
     return "" if not lines else " " + "; ".join(lines) + "."
+
+
+# The fixed fence around the reviewer's own words in a receipt (#1118). The text is the applicable
+# check's recorded review summary, final advisory and residual reasons included, never a FinishUP
+# finding or conclusion.
+REVIEWER_ADVISORY_LABEL: Final = (
+    "AI-powered reviewer summary (advisory; the reviewer's own words, not a FinishUP conclusion): "
+)
+REVIEWER_ADVISORY_WITHHELD: Final = (
+    "AI-powered reviewer summary withheld by this receipt's {profile} redaction profile; a "
+    "full_local receipt shows it."
+)
+
+
+def _reviewer_advisory_text(check: CheckRecordedPayload | None) -> str | None:
+    """The applicable check's recorded reviewer summary, when an AI-powered review produced one."""
+
+    if (
+        check is None
+        or check.semantic_status is not SemanticStatus.SUCCEEDED
+        or not check.review_summary
+    ):
+        return None
+    return check.review_summary
+
+
+def _reviewer_advisory_item(
+    check: CheckRecordedPayload | None, profile: ReceiptRedactionProfile
+) -> str | None:
+    """#1118: the reviewer's final advisory and residual reasons as one fenced receipt item.
+
+    It is a ``finding_summary`` leaf like every receipt prose item, so the result-boundary privacy
+    projection governs it on every agent view. ``full_local`` carries the words; the export
+    profiles carry an explicit omission instead, counted as a policy redaction.
+    """
+
+    text = _reviewer_advisory_text(check)
+    if text is None:
+        return None
+    if profile is not ReceiptRedactionProfile.FULL_LOCAL:
+        return REVIEWER_ADVISORY_WITHHELD.format(profile=profile.value)
+    return clip_to_limit(
+        REVIEWER_ADVISORY_LABEL + text, 8192, marker=" [reviewer summary cut]", ascii_only=False
+    )
 
 
 def _semantic_usage_sentence(provenance: SemanticProvenance | None) -> str:
@@ -2175,6 +2224,7 @@ def _sections(
     semantic_endpoint_sentence: str = "",
     semantic_usage_sentence: str = "",
     reviewer_sentence: str = "",
+    reviewer_advisory: str | None = None,
     task_statement_source_sentence: str = "",
     resolution_explanations: tuple[str, ...] = (),
     attempt_explanations: tuple[str, ...] = (),
@@ -2547,6 +2597,12 @@ def _sections(
     )
     items[ReceiptSectionKey.VERSION_AND_POLICY_IDENTITY] = ()
 
+    if reviewer_advisory is not None:
+        # The reviewer's own words are their own fenced item, never part of FinishUP's prose.
+        items[ReceiptSectionKey.LIMITATIONS_AND_COVERAGE] = (
+            *items[ReceiptSectionKey.LIMITATIONS_AND_COVERAGE],
+            reviewer_advisory,
+        )
     finished = {key: _finish_section(bodies[key], items[key]) for key in _SECTION_KEYS[include]}
     return tuple(
         ReceiptSection(
@@ -2921,6 +2977,7 @@ def build_receipt(
             else context.applicable_check.semantic_provenance
         ),
         reviewer_sentence=_reviewer_sentence(context.applicable_check),
+        reviewer_advisory=_reviewer_advisory_item(context.applicable_check, redaction_profile),
         attempt_explanations=tuple(
             f"{obligation.obligation_id} command item {attempt.requested_item_index}: {attempt.relation}. "
             "This relation concerns the attempt only, not command success."
