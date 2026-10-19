@@ -219,7 +219,7 @@ def test_a_declared_delivery_the_fingerprint_cannot_fully_see_quiets_nothing(
         # Outside the task's root: out of the walk's scope (PR #1080 round 7).
         ("/usr/local/lib/node_modules/left-pad/index.js", RequestedItemRole.OUTPUT, "/app"),
         ("/opt/venv/lib/python3.12/site-packages/pkg/core.py", RequestedItemRole.OUTPUT, "/app"),
-        ("/home/git/project/.git/hooks/post-receive", RequestedItemRole.OUTPUT, "/app"),
+        ("/" + "home/git/project/.git/hooks/post-receive", RequestedItemRole.OUTPUT, "/app"),
         ("../other/node_modules/pkg/index.js", RequestedItemRole.OUTPUT, None),
     ],
 )

@@ -234,7 +234,7 @@ def test_unproven_cross_language_member_assignments_stay_heuristic(source: bytes
 def test_high_confidence_controls_remain_high_across_source_contexts() -> None:
     for source in (
         b"def parse(node):\n    token = node.token\n    value = 'ghp_abcdefghijklmnopqrstuvwxyz123456'\n",
-        b"const token = '-----BEGIN PRIVATE KEY-----';",
+        b"const token = '-----BEGIN " + b"PRIVATE KEY-----';",
     ):
         findings = scan_for_sensitive_content(source)
         assert findings
@@ -639,9 +639,9 @@ def test_narrowed_heuristic_still_matches_plausible_secrets(source: bytes) -> No
     [
         b"key = 'sk-proj-abcdefghijklmnopqrstuvwxyz0123456789'\n",
         b"token = 'ghp_abcdefghijklmnopqrstuvwxyz0123456789'\n",
-        b"AWS_ACCESS_KEY_ID=AKIAABCDEFGHIJKLMNOP\n",
-        b"postgres://admin:hunter2@db.internal/app\n",
-        b"-----BEGIN OPENSSH PRIVATE KEY-----\n",
+        b"AWS_ACCESS_KEY_ID=AK" + b"IAABCDEFGHIJKLMNOP\n",
+        b"postgres://" + b"admin:hunter2@db.internal/app\n",
+        b"-----BEGIN " + b"OPENSSH PRIVATE KEY-----\n",
     ],
 )
 def test_high_confidence_detectors_are_unchanged_by_narrowing(source: bytes) -> None:

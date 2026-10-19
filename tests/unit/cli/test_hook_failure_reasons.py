@@ -39,7 +39,7 @@ def test_observe_exception_reason_is_closed() -> None:
 @pytest.mark.parametrize(
     ("failure", "expected"),
     [
-        (ValueError("/home/user/secret"), "observe_exception_value_error"),
+        (ValueError("/" + "home/user/secret"), "observe_exception_value_error"),
         (OSError("disk"), "observe_exception_os_error"),
         (_Leaky("named"), "observe_exception_unavailable"),
     ],

@@ -259,10 +259,10 @@ async def test_mcp_stdio_six_tool_dispatch_without_claiming_codex_activation(
         test_revision=_TEST_REVISION,
         config_profile_digest=canonical_digest({"profile": "mcp_stdio_dispatch"}),
         external_tool="mcp",
-        external_version="1.28.1",
+        external_version="1.30.0",
         integration_channel="mcp_stdio",
         protocol_version="2025-11-25",
-        sdk_version="1.28.1",
+        sdk_version="1.30.0",
     )
     evidence = record_and_write(
         CapabilityCase(
@@ -414,10 +414,10 @@ async def test_rejected_arguments_carry_corrective_text_over_the_wire(tmp_path: 
         test_revision=_TEST_REVISION,
         config_profile_digest=canonical_digest({"profile": "mcp_stdio_corrective"}),
         external_tool="mcp",
-        external_version="1.28.1",
+        external_version="1.30.0",
         integration_channel="mcp_stdio",
         protocol_version="2025-11-25",
-        sdk_version="1.28.1",
+        sdk_version="1.30.0",
     )
     evidence = record_and_write(
         CapabilityCase(

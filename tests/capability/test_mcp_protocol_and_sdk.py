@@ -1,6 +1,6 @@
 """Pinned MCP SDK/protocol capability evidence.
 
-Proves the installed candidate against ``mcp==1.28.1`` and negotiated protocol
+Proves the installed candidate against ``mcp==1.30.0`` and negotiated protocol
 ``2025-11-25`` via raw JSON-RPC frames and SDK identity probes. FinishUP-owned
 validation/framing is exercised; SDK import alone is never treated as proof.
 """
@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import importlib.metadata
 import json
+import os
 import subprocess
 import sys
 from collections.abc import Mapping
@@ -34,7 +35,7 @@ from finishup.mcp.semantic_destination import disclose_semantic_destination
 from finishup.protocol.canonical import canonical_digest
 
 _TEST_REVISION = bytes_digest(Path(__file__).read_bytes())
-_PINNED_MCP = "1.28.1"
+_PINNED_MCP = "1.30.0"
 _PROTOCOL = "2025-11-25"
 
 _CASE_NEGOTIATE = CapabilityCase(
@@ -79,7 +80,12 @@ def _run_raw(
 ) -> tuple[list[dict[str, object]], bytes]:
     child = "from finishup.mcp.server import main; main()"
     process = subprocess.Popen(
-        [sys.executable, "-I", "-c", child],
+        [
+            (os.environ.get("FINISHUP_CANDIDATE_PYTHON", "").strip() or sys.executable),
+            "-I",
+            "-c",
+            child,
+        ],
         stdin=subprocess.PIPE,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
@@ -133,7 +139,12 @@ anyio.run(main)
 """
     data = b'\n\xef\xbb\xbf{}\n{"jsonrpc":"2.0","id":1,"method":"ping"}\n'
     result = subprocess.run(
-        [sys.executable, "-I", "-c", child],
+        [
+            (os.environ.get("FINISHUP_CANDIDATE_PYTHON", "").strip() or sys.executable),
+            "-I",
+            "-c",
+            child,
+        ],
         input=data,
         capture_output=True,
         check=False,

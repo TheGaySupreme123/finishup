@@ -19,83 +19,83 @@
       "status": "planned_unavailable_without_codex_artifact"
     }
   ],
-  "profile": "v0.1-frozen",
+  "profile": "v0.3-mcp-1.30.0",
   "required_cases": [
     {
       "capability_family": "mcp_protocol_conformance",
-      "external_version": "1.28.1",
+      "external_version": "1.30.0",
       "platform": "linux_x86_64",
       "requirement_id": "mcp_initialize_all_supported_versions"
     },
     {
       "capability_family": "mcp_protocol_conformance",
-      "external_version": "1.28.1",
+      "external_version": "1.30.0",
       "platform": "linux_x86_64",
       "requirement_id": "mcp_unknown_version_fallback"
     },
     {
       "capability_family": "mcp_protocol_conformance",
-      "external_version": "1.28.1",
+      "external_version": "1.30.0",
       "platform": "linux_x86_64",
       "requirement_id": "mcp_capability_declaration_exact"
     },
     {
       "capability_family": "mcp_protocol_conformance",
-      "external_version": "1.28.1",
+      "external_version": "1.30.0",
       "platform": "linux_x86_64",
       "requirement_id": "mcp_tools_list_exact"
     },
     {
       "capability_family": "mcp_protocol_conformance",
-      "external_version": "1.28.1",
+      "external_version": "1.30.0",
       "platform": "linux_x86_64",
       "requirement_id": "mcp_resources_list_read_all"
     },
     {
       "capability_family": "mcp_protocol_conformance",
-      "external_version": "1.28.1",
+      "external_version": "1.30.0",
       "platform": "linux_x86_64",
       "requirement_id": "mcp_tools_call_all_six_dispatch"
     },
     {
       "capability_family": "mcp_protocol_conformance",
-      "external_version": "1.28.1",
+      "external_version": "1.30.0",
       "platform": "linux_x86_64",
       "requirement_id": "mcp_read_guidance_full_text"
     },
     {
       "capability_family": "mcp_protocol_conformance",
-      "external_version": "1.28.1",
+      "external_version": "1.30.0",
       "platform": "linux_x86_64",
       "requirement_id": "mcp_unknown_tool_sanitized"
     },
     {
       "capability_family": "mcp_protocol_conformance",
-      "external_version": "1.28.1",
+      "external_version": "1.30.0",
       "platform": "linux_x86_64",
       "requirement_id": "mcp_malformed_framing"
     },
     {
       "capability_family": "mcp_protocol_conformance",
-      "external_version": "1.28.1",
+      "external_version": "1.30.0",
       "platform": "linux_x86_64",
       "requirement_id": "mcp_idempotent_retry_stable"
     },
     {
       "capability_family": "mcp_protocol_conformance",
-      "external_version": "1.28.1",
+      "external_version": "1.30.0",
       "platform": "linux_x86_64",
       "requirement_id": "mcp_cancellation_eof_clean"
     },
     {
       "capability_family": "mcp_protocol_conformance",
-      "external_version": "1.28.1",
+      "external_version": "1.30.0",
       "platform": "linux_x86_64",
       "requirement_id": "mcp_pending_responses_flush_on_eof"
     },
     {
       "capability_family": "mcp_protocol_conformance",
-      "external_version": "1.28.1",
+      "external_version": "1.30.0",
       "platform": "linux_x86_64",
       "requirement_id": "mcp_stdout_purity"
     }

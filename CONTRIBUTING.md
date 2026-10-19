@@ -56,6 +56,9 @@ The pinned toolchain is Ruff for lint/format and the official npm-distributed Py
 (`npx --no-install pyright`) in strict mode for type checking; Node/npm are contributor and CI
 prerequisites only, never an end-user runtime requirement.
 
+The [PR CI runbook](docs/runbooks/pr-ci.md) describes current branch triggers, Python/uv
+compatibility checks, integration coverage, and test isolation. Product dogfood is manual-only.
+
 ### Testing against a real installed FinishUP without touching your own
 
 When a change needs an installed launcher, a running service, a host registration, or an upgrade

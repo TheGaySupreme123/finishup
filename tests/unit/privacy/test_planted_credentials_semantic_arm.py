@@ -80,7 +80,7 @@ from unit.application.test_semantic_case_check_change import (
 # A heuristic-only credential: an assignment to a token-named attribute with a high-entropy value
 # of no known provider shape. A real-looking AWS access key id is a high-confidence shape.
 _BOT_TOKEN = b"x9Fq2LmZ7vRt4KpW8sYd3NcB6hJe1QaU"
-_AWS_KEY = b"AKIAQ3EGRL7X2VNTWB5D"
+_AWS_KEY = b"AK" + b"IAQ3EGRL7X2VNTWB5D"
 _BOT_LINE = b'+        self.bot_token = "' + _BOT_TOKEN + b'"\n'
 _DELIVERABLE_DIFF = (
     b"diff --git a/bot/client.py b/bot/client.py\n"

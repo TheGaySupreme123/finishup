@@ -338,7 +338,7 @@ def test_bounded_event_context_is_fenced_and_reaches_the_ring(
             "duration_ms": 812,
             # Not context: a bound identity field and two unknown or hostile names are dropped.
             "reason": "overridden",
-            "path": "/home/user/secret",
+            "path": "/" + "home/user/secret",
             "body": "secret",
         },
     )

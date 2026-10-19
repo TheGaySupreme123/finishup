@@ -11,10 +11,10 @@ name: PR CI
 
 on:
   pull_request:
-    types: [opened, synchronize, reopened, ready_for_review]
-    branches: [main]
+    # Include stacked PRs and base-branch changes, regardless of their target branch.
+    types: [opened, synchronize, reopened, ready_for_review, edited]
   push:
-    branches: [main]
+    branches: [main, "0.3"]
   workflow_dispatch: {}
 
 permissions:
@@ -244,7 +244,19 @@ jobs:
       - name: npx --no-install pyright
         run: npx --no-install pyright
 
-      - name: Validate build metadata, workflow YAML, and JSON/Markdown hygiene
+      - name: Validate GitHub Actions workflows with pinned actionlint
+        run: |
+          set -euo pipefail
+          archive="${RUNNER_TEMP}/actionlint.tar.gz"
+          curl --fail --silent --show-error --location \
+            https://github.com/rhysd/actionlint/releases/download/v1.7.12/actionlint_1.7.12_linux_amd64.tar.gz \
+            --output "$archive"
+          echo "8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8  $archive" | sha256sum --check
+          mkdir -p "${RUNNER_TEMP}/actionlint"
+          tar -xzf "$archive" -C "${RUNNER_TEMP}/actionlint" actionlint
+          "${RUNNER_TEMP}/actionlint/actionlint" -shellcheck= -pyflakes=
+
+      - name: Validate build metadata and JSON hygiene
         run: |
           set -euo pipefail
           uv run --locked python -c "import tomllib; tomllib.load(open('pyproject.toml', 'rb'))"
@@ -256,11 +268,6 @@ jobs:
                   continue
               json.loads(path.read_text(encoding="utf-8"))
           PY
-          uv run --locked python -c "
-          import pathlib, yaml
-          for p in pathlib.Path('.github/workflows').glob('*.yml'):
-              yaml.safe_load(p.read_text(encoding='utf-8'))
-          " || true
 
       - name: Import-layer and domain/port boundary check
         run: |
@@ -302,15 +309,8 @@ jobs:
       - name: uv sync --locked
         run: uv sync --locked --all-extras --group dev
 
-      - name: Isolate HOME/XDG/FinishUP app data inside job temp directory
-        run: |
-          iso="${RUNNER_TEMP}/finishup-home"
-          mkdir -p "$iso"
-          echo "HOME=$iso" >> "$GITHUB_ENV"
-          echo "XDG_DATA_HOME=$iso/.local/share" >> "$GITHUB_ENV"
-          echo "XDG_CONFIG_HOME=$iso/.config" >> "$GITHUB_ENV"
-          echo "XDG_CACHE_HOME=$iso/.cache" >> "$GITHUB_ENV"
-          echo "YZCI_DENY_NETWORK=1" >> "$GITHUB_ENV"
+      - name: Isolate test home and private pytest temp directory
+        run: bash scripts/ci/prepare_test_environment.sh
 
       - name: Unit, property, and conformance (bounded, excludes fault/soak/live)
         run: |
@@ -353,15 +353,8 @@ jobs:
       - name: uv sync --locked
         run: uv sync --locked --all-extras --group dev
 
-      - name: Isolate HOME/XDG/FinishUP app data inside job temp directory
-        run: |
-          iso="${RUNNER_TEMP}/finishup-home"
-          mkdir -p "$iso"
-          echo "HOME=$iso" >> "$GITHUB_ENV"
-          echo "XDG_DATA_HOME=$iso/.local/share" >> "$GITHUB_ENV"
-          echo "XDG_CONFIG_HOME=$iso/.config" >> "$GITHUB_ENV"
-          echo "XDG_CACHE_HOME=$iso/.cache" >> "$GITHUB_ENV"
-          echo "YZCI_DENY_NETWORK=1" >> "$GITHUB_ENV"
+      - name: Isolate test home and private pytest temp directory
+        run: bash scripts/ci/prepare_test_environment.sh
 
       - name: Unit, property, and conformance (bounded, excludes fault/soak/live)
         run: |
@@ -369,12 +362,79 @@ jobs:
             -m "not fault and not soak and not live" -q --timeout=120
 
   # ---------------------------------------------------------------------------------------------
-  # sqlite-integration — bounded SQLite durability/migration/recovery integration cases.
+  # installer-compatibility — install this candidate on supported Python minors with minimum
+  # and current uv. These are compatibility smokes, separate from release reproducibility.
   # ---------------------------------------------------------------------------------------------
-  sqlite-integration:
-    name: sqlite-integration
+  installer-compatibility:
+    name: installer-compatibility (Python ${{ matrix.python }}, uv ${{ matrix.uv }})
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.12", "3.13", "3.14.6"]
+        uv: ["0.11.29", "0.13.1"]
+    permissions:
+      contents: read
+    env:
+      UV_VERSION: ${{ matrix.uv }}
+    steps:
+      - name: Checkout (no persisted credentials)
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+          fetch-depth: 1
+          submodules: false
+          lfs: false
+
+      - name: Install the selected uv and Python
+        uses: astral-sh/setup-uv@11f9893b081a58869d3b5fccaea48c9e9e46f990 # v8.3.2
+        with:
+          version: ${{ matrix.uv }}
+          python-version: ${{ matrix.python }}
+          enable-cache: true
+          cache-dependency-glob: "uv.lock"
+
+      - name: Verify locked dependencies and interpreter selection
+        env:
+          EXPECTED_PYTHON: ${{ matrix.python }}
+        run: |
+          uv --version
+          uv sync --locked --all-extras --group dev
+          uv run --locked python - <<'PY'
+          import os
+          import sys
+          expected = tuple(map(int, os.environ["EXPECTED_PYTHON"].split(".")))
+          assert sys.version_info[:len(expected)] == expected, sys.version
+          print(sys.version)
+          PY
+
+      - name: Isolate test home and private pytest temp directory
+        run: bash scripts/ci/prepare_test_environment.sh
+
+      - name: Build and install the candidate wheel and sdist outside the checkout
+        run: |
+          set -euo pipefail
+          uv build --no-sources --out-dir "${RUNNER_TEMP}/compat-dist"
+          uv venv "${RUNNER_TEMP}/compat-venv"
+          uv pip install --python "${RUNNER_TEMP}/compat-venv/bin/python" \
+            "${RUNNER_TEMP}"/compat-dist/finishup-*.whl
+          (cd "${RUNNER_TEMP}" && compat-venv/bin/finishup --help && compat-venv/bin/finishup version --json)
+          uv pip install --python "${RUNNER_TEMP}/compat-venv/bin/python" --reinstall \
+            "${RUNNER_TEMP}"/compat-dist/finishup-*.tar.gz
+          (cd "${RUNNER_TEMP}" && compat-venv/bin/finishup --help && compat-venv/bin/finishup version --json)
+
+  # ---------------------------------------------------------------------------------------------
+  # integration — all current bounded integration families, split to keep job duration bounded.
+  # ---------------------------------------------------------------------------------------------
+  integration:
+    name: integration (${{ matrix.area }})
     runs-on: ubuntu-24.04
     timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        area: [storage, objects, application, closure, observation, providers, service, privacy]
     permissions:
       contents: read
     steps:
@@ -397,15 +457,8 @@ jobs:
       - name: uv sync --locked
         run: uv sync --locked --all-extras --group dev
 
-      - name: Isolate HOME/XDG/FinishUP app data inside job temp directory
-        run: |
-          iso="${RUNNER_TEMP}/finishup-home"
-          mkdir -p "$iso"
-          echo "HOME=$iso" >> "$GITHUB_ENV"
-          echo "XDG_DATA_HOME=$iso/.local/share" >> "$GITHUB_ENV"
-          echo "XDG_CONFIG_HOME=$iso/.config" >> "$GITHUB_ENV"
-          echo "XDG_CACHE_HOME=$iso/.cache" >> "$GITHUB_ENV"
-          echo "YZCI_DENY_NETWORK=1" >> "$GITHUB_ENV"
+      - name: Isolate test home and private pytest temp directory
+        run: bash scripts/ci/prepare_test_environment.sh
 
       - name: Assert exact locked APSW/SQLite identity before tests
         run: |
@@ -417,38 +470,11 @@ jobs:
           print('compile options', list(apsw.compile_options))
           "
 
-      - name: Bounded SQLite integration (migration 0001, durability, replay, recovery, privacy sweep)
+      - name: Bounded integration family (excludes fault/kill-matrix/soak/live)
         run: |
-          uv run --locked pytest tests/integration/storage tests/integration/objects \
-            tests/integration/application tests/integration/privacy \
+          env -u FINISHUP_ISOLATED_ROOT -u YOETZ_ISOLATED_ROOT \
+            uv run --locked pytest "tests/integration/${{ matrix.area }}" \
             -m "not fault and not kill_matrix and not soak and not live" -q --timeout=180
-
-      - name: Upgrade, READY service, and project authority workflows
-        run: |
-          uv run --locked pytest \
-            tests/integration/service/test_bundle_upgrade.py \
-            tests/integration/service/test_ready_composition.py \
-            tests/integration/service/test_cross_repository_lineage_grant.py \
-            tests/integration/service/test_project_client_lifecycle.py \
-            tests/integration/service/test_project_ready_consent.py \
-            tests/integration/service/test_project_text_roots.py \
-            -m "not fault and not kill_matrix and not soak and not live" -q --timeout=180
-
-      - name: Sanitize and scan structural test report before any upload
-        if: failure()
-        run: |
-          mkdir -p "${RUNNER_TEMP}/sqlite-integration-report"
-          uv run --locked python scripts/scan_public_boundary.py \
-            --source-tree "${RUNNER_TEMP}/sqlite-integration-report" || true
-
-      - name: Upload sanitized structural report (failure only)
-        if: failure()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: sqlite-integration-report
-          path: ${{ runner.temp }}/sqlite-integration-report
-          retention-days: 5
-          if-no-files-found: ignore
 
   # ---------------------------------------------------------------------------------------------
   # cli-mcp-subprocess — bounded console/MCP subprocess parity and protocol purity.
@@ -492,26 +518,28 @@ jobs:
       - name: uv sync --locked (test runner tooling only)
         run: uv sync --locked --group dev
 
-      - name: Isolate HOME/XDG/FinishUP app data inside job temp directory
+      - name: Isolate test home and private pytest temp directory
         run: |
-          iso="${RUNNER_TEMP}/finishup-home"
-          mkdir -p "$iso"
-          echo "HOME=$iso" >> "$GITHUB_ENV"
-          echo "XDG_DATA_HOME=$iso/.local/share" >> "$GITHUB_ENV"
-          echo "XDG_CONFIG_HOME=$iso/.config" >> "$GITHUB_ENV"
-          echo "XDG_CACHE_HOME=$iso/.cache" >> "$GITHUB_ENV"
-          echo "YZCI_DENY_NETWORK=1" >> "$GITHUB_ENV"
+          bash scripts/ci/prepare_test_environment.sh
           echo "FINISHUP_CANDIDATE_PYTHON=${{ runner.temp }}/subprocess-venv/bin/python" >> "$GITHUB_ENV"
 
       - name: Bounded console/module/MCP subprocess cases (excludes full kill matrix)
         run: |
-          uv run --locked pytest tests/subprocess \
+          env -u FINISHUP_ISOLATED_ROOT -u YOETZ_ISOLATED_ROOT uv run --locked pytest tests/subprocess \
             --deselect tests/subprocess/test_kill_matrix.py \
             -m "not fault and not kill_matrix and not soak and not live" -q --timeout=180
 
       - name: Assert MCP stdout is protocol-only JSONL
         run: |
-          uv run --locked pytest tests/subprocess/test_mcp_stdout_purity.py \
+          env -u FINISHUP_ISOLATED_ROOT -u YOETZ_ISOLATED_ROOT uv run --locked pytest tests/subprocess/test_mcp_stdout_purity.py \
+            -m "not fault and not soak and not live" -q --timeout=120
+
+      - name: Installed-candidate MCP SDK and protocol compatibility (no live hosts/providers)
+        run: |
+          env -u FINISHUP_ISOLATED_ROOT -u YOETZ_ISOLATED_ROOT uv run --locked pytest \
+            tests/capability/test_mcp_protocol_and_sdk.py \
+            tests/capability/test_mcp_gate1_protocol_conformance.py \
+            tests/capability/test_codex_six_tools.py \
             -m "not fault and not soak and not live" -q --timeout=120
 
       # condaforge/miniforge3:24.9.2-0 is Ubuntu 20.04 (glibc 2.31, inside the certified glibc
@@ -568,6 +596,9 @@ jobs:
       - name: uv sync --locked
         run: uv sync --locked --all-extras --group dev
 
+      - name: Isolate test home and private pytest temp directory
+        run: bash scripts/ci/prepare_test_environment.sh
+
       - name: uv build --no-sources (clean exported candidate)
         run: |
           rm -rf "${{ runner.temp }}/export"
@@ -577,7 +608,7 @@ jobs:
       - name: Inspect sdist/wheel allowlists, metadata, entry points, and resource bytes
         run: |
           uv run --locked python scripts/verify_resource_manifest.py --check
-          uv run --locked pytest tests/packaging \
+          env -u FINISHUP_ISOLATED_ROOT -u YOETZ_ISOLATED_ROOT uv run --locked pytest tests/packaging \
             -m "not fault and not soak and not live" -q --timeout=180
 
       - name: Install the wheel outside the checkout
@@ -587,16 +618,6 @@ jobs:
           uv pip install --python "${{ runner.temp }}/pkg-venv/bin/python" \
             --no-index --no-deps --find-links "${{ runner.temp }}/dist" "finishup==${candidate_version}"
           uv pip install --python "${{ runner.temp }}/pkg-venv/bin/python" "finishup==${candidate_version}"
-
-      - name: Isolate HOME/XDG/FinishUP app data inside job temp directory
-        run: |
-          iso="${RUNNER_TEMP}/finishup-home"
-          mkdir -p "$iso"
-          echo "HOME=$iso" >> "$GITHUB_ENV"
-          echo "XDG_DATA_HOME=$iso/.local/share" >> "$GITHUB_ENV"
-          echo "XDG_CONFIG_HOME=$iso/.config" >> "$GITHUB_ENV"
-          echo "XDG_CACHE_HOME=$iso/.cache" >> "$GITHUB_ENV"
-          echo "YZCI_DENY_NETWORK=1" >> "$GITHUB_ENV"
 
       - name: Run import, help, version --json, and strict-local vertical slice
         run: |
@@ -642,7 +663,8 @@ jobs:
       - format-lint-type
       - unit-and-conformance
       - older-python
-      - sqlite-integration
+      - installer-compatibility
+      - integration
       - cli-mcp-subprocess
       - package-and-boundary
     runs-on: ubuntu-24.04
@@ -660,7 +682,8 @@ jobs:
             [format-lint-type]="${{ needs.format-lint-type.result }}"
             [unit-and-conformance]="${{ needs.unit-and-conformance.result }}"
             [older-python]="${{ needs.older-python.result }}"
-            [sqlite-integration]="${{ needs.sqlite-integration.result }}"
+            [installer-compatibility]="${{ needs.installer-compatibility.result }}"
+            [integration]="${{ needs.integration.result }}"
             [cli-mcp-subprocess]="${{ needs.cli-mcp-subprocess.result }}"
             [package-and-boundary]="${{ needs.package-and-boundary.result }}"
           )

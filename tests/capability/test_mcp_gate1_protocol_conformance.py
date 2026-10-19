@@ -4,7 +4,7 @@ This gate proves protocol conformance and conduit behavior only; it says nothing
 activation. Live Codex agent behavior is Gate 2/3 work and is intentionally out of scope here.
 
 Every required observation below is also enrolled under ``release/capability-policy.json`` for the
-``mcp_protocol_conformance`` / MCP SDK ``1.28.1`` / ``linux_x86_64`` cell.
+``mcp_protocol_conformance`` / MCP SDK ``1.30.0`` / ``linux_x86_64`` cell.
 """
 
 from __future__ import annotations
@@ -43,7 +43,7 @@ from finishup.protocol.canonical import JsonValue, canonical_digest
 from finishup.protocol.errors import PublicErrorCode
 
 _TEST_REVISION = bytes_digest(Path(__file__).read_bytes())
-_PINNED_MCP = "1.28.1"
+_PINNED_MCP = "1.30.0"
 _PROTOCOL = "2025-11-25"
 _FAMILY = "mcp_protocol_conformance"
 _CHANNEL = "mcp_stdio"

@@ -280,4 +280,4 @@ corrective influence, rollback, and normal-target isolation.
 - [Codex integration](codex-integration.md) — plugin, skill, MCP, and observation surfaces.
 - [AI-powered review dogfood](semantic-dogfood.md) — route profiles and the provenance gate.
 - [Influence dogfood](influence-dogfood.md) — attributable work-product change.
-- [Dogfood CI](dogfood-ci.md) — the unattended mechanics lane that runs on every push to `main`.
+- [Dogfood CI](dogfood-ci.md) — the mechanics lane available through manual workflow dispatch.

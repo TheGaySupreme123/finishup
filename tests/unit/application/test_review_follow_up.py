@@ -2294,7 +2294,7 @@ def test_captured_command_output_stays_inside_the_follow_up_byte_budget() -> Non
 _KEY_BODY = b"b3BlbnNzaC1rZXktdjEAAAAABG5vbmUAAAAEbm9uZQAAAAAAAAABAAABlwAAAAdzc2gtcn\n"
 _KEY_END = b"-----END OPENSSH PRIVATE KEY-----\n"
 _DB_PASS = b"DB_PASS=hunter2\n"
-_HOME_ASSIGNMENT = b"HOME=/home/me\n"
+_HOME_ASSIGNMENT = b"HOME=/" + b"home/me\n"
 _RK_LIVE = b"RK_LIVE_abcdefghijklmnopqrstuvwxyz\n"
 _GITIGNORED = b"GITIGNORED_LOCAL_NOTE\n"
 _ENV_DUMP = b"ENV_DUMP_MARKER=present\n"

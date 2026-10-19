@@ -30,7 +30,7 @@ dependencies = [
     "httpx==0.28.1",
     "jsonschema==4.26.0",
     "keyring==25.7.0",
-    "mcp==1.28.1",
+    "mcp==1.30.0",
     "openai==2.46.0",
     "packaging==26.2",
     "platformdirs==4.10.0",

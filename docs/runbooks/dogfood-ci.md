@@ -1,11 +1,10 @@
 # Dogfood CI
 
-`.github/workflows/dogfood.yml` runs an unattended product dogfood on GitHub-hosted runners: every
-push to `main`, nightly, on demand, and on a pull request that carries the `dogfood` label. It exists because a full manual dogfood (isolated
-instance, three hosts, three operating systems, evidence collection, cleanup) costs an afternoon,
-so it happened rarely and late. This workflow keeps the *mechanics* under continuous observation
-and leaves the judgment-heavy dogfood — new behaviour, influence, AI-powered review quality — to
-the runbooks it links at the end.
+`.github/workflows/dogfood.yml` runs product dogfood on GitHub-hosted runners only when manually
+dispatched. Automatic PR, push, and nightly runs are deferred under #1125; the `dogfood` label
+does not start a run. The existing matrix, inputs, and evidence collection remain available for
+later work. The workflow exercises installation and integration mechanics; judgment-heavy dogfood
+— new behaviour, influence, AI-powered review quality — follows the runbooks linked at the end.
 
 ## What green means
 
@@ -177,13 +176,19 @@ Reports contain no secrets by construction (redaction) but do contain the probe 
 relative structure, command names, bounded reason tokens, and the native agent's text. Treat the
 bucket as private.
 
-## Running it before merge
+## Running it on demand
 
-The workflow file must exist on `main` before `workflow_dispatch` can target any branch. To
-exercise a branch earlier, add the `dogfood` label to its pull request: the `pull_request`
-trigger then runs the full matrix on that head (and again on each push while the label stays).
-Pull requests without the label skip both lane matrices, and `dogfood-required` reports the skip
-without failing.
+The workflow file must exist on the default branch (`main`) before `workflow_dispatch` can target
+another branch. In Actions, select **Dogfood**, choose **Run workflow**, and select the candidate
+branch. The CLI equivalent is:
+
+```text
+gh workflow run dogfood.yml --ref <candidate-branch>
+```
+
+[Normal PR CI](pr-ci.md) is separate and covers every PR target, including `0.3` and feature
+branches in a stack. Dogfood is manual evidence and should not be configured as a required
+automatic PR check. Existing runs are not cancelled by changing the workflow triggers.
 
 ## Running a lane yourself
 

@@ -869,7 +869,7 @@ jobs:
     with:
       candidate-digest: ${{ needs.build-candidate.outputs.candidate-digest }}
       candidate-artifact-name: ${{ needs.build-candidate.outputs.artifact-name }}
-      tested_set_profile: v0.1-frozen
+      tested_set_profile: v0.3-mcp-1.30.0
       # Only run the approved live-provider cell when release policy has explicitly claimed and
       # approved it (reviewed repository variable, never inferred from the tag alone).
       live_provider: ${{ vars.RELEASE_LIVE_PROVIDER_CLAIM == 'true' }}

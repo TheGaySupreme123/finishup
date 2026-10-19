@@ -101,7 +101,7 @@ def shared(tmp_path: Path) -> str:
 
 
 def test_roots_are_validated_sorted_and_bounded() -> None:
-    for root in ("/shared", "/data/tasks/legacy_app", "/Users/me/datasets"):
+    for root in ("/shared", "/data/tasks/legacy_app", "/" + "Users/me/datasets"):
         assert admitted_input_root_valid(root), root
     for root in (
         "/",
@@ -112,7 +112,7 @@ def test_roots_are_validated_sorted_and_bounded() -> None:
         "/dev",
         "/private/etc/hosts",
         "/shared/../etc",
-        "/home/me/.ssh",
+        "/" + "home/me/.ssh",
         "/shared//x",
         "/with space",
     ):

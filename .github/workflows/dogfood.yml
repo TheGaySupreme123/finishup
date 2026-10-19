@@ -1,4 +1,4 @@
-# .github/workflows/dogfood.yml — unattended product dogfood on GitHub-hosted runners.
+# .github/workflows/dogfood.yml — manually dispatched product dogfood on GitHub-hosted runners.
 #
 # Authority: docs/runbooks/dogfood-ci.md; ADR-026 and ADR-028 (isolated, runtime-pinned disposable
 # instances); docs/runbooks/test-instances.md.
@@ -19,15 +19,7 @@
 name: Dogfood
 
 on:
-  schedule:
-    # One documented off-peak UTC time, after the nightly fault run.
-    - cron: "17 5 * * *"
-  push:
-    branches: [main]
-  pull_request:
-    # Opt-in per PR: add the `dogfood` label to run the full matrix against the branch before it
-    # reaches main. Fork PRs have no secrets, so their lanes run the credential-free subset.
-    types: [labeled, synchronize, reopened]
+  # Automatic runs are deferred; start a run explicitly when dogfood work resumes (#1125).
   workflow_dispatch:
     inputs:
       strict_agent:
@@ -65,7 +57,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: dogfood-${{ github.event.pull_request.number || github.ref }}
+  group: dogfood-${{ github.ref }}
   cancel-in-progress: true
 
 env:
@@ -93,7 +85,6 @@ jobs:
   # ---------------------------------------------------------------------------------------------
   lane:
     name: dogfood (${{ matrix.host }}, ${{ matrix.os }})
-    if: github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'dogfood')
     strategy:
       fail-fast: false
       matrix:
@@ -230,7 +221,6 @@ jobs:
   # ---------------------------------------------------------------------------------------------
   lane-wsl:
     name: dogfood (${{ matrix.host }}, wsl2-ubuntu-24.04)
-    if: github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'dogfood')
     strategy:
       fail-fast: false
       matrix:
@@ -427,7 +417,6 @@ jobs:
           for outcome in "${{ needs.lane.result }}" "${{ needs.lane-wsl.result }}"; do
             case "$outcome" in
               success) ;;
-              skipped) echo "- a lane matrix was skipped (unlabeled pull request)" >> "$GITHUB_STEP_SUMMARY" ;;
               *) failed=1 ;;
             esac
           done

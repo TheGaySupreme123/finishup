@@ -19,7 +19,7 @@ transcript, or one successful `check`, is never grounds for a blanket compatibil
 | Projection engine/generation and local policy/config digest | `version --json` (projection `yoetz/0.1.0`) |
 | Receipt schema and render version | `schemas/receipts/receipt-document-*.schema.json` |
 | Installed resource set / skill / reference compatibility | `version --json --resources`, `skills/codex/finishup/manifest.json` |
-| CLI contract / MCP SDK / MCP protocol | `version --json` (MCP SDK `mcp==1.28.1`, protocol negotiated against the latest published revision) |
+| CLI contract / MCP SDK / MCP protocol | `version --json` (MCP SDK `mcp==1.30.0`, protocol negotiated against the latest published revision) |
 | Codex exact tested executable set and JSONL importer format profiles | `version --json`, `fixtures/imports/codex/` |
 | Optional provider adapter / profile / model / SDK | `version --json`, provider capability fixtures |
 | Python / OS / CPU / ABI / APSW / SQLite source and build options / filesystem / key backend | `version --json` (Python `>=3.12,<3.15`, certified cell 3.14, APSW `3.53.3.1`, SQLite source ID pinned in ADR-003) |
@@ -204,7 +204,7 @@ authority for broader claims.
 ## External integrations
 
 MCP compatibility names the exact SDK and protocol-revision pair tested against an installed
-artifact (`mcp==1.28.1`, protocol negotiated). Codex support is an explicit tested executable set
+artifact (`mcp==1.30.0`, protocol negotiated). Codex support is an explicit tested executable set
 per platform (target/maximum-tested `0.144.5`) — a version newer than maximum-tested is
 `untested`, never inferred `supported`. Skill compatibility combines the skill schema version, the
 FinishUP protocol range it declares, and exact-tested Codex evidence; installing the skill files alone

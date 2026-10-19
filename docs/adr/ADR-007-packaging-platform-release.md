@@ -512,6 +512,20 @@ for users and contributors. Release reproducibility is unchanged.
   This means 3.12 and 3.13 are tested, not certified. The service, subprocess and packaging
   suites still run only on the release cell. `/doctor` accepts 3.12 through 3.14.
 
+## Amendment — MCP SDK security refresh (2026-10-19, issue #1125, owner decision)
+
+The owner explicitly approved updating the SDK and verifying its exact support contract while
+restoring PR CI. The current SDK pin is `mcp==1.30.0`; `uv.lock` is regenerated with uv, and the
+SDK/protocol capability tests and required MCP cells now target 1.30.0. The capability profile is
+`v0.3-mcp-1.30.0`; historical 1.28.1 evidence cannot satisfy its exact-version cells.
+
+This addresses [CVE-2026-59951 / GHSA-84m7-p3x7-pcfv](https://github.com/modelcontextprotocol/python-sdk/security/advisories/GHSA-84m7-p3x7-pcfv),
+whose patched 1.x version is 1.30.0. The advisory concerns stateful Streamable HTTP servers;
+FinishUP continues to serve only its bounded stdio transport. No advisory suppression is added.
+Protocol negotiation, FinishUP-side validation, frame bounds, EOF/cancellation, tool/resource
+inventory, and installed-candidate behavior remain verification obligations. A version bump alone
+does not certify a host or platform cell.
+
 ## Implementation-lock identities
 
 The 2026-07-17 implementation lock freezes the direct dependency declarations below. All are
@@ -520,7 +534,7 @@ freeze every transitive distribution, source, artifact hash, marker, and license
 
 - Runtime: `anyio==4.14.2`, `apsw==3.53.3.1`, `argon2-cffi==25.1.0`,
   `cryptography==50.0.0`, `httpx==0.28.1`, `jsonschema==4.26.0`, `keyring==25.7.0`,
-  `mcp==1.28.1`, `openai==2.46.0`, `platformdirs==4.10.0`, `pydantic==2.13.4`,
+  `mcp==1.30.0` (security refresh above), `openai==2.46.0`, `platformdirs==4.10.0`, `pydantic==2.13.4`,
   `textual==8.2.8`, and `typer==0.27.0`.
 - Compatibility extras: `semantic-openai` repeats `httpx==0.28.1` and `openai==2.46.0`;
   `portable-recovery` repeats `argon2-cffi==25.1.0`.

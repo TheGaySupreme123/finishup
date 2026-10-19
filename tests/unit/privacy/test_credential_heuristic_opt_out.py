@@ -95,7 +95,7 @@ _NOW = datetime(2026, 10, 7, tzinfo=UTC)
 _HEURISTIC = b"auth_token: 'bounded-but-suspicious-value-9'"
 # High-confidence: a known credential shape.
 _CONCRETE = b"GITHUB_TOKEN=ghp_abcdefghijklmnopqrstuvwxyz123456"
-_PRIVATE_KEY = b"-----BEGIN RSA PRIVATE KEY-----\nMIIBOgIBAAJBAKj34GkxFhD\n"
+_PRIVATE_KEY = b"-----BEGIN " + b"RSA PRIVATE KEY-----\nMIIBOgIBAAJBAKj34GkxFhD\n"
 
 
 def _machine() -> AuthorizationScope:

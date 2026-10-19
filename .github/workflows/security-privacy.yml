@@ -10,7 +10,7 @@ name: Security and Privacy
 
 on:
   pull_request:
-    branches: [main]
+    types: [opened, synchronize, reopened, ready_for_review, edited]
     paths:
       - "src/**"
       - "pyproject.toml"
@@ -140,10 +140,20 @@ jobs:
 
       - name: Locked vulnerability scan (built/install environment)
         run: |
+          set -euo pipefail
           uv venv "${RUNNER_TEMP}/audit-venv"
           uv pip install --python "${RUNNER_TEMP}/audit-venv/bin/python" .
+          # Inventory the actual installed dependencies. The venv root is not a
+          # site-packages path, and the unpublished candidate itself has no PyPI advisory entry.
+          "${RUNNER_TEMP}/audit-venv/bin/python" - <<'PY' > "${RUNNER_TEMP}/installed-requirements.txt"
+          import importlib.metadata
+          for dist in sorted(importlib.metadata.distributions(), key=lambda item: item.metadata["Name"].lower()):
+              name = dist.metadata["Name"]
+              if name.lower().replace("_", "-") != "finishup":
+                  print(f"{name}=={dist.version}")
+          PY
           uvx pip-audit==${PIP_AUDIT_VERSION} --strict --progress-spinner=off \
-            --path "${RUNNER_TEMP}/audit-venv" \
+            --no-deps --disable-pip -r "${RUNNER_TEMP}/installed-requirements.txt" \
             -o "${RUNNER_TEMP}/pip-audit-install.json" --format json
 
       - name: npm audit (production dependency tree)
@@ -167,13 +177,6 @@ jobs:
           uvx pip-licenses==${PIP_LICENSES_VERSION} --python "${RUNNER_TEMP}/license-venv/bin/python" \
             --format=json --with-authors --with-urls --fail-on="UNKNOWN" \
             --output-file "${RUNNER_TEMP}/licenses.json"
-
-      - name: Fail on unknown/unreviewed critical or high findings
-        run: |
-          uv run --locked python -c "
-          import json, sys
-          data = json.load(open('${RUNNER_TEMP}/pip-audit-source.json'.replace('\${RUNNER_TEMP}', '$RUNNER_TEMP')))
-          " 2>/dev/null || true
 
       - name: Scan report before short-retention upload
         run: |
@@ -221,6 +224,9 @@ jobs:
 
       - name: Static/security-relevant lint (banned API/import/layer, ruff security-relevant rules)
         run: uv run --locked ruff check .
+
+      - name: Isolate test home and private pytest temp directory
+        run: bash scripts/ci/prepare_test_environment.sh
 
       - name: Targeted static-security unit vectors
         run: |
@@ -384,14 +390,10 @@ jobs:
 
       - name: Install candidate outside checkout, isolated HOME/XDG
         run: |
+          bash scripts/ci/prepare_test_environment.sh
           iso="${RUNNER_TEMP}/finishup-home"
-          mkdir -p "$iso/.local/share" "$iso/.config" "$iso/.cache" "$iso/.runtime"
-          echo "HOME=$iso" >> "$GITHUB_ENV"
-          echo "XDG_DATA_HOME=$iso/.local/share" >> "$GITHUB_ENV"
-          echo "XDG_CONFIG_HOME=$iso/.config" >> "$GITHUB_ENV"
-          echo "XDG_CACHE_HOME=$iso/.cache" >> "$GITHUB_ENV"
+          install -d -m 0700 "$iso/.runtime"
           echo "XDG_RUNTIME_DIR=$iso/.runtime" >> "$GITHUB_ENV"
-          echo "YZCI_DENY_NETWORK=1" >> "$GITHUB_ENV"
           candidate_version=$(uv run --locked python -c "import tomllib; print(tomllib.load(open('pyproject.toml', 'rb'))['project']['version'])")
           uv venv "${{ runner.temp }}/runtime-venv"
           uv pip install --python "${{ runner.temp }}/runtime-venv/bin/python" \
@@ -410,7 +412,7 @@ jobs:
 
       - name: Runtime plaintext-canary sweep (start/publish/check/respond/status/receipt/crash/backup/migration/CLI/MCP)
         run: |
-          uv run --locked pytest \
+          env -u FINISHUP_ISOLATED_ROOT -u YOETZ_ISOLATED_ROOT uv run --locked pytest \
             tests/integration/privacy tests/conformance/privacy \
             tests/subprocess/test_privacy_human_control.py \
             tests/subprocess/test_cli_invocations.py \

@@ -52,7 +52,7 @@ skill files under `skills/codex/`, and `tests/capability/`.
    manifest and is not represented as Codex-readable frontmatter. MCP registration remains a
    separate previewed step, so v0.1 declares no `agents/openai.yaml` MCP dependency.
 3. **MCP protocol/SDK:** protocol negotiated (latest published `2025-11-25`, never assumed); SDK
-   pinned `mcp==1.28.1`, low-level `Server` surface, `validate_input=False`, direct
+   pinned `mcp==1.30.0`, low-level `Server` surface, `validate_input=False`, direct
    `CallToolResult`, FinishUP-side jsonschema Draft 2020-12 output validation, nested constant
    fallback defined in the MCP error spec.
 4. **Transport:** FinishUP-owned `bounded_stdio_server`: 1 MiB payload cap excluding

@@ -22,7 +22,7 @@ on:
         description: Reviewed exact-version tested-set profile name.
         required: true
         type: string
-        default: v0.1-frozen
+        default: v0.3-mcp-1.30.0
       live_provider:
         description: Run the explicitly approved live-provider job.
         required: true
