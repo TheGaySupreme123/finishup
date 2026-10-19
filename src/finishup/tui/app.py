@@ -742,8 +742,10 @@ class FinishUpTui(App[int]):
         # Only an explicit local answer finishes as local-only. Dismiss (None) is handled by
         # the first-run callers before storage or registration, so it must not fall through here.
         if choice == "local_only":
-            await self._record_local_only()
-            await self._finish_setup(connected=connected)
+            # Setup finishes only once the local-only choice is recorded; otherwise an earlier
+            # AI-review policy would stay in force behind a "finished" setup.
+            if await self._record_local_only():
+                await self._finish_setup(connected=connected)
             return
         if choice not in {"agent_opt_in", "ai_powered"}:
             return
@@ -811,15 +813,16 @@ class FinishUpTui(App[int]):
             )
             return
         del option, codex_home  # The policy route stays registered (ADR-049).
-        await self._record_local_only()
-        await self._finish_setup(connected=connected)
+        if await self._record_local_only():
+            await self._finish_setup(connected=connected)
 
-    async def _record_local_only(self) -> None:
+    async def _record_local_only(self) -> bool:
         """Record "local checks only; agents may not opt in" in the privacy policy (ADR-049).
 
         The Private recipe with the explicit ``local_only`` conversation setting, through the
         trusted questionnaire; it narrows, so no widening ceremony runs. Where the terminal cannot
-        open it, say the exact command instead.
+        open it, say the exact command instead. Returns whether the setting was recorded; setup
+        finishes only when it was.
         """
 
         try:
@@ -832,16 +835,18 @@ class FinishUpTui(App[int]):
                 "This terminal cannot open the trusted privacy ceremony",
                 ("Run 'finishup privacy conversations local-only' from your shell.",),
             )
-            return
+            return False
         except RuntimeError_ as error:
             self._report(error)
-            return
+            return False
         if getattr(report, "outcome", "failed") not in {"configured", "unchanged"}:
             self.say(
                 Level.UNPROVEN,
                 "Local checks only was not recorded",
                 ("Run 'finishup privacy conversations local-only' from your shell.",),
             )
+            return False
+        return True
 
     async def _choose_harnesses(
         self,
