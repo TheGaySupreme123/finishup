@@ -524,3 +524,23 @@ async def test_unlock_vault_skips_stored_entry_when_service_reports_stale(
 
 async def _async_value(value: Any) -> Any:
     return value
+
+
+@pytest.mark.anyio
+async def test_a_deliberate_passphrase_vault_is_not_told_to_store_its_passphrase(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Issue #1119 (Azure WSL run): `setup vault --passphrase` keeps no copy by choice."""
+
+    store = _Store(None, "auto_unlock_absent")
+    client = _Client(state="locked", reason="passphrase_required")
+    monkeypatch.setattr(module, "_auto_unlock_store", lambda: store)
+    monkeypatch.setattr(module, "build_service_client", lambda: _async_value(client))
+
+    assert await module._service_auto_unlock_status(True) == 20  # pyright: ignore[reportPrivateUsage]
+
+    report = json.loads(capsys.readouterr().out)
+    assert report["state"] == "absent"
+    assert report["next_command"] is None
+    assert "auto-unlock enable" in report["note"]
+    assert "repair" not in json.dumps(report)

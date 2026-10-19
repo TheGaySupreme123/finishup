@@ -4012,7 +4012,7 @@ resolves by proof, so retry never fails on `auto_unlock_entry_exists` from an ab
 same-attempt entry.
 
 `finishup service auto-unlock status` (`yoetz.auto-unlock-status/2`) also carries
-`custody: platform_store | owner_file` (issue #1119, ADR-008 amendment 2026-10-19). `owner_file`
+`custody: platform_store | owner_file` (issue #1119, ADR-008 amendment 2026-10-19). On a passphrase vault with no stored copy (the `setup vault --passphrase` choice) the `absent` state carries `next_command: null` and a `note` naming the optional `finishup service auto-unlock enable`, instead of suggesting `repair`. `owner_file`
 means the scoped secret lives in FinishUP's owner-only files under `<bundle>/auto-unlock/`, used
 only where no platform credential store is usable. `finishup setup vault --passphrase` creates a
 new vault from an owner-typed passphrase and keeps no copy; it refuses an initialized vault

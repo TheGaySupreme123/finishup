@@ -4019,8 +4019,17 @@ async def _service_auto_unlock_status(json_output: bool) -> int:
         state = "backend_unsupported"
     else:
         state = "rejected"
-    if state in {"stale", "absent", "rejected", "initialization_orphaned"}:
-        next_command: str | None = "finishup service auto-unlock repair"
+    note: str | None = None
+    if state == "absent" and vault_mode == "passphrase":
+        # Issue #1119: a typed passphrase with no stored copy is a choice (setup vault
+        # --passphrase), not a fault; storing it is optional and would undo that choice.
+        next_command: str | None = None
+        note = (
+            "Auto-unlock is off: you type your passphrase after each restart. To have FinishUP "
+            "keep it instead, run finishup service auto-unlock enable."
+        )
+    elif state in {"stale", "absent", "rejected", "initialization_orphaned"}:
+        next_command = "finishup service auto-unlock repair"
     elif state == "initialization_unreconciled":
         next_command = "finishup service restart"
     else:
@@ -4036,6 +4045,8 @@ async def _service_auto_unlock_status(json_output: bool) -> int:
         "vault_mode": vault_mode,
         "next_command": next_command,
     }
+    if note is not None:
+        cast(dict[str, JsonValue], report)["note"] = note
     _human_or_json(report, json_output=json_output)
     return 0 if state == "provisioned" else 20
 
