@@ -90,6 +90,8 @@ def test_agent_start_lists_the_questions_in_order_with_recommendations() -> None
     ):
         assert heading in guide, heading
     assert "No recommendation and no default" in guide
+    # Issue #1119: storage is never asked.
+    assert "4. **Secret storage**: never a question" in guide
     assert "local only is a finished state, not a fallback" in guide
 
 

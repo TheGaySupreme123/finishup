@@ -314,6 +314,49 @@ async def test_storage_only_ceremony_stops_before_provider_selection(
 
 
 @pytest.mark.anyio
+@pytest.mark.parametrize(
+    ("custody", "line"),
+    [
+        ("owner_file", "a file only your account can read"),
+        ("platform_store", "the platform credential store"),
+    ],
+)
+async def test_unlocking_an_existing_vault_names_its_custody(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    custody: str,
+    line: str,
+) -> None:
+    """Review round 2 of #1119: the unlock line names where the key actually lives."""
+
+    unlocked: list[bytes] = []
+
+    class Store:
+        def __init__(self, _bundle: object) -> None:
+            self.custody = custody
+
+        def load(self) -> bytearray:
+            return bytearray(b"g" * 64)
+
+    async def unlock(passphrase: bytearray | None = None) -> None:
+        unlocked.append(bytes(passphrase or b""))
+
+    async def ready() -> dict[str, JsonValue]:
+        return {"reachable": True, "state": "ready", "vault_mode": "passphrase"}
+
+    monkeypatch.setattr("finishup.adapters.keys.os_keyring.AutoUnlockPassphraseStore", Store)
+    monkeypatch.setattr("finishup.cli.unlock.unlock_vault", unlock)
+    monkeypatch.setattr(setup, "_service_reachability", ready)
+    observed, _provider = await setup._interactive_provider_setup(  # pyright: ignore[reportPrivateUsage]
+        {"reachable": True, "state": "locked", "vault_mode": "passphrase"},
+        storage_only=True,
+    )
+    assert observed["state"] == "ready"
+    assert unlocked == [b"g" * 64]
+    assert line in capsys.readouterr().out
+
+
+@pytest.mark.anyio
 async def test_storage_only_keyring_unlock_uses_existing_confidential_path(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

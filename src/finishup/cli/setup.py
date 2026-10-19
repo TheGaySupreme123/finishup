@@ -2865,7 +2865,11 @@ async def _interactive_provider_setup(
                     )
                     await unlock_vault()
                 else:
-                    typer.echo("Unlocking FinishUP from the platform credential store")
+                    typer.echo(
+                        "Unlocking FinishUP from the key kept in a file only your account can read"
+                        if auto_store.custody == "owner_file"
+                        else "Unlocking FinishUP from the platform credential store"
+                    )
                     await unlock_vault(bytearray(auto_passphrase))
             elif service.get("vault_mode") == "os_keyring" and storage_only:
                 from finishup.cli.unlock import retry_keyring

@@ -94,7 +94,8 @@ On Windows:
    lists `platform_cell_untested`, and you should say so to the user rather than claim support.
 
 On Linux, the same three facts apply — bubblewrap for network-denied checks, a Secret Service
-(GNOME Keyring or KWallet) for the system keyring or else a passphrase, and state on a local
+(GNOME Keyring or KWallet) for the system keyring or else a key file only the user's account can
+read, and state on a local
 disk — and `finishup setup status --json` reports all three under `platform` before you decide
 anything. Certified cells are macOS arm64 and Linux x86-64 (glibc 2.28+); other architectures
 install and report `platform_cell_untested`.
@@ -186,9 +187,10 @@ agents. Do not transfer the old approval to that new preview. The reverse path i
    registration for every selected agent; digest-bound, explicit, no default approval. Keep Codex's
    activation and policy-trust checks. Claude Code and Cursor still authenticate separately with
    macOS or PAM, and name the agent asking.
-5. **Secret storage** — system secure storage or a FinishUP passphrase. The full-screen interface
-   asks; the prompt wizard uses secure storage automatically and offers a passphrase only when it
-   is unavailable.
+5. **Secret storage** — not a question. Setup creates the vault itself and keeps its key in the
+   system keychain, or, where there is none (WSL, headless Linux), in a file only the user's
+   account can read; the result says which. A user who wants to type a passphrase after every
+   restart runs `finishup setup vault --passphrase` before setup instead.
 
 If they choose the first or third answer, additionally choose a **provider and model** (reviewed
 presets, a ChatGPT subscription, a custom HTTPS origin, or skip for now) and a **privacy policy**:
@@ -238,8 +240,9 @@ recommendations. Each answer decides the next step; stop after each and wait.
 3. **The exact change.** Show the preview (project skill, plugin and hook sources, MCP
    registration) and ask "Apply exactly this? Approve / Deny." No recommendation and no default:
    this one is theirs.
-4. **Secret storage**, only if the wizard reports system secure storage unavailable: "FinishUP needs
-   a place for secrets. Use a passphrase you choose? You will type it in your terminal."
+4. **Secret storage**: never a question. FinishUP creates its vault by itself during the terminal
+   step. Tell the user where the key went when the result names it (system keychain, or a file
+   only their account can read); do not offer a passphrase unless they ask for one.
 5. **Provider and model**, only after answer (a) or (c): list the presets from
    `finishup provider catalog --json` with their suggested models and ask which one, or skip for
    now. Recommend the preset whose retention terms match what they told you about privacy.
