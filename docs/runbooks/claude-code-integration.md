@@ -2607,3 +2607,13 @@ Verification: `tests/integration/application/test_publish_server_filled.py`,
 `tests/conformance/operations/test_status_contract.py` (brief and results-filter cases) and the
 MCP unit suites exercise the shared path. A live Claude Code session on macOS, Linux or WSL 2 is not
 recorded for this change; native Windows is not claimed.
+
+## Batch setup decision (2026-10-19, issue #1119)
+
+Claude Code participates in `setup run|disconnect|status --host all` and repeated `--host`
+selections through its existing plugin connection plan on macOS, Linux and WSL 2. The combined
+approval binds the executable, configuration, project, route and per-host preview; macOS or PAM
+authentication still runs for Claude Code on the foreground terminal, after the agent is named.
+Shared-project review-mode warnings and conservative shared-piece removal remain in the preview.
+Failures stop later members and preserve individual outcomes. Native-host/platform evidence
+limits elsewhere in this runbook still apply.

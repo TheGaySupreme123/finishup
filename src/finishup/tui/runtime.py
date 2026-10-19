@@ -586,9 +586,10 @@ def _host_entries() -> tuple[DoctorEntry, ...]:
             LayerState.NOT_CONFIGURED,
             detail=reason,
             remediation=(
-                "use a FinishUP passphrase instead (run /service, or "
-                "'finishup service initialize-passphrase'); nothing to do if this installation "
-                "already unlocks with one"
+                "nothing to do: setup keeps the vault key in a file only your account can read "
+                "here ('finishup service auto-unlock status' shows where); to type a passphrase "
+                "after each restart instead, create the vault with "
+                "'finishup setup vault --passphrase'"
             ),
         )
     return (platform_entry, sandbox_entry, storage_entry)
@@ -1945,6 +1946,17 @@ class FinishUpRuntime:
             await rotate_vault_passphrase()
         except HumanCeremonyCliError as error:
             raise RuntimeError_(error.reason, "the passphrase could not be changed")
+
+    async def set_up_storage_automatically(self) -> tuple[bool, str | None, str]:
+        """Create or unlock the vault with no question (issue #1119); see ``ensure_vault_ready``.
+
+        Returns readiness, the bounded reason when not ready, and the custody actually in use.
+        """
+
+        from finishup.cli.setup import ensure_vault_ready
+
+        vault = await ensure_vault_ready()
+        return vault.ready, vault.reason, vault.custody
 
     async def initialize_system_keyring(self) -> None:
         from finishup.cli.unlock import HumanCeremonyCliError, retry_keyring

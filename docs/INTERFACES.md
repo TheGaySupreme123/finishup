@@ -4011,6 +4011,14 @@ as a typed orphan that `finishup service auto-unlock status` distinguishes
 resolves by proof, so retry never fails on `auto_unlock_entry_exists` from an abandoned
 same-attempt entry.
 
+`finishup service auto-unlock status` (`yoetz.auto-unlock-status/2`) also carries
+`custody: platform_store | owner_file | null` (issue #1119, ADR-008 amendment 2026-10-19); `null` when no entry is stored, since custody names where a stored entry lives. On a passphrase vault with no stored copy (the `setup vault --passphrase` choice) the `absent` state carries `next_command: null` and a `note` naming the optional `finishup service auto-unlock enable`, instead of suggesting `repair`. `owner_file`
+means the scoped secret lives in FinishUP's owner-only files under `<bundle>/auto-unlock/`, used
+only where no platform credential store is usable. `finishup setup vault --passphrase` creates a
+new vault from an owner-typed passphrase and keeps no copy; it refuses an initialized vault
+with `vault_already_initialized`. A local-only first run creates the vault with no question
+before its privacy step and stops with `vault_setup_incomplete: <reason>` when it cannot.
+
 A `repository_privacy_grant` result is commit-aware (issue #519). The service records the
 durable policy transition before it sends the correlated ceremony result, so when only the
 trailing close confirmation is missing, wrong, or lost with the connection, the confidential
@@ -4059,6 +4067,28 @@ replaces only the authenticated envelope. Manual rotation stages the user-select
 agent-authorized rotation stages a locally generated replacement. Startup reconciliation tries
 the active and staged scoped credential entries and retains only the candidate that authenticates
 the committed envelope.
+
+### Several-agent setup batches (issue #1119)
+
+`cli.host_batch` composes the existing host connection plans for CLI and full-screen first run.
+`HostConnectionBatchReport` is the additive `yoetz.host-connection-batch-report/1` contract
+(`integrations/host-connection-batch-1.0.0.schema.json`); it carries individual
+`HostConnectionBatchMember` outcomes (`preview|completed|unchanged|status|incomplete|not_attempted`)
+and preserves `connection_observed=false`. The released single-host contract is unchanged.
+`batch_digest` hashes canonical JSON for the sorted list of `{host, installation_path,
+request_id, preview_digest}` objects, ordered by those four fields. `prepare_batch` and
+`apply_batch` retain each exact per-host digest; every member is refreshed before the first write
+and per-host apply still revalidates under its configuration lock. There is no batch atomicity
+claim: a failed later host leaves earlier results intact and the remainder requires a fresh
+preview. `batch_command` pins repeated host/path/config-root selections plus project and explicit
+route; the hidden `--batch` flag preserves combined acceptance when only one target remains.
+`select_batch_installation` retains Codex's discovered, PATH-visible executable name during
+explicit replay (`select_installation(preserve_visible_name=True)`), including a symlinked
+launcher. Ordinary single-host selection keeps its released resolution behavior.
+The batch request identity is shared across independent per-host plans. `--host all` expands
+executable-backed discovery; it cannot discover configurations whose executable has been removed.
+`setup status --next` retains its single-target readiness contract. No new MCP or hook operation
+or receipt field is introduced.
 
 ### Privacy policy, disclosure, and outbound gateway
 

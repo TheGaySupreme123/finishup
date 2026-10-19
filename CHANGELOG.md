@@ -20,6 +20,19 @@ gates on #1056. This heading takes the release date when 0.3.0 is tagged. See
   Releases stay certified on CPython 3.14.6; any other interpreter runs and reports itself as an
   untested cell (`platform_cell_untested`, `/doctor` "not proven"). The `<3.15` ceiling stays until
   the locked native dependencies publish Python 3.15 wheels.
+- **Connect every agent at once.** Setup can connect all detected coding agents or a chosen
+  subset in one run. The prompt wizard and full-screen first run offer one combined preview and
+  approval; each agent keeps its own authentication. `setup run`, `setup disconnect` and
+  `setup status` accept `--host all` or repeated `--host` selections. Batch acceptance binds every
+  preview and reports partial results separately, with a fresh continuation for the remaining
+  agents.
+- **No vault question.** Every setup path, local only included, creates the vault with no
+  question. The key goes to the system keychain, or, where none is usable (WSL, headless Linux),
+  to a file only your account can read: other accounts cannot open it, programs running as you
+  can, and a copy of FinishUP's data folder includes it (ADR-008 amendment, an owner decision).
+  `finishup setup vault --passphrase` keeps a typed, never-stored passphrase for a new vault, and
+  `finishup service auto-unlock status` shows where the key lives. Recovery snapshots never carry
+  it.
 
 ### Yoetz is now FinishUP
 

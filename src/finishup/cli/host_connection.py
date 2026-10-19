@@ -109,7 +109,11 @@ def claude_activation_cues(
 
 
 def select_installation(
-    host: str, executable: Path | None = None, config_root: Path | None = None
+    host: str,
+    executable: Path | None = None,
+    config_root: Path | None = None,
+    *,
+    preserve_visible_name: bool = False,
 ) -> HostInstallation:
     if host == "cursor":
         matches = [item for item in discover_hosts() if item.host in {"cursor-ide", "cursor-cli"}]
@@ -122,7 +126,14 @@ def select_installation(
         )
     selected_host = cast(SetupHost, host)
     if executable is not None:
-        candidate = executable.expanduser().resolve(strict=True)
+        # Codex discovery deliberately retains the PATH-visible name (including symlinks).
+        # A batch continuation must replay that same invocation; single-host selection keeps
+        # its released path handling unless its caller explicitly opts into this binding.
+        candidate = (
+            Path(os.path.abspath(executable.expanduser()))
+            if preserve_visible_name
+            else executable.expanduser().resolve(strict=True)
+        )
         if not candidate.is_file() or not os.access(candidate, os.X_OK):
             raise ConnectionError("connection_executable_unavailable")
         version = probe_version(candidate)

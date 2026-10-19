@@ -35,6 +35,12 @@ ordinary UI content trusted.
    an existing vault saves a passphrase only after the foreground confidential unlock ceremony
    proves it against the current envelope. This preserves powered-off/copy-at-rest protection but
    deliberately does not claim protection from code already executing as the active logged-in UID.
+   Amended 2026-10-19 (issue #1119, owner decision): where no platform store is usable, that
+   passphrase instead lives in owner-only files inside the service bundle (ADR-008 amendment of
+   the same date). On those machines a copy of the bundle carries everything needed to open the
+   vault, so neither copy-at-rest protection nor protection from the same UID is claimed; only
+   other accounts are kept out by file ownership and mode. `setup vault --passphrase` keeps the
+   original passphrase-only property for an owner who chooses it.
    A separately provisioned ADR-024 installation-recovery artifact may wrap this exact IVK for a
    protected local-human recovery ceremony. Forward revocation stages a new IVK and re-encrypts the
    vault before switching; it never resets or overwrites the inaccessible vault in place.

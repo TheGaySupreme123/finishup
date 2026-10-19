@@ -86,14 +86,16 @@ On Windows:
 5. Keep FinishUP's state on the Linux filesystem: install and run from the WSL home, and never point
    `FINISHUP_ISOLATED_ROOT` or an instance root at a Windows drive under `/mnt/<letter>`. FinishUP
    refuses such a path with `path_on_network_filesystem`; the project itself may live anywhere.
-6. Expect no system keyring in WSL: choose the FinishUP passphrase at the secure-storage question.
+6. Expect no system keyring in WSL. Setup creates the vault anyway and keeps its key in a file
+   only the user's Linux account can read; there is no passphrase question.
    Ask the user to run `sudo apt install bubblewrap` if they will trust a check policy whose
    checks deny network; without it those checks are rejected `sandbox_unavailable`. On a
    Windows-on-ARM machine the Ubuntu is aarch64, an untested platform cell: `finishup version --json`
    lists `platform_cell_untested`, and you should say so to the user rather than claim support.
 
 On Linux, the same three facts apply — bubblewrap for network-denied checks, a Secret Service
-(GNOME Keyring or KWallet) for the system keyring or else a passphrase, and state on a local
+(GNOME Keyring or KWallet) for the system keyring or else a key file only the user's account can
+read, and state on a local
 disk — and `finishup setup status --json` reports all three under `platform` before you decide
 anything. Certified cells are macOS arm64 and Linux x86-64 (glibc 2.28+); other architectures
 install and report `platform_cell_untested`.
@@ -155,11 +157,21 @@ Never forge OS presence or place credentials in ordinary arguments, environment,
 
 Guide these decisions in order:
 
-1. **Connect to Codex or not** — and which installation, when several are found. With no Codex,
-   integration is skipped and everything else still works.
+For agent-driven setup, preview with `finishup setup run --host all --non-interactive --json`, or
+repeat `--host`, for example `--host codex --host claude`. Show the combined preview and use its
+one continuation verbatim after approval. It pins each executable and settings folder plus the
+project, request identity and combined digest. A changed member refuses the whole batch before
+any write. A partial failure reports applied, failed and unattempted agents separately; inspect
+`finishup setup status --host all --json`, then use the new preview command for the remaining
+agents. Do not transfer the old approval to that new preview. The reverse path is
+`finishup setup disconnect --host all --non-interactive --json`, with the same approval rule.
+
+1. **Connect all or choose some** — connect every detected Codex, Claude Code, Cursor IDE and
+   Cursor Agent CLI installation, or select a subset. Confirm the Codex settings folder for each
+   selected Codex installation. With no agent, local FinishUP still works.
 2. **Project trust** (full-screen interface only) — applies to the whole repository root shown,
    not just the current folder; the prompt wizard folds trust into the approval in 4.
-3. **Review mode** — how tasks use AI-powered review. FinishUP's local checks run on every task
+3. **Review mode** — ask once for all selected agents. FinishUP's local checks run on every task
    whichever answer they choose:
    - **FinishUP (recommended)**: tasks start with local checks, and the agent turns on AI-powered
      review for a task when it helps. Choosing it is the user's standing permission for that; the
@@ -171,11 +183,14 @@ Guide these decisions in order:
    All three use the same MCP route (policy, `finishup mcp serve`), so the user can change the
    answer later with `finishup privacy conversations` without reconnecting. The interactive
    wizard registers it for every answer; a preview you run gets it from `--route-profile policy`.
-4. **Approve the exact proposed change** — project skill, plugin/hook sources, MCP registration;
-   digest-bound, explicit, no default answer.
-5. **Secret storage** — system secure storage or a FinishUP passphrase. The full-screen interface
-   asks; the prompt wizard uses secure storage automatically and offers a passphrase only when it
-   is unavailable.
+4. **Approve the exact proposed changes together** — project skill, plugin/hook sources and MCP
+   registration for every selected agent; digest-bound, explicit, no default approval. Keep Codex's
+   activation and policy-trust checks. Claude Code and Cursor still authenticate separately with
+   macOS or PAM, and name the agent asking.
+5. **Secret storage** — not a question. Setup creates the vault itself and keeps its key in the
+   system keychain, or, where there is none (WSL, headless Linux), in a file only the user's
+   account can read; the result says which. A user who wants to type a passphrase after every
+   restart runs `finishup setup vault --passphrase` before setup instead.
 
 If they choose the first or third answer, additionally choose a **provider and model** (reviewed
 presets, a ChatGPT subscription, a custom HTTPS origin, or skip for now) and a **privacy policy**:
@@ -225,8 +240,9 @@ recommendations. Each answer decides the next step; stop after each and wait.
 3. **The exact change.** Show the preview (project skill, plugin and hook sources, MCP
    registration) and ask "Apply exactly this? Approve / Deny." No recommendation and no default:
    this one is theirs.
-4. **Secret storage**, only if the wizard reports system secure storage unavailable: "FinishUP needs
-   a place for secrets. Use a passphrase you choose? You will type it in your terminal."
+4. **Secret storage**: never a question. FinishUP creates its vault by itself during the terminal
+   step. Tell the user where the key went when the result names it (system keychain, or a file
+   only their account can read); do not offer a passphrase unless they ask for one.
 5. **Provider and model**, only after answer (a) or (c): list the presets from
    `finishup provider catalog --json` with their suggested models and ask which one, or skip for
    now. Recommend the preset whose retention terms match what they told you about privacy.

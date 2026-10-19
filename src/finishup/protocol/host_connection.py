@@ -63,3 +63,34 @@ class HostConnectionReport(BaseModel):
 
 class HostConnectionContract(RootModel[HostConnectionPlan | HostConnectionReport]):
     pass
+
+
+class HostConnectionBatchMember(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    schema_tag: Literal["yoetz.host-connection-batch-member/1"] = Field(alias="schema")
+    host: Literal["codex", "claude", "cursor-ide", "cursor-cli"]
+    executable: str | None = None
+    config_root: str | None = None
+    action: Literal["connect", "disconnect"]
+    connection_observed: Literal[False]
+    outcome: Literal["preview", "completed", "unchanged", "status", "incomplete", "not_attempted"]
+    plan: HostConnectionPlan | None = None
+    status: dict[str, JsonValue] | None = None
+    reason: str | None = None
+    next_step: str | None = None
+    launch: dict[str, JsonValue] | None = None
+
+
+class HostConnectionBatchReport(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    schema_tag: Literal["yoetz.host-connection-batch-report/1"] = Field(alias="schema")
+    action: Literal["connect", "disconnect"]
+    connection_observed: Literal[False]
+    outcome: Literal["preview", "completed", "status", "incomplete"]
+    request_id: Request | None = None
+    preview_digest: Digest | None = None
+    members: list[HostConnectionBatchMember]
+    reason: str | None = None
+    next_step: str | None = None

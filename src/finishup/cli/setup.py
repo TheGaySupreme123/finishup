@@ -2770,7 +2770,7 @@ async def _interactive_provider_setup(
                             ):
                                 auto_store.discard_staged_initialization()
                         auto_passphrase = auto_store.stage_for_initialization()
-                        typer.echo("Secure vault setup (platform credential store auto-unlock)")
+                        typer.echo(_automatic_vault_line(auto_store.custody))
                         init_result = await initialize_passphrase_vault(bytearray(auto_passphrase))
                         if init_result.state == "ready" and init_result.reason == "succeeded":
                             try:
@@ -2865,7 +2865,11 @@ async def _interactive_provider_setup(
                     )
                     await unlock_vault()
                 else:
-                    typer.echo("Unlocking FinishUP from the platform credential store")
+                    typer.echo(
+                        "Unlocking FinishUP from the key kept in a file only your account can read"
+                        if auto_store.custody == "owner_file"
+                        else "Unlocking FinishUP from the platform credential store"
+                    )
                     await unlock_vault(bytearray(auto_passphrase))
             elif service.get("vault_mode") == "os_keyring" and storage_only:
                 from finishup.cli.unlock import retry_keyring
@@ -3134,13 +3138,107 @@ def _emit_codex_subscription_layer_report(*, privacy_outcome: str) -> None:
     typer.echo("The binding and the sign-in are not proof that an AI-powered review ran.")
 
 
+def _automatic_vault_line(custody: str) -> str:
+    if custody == "owner_file":
+        return "Secure vault setup (key kept in a file only your account can read)"
+    return "Secure vault setup (platform credential store auto-unlock)"
+
+
+@dataclass(frozen=True)
+class VaultReadiness:
+    """Outcome of :func:`ensure_vault_ready`: readiness, a bounded reason, and where the key is.
+
+    ``custody`` is ``platform_store`` (system keychain), ``owner_file`` (owner-only file),
+    ``passphrase`` (typed after each restart; no stored copy) or ``unknown``. ``service`` is the
+    status read after the attempt, so callers never report a pre-attempt locked state.
+    """
+
+    ready: bool
+    reason: str | None
+    custody: str
+    service: dict[str, JsonValue]
+
+
+def _vault_custody(service: dict[str, JsonValue]) -> str:
+    """Name where the vault key actually lives, from the vault mode and the scoped store."""
+
+    from finishup.adapters.keys.os_keyring import AutoUnlockPassphraseStore
+    from finishup.config.load import load_config
+    from finishup.config.paths import bundle_root
+
+    mode = service.get("vault_mode")
+    if mode == "os_keyring":
+        return "platform_store"
+    if mode != "passphrase":
+        return "unknown"
+    try:
+        config = load_config({}, os.environ, None)
+        store = AutoUnlockPassphraseStore(bundle_root(_data_dir=config.storage.data_dir))
+        present = store.slot_report().get("active") == "present"
+    except Exception:
+        return "unknown"
+    return store.custody if present else "passphrase"
+
+
+async def ensure_vault_ready() -> VaultReadiness:
+    """Create or unlock the vault with no question asked (issue #1119).
+
+    A new vault gets a generated passphrase kept in the system keychain, or in an owner-only
+    file where no keychain is usable. An existing vault is unlocked from that copy when one
+    exists; otherwise the human passphrase ceremony asks for it. Transport and ceremony failures
+    become a bounded not-ready outcome rather than an escaping exception.
+    """
+
+    from finishup.cli.unlock import HumanCeremonyCliError
+    from finishup.ports.control import ControlError
+    from finishup.service.confidential_client import ConfidentialClientError
+
+    service = await _service_reachability(start_if_absent=True)
+    if not service.get("reachable"):
+        return VaultReadiness(False, "service_unavailable", "unknown", service)
+    try:
+        service, result = await _interactive_provider_setup(service, storage_only=True)
+    except (ConfidentialClientError, ControlError, HumanCeremonyCliError, OSError) as error:
+        reason = getattr(error, "reason", None)
+        refreshed = await _service_reachability()
+        return VaultReadiness(
+            False,
+            reason if isinstance(reason, str) else "vault_setup_interrupted",
+            _vault_custody(refreshed),
+            refreshed,
+        )
+    reason = result.get("credential_reason")
+    ready = service.get("state") == "ready" and reason is None
+    return VaultReadiness(
+        ready,
+        None if ready else (reason if isinstance(reason, str) else "vault_not_ready"),
+        _vault_custody(service),
+        service,
+    )
+
+
+async def _ensure_setup_vault() -> int:
+    """Create or unlock the vault before an interactive setup with no review step completes.
+
+    An explicit ``--route-profile strict`` skips the review question and both steps that set up
+    storage; local checks still need a ready vault, so the setup marker waits for one.
+    """
+
+    vault = await ensure_vault_ready()
+    if not vault.ready:
+        typer.echo(f"vault_setup_incomplete: {vault.reason}", err=True)
+        return 20
+    return 0
+
+
 async def _run_local_only_privacy_setup(project: Path | None) -> int:
     """Record the owner's "local only; agents may not opt in" answer (ADR-049).
 
     The Private recipe with the explicit ``local_only`` conversation setting, through the same
     trusted questionnaire every privacy change uses. It narrows, so it applies without the
     widening ceremony. Without it a policy-route registration would keep the released check
-    behaviour of an installation that never chose.
+    behaviour of an installation that never chose. The vault is created first, so a local-only
+    setup ends ready rather than pointing at ``setup vault`` (issue #1119).
     """
 
     from finishup.cli.privacy_setup import run_privacy_setup
@@ -3150,6 +3248,10 @@ async def _run_local_only_privacy_setup(project: Path | None) -> int:
     service = await _service_reachability(start_if_absent=True)
     if not service.get("reachable"):
         typer.echo("privacy_setup_failed: service_unavailable", err=True)
+        return 20
+    vault = await ensure_vault_ready()
+    if not vault.ready:
+        typer.echo(f"vault_setup_incomplete: {vault.reason}", err=True)
         return 20
     try:
         result = await run_privacy_setup(
@@ -3455,6 +3557,116 @@ def _default_installation_choice(installations: Sequence[HostInstallation]) -> i
     return _path_codex_choice(codex) or 1
 
 
+def _choose_setup_installations(
+    installations: Sequence[HostInstallation],
+) -> tuple[HostInstallation, ...]:
+    typer.echo(
+        f"Connect FinishUP to: 1) all {len(installations)} agents found (recommended)  2) choose which"
+    )
+    choice = typer.prompt("Connect", type=IntRange(1, 2), default=1)
+    if choice == 1:
+        return tuple(installations)
+    for index, item in enumerate(installations, 1):
+        typer.echo(f"  {index}. {item.label} {item.version or ''} ({item.executable})")
+    while True:
+        raw = str(
+            typer.prompt(
+                "Agent numbers, separated by commas",
+                default=str(_default_installation_choice(installations)),
+            )
+        )
+        indexes: set[int]
+        try:
+            indexes = {int(value.strip()) - 1 for value in raw.split(",")}
+        except ValueError:
+            indexes = set()
+        if indexes and all(0 <= index < len(installations) for index in indexes):
+            return tuple(installations[index] for index in sorted(indexes))
+        typer.echo("Choose one or more of the listed numbers, separated by commas.")
+
+
+async def _run_setup_batch(
+    *,
+    hosts: Sequence[str],
+    host_paths: Sequence[Path],
+    config_roots: Sequence[Path],
+    installations: Sequence[HostInstallation] | None,
+    project: Path | None,
+    interactive: bool,
+    accept: bool,
+    json_output: bool,
+    route_profile: Literal["policy", "strict"] | None,
+    request_value: str | None,
+    preview_digest: str | None,
+) -> int:
+    from dataclasses import replace
+
+    from finishup.cli.host_batch import run_host_batch, select_installations
+    from finishup.cli.host_connection import CONNECTION_ERRORS
+
+    connected_project = _resolve_setup_project(project, interactive=interactive)
+    if connected_project is None:
+        return _emit_unconnectable_project("all", json_output=json_output)
+    selected = installations
+    if interactive:
+        try:
+            selected = (
+                tuple(selected)
+                if selected is not None
+                else select_installations(hosts, host_paths, config_roots)
+            )
+        except CONNECTION_ERRORS:
+            # The batch entrypoint renders the bounded selection error in its normal report.
+            return await run_host_batch(
+                hosts=hosts,
+                executables=host_paths,
+                config_roots=config_roots,
+                project=connected_project,
+                json_output=json_output,
+            )
+        confirmed: list[HostInstallation] = []
+        for item in selected:
+            if item.host == "codex":
+                home = Path(
+                    typer.prompt(
+                        f"Codex home used by {item.executable}", default=str(item.config_root)
+                    )
+                ).expanduser()
+                item = replace(item, config_root=home)
+            confirmed.append(item)
+        selected = tuple(confirmed)
+    review = _choose_review_mode() if interactive and route_profile is None else None
+    route = route_profile or ("policy" if review is not None else None)
+    result = await run_host_batch(
+        hosts=hosts,
+        executables=host_paths,
+        config_roots=config_roots,
+        installations=selected,
+        project=connected_project,
+        route=route,
+        accept=accept,
+        interactive=interactive,
+        request_value=request_value,
+        preview_digest=preview_digest,
+        json_output=json_output,
+    )
+    if result == 0 and interactive:
+        if review == "local_only":
+            result = await _run_local_only_privacy_setup(connected_project)
+        elif route == "policy":
+            result = await run_provider_setup(
+                conversation_review=None
+                if review is None
+                else review_choice_conversation_setting(review),
+                project=connected_project,
+            )
+        else:
+            result = await _ensure_setup_vault()
+        if result == 0:
+            _write_setup_marker("complete")
+    return result
+
+
 async def run_setup_wizard(
     *,
     non_interactive: bool,
@@ -3463,9 +3675,9 @@ async def run_setup_wizard(
     accept: bool,
     json_output: bool,
     route_profile: Literal["policy", "strict"] | None = None,
-    host: str | None = None,
-    host_path: Path | None = None,
-    host_config_root: Path | None = None,
+    host: str | tuple[str, ...] | None = None,
+    host_path: Path | tuple[Path, ...] | None = None,
+    host_config_root: Path | tuple[Path, ...] | None = None,
     project: Path | None = None,
     request_value: str | None = None,
     preview_digest: str | None = None,
@@ -3486,27 +3698,47 @@ async def run_setup_wizard(
     from finishup.adapters.integrations.host_discovery import discover_hosts
     from finishup.cli.host_connection import run_host_connection
 
+    if isinstance(host, tuple) or host == "all":
+        if codex_path is not None or codex_home is not None:
+            typer.echo("Use --host-path and --host-config-root for each batch member.", err=True)
+            return 2
+        return await _run_setup_batch(
+            hosts=host if isinstance(host, tuple) else (host,),
+            host_paths=host_path
+            if isinstance(host_path, tuple)
+            else (() if host_path is None else (host_path,)),
+            config_roots=host_config_root
+            if isinstance(host_config_root, tuple)
+            else (() if host_config_root is None else (host_config_root,)),
+            installations=None,
+            project=project,
+            interactive=interactive and not json_output,
+            accept=accept,
+            json_output=json_output,
+            route_profile=route_profile,
+            request_value=request_value,
+            preview_digest=preview_digest,
+        )
+    assert not isinstance(host_path, tuple)
+    assert not isinstance(host_config_root, tuple)
     if host is None and codex_path is None:
         installations = discover_hosts()
         alternatives = [item for item in installations if item.host != "codex"]
-        if alternatives and interactive:
-            typer.echo(
-                "Choose an agent to connect (one per run; run setup again to connect another):"
-            )
-            for index, item in enumerate(installations, 1):
-                typer.echo(f"  {index}. {item.label} {item.version or ''} ({item.executable})")
-            choice = int(
-                typer.prompt(
-                    "Agent",
-                    type=IntRange(1, len(installations)),
-                    default=_default_installation_choice(installations),
-                )
-            )
-            selected = installations[choice - 1]
-            host, host_path, host_config_root = (
-                selected.host,
-                selected.executable,
-                selected.config_root,
+        if len(installations) > 1 and interactive:
+            return await _run_setup_batch(
+                hosts=(),
+                host_paths=(),
+                config_roots=(),
+                installations=installations
+                if json_output
+                else _choose_setup_installations(installations),
+                project=project,
+                interactive=interactive and not json_output,
+                accept=accept,
+                json_output=json_output,
+                route_profile=route_profile,
+                request_value=request_value,
+                preview_digest=preview_digest,
             )
         elif alternatives and len(installations) == 1:
             selected = alternatives[0]
@@ -3561,6 +3793,8 @@ async def run_setup_wizard(
                     ),
                     project=connected_project,
                 )
+            else:
+                result = await _ensure_setup_vault()
             if result == 0:
                 _write_setup_marker("complete")
         return result
@@ -3742,30 +3976,45 @@ async def run_setup_wizard(
         from finishup.cli.unlock import HumanCeremonyCliError
         from finishup.ports.control import ControlError
 
-        try:
-            privacy_result = await run_privacy_setup(
-                recipe_hint="private",
-                update_checks_override=update_checks_choice,
-                # ADR-049: the owner's explicit "local only; agents may not opt in".
-                conversation_review=ConversationReview.LOCAL_ONLY,
-                workspace_locator=codex_project,
-            )
-            privacy = {
-                "outcome": privacy_result.outcome,
-                "profile": privacy_result.profile,
-                "proposal_id": privacy_result.proposal_id,
-                "grant_state": getattr(privacy_result, "grant_state", None),
-                "migration_state": getattr(privacy_result, "migration_state", None),
-                "reason": privacy_result.reason,
-            }
-        except (ControlError, HumanCeremonyCliError, OSError, ValueError) as error:
+        # Issue #1119: local only still ends with a ready vault, created with no question. A
+        # vault that is not ready stops here, so the setup marker is never written over it.
+        vault = await ensure_vault_ready()
+        service = vault.service
+        if not vault.ready:
             privacy = {
                 "outcome": "failed",
                 "profile": "unknown",
                 "grant_state": None,
                 "migration_state": None,
-                "reason": _privacy_block_reason(getattr(error, "reason", None)),
+                "reason": str(vault.reason)
+                if str(vault.reason).startswith("vault_")
+                else f"vault_{vault.reason}",
             }
+        else:
+            try:
+                privacy_result = await run_privacy_setup(
+                    recipe_hint="private",
+                    update_checks_override=update_checks_choice,
+                    # ADR-049: the owner's explicit "local only; agents may not opt in".
+                    conversation_review=ConversationReview.LOCAL_ONLY,
+                    workspace_locator=codex_project,
+                )
+                privacy = {
+                    "outcome": privacy_result.outcome,
+                    "profile": privacy_result.profile,
+                    "proposal_id": privacy_result.proposal_id,
+                    "grant_state": getattr(privacy_result, "grant_state", None),
+                    "migration_state": getattr(privacy_result, "migration_state", None),
+                    "reason": privacy_result.reason,
+                }
+            except (ControlError, HumanCeremonyCliError, OSError, ValueError) as error:
+                privacy = {
+                    "outcome": "failed",
+                    "profile": "unknown",
+                    "grant_state": None,
+                    "migration_state": None,
+                    "reason": _privacy_block_reason(getattr(error, "reason", None)),
+                }
 
     # A package check can happen only after the interactive user explicitly answered the
     # update-check question and the trusted privacy ceremony had a chance to commit it.
@@ -4110,14 +4359,42 @@ def _emit_human_report(report: dict[str, JsonValue]) -> None:
             typer.echo(f"  - {step}")
 
 
-async def run_vault_setup() -> int:
-    """Reuse the protected storage ceremony without configuring a model provider."""
+async def run_vault_setup(*, passphrase: bool = False) -> int:
+    """Reuse the protected storage ceremony without configuring a model provider.
+
+    By default a new vault is created with no question (issue #1119). ``passphrase`` instead
+    asks the owner to choose one on the trusted terminal and keeps no copy of it anywhere.
+    """
     if not _is_interactive_terminal():
         typer.echo(
             "trusted_console_required: run 'finishup setup vault' in your local terminal", err=True
         )
         return 2
     service = await _service_reachability(start_if_absent=True)
+    if passphrase:
+        if service.get("vault_mode") not in {None, "uninitialized"}:
+            typer.echo(
+                "vault_already_initialized: --passphrase applies only to a new vault. "
+                "Use 'finishup service rotate-passphrase' to change the passphrase.",
+                err=True,
+            )
+            return 2
+        from finishup.cli.unlock import HumanCeremonyCliError, initialize_passphrase_vault
+
+        typer.echo("Choose a FinishUP passphrase (hidden local-terminal input)")
+        try:
+            outcome = await initialize_passphrase_vault()
+        except HumanCeremonyCliError as error:
+            typer.echo(f"vault_setup_incomplete: {error.reason}", err=True)
+            return 20
+        if outcome.state != "ready" or outcome.reason != "succeeded":
+            typer.echo(f"vault_setup_incomplete: {outcome.reason}", err=True)
+            return 20
+        typer.echo(
+            "Vault ready. FinishUP keeps no copy of this passphrase; you will type it after "
+            "each restart."
+        )
+        return 0
     service, result = await _interactive_provider_setup(service, storage_only=True)
     if service.get("state") != "ready" or result.get("credential_reason") is not None:
         typer.echo("Vault setup is incomplete. Inspect 'finishup setup status --next'.", err=True)

@@ -604,7 +604,15 @@ def test_setup_update_network_requires_yes_and_successful_trusted_commit(
         recommendation_calls.append(cast(bool, kwargs["allow_network"]))
         return {"outcome": "refreshed", "pending": []}
 
+    vault_calls: list[bool] = []
+
+    async def vault_ready() -> object:
+        # Issue #1119: a local-only answer creates the vault before its privacy step.
+        vault_calls.append(True)
+        return setup_module.VaultReadiness(True, None, "platform_store", {"state": "ready"})
+
     monkeypatch.setattr(setup_module, "_is_interactive_terminal", lambda: True)
+    monkeypatch.setattr(setup_module, "ensure_vault_ready", vault_ready)
     monkeypatch.setattr(privacy_setup_module, "run_privacy_setup", privacy_setup)
     monkeypatch.setattr(setup_module, "_resolve_setup_package_update", package_update)
     monkeypatch.setattr(setup_module, "_refresh_setup_recommendations", recommendations)
@@ -615,6 +623,7 @@ def test_setup_update_network_requires_yes_and_successful_trusted_commit(
     assert result.exit_code == 0, (result.output, result.exception)
     assert network_calls == [expected_network]
     assert recommendation_calls == [expected_network]
+    assert vault_calls == [True]
 
 
 def test_non_interactive_accept_registers_and_writes_marker(

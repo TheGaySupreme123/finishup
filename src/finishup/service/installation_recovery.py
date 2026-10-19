@@ -48,6 +48,12 @@ __all__ = [
 ]
 
 
+# Bundle members a recovery snapshot must never carry: the scoped auto-unlock secret's owner-file
+# custody (issue #1119, ADR-008) would put the vault passphrase beside the envelope it opens, and
+# the auto-unlock initialization lock is empty coordination state.
+_NEVER_SNAPSHOTTED: Final = frozenset({"auto-unlock", "auto-unlock-init.lock"})
+
+
 class InstallationRecoveryState(str, Enum):  # noqa: UP042 - public durable spelling
     PRISTINE_SETUP = "pristine_setup"
     TEMPORARILY_LOCKED = "temporarily_locked"
@@ -628,9 +634,14 @@ class InstallationRecoverySetStore:
                 raise ValueError("installation_snapshot_vault_override_invalid")
             allowed_top_level.add(vault_override.name)
         for child in self._root.parent.iterdir():
+            if child.name in _NEVER_SNAPSHOTTED:
+                continue
             if child.name not in allowed_top_level:
                 raise ValueError("installation_snapshot_unknown_member")
         for path in self._root.parent.rglob("*"):
+            relative = path.relative_to(self._root.parent)
+            if relative.parts[0] in _NEVER_SNAPSHOTTED:
+                continue
             try:
                 path.relative_to(self._root)
             except ValueError:
