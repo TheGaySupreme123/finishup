@@ -95,8 +95,8 @@ uvx finishup
 
 FinishUP runs on Python 3.12, 3.13 or 3.14. You do not need to have one: `uv` downloads a
 supported interpreter on demand, whatever other Pythons are on the machine, and the install is not
-affected by them. Releases are certified on Python 3.14; 3.12 and 3.13 are tested but report
-themselves as an untested cell. The npm
+affected by them. Releases are certified on CPython 3.14.6; any other interpreter (3.12, 3.13, or
+another 3.14 patch) runs and is tested, but reports itself as an untested cell. The npm
 package bundles no Python and no FinishUP code and never installs `uv` itself; it makes the same
 `uv tool install` and launches the exact matching Python distribution. FinishUP runs on macOS and Linux (certified on
 macOS arm64 and Linux x86-64 (glibc 2.28+); other Linux architectures install and report themselves as untested —

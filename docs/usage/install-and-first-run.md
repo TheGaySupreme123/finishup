@@ -65,8 +65,9 @@ other Pythons are installed, which one `python3` resolves to, or whether pyenv, 
 install is unaffected by them and touches none of them. Only two configurations block it, and both
 say so in the error: `uv` configured never to download Pythons (`python-downloads = "never"`), and
 `uv` configured to use system interpreters only (`python-preference = "only-system"`) on a machine
-without Python 3.12 to 3.14. Releases are certified on Python 3.14. On 3.12 or 3.13 FinishUP runs
-and is tested, but reports itself as an untested cell (see [Linux](#linux)). Prefer `uv` over
+without Python 3.12 to 3.14. Releases are certified on CPython 3.14.6. On any other interpreter
+(3.12, 3.13, or another 3.14 patch) FinishUP runs and is tested, but reports itself as an
+untested cell (see [Linux](#linux)). Prefer `uv` over
 `pip` or `pipx`: a shared or system Python is often writable by other accounts, which FinishUP
 refuses (below).
 
@@ -173,8 +174,8 @@ marketplace conflict still requires inspecting the project; changing the home do
 ## Linux
 
 FinishUP runs on macOS and Linux. The certified cells are macOS 11 or later on Apple silicon and
-glibc 2.28 or later Linux on x86-64, both with Python 3.14; the same machines on Python 3.12 or
-3.13 count as untested cells too. The package also installs on other Linux architectures, such
+glibc 2.28 or later Linux on x86-64, both with CPython 3.14.6; the same machines on any other
+Python (3.12, 3.13, or another 3.14 patch) count as untested cells too. The package also installs on other Linux architectures, such
 as aarch64 (Raspberry Pi, Graviton, Asahi, or WSL on a Windows-on-ARM laptop); those installs are
 untested, not presumed compatible: `finishup version --json` lists `platform_cell_untested` under
 `limitations`, `finishup setup status --json` reports the cell, and `/doctor` shows the platform line
