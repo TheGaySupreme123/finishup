@@ -121,8 +121,9 @@ def test_respond_template_names_the_frontier_to_use() -> None:
 
 
 _SUPPLY_LIMIT: Final = (
+    # 83abdad0d (#1100 DOC fixes): an item may name no target, so the link is to "any named" one.
     "If `missing_for_assessment` names an `agent_suppliable` item you can supply, publish exactly "
-    "that item once, linked to its target, then `check` again. If it is already supplied, or it "
+    "that item once, linked to any named target, then `check` again. If it is already supplied, or it "
     "is a packet, type or authority limit, go to the receipt and state that specific limit."
 )
 _OBSERVED_OUTPUT: Final = (

@@ -57,7 +57,8 @@ def test_guidance_requires_statement_sourced_obligations() -> None:
 def test_publication_topic_names_the_requested_file_justification() -> None:
     text = _collapsed(_ROOT / "guidance/publication.md")
     assert "list that path as a `requested_items` entry with `item_kind` `file`" in text
-    assert "hook-observed verification run made after your last observed edit" in text
+    # 83abdad0d (#1100 DOC fixes): verification recorded after the latest staling edit counts.
+    assert "a completion claim must cite verification recorded after the latest such edit" in text
 
 
 def test_the_core_carries_milestone_check_cadence_for_every_skill() -> None:

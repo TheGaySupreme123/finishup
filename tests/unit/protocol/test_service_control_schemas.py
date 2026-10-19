@@ -713,6 +713,8 @@ def test_v25_observation_wire_tracks_domain_structural_keys_without_rewriting_v2
             "command_composition",
             # And the before/after workspace fingerprint fact (PR #1080 round 5).
             "workspace_effect",
+            # And the closed write-scope classes of that change (#1100, c152c9972).
+            "workspace_write_scopes",
         }
     )
     assert set(v25_properties) == expected_observation_keys
@@ -1365,7 +1367,8 @@ def _assert_v29_request_adds_only_command_commitment(
     v28: dict[str, Any], v29: dict[str, Any]
 ) -> None:
     """The 2.9 request adds the keyed command identity, the runner class, the closed runtime
-    facts (#909, #977) and the workspace-effect fact (PR #1080) and nothing else."""
+    facts (#909, #977), the workspace-effect fact (PR #1080) and its write-scope classes (#1100)
+    and nothing else."""
 
     v28_fields = _structural_properties(v28)
     v29_fields = _structural_properties(v29)
@@ -1379,6 +1382,7 @@ def _assert_v29_request_adds_only_command_commitment(
         "command_segment_commitments",
         "command_composition",
         "workspace_effect",
+        "workspace_write_scopes",
     }
     assert v29_fields["workspace_effect"] == {
         "enum": ["changed", "unavailable", "unchanged"],
@@ -1445,6 +1449,7 @@ def _assert_v29_request_adds_only_command_commitment(
         "command_segment_commitments",
         "command_composition",
         "workspace_effect",
+        "workspace_write_scopes",
     ):
         del _structural_properties(stripped)[added]
     assert {k: v for k, v in v28.items() if k != "$id"} == {
