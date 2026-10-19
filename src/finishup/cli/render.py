@@ -33,6 +33,7 @@ from finishup.domain.review_mode_render import (
     review_mode_continuation,
     status_review_mode_line,
 )
+from finishup.domain.reviewer_reads import render_reviewer_lines, reviewer_record_from_wire
 from finishup.kernel.fact_lineage import FactLineage, lineage_from_wire, lineage_texts
 from finishup.legacy_names import LAUNCHER_NAME
 from finishup.protocol.canonical import JsonValue
@@ -523,10 +524,7 @@ def render_human_check(result: CheckSuccessModel) -> str:
         # Issue #907: a check limitation, never a finding. Recheck only after supplying an
         # agent-suppliable item; otherwise report the limitation.
         lines.extend(render_missing_for_assessment_lines(result.missing_for_assessment))
-        if isinstance(result.review_summary, str):
-            # #1118 unit 4 (AIM-1): the reviewer's own words on what it still needs live in the
-            # privacy-projected summary; shown here as advisory text, never as an instruction.
-            lines.append("Reviewer summary (advisory): " + result.review_summary)
+    lines.extend(render_check_review_lines(result))
     if result.semantic_withheld_items:
         lines.append("Withheld review items (the reviewer continued without them):")
         for item in result.semantic_withheld_items:
@@ -556,6 +554,30 @@ def render_human_check(result: CheckSuccessModel) -> str:
                 "a fresh Codex process."
             )
     return "\n".join(lines)
+
+
+def render_check_review_lines(result: CheckSuccessModel) -> tuple[str, ...]:
+    """What the reviewer read and its final advisory report (#1118), for every text surface.
+
+    The summary and rows are the reviewer's privacy-projected words, shown as advisory text and
+    never as an instruction; the read lines carry only closed tokens and opaque identities.
+    """
+
+    lines: list[str] = []
+    if result.reviewer is not None:
+        lines.extend(
+            render_reviewer_lines(
+                reviewer_record_from_wire(result.reviewer.model_dump(mode="json"))
+            )
+        )
+    if result.review_summary is not None and not isinstance(result.review_summary, str):
+        lines.append("Reviewer summary (advisory): withheld from this view by the privacy policy.")
+    if isinstance(result.review_summary, str):
+        lines.append("Reviewer summary (advisory): " + result.review_summary)
+        for item in result.verified:
+            claim = item.requirement_or_claim
+            lines.append(f"- {item.verdict}: {claim if isinstance(claim, str) else '[omitted]'}")
+    return tuple(lines)
 
 
 def render_semantic_progress_lines(progress: StatusSemanticProgressModel) -> tuple[str, ...]:

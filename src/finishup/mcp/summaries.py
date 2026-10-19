@@ -43,6 +43,7 @@ from finishup.domain.review_mode_render import (
     review_mode_continuation,
     status_review_mode_line,
 )
+from finishup.domain.reviewer_reads import render_reviewer_lines, reviewer_record_from_wire
 from finishup.kernel.claim_verification import CLAIM_VERIFICATION_HEADER
 from finishup.kernel.fact_lineage import FactLineage, lineage_from_wire, lineage_texts
 from finishup.legacy_names import LAUNCHER_NAME, LAUNCHER_NAMES
@@ -1064,8 +1065,10 @@ def render_check_reviewer_output(envelope: object) -> str:
             if snippet is not None:
                 lines.append("  Supporting snippet: " + snippet)
 
+    # #1118: what the reviewer read, FinishUP's own bounded record (closed tokens, opaque ids).
+    reads = "\n".join(render_reviewer_lines(reviewer_record_from_wire(source.get("reviewer"))))
     if not lines:
-        return ""
+        return reads
     lines.insert(0, "AI-powered reviewer output (advisory; model-derived; not independent proof):")
     rendered: list[str] = []
     used = 0
@@ -1087,7 +1090,7 @@ def render_check_reviewer_output(envelope: object) -> str:
     result = "\n".join(rendered)
     if total_bytes > _MAX_REVIEW_OUTPUT_BYTES and result:
         result += "\n" + truncation_notice
-    return result
+    return f"{reads}\n{result}" if reads else result
 
 
 def _repair_clause(error: Mapping[str, JsonValue]) -> str:

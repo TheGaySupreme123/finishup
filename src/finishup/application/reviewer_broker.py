@@ -130,6 +130,8 @@ class ReviewerBroker:
     ) -> None:
         self.store, self._job, self._case, self._admit = store, job_id, case, admit
         self._max_reads = min(max_reads, MAX_READS)
+        # The read bytes this review may still add; the conversation lowers it to fit the channel.
+        self.total = MAX_TOTAL_BYTES
         self._roots = {root.alias: root for root in roots}
         self._allowed = frozenset(case.frontier_refs | case.local_check_refs)
         self._cursors: dict[str, tuple[str, str, int]] = {}
@@ -141,7 +143,7 @@ class ReviewerBroker:
         self.text_by_ref = {ref: list(texts) for ref, texts in (packet_text or {}).items()}
 
     def reads_allowed(self) -> bool:
-        return self.calls < self._max_reads and MAX_TOTAL_BYTES - self.used >= MIN_ROOM
+        return self.calls < self._max_reads and self.total - self.used >= MIN_ROOM
 
     async def execute(self, action: ReviewerActionModel, expired: Callable[[], bool]) -> str:
         """Reserve the next read, run it, fit and admit it; return the result envelope."""
@@ -157,7 +159,7 @@ class ReviewerBroker:
             selected = self._packet(cast(ReadPacketSectionArgsModel, args))
         if expired():  # completed past its local stop: discarded, never retained or sent
             raise ReadDeadline("reviewer_read_deadline")
-        room = min(MAX_RESULT_BYTES, args.max_bytes, MAX_TOTAL_BYTES - self.used)
+        room = min(MAX_RESULT_BYTES, args.max_bytes, self.total - self.used)
         encoded = await self._result(tool_ref, ordinal, selected, room)
         self.used += len(encoded)
         await self.store.capture("read", ordinal, encoded)
@@ -189,7 +191,7 @@ class ReviewerBroker:
             encoded, size = b"", 0
             for _ in range(8):  # the length fixed point: the size and the remainder's digits
                 body["result_utf8_bytes"] = size
-                body["bytes_remaining"] = max(0, MAX_TOTAL_BYTES - self.used - size)
+                body["bytes_remaining"] = max(0, self.total - self.used - size)
                 encoded = canonical_encode(body)
                 if len(encoded) == size:
                     break

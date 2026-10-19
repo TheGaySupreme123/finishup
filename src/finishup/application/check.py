@@ -825,6 +825,12 @@ def check_internal_json(result: CheckCommitResult) -> dict[str, JsonValue]:
             if result.review_input_manifest is None
             else {"review_input_manifest": dict(result.review_input_manifest.items())}
         ),
+        # #1118: what the reviewer conversation read and why it ended, when one ran.
+        **(
+            {}
+            if (reviewer := getattr(result, "reviewer", None)) is None
+            else {"reviewer": dict(cast(JsonObject, reviewer).items())}
+        ),
         **({} if result.totals is None else {"totals": result.totals}),
         # Issue #1012: present only when the request set ``await_observations``.
         **(
@@ -5734,6 +5740,14 @@ def _credential_heuristic_gaps(semantic_result: FinalSemanticEvaluation) -> froz
     return frozenset()
 
 
+def _reviewer_wire(record: ReviewerRecord | None) -> JsonObject | None:
+    """The reviewer conversation's record as the check result carries it (#1118)."""
+
+    return (
+        None if record is None else cast(JsonObject, freeze_json(cast(JsonValue, record.as_wire())))
+    )
+
+
 async def _semantic_evaluation_with_follow_up(
     app: Application,
     request: CheckRequest,
@@ -6546,6 +6560,7 @@ async def execute_check_commit(
             # from it and from the earlier checks of the same path; empty when none was read.
             "deliverable_states": recorded_deliverables,
             "review_input_manifest": recorded_manifest,
+            "reviewer": _reviewer_wire(semantic_result.reviewer),
             "totals": build_check_totals(
                 frozen.case,
                 candidate_findings,

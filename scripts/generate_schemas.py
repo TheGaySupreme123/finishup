@@ -2291,6 +2291,9 @@ def _check_recorded_v1_4_schema(entry: _RegistryEntry) -> dict[str, JsonValue]:
     _add_semantic_route_required(properties)
     _add_check_review_mode(definitions, properties)
     _add_deliverable_states(definitions, properties)
+    # #1118 (unreleased 1.4.0, in place): the reviewer conversation's record.
+    _add_reviewer_definitions(definitions)
+    properties["reviewer"] = {"$ref": "#/$defs/reviewer_record"}
     _admit_recorded_policy_identities(document)
     document["$id"] = SCHEMA_NAMESPACE + entry.relative_path
     document["title"] = f"Yoetz check recorded {entry.schema_version}"
@@ -3948,6 +3951,7 @@ def _check_result_v1_5_schema(entry: _RegistryEntry) -> dict[str, JsonValue]:
     document = _check_result_v1_4_schema(entry)
     _admit_deferred_before_first_edit(document)
     _add_check_agent_next(document)
+    _add_check_reviewer(document)
     document["$id"] = SCHEMA_NAMESPACE + entry.relative_path
     # New document (ADR-048): prose title uses FinishUP; the yoetz.dev $id stays frozen.
     document["title"] = f"FinishUP check result {entry.schema_version}"
@@ -3972,6 +3976,91 @@ def _add_check_agent_next(document: dict[str, JsonValue]) -> None:
     success = cast(dict[str, JsonValue], definitions["success"])
     properties = cast(dict[str, JsonValue], success["properties"])
     properties["agent_next"] = dict(_AGENT_NEXT_TEXT)
+
+
+def _add_check_reviewer(document: dict[str, JsonValue]) -> None:
+    """#1118: the reviewer conversation's record on the check success (unreleased 1.5.0, in place)."""
+
+    definitions = cast(dict[str, JsonValue], document["$defs"])
+    _add_reviewer_definitions(definitions)
+    success = cast(dict[str, JsonValue], definitions["success"])
+    cast(dict[str, JsonValue], success["properties"])["reviewer"] = {
+        "$ref": "#/$defs/reviewer_record"
+    }
+
+
+def _add_reviewer_definitions(definitions: dict[str, JsonValue]) -> None:
+    """#1118: the reviewer conversation's record, shared by check-result and check-recorded.
+
+    Closed tokens, decimal counts, digests, service-issued root aliases and opaque identities:
+    never a path, an argument or read text.
+    """
+
+    count: dict[str, JsonValue] = {
+        "maxLength": 6,
+        "pattern": "^(0|[1-9][0-9]{0,5})$",
+        "type": "string",
+    }
+    token: dict[str, JsonValue] = {"pattern": "^[a-z][a-z0-9_]{0,95}$", "type": "string"}
+
+    def nullable(schema: dict[str, JsonValue]) -> dict[str, JsonValue]:
+        return {"oneOf": [schema, {"type": "null"}]}
+
+    def enum(*values: str) -> dict[str, JsonValue]:
+        return {"enum": list(values), "type": "string"}
+
+    read_properties: dict[str, JsonValue] = {
+        "action": enum("read_file", "read_ledger", "read_packet_section"),
+        "baseline": nullable(enum("admission_time", "check_time", "read_time", "task_start")),
+        "call": enum("1", "2", "3"),
+        "disclosure": nullable(
+            {"pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$", "type": "string"}
+        ),
+        "lines": nullable(
+            {"items": count, "maxItems": 2, "minItems": 2, "type": "array"}
+        ),
+        "reason": nullable(token),
+        "result_bytes": count,
+        "result_digest": {"pattern": "^sha256:[0-9a-f]{64}$", "type": "string"},
+        "root": nullable({"pattern": "^[a-z][0-9]{1,2}$", "type": "string"}),
+        "source": nullable(
+            {
+                "pattern": "^(?:src_[0-9a-f]{24}|[A-Za-z0-9][A-Za-z0-9._:-]{0,127})$",
+                "type": "string",
+            }
+        ),
+        "standing": nullable(
+            enum(
+                "agent_assertion",
+                "finishup_record",
+                "outside_input_mutable",
+                "outside_input_snapshot",
+                "task_transcription",
+                "workspace_content",
+            )
+        ),
+        "status": enum("denied", "ok", "partial", "stale", "unavailable"),
+    }
+    definitions["reviewer_read"] = {
+        "additionalProperties": False,
+        "properties": read_properties,
+        "required": sorted(read_properties),
+        "type": "object",
+    }
+    record_properties: dict[str, JsonValue] = {
+        "cleanup": nullable(token),
+        "ended": nullable(token),
+        "exchanges": count,
+        "read_bytes": count,
+        "reads": {"items": {"$ref": "#/$defs/reviewer_read"}, "maxItems": 3, "type": "array"},
+        "reads_used": enum("0", "1", "2", "3"),
+    }
+    definitions["reviewer_record"] = {
+        "additionalProperties": False,
+        "properties": record_properties,
+        "required": sorted(record_properties),
+        "type": "object",
+    }
 
 
 def _add_status_check_outcome(definitions: dict[str, JsonValue]) -> None:

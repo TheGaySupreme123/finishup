@@ -1107,6 +1107,7 @@ class SqliteLedger:
                             verified=check_payload.verified,
                             missing_for_assessment=check_payload.missing_for_assessment,
                             review_input_manifest=check_payload.review_input_manifest,
+                            reviewer=check_payload.reviewer,
                             totals=check_payload.totals,
                             # Recovery rebuilds the same result the commit returned (#982).
                             semantic_withheld_item_ids=check_payload.semantic_withheld_item_ids,
@@ -3021,6 +3022,7 @@ class SqliteLedger:
         semantic_included_refs: tuple[str, ...] | None = None,
         semantic_withheld_item_ids: tuple[str, ...] = (),
         review_input_manifest: JsonObject | None = None,
+        reviewer: JsonObject | None = None,
         totals: JsonObject | None = None,
         semantic_redacted_values: tuple[SemanticRedactedValue, ...] = (),
         semantic_route_required: bool | None = None,
@@ -3060,6 +3062,7 @@ class SqliteLedger:
                     semantic_included_refs=semantic_included_refs,
                     semantic_withheld_item_ids=semantic_withheld_item_ids,
                     review_input_manifest=review_input_manifest,
+                    reviewer=reviewer,
                     totals=totals,
                     semantic_redacted_values=semantic_redacted_values,
                     semantic_route_required=semantic_route_required,

@@ -79,6 +79,7 @@ from finishup.domain.review_input_render import (
     render_review_input_manifest_compat_line,
     render_review_input_manifest_coverage_note,
 )
+from finishup.domain.reviewer_reads import render_reviewer_lines, reviewer_record_from_wire
 from finishup.domain.task_fact_tokens import (
     DELIVERABLE_REFERENCES_AMBIGUOUS_NAME_GAP,
     DELIVERABLE_REFERENCES_UNDECLARED_FILE_GAP,
@@ -1976,6 +1977,18 @@ def _provider_manifest_spec_status(check: CheckRecordedPayload | None) -> str | 
     return status if type(status) is str and status in _REVIEW_INPUT_SECTION_STATUSES else None
 
 
+def _reviewer_sentence(check: CheckRecordedPayload | None) -> str:
+    """#1118: what the applicable check's reviewer conversation read, as FinishUP recorded it.
+
+    Closed tokens, counts, aliases and opaque ids only; the reviewer's own summary stays on the
+    check result, under its privacy projection, and never enters a receipt.
+    """
+
+    record = None if check is None else reviewer_record_from_wire(check.reviewer)
+    lines = render_reviewer_lines(record)
+    return "" if not lines else " " + "; ".join(lines) + "."
+
+
 def _semantic_usage_sentence(provenance: SemanticProvenance | None) -> str:
     """Render only bounded token counters retained by AI-powered review provenance.
 
@@ -2161,6 +2174,7 @@ def _sections(
     planned_retired_finding_count: int = 0,
     semantic_endpoint_sentence: str = "",
     semantic_usage_sentence: str = "",
+    reviewer_sentence: str = "",
     task_statement_source_sentence: str = "",
     resolution_explanations: tuple[str, ...] = (),
     attempt_explanations: tuple[str, ...] = (),
@@ -2529,6 +2543,7 @@ def _sections(
         f"Engine {versions.engine_version}; protocol {versions.protocol_version}; {policy_rows}."
         + semantic_endpoint_sentence
         + semantic_usage_sentence
+        + reviewer_sentence
     )
     items[ReceiptSectionKey.VERSION_AND_POLICY_IDENTITY] = ()
 
@@ -2905,6 +2920,7 @@ def build_receipt(
             if context.applicable_check is None
             else context.applicable_check.semantic_provenance
         ),
+        reviewer_sentence=_reviewer_sentence(context.applicable_check),
         attempt_explanations=tuple(
             f"{obligation.obligation_id} command item {attempt.requested_item_index}: {attempt.relation}. "
             "This relation concerns the attempt only, not command success."

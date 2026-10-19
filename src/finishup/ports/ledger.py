@@ -1052,6 +1052,10 @@ class CheckCommitResult:
     # context without exposing matched bytes.
     semantic_withheld_item_ids: tuple[str, ...] = ()
     review_input_manifest: JsonObject | None = None
+    # #1118: the reviewer conversation's structural record (``ReviewerRecord.as_wire``), as the
+    # check returned it. Not part of the check event: a replay rebuilt after a service restart
+    # carries none; the encrypted review response keeps it.
+    reviewer: JsonObject | None = None
     totals: JsonObject | None = None
     # PL2-1 (issue #982): item refs and 1-based line numbers of values the external reviewer's
     # copy did not carry. Structural only; never values.
@@ -2448,6 +2452,7 @@ class LedgerPort(Protocol):
         semantic_redacted_values: tuple[SemanticRedactedValue, ...] = (),
         semantic_route_required: bool | None = None,
         deliverable_states: tuple[DeliverableState, ...] = (),
+        reviewer: JsonObject | None = None,
         review_mode: CheckReviewMode | None = None,
     ) -> CheckCommitResult: ...
 

@@ -61,6 +61,28 @@ _ROUND_MARGIN_BYTES: Final = 2_048
 CEILING_PLANNING_GAP: Final = "content_unselected"
 
 
+# #1118: every byte of the reviewer conversation counts against the channel ceiling: the loop
+# instruction, the packet (sent as a JSON string, so escaping grows it), the read catalog, the
+# reviewer's replies and the read results. The packet is planned below the ceiling less this frame
+# and a fifth for escaping; the reads get only what the sent conversation leaves.
+REVIEWER_FRAME_BYTES: Final = 8192
+
+
+def reviewer_packet_limit(policy: PrivacyPolicy) -> int | None:
+    """The packet size the reviewer conversation's first exchange can carry under the ceiling."""
+
+    limit = channel_prepared_limit(policy)
+    return None if limit is None else max(0, (limit - REVIEWER_FRAME_BYTES) * 4 // 5)
+
+
+def reviewer_read_room(limit: int | None, sent: int) -> int:
+    """Read bytes the next exchanges can add after a conversation of ``sent`` bytes."""
+
+    if limit is None:
+        return 0
+    return max(0, (limit - sent - 2048) * 4 // 5)
+
+
 def channel_prepared_limit(policy: PrivacyPolicy) -> int | None:
     """The prepared-packet byte size the AI-powered review channel admits.
 

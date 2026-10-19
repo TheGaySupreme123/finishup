@@ -91,6 +91,7 @@ from finishup.ports.secret_memory import HumanAuthorizationProof, SecretPurpose
 from finishup.ports.semantic import (
     ProviderAttemptProvenance,
     SemanticJudgment,
+    SemanticResultReply,
     SemanticResultSuccess,
 )
 from finishup.ports.start_catalog import StartCatalogPort, TaskRoute
@@ -666,7 +667,7 @@ async def test_ready_same_request_recovery_after_statement_plan_amendment(
             _credential: object,
             _request_commitment: object,
         ) -> object:
-            async def evaluate(_case: object, _deadline: object) -> SemanticResultSuccess:
+            async def evaluate(_case: object, _deadline: object) -> SemanticResultReply:
                 nonlocal provider_calls
                 provider_calls += 1
                 provenance = ProviderAttemptProvenance(
@@ -685,9 +686,15 @@ async def test_ready_same_request_recovery_after_statement_plan_amendment(
                     provider_request_id="review-input-test-provider-request",
                     request_commitment="hmac-sha256:" + "7" * 64,
                 )
-                return SemanticResultSuccess(
-                    SemanticJudgment("no_material_discrepancy", ()), provenance
-                )
+                # #1118: every review is the reviewer conversation; this one finishes at once.
+                final: dict[str, JsonValue] = {
+                    "conclusion": "no_material_discrepancy",
+                    "review_summary": "Nothing contradicts the recorded work.",
+                    "verified": [],
+                    "reviewer_challenges": [],
+                    "prior_finding_verdicts": [],
+                }
+                return SemanticResultReply({"reply": {"final_judgment": final}}, provenance)
 
             return SimpleNamespace(evaluate=evaluate)
 
@@ -1060,7 +1067,7 @@ async def test_paused_and_recovered_check_project_for_mcp_clients(
             _credential: object,
             _request_commitment: object,
         ) -> object:
-            async def evaluate(_case: object, _deadline: object) -> SemanticResultSuccess:
+            async def evaluate(_case: object, _deadline: object) -> SemanticResultReply:
                 nonlocal provider_calls
                 provider_calls += 1
                 provenance = ProviderAttemptProvenance(
@@ -1079,9 +1086,15 @@ async def test_paused_and_recovered_check_project_for_mcp_clients(
                     provider_request_id="review-input-test-provider-request",
                     request_commitment="hmac-sha256:" + "7" * 64,
                 )
-                return SemanticResultSuccess(
-                    SemanticJudgment("no_material_discrepancy", ()), provenance
-                )
+                # #1118: every review is the reviewer conversation; this one finishes at once.
+                final: dict[str, JsonValue] = {
+                    "conclusion": "no_material_discrepancy",
+                    "review_summary": "Nothing contradicts the recorded work.",
+                    "verified": [],
+                    "reviewer_challenges": [],
+                    "prior_finding_verdicts": [],
+                }
+                return SemanticResultReply({"reply": {"final_judgment": final}}, provenance)
 
             return SimpleNamespace(evaluate=evaluate)
 
@@ -1330,7 +1343,7 @@ async def test_review_after_statement_revision_with_carried_obligation_commits(
             _credential: object,
             _request_commitment: object,
         ) -> object:
-            async def evaluate(_case: object, _deadline: object) -> SemanticResultSuccess:
+            async def evaluate(_case: object, _deadline: object) -> SemanticResultReply:
                 nonlocal provider_calls
                 provider_calls += 1
                 provenance = ProviderAttemptProvenance(
@@ -1349,9 +1362,15 @@ async def test_review_after_statement_revision_with_carried_obligation_commits(
                     provider_request_id="review-input-test-provider-request",
                     request_commitment="hmac-sha256:" + "7" * 64,
                 )
-                return SemanticResultSuccess(
-                    SemanticJudgment("no_material_discrepancy", ()), provenance
-                )
+                # #1118: every review is the reviewer conversation; this one finishes at once.
+                final: dict[str, JsonValue] = {
+                    "conclusion": "no_material_discrepancy",
+                    "review_summary": "Nothing contradicts the recorded work.",
+                    "verified": [],
+                    "reviewer_challenges": [],
+                    "prior_finding_verdicts": [],
+                }
+                return SemanticResultReply({"reply": {"final_judgment": final}}, provenance)
 
             return SimpleNamespace(evaluate=evaluate)
 

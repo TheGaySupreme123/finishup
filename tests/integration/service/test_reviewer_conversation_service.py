@@ -1,0 +1,408 @@
+"""#1118: one full review through the ready service, with only the provider scripted.
+
+The real service composition admits the check, runs the reviewer conversation through the real
+privacy coordinator, catalog audit, outbound gateway and Responses request renderer, and commits
+the check. Only ``build_evaluator`` is replaced: the scripted provider reads each exchange as the
+route adapter would and answers with the next structured reply (three reads, then the final
+judgment). The check result, its CLI text, its MCP text and the receipt then show what was read.
+"""
+
+from __future__ import annotations
+
+import json
+import subprocess
+from collections.abc import Mapping
+from dataclasses import replace
+from pathlib import Path
+from types import SimpleNamespace
+from typing import cast
+
+import pytest
+
+from builders.multi_agent import INSTALLATION_ID, multi_agent_service
+from builders.privacy_policies import minimal_external_policy
+from builders.privacy_widenings import with_llm
+from builders.projection_workflow import ProjectionCase, project_case
+from finishup.adapters.integrations.observation_local import LocalObservationStore
+from finishup.adapters.providers.openai_responses_factory import OpenAIResponsesExternalFactory
+from finishup.adapters.providers.reviewer_reply import REVIEWER_REPLY_SCHEMAS
+from finishup.adapters.repository_identity import resolve_repository_privacy_context
+from finishup.application.privacy_policy import (
+    DecidePrivacyPolicyRequest,
+    PolicyDecisionRequired,
+    ProposePrivacyPolicyRequest,
+    decide_privacy_policy,
+    privacy_propose_policy,
+)
+from finishup.application.service import ClientProjectionContext, ProjectionRenderMode
+from finishup.cli.render import render_human_check
+from finishup.config.models import FinishUpConfig
+from finishup.config.write import fireworks_provider
+from finishup.domain.findings import SamplingParams
+from finishup.domain.privacy import AuthorizationScope, AuthorizationScopeKind, ProviderBinding
+from finishup.domain.receipts import receipt_document_from_json, render_receipt_human
+from finishup.mcp.summaries import render_check_reviewer_output
+from finishup.ports.control import ControlClientKind, ControlMethod, WorkspaceLocator
+from finishup.ports.keys import MacKeyPurpose
+from finishup.ports.privacy import (
+    EffectivePrivacyPolicy,
+    HumanAuthorityCapability,
+    HumanPolicyDecision,
+)
+from finishup.ports.secret_memory import HumanAuthorizationProof, SecretPurpose
+from finishup.ports.semantic import (
+    ProviderAttemptProvenance,
+    SemanticResultReply,
+    reviewer_exchange,
+)
+from finishup.protocol.canonical import JsonValue, canonical_encode
+from finishup.protocol.ids import IdKind, new_id
+from finishup.protocol.models import (
+    CheckRequest,
+    CheckResultModel,
+    CheckSuccessModel,
+    PublishWorkRequest,
+    ReceiptRequest,
+    SemanticStatus,
+    StartRequest,
+)
+from finishup.service.vault import provider_credential_profile_binding
+
+pytestmark = pytest.mark.anyio
+
+_ROOMY = with_llm(minimal_external_policy(), max_tokens=65_536)
+_STATEMENT = "Make add(a, b) in calc.py return the sum of a and b, and keep test_calc.py passing."
+
+
+@pytest.fixture(autouse=True)
+def work_has_begun(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The review runs as if the first edit were recorded (no pre-edit deferral)."""
+
+    import finishup.application.check as check_module
+
+    def edited(*_args: object) -> bool:
+        return True
+
+    monkeypatch.setattr(check_module, "material_edit_recorded", edited)
+
+
+def _read_file(path: str) -> dict[str, JsonValue]:
+    args: dict[str, JsonValue] = {
+        "root_id": "w1",
+        "path": path,
+        "mode": "text",
+        "start_line": 1,
+        "line_count": 40,
+    }
+    return {"reply": {"action": "read_file", "args": args}}
+
+
+_REPLIES: tuple[dict[str, JsonValue], ...] = (
+    _read_file("calc.py"),
+    _read_file("test_calc.py"),
+    {
+        "reply": {
+            "action": "read_file",
+            "args": {"root_id": "w1", "path": ".", "mode": "list", "cursor": None},
+        }
+    },
+    {
+        "reply": {
+            "final_judgment": {
+                "conclusion": "no_material_discrepancy",
+                "review_summary": (
+                    "Read calc.py and test_calc.py: add returns a + b and the test asserts "
+                    "add(2, 3) == 5."
+                ),
+                "verified": [],
+                "reviewer_challenges": [],
+                "prior_finding_verdicts": [],
+            }
+        }
+    },
+)
+
+
+async def test_one_review_reads_three_times_then_concludes_on_every_surface(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    workspace = (tmp_path / "work").resolve()
+    workspace.mkdir()
+    (workspace / "calc.py").write_text("def add(a, b):\n    return a + b\n")
+    (workspace / "test_calc.py").write_text(
+        "from calc import add\n\n\ndef test_add():\n    assert add(2, 3) == 5\n"
+    )
+    for argv in (
+        ("init", "-q", "-b", "main"),
+        ("-c", "user.name=t", "-c", "user.email=t@example.invalid", "add", "."),
+        ("-c", "user.name=t", "-c", "user.email=t@example.invalid", "commit", "-qm", "base"),
+    ):
+        subprocess.run(("git", *argv), cwd=workspace, check=True, capture_output=True)
+    provider = fireworks_provider(model="accounts/fireworks/models/minimax-m3")
+    exchanges: list[tuple[str, tuple[tuple[str, str], ...]]] = []
+    replies = list(_REPLIES)
+
+    def build_evaluator(
+        _factory: OpenAIResponsesExternalFactory,
+        binding: ProviderBinding,
+        _credential: object,
+        _request_commitment: object,
+    ) -> object:
+        async def evaluate(case: object, _deadline: object) -> SemanticResultReply:
+            media_type, payload = getattr(case, "media_type"), getattr(case, "payload")
+            exchange = reviewer_exchange(media_type, payload, REVIEWER_REPLY_SCHEMAS)
+            assert exchange is not None, "every review dispatch is a reviewer exchange"
+            exchanges.append((media_type, exchange.history))
+            provenance = ProviderAttemptProvenance(
+                provider=binding.provider_id,
+                endpoint_profile_id=binding.endpoint_profile_id,
+                endpoint_profile_version=binding.endpoint_profile_version,
+                model=binding.model_id,
+                sdk_version="scripted-1.0.0",
+                prompt_digest=exchange.prompt_digest,
+                schema_digest=exchange.schema_digest,
+                policy_digest=minimal_external_policy().policy_digest,
+                privacy_policy_digest=minimal_external_policy().policy_digest,
+                sampling_params=SamplingParams(128),
+                latency_ms=1,
+                status=SemanticStatus.SUCCEEDED,
+                provider_request_id=f"scripted-{len(exchanges)}",
+                request_commitment="hmac-sha256:" + "7" * 64,
+            )
+            return SemanticResultReply(replies.pop(0), provenance)
+
+        return SimpleNamespace(evaluate=evaluate)
+
+    monkeypatch.setattr(OpenAIResponsesExternalFactory, "build_evaluator", build_evaluator)
+    config = FinishUpConfig(profile="local-openai", provider=provider)
+    async with multi_agent_service(tmp_path / "state", config=config) as service:
+        policy_store = service.app.privacy.policy_application.policy_store  # type: ignore[union-attr]
+        original_effective_policy = policy_store.effective_policy
+        # A ceiling with room for the packet and three reads: the minimal profile's 4,096 tokens
+        # leave this conversation room for one read, and the reviewer is then offered none.
+        widened = _ROOMY
+
+        async def effective_policy(_store: object, scope: AuthorizationScope) -> object:
+            if scope.kind is AuthorizationScopeKind.TASK:
+                return EffectivePrivacyPolicy(widened, 2, widened.policy_digest)
+            return await original_effective_policy(scope)
+
+        monkeypatch.setattr(type(policy_store), "effective_policy", effective_policy)
+        lookup = service.vault.installation_mac_handle(MacKeyPurpose.CATALOG_LOOKUP)
+        repository = await resolve_repository_privacy_context(
+            WorkspaceLocator(str(workspace)), lookup
+        )
+        LocalObservationStore(_state=service.root / "state").grant_consent(
+            LocalObservationStore(_state=service.root / "state").workspace_commitment(
+                str(workspace)
+            )
+        )
+        common: dict[str, JsonValue] = {
+            "protocol_version": "0.1",
+            "schema_version": "1.0.0",
+            "actor": {"actor_id": "harness:reviewer-dogfood", "actor_type": "harness"},
+            "client": {
+                "kind": "cooperative_agent",
+                "version": "0.3.0",
+                "integration": "cooperative_mcp",
+            },
+        }
+        started = await service.app.start(
+            StartRequest.model_validate(
+                {
+                    **common,
+                    "request_id": new_id(IdKind.REQUEST),
+                    "mode": "create",
+                    "task_title": "Reviewer conversation dogfood",
+                    "workspace_ref": str(workspace),
+                    "external_ref": "reviewer-dogfood",
+                    "requested_view": "compact",
+                }
+            ),
+            repository_privacy_context=repository,
+        )
+        check_body: dict[str, JsonValue] = {
+            **common,
+            "request_id": new_id(IdKind.REQUEST),
+            "session_id": started.session_id,
+            "writer_id": started.writer_id,
+            "expected_frontier": started.frontier.model_dump(mode="json"),
+            "mode": "semantic_required",
+            "max_findings": "3",
+            "policy_packs": ["work-integrity/0.3.0"],
+        }
+        # Without a statement the check waits for one; the same request then resumes the review.
+        first = await service.app.check(
+            CheckRequest.model_validate(check_body), repository_privacy_context=repository
+        )
+        assert getattr(first, "state") == "awaiting_input"
+        await service.app.publish_work(
+            PublishWorkRequest.model_validate(
+                {
+                    **common,
+                    "request_id": new_id(IdKind.REQUEST),
+                    "session_id": started.session_id,
+                    "writer_id": started.writer_id,
+                    "expected_frontier": started.frontier.model_dump(mode="json"),
+                    "event_drafts": [
+                        {
+                            "event_id": new_id(IdKind.EVENT),
+                            "schema": {"name": "plan_published", "version": "1.1.0"},
+                            "occurred_at": "2026-10-19T12:00:00.000Z",
+                            "causal_parents": [],
+                            "payload": {
+                                "plan_version": 1,
+                                "summary": "Fix add and keep its test passing.",
+                                "obligation_refs": [],
+                                "task_statement": _STATEMENT,
+                            },
+                            "artifact_refs": [],
+                            "evidence_refs": [],
+                        }
+                    ],
+                }
+            ),
+            repository_privacy_context=repository,
+        )
+        await _widen_and_connect(service, INSTALLATION_ID, repository.commitment, provider)
+        checked = await service.app.check(
+            CheckRequest.model_validate(check_body), repository_privacy_context=repository
+        )
+        assert type(checked).__name__ == "CheckCommitResult", checked
+        assert getattr(checked, "semantic_status") is SemanticStatus.SUCCEEDED
+
+        # Four exchanges, each admitted on its own; the packet and read catalog lead every one.
+        assert [len(history) for _, history in exchanges] == [3, 5, 7, 9]
+        last = exchanges[-1][1]
+        assert "reviewer_catalog" in last[2][1]
+        first_read, second_read, listing = (json.loads(last[i][1]) for i in (4, 6, 8))
+        assert first_read["status"] == "ok" and "return a + b" in first_read["data"]["text"]
+        assert "assert add(2, 3) == 5" in second_read["data"]["text"]
+        listed = {entry["name"] for entry in listing["data"]["entries"]}
+        assert {"calc.py", "test_calc.py"} <= listed and ".git" not in listed
+
+        mcp_wire = await project_case(
+            service.app, ProjectionCase("check", ControlMethod.CHECK, check_body, checked), 7100
+        )
+        cli_wire = await project_case(
+            service.app,
+            ProjectionCase("check", ControlMethod.CHECK, check_body, checked),
+            7110,
+            context=ClientProjectionContext(
+                ControlClientKind.CLI, ProjectionRenderMode.HUMAN_READABLE, False
+            ),
+        )
+        reviewer = cast(Mapping[str, JsonValue], mcp_wire["reviewer"])
+        assert (reviewer["exchanges"], reviewer["reads_used"], reviewer["ended"]) == (
+            "4",
+            "3",
+            None,
+        )
+        cli_model = CheckResultModel.model_validate(cli_wire).root
+        assert isinstance(cli_model, CheckSuccessModel)
+        cli_text = render_human_check(cli_model)
+        mcp_text = render_check_reviewer_output(mcp_wire)
+        for text in (cli_text, mcp_text):
+            assert "Reviewer reads: 3 of 3" in text
+            assert "read_file: ok [w1 src_" in text
+            assert "calc.py" not in text.split("Reviewer summary")[0]
+        # The default agent-context policy withholds reviewer prose from this view; the CLI says
+        # so instead of dropping the line. The structural read record is never withheld.
+        assert "Reviewer summary (advisory): " in cli_text
+
+        receipt = await service.app.receipt(
+            ReceiptRequest.model_validate(
+                {
+                    **common,
+                    "request_id": new_id(IdKind.REQUEST),
+                    "session_id": started.session_id,
+                    "writer_id": started.writer_id,
+                    "expected_frontier": dict(
+                        getattr(checked, "result_frontier").as_wire().items()
+                    ),
+                    "task_id": started.task_id,
+                    "format": "json",
+                    "redaction_profile": "full_local",
+                    "include": "full",
+                }
+            ),
+            repository_privacy_context=repository,
+        )
+        document = receipt_document_from_json(getattr(receipt, "document"))
+        text = render_receipt_human(document, markdown=False)
+        markdown = render_receipt_human(document, markdown=True)
+        for rendered in (text, markdown, canonical_encode(getattr(receipt, "document")).decode()):
+            assert "Reviewer reads: 3 of 3" in rendered
+            assert "calc.py" not in rendered
+        print("\n--- CLI text ---\n" + cli_text)
+        print("\n--- MCP reviewer text ---\n" + mcp_text)
+        print("\n--- receipt text (version and policy identity) ---")
+        print("\n".join(line for line in text.splitlines() if "Reviewer reads" in line))
+
+
+async def _widen_and_connect(
+    service: object, installation_id: str, commitment: str, provider: object
+) -> None:
+    """The owner's trusted steps: widen this repository's policy and store a provider key."""
+
+    app = getattr(service, "app")
+    clock = getattr(service, "clock")
+    vault = getattr(service, "vault")
+    policy_app = app.privacy.policy_application
+    repository_scope = AuthorizationScope(
+        AuthorizationScopeKind.WORKSPACE, installation_id, commitment
+    )
+    authority = await policy_app.policy_store.repository_authority(repository_scope)
+    candidate = replace(_ROOMY, effective_scope=repository_scope, created_at=clock.now_utc())
+    proposed = await privacy_propose_policy(
+        policy_app,
+        ProposePrivacyPolicyRequest(
+            authority.effective.effective_digest,
+            candidate,
+            authority.authority_digest,
+            repository_scope,
+        ),
+    )
+    assert isinstance(proposed, PolicyDecisionRequired)
+    await decide_privacy_policy(
+        policy_app,
+        DecidePrivacyPolicyRequest(
+            proposed.prepared,
+            HumanPolicyDecision(
+                proposed.prepared.prepared_digest, True, clock.now_utc(), "hmac-sha256:" + "8" * 64
+            ),
+            HumanAuthorityCapability(
+                "established_passphrase",
+                "sha256:" + "9" * 64,
+                1,
+                str(getattr(vault.mode, "value", vault.mode)),
+                vault.generation,
+                True,
+            ),
+        ),
+    )
+    binding = provider_credential_profile_binding(
+        getattr(provider, "provider_id"),
+        getattr(provider, "model"),
+        getattr(provider, "endpoint_profile_id"),
+        getattr(provider, "endpoint_profile_version"),
+    )
+    credential = getattr(service, "memory").capture(
+        SecretPurpose.PROVIDER_CREDENTIAL, bytearray(b"reviewer-dogfood-provider-token")
+    )
+    await vault.store_provider_credential(
+        "set",
+        binding,
+        credential,
+        HumanAuthorizationProof(
+            "reviewer-dogfood-provider-credential",
+            "provider_credential_set",
+            binding.target_digest("set"),
+            1,
+            vault.generation,
+            None,
+            1.0,
+            60.0,
+        ),
+        2.0,
+    )

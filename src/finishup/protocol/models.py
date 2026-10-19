@@ -4244,6 +4244,55 @@ class CheckReviewModeModel(_ClosedModel):
         return self
 
 
+_ReviewerTokenWire = Annotated[str, Field(pattern=r"^[a-z][a-z0-9_]{0,95}$")]
+_ReviewerCountWire = Annotated[str, Field(max_length=6, pattern=r"^(0|[1-9][0-9]{0,5})$")]
+
+
+class ReviewerReadModel(_ClosedModel):
+    """#1118: one read the reviewer asked for and what the service sent back. Never a path."""
+
+    call: Literal["1", "2", "3"]
+    action: Literal["read_packet_section", "read_ledger", "read_file"]
+    status: Literal["ok", "partial", "unavailable", "denied", "stale"]
+    reason: _ReviewerTokenWire | None
+    # An opaque source identity: a case item id, or a keyed commitment of a file read.
+    source: (
+        Annotated[
+            str,
+            Field(pattern=r"^(?:src_[0-9a-f]{24}|[A-Za-z0-9][A-Za-z0-9._:-]{0,127})$"),
+        ]
+        | None
+    )
+    root: Annotated[str, Field(pattern=r"^[a-z][0-9]{1,2}$")] | None
+    standing: (
+        Literal[
+            "task_transcription",
+            "agent_assertion",
+            "finishup_record",
+            "workspace_content",
+            "outside_input_mutable",
+            "outside_input_snapshot",
+        ]
+        | None
+    )
+    baseline: Literal["task_start", "admission_time", "check_time", "read_time"] | None
+    lines: tuple[_ReviewerCountWire, _ReviewerCountWire] | None
+    result_bytes: _ReviewerCountWire
+    result_digest: Sha256Digest
+    disclosure: Annotated[str, Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")] | None
+
+
+class ReviewerRecordModel(_ClosedModel):
+    """#1118: what the reviewer conversation did: exchanges, reads, why it ended, cleanup."""
+
+    exchanges: _ReviewerCountWire
+    reads_used: Literal["0", "1", "2", "3"]
+    read_bytes: _ReviewerCountWire
+    reads: tuple[ReviewerReadModel, ...] = Field(max_length=3)
+    ended: _ReviewerTokenWire | None
+    cleanup: _ReviewerTokenWire | None
+
+
 class CheckObservationsAwaitedModel(_ClosedModel):
     """Outcome of the optional pre-check wait for this task's hook rows (issue #1012)."""
 
@@ -4465,6 +4514,7 @@ class CheckSuccessModel(_ClosedModel):
             "review_mode",
             "fact_lineage",
             "review_input_manifest",
+            "reviewer",
             "semantic_conclusion",
             "review_summary",
             "verified",
@@ -4512,6 +4562,8 @@ class CheckSuccessModel(_ClosedModel):
     # PL2-1: item refs and line numbers of values the external reviewer did not see.
     semantic_redacted_values: tuple[SemanticRedactedValueModel, ...] = ()
     review_input_manifest: ReviewInputManifestModel | None = None
+    # #1118: the reviewer conversation's record; absent where no conversation ran.
+    reviewer: ReviewerRecordModel | None = None
     totals: CheckTotalsModel | None = None
     observations_awaited: CheckObservationsAwaitedModel | None = None
     # Issue #986: ``false`` only when the check's route did not require AI-powered review; absent
@@ -7456,6 +7508,34 @@ _CHECK_STRUCTURAL_POINTERS: Final = (
         ("disposition", "item_id", "lines/*", "source_ref"),
     )
     + _prefix_leaf_patterns("/review_input_manifest", _REVIEW_INPUT_MANIFEST_LEAVES)
+    + _prefix_leaf_patterns(
+        "/reviewer",
+        (
+            "cleanup",
+            "ended",
+            "exchanges",
+            "read_bytes",
+            "reads_used",
+            *(
+                f"reads/*/{leaf}"
+                for leaf in (
+                    "action",
+                    "baseline",
+                    "call",
+                    "disclosure",
+                    "lines",
+                    "lines/*",
+                    "reason",
+                    "result_bytes",
+                    "result_digest",
+                    "root",
+                    "source",
+                    "standing",
+                    "status",
+                )
+            ),
+        ),
+    )
     + _prefix_leaf_patterns("/fact_lineage/*", _FACT_LINEAGE_LEAVES)
     + _prefix_leaf_patterns(
         "/specification_preflight",
@@ -8652,7 +8732,7 @@ def _build_result_leaf_rules() -> tuple[_ResultLeafRule, ...]:
         ):
             raise RuntimeError("invalid_result_leaf_classification")
     if (
-        len(result) != 1659
+        len(result) != 1677
     ):  # ... #1017 +3, #1027 +5, tb4n3 LO +9, W2-A +46, LF +34 (fact_lineage), W2-B +2,
         # tb4n4 #1044 +7 (closure_readiness.undeclared_references), #1048 +38 (inspection),
         # #1047 +2 (follow_up_round), tb4n5 +3 (publish action_notices),
@@ -8661,7 +8741,8 @@ def _build_result_leaf_rules() -> tuple[_ResultLeafRule, ...]:
         # #1084 +3 (publish server_filled), +3 (status operation server_filled),
         # +4 (status brief: detail and closure_state), +1 (status history occurred_at_source),
         # W5/D1 +2 (closure_readiness.acceptance_risk),
-        # W6 +1 check (agent_next) / +15 status (operation check_outcome)
+        # W6 +1 check (agent_next) / +15 status (operation check_outcome),
+        # #1118 +18 check (reviewer)
         raise RuntimeError("incomplete_result_leaf_registry")
     return result
 

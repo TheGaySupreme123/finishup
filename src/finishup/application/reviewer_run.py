@@ -27,7 +27,12 @@ from finishup.application.egress import (
     SemanticEgressReply,
     SemanticEgressResult,
 )
-from finishup.application.reviewer_broker import MAX_READS, ReadRoot, ReviewerBroker
+from finishup.application.reviewer_broker import (
+    MAX_READS,
+    MAX_TOTAL_BYTES,
+    ReadRoot,
+    ReviewerBroker,
+)
 from finishup.application.reviewer_exchange import ReviewerExchangeModel
 from finishup.application.reviewer_loop import ReviewerLoop, ReviewerModelError, ReviewOutcome
 from finishup.domain.privacy import (
@@ -118,11 +123,13 @@ async def run_reviewer(
     dispatch_guard: Callable[[], Awaitable[bool]] | None,
     resume_first: bool,
     clock: Callable[[], float],
+    read_room: Callable[[int], int] = lambda _sent: MAX_TOTAL_BYTES,
 ) -> ReviewerRun:
     """Run the review conversation for one job attempt and return its terminal result.
 
     ``resume_first`` sends the first exchange the owner approved (ask-every-time policy); such a
-    review gets no reads, since each further exchange would need its own approval.
+    review gets no reads, since each further exchange would need its own approval. ``read_room``
+    says how many read bytes the channel ceiling leaves after a conversation of that many bytes.
     """
 
     reads = 0 if resume_first else MAX_READS
@@ -138,14 +145,17 @@ async def run_reviewer(
     )
     catalog = reviewer_catalog(roots, reads)
     results: list[SemanticEgressResult] = []
+    sent: list[int] = []
 
     async def dispatch(payload: bytes, media_type: str, limit: Deadline) -> SemanticResult:
         history = decode_reviewer_exchange(payload)
 
         def render(packet: bytes) -> bytes:
-            return encode_reviewer_exchange(
+            rendered = encode_reviewer_exchange(
                 (history[0], ("user", packet.decode()), ("user", catalog), *history[2:])
             )
+            sent.append(len(rendered))
+            return rendered
 
         roots_held = tuple(sorted(broker.history_roots, key=str.encode))
         frame = ReviewerExchangeFrame(media_type, render, roots_held)
@@ -163,6 +173,8 @@ async def run_reviewer(
                 candidate_for(rid), limit, dispatch_guard=dispatch_guard, exchange=frame
             )
         results.append(result)
+        if sent:  # what the next exchanges may still add under the channel ceiling
+            broker.total = min(MAX_TOTAL_BYTES, broker.used + read_room(sent[-1]))
         if type(result) is SemanticEgressReply or type(result) is SemanticEgressProviderOutcome:
             return result.result
         raise ReviewerModelError("reviewer_exchange_not_sent")

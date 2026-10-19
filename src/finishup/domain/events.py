@@ -42,6 +42,7 @@ from finishup.domain.findings import (
     semantic_provenance_to_json,
 )
 from finishup.domain.receipts import SEMANTIC_REVIEW_ITEM_WITHHELD_GAP, ReceiptConclusion
+from finishup.domain.reviewer_reads import reviewer_record_from_wire
 from finishup.domain.values import (
     ActionId,
     Actor,
@@ -3299,6 +3300,9 @@ class CheckRecordedPayload:
     semantic_withheld_item_ids: tuple[str, ...] = ()
     # Metadata-only input coverage for the exact check packet (issue #951).
     review_input_manifest: JsonObject | None = None
+    # #1118 (1.4.0, unreleased in place): the reviewer conversation's structural record: exchanges,
+    # reads with opaque source ids and receipts, why it ended, the session cleanup. Never a path.
+    reviewer: JsonObject | None = None
     # Frozen-frontier structural totals; absent only on legacy check events.
     totals: JsonObject | None = None
     # PL2-1 (issue #982, 1.4.0 only): per case item, its catalogued ref and the 1-based lines whose
@@ -3463,6 +3467,11 @@ class CheckRecordedPayload:
         if (
             self.review_input_manifest is not None
             and type(self.review_input_manifest) is not JsonObject
+        ):
+            raise ProtocolValueError("invalid_event_value_type")
+        if self.reviewer is not None and (
+            type(self.reviewer) is not JsonObject
+            or reviewer_record_from_wire(self.reviewer) is None
         ):
             raise ProtocolValueError("invalid_event_value_type")
         if (
@@ -4438,6 +4447,7 @@ _PAYLOAD_SHAPES: Final[Mapping[str, tuple[frozenset[str], frozenset[str]]]] = Ma
                     "deliverable_states",
                     "review_input_manifest",
                     "review_mode",
+                    "reviewer",
                     "totals",
                 }
             ),
@@ -4972,6 +4982,11 @@ def decode_payload(schema: EventSchema, payload: JsonValue) -> EventPayload:
             ),
             review_input_manifest=_review_input_manifest_from_json(
                 _optional(source, "review_input_manifest")
+            ),
+            reviewer=(
+                None
+                if (recorded_reviewer := _optional(source, "reviewer")) is None
+                else cast(JsonObject, freeze_json(recorded_reviewer))
             ),
             semantic_route_required=cast(bool | None, _optional(source, "semantic_route_required")),
             review_mode=(
@@ -5534,6 +5549,7 @@ def encode_payload(payload: EventPayload) -> JsonValue:
             tuple(item.as_wire() for item in value.semantic_redacted_values),
         )
         _optional_value(result, "review_input_manifest", value.review_input_manifest)
+        _optional_value(result, "reviewer", value.reviewer)
         _optional_value(result, "semantic_route_required", value.semantic_route_required)
         _optional_value(
             result,
@@ -5628,6 +5644,7 @@ def _validate_event_schema_payload(
             or payload.semantic_route_required is not None
             or bool(payload.deliverable_states)
             or payload.review_mode is not None
+            or payload.reviewer is not None
         )
         # 1.5.0 exists only for the pre-edit deferral reason. A deferred check still carries
         # review_mode and totals, so this gate is first: those fields do not promote it to 1.4.0.

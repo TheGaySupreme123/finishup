@@ -91,7 +91,7 @@ class ReviewerRead:
 
     def as_wire(self) -> dict[str, object]:
         return {
-            "call": self.call,
+            "call": str(self.call),
             "action": self.action,
             "status": self.status,
             "reason": self.reason,
@@ -99,8 +99,8 @@ class ReviewerRead:
             "root": self.root,
             "standing": self.standing,
             "baseline": self.baseline,
-            "lines": None if self.lines is None else list(self.lines),
-            "result_bytes": self.result_bytes,
+            "lines": None if self.lines is None else [str(n) for n in self.lines],
+            "result_bytes": str(self.result_bytes),
             "result_digest": self.result_digest,
             "disclosure": self.disclosure,
         }
@@ -134,10 +134,12 @@ class ReviewerRecord:
             raise ValueError("reviewer_record_invalid")
 
     def as_wire(self) -> dict[str, object]:
+        """Counts are canonical decimal strings, like every other count on the wire."""
+
         return {
-            "exchanges": self.exchanges,
-            "reads_used": len(self.reads),
-            "read_bytes": sum(read.result_bytes for read in self.reads),
+            "exchanges": str(self.exchanges),
+            "reads_used": str(len(self.reads)),
+            "read_bytes": str(sum(read.result_bytes for read in self.reads)),
             "reads": [read.as_wire() for read in self.reads],
             "ended": self.ended,
             "cleanup": self.cleanup,
@@ -146,6 +148,12 @@ class ReviewerRecord:
 
 def _optional(value: object, pattern: re.Pattern[str]) -> bool:
     return value is None or (type(value) is str and pattern.fullmatch(value) is not None)
+
+
+def _count(value: object) -> int:
+    if type(value) is not str or not value.isdigit() or len(value) > 6:
+        raise ValueError("reviewer_record_invalid")
+    return int(value)
 
 
 def reviewer_record_from_wire(value: object) -> ReviewerRecord | None:
@@ -157,7 +165,7 @@ def reviewer_record_from_wire(value: object) -> ReviewerRecord | None:
     try:
         reads = tuple(
             ReviewerRead(
-                call=cast(int, row["call"]),
+                call=_count(row["call"]),
                 action=cast(str, row["action"]),
                 status=cast(str, row["status"]),
                 reason=cast(str | None, row["reason"]),
@@ -167,15 +175,17 @@ def reviewer_record_from_wire(value: object) -> ReviewerRecord | None:
                 baseline=cast(str | None, row["baseline"]),
                 lines=None
                 if row["lines"] is None
-                else cast(tuple[int, int], tuple(cast(Sequence[int], row["lines"]))),
-                result_bytes=cast(int, row["result_bytes"]),
+                else cast(
+                    tuple[int, int], tuple(_count(n) for n in cast(Sequence[object], row["lines"]))
+                ),
+                result_bytes=_count(row["result_bytes"]),
                 result_digest=cast(str, row["result_digest"]),
                 disclosure=cast(str | None, row["disclosure"]),
             )
             for row in cast(Sequence[Mapping[str, object]], body["reads"])
         )
         record = ReviewerRecord(
-            cast(int, body["exchanges"]),
+            _count(body["exchanges"]),
             reads,
             cast(str | None, body["ended"]),
             cast(str | None, body["cleanup"]),

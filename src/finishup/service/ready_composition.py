@@ -438,6 +438,8 @@ from finishup.service.semantic_ceiling import (
     channel_admission,
     channel_prepared_limit,
     plan_under_channel_ceiling,
+    reviewer_packet_limit,
+    reviewer_read_room,
     with_ceiling_planning_gap,
 )
 from finishup.service.vault import ProviderCredentialBinding, provider_credential_profile_binding
@@ -5512,7 +5514,8 @@ def _privacy_gated_semantic_evaluator(
                 semantic_case, planned_selection, ceiling_rounds = plan_under_channel_ceiling(
                     approved_case,
                     review_selection,
-                    channel_prepared_limit(policy),
+                    # #1118: the packet leaves room for the reviewer conversation around it.
+                    reviewer_packet_limit(policy),
                     lambda selection: build_case(
                         selection, with_ceiling_planning_gap(captured_content_gaps)
                     ),
@@ -5993,6 +5996,9 @@ def _privacy_gated_semantic_evaluator(
                                 dispatch_guard=_captured_content_fence_current,
                                 resume_first=resume_first,
                                 clock=clock.monotonic_seconds,
+                                read_room=lambda sent: reviewer_read_room(
+                                    channel_prepared_limit(policy), sent
+                                ),
                             )
                             stage = "response_mapping"
                             return _with_reviewer(await _mapped(run.result), run)
