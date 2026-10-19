@@ -9980,12 +9980,16 @@ follow-up loop is deleted.
   SemanticJudgment` raises `ReviewerReplyInvalid(code)` (`envelope_invalid`, `action_invalid`,
   `judgment_<stage>`). `REVIEWER_LOOP_INSTRUCTION` is the loop's one system text.
 - Controller: `application.reviewer_loop.ReviewerLoop(model, broker, *, instruction, packet,
-  deadline, history_admissible, final_reserve_seconds=30.0).run() -> ReviewOutcome(status,
+  deadline, history_admissible, final_reserve_seconds=30.0, clock=time.monotonic,
+  resume_reserved=False).run() -> ReviewOutcome(status,
   judgment, reason, history, model_turns, citable_refs, text_by_ref)`; the last two are the
   citation union for `validate_semantic_judgment`. `ReviewerModel.complete(history, schema, *,
   deadline) -> JsonValue` is the only model interface; a facade raises `ReviewerModelError(code)`.
   Incomplete reasons: `format_invalid`, `read_limit`, `deadline`, `turn_limit`,
   `authorization_changed`, `interrupted`, `uncaptured_step`, `step_refused`, or the facade's code.
+  The one repair covers `ReviewerReplyInvalid` from `complete` and from decoding alike; the turn is
+  captured either way. With `resume_reserved`, a store whose `usage()` is exactly `(1, 1)` runs turn
+  1 again without reserving it; any other prior usage ends `interrupted` or `uncaptured_step`.
 - Broker: `application.reviewer_broker.ReviewerBroker(*, job_id, case, roots, store, admit,
   packet_refs, packet_text)`; `execute(action, expired) -> str` returns the round-1 result envelope
   (`tool_ref` `<job>:read:<n>`, `call_index`, `status`, closed `reason`, `citable_refs`,
@@ -9999,8 +10003,9 @@ follow-up loop is deleted.
 - Steps: `ports.semantic.ReviewStepStore.reserve(kind, ordinal, selector)`, `capture(kind, ordinal,
   result)`, `usage() -> (steps, uncaptured)`; `ReviewStepRefused` on a repeated step or a lost lease.
   `SqliteLedger.review_steps(handle)` is the durable store (`semantic_review_steps`, ADR-003).
-- Admission: `PrivacyCoordinator.admit_reviewer_read(request_id, scope, binding, elements, envelope)
-  -> str | None` and `egress.reviewer_history_admissible(policy, binding, scope_kind, roots)`.
+- Admission: `PrivacyCoordinator.admit_reviewer_read(request_id, scope, binding, elements, envelope,
+  history=None) -> str | None` and `egress.reviewer_history_admissible(policy, binding, scope_kind,
+  roots, retained=())`.
   Reads: `task_input_read.read_text_beneath`, `list_beneath` (both take `expired` and raise
   `ReadDeadline`) and `clear_cut`; the broker raises `ReadDeadline` too when a read completes past
   its local stop.
@@ -11788,33 +11793,59 @@ The loop appends each reply to the history exactly as the model returned it (can
 ### Reviewer service wiring and delivery (issue #1118 integration, ADR-006)
 
 `application.reviewer_run.run_reviewer(privacy, job_id=, case=, roots=, steps=, binding=, scope=,
-deadline=, first_request_id=, new_request_id=, candidate_for=, dispatch_guard=, resume_first=,
-clock=, read_room=) -> ReviewerRun(result, record, citable_refs, text_by_ref, paths)` runs one job
-attempt. The composition calls it for every attempt when its privacy object is the
-`PrivacyCoordinator` (a non-coordinator test double keeps the one-dispatch shape), with
-`steps = SqliteLedger.review_steps(handle)`, the attempt's `provider_request_id` for the first
-exchange, the job's read roots and `read_room = reviewer_read_room(channel_prepared_limit(policy),
-sent)`. The attempt runner is given `max_retries=0` for it.
+deadline=, first_request_id=, new_request_id=, candidate_for=, dispatch_guard=, resume_pending=,
+clock=, source_commitment=, reads=MAX_READS, read_room=) -> ReviewerRun(result, record,
+citable_refs, text_by_ref, paths)` runs one job attempt. The composition calls it for every attempt
+when its privacy object is the `PrivacyCoordinator` (a non-coordinator test double keeps the
+one-dispatch shape), with `steps = SqliteLedger.review_steps(handle)`, the attempt's
+`provider_request_id` for the first exchange, the job's read roots, `reads=0` where
+`semantic_preview_required(policy)`, `resume_pending` = the awaiting `SemanticDisclosureWait`'s
+`pending_id` for this job and attempt (else `None`), `source_commitment = runtime.objects.
+commitment_for(data, ObjectKind.SEMANTIC_RESPONSE)` and `read_room =
+reviewer_read_room(channel_prepared_limit(policy), sent)`. Before it, the composition calls
+`PrivacyCoordinator.recover_started_request(provider_request_id)`: a consumed first exchange maps
+as `outcome_unknown` and is never resent. For it, `operation_max_retries` is `0` and a fallback plan
+(new or persisted) is `semantic_attempts.one_conversation_plan(plan)`: both endpoints at
+`max_retries=0`, `predispatch_only=True`, so `_walk_endpoints` engages the fallback only through
+`primary_predispatch_reason`.
 
 - `PrivacyCoordinator.evaluate_semantic(candidate, deadline, *, dispatch_guard=None, exchange=None)`
-  and `resume(..., exchange=None)` take a `ReviewerExchangeFrame(media_type, render, input_roots)`.
-  With a frame, the pipeline minimizes the case as before, then `render(approved_packet)` gives the
-  payload (the packet as the first user turn, the read catalog as the second); the payload is
-  rescanned (a finding blocks `never_send_detected`), becomes the proposal's prepared bytes, meets
-  the channel's byte and token ceilings, and is sent under `media_type`. The excerpt-limit check
-  still reads the packet. `input_roots` join the case's for the consume fence.
+  and `resume(..., exchange=None)` take a `ReviewerExchangeFrame(media_type, render, input_roots,
+  history=None)`. With a frame, the pipeline minimizes the case as before; then, when `history`
+  is given, `history.admit_exchange(effective, binding, scope_kind, input_roots)` must hold or the
+  exchange is refused `blocked_by_policy`/`policy_denied` before any proposal; then
+  `render(approved_packet)` gives the payload (the packet as the first user turn, the read catalog
+  as the second); the payload is rescanned (a finding blocks `never_send_detected`), becomes the
+  proposal's prepared bytes, meets the channel's byte and token ceilings, and is sent under
+  `media_type`. The excerpt-limit check still reads the packet, on resume too
+  (`_exceeds_current_limits` reads the conversation's packet turn). `input_roots` join the case's
+  for the consume fence.
+- `egress.ReviewerHistory(policy=None, retained=set())`: the `(DataCategory, DataClass)` of every
+  admitted read element and the `(generation, effective_digest)` the conversation's exchanges are
+  admitted under. `holds(policy, binding, scope_kind, roots)` checks the retained elements and
+  roots against the binding's current ceiling (local-model categories and classes for a local
+  binding); `admit_exchange(effective, ...)` also refuses, once anything is retained, an effective
+  policy other than the bound one, and binds it otherwise.
+- `PrivacyCoordinator.resume_reviewer_exchange(request_id, pending_id, deadline, *,
+  dispatch_guard=None, exchange)` loads the wait's proposal, requires its `request_id`, and resumes
+  it by its `prepared_case_digest` under the frame (reviewer media type and session). The service's
+  process-local proposal store (`_PrivacyContentObjectStore`) implements `open_verified`, so an
+  owner decision and a resume can reopen a proposal finalized by this process; after a restart none
+  reopens.
 - A `SemanticResultReply` maps to `SemanticEgressReply(result, fields, disclosure,
   provider_input_manifest_failure)`: `success(SemanticResultSuccess)` and
   `outcome(SemanticResultInvalid | SemanticResultTimeout)` build the conversation's terminal egress
   result with the exchange's proposal, authorization, receipt and request commitment; the
   disclosure is read from the packet turn (`ports.semantic.reviewer_packet_bytes`).
-- `PrivacyCoordinator.reviewer_history_current(scope, binding, roots)` is the loop's
-  per-continuation recheck.
+- `PrivacyCoordinator.reviewer_history_current(scope, binding, roots, history=None)` is the loop's
+  per-continuation recheck; `admit_reviewer_read(..., envelope, history=None)` adds an admitted
+  result's elements to `history` and refuses (`authorization_changed`) when the retained ones no
+  longer hold.
 - `service.semantic_ceiling.reviewer_packet_limit(policy)` (the packet's planning ceiling:
   `(channel_prepared_limit - REVIEWER_FRAME_BYTES) * 4 // 5`, `REVIEWER_FRAME_BYTES = 8192`) and
   `reviewer_read_room(limit, sent)` (`(limit - sent - 2048) * 4 // 5`); `ReviewerBroker.total` is
-  lowered to `used + read_room` after each exchange, and `max_reads=0` is used for a review resumed
-  after the owner's approval.
+  lowered to `used + read_room` after each exchange, and `max_reads=0` is used where every exchange
+  asks the owner first.
 - Read roots (`ReadRoot`): `w1` the workspace, refused where `probe_requested_paths` does not answer
   `ignored=False`, citable under the packet's excerpt refs; `o<n>` an admitted outside root with the
   task-declared paths beneath it (`declared`), and `s<n>` the same root served from the first kept
@@ -11826,10 +11857,17 @@ sent)`. The attempt runner is given `max_retries=0` for it.
   `reviewer_record_from_wire` returns `None` for anything else; `render_reviewer_lines(record)` is
   the one text rendering (CLI and TUI check text through `cli.render.render_check_review_lines`,
   MCP text through `mcp.summaries.render_check_reviewer_output`, and the receipt's version and
-  policy section). `source` is `src_` plus 24 hex of SHA-256 over job id, alias and path for a
-  file read, else the case item id; `disclosure` is the privacy receipt of the exchange that first
-  carried the result (`None` if none did); `ended` is the loop's closed stop reason, `None` for a
-  final judgment.
+  policy section). `source` is `src_` plus the first 24 hex of `source_commitment(
+  b"finishup/reviewer-read-source/v1\x00" + job_id + "\x00" + alias + ":" + path)` (the object
+  store's keyed commitment) for a file read, else the case item id; `disclosure` is the privacy
+  receipt of the exchange that first carried the result, recorded when that exchange was sent
+  (`None` if no sent exchange did); `ended` is the loop's closed stop reason, `None` for a final
+  judgment.
+- Receipts: `kernel.receipt_builder` appends `REVIEWER_ADVISORY_LABEL` plus the applicable check's
+  recorded `review_summary` (a succeeded semantic review only; at most 8,192 characters, marked
+  where cut) as the last item of the `limitations_and_coverage` section under `full_local`, and
+  `REVIEWER_ADVISORY_WITHHELD` under `default_local_export` and `redacted_share`, which also count
+  one `finding_detail`/`policy_redacted` redaction. The item is a `finding_summary` result leaf.
 - Wire: optional `reviewer` (`$defs/reviewer_record`, `$defs/reviewer_read`) on the check-result
   1.6.0 success branch and on check-recorded 1.6.0, both new versions; check-recorded 1.6.0 is
   written exactly when the record is present, and the 1.4.0/1.5.0 documents stay unchanged and

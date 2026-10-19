@@ -2405,16 +2405,20 @@ The loop allows at most three reads, 8 KiB per complete result and 24 KiB in all
 (at most five), the one format repair and every read is a durable step of the review job
 (ADR-003, migration `0017`), reserved before it runs and never refunded; a denied or empty read
 spends its read. A job that already holds steps is not resumed: its review ends incomplete
-(`interrupted`, or `uncaptured_step` when a reserved step has no captured result). After the cap
+(`interrupted`, or `uncaptured_step` when a reserved step has no captured result). The one
+exception is a first turn that waited for the owner before anything was sent, which runs once more
+in its own reservation (see "Owner approval" under "Service wiring and delivery"). After the cap
 only the final judgment is offered, and a read anyway ends the review incomplete with no
-observation. One format repair is allowed per review, and the malformed text is not echoed back. A
+observation. One format repair is allowed per review, for a completed answer that is not one JSON
+object as for one the decoder rejects, and the malformed text is not echoed back. A
 second malformed reply, a failed or uncertain model turn, a lost lease, or a binding that no longer
 holds ends the review incomplete. The shared deadline is checked after every await: a reply that
 arrives late is not used, a read is not started inside the final reserve, and a local read stops at
 five seconds or the reserve, whichever is first: a read in progress checks it per chunk and per
 listed entry, and again when it completes, so a read that completes late is discarded, never sent
 or retained. That bounds what is used, not wall time: a blocked OS call is not preempted. Before every continuation the loop rechecks local-only review, the route's policy
-refusal and every outside root the conversation holds bytes from, so a removed root ends it.
+refusal, every outside root the conversation holds bytes from, and the category and data class of
+every read element it holds, so a removed root or a withdrawn category ends it.
 
 A read result is fitted into its byte room first (`max_bytes` is at least 1,024, one whole
 envelope); spans, line spans, `truncated` and `next_cursor` describe exactly the fitted data. Text is
@@ -2541,6 +2545,14 @@ credential probe keep their one-shot dispatch; no check uses it.
   checks the outside roots of the packet items and of every read the conversation carries. The
   first exchange uses the attempt's provider request id; each later exchange gets a new one, its
   own proposal, receipt and one-use transport.
+- **Retained reads keep their admission.** Each admitted read element keeps the category and data
+  class it was admitted as, and the conversation is bound to the effective policy (generation and
+  digest) its exchanges are admitted under. Once it holds a read result, an exchange under any
+  other policy, or holding an element the current ceiling no longer allows, is refused before a
+  proposal exists; read admission and the per-turn recheck refuse the same way. The consume fence
+  binds that same policy digest, so a change after admission makes the authorization stale. A
+  provider keeps what it was sent, so FinishUP does not rewrite its history: the review ends
+  incomplete and nothing more is sent.
 - **Every byte sent counts against the channel ceiling**: the loop instruction, the packet (as a
   JSON string, so escaping grows it), the catalog, the replies and the reads. The packet is planned
   below the ceiling less an 8 KiB frame, then a fifth for escaping; after each exchange the reads
@@ -2554,12 +2566,25 @@ credential probe keep their one-shot dispatch; no check uses it.
   the policy withholds repository excerpts. Workspace text is citable under the refs of the
   packet's excerpts, outside text under the task statement's.
 - **Durable steps and attempts.** `SqliteLedger.review_steps(handle)` is the step store. A review
-  conversation is one physical attempt: the outer retry and repair are off for it, and a retry or
-  fallback dispatch of the same job finds its steps and ends `interrupted` rather than resuming.
-- **Owner approval.** Under an ask-every-time policy the first exchange waits for the owner like
-  the one-shot packet did; the resumed review sends exactly the approved conversation and is
-  offered no reads, since each further exchange would need its own approval. A later exchange that
-  needs approval ends the review blocked.
+  conversation is one physical attempt: the outer retry and repair are off for it. With a fallback
+  configured, the frozen plan (new or already persisted) gives each endpoint one attempt and
+  engages the fallback only for a primary that could not be resolved before any dispatch. A primary
+  that was dispatched and then failed ends the review with its own outcome: once its conversation
+  may have disclosed anything, no second conversation starts. A re-entered job that already holds
+  steps ends `interrupted` or `uncaptured_step` rather than resuming, except as below.
+- **Owner approval.** Under an ask-every-time policy the review offers no reads, since each
+  further exchange would need its own approval, and its first exchange waits for the owner. The
+  durable disclosure wait names the exact proposal the owner was shown. Re-entered, the job resumes
+  that proposal, for that request and by its prepared conversation digest, under the reviewer media
+  type and session, in the turn it already reserved: only when the job holds exactly that one
+  uncaptured turn and the first request was never consumed, and without refilling any budget.
+  Approved, the exact approved conversation is sent once; denied or expired, nothing is sent; a
+  first exchange already consumed is recovered by its request identity as `outcome_unknown` and
+  never resent. Proposals live only in the service process, so a restart before the decision ends
+  the waiting review unavailable without sending. Limit: the waiting check's operation lease runs
+  to the job's deadline, so a same-request `check` returns `operation_pending` while it lasts, and
+  once it lapses the deadline has passed; the resume is exercised at the admitted job's evaluator,
+  and owner-approved completion through a public same-request `check` is not yet shown.
 - **One terminal result.** A final judgment becomes an ordinary egress success, so the existing
   `validate_semantic_judgment` fence runs over the packet's citable refs joined with the refs the
   reads sent. An exchange's own blocked, awaiting or provider outcome ends the review as that
@@ -2572,13 +2597,19 @@ credential probe keep their one-shot dispatch; no check uses it.
   final runtime evidence, so `process_cleanup` stays within runtime-attempt-evidence 1.1.0 and no
   schema bump was needed.
 - **The record.** A bounded `ReviewerRecord` is built from the conversation's own service
-  envelopes: exchanges, and per read the action, status, reason, an opaque source identity (a
-  job-keyed commitment of root alias and path for a file, else the case item id), root alias,
-  standing, baseline, line span, result bytes and digest, and the privacy receipt of the exchange
-  that first sent it; plus why the conversation ended and the session cleanup. It is optional
+  envelopes: exchanges, and per read the action, status, reason, an opaque source identity (for a
+  file, the installation object store's keyed commitment of job, root alias and path under its own
+  domain; else the case item id), root alias, standing, baseline, line span, result bytes and
+  digest, and the privacy receipt of the exchange that first carried it, recorded when that
+  exchange was sent (none when no sent exchange carried it); plus why the conversation ended and
+  the session cleanup. It is optional
   `reviewer` on check-result 1.6.0 and check-recorded 1.6.0 (new versions; 1.4.0/1.5.0 are
   unchanged and refuse the field, so an older reader never misreads it), so the check result, a same-id replay, status recovery of the result and receipts all read it.
   Each file read's alias and path stays only in the encrypted review response. CLI and TUI text,
-  MCP text and receipts render the same lines; receipts carry this structural record, never
-  reviewer prose. As before, the text a read sent is not persisted, so a judgment recovered from
-  the durable response (without dispatch) cannot cite read text.
+  MCP text and receipts render the same lines. A `full_local` receipt also carries the applicable
+  check's recorded review summary (the final advisory and the residual reasons) as one fenced
+  `finding_summary` item in its limitations section; the export profiles carry an explicit,
+  counted omission instead, and the result-boundary privacy projection governs every agent view.
+  No reviewer prose enters a structural sentence. As before, the text a read sent is not
+  persisted, so a judgment recovered from the durable response (without dispatch) cannot cite read
+  text.

@@ -575,15 +575,28 @@ refused) or in a folder you admitted, limited to the files the task names there.
 most 8 KiB and all reads together at most 24 KiB, and each passes the same policy, limits and
 never-send rules as the packet. Each further turn of the conversation is sent with its own privacy
 check and receipt, and the whole conversation, packet and reads included, must fit your channel
-limits: with tight limits the reviewer gets fewer reads or none. If your policy asks before every
-review, you approve the first turn as before and that review runs without reads. FinishUP no longer
-resends a rebuilt packet inside the check.
+limits: with tight limits the reviewer gets fewer reads or none. What a read returned keeps the
+category it was admitted under: if you withdraw that category, or your policy changes, while the
+conversation holds it, the review stops there incomplete and nothing more is sent. If your policy
+asks before every review, that review runs without reads and its first turn waits for your decision
+on exactly what it would send; denied or expired, nothing is sent, and only those exact bytes could
+ever be sent once. Known limit: the waiting check keeps its review time running, and running the
+same check again reports it pending until that time is up, after which the review ends without
+sending anything. So today an approval does not complete that review; the next check asks again. A
+pending decision also does not survive a service restart. FinishUP no longer resends a rebuilt
+packet inside the check.
 
 What the reviewer read is recorded: the check result and the receipt list each read (its kind,
-outcome, folder alias, line span, size and the privacy receipt that sent it, never a path or
-content), and why a conversation stopped early. Use local-only review or withhold repository
-excerpts to stop file reads; remove an admitted folder to stop reads from it. Whatever the reviewer
-still needs comes back to the agent, with the reviewer's own reason in the review summary.
+outcome, folder alias, line span, size and the privacy receipt of the turn that first sent it,
+never a path or content), and why a conversation stopped early. Use local-only review or withhold
+repository excerpts to stop file reads; remove an admitted folder to stop reads from it. Whatever
+the reviewer still needs comes back to the agent, with the reviewer's own reason in the review
+summary. A `full_local` receipt also carries that summary, its final advisory and reasons, marked as
+the reviewer's own words; an exported receipt says it was withheld instead, and your privacy policy
+decides whether your agent's view shows it.
+
+If the reviewer answers with something that is not a valid reply, it is asked once to correct the
+format; a second bad answer, or a turn that failed or never finished, ends the review incomplete.
 
 AI-powered output is advisory, provenance-labeled, and fenced by fixed rules. It never silently
 becomes local-check truth, and it never upgrades a coverage claim.
@@ -594,11 +607,12 @@ sent text word for word; otherwise the quote is removed and the result says so. 
 cites only material the review did not carry becomes no finding, but its wording is added to the
 review summary as an unverified concern, so the agent still sees it.
 
-A review conversation gets one attempt and is never retried or resumed. If a fallback endpoint is
-approved and the primary cannot be resolved at all (for example, its credential is missing), the
-conversation runs on the fallback. If the primary fails once the review has started, the fallback
-does not start a second conversation for the same check: the review ends incomplete (outcome
-unknown), and the next check reviews again. An answer the primary actually
+A review conversation gets one attempt, and once it has sent anything it is never retried or
+resumed. If a fallback endpoint is approved and the primary cannot be
+resolved at all (for example, its credential is missing), the conversation runs on the fallback. If
+the primary fails once the review has started, the fallback does not start a second conversation
+for the same check: the review ends with the primary's own outcome, and the next check reviews
+again. An answer the primary actually
 gave is never re-asked elsewhere. The result and receipt then name the fallback as the provider,
 model, and endpoint that served and carry `fallback_from`: the primary, how many attempts it was
 given, and the exact reason it was abandoned. The markdown and text receipts say which endpoint
