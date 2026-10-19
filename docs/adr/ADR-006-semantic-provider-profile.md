@@ -2437,6 +2437,10 @@ The controller is adapted from mini-swe-agent's `DefaultAgent` (MIT, Kilian A. L
 E. Jimenez, `src/minisweagent/agents/default.py` at `40fa36522015a6bc6cf14411382b662b42083bf1`).
 Its copyright and permission notice is kept in `application/reviewer_loop.py`. Its shell
 environment, model framework, templating and trajectory logging are removed. The loop has one
-instruction of about 800 tokens in pstack's shape (goal, done condition, evidence, clues,
+instruction of about 1,000 tokens in pstack's shape (goal, done condition, evidence, clues,
 constraints); it states the substantive honesty rules of the packet-only instruction once, including
-the citation union, and does not reuse that instruction's text.
+the citation union, and does not reuse that instruction's text. Among them: an unbounded
+requirement is judged on the tested portion with the rest stated as a limitation; an observed check
+whose source is unavailable is judged on its captured output, and an agent-supplied command is never
+the hook-observed one; an image or binary is not assessable and is not a `missing_for_assessment`
+request. Each miss class of the offline accuracy cases is bound to one of its directives.

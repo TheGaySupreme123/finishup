@@ -294,8 +294,50 @@ def test_instruction_is_one_short_pstack_prompt_with_the_honesty_rules() -> None
         "insufficient_packet means unassessable",
         "exactly one prior_finding_verdicts entry",
         "advisory",
+        # R2-4: the honesty rules ADR-006 retains, each stated tersely.
+        "judge the part the recorded tests establish as supported and state the remainder as a "
+        "limitation",
+        "never abstain or ask for that source only because it is absent",
+        "not the hook-observed command",
+        "it is not_assessable, not a missing_for_assessment item",
     ):
-        assert rule in text, rule
+        assert rule in " ".join(text.split()), rule
+
+
+# Each miss class of the offline accuracy cases (n6, n7) and the loop instruction's directive for
+# it. The old instruction's exact sentences stay bound to that instruction by its own tests.
+_LOOP_DIRECTIVES = {
+    "adopted_agent_premise": "find the material that shows it",
+    "boundary_not_tested": "values just below, at and just above each bound",
+    "trusted_agent_validator": "claims to verify, not support",
+    "adopted_agent_method": "the method or assumption the result rests on",
+    "environment_portability": "neither it nor the task supplies",
+    "numeric_plausibility": "whether numbers are plausible in the task's units and definitions",
+    "insufficient_packet_suppressed_visible_defect": "always outranks what is missing",
+    "ungrounded_reassurance": "never reassure beyond it",
+    "hidden_verifier_quirk": "obtain what it cannot (a hidden grader",
+    "abstained_on_observed_output": "judge its captured lines and scope the row to them",
+    "relisted_supplied_material": "never list what the packet or a read holds",
+    "deferred_to_disclosure": "never stops you judging what the material shows",
+    "delivery_risk_on_correct_work": "An input or service the task supplies is no risk",
+}
+_ACCURACY_CASES = [
+    case
+    for name in ("n6_cases.json", "n7_cases.json")
+    for case in json.loads((_REPO / "tests/fixtures/reviewer_accuracy" / name).read_text("utf-8"))[
+        "cases"
+    ]
+]
+
+
+@pytest.mark.parametrize("case", _ACCURACY_CASES, ids=lambda case: case["case"])
+def test_each_offline_accuracy_case_is_bound_to_the_loop_instruction(
+    case: dict[str, JsonValue],
+) -> None:
+    text = " ".join(REVIEWER_LOOP_INSTRUCTION.split())
+    for miss in (case["miss"], *cast(list[str], case["secondary"])):
+        assert _LOOP_DIRECTIVES[cast(str, miss)] in text, miss
+    assert cast(str, case["case"]) not in text.casefold()
 
 
 # The loop
