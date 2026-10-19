@@ -4122,6 +4122,7 @@ async def _service_auto_unlock_repair(json_output: bool) -> int:
                 return exit_code_for(PublicErrorCode.VAULT_LOCKED)
             store = _auto_unlock_store()
             store.save(passphrase)
+            custody = store.custody
         finally:
             for index in range(len(passphrase)):
                 passphrase[index] = 0
@@ -4138,6 +4139,9 @@ async def _service_auto_unlock_repair(json_output: bool) -> int:
         "schema": "yoetz.auto-unlock-repair/1",
         "outcome": "repaired",
         "service_state": "ready",
+        # Issue #1119: where the passphrase now lives (owner_file keeps it in a file only this
+        # account can read, which programs running as this account can also read).
+        "custody": custody,
         "next_command": "finishup service auto-unlock status",
     }
     _human_or_json(report, json_output=json_output)

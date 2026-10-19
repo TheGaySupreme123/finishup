@@ -1287,7 +1287,9 @@ class FinishUpTui(App[int]):
             self.say(Level.VERIFIED, "Secure storage is already set up")
             return
         try:
-            ready, reason = await self.hand_over_terminal(self.runtime.set_up_storage_automatically)
+            ready, reason, custody = await self.hand_over_terminal(
+                self.runtime.set_up_storage_automatically
+            )
         except SuspendNotSupported:
             self.say(
                 Level.UNPROVEN,
@@ -1305,14 +1307,15 @@ class FinishUpTui(App[int]):
                 (str(reason), "", "Run 'finishup setup vault' to try again."),
             )
             return
-        where = (
-            "your system keychain"
-            if detection.secure_storage_available
-            else "a file only your account can read (no system keychain on this machine)"
-        )
-        self.say(
-            Level.VERIFIED, "Secure storage is set up", (f"The vault key is kept in {where}.",)
-        )
+        where = {
+            "platform_store": ("The vault key is kept in your system keychain.",),
+            "owner_file": (
+                "The vault key is kept in a file only your account can read.",
+                "Other accounts cannot open it; programs running as you can.",
+            ),
+            "passphrase": ("FinishUP keeps no copy; you type your passphrase after a restart.",),
+        }.get(custody, ())
+        self.say(Level.VERIFIED, "Secure storage is set up", where)
 
     async def hand_over_terminal(self, operation: Callable[[], Awaitable[Any]]) -> Any:
         """Run ``operation`` with the full-screen interface suspended.

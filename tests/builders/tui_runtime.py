@@ -462,9 +462,9 @@ class FakeRuntime:
     async def initialize_system_keyring(self) -> None:
         self.ceremonies.append("initialize_keyring")
 
-    async def set_up_storage_automatically(self) -> tuple[bool, str | None]:
+    async def set_up_storage_automatically(self) -> tuple[bool, str | None, str]:
         self.ceremonies.append("set_up_storage")
-        return True, None
+        return True, None, "platform_store"
 
     async def unlock_vault(self) -> None:
         self.ceremonies.append("unlock_vault")

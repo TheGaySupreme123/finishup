@@ -134,3 +134,48 @@ def test_existing_owner_file_custody_survives_a_platform_store_appearing(
 
     assert later.custody == "owner_file"
     assert later.load() is not None
+
+
+def test_a_hard_linked_entry_is_refused(bundle: Path, tmp_path: Path) -> None:
+    store = _store(bundle)
+    store.set_password(_SERVICE, _ACCOUNT, "secret-value")
+    os.link(bundle / "auto-unlock" / _ACCOUNT, tmp_path.resolve() / "second-name")
+
+    with pytest.raises(PermissionError):
+        store.get_password(_SERVICE, _ACCOUNT)
+
+
+def test_a_short_write_is_completed_before_the_entry_is_published(
+    monkeypatch: pytest.MonkeyPatch, bundle: Path
+) -> None:
+    real_write = os.write
+
+    def one_byte_at_a_time(fd: int, data: bytes | memoryview) -> int:
+        return real_write(fd, bytes(data[:1]))
+
+    monkeypatch.setattr(os, "write", one_byte_at_a_time)
+    store = _store(bundle)
+    store.set_password(_SERVICE, _ACCOUNT, "secret-value")
+    monkeypatch.undo()
+
+    assert store.get_password(_SERVICE, _ACCOUNT) == "secret-value"
+    assert [entry.name for entry in (bundle / "auto-unlock").iterdir()] == [_ACCOUNT]
+
+
+def test_a_chained_platform_store_is_used_instead_of_the_file(
+    monkeypatch: pytest.MonkeyPatch, bundle: Path
+) -> None:
+    from keyring.backends.chainer import ChainerBackend
+    from keyring.backends.SecretService import Keyring as SecretServiceKeyring
+
+    chained = SecretServiceKeyring()
+    chainer = ChainerBackend()
+    monkeypatch.setattr(
+        ChainerBackend, "backends", property(lambda _self: [FailKeyring(), chained])
+    )
+    monkeypatch.setattr(os_keyring.keyring, "get_keyring", lambda: chainer)
+
+    store = AutoUnlockPassphraseStore(bundle)
+
+    assert store.custody == "platform_store"
+    assert store._backend is chained  # pyright: ignore[reportPrivateUsage]

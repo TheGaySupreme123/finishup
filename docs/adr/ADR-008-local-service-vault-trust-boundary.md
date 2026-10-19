@@ -462,15 +462,26 @@ weakens the at-rest boundary on those machines.
   and proof-based recovery rule. Only the backend changes: `OwnerOnlyFileCredentialStore`
   (`finishup.adapters.keys.owner_file_store`) stores each slot as one file named by its digest
   account under `<bundle>/auto-unlock/` (directory `0700`, files `0600`).
-  - Reads refuse anything that is not a regular, euid-owned, owner-only file, or that sits in a
-    directory failing the owner-only check. Symlinks are refused (`O_NOFOLLOW`).
-  - Writes are atomic: an exclusive temp file is fsynced, renamed into place, and the directory
-    is fsynced.
+  - Every operation opens the custody directory once (`O_NOFOLLOW`), verifies that descriptor
+    (directory, euid-owned, `0700`), and resolves entry names against it, so a swapped path
+    component cannot redirect a read or write.
+  - Reads refuse anything that is not a regular, euid-owned, owner-only, single-link file.
+    Symlinks are refused (`O_NOFOLLOW`).
+  - Writes are atomic and complete: an exclusive temp file receives every byte, is fsynced,
+    renamed into place, and the directory is fsynced.
   - Only the custody directory is created, and only inside an existing bundle root.
   - Entry names are store-chosen digests; no user-controlled text reaches a path.
 - **Selection.** Existing file entries win, so an installation keeps its custody when a platform
-  store appears later. Otherwise an allowlisted platform store is used. The file is used only when
-  neither applies. `service auto-unlock status` reports `custody: platform_store | owner_file`.
+  store appears later. Otherwise an allowlisted platform store is used, including the first one
+  inside keyring's chainer wrapper. The file is used only when neither applies.
+  `service auto-unlock status` and `auto-unlock enable|repair` report
+  `custody: platform_store | owner_file`; setup and the terminal interface name the custody they
+  actually used, and the agent-chat `vault_initialize` and `vault_passphrase_rotate` danger texts
+  state both custodies and the same-user trade-off.
+- **Recovery snapshots never carry it.** ADR-024 self-contained snapshots skip
+  `<bundle>/auto-unlock/` (and the empty `auto-unlock-init.lock`) instead of refusing the bundle,
+  so recovery provisioning keeps working and an exported recovery set never holds the
+  passphrase beside the envelope it opens.
 - **What it protects.** The file custody protects the vault against other accounts on the
   machine. It does **not** protect against software running as the same user, which can read the
   file. On those machines the vault's at-rest protection is equivalent to the account's file

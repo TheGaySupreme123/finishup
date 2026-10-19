@@ -64,70 +64,101 @@ class OwnerOnlyFileCredentialStore:
             return self._directory.exists()
 
     def get_password(self, service: str, username: str) -> str | None:
-        path = self._entry(service, username)
+        name = self._entry(service, username)
         if not existing_owner_only_dir(self._directory):
             return None
+        directory = self._open_directory()
         try:
-            fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC)
-        except FileNotFoundError:
-            return None
-        try:
-            info = os.fstat(fd)
-            if (
-                not stat.S_ISREG(info.st_mode)
-                or info.st_uid != os.geteuid()
-                or info.st_mode & 0o077
-                or info.st_size > _MAX_ENTRY_BYTES
-            ):
-                raise PermissionError("owner_file_entry_unsafe")
-            data = os.read(fd, _MAX_ENTRY_BYTES + 1)
+            try:
+                fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC, dir_fd=directory)
+            except FileNotFoundError:
+                return None
+            try:
+                info = os.fstat(fd)
+                if (
+                    not stat.S_ISREG(info.st_mode)
+                    or info.st_uid != os.geteuid()
+                    or info.st_mode & 0o077
+                    or info.st_nlink != 1
+                    or info.st_size > _MAX_ENTRY_BYTES
+                ):
+                    raise PermissionError("owner_file_entry_unsafe")
+                data = os.read(fd, _MAX_ENTRY_BYTES + 1)
+            finally:
+                os.close(fd)
         finally:
-            os.close(fd)
+            os.close(directory)
         if len(data) > _MAX_ENTRY_BYTES:
             raise PermissionError("owner_file_entry_unsafe")
         return data.decode("ascii")
 
     def set_password(self, service: str, username: str, password: str) -> None:
-        path = self._entry(service, username)
+        name = self._entry(service, username)
         # Only the custody directory itself is ever created, inside an existing bundle root.
         if not self._directory.parent.is_dir():
             raise FileNotFoundError("owner_file_store_parent_missing")
         ensure_owner_only_dir(self._directory)
         encoded = password.encode("ascii")
-        temporary = path.with_name(f".{path.name}.{os.getpid()}.tmp")
-        fd = os.open(
-            temporary,
-            os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC,
-            0o600,
-        )
+        temporary = f".{name}.{os.getpid()}.tmp"
+        directory = self._open_directory()
         try:
+            fd = os.open(
+                temporary,
+                os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC,
+                0o600,
+                dir_fd=directory,
+            )
             try:
-                os.write(fd, encoded)
-                os.fsync(fd)
-            finally:
-                os.close(fd)
-            os.replace(temporary, path)
-        except BaseException:
-            try:
-                os.unlink(temporary)
-            except FileNotFoundError:
-                pass
-            raise
-        self._sync_directory()
+                try:
+                    view = memoryview(encoded)
+                    while view:
+                        written = os.write(fd, view)
+                        if written <= 0:
+                            raise OSError("owner_file_short_write")
+                        view = view[written:]
+                    os.fsync(fd)
+                finally:
+                    os.close(fd)
+                # rename(2) atomically replaces the destination on POSIX; both names resolve
+                # against the verified directory descriptor, never a re-walked path.
+                os.rename(temporary, name, src_dir_fd=directory, dst_dir_fd=directory)
+            except BaseException:
+                try:
+                    os.unlink(temporary, dir_fd=directory)
+                except FileNotFoundError:
+                    pass
+                raise
+            os.fsync(directory)
+        finally:
+            os.close(directory)
 
     def delete_password(self, service: str, username: str) -> None:
-        path = self._entry(service, username)
-        os.unlink(path)
-        self._sync_directory()
+        name = self._entry(service, username)
+        directory = self._open_directory()
+        try:
+            os.unlink(name, dir_fd=directory)
+            os.fsync(directory)
+        finally:
+            os.close(directory)
 
-    def _entry(self, service: str, username: str) -> Path:
+    def _open_directory(self) -> int:
+        """Open the custody directory once and verify the descriptor, not the path again."""
+
+        fd = os.open(self._directory, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC)
+        try:
+            info = os.fstat(fd)
+            if (
+                not stat.S_ISDIR(info.st_mode)
+                or info.st_uid != os.geteuid()
+                or stat.S_IMODE(info.st_mode) != 0o700
+            ):
+                raise PermissionError("owner_file_directory_unsafe")
+        except BaseException:
+            os.close(fd)
+            raise
+        return fd
+
+    def _entry(self, service: str, username: str) -> str:
         if service != _SERVICE_NAME or _ACCOUNT_PATTERN.fullmatch(username) is None:
             raise ValueError("owner_file_entry_name_invalid")
-        return self._directory / username
-
-    def _sync_directory(self) -> None:
-        fd = os.open(self._directory, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
-        try:
-            os.fsync(fd)
-        finally:
-            os.close(fd)
+        return username

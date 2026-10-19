@@ -3136,29 +3136,81 @@ def _emit_codex_subscription_layer_report(*, privacy_outcome: str) -> None:
 
 def _automatic_vault_line(custody: str) -> str:
     if custody == "owner_file":
-        return (
-            "Secure vault setup: no system keychain on this machine, so the key is kept in a "
-            "file only your account can read"
-        )
+        return "Secure vault setup (key kept in a file only your account can read)"
     return "Secure vault setup (platform credential store auto-unlock)"
 
 
-async def ensure_vault_ready() -> tuple[bool, str | None]:
+@dataclass(frozen=True)
+class VaultReadiness:
+    """Outcome of :func:`ensure_vault_ready`: readiness, a bounded reason, and where the key is.
+
+    ``custody`` is ``platform_store`` (system keychain), ``owner_file`` (owner-only file),
+    ``passphrase`` (typed after each restart; no stored copy) or ``unknown``. ``service`` is the
+    status read after the attempt, so callers never report a pre-attempt locked state.
+    """
+
+    ready: bool
+    reason: str | None
+    custody: str
+    service: dict[str, JsonValue]
+
+
+def _vault_custody(service: dict[str, JsonValue]) -> str:
+    """Name where the vault key actually lives, from the vault mode and the scoped store."""
+
+    from finishup.adapters.keys.os_keyring import AutoUnlockPassphraseStore
+    from finishup.config.load import load_config
+    from finishup.config.paths import bundle_root
+
+    mode = service.get("vault_mode")
+    if mode == "os_keyring":
+        return "platform_store"
+    if mode != "passphrase":
+        return "unknown"
+    try:
+        config = load_config({}, os.environ, None)
+        store = AutoUnlockPassphraseStore(bundle_root(_data_dir=config.storage.data_dir))
+        present = store.slot_report().get("active") == "present"
+    except Exception:
+        return "unknown"
+    return store.custody if present else "passphrase"
+
+
+async def ensure_vault_ready() -> VaultReadiness:
     """Create or unlock the vault with no question asked (issue #1119).
 
     A new vault gets a generated passphrase kept in the system keychain, or in an owner-only
     file where no keychain is usable. An existing vault is unlocked from that copy when one
-    exists; otherwise the human passphrase ceremony asks for it. Returns readiness and the
-    bounded reason when it is not ready.
+    exists; otherwise the human passphrase ceremony asks for it. Transport and ceremony failures
+    become a bounded not-ready outcome rather than an escaping exception.
     """
+
+    from finishup.cli.unlock import HumanCeremonyCliError
+    from finishup.ports.control import ControlError
+    from finishup.service.confidential_client import ConfidentialClientError
 
     service = await _service_reachability(start_if_absent=True)
     if not service.get("reachable"):
-        return False, "service_unavailable"
-    service, result = await _interactive_provider_setup(service, storage_only=True)
+        return VaultReadiness(False, "service_unavailable", "unknown", service)
+    try:
+        service, result = await _interactive_provider_setup(service, storage_only=True)
+    except (ConfidentialClientError, ControlError, HumanCeremonyCliError, OSError) as error:
+        reason = getattr(error, "reason", None)
+        refreshed = await _service_reachability()
+        return VaultReadiness(
+            False,
+            reason if isinstance(reason, str) else "vault_setup_interrupted",
+            _vault_custody(refreshed),
+            refreshed,
+        )
     reason = result.get("credential_reason")
     ready = service.get("state") == "ready" and reason is None
-    return ready, None if ready else (reason if isinstance(reason, str) else "vault_not_ready")
+    return VaultReadiness(
+        ready,
+        None if ready else (reason if isinstance(reason, str) else "vault_not_ready"),
+        _vault_custody(service),
+        service,
+    )
 
 
 async def _run_local_only_privacy_setup(project: Path | None) -> int:
@@ -3179,9 +3231,9 @@ async def _run_local_only_privacy_setup(project: Path | None) -> int:
     if not service.get("reachable"):
         typer.echo("privacy_setup_failed: service_unavailable", err=True)
         return 20
-    ready, reason = await ensure_vault_ready()
-    if not ready:
-        typer.echo(f"vault_setup_incomplete: {reason}", err=True)
+    vault = await ensure_vault_ready()
+    if not vault.ready:
+        typer.echo(f"vault_setup_incomplete: {vault.reason}", err=True)
         return 20
     try:
         result = await run_privacy_setup(
@@ -3902,32 +3954,43 @@ async def run_setup_wizard(
         from finishup.cli.unlock import HumanCeremonyCliError
         from finishup.ports.control import ControlError
 
-        # Issue #1119: local only still ends with a ready vault, created with no question.
-        await ensure_vault_ready()
-        try:
-            privacy_result = await run_privacy_setup(
-                recipe_hint="private",
-                update_checks_override=update_checks_choice,
-                # ADR-049: the owner's explicit "local only; agents may not opt in".
-                conversation_review=ConversationReview.LOCAL_ONLY,
-                workspace_locator=codex_project,
-            )
-            privacy = {
-                "outcome": privacy_result.outcome,
-                "profile": privacy_result.profile,
-                "proposal_id": privacy_result.proposal_id,
-                "grant_state": getattr(privacy_result, "grant_state", None),
-                "migration_state": getattr(privacy_result, "migration_state", None),
-                "reason": privacy_result.reason,
-            }
-        except (ControlError, HumanCeremonyCliError, OSError, ValueError) as error:
+        # Issue #1119: local only still ends with a ready vault, created with no question. A
+        # vault that is not ready stops here, so the setup marker is never written over it.
+        vault = await ensure_vault_ready()
+        service = vault.service
+        if not vault.ready:
             privacy = {
                 "outcome": "failed",
                 "profile": "unknown",
                 "grant_state": None,
                 "migration_state": None,
-                "reason": _privacy_block_reason(getattr(error, "reason", None)),
+                "reason": f"vault_{vault.reason}",
             }
+        else:
+            try:
+                privacy_result = await run_privacy_setup(
+                    recipe_hint="private",
+                    update_checks_override=update_checks_choice,
+                    # ADR-049: the owner's explicit "local only; agents may not opt in".
+                    conversation_review=ConversationReview.LOCAL_ONLY,
+                    workspace_locator=codex_project,
+                )
+                privacy = {
+                    "outcome": privacy_result.outcome,
+                    "profile": privacy_result.profile,
+                    "proposal_id": privacy_result.proposal_id,
+                    "grant_state": getattr(privacy_result, "grant_state", None),
+                    "migration_state": getattr(privacy_result, "migration_state", None),
+                    "reason": privacy_result.reason,
+                }
+            except (ControlError, HumanCeremonyCliError, OSError, ValueError) as error:
+                privacy = {
+                    "outcome": "failed",
+                    "profile": "unknown",
+                    "grant_state": None,
+                    "migration_state": None,
+                    "reason": _privacy_block_reason(getattr(error, "reason", None)),
+                }
 
     # A package check can happen only after the interactive user explicitly answered the
     # update-check question and the trusted privacy ceremony had a chance to commit it.
@@ -4296,9 +4359,12 @@ async def run_vault_setup(*, passphrase: bool = False) -> int:
 
         typer.echo("Choose a FinishUP passphrase (hidden local-terminal input)")
         try:
-            await initialize_passphrase_vault()
+            outcome = await initialize_passphrase_vault()
         except HumanCeremonyCliError as error:
             typer.echo(f"vault_setup_incomplete: {error.reason}", err=True)
+            return 20
+        if outcome.state != "ready" or outcome.reason != "succeeded":
+            typer.echo(f"vault_setup_incomplete: {outcome.reason}", err=True)
             return 20
         typer.echo(
             "Vault ready. FinishUP keeps no copy of this passphrase; you will type it after "

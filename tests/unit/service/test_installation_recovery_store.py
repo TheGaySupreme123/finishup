@@ -328,6 +328,43 @@ def test_snapshot_rejects_unknown_plaintext_member_instead_of_exporting_it(
     )
 
 
+def test_snapshot_skips_auto_unlock_custody_and_never_exports_it(tmp_path: Path) -> None:
+    """Issue #1119: owner-file custody beside the vault is neither refused nor copied."""
+
+    memory = LocalSecretMemory()
+    store = _store(tmp_path)
+    bundle = tmp_path / "bundle"
+    marker = bundle / "installation-state.json"
+    marker.write_bytes(b"private structural marker\n")
+    marker.chmod(0o600)
+    custody = bundle / "auto-unlock"
+    custody.mkdir(mode=0o700)
+    secret = b"auto-unlock-canary-must-never-enter-recovery-export"
+    entry = custody / ("bundle-" + "a" * 64)
+    entry.write_bytes(secret)
+    entry.chmod(0o600)
+    lock = bundle / "auto-unlock-init.lock"
+    lock.write_bytes(b"")
+    lock.chmod(0o600)
+
+    snapshot = store.prepare_snapshot(1)
+    artifact = _artifact(
+        memory,
+        mode=InstallationRecoveryMode.SELF_CONTAINED,
+        snapshot_digest=snapshot.manifest_digest,
+    )
+    store.activate(store.stage(artifact, snapshot))
+    archive = tmp_path / "recovery.yirs"
+    store.export_generation(1, archive)
+
+    recovery_root = bundle / "installation-recovery"
+    assert not any(
+        secret in path.read_bytes() for path in recovery_root.rglob("*") if path.is_file()
+    )
+    assert secret not in archive.read_bytes()
+    assert not list(recovery_root.rglob("auto-unlock*"))
+
+
 def test_orphaned_stage_does_not_wedge_the_identical_retry(tmp_path: Path) -> None:
     """A crash between staging and commit must not make the same generation unusable forever.
 

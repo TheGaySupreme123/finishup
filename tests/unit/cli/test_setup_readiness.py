@@ -359,9 +359,9 @@ async def test_local_only_setup_creates_the_vault_before_privacy(
     async def reachable(**_kwargs: object) -> dict[str, JsonValue]:
         return {"reachable": True, "state": "locked", "vault_mode": "uninitialized"}
 
-    async def vault_ready() -> tuple[bool, str | None]:
+    async def vault_ready() -> setup.VaultReadiness:
         order.append("vault")
-        return True, None
+        return setup.VaultReadiness(True, None, "owner_file", {"state": "ready"})
 
     async def privacy(**_kwargs: object) -> SimpleNamespace:
         order.append("privacy")
@@ -382,8 +382,8 @@ async def test_local_only_setup_stops_when_the_vault_is_not_ready(
     async def reachable(**_kwargs: object) -> dict[str, JsonValue]:
         return {"reachable": True, "state": "locked", "vault_mode": "uninitialized"}
 
-    async def vault_blocked() -> tuple[bool, str | None]:
-        return False, "auto_unlock_entry_exists"
+    async def vault_blocked() -> setup.VaultReadiness:
+        return setup.VaultReadiness(False, "auto_unlock_entry_exists", "unknown", {})
 
     async def privacy(**_kwargs: object) -> SimpleNamespace:
         raise AssertionError("privacy must not run without a ready vault")
@@ -407,7 +407,7 @@ async def test_vault_passphrase_option_uses_the_human_ceremony_only_for_a_new_va
 
     async def human_ceremony(passphrase: bytearray | None = None) -> object:
         calls.append("human" if passphrase is None else "supplied")
-        return object()
+        return SimpleNamespace(state="ready", reason="succeeded")
 
     async def automatic(*_args: object, **_kwargs: object) -> object:
         raise AssertionError("--passphrase must not generate or store a passphrase")
@@ -424,6 +424,25 @@ async def test_vault_passphrase_option_uses_the_human_ceremony_only_for_a_new_va
     monkeypatch.setattr(setup, "_service_reachability", initialized)
     assert await setup.run_vault_setup(passphrase=True) == 2
     assert calls == ["human"]
+
+
+@pytest.mark.anyio
+async def test_vault_passphrase_option_reports_a_failed_ceremony(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A ceremony that returns a locked state is not "Vault ready" (review of #1119)."""
+
+    monkeypatch.setattr(setup, "_is_interactive_terminal", lambda: True)
+
+    async def uninitialized(**_kwargs: object) -> dict[str, JsonValue]:
+        return {"reachable": True, "state": "locked", "vault_mode": "uninitialized"}
+
+    async def failed(passphrase: bytearray | None = None) -> object:
+        return SimpleNamespace(state="locked", reason="unlock_failed")
+
+    monkeypatch.setattr(setup, "_service_reachability", uninitialized)
+    monkeypatch.setattr("finishup.cli.unlock.initialize_passphrase_vault", failed)
+    assert await setup.run_vault_setup(passphrase=True) == 20
 
 
 def test_module_continuation_preserves_venv_interpreter_spelling(

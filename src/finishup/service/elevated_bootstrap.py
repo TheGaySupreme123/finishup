@@ -185,7 +185,10 @@ CONSENT_OPERATIONS: Final[tuple[ConsentOperationSpec, ...]] = (
         summary="Create the local vault passphrase (cloud/no-TTY).",
         danger_text=(
             "DANGER — vault initialize. Creates this installation's encrypted vault and stores a "
-            "helper-generated auto-unlock secret in the scoped platform credential store. Review "
+            "helper-generated auto-unlock secret in the scoped platform credential store, or, "
+            "where none is usable, in a file only this account can read: other accounts cannot "
+            "read it, but programs running as this account can, and a copy of FinishUP's data "
+            "folder includes it. Review "
             "may use independent action-bound OS user presence or an explicit current-chat "
             "instruction relayed by an allowlisted first-party agent. The helper generates and "
             "submits the secret locally; neither the agent nor chat may supply or receive it."
@@ -203,8 +206,9 @@ CONSENT_OPERATIONS: Final[tuple[ConsentOperationSpec, ...]] = (
         danger_text=(
             "DANGER — vault passphrase rotate. Reauthenticates the ready vault and atomically "
             "replaces its passphrase envelope. After an explicit current-chat instruction, the "
-            "trusted helper stages a random replacement in the scoped platform credential store "
-            "and submits both secrets locally. Neither the agent nor chat may supply or receive "
+            "trusted helper stages a random replacement in the same scoped custody (the platform "
+            "credential store, or the owner-only file where none is usable) and submits both "
+            "secrets locally. Neither the agent nor chat may supply or receive "
             "either secret. A staged entry is retained across an ambiguous interruption so "
             "service restart can reconcile it safely."
         ),

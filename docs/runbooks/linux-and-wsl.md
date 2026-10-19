@@ -350,7 +350,8 @@ proof on every load:
 | `keyring.backends.libsecret.Keyring` | not approved | accepted | libsecret binding of the same service; the Secret Service backend is the reviewed path |
 | `keyring.backends.Windows.WinVaultKeyring` | not approved | accepted | native Windows is not a supported host |
 | FinishUP owner-only file (`finishup.adapters.keys.owner_file_store.OwnerOnlyFileCredentialStore`) | not approved | accepted | used only when no backend above is usable; `0600` files under `<bundle>/auto-unlock/`; protects against other accounts, not against software running as you (ADR-008, 2026-10-19) |
-| anything else (`fail`, `null`, `chainer`, file-based `keyrings.alt`) | not approved | rejected | never selected; FinishUP's own owner-only file is used instead |
+| `chainer` (keyring's wrapper over several viable backends) | not approved | unwrapped | auto-unlock uses the first accepted backend inside it, and the owner-only file only when none is accepted |
+| anything else (`fail`, `null`, file-based `keyrings.alt`) | not approved | rejected | never selected; FinishUP's own owner-only file is used instead |
 
 ADR-008 grounds the root-key boundary in the Secret Service protocol's explicit locked/unlocked
 object model and Apple's Keychain data-protection classes; the KWallet and libsecret backends are

@@ -19,6 +19,7 @@ from threading import Lock
 from typing import Final, Protocol, cast
 
 import keyring
+from keyring.backends.chainer import ChainerBackend
 
 from finishup.adapters.keys.owner_file_store import (
     OWNER_FILE_BACKEND_ID,
@@ -121,7 +122,8 @@ _KEYRING_REQUIREMENTS: Final[Mapping[str, str]] = {
     "Linux": (
         "a running Freedesktop Secret Service (GNOME Keyring, or KWallet through its Secret "
         "Service bridge) on the session D-Bus; headless Linux and WSL 2 normally have none, so "
-        "the vault passphrase is the supported route there"
+        "setup keeps the vault key in a file only your account can read there, or uses a "
+        "passphrase you choose with 'finishup setup vault --passphrase'"
     ),
 }
 _KEYRING_REQUIREMENT_DEFAULT: Final = "macOS Keychain or a Freedesktop Secret Service"
@@ -329,8 +331,16 @@ def _default_auto_unlock_backend(bundle: Path) -> object:
     if owner_file.has_entries():
         return owner_file
     platform_backend = keyring.get_keyring()
-    if _backend_id_of(platform_backend) in _AUTO_UNLOCK_BACKENDS:
-        return platform_backend
+    # keyring wraps several viable backends in a chainer; use the first allowlisted platform
+    # store inside it rather than downgrading a desktop with a working Secret Service to a file.
+    candidates = (
+        tuple(platform_backend.backends)
+        if isinstance(platform_backend, ChainerBackend)
+        else (platform_backend,)
+    )
+    for candidate in candidates:
+        if _backend_id_of(candidate) in _AUTO_UNLOCK_BACKENDS - {OWNER_FILE_BACKEND_ID}:
+            return candidate
     return owner_file
 
 
