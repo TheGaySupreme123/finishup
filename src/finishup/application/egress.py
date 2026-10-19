@@ -4,14 +4,15 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import hashlib
 from collections import Counter
 from collections.abc import Awaitable, Callable, Iterable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timedelta
 from enum import StrEnum
 from typing import TYPE_CHECKING, cast
 
-from finishup.adapters.privacy.local_enforcer import SecretScanRuleset
+from finishup.adapters.privacy.local_enforcer import SecretScanRuleset, estimated_token_count
 from finishup.domain.findings import SemanticDispatchKind
 from finishup.domain.privacy import (
     REVIEW_PACKET_ITEM_ID,
@@ -93,6 +94,7 @@ from finishup.ports.semantic import (
     SemanticResultSuccess,
     SemanticResultTimeout,
     SemanticResultUnavailable,
+    reviewer_packet_bytes,
 )
 from finishup.protocol.canonical import canonical_digest, canonical_encode, strict_json_parse
 from finishup.protocol.ids import IdKind, validate_opaque_item_id
@@ -108,6 +110,8 @@ if TYPE_CHECKING:
 __all__ = [
     "PrivacyCoordinator",
     "RepositoryGrantAdmission",
+    "ReviewerExchangeFrame",
+    "SemanticEgressReply",
     "SemanticEgressAwaitingHuman",
     "SemanticEgressAttemptUnknown",
     "SemanticEgressBlocked",
@@ -424,6 +428,48 @@ class SemanticEgressSuccess:
 
 
 @dataclass(frozen=True, slots=True)
+class ReviewerExchangeFrame:
+    """One reviewer-loop exchange (#1118): admitted like the packet, sent as the conversation.
+
+    The case items are classified, minimized and scanned exactly as for a one-shot review; then
+    ``render`` places the approved packet in the conversation, whose exact bytes are scanned again
+    and become the disclosed payload under ``media_type``. ``input_roots`` are the outside roots of
+    earlier admitted reads the conversation carries; the consume fence checks them too.
+    """
+
+    media_type: str
+    render: Callable[[bytes], bytes]
+    input_roots: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
+class SemanticEgressReply:
+    """One completed reviewer exchange (#1118): the structured reply the loop decodes.
+
+    ``fields`` are the exchange's disclosure identities, from which the conversation's terminal
+    result is built: a success when the reply is the final judgment, else a provider outcome.
+    """
+
+    result: SemanticResultReply
+    fields: dict[str, object]
+    disclosure: ReviewPacketDisclosure | None
+    provider_input_manifest_failure: str | None
+
+    def success(self, result: SemanticResultSuccess) -> SemanticEgressSuccess:
+        return SemanticEgressSuccess(
+            result=result,
+            disclosure=self.disclosure,
+            provider_input_manifest_failure=self.provider_input_manifest_failure,
+            **self.fields,  # pyright: ignore[reportArgumentType]
+        )
+
+    def outcome(
+        self, result: SemanticResultInvalid | SemanticResultTimeout
+    ) -> SemanticEgressProviderOutcome:
+        return SemanticEgressProviderOutcome(result=result, **self.fields)  # pyright: ignore[reportArgumentType]
+
+
+@dataclass(frozen=True, slots=True)
 class SemanticEgressAwaitingHuman:
     """Nonterminal: exact prepared case awaits local human decision; no findings."""
 
@@ -519,6 +565,7 @@ type SemanticEgressResult = (
     | SemanticEgressAttemptUnknown
     | SemanticEgressBlocked
     | SemanticEgressProviderOutcome
+    | SemanticEgressReply
 )
 
 
@@ -628,6 +675,7 @@ class PrivacyCoordinator:
         "_policy_app",
         "_service_generation",
         "_semantic_dispatch_guard",
+        "_reviewer_frame",
     )
 
     def __init__(
@@ -662,6 +710,7 @@ class PrivacyCoordinator:
         self._close_lock = asyncio.Lock()
         self._close_task: asyncio.Task[None] | None = None
         self._semantic_dispatch_guard: Callable[[], Awaitable[bool] | bool] | None = None
+        self._reviewer_frame: ReviewerExchangeFrame | None = None
 
     @property
     def policy_application(self) -> PrivacyPolicyApplication | None:
@@ -709,6 +758,7 @@ class PrivacyCoordinator:
         deadline: Deadline,
         *,
         dispatch_guard: Callable[[], Awaitable[bool] | bool] | None = None,
+        exchange: ReviewerExchangeFrame | None = None,
     ) -> SemanticEgressResult:
         if type(candidate) is not CandidateContext or type(deadline) is not Deadline:
             raise TypeError("semantic_egress_arguments_invalid")
@@ -719,12 +769,12 @@ class PrivacyCoordinator:
                     PrivacyOutcome.CHANNEL_UNAVAILABLE,
                     PrivacyReason.CHANNEL_UNAVAILABLE,
                 )
-            prior_guard = self._semantic_dispatch_guard
-            self._semantic_dispatch_guard = dispatch_guard
+            prior_guard, prior_frame = self._semantic_dispatch_guard, self._reviewer_frame
+            self._semantic_dispatch_guard, self._reviewer_frame = dispatch_guard, exchange
             try:
                 return await self._evaluate_semantic_admitted(candidate, deadline)
             finally:
-                self._semantic_dispatch_guard = prior_guard
+                self._semantic_dispatch_guard, self._reviewer_frame = prior_guard, prior_frame
 
     async def resume(
         self,
@@ -733,6 +783,7 @@ class PrivacyCoordinator:
         deadline: Deadline,
         *,
         dispatch_guard: Callable[[], Awaitable[bool] | bool] | None = None,
+        exchange: ReviewerExchangeFrame | None = None,
     ) -> SemanticEgressResult:
         if (
             type(request_id) is not str
@@ -747,12 +798,14 @@ class PrivacyCoordinator:
                     PrivacyOutcome.CHANNEL_UNAVAILABLE,
                     PrivacyReason.CHANNEL_UNAVAILABLE,
                 )
-            prior_guard = self._semantic_dispatch_guard
-            self._semantic_dispatch_guard = dispatch_guard
+            # A resumed reviewer exchange sends the conversation the owner approved; the frame
+            # only names its reply media type and the roots it holds.
+            prior_guard, prior_frame = self._semantic_dispatch_guard, self._reviewer_frame
+            self._semantic_dispatch_guard, self._reviewer_frame = dispatch_guard, exchange
             try:
                 return await self._resume_admitted(request_id, case_digest, deadline)
             finally:
-                self._semantic_dispatch_guard = prior_guard
+                self._semantic_dispatch_guard, self._reviewer_frame = prior_guard, prior_frame
 
     async def recover_started_attempt(
         self,
@@ -1166,6 +1219,14 @@ class PrivacyCoordinator:
         ):
             return "privacy_withheld"
         return None
+
+    async def reviewer_history_current(
+        self, scope: AuthorizationScope, binding: ProviderBinding, roots: Iterable[str]
+    ) -> bool:
+        """Whether a review conversation holding bytes read beneath ``roots`` may go on (#1118)."""
+
+        effective = await self._policies.effective_policy(scope)
+        return reviewer_history_admissible(effective.policy, binding, scope.kind, roots)
 
     async def close(self) -> None:
         async with self._admission_lock:
@@ -1874,6 +1935,34 @@ class PrivacyCoordinator:
                 scan_stage=ReceiptSecretScanStage.PREPARED_CASE,
                 scan_match_count=_minimized_scan_match_count(minimized),
             )
+        packet_bytes = minimized.prepared_bytes
+        frame = self._reviewer_frame
+        if frame is not None:
+            # #1118: the approved packet travels inside the reviewer conversation. The whole
+            # conversation is the disclosed payload, so ceilings, the proposal and the gateway's
+            # final scan all see its exact bytes; earlier read results were admitted on their own.
+            payload = frame.render(packet_bytes)
+            heuristic = external_review_credential_heuristic(effective.policy, binding)
+            if self._classifier.scan_exact_bytes(payload, credential_heuristic=heuristic):
+                return await self._complete_semantic_predispatch(
+                    candidate,
+                    effective,
+                    PrivacyOutcome.BLOCKED_FORBIDDEN_DATA,
+                    PrivacyReason.NEVER_SEND_DETECTED,
+                    decision=decision,
+                    withheld_item_ids=minimized.withheld_item_ids,
+                    redacted_span_count=minimized.redacted_span_count,
+                    redacted_values=minimized.redacted_values,
+                    scan_stage=ReceiptSecretScanStage.PREPARED_CASE,
+                    scan_match_count=1,
+                )
+            minimized = replace(
+                minimized,
+                prepared_bytes=payload,
+                byte_count=len(payload),
+                token_count=estimated_token_count(len(payload)),
+                case_digest=f"sha256:{hashlib.sha256(payload).hexdigest()}",
+            )
         # Channel ceilings are operator-visible policy dimensions; fail closed when exceeded.
         llm = next(
             item
@@ -1910,7 +1999,7 @@ class PrivacyCoordinator:
         # excerpts, or more excerpt bytes, than the effective policy approved is refused whole,
         # never trimmed to fit (issue #907 Phase 1b).
         if candidate.purpose == _SEMANTIC_PURPOSE and not _within_excerpt_limits(
-            minimized.prepared_bytes, effective.policy.review_selection
+            packet_bytes, effective.policy.review_selection
         ):
             return await self._complete_semantic_predispatch(
                 candidate,
@@ -2169,7 +2258,7 @@ class PrivacyCoordinator:
                 candidate.request_id,
                 proposal.privacy_proposal_id,
                 proposal.prepared_bytes,
-                _MEDIA_TYPE,
+                self._exchange_media_type(),
                 minimized.included_item_ids or proposal.included_item_ids,
                 proposal.approved_categories,
                 proposal.blocked_categories,
@@ -2182,8 +2271,10 @@ class PrivacyCoordinator:
                 proposal.prepared_case_digest,
                 minimized.withheld_item_ids,
                 redacted_span_count=minimized.redacted_span_count,
-                input_roots=_included_input_roots(
-                    candidate, minimized.included_item_ids or proposal.included_item_ids
+                input_roots=self._with_exchange_roots(
+                    _included_input_roots(
+                        candidate, minimized.included_item_ids or proposal.included_item_ids
+                    )
                 ),
             )
             if not await self._semantic_dispatch_is_current():
@@ -2286,7 +2377,7 @@ class PrivacyCoordinator:
             self._ids.new(IdKind.OUTBOUND_CASE),
             candidate.request_id,
             proposal.prepared_bytes,
-            _MEDIA_TYPE,
+            self._exchange_media_type(),
             _SCHEMA_ID,
             minimized.included_item_ids,
             proposal.approved_categories,
@@ -2301,7 +2392,9 @@ class PrivacyCoordinator:
             minimized.withheld_item_ids,
             redacted_span_count=minimized.redacted_span_count,
             credential_heuristic=external_review_credential_heuristic(effective.policy, binding),
-            input_roots=_included_input_roots(candidate, minimized.included_item_ids),
+            input_roots=self._with_exchange_roots(
+                _included_input_roots(candidate, minimized.included_item_ids)
+            ),
         )
         if not await self._semantic_dispatch_is_current():
             return SemanticEgressBlocked(
@@ -2350,6 +2443,14 @@ class PrivacyCoordinator:
             redacted_values=minimized.redacted_values,
         )
 
+    def _exchange_media_type(self) -> str:
+        return _MEDIA_TYPE if self._reviewer_frame is None else self._reviewer_frame.media_type
+
+    def _with_exchange_roots(self, roots: tuple[str, ...]) -> tuple[str, ...]:
+        if self._reviewer_frame is None:
+            return roots
+        return tuple(sorted({*roots, *self._reviewer_frame.input_roots}, key=str.encode))
+
     async def _map_provider_result(
         self,
         request_id: str,
@@ -2373,6 +2474,31 @@ class PrivacyCoordinator:
         except Exception:
             receipt_id = None
         request_commitment = getattr(result.provenance, "request_commitment", None)
+        if type(result) is SemanticResultReply:
+            from finishup.application.semantic_case import review_packet_disclosure_result
+
+            # What the packet turn of the sent conversation carried (#1118).
+            packet = None if prepared_bytes is None else reviewer_packet_bytes(prepared_bytes)
+            disclosed = None if packet is None else review_packet_disclosure_result(packet)
+            return SemanticEgressReply(
+                result,
+                {
+                    "request_id": request_id,
+                    "privacy_proposal_id": privacy_proposal_id,
+                    "authorization_id": authorization_id,
+                    "dispatch_kind": dispatch_kind,
+                    "case_digest": case_digest,
+                    "privacy_receipt_id": receipt_id,
+                    "request_commitment": request_commitment,
+                    "withheld_item_ids": tuple(sorted(set(withheld_item_ids), key=str.encode)),
+                    "redacted_span_count": redacted_span_count,
+                    "redacted_values": redacted_values,
+                },
+                None if disclosed is None else disclosed.disclosure,
+                SEMANTIC_PROVIDER_INPUT_MANIFEST_MISSING_GAP
+                if disclosed is None
+                else disclosed.failure,
+            )
         if type(result) is SemanticResultSuccess:
             from finishup.application.semantic_case import review_packet_disclosure_result
 

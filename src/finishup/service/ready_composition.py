@@ -20,6 +20,7 @@ from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
 from functools import partial
 from pathlib import Path
+from types import MappingProxyType
 from typing import Final, Literal, Protocol, cast
 
 import apsw
@@ -130,7 +131,6 @@ from finishup.application.lineage_recovery import (
     observed_host_session_binding,
 )
 from finishup.application.missing_for_assessment import (
-    ReviewFollowUp,
     check_change_binary_paths,
     check_change_text_paths,
     unsuppliable_missing_kinds,
@@ -167,6 +167,8 @@ from finishup.application.projects import (
     build_routed_project_text_store,
 )
 from finishup.application.recommendations import evaluate_recommendation_context, refresh_pending
+from finishup.application.reviewer_broker import ReadRoot
+from finishup.application.reviewer_run import ReviewerRun, run_reviewer
 from finishup.application.semantic_attempts import (
     SemanticAttemptAccounting,
     SemanticEndpointPlan,
@@ -180,19 +182,15 @@ from finishup.application.semantic_case import (
     MAX_CAPTURED_SEMANTIC_CONTENT_PARTS,
     MAX_CAPTURED_SEMANTIC_INPUT_BYTES,
     TASK_INPUT_ITEM_PREFIX,
-    CheckTimeChange,
     LineageSemanticCapacityExceeded,
     SemanticCaseCapacityExceeded,
     SemanticCaseTooLarge,
     SemanticPacketView,
-    bounded_catalog_item_ids,
     build_semantic_case,
     captured_edit_paths,
     carries_task_inputs,
     check_time_change_bytes_carried,
     check_time_change_sections_carried,
-    current_section_parts,
-    follow_up_new_parts,
     semantic_case_packet_view,
     semantic_case_to_candidate_context,
     sent_excerpt_content_refs,
@@ -276,6 +274,7 @@ from finishup.domain.receipts import (
     ReceiptVersionSlice,
     SchemaVersionEntry,
 )
+from finishup.domain.reviewer_reads import reviewer_record_from_wire
 from finishup.domain.task_statement import (
     review_selection_for_delivery,
     specification_preflight,
@@ -317,6 +316,7 @@ from finishup.ports.change_capture import (
     MAX_SNAPSHOT_ADMISSION_SECONDS,
     MAX_SNAPSHOT_FILE_BYTES,
     ChangeCapturePort,
+    RequestedPathProbe,
     TaskInputFile,
     TaskInputSnapshotSet,
     current_check_workspace_source,
@@ -374,6 +374,7 @@ from finishup.ports.secret_memory import (
 )
 from finishup.ports.semantic import (
     Deadline,
+    ReviewStepStore,
     SemanticCase,
     SemanticResultInvalid,
     SemanticResultLate,
@@ -3870,13 +3871,12 @@ async def _publish_semantic_case_object(
     clock: ClockPort,
     execution: _SemanticExecution,
     check_change: CanonicalJsonValue | None = None,
-    follow_up: tuple[str, int] | None = None,
 ) -> ObjectRef:
     """Persist a structural SEMANTIC_CASE object bound into the durable job row.
 
     ``check_change`` is the pointer to the one check-time change object (ADR-031), or the record
-    that it was unavailable; the change's content stays in its own object. ``follow_up`` is the
-    check's first case digest and the round, for an in-check follow-up job (issue #1047).
+    that it was unavailable; the change's content stays in its own object. A recorded in-check
+    follow-up job (issue #1047, retired by #1118) names its base case; none is written now.
     """
 
     # Frozen legacy identifier (ADR-048): the stored semantic-case tag.
@@ -3889,8 +3889,6 @@ async def _publish_semantic_case_object(
     }
     if check_change is not None:
         body["check_change"] = check_change
-    if follow_up is not None:
-        body["follow_up"] = {"base_case_digest": follow_up[0], "round": follow_up[1]}
     payload = canonical_encode(cast(CanonicalJsonValue, body))
     staged = await runtime.objects.stage(
         ObjectSource(data=payload, declared_size=len(payload)),
@@ -4195,6 +4193,13 @@ async def _publish_semantic_response_object(
         )
     if evaluation.provider_input_manifest_failure is not None:
         body["provider_input_manifest_failure"] = evaluation.provider_input_manifest_failure
+    if evaluation.reviewer is not None:
+        # #1118: the conversation's bounded record, and each file read's alias and path. This
+        # object is encrypted; the paths never leave it except through the owner's own view.
+        body["reviewer"] = cast(CanonicalJsonValue, evaluation.reviewer.as_wire())
+        body["reviewer_paths"] = {
+            str(call): path for call, path in sorted((evaluation.reviewer_paths or {}).items())
+        }
     payload = canonical_encode(cast(CanonicalJsonValue, body))
     staged = await runtime.objects.stage(
         ObjectSource(data=payload, declared_size=len(payload)),
@@ -4400,7 +4405,20 @@ async def _recover_response_evaluation(
         provider_input_manifest_failure=provider_manifest_failure,
         provider_input_text_by_ref=None,
         case_content_gaps=case_content_gaps,
+        reviewer=reviewer_record_from_wire(body.get("reviewer")),
+        reviewer_paths=_reviewer_paths(body.get("reviewer_paths")),
     )
+
+
+def _reviewer_paths(value: object) -> Mapping[int, str] | None:
+    """The recorded ``call -> alias:path`` of a review response, if it is well formed."""
+
+    if not isinstance(value, dict):
+        return None
+    rows = cast(dict[object, object], value)
+    if not all(type(k) is str and k.isdigit() and type(v) is str for k, v in rows.items()):
+        return None
+    return MappingProxyType({int(cast(str, k)): cast(str, v) for k, v in rows.items()})
 
 
 def _review_inputs(
@@ -4856,42 +4874,114 @@ async def _reconcile_capture_handoffs(
     return complete
 
 
-def _follow_up_section_parts(
-    case: SemanticCase,
-    change: CheckTimeChange | None,
-    edit_paths: Mapping[str, frozenset[str]],
-    workspace_root: str | None,
-    withheld: Sequence[str],
-) -> Mapping[str, frozenset[str]]:
-    """What a current-diff follow-up could serve from the frozen change, per edit (tb4n5).
+class _ReviewSteps(Protocol):
+    """The durable ledger's reviewer step store (#1118; ``SqliteLedger.review_steps``)."""
 
-    Empty unless this case carries the change and the channel releases repository excerpts.
-    In process only.
-    """
-
-    if (
-        change is None
-        or DataCategory.REPOSITORY_EXCERPT.value in withheld
-        or not any(item.item_id.startswith(CHECK_TIME_CHANGE_ITEM_PREFIX) for item in case.items)
-    ):
-        return {}
-    return current_section_parts(change.capture, edit_paths, workspace_root)
+    def review_steps(self, handle: SemanticAttemptHandle) -> ReviewStepStore: ...
 
 
-def _admitted_follow_up_parts(
-    case: SemanticCase, follow_up: ReviewFollowUp, withheld: Sequence[str]
-) -> frozenset[str]:
-    """The requested new parts admission keeps (tb4n5): rows the bounded envelope's catalog
-    keeps, in categories the channel does not withhold, so a round whose new parts admission
-    would drop is never sent. A part egress then withholds under a privacy rule is disclosed on
-    the sent packet (the provider-bound manifest says ``pending``) and never asked for again."""
+def _with_reviewer(final: FinalSemanticEvaluation, run: ReviewerRun) -> FinalSemanticEvaluation:
+    """``final`` with the conversation's record and the citations its reads sent (#1118)."""
 
-    return follow_up_new_parts(
-        case,
-        follow_up,
-        withheld_categories=withheld,
-        carried_item_ids=bounded_catalog_item_ids(case),
+    texts = final.provider_input_text_by_ref
+    if texts is not None:
+        merged = {ref: tuple(values) for ref, values in texts.items()}
+        for ref, extra in run.text_by_ref.items():
+            merged[ref] = (*merged.get(ref, ()), *extra)
+        texts = MappingProxyType(merged)
+    return replace(
+        final,
+        reviewer=run.record,
+        reviewer_citable_refs=run.citable_refs,
+        reviewer_paths=MappingProxyType(dict(run.paths)),
+        provider_input_text_by_ref=texts,
     )
+
+
+async def _reviewer_read_roots(
+    runtime: TaskRuntime,
+    request_id: str,
+    case: SemanticCase,
+    *,
+    workspace_root: str | None,
+    outside: tuple[str, ...],
+    inputs: tuple[str, ...],
+    protected: tuple[str, ...],
+    withheld: tuple[str, ...],
+    change_capture: ChangeCapturePort | None,
+) -> tuple[ReadRoot, ...]:
+    """The ``read_file`` roots a review may name (#1118): none where repository excerpts are
+    withheld; else the workspace (Git-ignored paths refused) and, per owner-admitted outside root,
+    the task-declared paths beneath it, current (``o``) and as kept at task start or first
+    admission (``s``). Never this service's own bundle or state, by path or identity."""
+
+    if DataCategory.REPOSITORY_EXCERPT.value in withheld or workspace_root is None:
+        return ()
+    probe = getattr(change_capture, "probe_requested_paths", None)
+
+    def ignored(path: str) -> bool:
+        if not path:
+            return False
+        try:
+            (found,) = cast(Callable[..., Sequence[RequestedPathProbe]], probe)(
+                workspace_root, (path,)
+            )
+        except Exception:  # noqa: BLE001 - an unanswerable ignore state refuses the read
+            return True
+        return found.ignored is not False
+
+    evidence = tuple(
+        sorted(
+            {
+                ref
+                for item in case.items
+                if item.section == "excerpt"
+                for ref in (item.source_ref, *item.linked_subject_refs)
+            },
+            key=str.encode,
+        )
+    )
+    statement = tuple(i.source_ref for i in case.items if i.section == "task_statement")
+    roots = [
+        ReadRoot(
+            "w1",
+            workspace_root,
+            excluded=protected,
+            subject_refs=evidence,
+            refuse=ignored if callable(probe) else (lambda _path: True),
+        )
+    ]
+    snapshots = await load_input_snapshots(runtime, request_id) if outside else ()
+    for index, root in enumerate(outside, start=1):
+        prefix = root.rstrip("/") + "/"
+        declared = tuple(p.removeprefix(prefix) for p in inputs if p.startswith(prefix))
+        if not declared:
+            continue
+        excluded = (workspace_root, *protected)
+        roots.append(
+            ReadRoot(
+                f"o{index}",
+                root,
+                input_root=root,
+                declared=declared,
+                excluded=excluded,
+                subject_refs=statement,
+            )
+        )
+        kept = next((s for s in snapshots if any(f.path.startswith(prefix) for f in s.files)), None)
+        if kept is not None:
+            roots.append(
+                ReadRoot(
+                    f"s{index}",
+                    root,
+                    input_root=root,
+                    declared=declared,
+                    excluded=excluded,
+                    subject_refs=statement,
+                    snapshot=kept,
+                )
+            )
+    return tuple(roots)
 
 
 def _privacy_gated_semantic_evaluator(
@@ -4940,15 +5030,11 @@ def _privacy_gated_semantic_evaluator(
         require_complete_specification: bool = False,
         final_review: bool = False,
         task_fact_gaps: tuple[str, ...] = (),
-        follow_up: ReviewFollowUp | None = None,
     ) -> FinalSemanticEvaluation | None:
-        """One review of the frozen case, or one in-check follow-up round of it (issue #1047).
+        """One review of the frozen case: the reviewer conversation over one durable job (#1118).
 
-        A follow-up builds the same case with the excerpts the reviewer asked for ranked first,
-        under the endpoint, budget profile and check-time change frozen with the check's own
-        review job, in a job of its own keyed by its case digest, so recovery finds it again.
-        ``None`` means nothing was dispatched: the check has no completed review of its own, or
-        the follow-up packet would add nothing earlier packets did not carry.
+        A recorded in-check follow-up job (issue #1047, retired) is still recovered through its
+        base job.
         """
 
         from finishup.ports.ledger import OperationLease as _OpLease
@@ -5173,8 +5259,6 @@ def _privacy_gated_semantic_evaluator(
                             recovered_check_change,
                             _,
                         ) = await _read_semantic_execution(runtime, job.case_object_ref)
-                    if follow_up is not None and (execution is None or job.state != "succeeded"):
-                        return None
                     if execution is None:
                         return await _finish_legacy_semantic_job(
                             runtime,
@@ -5182,9 +5266,6 @@ def _privacy_gated_semantic_evaluator(
                             max_retries=max_retries,
                             on_lease_renewed=_on_lease_renewed,
                         )
-                elif follow_up is not None:
-                    # A follow-up answers the check's own completed review; there is none.
-                    return None
             if execution is not None:
                 provider = execution.provider
                 fallback_binding = execution.fallback_binding
@@ -5422,7 +5503,6 @@ def _privacy_gated_semantic_evaluator(
                     check_time_change_unavailable=check_change.unavailable,
                     check_time_change_unavailable_reason=check_change.reason,
                     final_review=final_review,
-                    follow_up=follow_up,
                 )
 
             try:
@@ -5541,19 +5621,10 @@ def _privacy_gated_semantic_evaluator(
             packet_prior_refs = packet_view.prior_finding_refs
             packet_settled_refs = packet_view.settled_finding_refs
             packet_citable_refs = packet_view.citable_refs
-            # Issue #1047: a follow-up round is sent only when this case composes a requested part
-            # no sent packet carried (``follow_up_new_parts`` below). What the round then showed
-            # is read from the sent packet (``sent_excerpt_content_refs``, ``sent_excerpt_parts``).
             # Issue #907: which paths each captured edit records, compared in process only so a
             # repeated request for a captured edit can converge on a fresh diff of that path.
             packet_edit_paths = captured_edit_paths(
                 frozen.case, captured_content, captured_content_scope
-            )
-            # tb4n5: what a current-diff follow-up could serve from the frozen change, per edit,
-            # only where this recipe carries the change and the channel releases repository
-            # excerpts. In process only.
-            packet_section_parts = _follow_up_section_parts(
-                semantic_case, check_change.change, packet_edit_paths, workspace_root, withheld
             )
             # tb4n2 A11: files Git found binary in the check-time change, for classifying a
             # suffix-less binary a reviewer names as FinishUP's limit. In process only.
@@ -5608,42 +5679,6 @@ def _privacy_gated_semantic_evaluator(
                         request_id=frozen.lease.operation_id,
                     )
                     check_change_files = CheckChangeShownFiles((), (), complete=False)
-            follow_up_base: tuple[str, int] | None = None
-            if follow_up is not None:
-                # Issue #1047: a round is sent only when its packet carries a requested excerpt
-                # part no earlier packet of this check carried (tb4n5: per part, so a later part
-                # of a partly shown source counts and a repeated one never does).
-                # Counted over what admission keeps: the bounded envelope's catalog and what the
-                # channel releases to either destination, so a round whose new parts admission
-                # would drop is never sent.
-                if not _admitted_follow_up_parts(semantic_case, follow_up, withheld):
-                    return None
-                if runtime is not None and job is not None:
-                    assert recovered_case_digest is not None
-                    follow_up_base = (recovered_case_digest, follow_up.round)
-                    # The round owns its job, keyed by its own case digest; it keeps the base
-                    # job's endpoint, retries and budget profile and gets its own deadline.
-                    job = await runtime.ledger.load_semantic_job(
-                        frozen.lease.writer_id,
-                        frozen.lease.operation_id,
-                        case_digest=semantic_case.case_digest,
-                    )
-                    execution = None
-                    if job is not None:
-                        (
-                            execution,
-                            _,
-                            round_case_digest,
-                            _,
-                            round_base_digest,
-                        ) = await _read_semantic_execution(runtime, job.case_object_ref)
-                        if (
-                            execution is None
-                            or round_case_digest != semantic_case.case_digest
-                            or round_base_digest != recovered_case_digest
-                        ):
-                            raise ValueError("semantic_follow_up_job_invalid")
-                recovered_case_digest = None
             if (
                 recovered_case_digest is not None
                 and semantic_case.case_digest != recovered_case_digest
@@ -5717,7 +5752,6 @@ def _privacy_gated_semantic_evaluator(
                     case_excerpt_parts=sent_excerpt_parts(
                         semantic_case, mapped.provider_input_manifest
                     ),
-                    case_current_section_parts=packet_section_parts,
                     case_privacy_withheld_refs=withheld_excerpt_content_refs(
                         semantic_case, mapped.case_privacy_withheld_refs
                     ),
@@ -5763,7 +5797,6 @@ def _privacy_gated_semantic_evaluator(
                     clock=clock,
                     execution=execution,
                     check_change=check_change.binding_json() if check_change.offered else None,
-                    follow_up=follow_up_base,
                 )
                 job = await runtime.ledger.enqueue_semantic_job(
                     frozen.lease,
@@ -5773,6 +5806,19 @@ def _privacy_gated_semantic_evaluator(
             # Structural progress starts at the frozen execution deadline; a recovered job keeps
             # its original row, so replay never restarts its elapsed time (issue #571 A2).
             await _begin_semantic_progress(runtime, job, execution.expires_at, clock)
+            read_roots = await _reviewer_read_roots(
+                runtime,
+                frozen.lease.operation_id,
+                semantic_case,
+                workspace_root=workspace_root,
+                outside=(
+                    policy.admitted_input_roots if carries_task_inputs(review_selection) else ()
+                ),
+                inputs=review_inputs[0],
+                protected=protected_directories,
+                withheld=withheld,
+                change_capture=change_capture,
+            )
 
             def _dispatch_for(
                 binding: ProviderBinding,
@@ -5914,16 +5960,45 @@ def _privacy_gated_semantic_evaluator(
                             if recovered is not None:
                                 stage = "response_mapping"
                                 return await _mapped(recovered)
-                        if (
+                        # Exact replay after a trusted local decision resumes the
+                        # already-prepared proposal. Starting the AI-powered review pipeline again
+                        # would mint a replacement proposal and could never observe the decision
+                        # bound to this attempt.
+                        resume_first = (
                             wait is not None
                             and wait.job_id == handle.job_id
                             and wait.attempt_id == handle.attempt_id
                             and wait.state == "awaiting"
-                        ):
-                            # Exact replay after a trusted local decision resumes the
-                            # already-prepared proposal. Starting the AI-powered review pipeline again would
-                            # mint a replacement proposal and could never observe the decision
-                            # bound to this attempt.
+                        )
+                        if type(privacy) is PrivacyCoordinator:
+                            # #1118: every admitted review is the reviewer conversation; each
+                            # exchange is its own admission under the same fence.
+                            run = await run_reviewer(
+                                privacy,
+                                job_id=handle.job_id,
+                                case=semantic_case,
+                                roots=read_roots,
+                                steps=cast(_ReviewSteps, runtime.ledger).review_steps(handle),
+                                binding=binding,
+                                scope=scope,
+                                deadline=attempt_deadline,
+                                first_request_id=handle.provider_request_id,
+                                new_request_id=lambda: ids.new(IdKind.REQUEST),
+                                candidate_for=lambda rid: semantic_case_to_candidate_context(
+                                    semantic_case,
+                                    request_id=rid,
+                                    scope=scope,
+                                    provider_binding=binding,
+                                ),
+                                dispatch_guard=_captured_content_fence_current,
+                                resume_first=resume_first,
+                                clock=clock.monotonic_seconds,
+                            )
+                            stage = "response_mapping"
+                            return _with_reviewer(await _mapped(run.result), run)
+                        # Small composition fakes that are not the privacy coordinator keep the
+                        # one-dispatch shape; production always composes the coordinator.
+                        if resume_first:
                             result = await _resume_with_fence(
                                 handle.provider_request_id,
                                 semantic_case.case_digest,
@@ -6023,7 +6098,11 @@ def _privacy_gated_semantic_evaluator(
                 provider_manifest_failure = None
                 provider_input_text_by_ref = None
                 evaluation_content_gaps: tuple[str, ...] = ()
+                reviewer = reviewer_paths = None
+                reviewer_refs: frozenset[str] = frozenset()
                 if type(evaluation) is FinalSemanticEvaluation:
+                    reviewer, reviewer_paths = evaluation.reviewer, evaluation.reviewer_paths
+                    reviewer_refs = evaluation.reviewer_citable_refs
                     semantic_withheld_item_ids = evaluation.semantic_withheld_item_ids
                     semantic_redacted_values = evaluation.semantic_redacted_values
                     evaluation_content_gaps = evaluation.case_content_gaps
@@ -6095,18 +6174,20 @@ def _privacy_gated_semantic_evaluator(
                     unsuppliable_missing_kinds=unsuppliable,
                     case_prior_finding_refs=packet_prior_refs,
                     case_settled_finding_refs=packet_settled_refs,
-                    case_citable_refs=packet_citable_refs,
+                    case_citable_refs=packet_citable_refs | reviewer_refs,
                     case_captured_edit_paths=packet_edit_paths,
                     case_binary_paths=packet_binary_paths,
                     case_text_paths=packet_text_paths,
                     case_workspace_root=workspace_root,
                     check_change_files=check_change_files,
                     continuation=continuation,
+                    reviewer=reviewer,
+                    reviewer_citable_refs=reviewer_refs,
+                    reviewer_paths=reviewer_paths,
                     review_input_manifest=input_manifest,
                     # Recovery reads the same provider-bound manifest from the durable response.
                     case_excerpt_refs=sent_excerpt_content_refs(semantic_case, provider_manifest),
                     case_excerpt_parts=sent_excerpt_parts(semantic_case, provider_manifest),
-                    case_current_section_parts=packet_section_parts,
                     provider_input_manifest=provider_manifest,
                     provider_input_manifest_failure=provider_manifest_failure,
                     provider_input_text_by_ref=provider_input_text_by_ref,
@@ -6122,7 +6203,9 @@ def _privacy_gated_semantic_evaluator(
                     primary_deadline=primary_deadline,
                     fallback_timeout_seconds=execution.fallback_timeout_seconds,
                     now_utc=clock.now_utc,
-                    max_retries=operation_max_retries,
+                    # #1118: a review conversation is one physical attempt. A failure after its
+                    # first exchange ends it incomplete; the job's steps are never resumed.
+                    max_retries=0 if type(privacy) is PrivacyCoordinator else operation_max_retries,
                     now_monotonic=clock.monotonic_seconds,
                     dispatch=_dispatch_for(provider),
                     publish_success_response=_publish_success,

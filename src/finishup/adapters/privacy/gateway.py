@@ -42,6 +42,7 @@ from finishup.adapters.providers.local_model import (
     LocalModelEvaluator,
     LocalModelSocketResolverPort,
 )
+from finishup.adapters.providers.reviewer_reply import REVIEWER_REPLY_SCHEMAS
 from finishup.domain.findings import SamplingParams, SemanticFailureClass
 from finishup.domain.privacy import (
     PRIVACY_REQUEST_COMMITMENT_ALGORITHM,
@@ -572,7 +573,9 @@ class PolicyEnforcingOutboundGateway(OutboundGatewayPort):
                     ):
                         new_local = (
                             allowed_local,
-                            LocalModelEvaluator(profile, handle, self._clock),
+                            LocalModelEvaluator(
+                                profile, handle, self._clock, reply_schemas=REVIEWER_REPLY_SCHEMAS
+                            ),
                         )
                     else:
                         unavailable.append(

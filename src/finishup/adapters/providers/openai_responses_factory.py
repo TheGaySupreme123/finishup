@@ -17,6 +17,7 @@ from finishup.adapters.providers.openai_responses import (
     RenderedOpenAIRequest,
     render_case,
 )
+from finishup.adapters.providers.reviewer_reply import REVIEWER_REPLY_SCHEMAS
 from finishup.config.models import (
     OFFICIAL_OPENAI_ENDPOINT_PROFILE_ID,
     OWNER_DECLARED_ENDPOINT_PROFILE_ID,
@@ -193,6 +194,6 @@ def external_factory_builders_from_config(
 
     def _builder() -> ExternalProviderFactory:
         profile = openai_profile_from_provider_config(provider, now=now)
-        return OpenAIResponsesExternalFactory(profile, clock)
+        return OpenAIResponsesExternalFactory(profile, clock, reply_schemas=REVIEWER_REPLY_SCHEMAS)
 
     return {binding: _builder}

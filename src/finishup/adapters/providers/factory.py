@@ -37,6 +37,7 @@ from finishup.adapters.providers.openai_responses_factory import (
 from finishup.adapters.providers.openai_responses_factory import (
     external_factory_builders_from_config as responses_factory_builders_from_config,
 )
+from finishup.adapters.providers.reviewer_reply import REVIEWER_REPLY_SCHEMAS
 from finishup.config.models import ExternalRuntimeProfileConfig, ProviderProfileConfig
 from finishup.domain.privacy import ApprovedOutboundCase, ProviderBinding
 from finishup.ports.clock import ClockPort
@@ -205,6 +206,6 @@ def external_factory_builders_from_config(
 
     def _builder() -> ExternalProviderFactory:
         profile = chat_completions_profile_from_provider_config(provider, now=now)
-        return ChatCompletionsExternalFactory(profile, clock)
+        return ChatCompletionsExternalFactory(profile, clock, reply_schemas=REVIEWER_REPLY_SCHEMAS)
 
     return {binding: _builder}

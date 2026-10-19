@@ -1,91 +1,76 @@
-"""#1118 unit 4: the reviewer-read summary keeps counts, closed tokens and aliases, never paths."""
+"""#1118: the reviewer conversation record every surface renders alike."""
 
 from __future__ import annotations
 
-import json
+import pytest
 
-from finishup.domain.reviewer_reads import render_reviewer_reads_lines, summarize_reviewer_reads
+from finishup.domain.reviewer_reads import (
+    ReviewerRead,
+    ReviewerRecord,
+    render_reviewer_lines,
+    reviewer_record_from_wire,
+)
 
-
-def _envelope(ordinal: int, status: str, size: int, data: object, reason: str | None = None) -> str:
-    return json.dumps(
-        {
-            "tool_ref": f"job:read:{ordinal}",
-            "call_index": ordinal,
-            "status": status,
-            "reason": reason,
-            "truncated": ordinal == 1,
-            "data": data,
-            "result_utf8_bytes": size,
-        }
-    )
+_DIGEST = "sha256:" + "a" * 64
 
 
-def _history() -> list[tuple[str, str]]:
-    secret_path = "o1:specs/customer-plan.md"
-    file_read = {
-        "text": "THE SPEC TEXT",
-        "provenance": {
-            "source_ref": secret_path,
-            "root_id": "o1",
-            "standing": "outside_input_snapshot",
-            "baseline": "task_start",
-        },
+def _read(call: int, **changes: object) -> ReviewerRead:
+    fields: dict[str, object] = {
+        "call": call,
+        "action": "read_file",
+        "status": "ok",
+        "reason": None,
+        "source": "src_" + "0" * 23 + str(call),
+        "root": "w1",
+        "standing": "workspace_content",
+        "baseline": "read_time",
+        "lines": (1, 2),
+        "result_bytes": 300,
+        "result_digest": _DIGEST,
+        "disclosure": f"egr_{call}",
     }
-    ledger_read = {
-        "records": [
-            {
-                "ref": "res_1",
-                "text": "3 passed",
-                "provenance": {
-                    "source_ref": "res_1",
-                    "root_id": None,
-                    "standing": "finishup_record",
-                    "baseline": "check_time",
-                },
-            }
-        ]
-    }
-    return [
-        ("system", "instruction"),
-        ("user", "packet"),
-        ("assistant", json.dumps({"action": "read_file", "args": {"root_id": "o1"}})),
-        ("user", _envelope(1, "ok", 4000, file_read)),
-        ("user", "format_error: not_json"),
-        ("assistant", json.dumps({"action": "read_ledger", "args": {"view": "command_output"}})),
-        ("user", _envelope(2, "ok", 900, ledger_read)),
-        ("assistant", json.dumps({"action": "read_file", "args": {"root_id": "/etc"}})),
-        ("user", _envelope(3, "denied", 300, None, reason="forbidden_path")),
-        ("assistant", json.dumps({"final_judgment": {"conclusion": "insufficient_packet"}})),
-    ]
+    fields.update(changes)
+    return ReviewerRead(**fields)  # pyright: ignore[reportArgumentType]
 
 
-def test_reads_are_counted_and_named_by_alias_and_standing_only() -> None:
-    summary = summarize_reviewer_reads(_history())
-    assert summary is not None
-    assert summary["reads_used"] == 3
-    assert summary["result_bytes"] == 5200
-    lines = render_reviewer_reads_lines(summary)
-    assert lines[0].startswith("Reviewer reads: 3 of 3, 5200 result bytes")
-    assert (
-        lines[1]
-        == "- 1. read_file: ok, 4000 bytes, clipped; o1 (outside_input_snapshot, task_start)"
+def test_the_wire_form_round_trips_and_renders_without_paths() -> None:
+    record = ReviewerRecord(
+        3, (_read(1), _read(2, status="denied", reason="forbidden_path", lines=None)), None, None
     )
-    assert lines[2] == "- 2. read_ledger: ok, 900 bytes; record (finishup_record, check_time)"
-    assert lines[3] == "- 3. read_file: denied forbidden_path, 300 bytes"
-    rendered = json.dumps(summary) + "\n".join(lines)
-    for leaked in ("customer-plan", "specs/", "THE SPEC TEXT", "3 passed", "/etc"):
-        assert leaked not in rendered
+    wire = record.as_wire()
+    assert wire["reads_used"] == 2 and wire["read_bytes"] == 600
+    assert reviewer_record_from_wire(wire) == record
+    lines = render_reviewer_lines(record)
+    assert lines[0] == "Reviewer reads: 2 of 3, 600 bytes, 3 model exchanges"
+    assert lines[1].startswith("- 1. read_file: ok [w1 src_") and "lines 1-2" in lines[1]
+    assert "sent under receipt egr_1" in lines[1]
+    assert lines[2].startswith("- 2. read_file: denied forbidden_path")
 
 
-def test_a_review_without_reads_or_with_malformed_turns_renders_nothing() -> None:
-    assert summarize_reviewer_reads([("system", "x"), ("user", "packet")]) is None
-    forged = [
-        ("assistant", json.dumps({"action": "read_file"})),
-        ("user", _envelope(9, "ok", 10, None)),
-        ("assistant", json.dumps({"action": "shell"})),
-        ("user", _envelope(1, "ok", 10, None)),
-    ]
-    assert summarize_reviewer_reads(forged) is None
-    assert render_reviewer_reads_lines(None) == ()
-    assert render_reviewer_reads_lines({"reads": "x"}) == ()
+def test_an_early_end_and_an_unsent_read_are_named() -> None:
+    record = ReviewerRecord(4, (_read(1, disclosure=None),), "read_limit", "terminated")
+    lines = render_reviewer_lines(record)
+    assert lines[0].endswith("; ended early: read_limit")
+    assert lines[1].endswith(", not sent")
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        {"root": "/home/user/project"},
+        {"source": "src/private_name.py"},
+        {"status": "bogus"},
+        {"result_bytes": 9000},
+        {"lines": (3, 1)},
+        {"action": "run_shell"},
+    ],
+)
+def test_anything_but_closed_tokens_and_opaque_ids_is_refused(change: dict[str, object]) -> None:
+    with pytest.raises(ValueError, match="reviewer_read_invalid"):
+        _read(1, **change)
+
+
+def test_an_older_or_malformed_response_has_no_record() -> None:
+    assert reviewer_record_from_wire(None) is None
+    assert reviewer_record_from_wire({"exchanges": 1}) is None
+    assert render_reviewer_lines(None) == ()

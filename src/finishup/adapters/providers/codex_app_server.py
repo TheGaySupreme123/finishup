@@ -45,6 +45,7 @@ from finishup.adapters.providers.openai_responses import (
     JudgmentValidationError,
     normalize_judgment,
 )
+from finishup.adapters.providers.reviewer_reply import REVIEWER_REPLY_SCHEMAS
 from finishup.config.models import (
     CODEX_FINAL_OUTPUT_LIMIT_DEFAULT,
     CODEX_OUTPUT_LIMIT_MAX,
@@ -2644,6 +2645,8 @@ def codex_factory_builders_from_config(
     binding = codex_binding_from_config(config)
 
     def _builder() -> CodexAppServerExternalFactory:
-        return CodexAppServerExternalFactory(CodexAppServerProfile.from_config(config), clock)
+        return CodexAppServerExternalFactory(
+            CodexAppServerProfile.from_config(config), clock, reply_schemas=REVIEWER_REPLY_SCHEMAS
+        )
 
     return {binding: _builder}

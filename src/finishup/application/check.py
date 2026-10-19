@@ -94,6 +94,7 @@ from finishup.domain.receipts import (
     semantic_coverage_gap_code,
 )
 from finishup.domain.review_input_render import render_agent_next
+from finishup.domain.reviewer_reads import ReviewerRecord
 from finishup.domain.task_statement import TASK_STATEMENT_GAPS, SpecificationPreflight
 from finishup.domain.values import (
     REPOSITORY_GRANT_CONTINUATION_KIND,
@@ -2242,6 +2243,15 @@ class FinalSemanticEvaluation:
     # paths it changed (``semantic_case.current_section_parts``), when this packet's recipe and
     # channel could carry them. In process only; never recorded or logged.
     case_current_section_parts: Mapping[str, frozenset[str]] | None = None
+    # #1118: what the reviewer conversation did (exchanges, reads, why it ended, cleanup); the
+    # bounded structural record every surface renders. ``None`` for a review that ran no
+    # conversation (older ledgers, local-only paths).
+    reviewer: ReviewerRecord | None = None
+    # The refs the conversation's admitted reads sent, joined to the packet's citable refs for the
+    # judgment fence. In process only, like ``provider_input_text_by_ref``.
+    reviewer_citable_refs: frozenset[str] = frozenset()
+    # Each file read's ``alias:path`` by call, kept only in the encrypted review response.
+    reviewer_paths: Mapping[int, str] | None = None
 
     def __post_init__(self) -> None:
         if (

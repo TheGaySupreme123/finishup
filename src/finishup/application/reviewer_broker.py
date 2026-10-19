@@ -126,8 +126,10 @@ class ReviewerBroker:
         admit: Callable[[tuple[ReadElement, ...], bytes], Awaitable[str | None]],
         packet_refs: frozenset[str] = frozenset(),
         packet_text: Mapping[str, tuple[str, ...]] | None = None,
+        max_reads: int = MAX_READS,
     ) -> None:
         self.store, self._job, self._case, self._admit = store, job_id, case, admit
+        self._max_reads = min(max_reads, MAX_READS)
         self._roots = {root.alias: root for root in roots}
         self._allowed = frozenset(case.frontier_refs | case.local_check_refs)
         self._cursors: dict[str, tuple[str, str, int]] = {}
@@ -139,7 +141,7 @@ class ReviewerBroker:
         self.text_by_ref = {ref: list(texts) for ref, texts in (packet_text or {}).items()}
 
     def reads_allowed(self) -> bool:
-        return self.calls < MAX_READS and MAX_TOTAL_BYTES - self.used >= MIN_ROOM
+        return self.calls < self._max_reads and MAX_TOTAL_BYTES - self.used >= MIN_ROOM
 
     async def execute(self, action: ReviewerActionModel, expired: Callable[[], bool]) -> str:
         """Reserve the next read, run it, fit and admit it; return the result envelope."""

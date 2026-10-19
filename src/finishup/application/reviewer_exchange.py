@@ -13,7 +13,7 @@ from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass
 from typing import Final
 
-from finishup.adapters.providers.reviewer_reply import ReviewerReplyInvalid, reviewer_reply_schema
+from finishup.adapters.providers.reviewer_reply import REVIEWER_REPLY_SCHEMAS, ReviewerReplyInvalid
 from finishup.application.reviewer_loop import ReviewerModelError, Turn
 from finishup.domain.findings import SemanticFailureClass
 from finishup.domain.privacy import ProviderBinding
@@ -21,7 +21,6 @@ from finishup.ports.semantic import (
     CURRENT_REVIEWER_SESSION,
     REVIEWER_EXCHANGE_MEDIA_TYPES,
     Deadline,
-    ReviewerReplySchemas,
     ReviewerSession,
     SemanticResult,
     SemanticResultInvalid,
@@ -32,11 +31,6 @@ from finishup.protocol.canonical import JsonValue
 
 __all__ = ["REVIEWER_REPLY_SCHEMAS", "ExchangeDispatch", "ReviewerExchangeModel"]
 
-# The provider-wire reply schemas composition installs on every route's factory.
-REVIEWER_REPLY_SCHEMAS: Final = ReviewerReplySchemas(
-    turn=reviewer_reply_schema(reads_allowed=True, strict=True),
-    final=reviewer_reply_schema(reads_allowed=False, strict=True),
-)
 # Runtime stages of a completed answer that is not one JSON object.
 _MALFORMED_STAGES: Final = frozenset({"output_empty", "output_not_json"})
 

@@ -22,12 +22,13 @@ from finishup.adapters.providers.openai_responses import (
     normalize_judgment,
     strict_output_schema,
 )
-from finishup.ports.semantic import SemanticJudgment
+from finishup.ports.semantic import ReviewerReplySchemas, SemanticJudgment
 from finishup.protocol.canonical import JsonValue
 from finishup.protocol.models import ReviewerActionModel
 
 __all__ = [
     "REVIEWER_LOOP_INSTRUCTION",
+    "REVIEWER_REPLY_SCHEMAS",
     "ReviewerReplyInvalid",
     "decode_reviewer_reply",
     "reviewer_reply_schema",
@@ -89,6 +90,13 @@ def reviewer_reply_schema(*, reads_allowed: bool, strict: bool = False) -> dict[
 
     built = _build(reads_allowed)
     return cast(dict[str, JsonValue], strict_output_schema(built)) if strict else built
+
+
+# The provider-wire reply schemas every route's factory installs (#1118).
+REVIEWER_REPLY_SCHEMAS: Final = ReviewerReplySchemas(
+    turn=reviewer_reply_schema(reads_allowed=True, strict=True),
+    final=reviewer_reply_schema(reads_allowed=False, strict=True),
+)
 
 
 def decode_reviewer_reply(parsed: JsonValue) -> ReviewerActionModel | SemanticJudgment:

@@ -107,6 +107,7 @@ __all__ = [
     "decode_reviewer_exchange",
     "encode_reviewer_exchange",
     "reviewer_exchange",
+    "reviewer_packet_bytes",
     "ExternalRuntimeAuthority",
     "MissingForAssessment",
     "RuntimeAttemptEvidence",
@@ -2171,6 +2172,16 @@ def decode_reviewer_exchange(payload: bytes) -> tuple[ReviewerMessage, ...]:
     if messages[-1][0] != "user":
         raise error
     return tuple(messages)
+
+
+def reviewer_packet_bytes(payload: bytes) -> bytes | None:
+    """The review packet a reviewer conversation carries (its first user turn), if it is one."""
+
+    try:
+        history = decode_reviewer_exchange(payload)
+    except ValueError:
+        return None
+    return history[1][1].encode()
 
 
 @dataclass(frozen=True, slots=True)
