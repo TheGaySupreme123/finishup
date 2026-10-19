@@ -55,12 +55,14 @@ The npm command, `npx finishup`, starts setup directly.
 Install the latest published version through Python via [`uv`](https://docs.astral.sh/uv/):
 
 ```text
-uv tool install --managed-python finishup
+uv tool install --managed-python --python 3.14 finishup
 finishup
 ```
 
 **Python.** FinishUP runs on Python 3.12, 3.13 or 3.14 and `uv` provides one: with
-`--managed-python` it downloads a supported interpreter on demand, so it does not matter which
+`--managed-python --python 3.14` it downloads Python 3.14 on demand (keep `--python 3.14`: uv 0.13
+and later otherwise pick Python 3.15, which FinishUP's dependencies cannot install on yet), so it
+does not matter which
 other Pythons are installed, which one `python3` resolves to, or whether pyenv, Homebrew, or a system Python is on your `PATH`. The
 install is unaffected by them and touches none of them. Only two configurations block it, and both
 say so in the error: `uv` configured never to download Pythons (`python-downloads = "never"`), and
@@ -217,7 +219,7 @@ every command except `finishup version`, `--version`, and `--help` then refuses 
    ```text
    curl -LsSf https://astral.sh/uv/install.sh | sh
    source "$HOME/.local/bin/env"
-   uv tool install --managed-python finishup
+   uv tool install --managed-python --python 3.14 finishup
    finishup
    ```
 

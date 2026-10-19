@@ -71,7 +71,7 @@ function main() {
   // No `--force`: if uv refuses, the user decides what to replace.
   const install = spawnSync(
     "uv",
-    ["tool", "install", "--quiet", "--managed-python", `yoetz==${version}`],
+    ["tool", "install", "--quiet", "--managed-python", "--python", "3.14", `yoetz==${version}`],
     { stdio: "inherit", shell: false },
   );
   if (install.error || install.status !== 0) {

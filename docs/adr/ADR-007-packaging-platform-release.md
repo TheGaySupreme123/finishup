@@ -491,12 +491,15 @@ for users and contributors. Release reproducibility is unchanged.
   at the locked versions. Without `<3.15`, an installer that picked 3.15 would try to compile
   them from source. The ceiling lifts when the locked versions ship 3.15 wheels and the suites
   pass on it.
-- **Install command.** `uv tool install --managed-python finishup`. The exact patch pin is gone.
-  uv selects an interpreter inside the range and downloads one when none of its own is present.
+- **Install command.** `uv tool install --managed-python --python 3.14 finishup`. The exact patch
+  pin is gone; the minor request stays. A real WSL 2 run on Azure (2026-10-19) showed why: uv 0.13
+  defaults to the newly released CPython 3.15 even for a package declaring `<3.15`, and then fails
+  to build apsw from source. `--python 3.14` selects the newest supported minor (the certified
+  line) on every uv; a user may still ask for 3.12 or 3.13 explicitly.
   `--managed-python` remains because a shared system Python (Homebrew's `/opt/homebrew`) is
   group-writable, and the runtime refuses it (`release_runtime_group_writable`). The npm
-  launchers make the same install and run `uvx finishup` without an interpreter request, so they
-  reuse the installed tool environment whatever minor it uses.
+  launchers make the same install (`--managed-python --python 3.14`) and run `uvx finishup`
+  without an interpreter request, so they reuse the installed tool environment.
 - **uv.** `[tool.uv] required-version = ">=0.11.29"`. CI and the release workflow keep
   `version: "0.11.29"` in every `setup-uv` step and record it in the candidate, so release
   artifacts stay byte-reproducible. `test_build_tool_meets_the_minimum_version` replaces the

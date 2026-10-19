@@ -136,8 +136,8 @@ def test_repository_sources_are_in_lockstep(monkeypatch: pytest.MonkeyPatch) -> 
         ),
         (
             "release/transitional-yoetz/npm/bin/yoetz.js",
-            '"--managed-python", `yoetz==${version}`]',
-            '"--managed-python", "--force", `yoetz==${version}`]',
+            '"--managed-python", "--python", "3.14", `yoetz==${version}`]',
+            '"--managed-python", "--python", "3.14", "--force", `yoetz==${version}`]',
             "transitional_npm_delegation_unexpected",
         ),
     ],
@@ -313,7 +313,7 @@ def test_npm_transitional_launcher_updates_the_yoetz_tool_in_place(tmp_path: Pat
     assert completed.returncode == 5
     assert uv_record.read_text().splitlines() == [
         "--version",
-        f"tool install --quiet --managed-python yoetz=={finishup.__version__}",
+        f"tool install --quiet --managed-python --python 3.14 yoetz=={finishup.__version__}",
     ]
     assert uvx_record.read_text().strip() == "yoetz status --json"
 

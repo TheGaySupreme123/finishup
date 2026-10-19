@@ -184,7 +184,7 @@ version for **one release**:
   or when stderr is not a terminal. `finishup upgrade` run through the alias plans with `yoetz`
   commands (the tool's `finishup` script is not on `PATH`) and ends with a **Move from the yoetz
   name** step: install `finishup` with the same managed Python as a fresh install
-  (`uv tool install --managed-python finishup` since issue #1119), carrying over the
+  (`uv tool install --managed-python --python 3.14 finishup` since issue #1119), carrying over the
   `semantic-openai` and `portable-recovery` extras when the `yoetz` tool's plain uv receipt proves
   them and otherwise asking the user to re-add extras and package options. A uv tool receipt
   (`uv-receipt.toml`) is *plain* when its `[tool]` table records only `requirements`, `python` and

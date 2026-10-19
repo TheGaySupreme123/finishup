@@ -109,11 +109,11 @@ def test_npm_release_is_built_once_published_after_pypi_and_download_verified() 
     # (issue #776), matching tests/packaging/test_npm_launcher.py.
     # Issue #1119: the launcher asks uv for a managed Python in the supported range, not 3.14.
     assert (
-        "tool install --quiet --compile-bytecode --managed-python "
+        "tool install --quiet --compile-bytecode --managed-python --python 3.14 "
         "finishup==${{ needs.validate-release-source.outputs.version }}"
     ) in verify
     assert '"finishup version --json"' in verify
-    assert "--python 3.14 finishup" not in verify
+    assert "--python 3.14 finishup version" not in verify
     assert (
         "finishup==${{ needs.validate-release-source.outputs.version }} version --json"
         not in verify
@@ -371,7 +371,7 @@ def test_transitional_yoetz_is_built_once_and_published_after_finishup() -> None
         1,
     )[0]
     assert "cmp -s" in verify
-    assert "tool install --quiet --managed-python yoetz==${version}" in verify
+    assert "tool install --quiet --managed-python --python 3.14 yoetz==${version}" in verify
     assert '= "yoetz status" ]' in verify
     assert "--force" not in build + pypi + npm + verify
 

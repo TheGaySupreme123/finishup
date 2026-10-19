@@ -2672,7 +2672,7 @@ class FinishUpRuntime:
                 remediation=""
                 if supported
                 else "FinishUP requires Python 3.12, 3.13 or 3.14; reinstall with "
-                "'uv tool install --managed-python finishup'",
+                "'uv tool install --managed-python --python 3.14 finishup'",
             )
         )
         package_detail = __version__

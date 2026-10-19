@@ -68,9 +68,10 @@ function main() {
   // configured them; a bare `uvx` would bind them to uv's prunable cache and a
   // later `uv cache clean` would silently break every host integration. uv
   // still performs the provenance-carrying install from PyPI; this launcher
-  // bundles and downloads nothing. `--managed-python` lets uv fetch a supported
-  // runtime when none of its own is present, and never binds FinishUP to a
-  // shared system Python (Homebrew's is group-writable, which FinishUP refuses).
+  // bundles and downloads nothing. `--managed-python` never binds FinishUP to a
+  // shared system Python (Homebrew's is group-writable, which FinishUP refuses);
+  // `--python 3.14` keeps uv off a newer default Python (3.15) the package cannot
+  // install on, and lets uv fetch 3.14 when none of its own is present.
   // The install runs under umask 022: FinishUP refuses a runtime another account
   // can write, and a umask 0002 shell would otherwise make every installed file
   // group-writable (harmless only for a user-private group). Restored after.
@@ -92,6 +93,8 @@ function main() {
         "--quiet",
         "--compile-bytecode",
         "--managed-python",
+        "--python",
+        "3.14",
         `finishup==${version}`,
       ],
       { stdio: "inherit", shell: false, env: installEnv },

@@ -84,7 +84,7 @@ what was caught.
 
 ```sh
 # Install the latest published version from PyPI — the canonical distribution
-uv tool install --managed-python finishup
+uv tool install --managed-python --python 3.14 finishup
 
 # Via npm — a dependency-free launcher that makes the same persistent uv install (needs uv)
 npx finishup
@@ -93,9 +93,10 @@ npx finishup
 uvx finishup
 ```
 
-FinishUP runs on Python 3.12, 3.13 or 3.14. You do not need to have one: `uv` downloads a
-supported interpreter on demand, whatever other Pythons are on the machine, and the install is not
-affected by them. Releases are certified on CPython 3.14.6; any other interpreter (3.12, 3.13, or
+FinishUP runs on Python 3.12, 3.13 or 3.14. You do not need to have one: `uv` downloads Python
+3.14 on demand, whatever other Pythons are on the machine, and the install is not affected by them.
+Keep `--python 3.14` in the command: uv 0.13 and later otherwise pick Python 3.15, which
+FinishUP's dependencies cannot install on yet. Releases are certified on CPython 3.14.6; any other interpreter (3.12, 3.13, or
 another 3.14 patch) runs and is tested, but reports itself as an untested cell. The npm
 package bundles no Python and no FinishUP code and never installs `uv` itself; it makes the same
 `uv tool install` and launches the exact matching Python distribution. FinishUP runs on macOS and Linux (certified on

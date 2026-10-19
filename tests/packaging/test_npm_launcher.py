@@ -87,7 +87,7 @@ def test_launcher_delegates_to_pinned_uvx(tmp_path: Path) -> None:
         "--version",
         # SOURCE_DATE_EPOCH in the install child only: checked-hash bytecode the sealed
         # generation reuses instead of compiling on the first serving start.
-        f"tool install --quiet --compile-bytecode --managed-python finishup=={version} epoch",
+        f"tool install --quiet --compile-bytecode --managed-python --python 3.14 finishup=={version} epoch",
     ]
 
 

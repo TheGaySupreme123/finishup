@@ -5,7 +5,7 @@ pinned Python distribution `finishup==<this package's version>` as a persistent 
 [`uv`](https://docs.astral.sh/uv/), which must already be installed, and runs it. The launcher:
 
 - bundles no Python, no dependencies, and no FinishUP code;
-- downloads nothing itself — `uv tool install --managed-python` performs the provenance-carrying
+- downloads nothing itself — `uv tool install --managed-python --python 3.14` performs the provenance-carrying
   install from PyPI (fetching a supported Python runtime on demand), and a versionless `uvx finishup`
   then runs that installed environment rather than a cache-backed one. `uv tool install` places
   `finishup` in uv's tool bin (`~/.local/bin`); if that directory is not on `PATH`, run

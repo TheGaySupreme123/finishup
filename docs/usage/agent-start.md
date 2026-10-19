@@ -111,7 +111,7 @@ source "$HOME/.local/bin/env"
 Then install the latest published FinishUP version:
 
 ```text
-uv tool install --managed-python finishup
+uv tool install --managed-python --python 3.14 finishup
 finishup version
 ```
 
