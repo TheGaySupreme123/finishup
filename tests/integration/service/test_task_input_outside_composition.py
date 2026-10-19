@@ -19,16 +19,28 @@ from typing import Any, cast
 import pytest
 
 import finishup.service.ready_composition as ready_composition_module
+import integration.service.test_semantic_fallback_dispatch as fallback
 import integration.service.test_semantic_non_dispatch as non_dispatch
 from builders.ledger_adapters import FixedClock, append_command, memory_adapter, sqlite_adapter
-from builders.policy_cases import evt
+from builders.policy_cases import evd, evt
 from finishup.adapters.memory.ledger import MemoryLedgerAdapter
 from finishup.adapters.sqlite.repository import SqliteLedger
 from finishup.application.check import FinalSemanticEvaluation
 from finishup.application.check_change import CheckChangeOutcome
-from finishup.application.semantic_case import CheckTimeChange
+from finishup.application.egress import SemanticEgressSuccess
+from finishup.application.semantic_case import (
+    CheckTimeChange,
+    assemble_filtered_review_packet,
+    review_packet_disclosure_result,
+)
 from finishup.application.semantic_content import CapturedContentResolution
-from finishup.domain.privacy import REVIEW_PACKET_ITEM_ID, CandidateContext
+from finishup.domain.findings import SemanticDispatchKind
+from finishup.domain.privacy import (
+    REVIEW_PACKET_ITEM_ID,
+    CandidateContext,
+    ProviderBinding,
+    ReviewContextProfile,
+)
 from finishup.domain.receipts import (
     CHECK_TIME_CHANGE_UNAVAILABLE_GAP,
     TASK_INPUT_OUTSIDE_NOT_ADMITTED_GAP,
@@ -39,13 +51,125 @@ from finishup.domain.receipts import (
     render_receipt_human,
 )
 from finishup.domain.task_statement import RecordedTaskStatement
+from finishup.kernel.deterministic_checks import DeterministicCase
 from finishup.ports.ledger import FrozenCase
 from finishup.ports.runtime import TaskRuntime
-from integration.service.test_review_follow_up_composition import (
-    _at_lease_frontier,  # pyright: ignore[reportPrivateUsage]
-    _CurrentSectionPrivacy,  # pyright: ignore[reportPrivateUsage]
-    _resolve_primary,  # pyright: ignore[reportPrivateUsage]
-)
+from finishup.ports.semantic import MissingForAssessment, SemanticJudgment, SemanticResultSuccess
+from finishup.protocol.canonical import strict_json_parse
+from finishup.protocol.models import SemanticStatus
+
+
+# Moved here from the retired in-check follow-up composition tests (#1047, #1118).
+def _at_lease_frontier(built: DeterministicCase, durable: FrozenCase) -> DeterministicCase:
+    """``built`` read at the durable lease's own one-event frontier.
+
+    The rows' order then falls back to their ids, which number them in the same order.
+    """
+
+    frontier = durable.lease.frontier
+    projection = built.projection
+    return replace(
+        built,
+        frontier=frontier,
+        projection=replace(
+            projection,
+            frontier=frontier.sequence,
+            head_digest=frontier.head_digest,
+            actions={
+                key: replace(row, source_frontier=frontier.sequence)
+                for key, row in projection.actions.items()
+            },
+            results={
+                key: replace(row, source_frontier=frontier.sequence)
+                for key, row in projection.results.items()
+            },
+            evidence={
+                key: replace(row, source_frontier=frontier.sequence)
+                for key, row in projection.evidence.items()
+            },
+            claims={
+                key: replace(row, source_frontier=frontier.sequence)
+                for key, row in projection.claims.items()
+            },
+            obligations={
+                key: replace(row, source_frontier=frontier.sequence)
+                for key, row in projection.obligations.items()
+            },
+            plans={
+                key: replace(row, source_frontier=frontier.sequence)
+                for key, row in projection.plans.items()
+            },
+        ),
+    )
+
+
+_CURRENT_MARKER = b"CURRENT_LEAD_STORE_MARKER"
+
+
+class _CurrentSectionPrivacy(non_dispatch._Privacy):  # pyright: ignore[reportPrivateUsage]
+    """A reviewer that needs the current ``leadStore.ts`` (tb4n5 react-lead-form).
+
+    It asks for the current diff of the stale edit that first added the file until a packet
+    carries the file's current content, then concludes. Every packet is sent whole.
+    """
+
+    def __init__(self, *, task_id: str) -> None:
+        super().__init__(task_id=task_id, profile=ReviewContextProfile.EXPANDED)
+        self.sent: list[frozenset[str]] = []
+
+    async def evaluate_semantic(self, candidate: object, deadline: object) -> object:
+        del deadline
+        assert type(candidate) is CandidateContext
+        self.calls += 1
+        content = {item.item_id: item.plaintext for item in candidate.items}
+        envelope = strict_json_parse(content.pop(REVIEW_PACKET_ITEM_ID))
+        assert isinstance(envelope, dict)
+        self.sent.append(frozenset(content))
+        disclosure = review_packet_disclosure_result(
+            assemble_filtered_review_packet(
+                envelope, content_by_id=content, included_item_ids=frozenset(content)
+            )
+        ).disclosure
+        assert disclosure is not None and disclosure.provider_input_manifest is not None
+        binding = cast(ProviderBinding, candidate.provider_binding)
+        digest = candidate.subject_digest
+        assert digest is not None
+        ordinal = self.calls
+        judgment = (
+            SemanticJudgment("no_material_discrepancy", (), review_summary="The store is shown.")
+            if any(_CURRENT_MARKER in text for text in content.values())
+            else SemanticJudgment(
+                "insufficient_packet",
+                (),
+                missing_for_assessment=(
+                    MissingForAssessment(
+                        "current_diff_for_path", (str(evd(1)),), "The current ledger store."
+                    ),
+                ),
+                review_summary="Only a stale edit of the ledger store is in the packet.",
+            )
+        )
+        return SemanticEgressSuccess(
+            request_id=candidate.request_id,
+            privacy_proposal_id=f"ppr_56000000-0000-4000-8000-00000000{ordinal:04d}",
+            authorization_id=f"aut_56000000-0000-4000-8000-00000000{ordinal:04d}",
+            dispatch_kind=SemanticDispatchKind.EXTERNAL,
+            result=SemanticResultSuccess(
+                judgment,
+                fallback._provenance(  # pyright: ignore[reportPrivateUsage]
+                    binding, status=SemanticStatus.SUCCEEDED, failure_class=None
+                ),
+            ),
+            case_digest=digest,
+            privacy_receipt_id=f"egr_56000000-0000-4000-8000-00000000{ordinal:04d}",
+            request_commitment="hmac-sha256:" + "6" * 64,
+            disclosure=disclosure,
+        )
+
+
+async def _resolve_primary() -> ProviderBinding | None:
+    return non_dispatch._PROVIDER  # pyright: ignore[reportPrivateUsage]
+
 
 _CODE = TASK_INPUT_OUTSIDE_NOT_ADMITTED_GAP
 _SENTENCE = check_time_change_gap_sentence(_CODE)
@@ -120,7 +244,11 @@ async def _composition(
     monkeypatch.setattr(ready_composition_module, "capture_check_time_change", capture)
     monkeypatch.setattr(ready_composition_module, "recover_check_time_change", recover)
     monkeypatch.setattr(
-        ready_composition_module, "current_check_workspace_source", lambda: object()
+        ready_composition_module,
+        "current_check_workspace_source",
+        # The check's workspace source names its workspace; the outside read excludes it (#1118
+        # unit 1). The capture itself is faked above, so the path is never opened.
+        lambda: SimpleNamespace(workspace="/finishup-test-workspace"),
     )
     durable, runtime = await _durable_semantic_case(adapter)
     case = _at_lease_frontier(built, durable)
