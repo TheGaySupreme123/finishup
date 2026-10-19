@@ -391,7 +391,7 @@ jobs:
       - name: Install candidate outside checkout, isolated HOME/XDG
         run: |
           bash scripts/ci/prepare_test_environment.sh
-          iso="${RUNNER_TEMP}/finishup-home"
+          iso="${RUNNER_TEMP}/h"
           install -d -m 0700 "$iso/.runtime"
           echo "XDG_RUNTIME_DIR=$iso/.runtime" >> "$GITHUB_ENV"
           candidate_version=$(uv run --locked python -c "import tomllib; print(tomllib.load(open('pyproject.toml', 'rb'))['project']['version'])")

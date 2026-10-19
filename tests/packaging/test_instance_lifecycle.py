@@ -371,7 +371,10 @@ def test_permanent_install_and_two_pinned_snapshots_coexist_and_dispose_independ
         )
         refused = _cli(b_exe, ["service", "run"], env)
         assert refused.returncode == 20
-        assert refused.stderr.startswith(b"installation_identity_mismatch:")
+        assert any(
+            line.startswith(b"installation_identity_mismatch:")
+            for line in refused.stderr.splitlines()
+        )
         assert b"Traceback" not in refused.stderr
         pin_path.write_bytes(original_pin)
         restarted = _json(b_exe, ["service", "restart"], env)

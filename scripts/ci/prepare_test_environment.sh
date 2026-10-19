@@ -5,8 +5,8 @@ set -euo pipefail
 : "${RUNNER_TEMP:?GitHub Actions runner temp directory is required}"
 : "${GITHUB_ENV:?GitHub Actions environment file is required}"
 
-test_home="${RUNNER_TEMP}/finishup-home"
-pytest_root="${RUNNER_TEMP}/finishup-pytest"
+test_home="${RUNNER_TEMP}/h"
+pytest_root="${RUNNER_TEMP}/pt"
 install -d -m 0700 "$test_home" "$pytest_root" \
   "$test_home/.local/share" "$test_home/.config" "$test_home/.cache"
 {

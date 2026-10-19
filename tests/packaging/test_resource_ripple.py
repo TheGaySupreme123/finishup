@@ -107,6 +107,7 @@ def _synthetic_checkout(root: Path, *, inventory_count: int, reviewed_count: int
     _write(root, "scripts/generate_review_dialogue_fixture.py", "")
     _write(root, "scripts/generate_task_statement_fixture.py", "")
     _write(root, "scripts/generate_publish_action_notices_fixture.py", "")
+    _write(root, "scripts/generate_publish_server_filled_fixture.py", "")
     _write(root, "scripts/generate_check_inspection_fixture.py", "")
     _write(root, "scripts/generate_review_mode_fixture.py", "")
     _write(root, "scripts/generate_deferred_review_fixture.py", "")

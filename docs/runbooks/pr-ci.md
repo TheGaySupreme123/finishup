@@ -42,7 +42,8 @@ inventory of the installed candidate's dependencies, excluding only the unpublis
 distribution itself; it does not treat an empty virtualenv-root scan as dependency coverage.
 
 `scripts/ci/prepare_test_environment.sh` gives each Linux test job a private home and mode-0700
-pytest base directory under the runner's temporary directory. Packaging receives isolation before
+pytest base directory under the runner's temporary directory. Short `h` and `pt` directory names
+leave room for Unix socket paths beneath disposable instances. Packaging receives isolation before
 any tests run. Commands that launch services or installed CLIs unset both inherited isolation-root
 variables, leaving each test responsible for its own instance. No job uses the maintainer's live
 installation or provider credentials.
