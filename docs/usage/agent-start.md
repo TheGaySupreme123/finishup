@@ -14,7 +14,8 @@ curl -fsSL https://raw.githubusercontent.com/TheGaySupreme123/finishup/main/docs
 1. **Check the platform** ([section 0](#0-check-the-platform-first--you-do-this)). macOS and Linux
    run FinishUP directly; Windows runs it inside WSL 2.
 2. **Install** ([section 1](#1-install--you-do-this)). Install `uv` if it is missing, then run
-   `uv tool install --managed-python finishup`. No Python version to choose.
+   `uv tool install --managed-python --python 3.14 finishup`. Keep `--python 3.14`: newer uv
+   otherwise picks Python 3.15, which FinishUP cannot install on yet.
 3. **Ask which agents to connect.** All the ones found (recommended), or a few of them.
 4. **Ask how reviews should work.** FinishUP (recommended: local checks on every task, and you turn
    on AI-powered review for a task when it helps), local only, or AI-powered review on every task.

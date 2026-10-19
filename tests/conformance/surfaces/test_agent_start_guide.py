@@ -94,7 +94,7 @@ def test_agent_start_lists_the_questions_in_order_with_recommendations() -> None
     assert "4. **Secret storage**: never a question" in guide
     assert guide.index("## The short version") < guide.index("## 0. Check the platform first")
     for line in (
-        "uv tool install --managed-python finishup",
+        "uv tool install --managed-python --python 3.14 finishup",
         "finishup setup run --host all --route-profile policy --non-interactive --json",
         "finishup ai setup",
         "finishup setup vault && finishup ai off",
