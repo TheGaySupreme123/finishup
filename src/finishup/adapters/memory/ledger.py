@@ -17,6 +17,7 @@ from finishup.domain.events import (
     FINDING_EVENT_SCHEMA_VERSION,
     FINDING_SNIPPET_EVENT_SCHEMA_VERSION,
     REVIEW_CHECK_EVENT_SCHEMA_VERSION,
+    REVIEWER_CHECK_EVENT_SCHEMA_VERSION,
     SEMANTIC_EVENT_SCHEMA_VERSION,
     AcceptedEvent,
     ActionRecordedPayload,
@@ -4344,10 +4345,13 @@ class MemoryLedgerAdapter:
                 )
                 else FINDING_EVENT_SCHEMA_VERSION
             )
-            # 1.5.0 is reserved for the pre-edit deferral reason. That check still carries
-            # review_mode and totals, so the reason is chosen before the 1.4.0 review-output rule.
+            # 1.6.0 is chosen exactly for the reviewer record (#1118). 1.5.0 is reserved for the
+            # pre-edit deferral reason. That check still carries review_mode and totals, so the
+            # reason is chosen before the 1.4.0 review-output rule.
             check_schema_version = (
-                DEFERRED_CHECK_EVENT_SCHEMA_VERSION
+                REVIEWER_CHECK_EVENT_SCHEMA_VERSION
+                if check_payload.reviewer is not None
+                else DEFERRED_CHECK_EVENT_SCHEMA_VERSION
                 if check_payload.semantic_reason is SemanticReason.DEFERRED_BEFORE_FIRST_EDIT
                 else REVIEW_CHECK_EVENT_SCHEMA_VERSION
                 if review_summary is not None or verified or check_payload.totals is not None

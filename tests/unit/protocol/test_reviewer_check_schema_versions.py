@@ -1,0 +1,144 @@
+"""#1118 R7: the reviewer record rides only check-recorded and check-result 1.6.0.
+
+The integration first added ``reviewer`` in place to check-recorded 1.4.0/1.5.0 and check-result
+1.5.0. Those schemas are closed, so a reader of the earlier bytes of those versions refused the
+field: the in-place change broke unreleased prerelease readers. The record now has new versions,
+the earlier documents are byte-identical to before, and their readers still refuse the field.
+"""
+
+from __future__ import annotations
+
+import hashlib
+import json
+from dataclasses import replace
+from pathlib import Path
+from typing import Any, cast
+
+import pytest
+from pydantic import ValidationError
+from tests.unit.kernel import test_receipt_builder as receipt_test
+from tests.unit.protocol.test_models_and_schemas import (
+    _check_result_wire,  # pyright: ignore[reportPrivateUsage]
+)
+
+from finishup.domain.events import (
+    REVIEWER_CHECK_EVENT_SCHEMA_VERSION,
+    EventPayload,
+    EventSchema,
+    decode_payload,
+    encode_payload,
+)
+from finishup.domain.findings import CheckVerdict
+from finishup.domain.reviewer_reads import reviewer_record_from_wire
+from finishup.domain.values import JsonObject, freeze_json
+from finishup.domain.values import JsonValue as DomainJsonValue
+from finishup.protocol.canonical import canonical_digest, canonical_encode
+from finishup.protocol.errors import ProtocolValueError
+from finishup.protocol.models import CheckResult
+from finishup.protocol.schemas import SchemaInstanceInvalid, validate_schema_instance
+from unit.application import test_undeclared_names_never_egress as named_checks
+
+_ROOT = Path(__file__).resolve().parents[3]
+_FIXTURE = _ROOT / "fixtures/canonical/check-reviewer-record-1.6.0.case.json"
+# SHA-256 of each document as it stood before the reviewer integration (7bd8eb2fe).
+_FROZEN = {
+    "schemas/events/check-recorded-1.4.0.schema.json": (
+        "57544bb1480c906a8edfbcbeafe9976f9ce31755ee613b95b268e748973fba1a"
+    ),
+    "schemas/events/check-recorded-1.5.0.schema.json": (
+        "6aa755d7038c695fa4929f26ef2386f95a7a325bedca367650a965e4d5ffcd4b"
+    ),
+    "schemas/operations/check-result-1.5.0.schema.json": (
+        "d03e8a3fd92b1f239a0aae66f691f65b863efda492016a518187b2144a09fd6c"
+    ),
+}
+
+
+def _decode(version: str, body: dict[str, Any]) -> EventPayload:
+    return decode_payload(EventSchema("check_recorded", version), cast(DomainJsonValue, body))
+
+
+def _vectors() -> list[dict[str, Any]]:
+    fixture = cast(dict[str, Any], json.loads(_FIXTURE.read_bytes()))
+    assert fixture["fixture_id"] == "CHK-160"
+    return cast(list[dict[str, Any]], fixture["input"]["vectors"])
+
+
+def _event_body() -> dict[str, Any]:
+    """A schema-valid check-recorded 1.4.0 body (review output, no reviewer record)."""
+
+    row, _digest = named_checks._check_row(with_names=True)  # pyright: ignore[reportPrivateUsage]
+    return cast(dict[str, Any], json.loads(canonical_encode(row.payload)))
+
+
+@pytest.mark.parametrize("path", sorted(_FROZEN))
+def test_earlier_check_schemas_are_byte_identical_to_before_the_reviewer(path: str) -> None:
+    assert hashlib.sha256((_ROOT / path).read_bytes()).hexdigest() == _FROZEN[path]
+    document = json.loads((_ROOT / path).read_text(encoding="utf-8"))
+    assert "reviewer_record" not in document.get("$defs", {})
+
+
+@pytest.mark.parametrize("vector", _vectors(), ids=lambda vector: str(vector["vector_id"]))
+def test_reviewer_vectors_are_canonical_and_decode(vector: dict[str, Any]) -> None:
+    payload = cast(dict[str, Any], vector["payload"])
+    assert canonical_encode(payload).hex() == vector["canonical_hex"]
+    assert canonical_digest(payload) == vector["digest"]
+    assert vector["admitted_versions"] == ["1.6.0"]
+    record = reviewer_record_from_wire(payload)
+    assert record is not None and record.as_wire() == payload
+
+
+@pytest.mark.parametrize("vector", _vectors(), ids=lambda vector: str(vector["vector_id"]))
+def test_check_recorded_admits_the_reviewer_only_on_1_6(vector: dict[str, Any]) -> None:
+    body = {**_event_body(), "reviewer": vector["payload"]}
+    for version in cast(list[str], vector["refused_versions"]):
+        # The decoder refuses the field exactly as a pre-integration reader of that version did.
+        with pytest.raises(ProtocolValueError) as refused:
+            _decode(version, body)
+        assert str(refused.value) == "unknown_payload_field"
+        with pytest.raises(SchemaInstanceInvalid):
+            validate_schema_instance("check-recorded", version, body)
+    decoded = _decode(REVIEWER_CHECK_EVENT_SCHEMA_VERSION, body)
+    validate_schema_instance("check-recorded", "1.6.0", body)
+    assert canonical_encode(encode_payload(decoded)) == canonical_encode(body)
+
+
+def test_check_recorded_1_6_requires_the_reviewer_and_older_bytes_still_replay() -> None:
+    body = _event_body()
+    _decode("1.4.0", body)
+    with pytest.raises(ProtocolValueError):
+        _decode("1.6.0", body)
+    check = receipt_test._check(  # pyright: ignore[reportPrivateUsage]
+        CheckVerdict.INSUFFICIENT_COVERAGE,
+        receipt_test._coverage(),  # pyright: ignore[reportPrivateUsage]
+    )
+    reviewer = cast(JsonObject, freeze_json(_vectors()[0]["payload"]))
+    with_reviewer = replace(check, reviewer=reviewer)
+    encoded = cast(dict[str, Any], json.loads(canonical_encode(encode_payload(with_reviewer))))
+    with pytest.raises(ProtocolValueError):
+        _decode("1.5.0", encoded)
+    _decode("1.6.0", encoded)
+
+
+@pytest.mark.parametrize("vector", _vectors(), ids=lambda vector: str(vector["vector_id"]))
+def test_check_result_admits_the_reviewer_only_on_1_6(vector: dict[str, Any]) -> None:
+    instance = {**cast(dict[str, Any], json.loads(json.dumps(_check_result_wire())))}
+    validate_schema_instance("check-result", "1.5.0", instance)
+    instance["reviewer"] = vector["payload"]
+    with pytest.raises(SchemaInstanceInvalid):
+        validate_schema_instance("check-result", "1.5.0", instance)
+    validate_schema_instance("check-result", "1.6.0", instance)
+    try:
+        CheckResult.model_validate(instance)
+    except ValidationError as error:  # pragma: no cover - the current model is the 1.6.0 contract
+        raise AssertionError(error) from error
+
+
+def test_new_reviewer_schemas_use_the_product_name() -> None:
+    for path, title in (
+        ("schemas/events/check-recorded-1.6.0.schema.json", "FinishUP check recorded 1.6.0"),
+        ("schemas/operations/check-result-1.6.0.schema.json", "FinishUP check result 1.6.0"),
+    ):
+        document = json.loads((_ROOT / path).read_text(encoding="utf-8"))
+        assert document["title"] == title
+        assert document["$id"] == "https://schemas.yoetz.dev/0.1/" + path.removeprefix("schemas/")

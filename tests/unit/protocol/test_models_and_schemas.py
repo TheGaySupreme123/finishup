@@ -390,7 +390,7 @@ _RESULT_SUPPORT_MODEL_SPECS: tuple[tuple[str, str, str], ...] = (
         "operations/publish-work-result-1.0.0.schema.json",
         "version_slice",
     ),
-    ("CheckSuccessModel", "operations/check-result-1.5.0.schema.json", "success"),
+    ("CheckSuccessModel", "operations/check-result-1.6.0.schema.json", "success"),
     (
         "CheckPolicyExecutionModel",
         "operations/check-result-1.0.0.schema.json",
@@ -2615,7 +2615,7 @@ def test_result_leaf_registry_has_exhaustive_schema_parity() -> None:
     assert type(rules) is tuple
     assert (
         len(rules)
-        == 1677  # #1118 +18 check reviewer; n6 item 4: check_recorded 1.5.0; #1079 +2 admissible_verification;
+        == 1678  # #1118 +18 check reviewer, +1 check_recorded 1.6.0; n6 item 4: check_recorded 1.5.0; #1079 +2 admissible_verification;
         # W6 #1107 +16 (check agent_next, status operation check_outcome);
         # +1 closing_material_frontier; #1084 +10 server_filled and brief status,
         # +1 history occurred_at_source (review R7), -2 replay_notice retired (round 2),
@@ -2647,7 +2647,7 @@ def test_result_leaf_registry_has_exhaustive_schema_parity() -> None:
         for rule in rules
         if rule.method == "publish_work" and rule.segments == publish_summary_segments
     )
-    assert len(publish_summary_rules) == 29  # n6 item 4: check_recorded 1.5.0
+    assert len(publish_summary_rules) == 30  # n6 item 4: check_recorded 1.5.0; #1118: 1.6.0
     assert all(rule.status_view is None for rule in publish_summary_rules)
 
     expected_publish = _expected_publish_summary_rules(models)
@@ -3168,6 +3168,7 @@ def _expected_publish_summary_rules(models: Any) -> dict[object, object]:
         ("check_recorded", "1.3.0"): "public_structural",
         ("check_recorded", "1.4.0"): "public_structural",
         ("check_recorded", "1.5.0"): "public_structural",
+        ("check_recorded", "1.6.0"): "public_structural",
         ("coordination_context_recorded", "1.0.0"): "public_structural",
         ("coordination_obligation_declared", "1.0.0"): "public_structural",
         ("coordination_disposition_recorded", "1.0.0"): "public_structural",
@@ -3278,7 +3279,7 @@ def test_schema_catalog_reports_complete_registry() -> None:
     assert SCHEMA_NAMESPACE == "https://schemas.yoetz.dev/0.1/"
     assert SCHEMA_MANIFEST_SCHEMA == "yoetz.schema-manifest/1.0.0"
     assert SCHEMA_MANIFEST_VERSION == "1.0.0"
-    assert SCHEMA_MEMBER_COUNT == 233  # #1118 unit 2: reviewer-reply 1.0.0
+    assert SCHEMA_MEMBER_COUNT == 235  # #1118: reviewer-reply 1.0.0, check-result/-recorded 1.6.0
     assert len(catalog.documents) == SCHEMA_MEMBER_COUNT
 
     paths = tuple(document.relative_path for document in catalog.documents)
@@ -3363,8 +3364,8 @@ def test_schema_catalog_record_shape_and_indexes_are_exact() -> None:
     manifest_bytes = root.joinpath("manifest.json").read_bytes()
     assert catalog.manifest_digest == f"sha256:{hashlib.sha256(manifest_bytes).hexdigest()}"
     assert (
-        sum(_count_refs(document.json_schema) for document in catalog.documents) == 8_136
-    )  # #1118 integration +6 (reviewer record on check-result 1.5.0, check-recorded 1.4.0/1.5.0),
+        sum(_count_refs(document.json_schema) for document in catalog.documents) == 8_355
+    )  # #1118 +225 (check-result 1.6.0 and check-recorded 1.6.0, which carry the reviewer record),
     # #1118 unit 2 +27 (reviewer-reply 1.0.0), #1084 +55 (publish server_filled; status results_filter, brief_success, server_filled),
     # W6 #1107 +6 (status check_outcome and its overall_next/missing item defs),
     # +1 (review of PR #1088: reduced success server_filled),
@@ -3397,12 +3398,12 @@ def test_schema_name_derivation_and_version_maps_are_exact() -> None:
         "2.9.0",
         "7.0.0",
         "1.4.0",
-        "1.5.0",
+        "1.6.0",
     }
-    assert set(event_versions.values()) == {"1.0.0", "1.1.0", "1.2.0", "1.4.0", "1.5.0"}
+    assert set(event_versions.values()) == {"1.0.0", "1.1.0", "1.2.0", "1.4.0", "1.6.0"}
     assert event_versions["action_recorded"] == "1.0.0"
     assert event_versions["evidence_recorded"] == "1.2.0"
-    assert event_versions["check_recorded"] == "1.5.0"
+    assert event_versions["check_recorded"] == "1.6.0"
     assert event_versions["claim_recorded"] == "1.1.0"
     assert event_versions["finding_recorded"] == "1.4.0"
     # The task-statement versions (issue #908).

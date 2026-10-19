@@ -2576,8 +2576,8 @@ credential probe keep their one-shot dispatch; no check uses it.
   job-keyed commitment of root alias and path for a file, else the case item id), root alias,
   standing, baseline, line span, result bytes and digest, and the privacy receipt of the exchange
   that first sent it; plus why the conversation ended and the session cleanup. It is optional
-  `reviewer` on check-result 1.5.0 and check-recorded 1.4.0 (both unreleased, extended in place),
-  so the check result, a same-id replay, status recovery of the result and receipts all read it.
+  `reviewer` on check-result 1.6.0 and check-recorded 1.6.0 (new versions; 1.4.0/1.5.0 are
+  unchanged and refuse the field, so an older reader never misreads it), so the check result, a same-id replay, status recovery of the result and receipts all read it.
   Each file read's alias and path stays only in the encrypted review response. CLI and TUI text,
   MCP text and receipts render the same lines; receipts carry this structural record, never
   reviewer prose. As before, the text a read sent is not persisted, so a judgment recovered from

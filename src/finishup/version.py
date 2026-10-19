@@ -120,8 +120,9 @@ _RESOURCE_LIMIT: Final = 4_194_304
 # check-recorded 1.5.0) and +1 canonical deferred-before-first-edit case (CAN-021). #1084: +1
 # canonical server-filled publish and brief status vectors (CAN-022). W6 #1107: +1 canonical
 # check agent_next vectors (AGN-001), +1 status check_outcome vector (AGN-002). #1118 unit 2: +1
-# reviewer-reply 1.0.0 schema.
-REVIEWED_RESOURCE_COUNT: Final = 320
+# reviewer-reply 1.0.0 schema. #1118: +2 schemas (check-result 1.6.0, check-recorded 1.6.0) and
+# +1 canonical reviewer-record case (REV-001).
+REVIEWED_RESOURCE_COUNT: Final = 323
 _RESOURCE_KINDS: Final = frozenset(
     {
         "canonical_vector",
@@ -139,7 +140,7 @@ _REQUEST_RESULT_VERSIONS: Final = (
     ("catalog", "7.0.0"),
     ("chat-user-attestation", "1.0.0"),
     ("check-request", "1.1.0"),
-    ("check-result", "1.5.0"),
+    ("check-result", "1.6.0"),
     ("closure-prepare-request", "1.0.0"),
     ("closure-prepare-result", "1.0.0"),
     ("client-info", "1.0.0"),
@@ -808,7 +809,7 @@ def build_version_manifest(*, include_optional_probes: bool = False) -> VersionM
         event_schema_versions=tuple(
             (
                 name,
-                "1.5.0"
+                "1.6.0"
                 if name == "check_recorded"
                 else "1.4.0"
                 if name == "finding_recorded"

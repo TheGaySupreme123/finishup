@@ -2972,6 +2972,7 @@ _PUBLISH_FIXED_SUMMARY: Final[Mapping[tuple[str, str], str]] = MappingProxyType(
         ("check_recorded", "1.3.0"): "check_recorded",
         ("check_recorded", "1.4.0"): "check_recorded",
         ("check_recorded", "1.5.0"): "check_recorded",
+        ("check_recorded", "1.6.0"): "check_recorded",
         ("receipt_recorded", "1.0.0"): "receipt_recorded",
         ("coordination_context_recorded", "1.0.0"): "coordination_context_recorded",
         ("coordination_obligation_declared", "1.0.0"): "coordination_obligation_declared",
@@ -8732,7 +8733,7 @@ def _build_result_leaf_rules() -> tuple[_ResultLeafRule, ...]:
         ):
             raise RuntimeError("invalid_result_leaf_classification")
     if (
-        len(result) != 1677
+        len(result) != 1678
     ):  # ... #1017 +3, #1027 +5, tb4n3 LO +9, W2-A +46, LF +34 (fact_lineage), W2-B +2,
         # tb4n4 #1044 +7 (closure_readiness.undeclared_references), #1048 +38 (inspection),
         # #1047 +2 (follow_up_round), tb4n5 +3 (publish action_notices),
@@ -8742,7 +8743,7 @@ def _build_result_leaf_rules() -> tuple[_ResultLeafRule, ...]:
         # +4 (status brief: detail and closure_state), +1 (status history occurred_at_source),
         # W5/D1 +2 (closure_readiness.acceptance_risk),
         # W6 +1 check (agent_next) / +15 status (operation check_outcome),
-        # #1118 +18 check (reviewer)
+        # #1118 +18 check (reviewer), +1 check_recorded 1.6.0
         raise RuntimeError("incomplete_result_leaf_registry")
     return result
 

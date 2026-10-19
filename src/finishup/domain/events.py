@@ -310,6 +310,9 @@ REVIEW_CHECK_EVENT_SCHEMA_VERSION: Final = "1.4.0"
 # superset of 1.4.0 and is selected only for that reason, so every other check keeps its
 # earlier bytes and a 1.4.0 record of ``deterministic_mode`` still replays.
 DEFERRED_CHECK_EVENT_SCHEMA_VERSION: Final = "1.5.0"
+# 1.6.0 (#1118) is 1.5.0 plus the reviewer conversation's record and is chosen exactly when that
+# record is present. 1.4.0 and 1.5.0 readers reject the field, so it never rides an older version.
+REVIEWER_CHECK_EVENT_SCHEMA_VERSION: Final = "1.6.0"
 SEMANTIC_EVENT_SCHEMA_VERSION: Final = "1.2.0"
 SEMANTIC_EVENT_SCHEMA_VERSIONS: Final = ("1.1.0", SEMANTIC_EVENT_SCHEMA_VERSION)
 # 1.3.0 (unreleased on the 0.3 line) also admits the optional review-dialogue fields of issue #905
@@ -986,6 +989,7 @@ def _locator_key_kind(schema: EventSchema) -> str:
                         CHECK_EVENT_SCHEMA_VERSION,
                         REVIEW_CHECK_EVENT_SCHEMA_VERSION,
                         DEFERRED_CHECK_EVENT_SCHEMA_VERSION,
+                        REVIEWER_CHECK_EVENT_SCHEMA_VERSION,
                     }
                 )
                 or (
@@ -3300,8 +3304,8 @@ class CheckRecordedPayload:
     semantic_withheld_item_ids: tuple[str, ...] = ()
     # Metadata-only input coverage for the exact check packet (issue #951).
     review_input_manifest: JsonObject | None = None
-    # #1118 (1.4.0, unreleased in place): the reviewer conversation's structural record: exchanges,
-    # reads with opaque source ids and receipts, why it ended, the session cleanup. Never a path.
+    # #1118 (1.6.0 only): the reviewer conversation's structural record: exchanges, reads with
+    # opaque source ids and receipts, why it ended, the session cleanup. Never a path.
     reviewer: JsonObject | None = None
     # Frozen-frontier structural totals; absent only on legacy check events.
     totals: JsonObject | None = None
@@ -3606,6 +3610,7 @@ PAYLOAD_TYPES: Final[Mapping[EventSchema, type[EventPayload]]] = MappingProxyTyp
         EventSchema("check_recorded", CHECK_EVENT_SCHEMA_VERSION): CheckRecordedPayload,
         EventSchema("check_recorded", REVIEW_CHECK_EVENT_SCHEMA_VERSION): CheckRecordedPayload,
         EventSchema("check_recorded", DEFERRED_CHECK_EVENT_SCHEMA_VERSION): CheckRecordedPayload,
+        EventSchema("check_recorded", REVIEWER_CHECK_EVENT_SCHEMA_VERSION): CheckRecordedPayload,
         **{
             EventSchema("check_recorded", version): CheckRecordedPayload
             for version in SEMANTIC_EVENT_SCHEMA_VERSIONS
@@ -4594,6 +4599,9 @@ def decode_payload(schema: EventSchema, payload: JsonValue) -> EventPayload:
         _validate_event_schema_payload(schema, finding)
         return finding
     required, optional = _PAYLOAD_SHAPES[schema.name]
+    if schema.name == "check_recorded" and schema.version != REVIEWER_CHECK_EVENT_SCHEMA_VERSION:
+        # #1118: an older check version never carried the reviewer record; its reader refuses it.
+        optional = optional - {"reviewer"}
     if schema.name == "evidence_recorded" and schema.version != SCHEMA_VERSION:
         optional = frozenset({*optional, "digest_binding"})
     if schema == EventSchema("claim_recorded", CLAIM_SCHEMA_VERSION):
@@ -5644,11 +5652,14 @@ def _validate_event_schema_payload(
             or payload.semantic_route_required is not None
             or bool(payload.deliverable_states)
             or payload.review_mode is not None
-            or payload.reviewer is not None
         )
-        # 1.5.0 exists only for the pre-edit deferral reason. A deferred check still carries
-        # review_mode and totals, so this gate is first: those fields do not promote it to 1.4.0.
-        if payload.semantic_reason is SemanticReason.DEFERRED_BEFORE_FIRST_EDIT:
+        # 1.6.0 exists exactly for the reviewer record (#1118), so that gate is first. 1.5.0 exists
+        # only for the pre-edit deferral reason. A deferred check still carries review_mode and
+        # totals, so that gate is next: those fields do not promote it to 1.4.0.
+        if payload.reviewer is not None or schema.version == REVIEWER_CHECK_EVENT_SCHEMA_VERSION:
+            if payload.reviewer is None or schema.version != REVIEWER_CHECK_EVENT_SCHEMA_VERSION:
+                raise ProtocolValueError("invalid_event_schema")
+        elif payload.semantic_reason is SemanticReason.DEFERRED_BEFORE_FIRST_EDIT:
             if schema.version != DEFERRED_CHECK_EVENT_SCHEMA_VERSION:
                 raise ProtocolValueError("invalid_event_schema")
         elif schema.version == DEFERRED_CHECK_EVENT_SCHEMA_VERSION:

@@ -11831,8 +11831,11 @@ sent)`. The attempt runner is given `max_retries=0` for it.
   carried the result (`None` if none did); `ended` is the loop's closed stop reason, `None` for a
   final judgment.
 - Wire: optional `reviewer` (`$defs/reviewer_record`, `$defs/reviewer_read`) on the check-result
-  1.5.0 success branch and on check-recorded 1.4.0/1.5.0, in place (unreleased). Its leaves are
-  public structural in the result-leaf registry. `CheckCommitResult.reviewer` and
+  1.6.0 success branch and on check-recorded 1.6.0, both new versions; check-recorded 1.6.0 is
+  written exactly when the record is present, and the 1.4.0/1.5.0 documents stay unchanged and
+  refuse the field (`unknown_payload_field`). MCP `check` outputs and control-result 2.9.0 name
+  check-result 1.6.0; golden vector `fixtures/canonical/check-reviewer-record-1.6.0.case.json`
+  (CHK-160). Its leaves are public structural in the result-leaf registry. `CheckCommitResult.reviewer` and
   `FinalSemanticEvaluation.reviewer` carry it in process; `FinalSemanticEvaluation`
   `reviewer_citable_refs` and `reviewer_paths` stay in process and in the encrypted
   `yoetz.semantic-response/1` object (`reviewer`, `reviewer_paths`).

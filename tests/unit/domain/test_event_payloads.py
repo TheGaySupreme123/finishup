@@ -564,6 +564,7 @@ def test_exact_schema_pair_dispatch_and_unknown_boundary() -> None:
         "1.3.0",
         "1.4.0",
         "1.5.0",  # n6 item 4: deferred_before_first_edit
+        "1.6.0",  # #1118: the reviewer record
     }
     assert {schema.version for schema in PAYLOAD_TYPES if schema.name == "finding_recorded"} == {
         SCHEMA_VERSION,

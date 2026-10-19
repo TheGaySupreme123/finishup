@@ -2291,9 +2291,6 @@ def _check_recorded_v1_4_schema(entry: _RegistryEntry) -> dict[str, JsonValue]:
     _add_semantic_route_required(properties)
     _add_check_review_mode(definitions, properties)
     _add_deliverable_states(definitions, properties)
-    # #1118 (unreleased 1.4.0, in place): the reviewer conversation's record.
-    _add_reviewer_definitions(definitions)
-    properties["reviewer"] = {"$ref": "#/$defs/reviewer_record"}
     _admit_recorded_policy_identities(document)
     document["$id"] = SCHEMA_NAMESPACE + entry.relative_path
     document["title"] = f"Yoetz check recorded {entry.schema_version}"
@@ -2360,6 +2357,24 @@ def _check_recorded_v1_5_schema(entry: _RegistryEntry) -> dict[str, JsonValue]:
     _admit_deferred_before_first_edit(document)
     document["$id"] = SCHEMA_NAMESPACE + entry.relative_path
     # New document (ADR-048): prose title uses FinishUP; the yoetz.dev $id stays frozen.
+    document["title"] = f"FinishUP check recorded {entry.schema_version}"
+    return document
+
+
+def _check_recorded_v1_6_schema(entry: _RegistryEntry) -> dict[str, JsonValue]:
+    """#1118: check-recorded 1.6.0 is 1.5.0 plus the optional reviewer conversation record.
+
+    A new version, never an in-place amendment: a 1.4.0/1.5.0 reader keeps rejecting the field,
+    and an older build preserves a 1.6.0 event it does not know as an opaque unknown version.
+    """
+
+    document = _check_recorded_v1_5_schema(entry)
+    definitions = cast(dict[str, JsonValue], document["$defs"])
+    _add_reviewer_definitions(definitions)
+    cast(dict[str, JsonValue], document["properties"])["reviewer"] = {
+        "$ref": "#/$defs/reviewer_record"
+    }
+    document["$id"] = SCHEMA_NAMESPACE + entry.relative_path
     document["title"] = f"FinishUP check recorded {entry.schema_version}"
     return document
 
@@ -3952,9 +3967,18 @@ def _check_result_v1_5_schema(entry: _RegistryEntry) -> dict[str, JsonValue]:
     document = _check_result_v1_4_schema(entry)
     _admit_deferred_before_first_edit(document)
     _add_check_agent_next(document)
-    _add_check_reviewer(document)
     document["$id"] = SCHEMA_NAMESPACE + entry.relative_path
     # New document (ADR-048): prose title uses FinishUP; the yoetz.dev $id stays frozen.
+    document["title"] = f"FinishUP check result {entry.schema_version}"
+    return document
+
+
+def _check_result_v1_6_schema(entry: _RegistryEntry) -> dict[str, JsonValue]:
+    """#1118: check-result 1.6.0 is 1.5.0 plus the optional reviewer record on a success."""
+
+    document = _check_result_v1_5_schema(entry)
+    _add_check_reviewer(document)
+    document["$id"] = SCHEMA_NAMESPACE + entry.relative_path
     document["title"] = f"FinishUP check result {entry.schema_version}"
     return document
 
@@ -3980,7 +4004,7 @@ def _add_check_agent_next(document: dict[str, JsonValue]) -> None:
 
 
 def _add_check_reviewer(document: dict[str, JsonValue]) -> None:
-    """#1118: the reviewer conversation's record on the check success (unreleased 1.5.0, in place)."""
+    """#1118: the reviewer conversation's record on the check success (check-result 1.6.0)."""
 
     definitions = cast(dict[str, JsonValue], document["$defs"])
     _add_reviewer_definitions(definitions)
@@ -8358,7 +8382,7 @@ def _control_v2_9_schema(entry: _RegistryEntry) -> dict[str, JsonValue]:
     # follow the current public finding/check contracts; earlier control artifacts remain frozen.
     active_replacements = {
         SCHEMA_NAMESPACE + "operations/check-result-1.3.0.schema.json": SCHEMA_NAMESPACE
-        + "operations/check-result-1.5.0.schema.json",
+        + "operations/check-result-1.6.0.schema.json",
         SCHEMA_NAMESPACE + "findings/finding-1.3.0.schema.json": SCHEMA_NAMESPACE
         + "findings/finding-1.4.0.schema.json",
     }
@@ -10557,6 +10581,18 @@ _REGISTRY: Final[tuple[_RegistryEntry, ...]] = (
         ),
     ),
     _RegistryEntry(
+        "events/check-recorded-1.6.0.schema.json",
+        "check-recorded",
+        "1.6.0",
+        "event",
+        "event-payload",
+        lambda: (
+            __import__(
+                "finishup.domain.events", fromlist=["CheckRecordedPayload"]
+            ).CheckRecordedPayload
+        ),
+    ),
+    _RegistryEntry(
         "events/claim-recorded-1.0.0.schema.json",
         "claim-recorded",
         "1.0.0",
@@ -11219,6 +11255,16 @@ _REGISTRY: Final[tuple[_RegistryEntry, ...]] = (
         "operations/check-result-1.5.0.schema.json",
         "check-result",
         "1.5.0",
+        "request_result",
+        "MCP output",
+        lambda: (
+            __import__("finishup.protocol.models", fromlist=["CheckResultModel"]).CheckResultModel
+        ),
+    ),
+    _RegistryEntry(
+        "operations/check-result-1.6.0.schema.json",
+        "check-result",
+        "1.6.0",
         "request_result",
         "MCP output",
         lambda: (
@@ -12233,6 +12279,7 @@ _BUILDER_OWNED_SCHEMA_PATHS: Final[frozenset[str]] = frozenset(
         "events/check-recorded-1.3.0.schema.json",
         "events/check-recorded-1.4.0.schema.json",
         "events/check-recorded-1.5.0.schema.json",
+        "events/check-recorded-1.6.0.schema.json",
         "events/finding-recorded-1.4.0.schema.json",
         "findings/provider-judgment-1.1.0.schema.json",
         "findings/provider-judgment-1.2.0.schema.json",
@@ -12268,6 +12315,7 @@ _BUILDER_OWNED_SCHEMA_PATHS: Final[frozenset[str]] = frozenset(
         "operations/check-result-1.3.0.schema.json",
         "operations/check-result-1.4.0.schema.json",
         "operations/check-result-1.5.0.schema.json",
+        "operations/check-result-1.6.0.schema.json",
         "config/yoetz-config-1.3.0.schema.json",
         "operations/check-request-1.1.0.schema.json",
         "operations/publish-work-request-1.2.0.schema.json",
@@ -12543,6 +12591,8 @@ def build_schema_documents(
             normalized = _check_recorded_v1_4_schema(entry)
         elif entry.relative_path == "events/check-recorded-1.5.0.schema.json":
             normalized = _check_recorded_v1_5_schema(entry)
+        elif entry.relative_path == "events/check-recorded-1.6.0.schema.json":
+            normalized = _check_recorded_v1_6_schema(entry)
         elif entry.relative_path == "findings/provider-judgment-1.1.0.schema.json":
             normalized = _provider_judgment_v1_1_schema(entry)
         elif entry.relative_path == "findings/provider-judgment-1.2.0.schema.json":
@@ -12656,6 +12706,8 @@ def build_schema_documents(
             normalized = _check_result_v1_4_schema(entry)
         elif entry.relative_path == "operations/check-result-1.5.0.schema.json":
             normalized = _check_result_v1_5_schema(entry)
+        elif entry.relative_path == "operations/check-result-1.6.0.schema.json":
+            normalized = _check_result_v1_6_schema(entry)
         elif entry.relative_path == "operations/receipt-result-1.1.0.schema.json":
             normalized = _simple_versioned_schema(
                 entry,
