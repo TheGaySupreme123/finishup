@@ -3627,9 +3627,9 @@ async def test_reviewer_steps_are_lease_guarded_keyed_and_durable() -> None:
     assert [(r[0], r[1], r[4]) for r in rows] == [("read", 1, None), ("turn", 1, 12)]
     assert all(b"private" not in str(r).encode() for r in rows)
     # Keyed: not the unkeyed digest of the selector (review_r1 probe).
-    assert rows[0][2] != hashlib.sha256(selector).hexdigest() and not rows[0][2].startswith(
-        "sha256:"
-    )
+    selector_commitment = str(rows[0][2])
+    assert selector_commitment != hashlib.sha256(selector).hexdigest()
+    assert not selector_commitment.startswith("sha256:")
     restarted = _restarted_sqlite(adapter, command)
     assert await restarted.review_steps(first).usage() == (2, 1)
     await adapter.record_attempt_outcome(
