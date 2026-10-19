@@ -135,7 +135,7 @@ class _Handoff:
         ticket = ObservationCaptureTicket(
             workspace_commitment=self.workspace,
             task_id=runtime.task_id,
-            yoetz_session_id=runtime.session_id,
+            finishup_session_id=runtime.session_id,
             session_commitment=self.world.session,
             source=_SOURCES[self.host],
             source_identity=identity,
@@ -950,9 +950,9 @@ async def test_claude_drain_delivers_a_shared_workspace_codex_row_with_its_hando
         native.LifecycleMapping(
             mapping_version=1,
             codex_session_id="codex-shared",
-            yoetz_task_id=world.sibling.task_id,
-            yoetz_session_id=world.sibling.session_id,
-            yoetz_writer_id=cast(str, world.sibling.writer_id),
+            finishup_task_id=world.sibling.task_id,
+            finishup_session_id=world.sibling.session_id,
+            finishup_writer_id=cast(str, world.sibling.writer_id),
             last_frontier=None,
         ),
         _state=tmp_path / "state",

@@ -132,9 +132,9 @@ def test_owned_start_binds_before_forwarding_and_drops_result(
     def observe(**kwargs: object) -> int:
         mapping = load_mapping(_SESSION, _state=tmp_path)
         assert mapping is not None
-        assert mapping.yoetz_task_id == _START["task_id"]
-        assert mapping.yoetz_session_id == _START["session_id"]
-        assert mapping.yoetz_writer_id == _START["writer_id"]
+        assert mapping.finishup_task_id == _START["task_id"]
+        assert mapping.finishup_session_id == _START["session_id"]
+        assert mapping.finishup_writer_id == _START["writer_id"]
         assert mapping.last_frontier == "4:sha256:" + "a" * 64
         structural = strict_json_parse(cast(bytes, kwargs["stdin_bytes"]))
         assert isinstance(structural, Mapping)
@@ -252,9 +252,9 @@ def test_invalid_start_preserves_mapping_and_emits_only_closed_diagnostics(
     original = mapping_from_start_ids(
         codex_session_id=_SESSION,
         last_frontier=None,
-        yoetz_task_id=cast(str, _START["task_id"]),
-        yoetz_session_id=cast(str, _START["session_id"]),
-        yoetz_writer_id=cast(str, _START["writer_id"]),
+        finishup_task_id=cast(str, _START["task_id"]),
+        finishup_session_id=cast(str, _START["session_id"]),
+        finishup_writer_id=cast(str, _START["writer_id"]),
     )
     store_mapping(original, _state=tmp_path)
     _run(tmp_path, _payload(result_json=response))
@@ -271,19 +271,19 @@ def test_explicit_start_replaces_previous_task_or_session(tmp_path: Path, same_t
     previous = mapping_from_start_ids(
         codex_session_id=_SESSION,
         last_frontier=None,
-        yoetz_task_id=cast(str, _START["task_id"])
+        finishup_task_id=cast(str, _START["task_id"])
         if same_task
         else "tsk_44444444-4444-4444-8444-444444444444",
-        yoetz_session_id="ses_55555555-5555-4555-8555-555555555555",
-        yoetz_writer_id="wri_66666666-6666-4666-8666-666666666666",
+        finishup_session_id="ses_55555555-5555-4555-8555-555555555555",
+        finishup_writer_id="wri_66666666-6666-4666-8666-666666666666",
     )
     store_mapping(previous, _state=tmp_path)
     _run(tmp_path, _payload())
     current = load_mapping(_SESSION, _state=tmp_path)
     assert current is not None and current != previous
-    assert current.yoetz_task_id == _START["task_id"]
-    assert current.yoetz_session_id == _START["session_id"]
-    assert current.yoetz_writer_id == _START["writer_id"]
+    assert current.finishup_task_id == _START["task_id"]
+    assert current.finishup_session_id == _START["session_id"]
+    assert current.finishup_writer_id == _START["writer_id"]
 
 
 def test_canonical_session_alias_is_used_and_conflicting_pair_is_rejected(tmp_path: Path) -> None:
@@ -314,7 +314,7 @@ def test_start_mapping_deferred_under_lifecycle_lock_applies_on_next_hook(
     monkeypatch.setattr(observe_hooks, "handle_observe", observe)
     _run(tmp_path, _payload("postToolUse", tool_name="Shell", tool_output="{}"))
     mapping = load_mapping(_SESSION, _state=tmp_path)
-    assert mapping is not None and mapping.yoetz_task_id == _START["task_id"]
+    assert mapping is not None and mapping.finishup_task_id == _START["task_id"]
 
 
 @pytest.mark.parametrize("deferred", [False, True])

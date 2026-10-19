@@ -108,9 +108,9 @@ def _mapped(tmp_path: Path, session: str, service: _Service) -> None:
     store_mapping(
         mapping_from_start_ids(
             codex_session_id=session,
-            yoetz_task_id=service.compact.task_id,
-            yoetz_session_id=service.compact.session_id,
-            yoetz_writer_id=service.compact.writer_id,
+            finishup_task_id=service.compact.task_id,
+            finishup_session_id=service.compact.session_id,
+            finishup_writer_id=service.compact.writer_id,
             last_frontier="0:genesis",
         ),
         _state=tmp_path,

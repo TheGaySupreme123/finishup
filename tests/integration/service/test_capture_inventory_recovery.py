@@ -730,7 +730,7 @@ async def test_recovered_inventory_preserves_real_pending_ticket_pressure(
             ObservationCaptureTicket(
                 workspace_commitment=world.workspace,
                 task_id=current.task_id,
-                yoetz_session_id=current.session_id,
+                finishup_session_id=current.session_id,
                 session_commitment=world.session,
                 source=ObservationSource.CLAUDE_HOOK,
                 source_identity=f"retained-{number}",
@@ -853,9 +853,9 @@ async def test_parent_worker_routes_recover_and_keep_encrypted_content_task_scop
         native.LifecycleMapping(
             mapping_version=1,
             codex_session_id=worker_session,
-            yoetz_task_id=world.sibling.task_id,
-            yoetz_session_id=world.sibling.session_id,
-            yoetz_writer_id=cast(str, world.sibling.writer_id),
+            finishup_task_id=world.sibling.task_id,
+            finishup_session_id=world.sibling.session_id,
+            finishup_writer_id=cast(str, world.sibling.writer_id),
             last_frontier=None,
         ),
         _state=tmp_path / "state",

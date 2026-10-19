@@ -230,7 +230,7 @@ class ObservationAdviceSemanticAttempt:
 
     attempt_id: str
     workspace_commitment: str
-    yoetz_session_id: str
+    finishup_session_id: str
     basis_digest: str
     subject_digest: str
     coverage_gaps: tuple[str, ...]
@@ -412,7 +412,7 @@ class ObservationAdviceSemanticRepository(Protocol):
         self,
         *,
         workspace: str,
-        yoetz_session_id: str,
+        finishup_session_id: str,
         basis_digest: str,
         subject_digest: str,
         coverage_gaps: tuple[str, ...],
@@ -424,11 +424,11 @@ class ObservationAdviceSemanticRepository(Protocol):
     ) -> ObservationAdviceSemanticAttempt | ObservationAdviceSemanticDeferral: ...
 
     def lookup(
-        self, *, yoetz_session_id: str, basis_digest: str
+        self, *, finishup_session_id: str, basis_digest: str
     ) -> ObservationAdviceSemanticAttempt | None: ...
 
     def latest_for_identity(
-        self, *, yoetz_session_id: str, identity: str
+        self, *, finishup_session_id: str, identity: str
     ) -> ObservationAdviceSemanticAttempt | None: ...
 
     def claim_next(
@@ -462,7 +462,7 @@ type AdviceSemanticCancellationReconciler = Callable[
     [ObservationAdviceSemanticAttempt], Awaitable[ObservationAdviceSemanticOutcome | None]
 ]
 type NowProvider = Callable[[], str]
-# ``(yoetz_session_id) -> the task route can reach a provider`` (#923): the route is ACTIVE, and
+# ``(finishup_session_id) -> the task route can reach a provider`` (#923): the route is ACTIVE, and
 # its repository authority is granted and admits LLM-inference egress. Read from the policy store,
 # never through the privacy admission lock; gates admission together with provider readiness.
 type AdviceSemanticRouteReady = Callable[[str], Awaitable[bool]]
@@ -470,11 +470,11 @@ type AdviceSemanticRouteReady = Callable[[str], Awaitable[bool]]
 # admits LLM-inference egress, and the configured credential is present. Read from current facts
 # on every build, never from the READY snapshot; a probe failure counts as not ready.
 type AdviceSemanticProviderReady = Callable[[], Awaitable[bool]]
-# ``(yoetz_session_id) -> the effective repository policy needs a human preview`` (#1019):
+# ``(finishup_session_id) -> the effective repository policy needs a human preview`` (#1019):
 # ``confirm_every_request`` (metadata-only) or an LLM channel with ``preview_required``. Read
 # from the policy store like the route probe; a probe failure admits nothing.
 type AdviceSemanticPreviewRequired = Callable[[str], Awaitable[bool]]
-# ``(workspace, yoetz_session_id, delay_seconds)``: ask for an advice rebuild once a deferred or
+# ``(workspace, finishup_session_id, delay_seconds)``: ask for an advice rebuild once a deferred or
 # backed-off admission becomes eligible. Must not block; the supervisor owns the timer.
 type AdviceSemanticRevisit = Callable[[str, str, float], None]
 
@@ -596,9 +596,9 @@ class ObservationAdviceSemanticScheduler:
         candidates: Sequence[ObservationAdviceCandidate],
         basis: str,
         gaps: Sequence[str],
-        yoetz_session_id: str | None,
+        finishup_session_id: str | None,
     ) -> ObservationAdviceSemanticAddon | None:
-        if not self.enabled or yoetz_session_id is None or not candidates:
+        if not self.enabled or finishup_session_id is None or not candidates:
             return None
         repository = _repository_for(store)
         if repository is None:
@@ -615,11 +615,11 @@ class ObservationAdviceSemanticScheduler:
         # original basis in the frozen packet and hash those exact bytes for disclosure provenance.
         identity = advice_candidate_identity(packet)
         latest = repository.latest_for_identity(
-            yoetz_session_id=yoetz_session_id, identity=identity
+            finishup_session_id=finishup_session_id, identity=identity
         )
         if not (
             await self._probe(self.provider_ready, "provider_ready_probe_failed")
-            and await self._probe(self.route_ready, "route_ready_probe_failed", yoetz_session_id)
+            and await self._probe(self.route_ready, "route_ready_probe_failed", finishup_session_id)
         ):
             # Advice that cannot reach a provider never enqueues (#923): no row, no revisit, no
             # pending gap. A review this identity already completed stays a recorded fact.
@@ -630,7 +630,7 @@ class ObservationAdviceSemanticScheduler:
                 evidence_digest=None,
                 failure_reason=ADVICE_SEMANTIC_UNREACHABLE_REASON,
             )
-        skip = await self._preview_skip(yoetz_session_id)
+        skip = await self._preview_skip(finishup_session_id)
         if skip is not None:
             # Preview-required privacy (#1019): nobody can preview a background packet, so the
             # review is skipped like an unreachable provider -- no row, no pending proposal, no
@@ -644,7 +644,7 @@ class ObservationAdviceSemanticScheduler:
         subject = canonical_digest(cast(JsonValue, dict(packet)))
         scheduled = repository.schedule(
             workspace=workspace,
-            yoetz_session_id=yoetz_session_id,
+            finishup_session_id=finishup_session_id,
             basis_digest=identity,
             subject_digest=subject,
             coverage_gaps=sorted_gaps,
@@ -655,7 +655,7 @@ class ObservationAdviceSemanticScheduler:
             retry_base_seconds=self.min_interval_seconds,
         )
         if isinstance(scheduled, ObservationAdviceSemanticDeferral):
-            self._request_revisit(workspace, yoetz_session_id, scheduled.retry_after_seconds)
+            self._request_revisit(workspace, finishup_session_id, scheduled.retry_after_seconds)
             if scheduled.reason == "retry_backoff" and scheduled.previous is not None:
                 # The last attempt's own closed reason stays visible until the retry runs.
                 return addon_from_attempt(scheduled.previous)
@@ -666,12 +666,12 @@ class ObservationAdviceSemanticScheduler:
             )
         return addon_from_attempt(scheduled)
 
-    async def _preview_skip(self, yoetz_session_id: str) -> str | None:
+    async def _preview_skip(self, finishup_session_id: str) -> str | None:
         probe = self.preview_required
         if probe is None:
             return None
         try:
-            required = bool(await probe(yoetz_session_id))
+            required = bool(await probe(finishup_session_id))
         except Exception as exc:  # noqa: BLE001 - an unreadable policy admits nothing this build
             record_unexpected_exception_without_raising(
                 exc,
@@ -699,12 +699,12 @@ class ObservationAdviceSemanticScheduler:
             )
             return False
 
-    def _request_revisit(self, workspace: str, yoetz_session_id: str, delay: float) -> None:
+    def _request_revisit(self, workspace: str, finishup_session_id: str, delay: float) -> None:
         revisit = self.revisit
         if revisit is None:
             return
         try:
-            revisit(workspace, yoetz_session_id, max(float(delay), 1.0))
+            revisit(workspace, finishup_session_id, max(float(delay), 1.0))
         except Exception as exc:  # noqa: BLE001 - a missed revisit only waits for the next hook
             record_unexpected_exception_without_raising(
                 exc,
@@ -882,7 +882,7 @@ class ObservationAdviceSemanticSupervisor:
 
         self._revisit_handler = handler
 
-    def schedule_revisit(self, workspace: str, yoetz_session_id: str, delay: float) -> None:
+    def schedule_revisit(self, workspace: str, finishup_session_id: str, delay: float) -> None:
         """Rebuild one session's advice after ``delay`` seconds (trailing edge, #888).
 
         At most one timer per session; an existing earlier timer is kept because the rebuild
@@ -893,7 +893,7 @@ class ObservationAdviceSemanticSupervisor:
 
         if self._closed or self._revisit_handler is None:
             return
-        key = (workspace, yoetz_session_id)
+        key = (workspace, finishup_session_id)
         if key in self._revisit_timers or len(self._revisit_timers) >= _MAX_REVISIT_TIMERS:
             return
         try:
@@ -901,18 +901,18 @@ class ObservationAdviceSemanticSupervisor:
         except RuntimeError:
             return
         self._revisit_timers[key] = loop.call_later(
-            max(delay, 1.0), self._fire_revisit, workspace, yoetz_session_id
+            max(delay, 1.0), self._fire_revisit, workspace, finishup_session_id
         )
 
-    def _fire_revisit(self, workspace: str, yoetz_session_id: str) -> None:
-        self._revisit_timers.pop((workspace, yoetz_session_id), None)
+    def _fire_revisit(self, workspace: str, finishup_session_id: str) -> None:
+        self._revisit_timers.pop((workspace, finishup_session_id), None)
         handler = self._revisit_handler
         if self._closed or handler is None:
             return
 
         async def run() -> None:
             try:
-                await handler(workspace, yoetz_session_id)
+                await handler(workspace, finishup_session_id)
             except asyncio.CancelledError:
                 raise
             except Exception as exc:  # noqa: BLE001 - a failed revisit waits for the next hook

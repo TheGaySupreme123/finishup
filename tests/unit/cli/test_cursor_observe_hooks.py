@@ -581,9 +581,9 @@ def test_cursor_received_clear_clears_existing_lifecycle_mapping(tmp_path: Path)
     store_mapping(
         mapping_from_start_ids(
             codex_session_id=session,
-            yoetz_task_id=new_id(IdKind.TASK),
-            yoetz_session_id=new_id(IdKind.SESSION),
-            yoetz_writer_id=new_id(IdKind.WRITER),
+            finishup_task_id=new_id(IdKind.TASK),
+            finishup_session_id=new_id(IdKind.SESSION),
+            finishup_writer_id=new_id(IdKind.WRITER),
             last_frontier=None,
         ),
         _state=tmp_path,

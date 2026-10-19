@@ -163,7 +163,7 @@ def test_inspection_objects_materialize_as_separate_bounded_evidence() -> None:
     task_id, _envelope, _manifests = _inputs()
     snapshot = ObservationInspectionSnapshot(
         snapshot_id="inspection-302",
-        yoetz_session_id="ses_00000000-0000-4000-8000-000000000302",
+        finishup_session_id="ses_00000000-0000-4000-8000-000000000302",
         subject_state_digest="sha256:" + "1" * 64,
         changed_paths_digest="sha256:" + "2" * 64,
         facts_object_id="obj_00000000-0000-4000-8000-000000000304",

@@ -55,9 +55,9 @@ def _persist_mapping(
     observe_hooks.store_mapping(
         observe_hooks.mapping_from_start_ids(
             codex_session_id=host_session,
-            yoetz_task_id=task_id,
-            yoetz_session_id=_OLD_FINISHUP_SESSION,
-            yoetz_writer_id=_OLD_WRITER,
+            finishup_task_id=task_id,
+            finishup_session_id=_OLD_FINISHUP_SESSION,
+            finishup_writer_id=_OLD_WRITER,
             last_frontier=None,
         ),
         _state=state,
@@ -152,9 +152,9 @@ def _persist_pending_predecessor(
     observe_hooks.store_mapping(
         observe_hooks.mapping_from_start_ids(
             codex_session_id=host_session,
-            yoetz_task_id=_TASK_A,
-            yoetz_session_id=_OLD_FINISHUP_SESSION,
-            yoetz_writer_id=_OLD_WRITER,
+            finishup_task_id=_TASK_A,
+            finishup_session_id=_OLD_FINISHUP_SESSION,
+            finishup_writer_id=_OLD_WRITER,
             last_frontier=None,
         ),
         _state=state,
@@ -298,8 +298,8 @@ def test_persisted_predecessor_pending_row_drains_after_successor_attach(tmp_pat
     successor_mapping = observe_hooks.load_mapping("codex-successor-pending", _state=tmp_path)
     predecessor_mapping = observe_hooks.load_mapping(predecessor, _state=tmp_path)
     assert successor_mapping is not None
-    assert successor_mapping.yoetz_task_id == _TASK_A
-    assert successor_mapping.yoetz_session_id == _SUCCESSOR_FINISHUP_SESSION
+    assert successor_mapping.finishup_task_id == _TASK_A
+    assert successor_mapping.finishup_session_id == _SUCCESSOR_FINISHUP_SESSION
     assert predecessor_mapping is not None
-    assert predecessor_mapping.yoetz_session_id == _SUCCESSOR_FINISHUP_SESSION
-    assert predecessor_mapping.yoetz_writer_id == _SUCCESSOR_WRITER
+    assert predecessor_mapping.finishup_session_id == _SUCCESSOR_FINISHUP_SESSION
+    assert predecessor_mapping.finishup_writer_id == _SUCCESSOR_WRITER

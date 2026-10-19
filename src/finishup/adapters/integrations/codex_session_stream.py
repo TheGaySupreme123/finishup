@@ -2924,9 +2924,9 @@ def _stream_selection_context(
     annotated = JsonObject(
         {
             **dict(structural),
-            "selection_task_id": mapping.yoetz_task_id,
-            "selection_session_id": mapping.yoetz_session_id,
-            "selection_writer_id": mapping.yoetz_writer_id,
+            "selection_task_id": mapping.finishup_task_id,
+            "selection_session_id": mapping.finishup_session_id,
+            "selection_writer_id": mapping.finishup_writer_id,
             "selection_authority_generation": authority.generation,
         }
     )
@@ -2935,10 +2935,10 @@ def _stream_selection_context(
     fence = canonical_digest(
         JsonObject(
             {
-                "route": mapping.yoetz_task_id,
-                "task": mapping.yoetz_task_id,
-                "session": mapping.yoetz_session_id,
-                "writer": mapping.yoetz_writer_id,
+                "route": mapping.finishup_task_id,
+                "task": mapping.finishup_task_id,
+                "session": mapping.finishup_session_id,
+                "writer": mapping.finishup_writer_id,
                 "host_session": envelope.session_commitment,
                 "source": envelope.source.value,
                 "generation": envelope.cursor.source_generation,

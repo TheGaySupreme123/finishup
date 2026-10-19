@@ -103,7 +103,7 @@ def test_capture_ticket_staging_round_trip_and_revocation() -> None:
     ticket = ObservationCaptureTicket(
         workspace_commitment=_WORKSPACE,
         task_id=_TASK,
-        yoetz_session_id=_FINISHUP_SESSION,
+        finishup_session_id=_FINISHUP_SESSION,
         session_commitment=_SESSION,
         source=ObservationSource.CLAUDE_HOOK,
         source_identity="hook:ticket-1",
@@ -135,7 +135,7 @@ def test_capture_ticket_quota_counts_only_active_handoffs() -> None:
     base = ObservationCaptureTicket(
         workspace_commitment=_WORKSPACE,
         task_id=_TASK,
-        yoetz_session_id=_FINISHUP_SESSION,
+        finishup_session_id=_FINISHUP_SESSION,
         session_commitment=_SESSION,
         source=ObservationSource.CLAUDE_HOOK,
         source_identity="hook:quota-0",
@@ -478,9 +478,9 @@ def test_codex_session_commitment_for_session_recovers_historical_route() -> Non
     store.grant_consent(_WORKSPACE, _TIME)
     store.record_workspace_session_route(
         workspace=_WORKSPACE,
-        yoetz_session_id="ses_10000000-0000-4000-8000-000000000001",
-        yoetz_task_id="tsk_10000000-0000-4000-8000-000000000001",
-        yoetz_writer_id="wtr_10000000-0000-4000-8000-000000000001",
+        finishup_session_id="ses_10000000-0000-4000-8000-000000000001",
+        finishup_task_id="tsk_10000000-0000-4000-8000-000000000001",
+        finishup_writer_id="wtr_10000000-0000-4000-8000-000000000001",
         codex_session_commitment=_SESSION,
         bound_at=_TIME,
     )
@@ -488,16 +488,16 @@ def test_codex_session_commitment_for_session_recovers_historical_route() -> Non
     # lanes remain available for recovery and concurrent verification.
     store.record_workspace_session_route(
         workspace=_WORKSPACE,
-        yoetz_session_id="ses_10000000-0000-4000-8000-000000000002",
-        yoetz_task_id="tsk_10000000-0000-4000-8000-000000000002",
-        yoetz_writer_id="wtr_10000000-0000-4000-8000-000000000002",
+        finishup_session_id="ses_10000000-0000-4000-8000-000000000002",
+        finishup_task_id="tsk_10000000-0000-4000-8000-000000000002",
+        finishup_writer_id="wtr_10000000-0000-4000-8000-000000000002",
         codex_session_commitment=_SESSION_B,
         bound_at=_TIME,
     )
     assert (
         store.codex_session_commitment_for_session(
             workspace=_WORKSPACE,
-            yoetz_session_id="ses_10000000-0000-4000-8000-000000000001",
+            finishup_session_id="ses_10000000-0000-4000-8000-000000000001",
         )
         == _SESSION
     )
@@ -508,7 +508,7 @@ def test_codex_session_commitment_for_session_recovers_historical_route() -> Non
     assert (
         store.codex_session_commitment_for_session(
             workspace=_WORKSPACE,
-            yoetz_session_id="ses_10000000-0000-4000-8000-000000000002",
+            finishup_session_id="ses_10000000-0000-4000-8000-000000000002",
         )
         == _SESSION_B
     )
@@ -521,9 +521,9 @@ def test_workspace_session_route_commitment_is_first_writer_fence() -> None:
     assert (
         store.record_workspace_session_route(
             workspace=_WORKSPACE,
-            yoetz_session_id=finishup_session,
-            yoetz_task_id=_TASK,
-            yoetz_writer_id="wtr_10000000-0000-4000-8000-000000000003",
+            finishup_session_id=finishup_session,
+            finishup_task_id=_TASK,
+            finishup_writer_id="wtr_10000000-0000-4000-8000-000000000003",
             codex_session_commitment=_SESSION,
             bound_at=_TIME,
         )
@@ -534,9 +534,9 @@ def test_workspace_session_route_commitment_is_first_writer_fence() -> None:
     assert (
         store.record_workspace_session_route(
             workspace=_WORKSPACE,
-            yoetz_session_id=finishup_session,
-            yoetz_task_id=_TASK,
-            yoetz_writer_id="wtr_10000000-0000-4000-8000-000000000004",
+            finishup_session_id=finishup_session,
+            finishup_task_id=_TASK,
+            finishup_writer_id="wtr_10000000-0000-4000-8000-000000000004",
             codex_session_commitment=_SESSION_B,
             bound_at=_TIME,
         )
@@ -545,7 +545,7 @@ def test_workspace_session_route_commitment_is_first_writer_fence() -> None:
     assert (
         store.codex_session_commitment_for_session(
             workspace=_WORKSPACE,
-            yoetz_session_id=finishup_session,
+            finishup_session_id=finishup_session,
         )
         == _SESSION
     )
@@ -572,9 +572,9 @@ def test_workspace_routes_keep_unrelated_sessions_active() -> None:
     ):
         store.record_workspace_session_route(
             workspace=_WORKSPACE,
-            yoetz_session_id=finishup_session,
-            yoetz_task_id=task,
-            yoetz_writer_id=writer,
+            finishup_session_id=finishup_session,
+            finishup_task_id=task,
+            finishup_writer_id=writer,
             codex_session_commitment=session,
             bound_at=_TIME,
         )

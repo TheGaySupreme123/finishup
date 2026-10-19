@@ -160,9 +160,9 @@ def test_post_tool_use_successful_start_creates_mapping(tmp_path: Path, tool_nam
     assert code == 0
     mapping = load_mapping(codex_session, _state=tmp_path)
     assert mapping is not None
-    assert mapping.yoetz_task_id == task_id
-    assert mapping.yoetz_session_id == session_id
-    assert mapping.yoetz_writer_id == writer_id
+    assert mapping.finishup_task_id == task_id
+    assert mapping.finishup_session_id == session_id
+    assert mapping.finishup_writer_id == writer_id
     assert mapping.last_frontier == "0:genesis"
 
 
@@ -215,9 +215,9 @@ def test_post_tool_use_delegated_start_preserves_parent_mapping(tmp_path: Path) 
     codex_session = "codex-delegate-parent"
     parent_mapping = mapping_from_start_ids(
         codex_session_id=codex_session,
-        yoetz_task_id=parent_task,
-        yoetz_session_id=parent_session,
-        yoetz_writer_id=parent_writer,
+        finishup_task_id=parent_task,
+        finishup_session_id=parent_session,
+        finishup_writer_id=parent_writer,
         last_frontier="2:sha256:" + "b" * 64,
     )
     store_mapping(parent_mapping, _state=tmp_path)
@@ -248,9 +248,9 @@ def test_post_tool_use_delegated_start_preserves_parent_mapping(tmp_path: Path) 
     )
     mapping = load_mapping(codex_session, _state=tmp_path)
     assert mapping is not None
-    assert mapping.yoetz_task_id == parent_task
-    assert mapping.yoetz_session_id == parent_session
-    assert mapping.yoetz_writer_id == parent_writer
+    assert mapping.finishup_task_id == parent_task
+    assert mapping.finishup_session_id == parent_session
+    assert mapping.finishup_writer_id == parent_writer
     assert mapping.last_frontier == "3:sha256:" + "c" * 64
 
 
@@ -295,9 +295,9 @@ def test_attached_child_shared_session_preserves_parent_and_binds_scoped_lanes(
     host_session = "codex-shared-parent"
     parent = mapping_from_start_ids(
         codex_session_id=host_session,
-        yoetz_task_id=parent_task,
-        yoetz_session_id=parent_session,
-        yoetz_writer_id=parent_writer,
+        finishup_task_id=parent_task,
+        finishup_session_id=parent_session,
+        finishup_writer_id=parent_writer,
         last_frontier="4:sha256:" + "a" * 64,
     )
     store_mapping(parent, _state=tmp_path)
@@ -328,8 +328,8 @@ def test_attached_child_shared_session_preserves_parent_and_binds_scoped_lanes(
     )
     child_mapping = load_mapping(host_lane, _state=tmp_path)
     assert child_mapping is not None
-    assert child_mapping.yoetz_task_id == child_task
-    assert child_mapping.yoetz_session_id == child_session
+    assert child_mapping.finishup_task_id == child_task
+    assert child_mapping.finishup_session_id == child_session
 
 
 def test_child_start_reconciles_pending_parent_before_classification(tmp_path: Path) -> None:
@@ -338,9 +338,9 @@ def test_child_start_reconciles_pending_parent_before_classification(tmp_path: P
     host_session = "codex-pending-parent"
     parent = mapping_from_start_ids(
         codex_session_id=host_session,
-        yoetz_task_id=parent_task,
-        yoetz_session_id=parent_session,
-        yoetz_writer_id=parent_writer,
+        finishup_task_id=parent_task,
+        finishup_session_id=parent_session,
+        finishup_writer_id=parent_writer,
         last_frontier=None,
     )
     queue_mapping_store(parent, _state=tmp_path)
@@ -381,9 +381,9 @@ def test_child_alias_cannot_be_rebound_to_another_task(tmp_path: Path) -> None:
     store_mapping(
         mapping_from_start_ids(
             codex_session_id=host_session,
-            yoetz_task_id=parent_task,
-            yoetz_session_id=parent_session,
-            yoetz_writer_id=parent_writer,
+            finishup_task_id=parent_task,
+            finishup_session_id=parent_session,
+            finishup_writer_id=parent_writer,
             last_frontier=None,
         ),
         _state=tmp_path,
@@ -396,9 +396,9 @@ def test_child_alias_cannot_be_rebound_to_another_task(tmp_path: Path) -> None:
     )
     old_mapping = mapping_from_start_ids(
         codex_session_id=host_lane,
-        yoetz_task_id=old_child_task,
-        yoetz_session_id=old_child_session,
-        yoetz_writer_id=old_child_writer,
+        finishup_task_id=old_child_task,
+        finishup_session_id=old_child_session,
+        finishup_writer_id=old_child_writer,
         last_frontier=None,
     )
     store_mapping(old_mapping, _state=tmp_path)
@@ -431,9 +431,9 @@ def test_conflicting_child_aliases_fail_closed_without_task_fallback(tmp_path: P
     host_session = "codex-conflicting-child"
     parent = mapping_from_start_ids(
         codex_session_id=host_session,
-        yoetz_task_id=parent_task,
-        yoetz_session_id=parent_session,
-        yoetz_writer_id=parent_writer,
+        finishup_task_id=parent_task,
+        finishup_session_id=parent_session,
+        finishup_writer_id=parent_writer,
         last_frontier=None,
     )
     store_mapping(parent, _state=tmp_path)
@@ -523,7 +523,7 @@ def test_post_tool_use_duplicate_idempotent(tmp_path: Path) -> None:
     handle_post_tool_use(stdin_bytes=raw, stdout=io.BytesIO(), _state=tmp_path)
     mapping = load_mapping("codex-dup", _state=tmp_path)
     assert mapping is not None
-    assert mapping.yoetz_task_id == task_id
+    assert mapping.finishup_task_id == task_id
 
 
 def test_start_bind_reconciles_crashed_applying_before_store(tmp_path: Path) -> None:
@@ -532,16 +532,16 @@ def test_start_bind_reconciles_crashed_applying_before_store(tmp_path: Path) -> 
     session = "codex-residual-start"
     old = mapping_from_start_ids(
         codex_session_id=session,
-        yoetz_task_id=new_id(IdKind.TASK),
-        yoetz_session_id=new_id(IdKind.SESSION),
-        yoetz_writer_id=new_id(IdKind.WRITER),
+        finishup_task_id=new_id(IdKind.TASK),
+        finishup_session_id=new_id(IdKind.SESSION),
+        finishup_writer_id=new_id(IdKind.WRITER),
         last_frontier="1:sha256:" + "a" * 64,
     )
     current = mapping_from_start_ids(
         codex_session_id=session,
-        yoetz_task_id=new_id(IdKind.TASK),
-        yoetz_session_id=new_id(IdKind.SESSION),
-        yoetz_writer_id=new_id(IdKind.WRITER),
+        finishup_task_id=new_id(IdKind.TASK),
+        finishup_session_id=new_id(IdKind.SESSION),
+        finishup_writer_id=new_id(IdKind.WRITER),
         last_frontier="3:sha256:" + "c" * 64,
     )
     queue_mapping_store(old, _state=tmp_path)
@@ -555,9 +555,9 @@ def test_start_bind_reconciles_crashed_applying_before_store(tmp_path: Path) -> 
         "tool_response": {
             "structuredContent": {
                 "ok": True,
-                "task_id": current.yoetz_task_id,
-                "session_id": current.yoetz_session_id,
-                "writer_id": current.yoetz_writer_id,
+                "task_id": current.finishup_task_id,
+                "session_id": current.finishup_session_id,
+                "writer_id": current.finishup_writer_id,
                 "frontier": {
                     "sequence": "3",
                     "head_digest": "sha256:" + "c" * 64,
@@ -578,9 +578,9 @@ def test_session_start_clear_reconciles_crashed_applying_before_clear(tmp_path: 
     session = "codex-residual-clear"
     existing = mapping_from_start_ids(
         codex_session_id=session,
-        yoetz_task_id=new_id(IdKind.TASK),
-        yoetz_session_id=new_id(IdKind.SESSION),
-        yoetz_writer_id=new_id(IdKind.WRITER),
+        finishup_task_id=new_id(IdKind.TASK),
+        finishup_session_id=new_id(IdKind.SESSION),
+        finishup_writer_id=new_id(IdKind.WRITER),
         last_frontier=None,
     )
     store_mapping(existing, _state=tmp_path)
@@ -609,16 +609,16 @@ def test_start_bind_owner_coalesces_loser_queue_before_reconcile(tmp_path: Path)
     session = "codex-synchronized-bind"
     owner_mapping = mapping_from_start_ids(
         codex_session_id=session,
-        yoetz_task_id=new_id(IdKind.TASK),
-        yoetz_session_id=new_id(IdKind.SESSION),
-        yoetz_writer_id=new_id(IdKind.WRITER),
+        finishup_task_id=new_id(IdKind.TASK),
+        finishup_session_id=new_id(IdKind.SESSION),
+        finishup_writer_id=new_id(IdKind.WRITER),
         last_frontier="2:sha256:" + "a" * 64,
     )
     loser_mapping = mapping_from_start_ids(
         codex_session_id=session,
-        yoetz_task_id=new_id(IdKind.TASK),
-        yoetz_session_id=new_id(IdKind.SESSION),
-        yoetz_writer_id=new_id(IdKind.WRITER),
+        finishup_task_id=new_id(IdKind.TASK),
+        finishup_session_id=new_id(IdKind.SESSION),
+        finishup_writer_id=new_id(IdKind.WRITER),
         last_frontier="1:sha256:" + "b" * 64,
     )
     owner_queue_entered = threading.Event()
@@ -648,9 +648,9 @@ def test_start_bind_owner_coalesces_loser_queue_before_reconcile(tmp_path: Path)
                         "tool_response": {
                             "structuredContent": {
                                 "ok": True,
-                                "task_id": owner_mapping.yoetz_task_id,
-                                "session_id": owner_mapping.yoetz_session_id,
-                                "writer_id": owner_mapping.yoetz_writer_id,
+                                "task_id": owner_mapping.finishup_task_id,
+                                "session_id": owner_mapping.finishup_session_id,
+                                "writer_id": owner_mapping.finishup_writer_id,
                                 "frontier": {
                                     "sequence": "2",
                                     "head_digest": "sha256:" + "a" * 64,
@@ -672,9 +672,9 @@ def test_start_bind_owner_coalesces_loser_queue_before_reconcile(tmp_path: Path)
                         "tool_response": {
                             "structuredContent": {
                                 "ok": True,
-                                "task_id": loser_mapping.yoetz_task_id,
-                                "session_id": loser_mapping.yoetz_session_id,
-                                "writer_id": loser_mapping.yoetz_writer_id,
+                                "task_id": loser_mapping.finishup_task_id,
+                                "session_id": loser_mapping.finishup_session_id,
+                                "writer_id": loser_mapping.finishup_writer_id,
                                 "frontier": {
                                     "sequence": "1",
                                     "head_digest": "sha256:" + "b" * 64,
@@ -714,16 +714,16 @@ def test_clear_owner_coalesces_loser_store_before_reconcile(tmp_path: Path) -> N
     session = "codex-synchronized-clear"
     existing = mapping_from_start_ids(
         codex_session_id=session,
-        yoetz_task_id=new_id(IdKind.TASK),
-        yoetz_session_id=new_id(IdKind.SESSION),
-        yoetz_writer_id=new_id(IdKind.WRITER),
+        finishup_task_id=new_id(IdKind.TASK),
+        finishup_session_id=new_id(IdKind.SESSION),
+        finishup_writer_id=new_id(IdKind.WRITER),
         last_frontier=None,
     )
     loser = mapping_from_start_ids(
         codex_session_id=session,
-        yoetz_task_id=new_id(IdKind.TASK),
-        yoetz_session_id=new_id(IdKind.SESSION),
-        yoetz_writer_id=new_id(IdKind.WRITER),
+        finishup_task_id=new_id(IdKind.TASK),
+        finishup_session_id=new_id(IdKind.SESSION),
+        finishup_writer_id=new_id(IdKind.WRITER),
         last_frontier=None,
     )
     store_mapping(existing, _state=tmp_path)
@@ -772,9 +772,9 @@ def test_clear_owner_coalesces_loser_store_before_reconcile(tmp_path: Path) -> N
                         "tool_response": {
                             "structuredContent": {
                                 "ok": True,
-                                "task_id": loser.yoetz_task_id,
-                                "session_id": loser.yoetz_session_id,
-                                "writer_id": loser.yoetz_writer_id,
+                                "task_id": loser.finishup_task_id,
+                                "session_id": loser.finishup_session_id,
+                                "writer_id": loser.finishup_writer_id,
                             }
                         },
                     },
@@ -869,9 +869,9 @@ def test_session_start_active_with_fake_service(tmp_path: Path) -> None:
     store_mapping(
         mapping_from_start_ids(
             codex_session_id="codex-active",
-            yoetz_task_id=task_id,
-            yoetz_session_id=session_id,
-            yoetz_writer_id=writer_id,
+            finishup_task_id=task_id,
+            finishup_session_id=session_id,
+            finishup_writer_id=writer_id,
             last_frontier="0:genesis",
         ),
         _state=tmp_path,
@@ -917,9 +917,9 @@ def test_session_start_unreachable_service(tmp_path: Path) -> None:
     store_mapping(
         mapping_from_start_ids(
             codex_session_id="codex-down",
-            yoetz_task_id=task_id,
-            yoetz_session_id=session_id,
-            yoetz_writer_id=writer_id,
+            finishup_task_id=task_id,
+            finishup_session_id=session_id,
+            finishup_writer_id=writer_id,
             last_frontier=None,
         ),
         _state=tmp_path,
@@ -977,9 +977,9 @@ def _session_start_context_for_failure(
     store_mapping(
         mapping_from_start_ids(
             codex_session_id=codex_session_id,
-            yoetz_task_id=task_id,
-            yoetz_session_id=session_id,
-            yoetz_writer_id=writer_id,
+            finishup_task_id=task_id,
+            finishup_session_id=session_id,
+            finishup_writer_id=writer_id,
             last_frontier="0:genesis",
         ),
         _state=tmp_path,
@@ -1026,7 +1026,7 @@ def test_session_start_stale_mapping_is_not_reported_unavailable(
     mapping = load_mapping("codex-stale", _state=tmp_path)
     assert mapping is not None
     assert text == hooks_module._stale_mapping_context(mapping)  # pyright: ignore[reportPrivateUsage]
-    assert mapping.yoetz_session_id in text
+    assert mapping.finishup_session_id in text
     assert "mode=attach" in text
     assert "unavailable" not in text
     assert "start" in text
@@ -1153,9 +1153,9 @@ def test_session_start_clear_removes_mapping(tmp_path: Path) -> None:
     store_mapping(
         mapping_from_start_ids(
             codex_session_id="codex-clear",
-            yoetz_task_id=task_id,
-            yoetz_session_id=session_id,
-            yoetz_writer_id=writer_id,
+            finishup_task_id=task_id,
+            finishup_session_id=session_id,
+            finishup_writer_id=writer_id,
             last_frontier=None,
         ),
         _state=tmp_path,
@@ -1181,9 +1181,9 @@ def test_session_start_defers_service_while_pending_mapping_lock_is_busy(tmp_pat
     store.bind_codex_session(workspace, session)
     mapping = mapping_from_start_ids(
         codex_session_id=session,
-        yoetz_task_id=new_id(IdKind.TASK),
-        yoetz_session_id=new_id(IdKind.SESSION),
-        yoetz_writer_id=new_id(IdKind.WRITER),
+        finishup_task_id=new_id(IdKind.TASK),
+        finishup_session_id=new_id(IdKind.SESSION),
+        finishup_writer_id=new_id(IdKind.WRITER),
         last_frontier=None,
     )
     connects: list[str] = []
@@ -1249,9 +1249,9 @@ def test_session_start_resume_with_missing_mapping_runs_recovery_under_owned_loc
     store_mapping(
         mapping_from_start_ids(
             codex_session_id=prior,
-            yoetz_task_id=task_id,
-            yoetz_session_id=prior_session_id,
-            yoetz_writer_id=prior_writer_id,
+            finishup_task_id=task_id,
+            finishup_session_id=prior_session_id,
+            finishup_writer_id=prior_writer_id,
             last_frontier=None,
         ),
         _state=tmp_path,
@@ -1304,9 +1304,9 @@ def test_session_start_resume_with_missing_mapping_runs_recovery_under_owned_loc
     assert code == 0
     mapping = load_mapping("codex-resume-next", _state=tmp_path)
     assert mapping is not None
-    assert mapping.yoetz_task_id == task_id
-    assert mapping.yoetz_session_id == successor_session_id
-    assert mapping.yoetz_writer_id == successor_writer_id
+    assert mapping.finishup_task_id == task_id
+    assert mapping.finishup_session_id == successor_session_id
+    assert mapping.finishup_writer_id == successor_writer_id
     assert [getattr(request, "mode", None) for request in client.requests] == ["attach"]
     assert task_id in stdout.getvalue().decode()
 
@@ -1343,9 +1343,9 @@ def test_post_tool_use_bare_json_string_start_result_binds(tmp_path: Path) -> No
     assert code == 0
     mapping = load_mapping("codex-string-1", _state=tmp_path)
     assert mapping is not None
-    assert mapping.yoetz_task_id == "tsk_00000000-0000-4000-8000-000000000001"
-    assert mapping.yoetz_session_id == "ses_00000000-0000-4000-8000-000000000002"
-    assert mapping.yoetz_writer_id == "wri_00000000-0000-4000-8000-000000000003"
+    assert mapping.finishup_task_id == "tsk_00000000-0000-4000-8000-000000000001"
+    assert mapping.finishup_session_id == "ses_00000000-0000-4000-8000-000000000002"
+    assert mapping.finishup_writer_id == "wri_00000000-0000-4000-8000-000000000003"
     assert mapping.last_frontier == "1:sha256:" + "a" * 64
     assert "start_bind" not in _diagnostics_text(tmp_path)
 
@@ -1433,9 +1433,9 @@ def test_session_start_status_read_binds_the_workspace_locator(
     store_mapping(
         mapping_from_start_ids(
             codex_session_id="codex-bound-1",
-            yoetz_task_id=task_id,
-            yoetz_session_id=session_id,
-            yoetz_writer_id=writer_id,
+            finishup_task_id=task_id,
+            finishup_session_id=session_id,
+            finishup_writer_id=writer_id,
             last_frontier="0:genesis",
         ),
         _state=tmp_path,
@@ -1555,9 +1555,9 @@ def test_session_start_probe_binds_the_host_payload_cwd_over_the_hook_cwd(
     store_mapping(
         mapping_from_start_ids(
             codex_session_id="codex-compact-cwd",
-            yoetz_task_id=task_id,
-            yoetz_session_id=session_id,
-            yoetz_writer_id=writer_id,
+            finishup_task_id=task_id,
+            finishup_session_id=session_id,
+            finishup_writer_id=writer_id,
             last_frontier="0:genesis",
         ),
         _state=tmp_path / "state",
@@ -1588,7 +1588,7 @@ def test_session_start_probe_binds_the_host_payload_cwd_over_the_hook_cwd(
     assert session_id in text and writer_id in text
     refreshed = load_mapping("codex-compact-cwd", _state=tmp_path / "state")
     assert refreshed is not None
-    assert (refreshed.yoetz_session_id, refreshed.yoetz_writer_id) == (session_id, writer_id)
+    assert (refreshed.finishup_session_id, refreshed.finishup_writer_id) == (session_id, writer_id)
     assert "status_workspace" not in _diagnostics_text(tmp_path / "state")
 
 
@@ -1689,7 +1689,7 @@ def test_session_start_superseded_session_names_the_replacement_binding(tmp_path
     assert text.startswith("FinishUP task mapping for this session is stale")
     assert new_task in text
     assert f"session_id {new_session} and writer_id {new_writer}" in text
-    assert f"mode=attach and session_id {mapping.yoetz_session_id}" in text
+    assert f"mode=attach and session_id {mapping.finishup_session_id}" in text
     assert "different external_ref" in text
     diagnostics = _diagnostics_text(tmp_path)
     assert diagnostics.count('"reason":"mapping_stale"') == 1
@@ -1724,9 +1724,9 @@ def test_mapped_resume_reads_grant_once_and_keeps_context(
     store_mapping(
         mapping_from_start_ids(
             codex_session_id="codex-admission",
-            yoetz_task_id=task_id,
-            yoetz_session_id=session_id,
-            yoetz_writer_id=writer_id,
+            finishup_task_id=task_id,
+            finishup_session_id=session_id,
+            finishup_writer_id=writer_id,
             last_frontier="0:genesis",
         ),
         _state=tmp_path,

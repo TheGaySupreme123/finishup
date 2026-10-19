@@ -307,9 +307,9 @@ async def test_real_delegation_attach_publication_and_child_receipt_preserve_par
         parent_mapping = load_mapping(parent_host_session, _state=lifecycle_state)
         assert parent_mapping is not None
         assert (
-            parent_mapping.yoetz_task_id,
-            parent_mapping.yoetz_session_id,
-            parent_mapping.yoetz_writer_id,
+            parent_mapping.finishup_task_id,
+            parent_mapping.finishup_session_id,
+            parent_mapping.finishup_writer_id,
             parent_mapping.last_frontier,
         ) == (
             parent.task_id,
@@ -343,9 +343,9 @@ async def test_real_delegation_attach_publication_and_child_receipt_preserve_par
         delegated_parent_mapping = load_mapping(parent_host_session, _state=lifecycle_state)
         assert delegated_parent_mapping is not None
         assert (
-            delegated_parent_mapping.yoetz_task_id,
-            delegated_parent_mapping.yoetz_session_id,
-            delegated_parent_mapping.yoetz_writer_id,
+            delegated_parent_mapping.finishup_task_id,
+            delegated_parent_mapping.finishup_session_id,
+            delegated_parent_mapping.finishup_writer_id,
             delegated_parent_mapping.last_frontier,
         ) == (
             parent.task_id,
@@ -404,9 +404,9 @@ async def test_real_delegation_attach_publication_and_child_receipt_preserve_par
         child_mapping = load_mapping(child_host_session, _state=lifecycle_state)
         assert child_mapping is not None
         assert (
-            child_mapping.yoetz_task_id,
-            child_mapping.yoetz_session_id,
-            child_mapping.yoetz_writer_id,
+            child_mapping.finishup_task_id,
+            child_mapping.finishup_session_id,
+            child_mapping.finishup_writer_id,
             child_mapping.last_frontier,
         ) == (
             attached.task_id,
@@ -730,7 +730,7 @@ async def test_codex_shared_host_child_alias_routes_observation_to_attached_chil
         )
         parent_mapping = load_mapping(parent_host_session, _state=lifecycle_state)
         assert parent_mapping is not None
-        assert parent_mapping.yoetz_task_id == parent.task_id
+        assert parent_mapping.finishup_task_id == parent.task_id
 
         attached = await app.start(
             StartRequest.model_validate(
@@ -767,9 +767,9 @@ async def test_codex_shared_host_child_alias_routes_observation_to_attached_chil
         child_mapping = load_mapping(child_host_lane, _state=lifecycle_state)
         assert child_mapping is not None
         assert (
-            child_mapping.yoetz_task_id,
-            child_mapping.yoetz_session_id,
-            child_mapping.yoetz_writer_id,
+            child_mapping.finishup_task_id,
+            child_mapping.finishup_session_id,
+            child_mapping.finishup_writer_id,
             child_mapping.last_frontier,
         ) == (
             attached.task_id,
@@ -784,7 +784,7 @@ async def test_codex_shared_host_child_alias_routes_observation_to_attached_chil
         observation_store.grant_consent(workspace_commitment)
         observation_store.set_session_advice_snapshot(
             workspace_commitment,
-            yoetz_session_id=parent.session_id,
+            finishup_session_id=parent.session_id,
             snapshot=AdviceSnapshot(
                 ranked_finding_ids=(finding_id("fnd_00000000-0000-4000-8000-000000000001"),),
                 evidence_basis_digest="sha256:" + "a" * 64,
@@ -804,7 +804,7 @@ async def test_codex_shared_host_child_alias_routes_observation_to_attached_chil
         )
         parent_advice_before = observation_store.peek_advice_for_delivery(
             workspace_commitment,
-            yoetz_session_id=parent.session_id,
+            finishup_session_id=parent.session_id,
             allow_standing=False,
             session_commitment=observation_store.session_commitment(parent_host_session),
         )
@@ -881,7 +881,7 @@ async def test_codex_shared_host_child_alias_routes_observation_to_attached_chil
         assert parent_status.result_frontier == parent_status.subject_frontier
         parent_advice_after = observation_store.peek_advice_for_delivery(
             workspace_commitment,
-            yoetz_session_id=parent.session_id,
+            finishup_session_id=parent.session_id,
             allow_standing=False,
             session_commitment=observation_store.session_commitment(parent_host_session),
         )
@@ -1002,7 +1002,7 @@ async def test_late_subagent_stop_after_parent_reattach_keeps_registry_annotatio
         )
         rotated_mapping = load_mapping(parent_host_session, _state=lifecycle_state)
         assert rotated_mapping is not None
-        assert (rotated_mapping.yoetz_session_id, rotated_mapping.yoetz_writer_id) == (
+        assert (rotated_mapping.finishup_session_id, rotated_mapping.finishup_writer_id) == (
             resumed.session_id,
             resumed.writer_id,
         )
@@ -1084,7 +1084,7 @@ async def test_late_subagent_stop_after_parent_reattach_keeps_registry_annotatio
         )
         delivery = observation_store.peek_advice_for_delivery(
             workspace_commitment,
-            yoetz_session_id=resumed.session_id,
+            finishup_session_id=resumed.session_id,
             allow_standing=False,
             session_commitment=observation_store.session_commitment(parent_host_session),
         )
@@ -1587,7 +1587,7 @@ async def test_native_handle_attach_correlates_without_declared_host_ids(
         assert after_replay is not None
         assert after_replay.lease_expires_at == after_activity.lease_expires_at
         parent_mapping = load_mapping(host_session, _state=state)
-        assert parent_mapping is not None and parent_mapping.yoetz_task_id == parent.task_id
+        assert parent_mapping is not None and parent_mapping.finishup_task_id == parent.task_id
         if not observed_first:
             await ingest_hook(observed)
         await ingest_hook({**observed, "hook_event_name": "SubagentStop"})

@@ -79,7 +79,7 @@ async def test_a_held_row_lands_before_the_check_that_awaited_it(replay: _Replay
     read_at = held.envelope.receipt_time.as_datetime().timestamp()
     snapshot = session_pending_row_identities(
         replay.store,
-        yoetz_session_id=replay.mapping.yoetz_session_id,
+        finishup_session_id=replay.mapping.finishup_session_id,
         _state=replay.root,
         now=read_at + 60,
     )

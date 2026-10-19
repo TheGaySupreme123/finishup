@@ -115,7 +115,7 @@ class _Harness:
 
     async def build(self, store: _Store) -> AdviceSnapshot:
         snapshot = await self.coordinator.advice_context_builder.build(
-            _COMMITMENT, store, yoetz_session_id=self.route.session_id
+            _COMMITMENT, store, finishup_session_id=self.route.session_id
         )
         assert snapshot is not None
         return cast(AdviceSnapshot, snapshot)
@@ -132,7 +132,7 @@ class _Harness:
         drained = await worker.run_once()
         assert drained is not None
         row = store.repository.lookup(
-            yoetz_session_id=drained.yoetz_session_id, basis_digest=drained.basis_digest
+            finishup_session_id=drained.finishup_session_id, basis_digest=drained.basis_digest
         )
         assert row is not None
         return row

@@ -249,9 +249,9 @@ def make_replay(base: Path, monkeypatch: pytest.MonkeyPatch) -> Replay:
     mapping = LifecycleMapping(
         mapping_version=1,
         codex_session_id=HOST,
-        yoetz_task_id=task_id,
-        yoetz_session_id=PREFIX_BY_KIND[IdKind.SESSION] + str(uuid.uuid4()),
-        yoetz_writer_id=PREFIX_BY_KIND[IdKind.WRITER] + str(uuid.uuid4()),
+        finishup_task_id=task_id,
+        finishup_session_id=PREFIX_BY_KIND[IdKind.SESSION] + str(uuid.uuid4()),
+        finishup_writer_id=PREFIX_BY_KIND[IdKind.WRITER] + str(uuid.uuid4()),
         last_frontier=None,
     )
     ids = FixedIds()

@@ -38,7 +38,7 @@ AWAIT_OBSERVATIONS_DEADLINE_SHARE: Final = 0.1
 _POLL_SECONDS: Final = 0.1
 _REWAKE_SECONDS: Final = 1.0
 
-# Blocking read: ``(yoetz_session_id, monotonic_deadline) -> pending row identities``.
+# Blocking read: ``(finishup_session_id, monotonic_deadline) -> pending row identities``.
 type TaskPendingProbe = Callable[[str, float], frozenset[str]]
 
 

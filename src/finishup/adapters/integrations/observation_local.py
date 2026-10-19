@@ -3066,13 +3066,13 @@ def _frontier_lineage_rewound(
 
 def _advice_delivery_scope_key(
     *,
-    yoetz_session_id: str | None,
+    finishup_session_id: str | None,
     session_commitment: str | None,
 ) -> str | None:
     """Prefer the mapped FinishUP session; otherwise the current Codex session."""
 
-    if type(yoetz_session_id) is str:
-        return yoetz_session_id
+    if type(finishup_session_id) is str:
+        return finishup_session_id
     if type(session_commitment) is str:
         return session_commitment
     return None
@@ -3081,7 +3081,7 @@ def _advice_delivery_scope_key(
 def _task_scoped_delivery_snapshot(
     state: _WorkspaceState,
     *,
-    yoetz_session_id: str | None,
+    finishup_session_id: str | None,
     session_commitment: str | None,
 ) -> AdviceSnapshot | None:
     """Task-scoped snapshot for hook delivery: never the workspace fallback.
@@ -3091,8 +3091,8 @@ def _task_scoped_delivery_snapshot(
     same-session failed command stays deliverable before ``start`` returns.
     """
 
-    if type(yoetz_session_id) is str and state.session_advice is not None:
-        mapped = state.session_advice.get(yoetz_session_id)
+    if type(finishup_session_id) is str and state.session_advice is not None:
+        mapped = state.session_advice.get(finishup_session_id)
         if mapped is not None:
             return mapped
     if type(session_commitment) is not str or not session_commitment:
@@ -5913,7 +5913,7 @@ class LocalObservationStore:
         self,
         workspace: str,
         *,
-        yoetz_session_id: str,
+        finishup_session_id: str,
         snapshot: AdviceSnapshot | None,
     ) -> None:
         with self._lock:
@@ -5921,9 +5921,9 @@ class LocalObservationStore:
             if state.session_advice is None:
                 state.session_advice = {}
             if snapshot is None:
-                state.session_advice.pop(yoetz_session_id, None)
+                state.session_advice.pop(finishup_session_id, None)
             else:
-                state.session_advice[yoetz_session_id] = snapshot
+                state.session_advice[finishup_session_id] = snapshot
             self._save(workspace, state)
 
     @_read_mostly
@@ -5931,7 +5931,7 @@ class LocalObservationStore:
         self,
         workspace: str,
         *,
-        yoetz_session_id: str | None = None,
+        finishup_session_id: str | None = None,
         allow_standing: bool = True,
         session_commitment: str | None = None,
     ) -> AdviceDelivery | None:
@@ -5966,7 +5966,7 @@ class LocalObservationStore:
             state = self._load(workspace)
             snapshot = _task_scoped_delivery_snapshot(
                 state,
-                yoetz_session_id=yoetz_session_id,
+                finishup_session_id=finishup_session_id,
                 session_commitment=session_commitment,
             )
             item = None
@@ -5988,7 +5988,7 @@ class LocalObservationStore:
                 return None
             identity = advice_delivery_identity(snapshot, item=item)
             scope = _advice_delivery_scope_key(
-                yoetz_session_id=yoetz_session_id,
+                finishup_session_id=finishup_session_id,
                 session_commitment=session_commitment,
             )
             if type(scope) is str:
@@ -6009,7 +6009,7 @@ class LocalObservationStore:
         workspace: str,
         delivery_identity: str,
         *,
-        yoetz_session_id: str | None = None,
+        finishup_session_id: str | None = None,
         session_commitment: str | None = None,
     ) -> None:
         """Record advice as delivered — call only after the text reached the agent.
@@ -6035,7 +6035,7 @@ class LocalObservationStore:
         with self._lock:
             state = self._load(workspace)
             scope = _advice_delivery_scope_key(
-                yoetz_session_id=yoetz_session_id,
+                finishup_session_id=finishup_session_id,
                 session_commitment=session_commitment,
             )
             if type(scope) is str:

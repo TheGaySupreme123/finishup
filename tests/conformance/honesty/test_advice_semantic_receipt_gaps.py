@@ -136,7 +136,7 @@ async def _receipt_gaps(
     snapshot = await builder.build(
         _WORKSPACE,
         store,  # type: ignore[arg-type]
-        yoetz_session_id=started.session_id,
+        finishup_session_id=started.session_id,
     )
     assert snapshot is not None and snapshot.ranked_items
     count = db.execute("SELECT COUNT(*) FROM observation_advice_semantic_attempts").fetchone()

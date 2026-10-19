@@ -689,18 +689,18 @@ def test_sqlite_session_advice_is_isolated_and_latest_anywhere_is_gone() -> None
 
     store.set_session_advice_snapshot(
         workspace=workspace,
-        yoetz_session_id="session-a",
+        finishup_session_id="session-a",
         snapshot=_snap("a"),
         updated_at=now,
     )
     store.set_session_advice_snapshot(
         workspace=workspace,
-        yoetz_session_id="session-b",
+        finishup_session_id="session-b",
         snapshot=_snap("b"),
         updated_at=now,
     )
-    a = store.load_advice_snapshot_for_session(workspace=workspace, yoetz_session_id="session-a")
-    b = store.load_advice_snapshot_for_session(workspace=workspace, yoetz_session_id="session-b")
+    a = store.load_advice_snapshot_for_session(workspace=workspace, finishup_session_id="session-a")
+    b = store.load_advice_snapshot_for_session(workspace=workspace, finishup_session_id="session-b")
     assert a is not None and b is not None
     assert a.suppression_identity != b.suppression_identity
     assert store.load_latest_advice_snapshot() is None

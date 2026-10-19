@@ -41,7 +41,7 @@ def _ticket(index: int, *, captured_at: Timestamp = _TIME) -> ObservationCapture
     return ObservationCaptureTicket(
         workspace_commitment=_WORKSPACE,
         task_id=_TASK,
-        yoetz_session_id=_FINISHUP_SESSION,
+        finishup_session_id=_FINISHUP_SESSION,
         session_commitment=_SESSION,
         source=ObservationSource.CLAUDE_HOOK,
         source_identity=f"hook:budget-{index}",

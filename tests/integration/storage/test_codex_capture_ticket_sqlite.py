@@ -33,7 +33,7 @@ def _codex_ticket() -> ObservationCaptureTicket:
     return ObservationCaptureTicket(
         workspace_commitment=_WORKSPACE,
         task_id=_TASK_ID,
-        yoetz_session_id=_FINISHUP_SESSION_ID,
+        finishup_session_id=_FINISHUP_SESSION_ID,
         session_commitment=_SESSION,
         source=ObservationSource.CODEX_HOOK,
         source_identity="hook:codex:1101",

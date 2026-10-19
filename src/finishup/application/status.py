@@ -2396,7 +2396,7 @@ async def execute_status(
                     )
                     if callable(session_load):
                         loaded = session_load(
-                            workspace=workspace, yoetz_session_id=runtime.session_id
+                            workspace=workspace, finishup_session_id=runtime.session_id
                         )
                         snapshot = loaded if isinstance(loaded, AdviceSnapshot) else None
                     else:

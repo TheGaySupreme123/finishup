@@ -1748,9 +1748,9 @@ async def test_ready_lineage_bootstraps_exact_durable_host_session_route(
         store_mapping(
             mapping_from_start_ids(
                 codex_session_id=host_session_id,
-                yoetz_task_id=second.task_id,
-                yoetz_session_id=second.session_id,
-                yoetz_writer_id=second.writer_id,
+                finishup_task_id=second.task_id,
+                finishup_session_id=second.session_id,
+                finishup_writer_id=second.writer_id,
                 last_frontier=None,
             ),
             _state=tmp_path / "state",
@@ -3074,7 +3074,7 @@ async def test_background_advice_is_admitted_only_while_a_provider_is_usable(
 
         async def build(failures: int) -> tuple[str, ...]:
             store.failures = failures
-            snapshot = await builder.build(workspace, store, yoetz_session_id=session)  # type: ignore[arg-type]
+            snapshot = await builder.build(workspace, store, finishup_session_id=session)  # type: ignore[arg-type]
             assert snapshot is not None
             return snapshot.confidence_coverage.known_gaps
 
@@ -3089,7 +3089,7 @@ async def test_background_advice_is_admitted_only_while_a_provider_is_usable(
         # would otherwise stop at the unresolved route as authorization_missing and retry).
         legacy = repository.schedule(
             workspace=workspace,
-            yoetz_session_id=session,
+            finishup_session_id=session,
             basis_digest="legacy-identity",
             subject_digest="sha256:" + "c" * 64,
             coverage_gaps=(),
@@ -3423,7 +3423,7 @@ async def test_background_advice_readiness_follows_the_primary_only_dispatch(
         assert await vault.has_provider_credential(credential_binding)
 
         store.failures = 3
-        snapshot = await builder.build(workspace, store, yoetz_session_id=session)  # type: ignore[arg-type]
+        snapshot = await builder.build(workspace, store, finishup_session_id=session)  # type: ignore[arg-type]
         assert snapshot is not None
         gaps = snapshot.confidence_coverage.known_gaps
         assert ADVICE_SEMANTIC_PENDING_GAP not in gaps
@@ -3432,7 +3432,7 @@ async def test_background_advice_readiness_follows_the_primary_only_dispatch(
 
         queued = repository.schedule(
             workspace=workspace,
-            yoetz_session_id=session,
+            finishup_session_id=session,
             basis_digest="queued-identity",
             subject_digest="sha256:" + "c" * 64,
             coverage_gaps=(),
@@ -3541,7 +3541,7 @@ async def test_background_advice_is_on_by_default_and_an_owner_false_turns_it_of
             repository = SqliteObservationAdviceSemanticRepository(db)
             repository.schedule(
                 workspace="hmac-sha256:" + "a" * 64,
-                yoetz_session_id="ses_00000000-0000-4000-8000-000000000888",
+                finishup_session_id="ses_00000000-0000-4000-8000-000000000888",
                 basis_digest="queued-by-an-older-service",
                 subject_digest="sha256:" + "c" * 64,
                 coverage_gaps=(),
@@ -3560,7 +3560,7 @@ async def test_background_advice_is_on_by_default_and_an_owner_false_turns_it_of
             closed = await worker.run_once()
             assert closed is not None
             row = repository.lookup(
-                yoetz_session_id="ses_00000000-0000-4000-8000-000000000888",
+                finishup_session_id="ses_00000000-0000-4000-8000-000000000888",
                 basis_digest="queued-by-an-older-service",
             )
             assert row is not None
