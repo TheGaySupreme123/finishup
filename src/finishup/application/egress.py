@@ -870,6 +870,51 @@ class PrivacyCoordinator:
             finally:
                 self._semantic_dispatch_guard, self._reviewer_frame = prior_guard, prior_frame
 
+    async def resume_reviewer_exchange(
+        self,
+        request_id: str,
+        pending_id: str,
+        deadline: Deadline,
+        *,
+        dispatch_guard: Callable[[], Awaitable[bool] | bool] | None = None,
+        exchange: ReviewerExchangeFrame,
+    ) -> SemanticEgressResult:
+        """Resume the first reviewer exchange that waited for the owner (#1118).
+
+        The durable wait names its proposal; that proposal, for this exact request, names the
+        prepared conversation the owner was shown, and only that exact prepared digest resumes:
+        approved, it is sent once under ``exchange``'s reviewer media type; denied, expired or
+        still waiting, it maps as a one-shot review's would. A consumed attempt is never resent.
+        """
+
+        if (
+            type(request_id) is not str
+            or type(pending_id) is not str
+            or type(deadline) is not Deadline
+            or type(exchange) is not ReviewerExchangeFrame
+        ):
+            raise TypeError("semantic_egress_resume_invalid")
+        async with self._admission_lock:
+            if self._closed:
+                return SemanticEgressBlocked(
+                    request_id,
+                    PrivacyOutcome.CHANNEL_UNAVAILABLE,
+                    PrivacyReason.CHANNEL_UNAVAILABLE,
+                )
+            proposal = await self._load_disclosure_proposal(pending_id)
+            if proposal is None or proposal.request_id != request_id:
+                return SemanticEgressBlocked(
+                    request_id, PrivacyOutcome.AUDIT_FAILED, PrivacyReason.AUDIT_FAILED
+                )
+            prior_guard, prior_frame = self._semantic_dispatch_guard, self._reviewer_frame
+            self._semantic_dispatch_guard, self._reviewer_frame = dispatch_guard, exchange
+            try:
+                return await self._resume_admitted(
+                    request_id, proposal.prepared_case_digest, deadline
+                )
+            finally:
+                self._semantic_dispatch_guard, self._reviewer_frame = prior_guard, prior_frame
+
     async def recover_started_attempt(
         self,
         request_id: str,
@@ -3323,7 +3368,10 @@ def _exceeds_current_limits(
 
     if proposal.purpose != _SEMANTIC_PURPOSE:
         return False
-    if not _within_excerpt_limits(proposal.prepared_bytes, effective.policy.review_selection):
+    # A reviewer exchange (#1118) carries the packet as its first user turn; the excerpt limits
+    # answer to that packet, the channel ceilings below to the whole conversation.
+    packet = reviewer_packet_bytes(proposal.prepared_bytes) or proposal.prepared_bytes
+    if not _within_excerpt_limits(packet, effective.policy.review_selection):
         return True
     llm = next(
         (

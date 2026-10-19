@@ -167,7 +167,7 @@ from finishup.application.projects import (
     build_routed_project_text_store,
 )
 from finishup.application.recommendations import evaluate_recommendation_context, refresh_pending
-from finishup.application.reviewer_broker import ReadRoot
+from finishup.application.reviewer_broker import MAX_READS, ReadRoot
 from finishup.application.reviewer_run import ReviewerRun, run_reviewer
 from finishup.application.semantic_attempts import (
     SemanticAttemptAccounting,
@@ -666,6 +666,22 @@ class _PrivacyContentObjectStore:
     async def abandon(self, staged: StagedObject) -> None:
         self._objects.pop(staged.object_id, None)
         self._abandoned_ids.add(staged.object_id)
+
+    async def open_verified(self, ref: ObjectRef) -> AsyncGenerator[bytes]:
+        """A proposal this process finalized, so an owner-approved disclosure can resume (#1118).
+
+        Proposals live only in this process: after a restart none reopens, and the waiting review
+        fails closed (``audit_failed``) without sending anything.
+        """
+
+        data = self._objects.get(ref.object_id)
+        if (
+            data is None
+            or ref.plaintext_size != len(data)
+            or ref.envelope_digest != "sha256:" + hashlib.sha256(data).hexdigest()
+        ):
+            raise ValueError("privacy_audit_object_unavailable")
+        yield data
 
 
 @dataclass(frozen=True, slots=True)
@@ -5963,16 +5979,6 @@ def _privacy_gated_semantic_evaluator(
                                 SemanticReason.SCOPE_NOT_AUTHORIZED,
                             )
                         stage = "privacy_dispatch_entered"
-                        if type(privacy) is PrivacyCoordinator:
-                            recovered = await privacy.recover_started_attempt(
-                                handle.provider_request_id,
-                                semantic_case.case_digest,
-                                attempt_deadline,
-                                dispatch_guard=_captured_content_fence_current,
-                            )
-                            if recovered is not None:
-                                stage = "response_mapping"
-                                return await _mapped(recovered)
                         # Exact replay after a trusted local decision resumes the
                         # already-prepared proposal. Starting the AI-powered review pipeline again
                         # would mint a replacement proposal and could never observe the decision
@@ -5985,7 +5991,16 @@ def _privacy_gated_semantic_evaluator(
                         )
                         if type(privacy) is PrivacyCoordinator:
                             # #1118: every admitted review is the reviewer conversation; each
-                            # exchange is its own admission under the same fence.
+                            # exchange is its own admission under the same fence. A first exchange
+                            # this attempt already consumed is terminally unknown and never resent;
+                            # recovery looks it up by its request identity alone, since each
+                            # exchange's prepared digest is that of its conversation, not the case.
+                            recovered = await privacy.recover_started_request(
+                                handle.provider_request_id
+                            )
+                            if recovered is not None:
+                                stage = "response_mapping"
+                                return await _mapped(recovered)
                             run = await run_reviewer(
                                 privacy,
                                 job_id=handle.job_id,
@@ -6004,8 +6019,15 @@ def _privacy_gated_semantic_evaluator(
                                     provider_binding=binding,
                                 ),
                                 dispatch_guard=_captured_content_fence_current,
-                                resume_first=resume_first,
+                                # The wait names the exact proposal the owner was shown; only that
+                                # unconsumed first exchange resumes, in the turn it reserved.
+                                resume_pending=(
+                                    None if not resume_first or wait is None else wait.pending_id
+                                ),
                                 clock=clock.monotonic_seconds,
+                                # Ask-every-time: each further exchange would need its own
+                                # approval, so the review offers no reads from its first exchange.
+                                reads=0 if semantic_preview_required(policy) else MAX_READS,
                                 read_room=lambda sent: reviewer_read_room(
                                     channel_prepared_limit(policy), sent
                                 ),

@@ -20,6 +20,7 @@ from typing import Any, cast
 
 import pytest
 
+import finishup.service.ready_composition as ready_composition
 from builders.multi_agent import INSTALLATION_ID, multi_agent_service
 from builders.privacy_policies import minimal_external_policy
 from builders.privacy_widenings import with_llm
@@ -44,7 +45,9 @@ from finishup.domain.findings import SamplingParams
 from finishup.domain.privacy import (
     AuthorizationScope,
     AuthorizationScopeKind,
+    ConsentSource,
     EgressChannel,
+    HumanPrivacyDecision,
     PrivacyPolicy,
     ProviderBinding,
 )
@@ -489,6 +492,16 @@ async def _widen_and_connect(
 
 
 _FINAL_REPLY = _REPLIES[-1]
+# Ask-every-time: every reviewer exchange waits for the owner's decision on its exact bytes.
+_ASK = replace(
+    _ROOMY,
+    channel_policies=tuple(
+        replace(c, preview_required=True) if c.channel is EgressChannel.LLM_INFERENCE else c
+        for c in _ROOMY.channel_policies
+    ),
+)
+
+
 async def _tighten_repository(review: _Review, category: DataCategory) -> None:
     """The owner's own tightening of this repository's grant: ``category`` no longer leaves."""
 
@@ -570,3 +583,148 @@ async def test_a_narrowed_task_policy_ends_the_conversation_before_its_next_turn
     record = reviewer_record_from_wire(getattr(checked, "reviewer", None))
     assert record is not None and record.ended == "authorization_changed"
     assert record.exchanges == 1 and record.reads[0].disclosure is None
+
+
+def _capture_evaluations(monkeypatch: pytest.MonkeyPatch) -> list[tuple[Any, ...]]:
+    """Every run of the service's admitted-job evaluator, so a test can re-enter one."""
+
+    runs: list[tuple[Any, ...]] = []
+    factory = ready_composition._privacy_gated_semantic_evaluator  # pyright: ignore[reportPrivateUsage]
+
+    def tracking(*args: Any, **kwargs: Any) -> Any:
+        evaluate = factory(*args, **kwargs)
+
+        async def run(*call: Any, **named: Any) -> Any:
+            result = await evaluate(*call, **named)
+            runs.append((evaluate, call, named, result))
+            return result
+
+        return run
+
+    monkeypatch.setattr(ready_composition, "_privacy_gated_semantic_evaluator", tracking)
+    return runs
+
+
+async def _reenter(runs: list[tuple[Any, ...]]) -> Any:
+    """Re-enter the waiting job's evaluator under the lease its wait renewed.
+
+    A same-request ``check`` cannot do this yet: the waiting operation's lease is bounded by the
+    job's own deadline, so the public replay is ``operation_pending`` until that deadline passes.
+    """
+
+    evaluate, call, named, waiting = runs[-1]
+    frozen = replace(call[0], lease=waiting.operation_lease)
+    result = await evaluate(frozen, *call[1:], **named)
+    runs.append((evaluate, (frozen, *call[1:]), named, result))
+    return result
+
+
+async def _owner_decides(review: _Review, *, approved: bool | None) -> Any:
+    """Run the check to its disclosure wait and record the owner's decision on that proposal."""
+
+    waiting = await review.check()
+    assert type(waiting).__name__ == "CheckAwaitingHuman", waiting
+    continuation = getattr(waiting, "continuation")
+    assert continuation.kind == "privacy_disclosure_decision"
+    assert review.payloads == []  # nothing is sent before the owner decides
+    audit = review.service.app.privacy._audit  # pyright: ignore[reportPrivateUsage]
+    proposal = await audit.load_disclosure_proposal(continuation.pending_id)
+    assert proposal is not None, "the exact prepared conversation the owner is shown"
+    if approved is not None:
+        await audit.record_human_decision(
+            proposal.privacy_proposal_id,
+            HumanPrivacyDecision(
+                proposal.proposal_commitment,
+                approved,
+                ConsentSource.PER_REQUEST_LOCAL_HUMAN,
+                review.service.clock.now_utc(),
+                proposal.expires_at if approved else None,
+                proposal.prepared_case_digest,
+                "hmac-sha256:" + "9" * 64,
+            ),
+        )
+    return proposal
+
+
+async def test_an_approved_first_exchange_resumes_once_and_concludes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """R2: ask-every-time; the owner approves the exact first exchange; it is sent once."""
+
+    runs = _capture_evaluations(monkeypatch)
+    async with _reviewing(tmp_path, monkeypatch, (_FINAL_REPLY,), policy=_ASK) as review:
+        # Re-entered before any decision, the job still waits on the same proposal: nothing is
+        # sent and no replacement proposal is minted.
+        proposal = await _owner_decides(review, approved=None)
+        still = await _reenter(runs)
+        assert still.status is SemanticStatus.AWAITING_HUMAN
+        assert still.continuation.pending_id == proposal.privacy_proposal_id
+        assert review.payloads == []
+        await _owner_decides_on(review, proposal, approved=True)
+        resumed = await _reenter(runs)
+        assert resumed.status is SemanticStatus.SUCCEEDED, (resumed.status, resumed.reason)
+        # Exactly the approved bytes, once, under the reviewer's final-only media type and with
+        # no reads offered: each further exchange would need its own approval.
+        assert review.payloads == [proposal.prepared_bytes]
+        assert [media for media, _ in review.exchanges] == [
+            "application/vnd.finishup.reviewer-final+json"
+        ]
+        assert '"reads_allowed":0' in review.exchanges[0][1][2][1]
+        assert resumed.reviewer is not None
+        assert (resumed.reviewer.exchanges, resumed.reviewer.reads) == (1, ())
+        assert resumed.reviewer.ended is None
+        # The same job entered again recovers its durable result: nothing more is sent.
+        await _reenter(runs)
+        assert len(review.payloads) == 1
+
+
+async def _owner_decides_on(review: _Review, proposal: Any, *, approved: bool) -> None:
+    audit = review.service.app.privacy._audit  # pyright: ignore[reportPrivateUsage]
+    await audit.record_human_decision(
+        proposal.privacy_proposal_id,
+        HumanPrivacyDecision(
+            proposal.proposal_commitment,
+            approved,
+            ConsentSource.PER_REQUEST_LOCAL_HUMAN,
+            review.service.clock.now_utc(),
+            proposal.expires_at if approved else None,
+            proposal.prepared_case_digest,
+            "hmac-sha256:" + "9" * 64,
+        ),
+    )
+
+
+async def test_a_denied_first_exchange_sends_nothing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runs = _capture_evaluations(monkeypatch)
+    async with _reviewing(tmp_path, monkeypatch, (_FINAL_REPLY,), policy=_ASK) as review:
+        await _owner_decides(review, approved=False)
+        denied = await _reenter(runs)
+        assert denied.status is SemanticStatus.HUMAN_DENIED, (denied.status, denied.reason)
+        assert review.payloads == []
+
+
+async def test_an_expired_approval_sends_nothing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runs = _capture_evaluations(monkeypatch)
+    # The proposal expires after 60 s; the job's own deadline is longer.
+    ask = replace(
+        _ASK,
+        channel_policies=tuple(
+            replace(c, authorization_ttl_seconds=60)
+            if c.channel is EgressChannel.LLM_INFERENCE
+            else c
+            for c in _ASK.channel_policies
+        ),
+    )
+    async with _reviewing(
+        tmp_path, monkeypatch, (_FINAL_REPLY,), policy=ask, timeout_seconds=300
+    ) as review:
+        proposal = await _owner_decides(review, approved=None)
+        review.service.clock.advance(seconds=61)
+        assert review.service.clock.now_utc() > proposal.expires_at
+        expired = await _reenter(runs)
+        assert expired.status is SemanticStatus.APPROVAL_EXPIRED, (expired.status, expired.reason)
+        assert review.payloads == []

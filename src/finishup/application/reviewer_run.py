@@ -122,18 +122,20 @@ async def run_reviewer(
     new_request_id: Callable[[], str],
     candidate_for: Callable[[str], CandidateContext],
     dispatch_guard: Callable[[], Awaitable[bool]] | None,
-    resume_first: bool,
+    resume_pending: str | None,
     clock: Callable[[], float],
+    reads: int = MAX_READS,
     read_room: Callable[[int], int] = lambda _sent: MAX_TOTAL_BYTES,
 ) -> ReviewerRun:
     """Run the review conversation for one job attempt and return its terminal result.
 
-    ``resume_first`` sends the first exchange the owner approved (ask-every-time policy); such a
-    review gets no reads, since each further exchange would need its own approval. ``read_room``
+    ``reads`` is how many reads the review offers: none where every exchange asks the owner first,
+    since each further exchange would need its own approval. ``resume_pending`` names the proposal
+    of a first exchange that waited for the owner before anything was sent: that exchange is
+    resumed once, in the turn it already reserved, by its exact prepared identity. ``read_room``
     says how many read bytes the channel ceiling leaves after a conversation of that many bytes.
     """
 
-    reads = 0 if resume_first else MAX_READS
     retained = ReviewerHistory()
     broker = ReviewerBroker(
         job_id=job_id,
@@ -161,10 +163,10 @@ async def run_reviewer(
 
         roots_held = tuple(sorted(broker.history_roots, key=str.encode))
         frame = ReviewerExchangeFrame(media_type, render, roots_held, retained)
-        if not results and resume_first:
-            result = await privacy.resume(
+        if not results and resume_pending is not None:
+            result = await privacy.resume_reviewer_exchange(
                 first_request_id,
-                case.case_digest,
+                resume_pending,
                 limit,
                 dispatch_guard=dispatch_guard,
                 exchange=frame,
@@ -194,6 +196,7 @@ async def run_reviewer(
             deadline=deadline,
             history_admissible=admissible,
             clock=clock,
+            resume_reserved=resume_pending is not None,
         )
         outcome = await loop.run()
         cleanup = await session.aclose()

@@ -30,7 +30,8 @@ At most three reads, then only the final judgment. One format repair for the who
 completed answer that is not one JSON object or not a valid reply; a second malformed reply, a read
 after the cap, a revoked binding, a lost lease or the deadline ends the review incomplete. Every
 model turn, the repair and every read is a durable job step, reserved before it runs; a job that
-already holds steps is not resumed. A failed turn is never retried.
+already holds steps is not resumed, except the one first turn that waited for the owner before
+anything was sent (``resume_reserved``). A failed turn is never retried.
 """
 
 from __future__ import annotations
@@ -109,12 +110,14 @@ class ReviewerLoop:
         history_admissible: Callable[[frozenset[str]], Awaitable[bool]],
         final_reserve_seconds: float = 30.0,
         clock: Callable[[], float] = time.monotonic,
+        resume_reserved: bool = False,
     ) -> None:
         self.model, self.broker, self.store = model, broker, broker.store
         self.deadline, self.clock = deadline, clock
         self.instruction, self.packet = instruction, packet
         self.history_admissible = history_admissible
         self.reserve = final_reserve_seconds
+        self.resume_reserved = resume_reserved
         self.messages: list[Turn] = []
         self.n_calls = 0
 
@@ -123,9 +126,12 @@ class ReviewerLoop:
         self.messages = [Turn("system", self.instruction), Turn("user", self.packet)]
         repaired = False
         try:
-            steps, uncaptured = await self.store.usage()
-            if steps:  # no resume in v1: an earlier run of this job ends it
-                return self.exit("uncaptured_step" if uncaptured else "interrupted")
+            usage = await self.store.usage()
+            # The caller proved the one reserved first turn waited for the owner and sent nothing;
+            # it runs once more in that same reservation, never with a refilled budget.
+            resumed = self.resume_reserved and usage == (1, 1)
+            if usage[0] and not resumed:  # no other resume: an earlier run of this job ends it
+                return self.exit("uncaptured_step" if usage[1] else "interrupted")
             while True:
                 self.remaining()
                 if self.n_calls >= MAX_MODEL_TURNS:
@@ -135,7 +141,8 @@ class ReviewerLoop:
                     return self.exit("authorization_changed")
                 reads = self.broker.reads_allowed() and self.remaining() > self.reserve
                 self.n_calls = turn = self.n_calls + 1
-                await self.store.reserve("turn", turn, b"turn" if reads else b"final")
+                if not (resumed and turn == 1):
+                    await self.store.reserve("turn", turn, b"turn" if reads else b"final")
                 self.remaining()
                 schema = reviewer_reply_schema(reads_allowed=reads, strict=True)
                 invalid: ReviewerReplyInvalid | None = None
