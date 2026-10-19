@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import sys
 from pathlib import Path
 
 import pytest
@@ -26,7 +27,7 @@ from finishup.version import (
     ],
 )
 def test_advertised_cells_are_certified(os_name: str, machine: str, cell: str) -> None:
-    result = platform_cell(os_name=os_name, machine=machine, libc=("glibc", "2.28"))
+    result = platform_cell(os_name=os_name, machine=machine, libc=("glibc", "2.28"), python=(3, 14))
 
     assert result.certified is True
     assert result.cell == cell
@@ -49,7 +50,7 @@ def test_advertised_cells_are_certified(os_name: str, machine: str, cell: str) -
     ],
 )
 def test_other_cells_are_untested_not_presumed_compatible(os_name: str, machine: str) -> None:
-    result = platform_cell(os_name=os_name, machine=machine, libc=("glibc", "2.28"))
+    result = platform_cell(os_name=os_name, machine=machine, libc=("glibc", "2.28"), python=(3, 14))
 
     assert result.certified is False
     assert result.cell is None
@@ -79,6 +80,8 @@ def test_manifest_on_a_certified_cell_carries_no_platform_limitation(
     monkeypatch.setattr(version_module.platform, "machine", lambda: "x86_64")
 
     monkeypatch.setattr(version_module.platform, "libc_ver", lambda: ("glibc", "2.28"))
+    # The older-python CI lane runs this too; certify whichever minor is running.
+    monkeypatch.setattr(version_module, "_CERTIFIED_PYTHON_MINOR", sys.version_info[:2])
 
     assert PLATFORM_CELL_UNTESTED not in build_version_manifest().limitations
 
@@ -98,6 +101,26 @@ def test_linux_libc_outside_certified_cell_stays_unproven(
     assert PLATFORM_CELL_UNTESTED in build_version_manifest().limitations
 
 
+@pytest.mark.parametrize("python", [(3, 12), (3, 13)])
+def test_supported_python_below_the_release_cell_is_untested(python: tuple[int, int]) -> None:
+    # Issue #1119: requires-python admits these minors, but release evidence covers only 3.14.
+    result = platform_cell(os_name="Darwin", machine="arm64", libc=("", ""), python=python)
+
+    assert result.certified is False
+    assert result.cell is None
+    assert result.python_version == f"{python[0]}.{python[1]}"
+    assert "python_version" not in result.as_json()
+
+
+def test_release_cell_python_is_certified() -> None:
+    result = platform_cell(os_name="Darwin", machine="arm64", libc=("", ""), python=(3, 14))
+
+    assert result.certified is True
+    assert result.python_version == "3.14"
+
+
 @pytest.mark.parametrize("release", ["2.28", "2.28.1", "2.40", "3.0"])
 def test_linux_glibc_at_or_above_floor_is_certified(release: str) -> None:
-    assert platform_cell(os_name="Linux", machine="x86_64", libc=("glibc", release)).certified
+    assert platform_cell(
+        os_name="Linux", machine="x86_64", libc=("glibc", release), python=(3, 14)
+    ).certified

@@ -589,7 +589,7 @@ class LineageManifestCoordinator:
                     key=str.encode,
                 )
             )
-        except TypeError, ValueError:
+        except (TypeError, ValueError):
             # A malformed inventory result is an authority read failure.  Treating it as an
             # empty list would erase the last accepted aggregate and fabricate a clean parent.
             return LineageSweepResult(current, False, inventory_read_gap=True)

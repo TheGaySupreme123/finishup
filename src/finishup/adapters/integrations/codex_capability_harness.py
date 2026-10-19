@@ -102,7 +102,7 @@ def discover_codex_capability_artifact() -> CodexArtifactIdentity | None:
                 binary.executable_path,
                 reported_version=version,
             )
-        except OSError, ValueError:
+        except (OSError, ValueError):
             continue
     return None
 

@@ -103,7 +103,7 @@ class HookSpool:
         }
         try:
             line = canonical_encode(cast(JsonValue, body)) + b"\n"
-        except TypeError, ValueError:
+        except (TypeError, ValueError):
             return False
         if len(line) > _MAX_RECORD_BYTES:
             return False
@@ -136,14 +136,14 @@ class HookSpool:
                 finally:
                     os.close(descriptor)
             return True
-        except OSError, PathSafetyError:
+        except (OSError, PathSafetyError):
             return False
 
     def pending_workspaces(self) -> tuple[str, ...]:
         try:
             ensure_owner_only_dir(self._root)
             names = list(self._root.glob("*.jsonl")) + list(self._root.glob("*.draining"))
-        except OSError, PathSafetyError:
+        except (OSError, PathSafetyError):
             return ()
         result: set[str] = set()
         for path in names:
@@ -189,7 +189,7 @@ class HookSpool:
                 draining,
                 limit,
             )
-        except OSError, PathSafetyError:
+        except (OSError, PathSafetyError):
             yield ()
             return
         try:

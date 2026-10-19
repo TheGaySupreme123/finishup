@@ -210,7 +210,7 @@ def _libproc() -> _LibProc | None:
     if not _LIBPROC:
         try:
             _LIBPROC.append(_LibProc())
-        except OSError, AttributeError:
+        except (OSError, AttributeError):
             _LIBPROC.append(None)
     return _LIBPROC[0]
 
@@ -249,7 +249,7 @@ def _linux_table(uid: int) -> tuple[dict[int, _Process], float] | None:
     try:
         tick_ns = 1_000_000_000 / os.sysconf("SC_CLK_TCK")
         names = os.listdir("/proc")
-    except OSError, ValueError, ZeroDivisionError:
+    except (OSError, ValueError, ZeroDivisionError):
         return None
     table: dict[int, _Process] = {}
     for name in names:

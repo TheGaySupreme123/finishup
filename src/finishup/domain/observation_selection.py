@@ -269,7 +269,7 @@ def _bounded_result_mapping(value: object) -> Mapping[str, CanonicalJsonValue] |
         return None
     try:
         parsed = strict_json_parse(encoded)
-    except ProtocolValueError, TypeError, ValueError:
+    except (ProtocolValueError, TypeError, ValueError):
         return None
     return cast(Mapping[str, CanonicalJsonValue], parsed) if isinstance(parsed, Mapping) else None
 

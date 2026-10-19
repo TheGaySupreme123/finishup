@@ -358,8 +358,9 @@ availability, structured-output interoperability, provider data use, or E-007 ca
    `support/npm-launcher/` contains a dependency-free `package.json` (registry name
    `finishup`, version locked to the PyPI version) and `bin/finishup.js`, which requires `uv` on PATH
    (printing install guidance and exiting nonzero otherwise), makes the exact version a
-   persistent tool with `uv tool install --quiet --python 3.14 finishup==<version>` (a no-op once
-   present), and delegates to a versionless `uvx --python 3.14 finishup`, which runs that installed
+   persistent tool with `uv tool install --quiet --managed-python finishup==<version>` (a no-op once
+   present; `--python 3.14` until issue #1119 lowered the floor to 3.12), and delegates to a
+   versionless `uvx finishup`, which runs that installed
    tool environment rather than a cache-backed one, with untouched arguments and the child's
    exact exit code. It bundles no Python, downloads nothing itself, and duplicates no
    wizard logic — first-run behavior lives once, in the Python CLI. The persistent install was

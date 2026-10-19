@@ -120,6 +120,6 @@ def run_cursor_project_mcp_command(
     except CursorProjectMcpError as error:
         _emit({"ok": False, "reason_code": error.reason}, json_output=json_output)
         return 1
-    except OSError, TypeError, ValueError:
+    except (OSError, TypeError, ValueError):
         _emit({"ok": False, "reason_code": "cursor_project_mcp_invalid"}, json_output=json_output)
         return 2

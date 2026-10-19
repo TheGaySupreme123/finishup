@@ -66,7 +66,7 @@ def _legacy_alias_notice(arguments: list[str]) -> None:
             return
         sys.stderr.write(LEGACY_ALIAS_NOTICE + "\n")
         sys.stderr.flush()
-    except OSError, ValueError:
+    except (OSError, ValueError):
         pass
 
 

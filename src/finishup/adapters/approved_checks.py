@@ -343,7 +343,7 @@ def _enable_child_subreaper() -> bool:
         ]
         prctl.restype = ctypes.c_int
         return prctl(_PR_SET_CHILD_SUBREAPER, 1, 0, 0, 0) == 0
-    except OSError, AttributeError, ValueError:
+    except (OSError, AttributeError, ValueError):
         # Best effort only: a missing libc symbol or a seccomp-blocked prctl must never fail
         # the check run; the reap loop below degrades to its bounded no-progress exit.
         return False
@@ -385,7 +385,7 @@ def _taskkill_tree(pid: int) -> bool:
             check=False,
             timeout=5.0,
         )
-    except OSError, subprocess.SubprocessError:
+    except (OSError, subprocess.SubprocessError):
         return False
     # A nonzero code (access denied, no such pid) means the tree is still standing: report the
     # failure so the caller falls back to ``kill`` now instead of after a five-second wait.

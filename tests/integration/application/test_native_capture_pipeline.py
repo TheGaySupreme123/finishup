@@ -14,7 +14,7 @@ import hashlib
 import io
 import json
 import uuid
-from collections.abc import Awaitable, Callable, Mapping
+from collections.abc import Awaitable, Callable, Coroutine, Mapping
 from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
@@ -375,7 +375,7 @@ def _claude_hook_runner(
     profile: str,
 ) -> Callable[[str, Mapping[str, object]], int]:
     def run_async(factory: Callable[[], Awaitable[object]]) -> object:
-        return asyncio.run(factory())
+        return asyncio.run(cast(Coroutine[object, object, object], factory()))
 
     def run_hook(event_name: str, payload: Mapping[str, object]) -> int:
         return handle_claude_observe(
@@ -842,7 +842,7 @@ async def test_profileless_codex_hook_content_reaches_guarded_task_bundle(
     }
 
     def run_async(factory: Callable[[], Awaitable[object]]) -> object:
-        return asyncio.run(factory())
+        return asyncio.run(cast(Coroutine[object, object, object], factory()))
 
     assert (
         await asyncio.to_thread(
@@ -1133,7 +1133,7 @@ async def test_ordinary_native_hook_content_reaches_prepared_semantic_packet(
     def run_async(factory: Callable[[], Awaitable[object]]) -> object:
         # pytest-anyio propagates its backend context into ``to_thread``.  Run the synchronous
         # hook's coroutine runner explicitly so the hook exercises its normal service drain.
-        return asyncio.run(factory())
+        return asyncio.run(cast(Coroutine[object, object, object], factory()))
 
     def run_hook(event_name: str, payload: Mapping[str, object]) -> int:
         payload = cast(Mapping[str, object], _with_project(payload, str(project.resolve())))
@@ -2255,7 +2255,7 @@ async def test_unreadable_native_capture_degrades_without_semantic_content(tmp_p
     )
 
     def run_async(factory: Callable[[], Awaitable[object]]) -> object:
-        return asyncio.run(factory())
+        return asyncio.run(cast(Coroutine[object, object, object], factory()))
 
     def run_hook(event_name: str, payload: Mapping[str, object]) -> int:
         return handle_claude_observe(
@@ -2355,7 +2355,7 @@ async def test_disabled_native_content_never_enters_service_request(tmp_path: Pa
     local.disable_content_capture(workspace, profile)
 
     def run_async(factory: Callable[[], Awaitable[object]]) -> object:
-        return asyncio.run(factory())
+        return asyncio.run(cast(Coroutine[object, object, object], factory()))
 
     payload = {
         "hook_event_name": "PostToolUse",
@@ -2643,7 +2643,7 @@ async def test_early_planted_edit_outranks_many_captured_outputs_in_the_packet(
     )
 
     def run_async(factory: Callable[[], Awaitable[object]]) -> object:
-        return asyncio.run(factory())
+        return asyncio.run(cast(Coroutine[object, object, object], factory()))
 
     def run_hook(event_name: str, payload: Mapping[str, object]) -> int:
         stdin = canonical_encode(cast(CanonicalJsonValue, payload))
@@ -2777,7 +2777,7 @@ async def test_codex_code_mode_and_shell_edits_reach_the_packet(tmp_path: Path) 
     root = str(project.resolve())
 
     def run_async(factory: Callable[[], Awaitable[object]]) -> object:
-        return asyncio.run(factory())
+        return asyncio.run(cast(Coroutine[object, object, object], factory()))
 
     def run_hook(event_name: str, payload: Mapping[str, object]) -> int:
         return handle_observe(
@@ -2956,7 +2956,7 @@ async def test_codex_recorded_outcome_shapes_reach_the_ledger(tmp_path: Path) ->
     )
 
     def run_async(factory: Callable[[], Awaitable[object]]) -> object:
-        return asyncio.run(factory())
+        return asyncio.run(cast(Coroutine[object, object, object], factory()))
 
     def run_hook(event_name: str, payload: Mapping[str, object]) -> int:
         return handle_observe(
@@ -3164,7 +3164,7 @@ async def test_codex_image_result_reaches_the_ledger_as_digest_only_evidence(
     ) = await _pipeline(tmp_path, codex_session_id=raw_session, profile=None)
 
     def run_async(factory: Callable[[], Awaitable[object]]) -> object:
-        return asyncio.run(factory())
+        return asyncio.run(cast(Coroutine[object, object, object], factory()))
 
     for event in ("PreToolUse", "PostToolUse"):
         payload: dict[str, object] = {

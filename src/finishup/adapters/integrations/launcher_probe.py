@@ -114,13 +114,13 @@ class OsLauncherProbe:
                 shell=False,
                 timeout=_PROBE_TIMEOUT_SECONDS,
             )
-        except OSError, ValueError, subprocess.SubprocessError:
+        except (OSError, ValueError, subprocess.SubprocessError):
             return None
         if completed.returncode != 0 or len(completed.stdout) > _MAX_PROBE_BYTES:
             return None
         try:
             parsed = strict_json_parse(completed.stdout.strip())
-        except ProtocolValueError, UnicodeError, ValueError:
+        except (ProtocolValueError, UnicodeError, ValueError):
             return None
         if not isinstance(parsed, Mapping):
             return None

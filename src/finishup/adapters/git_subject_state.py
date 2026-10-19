@@ -538,7 +538,7 @@ class GitSubjectStateAdapter:
                 SubjectStateStatus.UNSUPPORTED,
                 SubjectStateLimitation.READ_LIMIT_EXCEEDED,
             )
-        except _GitProcessFailure, OSError, ValueError:
+        except (_GitProcessFailure, OSError, ValueError):
             return _closed_result(
                 SubjectStateStatus.STATE_NOT_OBSERVED,
                 SubjectStateLimitation.GIT_FAILED,

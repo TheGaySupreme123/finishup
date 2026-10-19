@@ -6,7 +6,7 @@ from __future__ import annotations
 import asyncio
 import io
 import json
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Coroutine
 from dataclasses import replace
 from pathlib import Path
 from typing import cast
@@ -78,7 +78,7 @@ async def test_plain_bash_f1_capture_and_stream_overlap(tmp_path: Path, stream_f
     post["tool_response"] = json.dumps(response)
 
     def run_async(factory: Callable[[], Awaitable[object]]) -> object:
-        return asyncio.run(factory())
+        return asyncio.run(cast(Coroutine[object, object, object], factory()))
 
     def hook_call(kind: str) -> int:
         payload = {**post, "hook_event_name": kind}

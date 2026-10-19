@@ -252,7 +252,7 @@ def communicate_bounded(handle: ChildHandle, input_bytes: bytes = b"") -> ChildR
         try:
             process.stdin.write(input_bytes)
             process.stdin.flush()
-        except BrokenPipeError, OSError:
+        except (BrokenPipeError, OSError):
             pass
         finally:
             try:

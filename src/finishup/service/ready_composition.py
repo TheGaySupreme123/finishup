@@ -1015,7 +1015,7 @@ def _bundle_upgrade_schema_and_frontier(path: Path) -> tuple[int, Frontier]:
             }.get(exc.reason_code, BundleUpgradeReason.BUNDLE_MISSING),
             False,
         ) from exc
-    except apsw.Error, OSError:
+    except (apsw.Error, OSError):
         return 0, Frontier.genesis()
     finally:
         _close_db(db)
@@ -4186,7 +4186,7 @@ async def _recover_response_evaluation(
         resolved = await runtime.objects.resolve_verified(ref.object_id, ref.envelope_digest)
         payload = b"".join([chunk async for chunk in runtime.objects.open_verified(resolved)])
         parsed = strict_json_parse(payload)
-    except KeyError, OSError, TypeError, ValueError:
+    except (KeyError, OSError, TypeError, ValueError):
         return None
     if type(parsed) is not dict:
         return None
@@ -4200,7 +4200,7 @@ async def _recover_response_evaluation(
     try:
         status = SemanticStatus(cast(str, body["status"]))
         reason = SemanticReason(cast(str, body["reason"]))
-    except KeyError, TypeError, ValueError:
+    except (KeyError, TypeError, ValueError):
         return None
     judgment = None
     provenance = None
@@ -4208,7 +4208,7 @@ async def _recover_response_evaluation(
     if raw_judgment is not None:
         try:
             decoded = _judgment_from_response_json(raw_judgment)
-        except TypeError, ValueError:
+        except (TypeError, ValueError):
             return None
         if type(decoded) is SemanticJudgment:
             judgment = decoded
@@ -4218,7 +4218,7 @@ async def _recover_response_evaluation(
             from finishup.domain.values import freeze_json
 
             provenance = semantic_provenance_from_json(freeze_json(raw_provenance))
-        except TypeError, ValueError:
+        except (TypeError, ValueError):
             return None
     if status is SemanticStatus.SUCCEEDED and (judgment is None or provenance is None):
         return None
@@ -4273,7 +4273,7 @@ async def _recover_response_evaluation(
                     provider_manifest = frozen_provider
                 else:
                     provider_manifest_failure = SEMANTIC_PROVIDER_INPUT_MANIFEST_RECOVERY_FAILED_GAP
-            except TypeError, ValueError:
+            except (TypeError, ValueError):
                 provider_manifest_failure = SEMANTIC_PROVIDER_INPUT_MANIFEST_RECOVERY_FAILED_GAP
     else:
         provider_manifest_failure = SEMANTIC_PROVIDER_INPUT_MANIFEST_RECOVERY_FAILED_GAP
@@ -4351,7 +4351,7 @@ def _observation_workspace_for_runtime(runtime: TaskRuntime) -> str | None:
         return None
     try:
         validate_commitment(workspace)
-    except TypeError, ValueError:
+    except (TypeError, ValueError):
         return None
     try:
         route = route_lookup(workspace=workspace, finishup_session_id=runtime.session_id)
@@ -4370,7 +4370,7 @@ def _observation_workspace_for_runtime(runtime: TaskRuntime) -> str | None:
         return None
     try:
         validate_commitment(route_values[0])
-    except TypeError, ValueError:
+    except (TypeError, ValueError):
         return None
     return workspace
 
@@ -6874,7 +6874,7 @@ async def provide_service_ready_context(
                     advice_policy
                 ).include_finding_prose,
             )
-        except TypeError, ValueError, UnicodeDecodeError:
+        except (TypeError, ValueError, UnicodeDecodeError):
             return ObservationAdviceSemanticOutcome(
                 status="failed", failure_reason="provider_failed"
             )
@@ -7074,7 +7074,7 @@ async def provide_service_ready_context(
         try:
             route = await catalog.task_route(task_id)
             provenance = await catalog.task_source_provenance(task_id)
-        except TypeError, ValueError, PublicOperationError:
+        except (TypeError, ValueError, PublicOperationError):
             return False
         if (
             route is None
@@ -7085,7 +7085,7 @@ async def provide_service_ready_context(
             return False
         try:
             binding = await catalog.session_binding(route.session_id)
-        except TypeError, ValueError, PublicOperationError:
+        except (TypeError, ValueError, PublicOperationError):
             return False
         if binding is None or binding.task_id != task_id or binding.session_id != route.session_id:
             return False
@@ -7098,7 +7098,7 @@ async def provide_service_ready_context(
                     frozenset({RuntimeCapability.STRUCTURAL_READ, RuntimeCapability.PAYLOAD_READ}),
                 )
             )
-        except TypeError, ValueError, PublicOperationError:
+        except (TypeError, ValueError, PublicOperationError):
             return False
         if (
             type(leased) is not TaskRuntime
@@ -7139,7 +7139,7 @@ async def provide_service_ready_context(
                 and latest.route_generation == route.route_generation
                 and latest.route_identity_digest == route.route_identity_digest
             )
-        except TypeError, ValueError, PublicOperationError:
+        except (TypeError, ValueError, PublicOperationError):
             return False
         finally:
             await runtime.release(leased)

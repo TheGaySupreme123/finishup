@@ -62,7 +62,7 @@ class SessionRouteMemory:
             if path.is_symlink() or path.stat().st_size > _MAX_FILE_BYTES:
                 return {}
             raw = json.loads(path.read_text(encoding="utf-8"))
-        except OSError, ValueError:
+        except (OSError, ValueError):
             return {}
         if not isinstance(raw, dict):
             return {}

@@ -1237,7 +1237,7 @@ def lineage_manifest_from_records(records: Iterable[object]) -> LineageManifest:
             continue
         try:
             service_stamped = is_lineage_service_stamped(cast(LedgerRecord, record))
-        except AttributeError, TypeError, ValueError:
+        except (AttributeError, TypeError, ValueError):
             service_stamped = False
         if not service_stamped:
             # A closed lineage payload is not sufficient provenance.  Keep the latest event

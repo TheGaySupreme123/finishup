@@ -155,7 +155,7 @@ def _ascii_sorted_unique(values: tuple[str, ...]) -> bool:
         return False
     try:
         return values == tuple(sorted(set(values), key=lambda item: item.encode("ascii")))
-    except AttributeError, UnicodeEncodeError:
+    except (AttributeError, UnicodeEncodeError):
         return False
 
 
@@ -274,7 +274,7 @@ class PlanProjectionRecord(ProjectionRecord[PlanPublishedPayload | PlanRevisedPa
     superseded_by_plan_version: int | None = None
 
     def __post_init__(self) -> None:
-        super().__post_init__()
+        super(PlanProjectionRecord, self).__post_init__()
         if self.payload is not None and type(self.payload) not in {
             PlanPublishedPayload,
             PlanRevisedPayload,
@@ -305,7 +305,7 @@ class ObligationProjectionRecord(ProjectionRecord[ObligationPublishedPayload]):
     introduced_frontier: int | None = None
 
     def __post_init__(self) -> None:
-        super().__post_init__()
+        super(ObligationProjectionRecord, self).__post_init__()
         if self.payload is not None and type(self.payload) is not ObligationPublishedPayload:
             raise _invalid()
         if self.introduced_frontier is not None and (
@@ -342,7 +342,7 @@ class DecisionProjectionRecord(ProjectionRecord[DecisionRecordedPayload]):
     superseded_by_event_id: EventId | None = None
 
     def __post_init__(self) -> None:
-        super().__post_init__()
+        super(DecisionProjectionRecord, self).__post_init__()
         if self.payload is not None and type(self.payload) is not DecisionRecordedPayload:
             raise _invalid()
         if self.superseded_by_event_id is not None:
@@ -485,7 +485,7 @@ class FindingProjectionRecord(ProjectionRecord[Finding]):
     absorbed_refs: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
-        super().__post_init__()
+        super(FindingProjectionRecord, self).__post_init__()
         if self.payload is not None and type(self.payload) is not Finding:
             raise _invalid()
         if (
@@ -589,7 +589,7 @@ class ClaimProjectionRecord(ProjectionRecord[ClaimRecordedPayload | ClaimRecorde
     superseded_by_claim_id: ClaimId | None = None
 
     def __post_init__(self) -> None:
-        super().__post_init__()
+        super(ClaimProjectionRecord, self).__post_init__()
         if self.payload is not None and type(self.payload) not in {
             ClaimRecordedPayload,
             ClaimRecordedPayloadV1_1,
@@ -612,7 +612,7 @@ class EvidenceProjectionRecord(ProjectionRecord[EvidenceRecordedPayload]):
     redacted_object_id: ObjectId | None = None
 
     def __post_init__(self) -> None:
-        super().__post_init__()
+        super(EvidenceProjectionRecord, self).__post_init__()
         if self.payload is not None and type(self.payload) is not EvidenceRecordedPayload:
             raise _invalid()
         if type(self.object_available) is not bool:

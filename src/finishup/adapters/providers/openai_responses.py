@@ -1965,7 +1965,7 @@ def normalize_response(
     try:
         parsed = strict_json_parse(raw_bytes)
         judgment = normalize_judgment(parsed, require_part2=True)
-    except ValueError, TypeError, LookupError:
+    except (ValueError, TypeError, LookupError):
         return SemanticResultInvalid(
             _provenance(
                 profile,
@@ -2190,7 +2190,7 @@ class OneAttemptCredentialTransport(httpx.AsyncBaseTransport):
         if content_length is not None:
             try:
                 declared_size = int(content_length)
-            except TypeError, ValueError:
+            except (TypeError, ValueError):
                 # Provider-controlled header text must not appear in structural errors.
                 await response.aclose()
                 raise ValueError("openai_response_content_length_invalid") from None

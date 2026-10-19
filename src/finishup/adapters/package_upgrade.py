@@ -97,7 +97,7 @@ def plain_uv_tool_receipt(receipt: str, name: str) -> PlainToolReceipt | None:
 
     try:
         document = tomllib.loads(receipt)
-    except tomllib.TOMLDecodeError, RecursionError:
+    except (tomllib.TOMLDecodeError, RecursionError):
         return None
     tool = document.get("tool")
     if type(tool) is not dict:
@@ -153,7 +153,7 @@ def _upgrade_command(prefix: Path, name: str = LAUNCHER_NAME) -> tuple[str, ...]
 
     try:
         receipt = plain_uv_tool_receipt(read_uv_receipt(prefix), name)
-    except OSError, ValueError:
+    except (OSError, ValueError):
         return None
     if receipt is None:
         return None
@@ -225,7 +225,7 @@ def execute_package_upgrade() -> str:
             try:
                 text = verified.stdout.decode("ascii", errors="strict").strip()
                 installed = Version(text)
-            except UnicodeError, InvalidVersion:
+            except (UnicodeError, InvalidVersion):
                 return "package_version_unverified"
             previous = Version(__version__)
             if installed < previous:
@@ -235,5 +235,5 @@ def execute_package_upgrade() -> str:
             )
     except subprocess.TimeoutExpired:
         return "outcome_unknown"
-    except OSError, ValueError, InvalidVersion:
+    except (OSError, ValueError, InvalidVersion):
         return "package_manager_unavailable"

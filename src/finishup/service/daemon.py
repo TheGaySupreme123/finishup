@@ -430,7 +430,7 @@ def _is_valid_capture_only_observation(request: ControlCallRequest) -> bool:
         return False
     try:
         parsed = observation_ingest_request_from_json(cast(DomainJsonValue, request.body))
-    except KeyError, ProtocolValueError, TypeError, ValueError:
+    except (KeyError, ProtocolValueError, TypeError, ValueError):
         return False
     return (
         type(parsed) is ObservationIngestRequest
@@ -1096,7 +1096,7 @@ class ServiceDaemon:
                 validate_request(request)
                 self._validate_generation(request)
                 self._validate_client_method(client_kind, request.method)
-            except ControlProtocolError, TypeError, ValueError:
+            except (ControlProtocolError, TypeError, ValueError):
                 # Only the validation prefix maps to frame_invalid. Runtime TypeError/ValueError
                 # from method dispatch must reach the correlated internal_error branch below.
                 return self._error_result(request, ControlError("frame_invalid"))
@@ -1497,7 +1497,7 @@ class ServiceDaemon:
                         request, exc, phase="handler", reason="request_timeout"
                     ) from exc
                 raise ControlError("request_timeout", retryable=True) from exc
-            except ControlError, LifecycleError, PublicOperationError:
+            except (ControlError, LifecycleError, PublicOperationError):
                 # Deliberate application outcomes carry their own code, retryability and
                 # continuation. Only an untyped exception is a transient projection incident.
                 raise
@@ -1691,7 +1691,7 @@ class ServiceDaemon:
                 self._validate_success_body(request, persisted)
                 return persisted
             return projected
-        except ControlError, LifecycleError, PublicOperationError:
+        except (ControlError, LifecycleError, PublicOperationError):
             raise
         except (asyncio.CancelledError, Exception) as exc:
             # Cancellation is reclassified here too. `dispatch` already converts a cancelled call
@@ -1929,7 +1929,7 @@ class ServiceDaemon:
             return False
         try:
             target = owner_receipt_view_target(request.body, session.connection_nonce)
-        except AttributeError, TypeError, ValueError:
+        except (AttributeError, TypeError, ValueError):
             return False
         return self._composition.owner_view_grants.consume(
             admission, owner_receipt_view_target_digest(target)
@@ -2759,7 +2759,7 @@ class ServiceDaemon:
         for signum in (signal.SIGINT, signal.SIGTERM):
             try:
                 loop.add_signal_handler(signum, self._stop_event.set)
-            except NotImplementedError, RuntimeError:
+            except (NotImplementedError, RuntimeError):
                 continue
 
 
@@ -3555,7 +3555,7 @@ class _LockedHumanEffects:
                     raise HumanControlError("state_forbidden")
                 try:
                     artifact = self._recovery_sets.load(target.recovery_generation)
-                except FileNotFoundError, OSError, TypeError, ValueError:
+                except (FileNotFoundError, OSError, TypeError, ValueError):
                     raise HumanControlError("pending_unavailable") from None
                 item_count = 1
                 total_bytes = len(artifact.canonical_bytes)
@@ -4533,7 +4533,7 @@ class _HumanConnectionServer:
             peer_wait.cancel()
             try:
                 await peer_wait
-            except asyncio.CancelledError, Exception:
+            except (asyncio.CancelledError, Exception):
                 pass
             return action.result()
         peer: object | None = None
@@ -4570,7 +4570,7 @@ class _HumanConnectionServer:
         for task in pending:
             try:
                 await task
-            except asyncio.CancelledError, Exception:
+            except (asyncio.CancelledError, Exception):
                 pass
         if secret_wait in done and not secret_wait.cancelled():
             return secret_wait.result()

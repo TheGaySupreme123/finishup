@@ -203,7 +203,7 @@ def _unwind_create(root: Path, identity: InstanceIdentity, *, root_existed: bool
     try:
         if read_instance_identity(state) == identity:
             instance_identity_path(state).unlink()
-    except InstanceIdentityError, OSError:
+    except (InstanceIdentityError, OSError):
         return
     for directory in (state,) if root_existed else (state, root):
         try:

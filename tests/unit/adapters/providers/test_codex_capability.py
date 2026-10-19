@@ -404,7 +404,7 @@ class _Candidate:
     def descendant(self) -> int | None:
         try:
             return int(self.pid_file.read_text().strip())
-        except OSError, ValueError:
+        except (OSError, ValueError):
             return None
 
     def reap_own_descendant(self) -> None:

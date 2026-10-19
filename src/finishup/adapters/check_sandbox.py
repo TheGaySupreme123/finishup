@@ -67,7 +67,7 @@ def _run_probe(argv: Sequence[str]) -> int:
             shell=False,
             timeout=_PROBE_TIMEOUT_SECONDS,
         )
-    except OSError, subprocess.SubprocessError:
+    except (OSError, subprocess.SubprocessError):
         return -1
     return completed.returncode
 

@@ -57,7 +57,7 @@ def _resolved_directory(locator: WorkspaceLocator) -> Path:
         raise RepositoryIdentityError("repository_locator_invalid")
     try:
         resolved = Path(locator.path).resolve(strict=True)
-    except OSError, RuntimeError:
+    except (OSError, RuntimeError):
         raise RepositoryIdentityError("repository_locator_unavailable") from None
     if not resolved.is_dir():
         raise RepositoryIdentityError("repository_locator_invalid")
@@ -331,7 +331,7 @@ async def _bounded_git_common_directory(directory: Path) -> Path | None:
         }:
             raise ValueError
         common_directory = absolute_rev_parse_path(common_raw, directory).resolve(strict=True)
-    except OSError, RuntimeError, UnicodeError, ValueError:
+    except (OSError, RuntimeError, UnicodeError, ValueError):
         raise RepositoryIdentityError("repository_identity_unavailable") from None
     if not common_directory.is_dir() or (inside_work_tree, bare_repository) == (b"false", b"false"):
         raise RepositoryIdentityError("repository_identity_unavailable")

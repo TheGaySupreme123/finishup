@@ -168,7 +168,7 @@ def lookup_diagnostic_records(
                 continue
             try:
                 parsed: object = json.loads(line.decode("ascii"))
-            except UnicodeDecodeError, json.JSONDecodeError:
+            except (UnicodeDecodeError, json.JSONDecodeError):
                 continue
             if type(parsed) is not dict:
                 continue

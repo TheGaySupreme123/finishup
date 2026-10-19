@@ -353,7 +353,7 @@ def load_route_history(
             return None
         parsed = strict_json_parse(raw_bytes)
         decoded = _decode_route_history(parsed)
-    except OSError, ProtocolValueError, UnicodeError, TypeError, ValueError:
+    except (OSError, ProtocolValueError, UnicodeError, TypeError, ValueError):
         return None
     if decoded is None:
         return None
@@ -457,7 +457,7 @@ def load_mapping(codex_session_id: str, *, _state: Path | None = None) -> Lifecy
         return _parse_mapping(
             cast(Mapping[str, JsonValue], parsed), expected_session=codex_session_id
         )
-    except OSError, ProtocolValueError, UnicodeError, TypeError, ValueError:
+    except (OSError, ProtocolValueError, UnicodeError, TypeError, ValueError):
         return None
 
 
@@ -481,7 +481,7 @@ def load_latest_mapping(
             if path.is_symlink():
                 continue
             modified_ns = path.stat().st_mtime_ns
-        except OSError, ProtocolValueError:
+        except (OSError, ProtocolValueError):
             continue
         candidate = (modified_ns, codex_session_id.encode("ascii"), mapping)
         if latest is None or candidate[:2] > latest[:2]:
@@ -612,7 +612,7 @@ def _load_pending_mapping_operation(
             expected_session=codex_session_id,
         )
         return ("store", mapping)
-    except OSError, ProtocolValueError, UnicodeError, TypeError, ValueError:
+    except (OSError, ProtocolValueError, UnicodeError, TypeError, ValueError):
         return None
 
 

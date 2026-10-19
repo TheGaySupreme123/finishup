@@ -116,7 +116,7 @@ class ObservationSelectionLoss:
         if type(lane) is str:
             try:
                 validate_sha256_digest(lane)
-            except ProtocolValueError, TypeError, ValueError:
+            except (ProtocolValueError, TypeError, ValueError):
                 pass
             else:
                 lane_valid = lane == expected_lane

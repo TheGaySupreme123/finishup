@@ -476,7 +476,7 @@ class WorkspaceFingerprintStore:
                     _write_small(self._directory / "bounded", failure.reason.encode("ascii"))
                 self._mark_failed(call_identity, failure.reason)
             return failure.reason
-        except OSError, PathSafetyError, ValueError:
+        except (OSError, PathSafetyError, ValueError):
             return "store_unusable"
 
     def effect_after(
@@ -498,7 +498,7 @@ class WorkspaceFingerprintStore:
                 return WorkspaceEffectReading(WORKSPACE_UNAVAILABLE, failed, fresh=False)
             try:
                 before = self._load(self._pending_path(call_identity), delete=True)
-            except OSError, PathSafetyError, ValueError:
+            except (OSError, PathSafetyError, ValueError):
                 before = None
             if before is None:
                 return WorkspaceEffectReading(WORKSPACE_UNAVAILABLE, "no_pre_snapshot")
@@ -572,7 +572,7 @@ class WorkspaceFingerprintStore:
                 if failure.backoff and failure.reason in _BACKOFF_SECONDS:
                     _write_small(self._directory / "bounded", failure.reason.encode("ascii"))
             return WorkspaceEffectReading(WORKSPACE_UNAVAILABLE, failure.reason)
-        except OSError, PathSafetyError, ValueError:
+        except (OSError, PathSafetyError, ValueError):
             return WorkspaceEffectReading(WORKSPACE_UNAVAILABLE, "store_unusable")
 
     def invalidate(self, call_identity: str, reason: UnavailableReason) -> None:
@@ -725,7 +725,7 @@ class WorkspaceFingerprintStore:
                 return None
             age = time.time() - marker.stat().st_mtime
             reason = marker.read_bytes()[:32].decode("ascii")
-        except OSError, UnicodeDecodeError:
+        except (OSError, UnicodeDecodeError):
             return None
         if reason == "too_large" and 0 <= age < _BACKOFF_SECONDS["too_large"]:
             return "too_large"
@@ -761,7 +761,7 @@ class WorkspaceFingerprintStore:
             if path.is_symlink():
                 return None
             raw = path.read_bytes()[:32].decode("ascii")
-        except OSError, UnicodeDecodeError:
+        except (OSError, UnicodeDecodeError):
             return None
         finally:
             with contextlib.suppress(OSError):

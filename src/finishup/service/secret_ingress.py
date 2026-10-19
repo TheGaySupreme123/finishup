@@ -337,5 +337,5 @@ async def _read_exact(stream: _SecretStream, size: int) -> bytes:
 async def _await_cancelled(task: asyncio.Task[SecretHandle]) -> None:
     try:
         await task
-    except asyncio.CancelledError, SecretIngressError:
+    except (asyncio.CancelledError, SecretIngressError):
         pass

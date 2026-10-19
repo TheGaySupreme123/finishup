@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import io
 import threading
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Coroutine
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from functools import partial
@@ -514,7 +514,7 @@ def _native_failed_command(
     """Invoke actual host normalizers/handlers, not the installed vendor application."""
 
     def run_async(factory: Callable[[], Awaitable[object]]) -> object:
-        return asyncio.run(factory())
+        return asyncio.run(cast(Coroutine[object, object, object], factory()))
 
     common = {
         "cwd": str(world.project),

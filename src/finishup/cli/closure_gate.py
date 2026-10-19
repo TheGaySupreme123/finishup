@@ -691,7 +691,7 @@ def _lineage_variants(readiness: object, items: tuple[str, ...]) -> tuple[str, .
     for entry in tuple(cast(tuple[object, ...], raw)):
         try:
             item = lineage_from_wire(entry)
-        except TypeError, ValueError:
+        except (TypeError, ValueError):
             continue
         if item.code in wanted:
             parsed.append(item)
@@ -1795,7 +1795,7 @@ def _load_checked(path: Path) -> dict[str, str] | None:
         raw = json.loads(path.read_text(encoding="utf-8"))
     except FileNotFoundError:
         return {}
-    except OSError, ValueError:
+    except (OSError, ValueError):
         return None
     if not isinstance(raw, dict):
         return None

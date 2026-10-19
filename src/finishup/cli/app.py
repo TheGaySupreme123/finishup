@@ -913,7 +913,7 @@ async def _call_workflow(
                 )
             return exit_code_for(PublicErrorCode.INTERNAL_ERROR)
         return _usage_failure()
-    except ProtocolValueError, ValidationError, ValueError:
+    except (ProtocolValueError, ValidationError, ValueError):
         return _usage_failure()
     except ControlError as error:
         return _control_failure(error, operation=method, check_mode=check_mode)
@@ -1858,7 +1858,7 @@ def closure_prepare_command(
 
     try:
         run_async(prepare)
-    except OSError, ProtocolValueError, ValidationError:
+    except (OSError, ProtocolValueError, ValidationError):
         _finish(_usage_failure())
     except ValueError as error:
         reason = str(error)
@@ -1977,7 +1977,7 @@ async def _call_support(
                 if line is not None:
                     typer.echo(line)
         return 0
-    except OSError, ProtocolValueError, ValidationError, ValueError:
+    except (OSError, ProtocolValueError, ValidationError, ValueError):
         return _usage_failure()
     except ControlError as error:
         return _control_failure(error)
@@ -1991,7 +1991,7 @@ def _effective_credential_heuristic_line(value: JsonValue) -> str | None:
 
     try:
         policy = cast(Mapping[str, JsonValue], cast(Mapping[str, JsonValue], value)["policy"])
-    except KeyError, TypeError:
+    except (KeyError, TypeError):
         return None
     if policy.get("credential_heuristic") != "disabled":
         return None
@@ -2042,7 +2042,7 @@ def _effective_task_statement_line(value: JsonValue) -> str | None:
             predates_section="task_statement" not in sections
             and policy["review_context_profile"] in {"goal_aware", "assisted", "expanded"},
         )
-    except KeyError, StopIteration, TypeError:
+    except (KeyError, StopIteration, TypeError):
         return None
     return "Task statement: " + text
 
@@ -2062,7 +2062,7 @@ def _effective_excerpt_limits_line(value: JsonValue) -> str | None:
         policy = decode_privacy_policy_canonical(
             canonical_encode(cast(Mapping[str, JsonValue], value)["policy"])
         )
-    except KeyError, TypeError, ValueError:
+    except (KeyError, TypeError, ValueError):
         return None
     return "Excerpt limits: " + policy_excerpt_limits_disclosure(policy)
 
@@ -2303,7 +2303,7 @@ async def _run_conversation_review_status(json_output: bool) -> int:
         snapshot = await get_privacy_setup_snapshot(Path.cwd())
     except ControlError as error:
         return _control_failure(error, json_output=json_output)
-    except OSError, ValueError:
+    except (OSError, ValueError):
         typer.echo("privacy_conversations_failed: privacy_setup_unreadable", err=True)
         return 20
     policy = snapshot.composed_policy
@@ -2389,7 +2389,7 @@ async def _run_input_roots_status(json_output: bool) -> int:
         snapshot = await get_privacy_setup_snapshot(Path.cwd())
     except ControlError as error:
         return _control_failure(error, json_output=json_output)
-    except OSError, ValueError:
+    except (OSError, ValueError):
         typer.echo("privacy_input_roots_failed: privacy_setup_unreadable", err=True)
         return 20
     roots = list(snapshot.composed_policy.admitted_input_roots)
@@ -2626,7 +2626,7 @@ def service_run(
 
         try:
             validate_id(IdKind.CORRELATION, startup_correlation_id)
-        except TypeError, ValueError:
+        except (TypeError, ValueError):
             _finish(_usage_failure())
     # Import-light: it must record a failure to import the daemon itself (#1040).
     from finishup.service.startup_failure import ServiceStartupError, record_startup_failure
@@ -2913,7 +2913,7 @@ def service_diagnostics(
         )
         _human_or_json(output, json_output=json_output)
         _finish(0 if records else 1)
-    except OSError, TypeError, ValueError:
+    except (OSError, TypeError, ValueError):
         _finish(_usage_failure())
 
 
@@ -3765,7 +3765,7 @@ async def _trusted_call(operation: Callable[[], Awaitable[object]], json_output:
         result = await operation()
         _human_or_json(result, json_output=json_output)
         return 0
-    except OSError, ProtocolValueError, ValueError:
+    except (OSError, ProtocolValueError, ValueError):
         return _usage_failure()
     except Exception as error:
         failure = _trusted_exception_failure(error)
@@ -3779,7 +3779,7 @@ def _recovery_store_read[T](operation: Callable[[], T]) -> tuple[T | None, int |
 
     try:
         return operation(), None
-    except OSError, ProtocolValueError, RuntimeError, ValueError:
+    except (OSError, ProtocolValueError, RuntimeError, ValueError):
         _stderr("storage_corrupt: the installation recovery set could not be read")
         return None, exit_code_for(PublicErrorCode.STORAGE_CORRUPT)
 
@@ -4512,7 +4512,7 @@ def _provider_credential_command(action: str) -> Callable[..., None]:
 
         try:
             _finish(run_async(run))
-        except ProtocolValueError, ValueError:
+        except (ProtocolValueError, ValueError):
             _finish(_usage_failure())
 
     return command
@@ -5353,7 +5353,7 @@ def privacy_apply_desired(
             return 0
         try:
             tightening = is_privacy_tightening(current, candidate)
-        except TypeError, ValueError:
+        except (TypeError, ValueError):
             # Classification is the gate. If it cannot run, this is not a tighten, and the
             # command must not fall through to the widen message as if it had decided.
             return _usage_failure()
@@ -5420,7 +5420,7 @@ async def _privacy_pending(json_output: bool) -> int:
             result = await client.privacy_pending_list()
         finally:
             await client.close()
-    except ProtocolValueError, ValueError:
+    except (ProtocolValueError, ValueError):
         return _usage_failure()
     except ControlError as error:
         return _control_failure(error)
@@ -5514,7 +5514,7 @@ async def _privacy_receipts_list(page_size: int, cursor: str | None, json_output
             result = await client.privacy_receipts_list(request)
         finally:
             await client.close()
-    except ProtocolValueError, ValueError:
+    except (ProtocolValueError, ValueError):
         return _usage_failure()
     except ControlError as error:
         return _control_failure(error, json_output=json_output)
@@ -5551,7 +5551,7 @@ async def _privacy_receipts_get(receipt_id: str, json_output: bool) -> int:
             result = await client.privacy_receipts_get(request)
         finally:
             await client.close()
-    except ProtocolValueError, ValueError:
+    except (ProtocolValueError, ValueError):
         return _usage_failure()
     except ControlError as error:
         return _control_failure(error, json_output=json_output)
@@ -6082,7 +6082,7 @@ def elevated_authorize(
             if provider_credential_stdin:
                 try:
                     secret = _read_bounded_stdin_secret(8192)
-                except OSError, ValueError:
+                except (OSError, ValueError):
                     _stderr(
                         _bounded_failure_line(
                             "provider_credential_invalid", prefix="elevated_bootstrap"

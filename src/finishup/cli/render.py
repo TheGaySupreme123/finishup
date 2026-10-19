@@ -1030,7 +1030,7 @@ def lineage_lines(lineage: Iterable[object] | None) -> list[str]:
     for entry in lineage or ():
         try:
             items.append(lineage_from_wire(entry))
-        except TypeError, ValueError:
+        except (TypeError, ValueError):
             continue
     texts = lineage_texts(items)
     lines = list(texts[:_MAX_LINEAGE_LINES])
@@ -1163,7 +1163,7 @@ def _semantic_redacted_value_lines(items: Sequence[object]) -> list[str]:
                 )
             else:
                 values.append(SemanticRedactedValue.from_wire(item))
-        except TypeError, ValueError:
+        except (TypeError, ValueError):
             continue
     if not values:
         return []
@@ -1190,7 +1190,7 @@ def _semantic_withheld_item_lines(document: Mapping[str, JsonValue]) -> list[str
             continue
         try:
             validate_opaque_item_id(item_id)
-        except TypeError, ValueError:
+        except (TypeError, ValueError):
             continue
         items.append((cast(str, item_id), reason))
     if not items:

@@ -246,7 +246,7 @@ def normalize_local_response(
     try:
         parsed = strict_json_parse(raw)
         judgment = _judgment_from_json(parsed)
-    except ValueError, TypeError, LookupError:
+    except (ValueError, TypeError, LookupError):
         return SemanticResultInvalid(
             _provenance(
                 profile,

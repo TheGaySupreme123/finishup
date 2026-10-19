@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Awaitable, Callable, Mapping
+from collections.abc import Awaitable, Callable, Coroutine, Mapping
 from typing import cast
 
 import pytest
@@ -193,7 +193,7 @@ def test_project_mutation_surfaces_generated_request_id_for_retry(
         raise ControlError("request_timeout", retryable=True)
 
     def run_async(factory: Callable[[], Awaitable[object]]) -> object:
-        return asyncio.run(factory())
+        return asyncio.run(cast(Coroutine[object, object, object], factory()))
 
     monkeypatch.setattr(project_cli, "_invoke", invoke)
     monkeypatch.setattr("finishup.cli.app.run_async", run_async)

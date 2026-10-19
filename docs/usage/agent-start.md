@@ -111,7 +111,7 @@ source "$HOME/.local/bin/env"
 Then install the latest published FinishUP version:
 
 ```text
-uv tool install --compile-bytecode --managed-python --python 3.14.6 finishup
+uv tool install --managed-python finishup
 finishup version
 ```
 
@@ -120,9 +120,9 @@ finishup version
 makes the same persistent `uv tool install` and launches that exact version. The compatibility
 extras are aliases the standard install already contains — do not add them.
 
-Do not worry about which Pythons the machine has. FinishUP needs Python 3.14 and `--managed-python`
-makes `uv` download exactly that interpreter on demand; pyenv, Homebrew, system, and project
-Pythons are neither used nor touched. Never substitute `pip install finishup`, `pipx`, or a project
+Do not worry about which Pythons the machine has. FinishUP needs Python 3.12 to 3.14 and
+`--managed-python` makes `uv` download a supported interpreter on demand; pyenv, Homebrew, system,
+and project Pythons are neither used nor touched. Never substitute `pip install finishup`, `pipx`, or a project
 virtual environment: an older Python cannot satisfy the package, and a prefix another account can
 write (Homebrew's `/opt/homebrew`, a shared `venv`) is refused, because the agent would then launch
 a program others can replace. Ubuntu's and Fedora's default umask `0002` is fine: the group it
@@ -134,7 +134,8 @@ root installed FinishUP in a container): show the user the directory and repair 
 run` prints; usually that means installing FinishUP as the user who runs the agent. Do not connect an agent from a one-off
 `uvx finishup` run either; it lives in `uv`'s cache and a later `uv cache clean` would break the
 connection. If the install fails, read the `uv` error: the only two blocking configurations are
-`python-downloads = "never"` and `python-preference = "only-system"` without a 3.14 present, and
+`python-downloads = "never"` and `python-preference = "only-system"` without a 3.12 to 3.14
+present, and
 both name themselves.
 
 ## 2. Setup — guide it in the conversation

@@ -1140,7 +1140,7 @@ class GitChangeCaptureAdapter:
             return None
         try:
             return commit, self._nested_untracked_baseline(nested, deadline)
-        except ChangeCaptureUnavailable, ValueError:
+        except (ChangeCaptureUnavailable, ValueError):
             return commit, None
 
     def _nested_untracked_baseline(
@@ -1297,7 +1297,7 @@ class GitChangeCaptureAdapter:
                         limit=1_024,
                         accepted=frozenset({0, 1}),
                     )
-                except ValueError, ChangeCaptureUnavailable:
+                except (ValueError, ChangeCaptureUnavailable):
                     unknown.add(path)
                     continue
                 if code != 0:
@@ -1313,7 +1313,7 @@ class GitChangeCaptureAdapter:
                         limit=8_192,
                         accepted=frozenset({0, 1}),
                     )
-                except ValueError, ChangeCaptureUnavailable:
+                except (ValueError, ChangeCaptureUnavailable):
                     verbose = b""
                 sources[path] = verbose.split(b":", 1)[0] if b":" in verbose else b""
         info_exclude = os.fsencode(pinned.root / ".git" / "info" / "exclude")
@@ -2142,7 +2142,7 @@ class GitChangeCaptureAdapter:
             if _nul_fields(listed) != [b"H " + relative]:
                 return None
             return self._rev(pinned, f"{base_id}:{name}", deadline)
-        except UnicodeDecodeError, ValueError, ChangeCaptureUnavailable:
+        except (UnicodeDecodeError, ValueError, ChangeCaptureUnavailable):
             return None
 
     # --- Git access --------------------------------------------------------------------------
@@ -2157,7 +2157,7 @@ class GitChangeCaptureAdapter:
             raise ChangeCaptureUnavailable(GIT_VERSION_UNSUPPORTED)
         try:
             resolved = Path(workspace).resolve(strict=True)
-        except OSError, RuntimeError:
+        except (OSError, RuntimeError):
             resolved = None
         if resolved is not None and root_owned_checkout(resolved) is not None:
             # A checkout root owns, served to a non-root user: Git refuses it ("dubious
@@ -3208,7 +3208,7 @@ def _task_input(
         outcome, content = _read_beneath(
             pinned.descriptor, relative, _MAX_TASK_INPUT_READ_BYTES, identity
         )
-    except UnicodeDecodeError, _ChangedDuringCapture:
+    except (UnicodeDecodeError, _ChangedDuringCapture):
         return None
     if outcome == "too_large" and blob is None:
         owner = os.geteuid() if hasattr(os, "geteuid") else os.getuid()
@@ -4286,7 +4286,7 @@ def _verify_loose_object(
         hasher = hashlib.new(object_format)
         hasher.update(inflated)
         return None if hasher.hexdigest() == oid else "object_unverified"
-    except OSError, zlib.error:
+    except (OSError, zlib.error):
         return "object_unverified"
     finally:
         compressed[:] = bytes(len(compressed))
@@ -4456,7 +4456,7 @@ def _global_excludes_file(deadline: float) -> str | None:
                 candidate = os.fsdecode(completed.stdout.rstrip(b"\n")) or None
         except subprocess.TimeoutExpired:
             raise ChangeCaptureUnavailable("git_failed") from None
-        except OSError, subprocess.SubprocessError:
+        except (OSError, subprocess.SubprocessError):
             candidate = None
     if candidate is None:
         base = xdg if xdg else os.path.join(home, ".config")

@@ -1702,7 +1702,7 @@ class _ProviderHandle(ProviderCredentialHandle):
                     SecretConsumer.PROVIDER_AUTHORIZER,
                     lambda view: bytearray(view),
                 )
-            except SecretMemoryError, EncryptedVaultError:
+            except (SecretMemoryError, EncryptedVaultError):
                 return
             _overwrite(discarded)
 

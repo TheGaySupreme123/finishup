@@ -409,7 +409,7 @@ def _current_revision(checkout: Path) -> str:
             capture_output=True,
             text=True,
         )
-    except OSError, subprocess.CalledProcessError:
+    except (OSError, subprocess.CalledProcessError):
         return "unknown"
     return completed.stdout.strip() or "unknown"
 

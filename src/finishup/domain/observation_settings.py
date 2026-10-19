@@ -635,7 +635,7 @@ def observation_selection_settings_from_json(raw: object) -> ObservationSelectio
     if raw_workspace is not None:
         try:
             workspace = _setting_from_json(raw_workspace)
-        except ProtocolValueError, TypeError, ValueError:
+        except (ProtocolValueError, TypeError, ValueError):
             workspace = None
     sessions: list[tuple[str, ObservationSelectionSetting]] = []
     raw_sessions = row.get("sessions")
@@ -649,7 +649,7 @@ def observation_selection_settings_from_json(raw: object) -> ObservationSelectio
             try:
                 validate_commitment(key)
                 setting = _setting_from_json(value)
-            except ProtocolValueError, TypeError, ValueError:
+            except (ProtocolValueError, TypeError, ValueError):
                 continue
             sessions.append((key, setting))
             if len(sessions) >= _MAX_SESSION_OVERRIDES:

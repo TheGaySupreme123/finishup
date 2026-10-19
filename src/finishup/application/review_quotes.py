@@ -126,7 +126,7 @@ def _json_strings(text: str) -> Iterator[str]:
         return
     try:
         document = strict_json_parse(text.encode("utf-8"), validate=False)
-    except ValueError, UnicodeEncodeError:
+    except (ValueError, UnicodeEncodeError):
         return
     stack: list[object] = [document]
     emitted = 0
@@ -153,7 +153,7 @@ def _quote_variants(quote: str) -> tuple[str, ...]:
         for wrapped in (quote, _UNESCAPED_QUOTE.sub('\\"', quote)):
             try:
                 decoded = strict_json_parse(('"' + wrapped + '"').encode("utf-8"), validate=False)
-            except ValueError, UnicodeEncodeError:
+            except (ValueError, UnicodeEncodeError):
                 continue
             break
         if isinstance(decoded, str) and decoded and decoded != quote:

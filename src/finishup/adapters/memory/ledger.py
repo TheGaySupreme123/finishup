@@ -1304,7 +1304,7 @@ def _latest_check_test_edits(
         return None
     try:
         counters = CheckTestEditTotalsModel.model_validate(totals["test_edits"])
-    except KeyError, TypeError, ValueError:
+    except (KeyError, TypeError, ValueError):
         # Legacy check events have no totals group. Status must keep that absence explicit rather
         # than manufacture zero counts for an unexamined capture.
         return None
@@ -2640,7 +2640,7 @@ class MemoryLedgerAdapter:
             try:
                 async for _ in self._objects.open_verified(ref):
                     pass
-            except KeyError, OSError, ValueError:
+            except (KeyError, OSError, ValueError):
                 return False
             return True
 

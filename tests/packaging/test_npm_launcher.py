@@ -80,14 +80,14 @@ def test_launcher_delegates_to_pinned_uvx(tmp_path: Path) -> None:
     version = _package()["version"]
     # Versionless: `uvx` then runs the tool environment installed just above rather than
     # resolving a possibly cache-backed environment for the same version.
-    assert record.read_text(encoding="utf-8").strip() == "--python 3.14 finishup status --json"
+    assert record.read_text(encoding="utf-8").strip() == "finishup status --json"
     # The same exact version is made a persistent uv tool first, so host hooks and MCP
     # entries bind a launcher that survives `uv cache clean` (issue #766).
     assert uv_record.read_text(encoding="utf-8").splitlines() == [
         "--version",
         # SOURCE_DATE_EPOCH in the install child only: checked-hash bytecode the sealed
         # generation reuses instead of compiling on the first serving start.
-        f"tool install --quiet --compile-bytecode --python 3.14 finishup=={version} epoch",
+        f"tool install --quiet --compile-bytecode --managed-python finishup=={version} epoch",
     ]
 
 
@@ -217,7 +217,7 @@ def test_launcher_guidance_names_the_runtime_and_a_concrete_install_command(
         check=False,
     )
     stderr = completed.stderr.decode("utf-8")
-    assert "Python 3.14" in stderr
+    assert "Python 3.12" in stderr
     assert "astral.sh/uv/install.sh" in stderr
     assert "never installs anything itself" in stderr
 

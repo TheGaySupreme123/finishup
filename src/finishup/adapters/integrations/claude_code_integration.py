@@ -925,7 +925,7 @@ def installed_claude_route_profile(
         return None
     try:
         document = strict_json_parse(files.get("plugins/finishup/.mcp.json", b""))
-    except ProtocolValueError, UnicodeError:
+    except (ProtocolValueError, UnicodeError):
         return None
     servers = document.get("mcpServers") if isinstance(document, Mapping) else None
     entry = servers.get(MCP_SERVER_NAME) if isinstance(servers, Mapping) else None
@@ -1209,7 +1209,7 @@ def _marker(artifact: ClaudeCodePluginArtifact) -> bytes:
 def _load_object(data: bytes) -> Mapping[str, JsonValue] | None:
     try:
         parsed = strict_json_parse(data)
-    except ProtocolValueError, UnicodeError:
+    except (ProtocolValueError, UnicodeError):
         return None
     return cast(Mapping[str, JsonValue], parsed) if isinstance(parsed, Mapping) else None
 
@@ -1320,7 +1320,7 @@ def _json_file(path: Path) -> tuple[Mapping[str, JsonValue] | None, bool]:
         if path.is_symlink() or not path.is_file() or path.stat().st_size > _MAX_FILE_BYTES:
             return None, False
         parsed = strict_json_parse(path.read_bytes())
-    except OSError, ProtocolValueError, UnicodeError:
+    except (OSError, ProtocolValueError, UnicodeError):
         return None, False
     return (
         (cast(Mapping[str, JsonValue], parsed), True)
@@ -1357,7 +1357,7 @@ def _remove_project_declaration(target: ClaudeCodePluginTarget) -> bool:
         raw = path.read_bytes()
         mode = path.stat().st_mode & 0o777
         document = strict_json_parse(raw)
-    except OSError, ProtocolValueError, UnicodeError:
+    except (OSError, ProtocolValueError, UnicodeError):
         return False
     if not isinstance(document, Mapping):
         return False
@@ -1761,7 +1761,7 @@ def _list_plugins(
         return [], False
     try:
         parsed = strict_json_parse(result.stdout)
-    except ProtocolValueError, UnicodeError:
+    except (ProtocolValueError, UnicodeError):
         return [], False
     if type(parsed) is not list or any(not isinstance(item, Mapping) for item in parsed):
         return [], False
@@ -2112,7 +2112,7 @@ def _legacy_tree(
             # Interrupted residue beside it: never classify it as safe to remove.
             return "other", None, None
         files = _safe_tree(root)
-    except ClaudeCodeIntegrationError, OSError:
+    except (ClaudeCodeIntegrationError, OSError):
         return "other", None, None
     if not _valid_source_marker(files)[0]:
         return "other", None, None
@@ -2891,7 +2891,7 @@ def _drop_legacy_declaration(
             return False
         raw = path.read_bytes()
         parsed = strict_json_parse(raw)
-    except OSError, ProtocolValueError, UnicodeError:
+    except (OSError, ProtocolValueError, UnicodeError):
         return False
     if not isinstance(parsed, Mapping):
         return False

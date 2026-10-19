@@ -257,7 +257,7 @@ async def _refuse_superseded_coordination(
         superseded = await coordination_generation_superseded(
             projects, project_id_value, membership_generation
         )
-    except CoordinationError, ValueError:
+    except (CoordinationError, ValueError):
         return
     if superseded:
         raise PublicOperationError(
@@ -577,7 +577,7 @@ type _SupportHandler = Callable[..., Awaitable[JsonObject]]
 def _accepts_keyword(function: object, name: str) -> bool:
     try:
         parameters = inspect.signature(cast(Callable[..., object], function)).parameters.values()
-    except TypeError, ValueError:
+    except (TypeError, ValueError):
         return False
     return any(
         parameter.name == name or parameter.kind is inspect.Parameter.VAR_KEYWORD
@@ -590,7 +590,7 @@ def _declares_keyword(function: object, name: str) -> bool:
 
     try:
         parameters = inspect.signature(cast(Callable[..., object], function)).parameters
-    except TypeError, ValueError:
+    except (TypeError, ValueError):
         return False
     parameter = parameters.get(name)
     return parameter is not None and parameter.kind in (
@@ -1389,7 +1389,7 @@ class Application:
                 # retries it; unrelated tasks continue through this recovery turn.
                 if not exc.retryable:
                     continue
-            except OSError, TimeoutError:
+            except (OSError, TimeoutError):
                 # Environmental bundle/key availability is likewise retryable at this boundary.
                 continue
 

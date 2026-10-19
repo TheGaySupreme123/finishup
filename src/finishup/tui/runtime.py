@@ -548,10 +548,14 @@ def _host_entries() -> tuple[DoctorEntry, ...]:
             "platform_cell",
             "Platform",
             LayerState.UNPROVEN,
-            detail=f"{cell.os_name} {cell.machine} is an untested platform cell",
+            detail=(
+                f"{cell.os_name} {cell.machine} with Python {cell.python_version} "
+                "is an untested platform cell"
+            ),
             remediation=(
-                "FinishUP is certified on macOS arm64 and Linux x86-64 (glibc 2.28+); it installed here "
-                "but nothing has been proven on this cell, so expect no support claim"
+                "FinishUP is certified on macOS arm64 and Linux x86-64 (glibc 2.28+) with Python "
+                "3.14; it installed here but nothing has been proven on this cell, so expect no "
+                "support claim"
             ),
         )
     sandbox = probe_check_sandbox()
@@ -1461,7 +1465,7 @@ class FinishUpRuntime:
         try:
             async with self._client() as client:
                 status = await client.service_status()
-        except RuntimeError_, ControlError:
+        except (RuntimeError_, ControlError):
             return VaultPosture(reachable=False, state=None, vault_mode=None)
         state = getattr(getattr(status, "state", None), "value", None)
         return VaultPosture(
@@ -1489,7 +1493,7 @@ class FinishUpRuntime:
         try:
             async with self._client() as client:
                 effective = await client.privacy_get_setup(JsonObject({"schema_version": "2.0.0"}))
-        except RuntimeError_, ControlError:
+        except (RuntimeError_, ControlError):
             return PrivacyPosture(profile=None, llm_inference_enabled=None, readable=False)
         response = _mapping(effective)
         policy_map = _mapping(response.get("composed_policy"))
@@ -2658,7 +2662,7 @@ class FinishUpRuntime:
         folders = _installation_folders_entry()
         folders_blocked = folders.state is LayerState.BLOCKED
         entries: list[DoctorEntry] = []
-        supported = (3, 14) <= sys.version_info[:2] < (3, 15)
+        supported = (3, 12) <= sys.version_info[:2] < (3, 15)
         entries.append(
             DoctorEntry(
                 "runtime",
@@ -2667,7 +2671,8 @@ class FinishUpRuntime:
                 detail=".".join(str(part) for part in sys.version_info[:3]),
                 remediation=""
                 if supported
-                else "FinishUP requires Python 3.14; reinstall with 'uv tool install finishup'",
+                else "FinishUP requires Python 3.12, 3.13 or 3.14; reinstall with "
+                "'uv tool install --managed-python finishup'",
             )
         )
         package_detail = __version__

@@ -670,7 +670,7 @@ def _observed_image_drafts(
         return (), ()
     try:
         images = validate_observed_images(raw)
-    except ProtocolValueError, TypeError, ValueError:
+    except (ProtocolValueError, TypeError, ValueError):
         return (), ()
     drafts: list[MaterializedObservationDraft] = []
     refs: list[str] = []
@@ -741,7 +741,7 @@ def materialize_routine_read_summary(
     baseline = coverage_for_channel(PublicationChannel.HOOK_OBSERVED)
     try:
         _validate_materialization_mapping_version(mapping_version)
-    except TypeError, ValueError:
+    except (TypeError, ValueError):
         return MaterializedObservationBatch(
             (), baseline, PublicationChannel.HOOK_OBSERVED, (), "unsupported_mapping_version"
         )
@@ -1066,7 +1066,7 @@ def materialize_observation_envelope(
 
     try:
         _validate_materialization_mapping_version(mapping_version)
-    except TypeError, ValueError:
+    except (TypeError, ValueError):
         return MaterializedObservationBatch(
             (),
             coverage_for_channel(PublicationChannel.HOOK_OBSERVED),

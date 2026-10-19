@@ -36,7 +36,7 @@ function main() {
     fail([
       "finishup: the 'uv' tool is required and was not found on PATH.",
       "",
-      "FinishUP runs on Python 3.14 and this launcher only delegates to the",
+      "FinishUP runs on Python 3.12 or later and this launcher only delegates to the",
       `Python distribution 'finishup==${version}'. It never installs anything itself,`,
       "so uv has to be present first.",
       "",
@@ -68,8 +68,9 @@ function main() {
   // configured them; a bare `uvx` would bind them to uv's prunable cache and a
   // later `uv cache clean` would silently break every host integration. uv
   // still performs the provenance-carrying install from PyPI; this launcher
-  // bundles and downloads nothing. `--python 3.14` lets uv fetch the runtime
-  // when no suitable interpreter is present, whatever other Pythons exist.
+  // bundles and downloads nothing. `--managed-python` lets uv fetch a supported
+  // runtime when none of its own is present, and never binds FinishUP to a
+  // shared system Python (Homebrew's is group-writable, which FinishUP refuses).
   // The install runs under umask 022: FinishUP refuses a runtime another account
   // can write, and a umask 0002 shell would otherwise make every installed file
   // group-writable (harmless only for a user-private group). Restored after.
@@ -90,8 +91,7 @@ function main() {
         "install",
         "--quiet",
         "--compile-bytecode",
-        "--python",
-        "3.14",
+        "--managed-python",
         `finishup==${version}`,
       ],
       { stdio: "inherit", shell: false, env: installEnv },
@@ -108,8 +108,8 @@ function main() {
       "",
       `Reported: ${reported}`,
       "",
-      "FinishUP needs Python 3.14. uv downloads it on demand unless Python downloads are",
-      "disabled in your uv configuration; the message above names the exact cause.",
+      "FinishUP needs Python 3.12 to 3.14. uv downloads one on demand unless Python downloads",
+      "are disabled in your uv configuration; the message above names the exact cause.",
       `See ${INSTALL_DOCS}`,
     ]);
     return;
@@ -121,7 +121,7 @@ function main() {
   // above; repeating it here could only ever select a different environment.
   const result = spawnSync(
     "uvx",
-    ["--python", "3.14", "finishup", ...process.argv.slice(2)],
+    ["finishup", ...process.argv.slice(2)],
     { stdio: "inherit", shell: false },
   );
 

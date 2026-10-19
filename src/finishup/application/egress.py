@@ -300,7 +300,7 @@ def advice_selection_is_current(candidate: CandidateContext, policy: PrivacyPoli
             continue
         try:
             envelope = strict_json_parse(item.plaintext)
-        except ValueError, TypeError, UnicodeDecodeError:
+        except (ValueError, TypeError, UnicodeDecodeError):
             return True
         if isinstance(envelope, dict):
             named = envelope.get("review_context_profile")

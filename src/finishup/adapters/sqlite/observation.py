@@ -1944,7 +1944,7 @@ class SqliteObservationStore:
         if type(raw_profiles) is str:
             try:
                 parsed = strict_json_parse(raw_profiles.encode("utf-8"))
-            except ValueError, ProtocolValueError:
+            except (ValueError, ProtocolValueError):
                 parsed = ()
             if isinstance(parsed, (tuple, list)):
                 profiles = tuple(

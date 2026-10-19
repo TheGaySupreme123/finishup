@@ -65,7 +65,7 @@ async def installation_readiness(project: Path, operation: SetupOperation) -> di
         if operation == "review":
             try:
                 external, _local = configured_bindings()
-            except OSError, ValueError:
+            except (OSError, ValueError):
                 external = None
             if external is None:
                 result.update(reason="provider_binding_required", arguments=["--set"])
@@ -95,7 +95,7 @@ def _background_advice() -> dict[str, JsonValue] | None:
 
     try:
         return background_advice_facts(load_config({}, os.environ, None))
-    except ConfigError, OSError, PathSafetyError, ValueError:
+    except (ConfigError, OSError, PathSafetyError, ValueError):
         return None
 
 

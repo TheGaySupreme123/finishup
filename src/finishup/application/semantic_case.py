@@ -4258,7 +4258,7 @@ def _output_secret_reason(content: bytes) -> _OmissionReason | None:
             _replaced, detected = redact_sensitive_content(
                 view, heuristic_marker=EGRESS_CREDENTIAL_PLACEHOLDER
             )
-        except PrivacyFenceError, TypeError, ValueError:
+        except (PrivacyFenceError, TypeError, ValueError):
             return "redacted_never_send"
         high = any(finding.confidence is not ScanConfidence.HEURISTIC for finding in findings)
         if key_material or high:
@@ -4270,7 +4270,7 @@ def _output_secret_reason(content: bytes) -> _OmissionReason | None:
             parsed: object = json.loads(view)
         except RecursionError:
             return "redacted_never_send"
-        except TypeError, ValueError:
+        except (TypeError, ValueError):
             continue
         if depth >= 4:
             # Deeper structured encodings are not needed by supported native hook shapes.
@@ -4293,7 +4293,7 @@ def _observed_command_text(projection: ProjectionState, action_ref: str | None) 
         return None
     try:
         key = validate_action_id(action_ref)
-    except ProtocolValueError, ValueError:
+    except (ProtocolValueError, ValueError):
         return None
     row = projection.actions.get(key)
     if row is None or row.payload is None or row.redacted:
@@ -9018,7 +9018,7 @@ def _provider_bound_input_manifest(
             row = carried_by_id[item_ids[0]]
             try:
                 rendered = strict_json_parse(cast(str, row.get("content", "")).encode("utf-8"))
-            except TypeError, ValueError:
+            except (TypeError, ValueError):
                 rendered = None
             if isinstance(rendered, dict) and type(rendered.get("statement")) is str:
                 statement = cast(str, rendered["statement"])
@@ -9326,7 +9326,7 @@ def _decode_review_input_manifest(
                 content_digest=content_digest,
                 content_bytes=content_bytes,
             )
-        except TypeError, ValueError:
+        except (TypeError, ValueError):
             return None
 
     missing_raw = body.get("missing_inputs")
@@ -9359,7 +9359,7 @@ def _decode_review_input_manifest(
                     status=cast(Literal["pending", "supplied", "unavailable", "repeated"], status),
                 )
             )
-        except TypeError, ValueError:
+        except (TypeError, ValueError):
             return None
 
     selected_item_count = body.get("selected_item_count")
@@ -9391,7 +9391,7 @@ def _decode_review_input_manifest(
             review_phase=cast(Literal["routine", "final"] | None, body.get("review_phase")),
             follow_up_round=cast(int | None, body.get("follow_up_round")),
         )
-    except KeyError, TypeError, ValueError:
+    except (KeyError, TypeError, ValueError):
         return None
 
 
@@ -9598,7 +9598,7 @@ def review_packet_disclosure_result(prepared: bytes) -> ReviewPacketDisclosureRe
         else:
             try:
                 frozen_provider = freeze_json(cast(JsonValue, provider_raw))
-            except TypeError, ValueError:
+            except (TypeError, ValueError):
                 failure = SEMANTIC_PROVIDER_INPUT_MANIFEST_INVALID_GAP
             else:
                 if type(frozen_provider) is not JsonObject:
@@ -9653,7 +9653,7 @@ def review_packet_disclosure_result(prepared: bytes) -> ReviewPacketDisclosureRe
                             )
                             try:
                                 frozen_expected = freeze_json(cast(JsonValue, expected))
-                            except TypeError, ValueError:
+                            except (TypeError, ValueError):
                                 failure = SEMANTIC_PROVIDER_INPUT_MANIFEST_MISMATCH_GAP
                             else:
                                 if (

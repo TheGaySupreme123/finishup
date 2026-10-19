@@ -358,7 +358,7 @@ def _redact_encoded_heuristic_spans(content: bytes) -> tuple[bytes, int] | None:
         return None
     try:
         decoded = strict_json_parse(sanitized_encoded)
-    except TypeError, ValueError, UnicodeDecodeError:
+    except (TypeError, ValueError, UnicodeDecodeError):
         return None
     if type(decoded) is not str:
         return None
@@ -393,7 +393,7 @@ def _catalog_source_refs(classified: ClassifiedContext) -> dict[str, str]:
         return {}
     try:
         parsed = strict_json_parse(envelope)
-    except TypeError, ValueError, UnicodeDecodeError:
+    except (TypeError, ValueError, UnicodeDecodeError):
         return {}
     if not isinstance(parsed, dict):
         return {}
@@ -670,7 +670,7 @@ class LocalPrivacyEnforcer:
             # contentless semantic request.
             try:
                 semantic_packet = strict_json_parse(prepared)
-            except TypeError, ValueError, UnicodeDecodeError:
+            except (TypeError, ValueError, UnicodeDecodeError):
                 included = ()
             else:
                 if not (

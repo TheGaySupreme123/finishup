@@ -390,7 +390,7 @@ def _listed_files(root_descriptor: int, directory: bytes, room: int, trust: _Tru
                 try:
                     encoded = name.encode("utf-8", errors="strict")
                     facts = os.stat(name, dir_fd=descriptor, follow_symlinks=False)
-                except UnicodeEncodeError, OSError:
+                except (UnicodeEncodeError, OSError):
                     continue
                 relative = encoded if not current else current + b"/" + encoded
                 if stat.S_ISREG(facts.st_mode) and not credential_named_bytes(relative):
@@ -423,9 +423,9 @@ def _excluded_identities(paths: tuple[str, ...]) -> frozenset[tuple[int, int]] |
     for path in paths:
         try:
             facts = os.stat(path)
-        except FileNotFoundError, NotADirectoryError:
+        except (FileNotFoundError, NotADirectoryError):
             continue
-        except OSError, ValueError:
+        except (OSError, ValueError):
             return None
         identities.add((facts.st_dev, facts.st_ino))
     return frozenset(identities)

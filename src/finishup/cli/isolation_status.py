@@ -94,7 +94,7 @@ class IsolationReport(TypedDict):
 def _resolved(path: Path) -> Path:
     try:
         return path.resolve(strict=False)
-    except OSError, RuntimeError:
+    except (OSError, RuntimeError):
         return path
 
 
@@ -114,7 +114,7 @@ def _read_once(resolved: Path) -> _ReadOutcome | None:
     flags = os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC | os.O_NONBLOCK
     try:
         descriptor = os.open(resolved, flags)
-    except FileNotFoundError, NotADirectoryError:
+    except (FileNotFoundError, NotADirectoryError):
         return ("absent", None, None)
     except OSError as error:
         # ELOOP means the resolved final component became a symlink after resolution: a

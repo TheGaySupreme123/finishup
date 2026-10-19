@@ -564,7 +564,7 @@ async def remove_stale_endpoint(kind: EndpointKind, service_lock: _ServiceLockAu
             asyncio.get_running_loop().sock_connect(probe, os.fspath(path)),
             timeout=_STALE_PROBE_SECONDS,
         )
-    except ConnectionRefusedError, FileNotFoundError:
+    except (ConnectionRefusedError, FileNotFoundError):
         pass
     except TimeoutError as exc:
         raise LocalControlTransportError("endpoint_in_use") from exc
