@@ -47,6 +47,12 @@ any tests run. Commands that launch services or installed CLIs unset both inheri
 variables, leaving each test responsible for its own instance. No job uses the maintainer's live
 installation or provider credentials.
 
+The observation integration job installs Ubuntu's Bubblewrap package and proves that its real
+no-network launch works. If Ubuntu's AppArmor user-namespace restriction still blocks that probe,
+the job relaxes that restriction on its disposable runner and probes again. Failure still fails
+the job; there is no unsandboxed fallback. Shared setup creates each scanned XDG directory before
+the runtime privacy sweep, so an unused directory is empty rather than a missing scan target.
+
 Synthetic privacy regression controls are assembled at runtime. Their runtime bytes and assertions
 remain intact while the tracked source passes the public-boundary scanner. Do not exempt whole
 test trees or weaken scanner rules to admit a test fixture.

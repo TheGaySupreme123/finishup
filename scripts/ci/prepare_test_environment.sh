@@ -7,7 +7,8 @@ set -euo pipefail
 
 test_home="${RUNNER_TEMP}/finishup-home"
 pytest_root="${RUNNER_TEMP}/finishup-pytest"
-install -d -m 0700 "$test_home" "$pytest_root"
+install -d -m 0700 "$test_home" "$pytest_root" \
+  "$test_home/.local/share" "$test_home/.config" "$test_home/.cache"
 {
   echo "HOME=$test_home"
   echo "XDG_DATA_HOME=$test_home/.local/share"

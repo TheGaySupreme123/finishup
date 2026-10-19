@@ -470,6 +470,19 @@ jobs:
           print('compile options', list(apsw.compile_options))
           "
 
+      - name: Prepare enforcing Linux check sandbox
+        if: matrix.area == 'observation'
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends bubblewrap
+          # Only this disposable runner is changed; product sandbox policy is unchanged.
+          # Ubuntu's AppArmor restriction can outlive installing the distribution profile.
+          if ! bwrap --die-with-parent --unshare-net --bind / / --dev /dev --proc /proc -- /bin/true; then
+            sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          fi
+          bwrap --die-with-parent --unshare-net --bind / / --dev /dev --proc /proc -- /bin/true
+
       - name: Bounded integration family (excludes fault/kill-matrix/soak/live)
         run: |
           env -u FINISHUP_ISOLATED_ROOT -u YOETZ_ISOLATED_ROOT \
