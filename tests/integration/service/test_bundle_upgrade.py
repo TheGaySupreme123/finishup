@@ -236,7 +236,7 @@ def _coordinator(
 
 
 @pytest.mark.anyio
-@pytest.mark.parametrize("source_version", [12, 13, 14, 15])
+@pytest.mark.parametrize("source_version", [12, 13, 14, 15, 16])
 async def test_supported_upgrade_is_backup_first_idempotent_and_fenced(
     source_version: int,
     tmp_path: Path,
@@ -309,8 +309,8 @@ async def test_unknown_and_future_bundle_versions_still_fail_closed(
     _build_bundle(future, version=BUNDLE_UPGRADE_TARGET_VERSION)
     database = _open_writer(future)
     try:
-        database.execute("PRAGMA user_version = 17")
-        database.execute("UPDATE bundle_meta SET value='17' WHERE key='storage_schema_version'")
+        database.execute("PRAGMA user_version = 18")
+        database.execute("UPDATE bundle_meta SET value='18' WHERE key='storage_schema_version'")
     finally:
         database.close(force=True)
     with pytest.raises(BundleUpgradeError) as future_error:

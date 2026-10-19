@@ -77,11 +77,11 @@ __all__ = [
 ]
 
 BUNDLE_UPGRADE_SOURCE_VERSION: Final = 12
-BUNDLE_UPGRADE_TARGET_VERSION: Final = 16
-# 0.3 development bundles already at v15 take only 0016 (review-input suspension, issue #951).
-BUNDLE_UPGRADE_SOURCE_VERSIONS: Final = (12, 13, 14, 15)
+BUNDLE_UPGRADE_TARGET_VERSION: Final = 17
+# 0.3 development bundles already at v16 take only 0017 (reviewer-loop steps, issue #1118).
+BUNDLE_UPGRADE_SOURCE_VERSIONS: Final = (12, 13, 14, 15, 16)
 _MAX_SAFE_INTEGER: Final = 2**53 - 1
-_REQUIRED_MIGRATION_IDS: Final[tuple[str, ...]] = ("0013", "0014", "0015", "0016")
+_REQUIRED_MIGRATION_IDS: Final[tuple[str, ...]] = ("0013", "0014", "0015", "0016", "0017")
 _LEASE_SECONDS: Final = 60
 _MIGRATION_PHASE_ORDER: Final[tuple[str, ...]] = (
     "reserved",
@@ -89,8 +89,10 @@ _MIGRATION_PHASE_ORDER: Final[tuple[str, ...]] = (
     "schema_applied",
     "replay_verified",
 )
-# Tables created by a migration inside the upgrade window (0015 semantic progress, #571 A2).
-_MIGRATION_CREATED_TABLES: Final[frozenset[str]] = frozenset({"semantic_progress"})
+# Tables created by a migration inside the upgrade window (0015 progress, #571; 0017 steps, #1118).
+_MIGRATION_CREATED_TABLES: Final[frozenset[str]] = frozenset(
+    {"semantic_progress", "semantic_review_steps"}
+)
 _EPHEMERAL_PRESERVATION_TABLES: Final[frozenset[str]] = frozenset(
     {"bundle_meta", "maintenance_pins", "maintenance_operations"}
 )
@@ -1674,7 +1676,7 @@ class BundleUpgradeCoordinator:
         self,
         targets: Sequence[BundleUpgradeTarget],
     ) -> BundleUpgradeReport:
-        """Migrate stale v12-v15 targets before any READY work is admitted."""
+        """Migrate stale v12-v16 targets before any READY work is admitted."""
 
         if type(targets) not in (tuple, list):
             raise TypeError("bundle_upgrade_targets_invalid")

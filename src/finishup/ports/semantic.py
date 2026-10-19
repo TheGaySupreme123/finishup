@@ -98,6 +98,8 @@ __all__ = [
     "ReviewInputSection",
     "ReviewOmission",
     "ReviewPacket",
+    "ReviewStepRefused",
+    "ReviewStepStore",
     "ReviewerChallenge",
     "VerifiedReviewItem",
     "VerifiedReviewVerdict",
@@ -560,6 +562,29 @@ class Deadline:
 
 def _valid_monotonic(value: object) -> bool:
     return type(value) is float and math.isfinite(value) and value >= 0.0
+
+
+type ReviewStepKind = Literal["turn", "repair", "read"]
+
+
+class ReviewStepRefused(Exception):
+    """A reviewer step exists already, or its job no longer holds the lease (#1118, ADR-003)."""
+
+
+class ReviewStepStore(Protocol):
+    """The durable steps of one leased review job: model turns, the repair, and the reads.
+
+    A step is reserved before it runs and its result captured after; neither is ever refunded.
+    The store keeps keyed commitments and byte counts only, never the selector or result bytes.
+    """
+
+    async def reserve(self, kind: ReviewStepKind, ordinal: int, selector: bytes) -> None: ...
+
+    async def capture(self, kind: ReviewStepKind, ordinal: int, result: bytes) -> None: ...
+
+    async def usage(self) -> tuple[int, int]:
+        """``(steps recorded, steps reserved without a capture)`` for the job."""
+        ...
 
 
 @dataclass(frozen=True, slots=True)

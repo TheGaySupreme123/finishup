@@ -94,6 +94,7 @@ def test_schema_seven_upgrade_keeps_old_rows_weak_and_accepts_exact_bindings(
         "0014",
         "0015",
         "0016",
+        "0017",
     )
     assert db.execute("PRAGMA user_version").fetchone() == (
         current_schema_version(BUNDLE_MIGRATIONS),

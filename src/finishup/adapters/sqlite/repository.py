@@ -126,6 +126,7 @@ from finishup.ports.ledger import (
 )
 from finishup.ports.objects import ObjectKind, ObjectMetadata, ObjectRef, ObjectStorePort
 from finishup.ports.runtime import OwnershipFence
+from finishup.ports.semantic import ReviewStepKind, ReviewStepRefused, ReviewStepStore
 from finishup.protocol.canonical import canonical_encode, strict_json_parse
 from finishup.protocol.coverage import (
     AuthorshipAssurance,
@@ -2676,6 +2677,60 @@ class SqliteLedger:
             )
         return changed == 1
 
+    def review_steps(self, handle: SemanticAttemptHandle) -> ReviewStepStore:
+        """The durable reviewer-loop steps of ``handle``'s job, guarded by its lease (#1118)."""
+
+        return _SqliteReviewSteps(self, handle)
+
+    async def record_review_step(
+        self,
+        handle: SemanticAttemptHandle,
+        kind: ReviewStepKind,
+        ordinal: int,
+        data: bytes,
+        *,
+        capture: bool,
+    ) -> None:
+        if self._objects is None or kind not in {"turn", "repair", "read"}:
+            raise ReviewStepRefused("review_step_refused")
+        domain = b"finishup/reviewer-step/%s/%s/v1\x00" % (
+            b"capture" if capture else b"selector",
+            kind.encode(),
+        )
+        commitment = await self._objects.commitment_for(domain + data, ObjectKind.SEMANTIC_RESPONSE)
+        lease = (
+            "EXISTS (SELECT 1 FROM semantic_jobs WHERE job_id=? AND state='leased' "
+            "AND active_attempt_id=? AND lease_generation=?)"
+        )
+        held = (handle.job_id, handle.attempt_id, handle.lease_generation)
+        await self._ensure_recovered()
+        async with self._lock:
+            if capture:
+                changed = self._progress_write_locked(
+                    "UPDATE semantic_review_steps SET capture_commitment=?,capture_bytes=? "
+                    "WHERE job_id=? AND kind=? AND ordinal=? AND capture_commitment IS NULL AND "
+                    + lease,
+                    (commitment, len(data), handle.job_id, kind, ordinal, *held),
+                )
+            else:
+                changed = self._progress_write_locked(
+                    "INSERT INTO semantic_review_steps(job_id,kind,ordinal,selector_commitment) "
+                    f"SELECT ?,?,?,? WHERE {lease} ON CONFLICT DO NOTHING",
+                    (handle.job_id, kind, ordinal, commitment, *held),
+                )
+        if changed != 1:
+            raise ReviewStepRefused("review_step_refused")
+
+    async def review_step_usage(self, job_id: str) -> tuple[int, int]:
+        await self._ensure_recovered()
+        async with self._lock:
+            row = self._db.execute(
+                "SELECT count(*),count(*)-count(capture_commitment) FROM semantic_review_steps "
+                "WHERE job_id=?",
+                (job_id,),
+            ).fetchone()
+        return cast(tuple[int, int], tuple(row or (0, 0)))
+
     async def load_semantic_progress(
         self, writer_id: str, operation_id: str
     ) -> SemanticProgressRecord | None:
@@ -3071,3 +3126,20 @@ class SqliteLedger:
                 if self._db.get_autocommit() is False:
                     self._db.execute("ROLLBACK")
                 raise
+
+
+@dataclass(frozen=True, slots=True)
+class _SqliteReviewSteps:
+    """``ReviewStepStore`` of one leased job: keyed commitments and byte counts only."""
+
+    ledger: SqliteLedger
+    handle: SemanticAttemptHandle
+
+    async def reserve(self, kind: ReviewStepKind, ordinal: int, selector: bytes) -> None:
+        await self.ledger.record_review_step(self.handle, kind, ordinal, selector, capture=False)
+
+    async def capture(self, kind: ReviewStepKind, ordinal: int, result: bytes) -> None:
+        await self.ledger.record_review_step(self.handle, kind, ordinal, result, capture=True)
+
+    async def usage(self) -> tuple[int, int]:
+        return await self.ledger.review_step_usage(self.handle.job_id)
