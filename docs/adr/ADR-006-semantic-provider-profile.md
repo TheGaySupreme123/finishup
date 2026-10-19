@@ -2381,3 +2381,66 @@ excerpt budget and final packet ceiling (a clipped first part keeps its bounded 
 their smaller excerpt budget. If the remaining protected material cannot fit, egress still refuses
 the packet; a reduced floor is not used to manufacture a successful dispatch. This is packet
 coverage, not proof that the specification is complete or the verification establishes correctness.
+
+### The reviewer loop: one read or the final judgment per turn (2026-10-19, issue #1118 unit 2)
+
+Status: accepted for the controller, broker and reply contract; provider wiring is unit 3 and the
+old in-check follow-up loop stays the active path until unit 4 replaces it.
+
+FinishUP owns a small verifying loop. Each model turn returns exactly one reply under
+`findings/reviewer-reply-1.0.0`: `read_packet_section`, `read_ledger` or `read_file` (the round-1
+broker inputs, as JSON text FinishUP interprets, never provider tool registrations), or
+`final_judgment`, the existing provider judgment validated by `normalize_judgment(...,
+require_part2=True)`. The root is an object wrapper; with no read allowance left the same root
+offers only `FinalReply`. Strict wire form comes from `strict_output_schema`; the decoder still
+enforces what it drops, and reads a strict null as the field's default.
+
+The loop allows at most three reads, 8 KiB per complete result and 24 KiB in all. Every model turn
+(at most five), the one format repair and every read is a durable step of the review job
+(ADR-003, migration `0017`), reserved before it runs and never refunded; a denied or empty read
+spends its read. A job that already holds steps is not resumed: its review ends incomplete
+(`interrupted`, or `uncaptured_step` when a reserved step has no captured result). After the cap
+only the final judgment is offered, and a read anyway ends the review incomplete with no
+observation. One format repair is allowed per review, and the malformed text is not echoed back. A
+second malformed reply, a failed or uncertain model turn, a lost lease, or a binding that no longer
+holds ends the review incomplete. The shared deadline is checked after every await: a reply that
+arrives late is not used, a read is not started inside the final reserve, and a local read stops at
+five seconds or the reserve, whichever is first: a read in progress checks it per chunk and per
+listed entry, and again when it completes, so a read that completes late is discarded, never sent
+or retained. That bounds what is used, not wall time: a blocked OS call is not preempted. Before every continuation the loop rechecks local-only review, the route's policy
+refusal and every outside root the conversation holds bytes from, so a removed root ends it.
+
+A read result is fitted into its byte room first (`max_bytes` is at least 1,024, one whole
+envelope); spans, line spans, `truncated` and `next_cursor` describe exactly the fitted data. Text is
+cut at a safe boundary; a listed entry is sent whole or left for the cursor, which resumes at the
+first entry not sent, so a name is never shortened. When nothing fits, the result is
+`unavailable`/`byte_budget` with no data, refs or cursor, within `max_bytes`. Then
+each content-bearing element (text, record text, listed name) goes through
+`PrivacyCoordinator.admit_reviewer_read` as one item: the packet's classification, category and
+data-class ceiling, never-send rules and root binding. An element the minimizer would change in any
+way withholds the whole result, and the exact encoded envelope is scanned under the owner's credential
+heuristic, so no label can carry what admission did not see. A file result's `source_ref` is its
+opaque `tool_ref`; the path is never echoed. Cut points move clear of a recognized credential. Packet
+and ledger reads cover the frozen case's rendered records, including items the bounded packet cut;
+bytes the case never kept are `not_retained`. File reads use the trusted descriptor walk beneath a
+service-issued alias: the workspace (minus ignored, hidden, credential-named and excluded paths), an
+owner-admitted outside root limited to the task-declared subset, or a kept snapshot. A listing
+applies the same rules to every child and inspects at most 128 entries. Cursors are opaque, issued
+by the broker and bound to their selector and source version: a forged or rebound cursor is
+`denied`/`invalid_request`, a changed source `stale`/`source_changed`. The loop's outcome carries the
+citation union of the packet as sent and every admitted result as sent: exactly the refs a result
+advertises in its `citable_refs` (at most 16), each with only the text that result carried; the existing
+`validate_semantic_judgment` fence checks the final judgment against it. An admitted result is not a
+channel grant: each exchange that carries it is admitted at the gateway on its own.
+
+The controller is adapted from mini-swe-agent's `DefaultAgent` (MIT, Kilian A. Lieret and Carlos
+E. Jimenez, `src/minisweagent/agents/default.py` at `40fa36522015a6bc6cf14411382b662b42083bf1`).
+Its copyright and permission notice is kept in `application/reviewer_loop.py`. Its shell
+environment, model framework, templating and trajectory logging are removed. The loop has one
+instruction of about 1,000 tokens in pstack's shape (goal, done condition, evidence, clues,
+constraints); it states the substantive honesty rules of the packet-only instruction once, including
+the citation union, and does not reuse that instruction's text. Among them: an unbounded
+requirement is judged on the tested portion with the rest stated as a limitation; an observed check
+whose source is unavailable is judged on its captured output, and an agent-supplied command is never
+the hook-observed one; an image or binary is not assessable and is not a `missing_for_assessment`
+request. Each miss class of the offline accuracy cases is bound to one of its directives.

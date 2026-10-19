@@ -214,6 +214,19 @@ migration IDs `0013`–`0016` in its plan digest. A v15 bundle applies only `001
 bundle is accepted at startup. Unknown source versions and schemas newer than the binary still
 fail closed before the migration journal or DDL is reached.
 
+### Amendment — reviewer-loop steps and the v17 target (2026-10-19, issue #1118)
+
+Bundle migration `0017` adds `semantic_review_steps`: one row per reviewer-loop step of a semantic
+job (`turn` 1–5, `repair` 1, `read` 1–3, enforced by `CHECK`). A step is reserved before it runs and
+its result captured after; neither is refunded. Rows hold only keyed commitments (the object store's
+commitment key over a step-specific domain), the captured byte count and closed values: never a
+path, argument, prompt, model text or read result. Writes are owner-fenced and succeed only while the
+durable job and operation rows, read in the same write transaction, still hold an unexpired lease for
+the writing attempt, lease generation, lease owner and owner generation. The expiry is the ledger's,
+so a renewal counts and an expired lease writes nothing even before another worker reclaims it. A job that already holds steps is not
+resumed in v1; its review ends incomplete. The READY-boundary upgrade now targets `17` from sources
+`12`–`16`, with migration IDs `0013`–`0017` in its plan digest; a v16 bundle applies only `0017`.
+
 ## Consequences
 
 Platform wheels (not pure-Python) on macOS arm64 + manylinux_2_28 x86_64; FinishUP owns security

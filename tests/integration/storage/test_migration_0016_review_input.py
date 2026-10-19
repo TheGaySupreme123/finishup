@@ -270,7 +270,7 @@ def test_populated_v15_upgrade_preserves_operations_and_semantic_dependencies() 
     db = _schema_fifteen_with_durable_rows()
     before = _durable_rows(db)
 
-    report = run_migrations(db, BUNDLE_MIGRATIONS, maintenance=None)  # type: ignore[arg-type]
+    report = run_migrations(db, BUNDLE_MIGRATIONS[:16], maintenance=None)  # type: ignore[arg-type]
 
     assert (report.from_version, report.to_version) == (15, 16)
     assert report.applied_versions == ("0016",)
@@ -305,7 +305,7 @@ def test_populated_v15_upgrade_preserves_operations_and_semantic_dependencies() 
     ).fetchone() == ("review_input",)
 
     after_marker = _durable_rows(db)
-    rerun = run_migrations(db, BUNDLE_MIGRATIONS, maintenance=None)  # type: ignore[arg-type]
+    rerun = run_migrations(db, BUNDLE_MIGRATIONS[:16], maintenance=None)  # type: ignore[arg-type]
     assert rerun.applied_versions == ()
     assert _durable_rows(db) == after_marker
     assert db.execute("PRAGMA foreign_key_check").fetchone() is None
@@ -349,7 +349,7 @@ def test_failed_v15_to_v16_upgrade_rolls_back_and_allows_retry() -> None:
         ("operations", "operation_id", "operation_id"),
     }
 
-    retry = run_migrations(db, BUNDLE_MIGRATIONS, maintenance=None)  # type: ignore[arg-type]
+    retry = run_migrations(db, BUNDLE_MIGRATIONS[:16], maintenance=None)  # type: ignore[arg-type]
     assert retry.applied_versions == ("0016",)
     assert _durable_rows(db) == before
     assert db.execute("PRAGMA foreign_key_check").fetchone() is None

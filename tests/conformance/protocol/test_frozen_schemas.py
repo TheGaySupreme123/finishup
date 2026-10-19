@@ -26,8 +26,8 @@ _EXPECTED_SCHEMA_MANIFEST_SCHEMA = "yoetz.schema-manifest/1.0.0"
 _EXPECTED_SCHEMA_MANIFEST_VERSION = "1.0.0"
 # +1 each: the review-packet-row 2.0.0 provider contract (robust lane row contract).
 # ADR-049: +1 member, decision-recorded 1.1.0 (an event schema, not a request/result version).
-_EXPECTED_MEMBER_COUNT = 232  # n6 item 4 +2: check-result 1.5.0, check-recorded 1.5.0
-_EXPECTED_REQUEST_RESULT_VERSION_COUNT = 54
+_EXPECTED_MEMBER_COUNT = 233  # #1118 unit 2 +1: reviewer-reply 1.0.0
+_EXPECTED_REQUEST_RESULT_VERSION_COUNT = 55
 _EXPECTED_EVENT_VERSION_COUNT = 29
 
 

@@ -192,6 +192,14 @@ __all__ = [
     "ProviderVerifiedItemModel",
     "ProviderJudgmentChallengesModel",
     "ProviderJudgmentEnvelopeModel",
+    "ReadFileListArgsModel",
+    "ReadFileTextArgsModel",
+    "ReadLedgerArgsModel",
+    "ReadPacketSectionArgsModel",
+    "ReviewerActionModel",
+    "ReviewerFileActionModel",
+    "ReviewerLedgerActionModel",
+    "ReviewerPacketActionModel",
     "ProviderJudgmentInsufficientModel",
     "ProviderMissingItemModel",
     "ProviderJudgmentModel",
@@ -2652,6 +2660,91 @@ class ProviderJudgmentEnvelopeModel(_ClosedModel):
     """
 
     judgment: ProviderJudgmentModel
+
+
+# Reviewer loop reply (#1118 unit 2, ADR-006): each model turn is exactly one read action or the
+# final judgment. The read inputs are the round-1 broker contracts; they are JSON text the service
+# interprets, never provider tool registrations. A strict provider sends an optional field as
+# null, so a null defaulted field reads as its default.
+_ReviewerRef = Annotated[str, Field(min_length=1, max_length=128)]
+_ReviewerCursor = Annotated[str, Field(max_length=256)] | None
+_ReviewerMaxBytes = Annotated[int, Field(ge=1024, le=8192)]  # one whole result envelope
+
+
+class _ReviewerArgsModel(_ClosedModel):
+    max_bytes: _ReviewerMaxBytes = 8192
+
+    @model_validator(mode="before")
+    @classmethod
+    def _null_means_default(cls, value: object) -> object:
+        if not isinstance(value, Mapping):
+            return value
+        source = cast(Mapping[str, object], value)
+        defaulted = {name for name, field in cls.model_fields.items() if not field.is_required()}
+        return {k: v for k, v in source.items() if not (v is None and k in defaulted)}
+
+
+class ReadPacketSectionArgsModel(_ReviewerArgsModel):
+    section: Literal[
+        "task_statement",
+        "excerpts",
+        "deterministic_findings",
+        "agent_account",
+        "prior_findings",
+        "timeline",
+    ]
+    item_ref: _ReviewerRef
+    offset: Annotated[int, Field(ge=0, le=4_194_304)]
+
+
+class ReadLedgerArgsModel(_ReviewerArgsModel):
+    view: Literal["findings", "observations", "claims", "plan", "obligations", "command_output"]
+    refs: Annotated[
+        tuple[_ReviewerRef, ...],
+        Field(min_length=1, max_length=4, json_schema_extra={"uniqueItems": True}),
+    ]
+    cursor: _ReviewerCursor
+
+    @model_validator(mode="after")
+    def _unique_refs(self) -> ReadLedgerArgsModel:
+        _require_unique(self.refs, limit=4)
+        return self
+
+
+class ReadFileTextArgsModel(_ReviewerArgsModel):
+    root_id: Annotated[str, Field(min_length=1, max_length=32)]
+    path: Annotated[str, Field(min_length=1, max_length=512)]
+    mode: Literal["text"]
+    start_line: Annotated[int, Field(ge=1, le=1_000_000)]
+    line_count: Annotated[int, Field(ge=1, le=200)]
+
+
+class ReadFileListArgsModel(_ReviewerArgsModel):
+    root_id: Annotated[str, Field(min_length=1, max_length=32)]
+    path: Annotated[str, Field(min_length=1, max_length=512)]
+    mode: Literal["list"]
+    cursor: _ReviewerCursor
+    max_entries: Annotated[int, Field(ge=1, le=32)] = 32
+
+
+class ReviewerPacketActionModel(_ClosedModel):
+    action: Literal["read_packet_section"]
+    args: ReadPacketSectionArgsModel
+
+
+class ReviewerLedgerActionModel(_ClosedModel):
+    action: Literal["read_ledger"]
+    args: ReadLedgerArgsModel
+
+
+class ReviewerFileActionModel(_ClosedModel):
+    action: Literal["read_file"]
+    args: ReadFileTextArgsModel | ReadFileListArgsModel
+
+
+type ReviewerActionModel = (
+    ReviewerPacketActionModel | ReviewerLedgerActionModel | ReviewerFileActionModel
+)
 
 
 class StartCompactViewModel(_ClosedModel):

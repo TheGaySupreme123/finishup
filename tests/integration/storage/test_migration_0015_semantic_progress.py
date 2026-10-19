@@ -47,7 +47,7 @@ def test_schema_fourteen_upgrade_adds_only_an_empty_progress_table() -> None:
 
     current = current_schema_version(BUNDLE_MIGRATIONS)
     assert (report.from_version, report.to_version) == (14, current)
-    assert report.applied_versions == ("0015", "0016")
+    assert report.applied_versions == ("0015", "0016", "0017")
     assert db.execute("PRAGMA user_version").fetchone() == (current,)
     assert db.execute(
         "SELECT value FROM bundle_meta WHERE key='storage_schema_version'"
@@ -59,7 +59,7 @@ def test_schema_fourteen_upgrade_adds_only_an_empty_progress_table() -> None:
             "SELECT name FROM sqlite_schema WHERE type='table' AND name NOT LIKE 'sqlite_%'"
         )
     }
-    assert after - before == {"semantic_progress"}
+    assert after - before == {"semantic_progress", "semantic_review_steps"}
     assert db.execute("SELECT COUNT(*) FROM semantic_progress").fetchone() == (0,)
     columns = [row[1] for row in db.execute("PRAGMA table_info(semantic_progress)")]
     # Closed structure only: no provider text, token, account, or path column exists.

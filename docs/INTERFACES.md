@@ -9948,6 +9948,44 @@ authentication; selected excerpts are in the built packet. These counts precede 
 minimization and do not prove provider delivery or code correctness. The record contains no
 content, paths, or content hashes.
 
+### Reviewer loop (issue #1118 unit 2)
+
+Not yet wired to a provider route (unit 3); the in-check follow-up loop stays active until unit 4.
+
+- Reply contract: `schemas/findings/reviewer-reply-1.0.0.schema.json`, built by
+  `adapters.providers.reviewer_reply.reviewer_reply_schema(*, reads_allowed, strict=False)` from
+  `protocol.models.ReviewerActionModel` (`ReviewerPacketActionModel`, `ReviewerLedgerActionModel`,
+  `ReviewerFileActionModel` over `Read*ArgsModel`; `max_bytes` 1,024–8,192) and the provider
+  judgment `$defs`. Root `{"reply": PacketAction | LedgerAction | FileAction | FinalReply}`; with
+  `reads_allowed=False` only `FinalReply`. `decode_reviewer_reply(parsed) -> ReviewerActionModel |
+  SemanticJudgment` raises `ReviewerReplyInvalid(code)` (`envelope_invalid`, `action_invalid`,
+  `judgment_<stage>`). `REVIEWER_LOOP_INSTRUCTION` is the loop's one system text.
+- Controller: `application.reviewer_loop.ReviewerLoop(model, broker, *, instruction, packet,
+  deadline, history_admissible, final_reserve_seconds=30.0).run() -> ReviewOutcome(status,
+  judgment, reason, history, model_turns, citable_refs, text_by_ref)`; the last two are the
+  citation union for `validate_semantic_judgment`. `ReviewerModel.complete(history, schema, *,
+  deadline) -> JsonValue` is the only model interface; a facade raises `ReviewerModelError(code)`.
+  Incomplete reasons: `format_invalid`, `read_limit`, `deadline`, `turn_limit`,
+  `authorization_changed`, `interrupted`, `uncaptured_step`, `step_refused`, or the facade's code.
+- Broker: `application.reviewer_broker.ReviewerBroker(*, job_id, case, roots, store, admit,
+  packet_refs, packet_text)`; `execute(action, expired) -> str` returns the round-1 result envelope
+  (`tool_ref` `<job>:read:<n>`, `call_index`, `status`, closed `reason`, `citable_refs`,
+  `result_utf8_bytes`, `result_digest`, `bytes_remaining`, `next_cursor`, `data` with `text`,
+  `records` or whole `entries` and `provenance` `source_ref`/`root_id`/`baseline`/`standing`/spans).
+  `cited_refs`/`text_by_ref` hold exactly each admitted result's advertised `citable_refs`.
+  `ReadRoot(alias, path, input_root, declared, excluded, subject_refs, snapshot, refuse)` is a
+  service-issued alias. `admit(elements, envelope) -> reason | None` takes `ReadElement`
+  `(category, bytes, input_root)` tuples. `history_roots` lists every outside root the conversation
+  holds bytes from.
+- Steps: `ports.semantic.ReviewStepStore.reserve(kind, ordinal, selector)`, `capture(kind, ordinal,
+  result)`, `usage() -> (steps, uncaptured)`; `ReviewStepRefused` on a repeated step or a lost lease.
+  `SqliteLedger.review_steps(handle)` is the durable store (`semantic_review_steps`, ADR-003).
+- Admission: `PrivacyCoordinator.admit_reviewer_read(request_id, scope, binding, elements, envelope)
+  -> str | None` and `egress.reviewer_history_admissible(policy, binding, scope_kind, roots)`.
+  Reads: `task_input_read.read_text_beneath`, `list_beneath` (both take `expired` and raise
+  `ReadDeadline`) and `clear_cut`; the broker raises `ReadDeadline` too when a read completes past
+  its local stop.
+
 ### Review dialogue record (issue #905)
 
 `finding_recorded` `1.3.0` (unreleased on the 0.3 line, extended in place) admits two optional

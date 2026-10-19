@@ -92,7 +92,7 @@ from finishup.ports.objects import (
     StagedObject,
 )
 from finishup.ports.runtime import OwnershipFence
-from finishup.ports.semantic import SamplingParams
+from finishup.ports.semantic import ReviewStepRefused, SamplingParams
 from finishup.protocol.canonical import JsonValue, canonical_encode
 from finishup.protocol.coverage import (
     AuthorshipAssurance,
@@ -3593,3 +3593,98 @@ async def test_load_check_result_reads_a_stored_insufficient_packet_check_after_
     assert type(replayed) is CheckCommitResult and replayed.outcome == "replayed"
     assert replayed.missing_for_assessment == recovered.missing_for_assessment
     assert replayed.result_frontier == recovered.result_frontier
+
+
+@pytest.mark.anyio
+async def test_reviewer_steps_are_lease_guarded_keyed_and_durable() -> None:
+    """#1118 M4: reviewer-loop steps survive restart, keep no plaintext, and need the lease."""
+
+    command = ledger_command(request_suffix="e")
+    operation_id = "req_00000000-0000-4000-8000-0000000000de"
+    adapter = sqlite_ledger(command)
+    await adapter.append_batch(command)
+    lease = await _semantic_wait_lease(adapter, command, operation_id)
+    case_ref = await _object_ref(
+        adapter, command, ObjectKind.SEMANTIC_CASE, semantic_case_digest="sha256:" + "e" * 64
+    )
+    job = await adapter.enqueue_semantic_job(lease, "sha256:" + "e" * 64, case_ref)
+    first = await adapter.claim_semantic_job(lease, job.job_id)
+    steps = adapter.review_steps(first)
+    assert await steps.usage() == (0, 0)
+    selector = b'{"path":"private/spec.md"}'
+    await steps.reserve("turn", 1, b"turn")
+    await steps.capture("turn", 1, b'{"reply":{}}')
+    await steps.reserve("read", 1, selector)
+    assert await steps.usage() == (2, 1)
+    with pytest.raises(ReviewStepRefused):  # a step is reserved once, never replayed
+        await steps.reserve("read", 1, selector)
+    with pytest.raises(ReviewStepRefused):  # captured once
+        await steps.capture("turn", 1, b"again")
+    rows = adapter._db.execute(  # pyright: ignore[reportPrivateUsage]
+        "SELECT kind,ordinal,selector_commitment,capture_commitment,capture_bytes "
+        "FROM semantic_review_steps ORDER BY kind,ordinal"
+    ).fetchall()
+    assert [(r[0], r[1], r[4]) for r in rows] == [("read", 1, None), ("turn", 1, 12)]
+    assert all(b"private" not in str(r).encode() for r in rows)
+    # Keyed: not the unkeyed digest of the selector (review_r1 probe).
+    selector_commitment = str(rows[0][2])
+    assert selector_commitment != hashlib.sha256(selector).hexdigest()
+    assert not selector_commitment.startswith("sha256:")
+    restarted = _restarted_sqlite(adapter, command)
+    assert await restarted.review_steps(first).usage() == (2, 1)
+    await adapter.record_attempt_outcome(
+        first, AttemptOutcome.EXPIRED, terminal_code=SemanticReason.TRANSPORT_UNAVAILABLE
+    )
+    with pytest.raises(ReviewStepRefused):  # a superseded attempt can no longer write
+        await steps.capture("read", 1, b"{}")
+
+
+@pytest.mark.anyio
+async def test_reviewer_steps_need_the_live_durable_lease() -> None:
+    """#1118 R2-1: expiry, not only takeover, stops a step; renewal is read from the ledger."""
+
+    class _AdvancingClock:
+        def __init__(self) -> None:
+            self.now = datetime(2026, 7, 19, 12, 0, tzinfo=UTC)
+
+        def now_utc(self) -> datetime:
+            return self.now
+
+        def monotonic_seconds(self) -> float:
+            return 1.0
+
+    command = ledger_command(request_suffix="f")
+    adapter = sqlite_ledger(command)
+    clock = _AdvancingClock()
+    adapter._clock = clock  # pyright: ignore[reportPrivateUsage]
+    await adapter.append_batch(command)
+    lease = await _semantic_wait_lease(adapter, command, "req_00000000-0000-4000-8000-0000000000df")
+    case_ref = await _object_ref(
+        adapter, command, ObjectKind.SEMANTIC_CASE, semantic_case_digest="sha256:" + "f" * 64
+    )
+    job = await adapter.enqueue_semantic_job(lease, "sha256:" + "f" * 64, case_ref)
+    handle = await adapter.claim_semantic_job(lease, job.job_id)
+    steps = adapter.review_steps(handle)
+    await steps.reserve("turn", 1, b"turn")
+    # A handle whose generation or owner generation is not the durable one writes nothing.
+    for stale in (
+        replace(handle, lease_generation=handle.lease_generation + 1),
+        replace(handle, owner_generation="0"),
+        replace(handle, lease_owner_id="svc_other"),
+    ):
+        with pytest.raises(ReviewStepRefused):
+            await adapter.review_steps(stale).capture("turn", 1, b"{}")
+    # Renewed before expiry: the stale handle's own expiry does not stop the write.
+    clock.now = handle.lease_expires_at - timedelta(seconds=1)
+    renewed = await adapter.renew_leases(lease)
+    assert renewed.lease_expires_at > handle.lease_expires_at
+    clock.now = handle.lease_expires_at + timedelta(seconds=1)
+    await steps.capture("turn", 1, b"{}")
+    await steps.reserve("read", 1, b"{}")
+    # Expired with no other worker claiming the job: neither reserve nor capture is recorded.
+    clock.now = renewed.lease_expires_at
+    with pytest.raises(ReviewStepRefused):
+        await steps.reserve("turn", 2, b"turn")
+    with pytest.raises(ReviewStepRefused):
+        await steps.capture("read", 1, b"{}")
+    assert await steps.usage() == (2, 1)
