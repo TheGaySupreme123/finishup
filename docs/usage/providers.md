@@ -45,8 +45,10 @@ stored key** through the same terminal handoff. When Codex is the primary review
 fallback is configured, these key commands target that API fallback; they do not change Codex's login.
 
 Removal keeps the provider binding and privacy settings. FinishUP reloads readiness, and status
-reports that the key is no longer stored. AI-powered review cannot send anything with this provider
-until you enter a key again with `finishup ai key`. Requests already sent cannot be recalled.
+reports that the key is no longer stored. AI-powered review cannot use this provider and model
+until you enter a key again with `finishup ai key`; a key stored earlier for another model of the
+same provider stays stored. To check a removal when Codex is primary, use
+`finishup provider status --json`, which reports the API fallback key. Requests already sent cannot be recalled.
 If the key may have leaked, also revoke it at the provider: local removal does not invalidate it
 there. `ai off` stops AI-powered review here while keeping the key stored.
 

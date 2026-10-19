@@ -266,6 +266,16 @@ cannot be recalled. The CLI confirms with default No; the full-screen interface 
 terminal. Binding and privacy policy stay unchanged. This ceremony is deliberately absent from
 ADR-015 elevated bootstrap, `finishup consent`, delegated chat authorization and MCP.
 
+Known limit (review of #1119, accepted for this release). Where scoped auto-unlock supplies the
+reauthentication factor, the default for a generated-passphrase vault whose owner never learned
+the passphrase, a process that runs as the same user and controls a foreground pseudo-terminal can
+complete removal without a human. That is the same authority `provider_credential_set` and
+`provider_credential_rotate` already have with the same factor. Removal discloses nothing; its worst
+case is a deleted key that the owner enters again. Requiring an owner-entered factor or action-bound
+OS presence would leave removal unusable for the default vault until production OS presence covers
+credential ceremonies. That stricter rule should therefore land for set, rotate and remove together;
+it is a follow-up on #1119.
+
 `UnlockCoordinator` solely owns the persistent passphrase throttle: admission delay, in-progress
 reservation, failure charge, success reset, crash re-arm, and repair. It calls cryptographic vault
 verification only after reserving the attempt. `VaultService` never reads or mutates that throttle

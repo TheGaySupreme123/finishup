@@ -200,14 +200,18 @@ async def forget_key() -> Literal["removed", "cancelled", "removed_not_ready"]:
         if error.reason == "record_missing":
             _fail("record_missing: no key is stored for this provider and model.")
         _fail(
-            "Key removal was not confirmed. Run finishup service unlock, then finishup ai status."
+            "Key removal was not confirmed. Run finishup service unlock, then "
+            "finishup provider status --json (it reports the API fallback key too)."
         )
     except (ConfigError, OSError, ValueError):
-        _fail("Key removal was not confirmed. Run finishup ai status.")
+        _fail(
+            "Key removal was not confirmed. Run finishup provider status --json "
+            "(it reports the API fallback key too)."
+        )
     typer.echo(
-        "The stored key was removed. AI-powered review cannot send anything with this provider "
-        "until you enter a key again with finishup ai key. If the key may have leaked, "
-        "also revoke it at the provider."
+        "The stored key was removed. AI-powered review cannot use this provider and model "
+        "until you enter a key again with finishup ai key; keys you stored for other models "
+        "stay stored. If the key may have leaked, also revoke it at the provider."
     )
     try:
         service = await restart_service_for_semantic_composition()

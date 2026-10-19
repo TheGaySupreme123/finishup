@@ -2737,7 +2737,7 @@ class FinishUpTui(App[int]):
                     if status == "removed"
                     else "The stored key was removed; readiness could not reload. Run finishup ai status.",
                     (
-                        "AI-powered review cannot send anything with this provider until you enter a key again with finishup ai key.",
+                        "AI-powered review cannot use this provider and model until you enter a key again with finishup ai key; keys stored for other models stay stored.",
                         "If the key may have leaked, also revoke it at the provider.",
                     ),
                 )

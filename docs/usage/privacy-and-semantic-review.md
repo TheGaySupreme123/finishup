@@ -28,7 +28,8 @@ widening still needs its own reauthentication; selecting a reviewer or storing a
 `finishup ai off` selects local-only review for this repository. The key stays encrypted in the
 vault. `finishup ai key` replaces it; `finishup ai forget-key` removes it after confirmation and
 owner reauthentication in your own terminal. Removal keeps the provider binding and privacy policy;
-AI-powered review cannot send anything with that API provider until a key is entered again.
+AI-powered review cannot use that provider and model until a key is entered again; keys stored for
+other models stay stored.
 Revoke the key at the provider too if it may have leaked.
 `finishup ai on` selects agent opt-in through the same privacy approval path as
 `finishup privacy conversations agent-opt-in`. `finishup ai status` reports mode, reviewer,

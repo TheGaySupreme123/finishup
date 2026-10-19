@@ -87,7 +87,8 @@ def test_forget_key_confirms_defaults_no_and_reloads(
     assert "[y/N]" in result.output
     assert calls == (["ceremony", "reload"] if answer == "y" else [])
     if answer == "y":
-        assert "cannot send" in result.output
+        assert "cannot use this provider and model" in result.output
+        assert "other models stay stored" in result.output
         assert "finishup ai key" in result.output
         assert "revok" in result.output.lower()
 
@@ -620,6 +621,9 @@ def test_forget_key_never_claims_ambiguous_or_missing_deletion(
     assert result.exit_code == 20
     assert "was removed" not in result.output
     assert ("record_missing" if failure == "record_missing" else "not confirmed") in result.output
+    if failure != "record_missing":
+        # Review of #1119: `ai status` cannot see an API fallback key; this surface can.
+        assert "finishup provider status --json" in result.output
 
 
 def test_forget_key_targets_the_exact_api_fallback(
