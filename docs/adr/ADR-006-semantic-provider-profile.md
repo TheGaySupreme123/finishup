@@ -2470,7 +2470,13 @@ Codex is used as the model only. Capability profile v3 applies to every Codex se
 `initialize` opts into the experimental API solely to send `thread/start.environments: []`, which
 disables environment access, so shell, patch and file tools have no environment to register or
 read from; `[tools.update_plan]` and `[tools.experimental_request_user_input]` are disabled in the
-isolated config and launch overrides; the protocol subset is generated with `--experimental` and
+isolated config and launch overrides; on 0.162.1 only, the launch also sets `agents.enabled=false`,
+`features.goals=false`, `features.sleep_tool=false` and `skills.include_instructions=false`, because a
+model catalog entry (for example gpt-6.1-sol's `multi_agent_version` and `clock`) otherwise
+registers collaboration, goal and `sleep` tools without any environment (#1118). The same catalog's
+`tool_mode: code_mode_only` (code-mode `exec`/`wait`) and `send_user_message_async`
+(`request_user_input_async`) have no supported config off switch on 0.162.1; they stay registered
+and are refused on the wire if called. The protocol subset is generated with `--experimental` and
 must carry `ThreadStartParams.environments`. `features.stable_environment_tools` is not set, because
 releases below 0.162.1 do not define it under `--strict-config`; with no environment it has nothing
 to expose. A reviewer session keeps one ephemeral thread; its first turn sends every admitted user

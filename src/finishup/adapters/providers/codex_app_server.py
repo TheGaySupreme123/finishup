@@ -67,6 +67,7 @@ from finishup.domain.privacy import (
     ProviderDataUseProfile,
     RequestCommitment,
 )
+from finishup.observability.logging import record_bounded_event_without_raising
 from finishup.observability.semantic_context import report_semantic_progress
 from finishup.ports.clock import ClockPort
 from finishup.ports.secret_memory import ProviderAttemptAuthBinding
@@ -306,6 +307,12 @@ _NON_FINAL_PHASES: Final = frozenset({"commentary", "partial_answer"})
 # Informational notifications are validated for method only and discarded unread; none of them
 # authorizes anything, and none of their bodies is retained. ``model/rerouted`` is the one
 # informational event that changes the answer's provenance, so it is handled explicitly.
+# ``thread/settings/updated`` (Codex 0.162.1, experimental) echoes the thread's effective
+# settings after a ``turn/start`` applies its overrides (``effort``, ``summary``, ...); the
+# app-server sends it whenever the snapshot differs from the last one it reported, so the first
+# turn on every thread produces it (``codex-rs/app-server/src/bespoke_event_handling.rs``
+# ``ThreadSettingsApplied``; ``thread_state.rs`` ``note_thread_settings``). It is bookkeeping
+# about settings FinishUP itself sent, never a tool, plan or item event.
 _ALLOWED_NOTIFICATION_METHODS: Final = frozenset(
     {
         "account/updated",
@@ -325,6 +332,7 @@ _ALLOWED_NOTIFICATION_METHODS: Final = frozenset(
         "thread/compacted",
         "thread/name/updated",
         "thread/queue/changed",
+        "thread/settings/updated",
         "thread/started",
         "thread/status/changed",
         "thread/tokenUsage/updated",
@@ -402,6 +410,28 @@ _LAUNCH_OVERRIDES: Final = (
     "tools.update_plan.enabled=false",
     'web_search="disabled"',
 )
+# Supported keys that remove further built-in tools, bound to the release whose source defined
+# and was reviewed for them (``--strict-config`` refuses a key an older release does not know).
+# Codex 0.162.1 registers these from the model catalog or a default-on feature even with
+# ``environments: []`` (``codex-rs/core/src/tools/spec_plan.rs``, #1118):
+# - ``agents.enabled=false``: a catalog ``multi_agent_version`` (``v2`` for gpt-6.1-sol) overrides
+#   ``features.multi_agent=false``; only this key disables the collaboration tools
+#   (``core/src/config/mod.rs`` ``multi_agent_version_override``);
+# - ``features.goals=false``: the default-on goal tools (``get_goal``/``create_goal``/
+#   ``update_goal``) and their ``thread/goal/*`` notifications;
+# - ``features.sleep_tool=false``: the default-on ``sleep`` tool a catalog ``clock`` entry exposes;
+# - ``skills.include_instructions=false``: no skills catalog text in the model's context.
+# Not removable by any supported key on 0.162.1: a catalog ``tool_mode="code_mode_only"`` forces
+# the code-mode ``exec``/``wait`` tools, and a catalog ``send_user_message_async`` entry forces
+# ``request_user_input_async``. Their items are not admitted, so a call still ends the turn.
+_RELEASE_LAUNCH_OVERRIDES: Final[Mapping[str, tuple[str, ...]]] = {
+    "0.162.1": (
+        "agents.enabled=false",
+        "features.goals=false",
+        "features.sleep_tool=false",
+        "skills.include_instructions=false",
+    ),
+}
 # Releases whose multi-turn reviewer session was reviewed from source (#1118 unit 3); any other
 # refuses a reviewer exchange (never falls back). Extend only after a capability cell.
 REVIEWER_LOOP_REVIEWED_RELEASES: Final = frozenset({"0.162.1"})
@@ -628,7 +658,10 @@ class CodexAppServerProfile:
             "--stdio",
             "--strict-config",
         ]
-        for override in _LAUNCH_OVERRIDES:
+        for override in (
+            *_LAUNCH_OVERRIDES,
+            *_RELEASE_LAUNCH_OVERRIDES.get(self.runtime_version, ()),
+        ):
             args.extend(("-c", override))
         return tuple(args)
 
@@ -1699,6 +1732,51 @@ def _validate_thread(
     return thread_id
 
 
+# A Codex wire name is structural (``thread/settings/updated``, ``item/agentMessage/delta``,
+# ``mcpToolCall``), never user content, but it is still validated before it reaches a diagnostic:
+# at most five slash-separated camelCase segments of ASCII letters and digits.
+_RUNTIME_NAME_PATTERN: Final = re.compile(r"[a-z][A-Za-z0-9]{0,31}(?:/[a-z][A-Za-z0-9]{0,31}){0,4}")
+_CAMEL_BOUNDARY: Final = re.compile(r"(?<=[a-z0-9])(?=[A-Z])")
+
+
+def _runtime_name_token(value: object) -> str | None:
+    """Encode one validated Codex wire name as a diagnostic token, or ``None`` if malformed.
+
+    ``/`` becomes ``.`` and camelCase becomes snake_case (``item/agentMessage/delta`` ->
+    ``item.agent_message.delta``), so the result fits the closed diagnostic token shape
+    ``[a-z][a-z0-9_.-]{0,63}``.
+    """
+
+    if type(value) is not str or _RUNTIME_NAME_PATTERN.fullmatch(value) is None:
+        return None
+    token = _CAMEL_BOUNDARY.sub("_", value).lower().replace("/", ".")
+    return token if len(token) <= 64 else None
+
+
+def runtime_event_diagnostic_reason(method: object, item_type: object = None) -> str:
+    """The closed, length-bounded reason naming the Codex event an attempt refused.
+
+    ``item/started`` and ``item/completed`` report the refused item type as ``item.<type>``
+    instead of the method; a value of any other shape is reported as ``event_name_invalid``.
+    """
+
+    if item_type is None:
+        token = _runtime_name_token(method)
+    else:
+        token = _runtime_name_token(f"item/{item_type}") if type(item_type) is str else None
+    return "event_name_invalid" if token is None else token
+
+
+def _record_forbidden_event(operation: str, method: object, item_type: object = None) -> None:
+    """Write which Codex event ended an attempt to the owner-only service diagnostics."""
+
+    record_bounded_event_without_raising(
+        component="codex_app_server",
+        operation=operation,
+        reason=runtime_event_diagnostic_reason(method, item_type),
+    )
+
+
 def _notification_item(
     message: Mapping[str, object],
 ) -> tuple[str | None, str | None, str | None]:
@@ -2350,12 +2428,16 @@ class CodexAppServerEvaluator:
                     if messages
                     else await runtime.read(_remaining(deadline, self.clock))
                 )
-                if "method" in message and "id" in message:
-                    raise ValueError("codex_app_server_tool_request_forbidden")
                 method = message.get("method")
-                if type(method) is not str or method not in _ALLOWED_NOTIFICATION_METHODS:
-                    raise ValueError("codex_app_server_event_forbidden")
-                if exchange is not None and method in _REVIEWER_FORBIDDEN_METHODS:
+                if "method" in message and "id" in message:
+                    _record_forbidden_event("codex_app_server_tool_request_forbidden", method)
+                    raise ValueError("codex_app_server_tool_request_forbidden")
+                if (
+                    type(method) is not str
+                    or method not in _ALLOWED_NOTIFICATION_METHODS
+                    or (exchange is not None and method in _REVIEWER_FORBIDDEN_METHODS)
+                ):
+                    _record_forbidden_event("codex_app_server_event_forbidden", method)
                     raise ValueError("codex_app_server_event_forbidden")
                 if method == "account/rateLimits/updated":
                     try:
@@ -2425,8 +2507,14 @@ class CodexAppServerEvaluator:
                 if method in {"item/started", "item/completed"}:
                     item_type, text, phase = _notification_item(message)
                     if item_type not in _ALLOWED_ITEM_TYPES:
+                        _record_forbidden_event(
+                            "codex_app_server_tool_event_forbidden", method, item_type
+                        )
                         raise ValueError("codex_app_server_tool_event_forbidden")
                     if exchange is not None and item_type not in _REVIEWER_ITEM_TYPES:
+                        _record_forbidden_event(
+                            "codex_app_server_event_forbidden", method, item_type
+                        )
                         raise ValueError("codex_app_server_event_forbidden")
                     if method == "item/completed" and item_type == "agentMessage":
                         if phase is not None and phase not in _AGENT_MESSAGE_PHASES:

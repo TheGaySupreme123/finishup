@@ -289,3 +289,6 @@ async def test_a_service_review_runs_on_one_codex_thread_through_the_real_evalua
         evidence = cast(dict[str, JsonValue], mcp_wire["semantic_provenance"])["runtime_evidence"]
         # The session's own close ended the process group after the last turn.
         assert cast(dict[str, JsonValue], evidence)["process_cleanup"] == "terminated"
+        # The replayed 0.162.1 wire (``thread/settings/updated`` before the first ack, reasoning,
+        # deltas, moderation metadata, usage) is admitted without any stage (#1118).
+        assert "failure_stage" not in cast(dict[str, JsonValue], evidence)

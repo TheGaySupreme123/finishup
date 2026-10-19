@@ -27,7 +27,16 @@ Codex is enough: the next `setup` or `repair` adopts the newer release without a
 Profile v3 adds three restrictions to every session, one-shot or loop: `initialize` sets
 `experimentalApi: true` only so `thread/start` can send `environments: []`, which leaves no
 environment for shell, patch or file tools; the isolated config and launch overrides disable the
-`update_plan` and `experimental_request_user_input` utilities. A reviewer-loop session reuses one
+`update_plan` and `experimental_request_user_input` utilities. On 0.162.1 the launch also sets
+`agents.enabled=false`, `features.goals=false`, `features.sleep_tool=false` and
+`skills.include_instructions=false`: the gpt-6.1-sol catalog entry (`multi_agent_version: v2`,
+`experimental_supported_tools: [send_user_message_async, clock]`) otherwise registers the
+collaboration, goal and `sleep` tools even with `features.multi_agent=false` and no environment.
+Two catalog-forced tool families have no supported off switch on 0.162.1 and stay registered:
+code-mode `exec`/`wait` (catalog `tool_mode: code_mode_only`) and `request_user_input_async`.
+They are not admitted on the wire: a call surfaces as a refused item or server request and ends the
+turn. Older releases do not get these four keys, because `--strict-config` refuses a key a release
+does not define. A reviewer-loop session reuses one
 ephemeral thread across `turn/start` calls: the first turn sends the packet and the read catalog,
 each later turn only the new admitted input, and every turn supplies the reply `outputSchema`. Any plan or compaction event, server request, native warning,
 reroute or tool item ends the turn and cleans up the process. The thread lives only in the review's
@@ -739,6 +748,19 @@ the same token as an owner-only diagnostic line (`semantic_composition` /
 | `output_not_json` | The final answer was not strict JSON (prose, fenced code, trailing text). | Terminal; not retried. |
 | `judgment_envelope_invalid`, `judgment_enum_invalid`, `judgment_refs_duplicate`, `judgment_refs_invalid`, `judgment_conclusion_mismatch`, `judgment_text_bounds`, `judgment_shape_invalid`, `judgment_invariant_invalid` | Strict JSON that failed the frozen judgment contract at the named stage. | Terminal (`response_schema_invalid`); asking again is not a fix. `judgment_refs_invalid` is the model citing an item id instead of a `citable_refs` entry. |
 | `request_failed`, `transport_failed`, `deadline_expired`, `cleanup_unconfirmed`, `event_limit`, `runtime_warning`, `unclassified` | Runtime transport, deadline, event-budget, warning, or cleanup ambiguity. | Per ADR-006: pre-acknowledgement transients may retry; post-acknowledgement ambiguity is `outcome_unknown` and is not retried. No invalid-answer classification. |
+
+For `tool_request_forbidden`, `event_forbidden` and `tool_event_forbidden` the service also writes
+one owner-only diagnostic line naming the refused Codex event (component `codex_app_server`,
+operation equal to the internal token, for example `codex_app_server_event_forbidden`). Its
+`reason` is the Codex wire name validated as at most five slash-separated camelCase ASCII
+segments, encoded with `/` as `.` and camelCase as snake_case (`thread/settings/updated` becomes
+`thread.settings.updated`; a refused `mcpToolCall` item becomes `item.mcp_tool_call`). Any other
+shape is reported as `event_name_invalid`; no notification body is recorded.
+
+Codex 0.162.1 sends `thread/settings/updated` after the first `turn/start` on every thread,
+because the turn's `effort` and `summary` overrides produce the thread's first settings snapshot.
+It echoes settings FinishUP sent and is discarded unread on both the single-shot and the
+reviewer path (#1118).
 
 `semantic_case_content_over_item_limit` is a separate coverage gap on the disclosed case; it is
 reported alongside a stage, never inferred from one. `semantic_case_finding_refs_over_limit` is the

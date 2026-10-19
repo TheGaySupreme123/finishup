@@ -2,7 +2,8 @@
 
 Run as ``python -I fake_codex_app_server.py SCRIPT LOG``. ``SCRIPT`` is a JSON object with the
 ``codex_home`` and ``version`` ``initialize`` reports, the ``model`` and ``efforts`` ``model/list``
-lists, and ``answers``: the final agent message of each ``turn/start``, in order. Every request
+lists, and ``answers``: the final agent message of each ``turn/start``, in order. Each turn
+replays the notification sequence real Codex 0.162.1 sent (``_turn_events``). Every request
 the client writes is appended to ``LOG`` as one JSON line, so a test sees the exact wire the real
 evaluator sent. No model, network, credential or Codex binary is involved.
 
@@ -63,13 +64,81 @@ def _serve(script_path: str, log_path: str) -> None:
         elif method == "turn/start":
             turns += 1
             turn = f"turn-{turns}"
-            write({"id": rid, "result": {"turn": {"id": turn, "status": "inProgress"}}})
-            item = {"type": "agentMessage", "phase": "final_answer", "text": answers.pop(0)}
-            write({"method": "item/completed", "params": {"item": item}})
-            done = {"id": turn, "status": "completed", "error": None}
-            write({"method": "turn/completed", "params": {"threadId": "thr-fake", "turn": done}})
+            for event in _turn_events(turns, turn, rid, params, answers.pop(0)):
+                write(event)
             continue
         write({"id": rid, "result": result})
+
+
+def _turn_events(
+    number: int, turn: str, rid: object, params: dict[str, Any], answer: str
+) -> list[dict[str, object]]:
+    """One turn's wire, in the order real Codex 0.162.1 sent it to the reviewer (#1118).
+
+    Recorded from ``codex app-server`` 0.162.1 on a ChatGPT login driving gpt-6.1-sol through
+    ``CodexAppServerEvaluator``. ``thread/settings/updated`` precedes the ``turn/start`` ack and
+    is sent only when the effective settings change, so only the first turn of a thread has it.
+    Bodies are reduced to the fields their shape needs; the method order is the recorded one.
+    """
+
+    thread = "thr-fake"
+    ids = {"threadId": thread, "turnId": turn}
+    events: list[dict[str, object]] = []
+    if number == 1:
+        settings = {
+            "cwd": "/fake",
+            "approvalPolicy": params.get("approvalPolicy"),
+            "approvalsReviewer": params.get("approvalsReviewer"),
+            "sandboxPolicy": params.get("sandboxPolicy"),
+            "model": params.get("model"),
+            "modelProvider": "openai",
+            "effort": params.get("effort"),
+            "summary": params.get("summary"),
+            "personality": params.get("personality"),
+        }
+        events.append(
+            {
+                "method": "thread/settings/updated",
+                "params": {"threadId": thread, "threadSettings": settings},
+            }
+        )
+    events.append({"id": rid, "result": {"turn": {"id": turn, "status": "inProgress"}}})
+    usage = {
+        "inputTokens": 900 * number,
+        "cachedInputTokens": 0,
+        "cacheWriteInputTokens": 0,
+        "outputTokens": 60 * number,
+        "reasoningOutputTokens": 20 * number,
+        "totalTokens": 960 * number,
+    }
+    for method, item in (
+        ("item/started", {"type": "userMessage", "id": "u"}),
+        ("item/completed", {"type": "userMessage", "id": "u"}),
+        ("item/started", {"type": "reasoning", "id": "r"}),
+        ("item/completed", {"type": "reasoning", "id": "r"}),
+        ("item/started", {"type": "agentMessage", "id": "a", "phase": "final_answer", "text": ""}),
+    ):
+        if method == "item/started" and item["type"] == "userMessage":
+            events.append(
+                {"method": "thread/status/changed", "params": {"threadId": thread, "status": {}}}
+            )
+            events.append({"method": "turn/started", "params": {"threadId": thread, "turn": {}}})
+        events.append({"method": method, "params": {**ids, "item": item}})
+    for half in (answer[: len(answer) // 2], answer[len(answer) // 2 :]):
+        events.append({"method": "item/agentMessage/delta", "params": {**ids, "delta": half}})
+    final = {"type": "agentMessage", "id": "a", "phase": "final_answer", "text": answer}
+    done = {"id": turn, "status": "completed", "error": None}
+    tail: list[dict[str, object]] = [
+        {"method": "turn/moderationMetadata", "params": {**ids, "metadata": {}}},
+        {"method": "item/completed", "params": {**ids, "item": final}},
+        {
+            "method": "thread/tokenUsage/updated",
+            "params": {**ids, "tokenUsage": {"last": usage, "total": usage}},
+        },
+        {"method": "thread/status/changed", "params": {"threadId": thread, "status": {}}},
+        {"method": "turn/completed", "params": {"threadId": thread, "turn": done}},
+    ]
+    return events + tail
 
 
 def launcher(script: Path, log: Path):  # noqa: ANN201 - returns the adapter's private launch type

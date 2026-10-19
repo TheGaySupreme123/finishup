@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import re
 import threading
 from collections import deque
 from collections.abc import Mapping
@@ -1849,6 +1850,30 @@ def test_launcher_and_environment_do_not_inherit_aliases_credentials_or_proxies(
     assert "HOME" not in environment
 
 
+@pytest.mark.parametrize("version", ["0.157.1", "0.159.0", "0.162.1"])
+def test_only_the_reviewed_release_gets_its_extra_tool_removal_overrides(version: str) -> None:
+    """#1118: catalog- and default-driven tools 0.162.1 still registers are disabled by key."""
+
+    profile = profile_for(record_for(b"codex", b"host", version=version))
+    overrides = [
+        value
+        for flag, value in zip(profile.launcher_argv[4::2], profile.launcher_argv[5::2])
+        if flag == "-c"
+    ]
+    extra = {
+        "agents.enabled=false",
+        "features.goals=false",
+        "features.sleep_tool=false",
+        "skills.include_instructions=false",
+    }
+
+    assert "tools.update_plan.enabled=false" in overrides
+    assert "features.shell_tool=false" in overrides
+    # ``--strict-config`` refuses a key a release does not define, so only 0.162.1 gets them.
+    assert extra.issubset(overrides) is (version == "0.162.1")
+    assert extra.isdisjoint(overrides) is (version != "0.162.1")
+
+
 def test_factory_binds_every_runtime_authority_field(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -2090,6 +2115,122 @@ async def test_informational_notifications_and_plan_items_are_discarded_unread(
 
     assert type(result) is SemanticResultSuccess
     assert "canary" not in repr(result)
+
+
+async def test_thread_settings_echo_before_the_turn_ack_is_discarded_unread(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """#1118: Codex 0.162.1 echoes the first ``turn/start``'s settings before the ack."""
+
+    thread = "019a0000-0000-7000-8000-000000000001"
+
+    class SettingsRuntime(_Runtime):
+        async def request(
+            self, request_id: int, method: str, params: object, timeout: float
+        ) -> dict[str, object]:
+            if method == "turn/start":
+                # Real order: the notification is buffered while ``turn/start`` awaits its ack.
+                self.pending_notifications.append(
+                    {
+                        "method": "thread/settings/updated",
+                        "params": {
+                            "threadId": thread,
+                            "threadSettings": {"effort": "high", "cwd": "canary"},
+                        },
+                    }
+                )
+            return await super().request(request_id, method, params, timeout)
+
+    runtime = SettingsRuntime(_profile())
+    runtime.events[0:0] = [
+        {"method": "thread/status/changed", "params": {"threadId": thread}},
+        {"method": "turn/started", "params": {"threadId": thread}},
+    ]
+
+    result = await _evaluate(monkeypatch, runtime)
+
+    assert type(result) is SemanticResultSuccess
+    assert result.provenance.runtime_evidence is not None
+    assert result.provenance.runtime_evidence.failure_stage is None
+    assert "canary" not in repr(result)
+
+
+@pytest.mark.parametrize(
+    ("event", "operation", "reason"),
+    [
+        (
+            {"method": "thread/goal/updated", "params": {"goal": "canary"}},
+            "codex_app_server_event_forbidden",
+            "thread.goal.updated",
+        ),
+        (
+            {"method": "item/fileChange/patchUpdated", "params": {"patch": "canary"}},
+            "codex_app_server_event_forbidden",
+            "item.file_change.patch_updated",
+        ),
+        (
+            {"method": "canary text/with spaces", "params": {}},
+            "codex_app_server_event_forbidden",
+            "event_name_invalid",
+        ),
+        (
+            {"method": "item/commandExecution/requestApproval", "id": 7, "params": {}},
+            "codex_app_server_tool_request_forbidden",
+            "item.command_execution.request_approval",
+        ),
+        (
+            {"method": "item/completed", "params": {"item": {"type": "mcpToolCall"}}},
+            "codex_app_server_tool_event_forbidden",
+            "item.mcp_tool_call",
+        ),
+    ],
+)
+async def test_a_refused_event_records_its_validated_name_in_service_diagnostics(
+    monkeypatch: pytest.MonkeyPatch, event: dict[str, object], operation: str, reason: str
+) -> None:
+    recorded: list[dict[str, str]] = []
+
+    def record(**fields: str) -> str:
+        recorded.append(fields)
+        return "err_00000000-0000-4000-8000-000000000000"
+
+    monkeypatch.setattr(module, "record_bounded_event_without_raising", record)
+    runtime = _Runtime(_profile())
+    runtime.events.insert(0, event)
+
+    result = await _evaluate(monkeypatch, runtime)
+
+    assert type(result) is SemanticResultUnavailable
+    assert recorded == [{"component": "codex_app_server", "operation": operation, "reason": reason}]
+    assert "canary" not in repr(recorded)
+
+
+@pytest.mark.parametrize(
+    ("method", "item_type", "reason"),
+    [
+        ("thread/settings/updated", None, "thread.settings.updated"),
+        ("item/agentMessage/delta", None, "item.agent_message.delta"),
+        ("item/started", "dynamicToolCall", "item.dynamic_tool_call"),
+        ("turn/plan/updated", None, "turn.plan.updated"),
+        (None, None, "event_name_invalid"),
+        (7, None, "event_name_invalid"),
+        ("Thread/started", None, "event_name_invalid"),
+        ("thread//started", None, "event_name_invalid"),
+        ("thread/started\n", None, "event_name_invalid"),
+        ("a/b/c/d/e/f", None, "event_name_invalid"),
+        ("a" * 33, None, "event_name_invalid"),
+        ("/".join(["abcdefghijklmnop"] * 5), None, "event_name_invalid"),
+        ("item/completed", 3, "event_name_invalid"),
+        ("item/completed", "tool call", "event_name_invalid"),
+    ],
+)
+def test_runtime_event_names_become_closed_bounded_tokens(
+    method: object, item_type: object, reason: str
+) -> None:
+    token = module.runtime_event_diagnostic_reason(method, item_type)
+
+    assert token == reason
+    assert re.fullmatch(r"[a-z][a-z0-9_.-]{0,63}", token)
 
 
 async def test_model_reroute_ends_the_turn_as_refused_with_its_stage(
