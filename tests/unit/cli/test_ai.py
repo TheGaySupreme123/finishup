@@ -38,8 +38,16 @@ def test_ai_commands_are_discoverable_and_key_accepts_no_secret_input() -> None:
         ["key", "--key", "secret-canary"],
         ["key", "--file", "key.txt"],
         ["key", "--stdin"],
+        ["setup", "secret-canary"],
+        ["on", "secret-canary"],
+        ["off", "secret-canary"],
+        ["status", "secret-canary"],
     ):
-        assert runner.invoke(cli.app, ["ai", *arguments]).exit_code == 2
+        result = runner.invoke(cli.app, ["ai", *arguments])
+        assert result.exit_code == 2
+        # Review of #1119: a pasted key is never echoed back into the terminal or a transcript.
+        assert "secret-canary" not in result.output
+        assert "secret-canary" not in (result.stderr if result.stderr_bytes is not None else "")
 
 
 @pytest.mark.parametrize(("stored", "action"), [(False, "set"), (True, "rotate")])
@@ -127,7 +135,10 @@ def test_ai_setup_reuses_the_guided_flow(monkeypatch: pytest.MonkeyPatch) -> Non
     monkeypatch.setattr(setup, "run_provider_setup", guided)
     result = CliRunner().invoke(cli.app, ["ai", "setup"])
     assert result.exit_code == 0, result.output
-    assert calls == [ConversationReview.LOCAL_AGENT_OPT_IN]
+    # Review of #1119: "every task" is one flow, so a "Not now" answer inside it stays local.
+    result = CliRunner().invoke(cli.app, ["ai", "setup", "--every-task"])
+    assert result.exit_code == 0, result.output
+    assert calls == [ConversationReview.LOCAL_AGENT_OPT_IN, ConversationReview.AI_POWERED]
 
 
 def test_ai_status_is_short_nonsecret_and_preserves_unknowns(
@@ -229,6 +240,45 @@ def test_model_change_keeps_old_binding_and_runs_hidden_key_entry(
     assert "bound to" in result.output and "model" in result.output
     assert "enter" in result.output.lower()
     assert "old" in result.output.lower()
+
+
+def test_a_cancelled_key_entry_restores_the_working_model(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Review of #1119: cancelling the new model's key leaves the old model and key active."""
+
+    import typer
+
+    config_path = tmp_path / "config.toml"
+    write_config_toml(
+        FinishUpConfig(
+            profile="local-openai", provider=official_openai_provider(model="gpt-6.1-sol")
+        ),
+        path=config_path,
+    )
+    import finishup.config.write as writers
+
+    real_snapshot = writers.config_write_snapshot
+    real_write = writers.write_config_toml_if_unchanged
+
+    def write(config: FinishUpConfig, *, expected_bytes: bytes | None) -> Path:
+        return real_write(config, path=config_path, expected_bytes=expected_bytes)
+
+    monkeypatch.setattr(writers, "config_write_snapshot", lambda: real_snapshot(config_path))
+    monkeypatch.setattr(writers, "write_config_toml_if_unchanged", write)
+
+    def cancelled_key() -> None:
+        raise typer.Exit(130)
+
+    monkeypatch.setattr(ai, "key", cancelled_key)
+    result = CliRunner().invoke(cli.app, ["ai", "model", "gpt-6-astra"])
+
+    from finishup.config.load import load_config
+
+    provider = load_config({}, {}, config_path).provider
+    assert result.exit_code == 130
+    assert provider is not None and provider.model == "gpt-6.1-sol"
+    assert "previous model is active again" in result.output
 
 
 def test_reviewer_question_has_three_plain_choices_and_reasks_invalid_input(

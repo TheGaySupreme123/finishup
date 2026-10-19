@@ -7,7 +7,7 @@ from __future__ import annotations
 
 from collections.abc import Awaitable, Callable, Mapping
 from pathlib import Path
-from typing import Annotated, Literal, NoReturn, cast
+from typing import Annotated, Any, Final, Literal, NoReturn, cast
 
 import typer
 
@@ -33,14 +33,48 @@ def _fail(message: str) -> NoReturn:
     raise typer.Exit(20)
 
 
-@ai_app.command("setup")
-def setup() -> None:
+def _usage_error(message: str) -> NoReturn:
+    typer.echo(message, err=True)
+    raise typer.Exit(2)
+
+
+# Commands that take no arguments accept and discard extra ones instead of letting Click echo them
+# back: a key pasted after `finishup ai key` must never be repeated into a terminal or transcript.
+_NO_EXTRA_ARGS: Final = {"allow_extra_args": True, "ignore_unknown_options": True}
+
+
+def _refuse_extra_arguments(context: typer.Context) -> None:
+    if context.args:
+        _usage_error(
+            "This command takes no arguments, and FinishUP never accepts a key on the command "
+            "line. Run it on its own and type the key at the hidden prompt. If you pasted a key, "
+            "clear it from your shell history and replace it at your provider."
+        )
+
+
+@ai_app.command("setup", context_settings=_NO_EXTRA_ARGS)
+def setup(
+    context: typer.Context,
+    every_task: Annotated[
+        bool,
+        typer.Option(
+            "--every-task",
+            help="Review every task with AI, instead of letting your agent turn it on when it helps.",
+        ),
+    ] = False,
+) -> None:
     """Choose ChatGPT or an API key, then approve privacy in the trusted terminal."""
+
+    _refuse_extra_arguments(context)
 
     from finishup.cli.setup import run_provider_setup
 
     code = _run(
-        lambda: run_provider_setup(conversation_review=ConversationReview.LOCAL_AGENT_OPT_IN)
+        lambda: run_provider_setup(
+            conversation_review=ConversationReview.AI_POWERED
+            if every_task
+            else ConversationReview.LOCAL_AGENT_OPT_IN
+        )
     )
     raise typer.Exit(code)
 
@@ -70,9 +104,16 @@ async def key_action() -> Literal["set", "rotate"]:
     return "rotate" if stored else "set"
 
 
-@ai_app.command("key")
-def key() -> None:
+@ai_app.command("key", context_settings=_NO_EXTRA_ARGS)
+def key_command(context: typer.Context) -> None:
     """Enter the configured provider's key with hidden input in your own terminal."""
+
+    _refuse_extra_arguments(context)
+    key()
+
+
+def key() -> None:
+    """Hidden key entry for the configured provider; also the last step of ``ai model``."""
 
     from finishup.cli.app import run_configured_provider_credential
 
@@ -173,11 +214,14 @@ def _yes_no_unknown(value: JsonValue) -> str:
     return "yes" if value is True else "no" if value is False else "unknown"
 
 
-@ai_app.command("status")
+@ai_app.command("status", context_settings=_NO_EXTRA_ARGS)
 def status(
+    context: typer.Context,
     json_output: Annotated[bool, typer.Option("--json", help="Emit nonsecret JSON.")] = False,
 ) -> None:
     """Show review mode, reviewer, model, key presence, and privacy permission."""
+
+    _refuse_extra_arguments(context)
 
     try:
         report = _run(ai_status_report)
@@ -228,16 +272,20 @@ def _change_mode(setting: ConversationReview) -> None:
         )
 
 
-@ai_app.command("off")
-def off() -> None:
+@ai_app.command("off", context_settings=_NO_EXTRA_ARGS)
+def off(context: typer.Context) -> None:
     """Use local checks only in this repository; keep the stored key."""
+
+    _refuse_extra_arguments(context)
 
     _change_mode(ConversationReview.LOCAL_ONLY)
 
 
-@ai_app.command("on")
-def on() -> None:
+@ai_app.command("on", context_settings=_NO_EXTRA_ARGS)
+def on(context: typer.Context) -> None:
     """Let agents opt in to review; widening still requires your reauthentication."""
+
+    _refuse_extra_arguments(context)
 
     _change_mode(ConversationReview.LOCAL_AGENT_OPT_IN)
 
@@ -339,4 +387,37 @@ def model(
     typer.echo(
         "The model change does not approve privacy; review any needed permission with finishup --privacy."
     )
-    key()
+    try:
+        key()
+    except (typer.Exit, typer.Abort, KeyboardInterrupt) as stopped:
+        if isinstance(stopped, typer.Exit) and stopped.exit_code == 0:
+            raise
+        _restore_previous_model(config)
+        raise
+
+
+def _restore_previous_model(previous: object) -> None:
+    """Put the working model back when the new model's key was not entered (review of #1119).
+
+    The old key stays bound to the old model, so restoring the binding restores a working
+    reviewer instead of leaving a model active without a key.
+    """
+
+    from finishup.cli.setup import restart_service_for_semantic_composition
+    from finishup.config.write import config_write_snapshot, write_config_toml_if_unchanged
+
+    try:
+        _current, current_bytes = config_write_snapshot()
+        write_config_toml_if_unchanged(cast(Any, previous), expected_bytes=current_bytes)
+        _run(restart_service_for_semantic_composition)
+    except (ConfigError, ControlError, OSError, ValueError):
+        typer.echo(
+            "Key entry did not finish, and the previous model could not be restored "
+            "automatically. Run finishup ai model to choose it again.",
+            err=True,
+        )
+        return
+    typer.echo(
+        "Key entry did not finish, so the previous model is active again with its stored key.",
+        err=True,
+    )

@@ -29,7 +29,7 @@ curl -fsSL https://raw.githubusercontent.com/TheGaySupreme123/finishup/main/docs
    itself and says where the key is kept. A key is typed there, hidden, never in chat.
    - FinishUP (recommended): `finishup ai setup`
    - Local only: `finishup setup vault && finishup ai off`
-   - Every task: `finishup ai setup && finishup privacy conversations ai-powered`
+   - Every task: `finishup ai setup --every-task`
 8. **Verify** ([section 5](#5-verify-and-report-in-layers)). Open a fresh session in the project and
    show a successful FinishUP `start`.
 
@@ -303,8 +303,8 @@ answer and creates the vault:
   terminal privacy approval where your host supports it.
 - **(b)** `finishup setup vault && finishup ai off`. It applies at once where the repository
   already has a grant, and otherwise walks the user through the Private policy that records it.
-- **(c)** `finishup ai setup && finishup privacy conversations ai-powered`: the second command
-  needs less of the user, so it takes the trusted local approval.
+- **(c)** `finishup ai setup --every-task`: the same flow, whose privacy step records review on
+  every task through the trusted local approval. A "Not now" answer inside it stays local.
 
 `finishup privacy conversations status` confirms the result. Then verify (section 5) and report
 each layer separately. Setup is finished when the user's chosen answer is reached — local only is

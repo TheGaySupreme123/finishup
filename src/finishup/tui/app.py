@@ -742,8 +742,9 @@ class FinishUpTui(App[int]):
         # Only an explicit local answer finishes as local-only. Dismiss (None) is handled by
         # the first-run callers before storage or registration, so it must not fall through here.
         if choice == "local_only":
-            await self._record_local_only()
-            await self._finish_setup(connected=connected)
+            # The setup marker is written only over a recorded answer (review of #1119).
+            if await self._record_local_only():
+                await self._finish_setup(connected=connected)
             return
         if choice not in {"agent_opt_in", "ai_powered"}:
             return
@@ -752,6 +753,10 @@ class FinishUpTui(App[int]):
         )
         if provider_choice == "local_only":
             await self._finish_setup(connected=connected)
+            return
+        if provider_choice == "local_only_unrecorded":
+            # "Not now" could not be recorded, so the earlier policy may still allow AI-powered
+            # review. Finishing here would describe a setup that did not happen.
             return
         provider = await self.runtime.provider_posture()
         if (
@@ -814,8 +819,8 @@ class FinishUpTui(App[int]):
             )
             return
         del option, codex_home  # The policy route stays registered (ADR-049).
-        await self._record_local_only()
-        await self._finish_setup(connected=connected)
+        if await self._record_local_only():
+            await self._finish_setup(connected=connected)
 
     async def _record_local_only(self) -> bool:
         """Record "local checks only; agents may not opt in" in the privacy policy (ADR-049).
@@ -2633,7 +2638,7 @@ class FinishUpTui(App[int]):
         if connection is None:
             return None
         if connection == "local_only":
-            return "local_only" if await self._record_local_only() else None
+            return "local_only" if await self._record_local_only() else "local_only_unrecorded"
         if connection == "codex_subscription":
             await self._command_codex_subscription(conversation_review=conversation_review)
             return None

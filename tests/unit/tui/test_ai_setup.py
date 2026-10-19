@@ -145,3 +145,33 @@ async def test_trusted_privacy_handoff_asks_probe_consent_only_for_api_key(
     await runtime.run_privacy_setup(None, credential_probe=probe)
     assert questions == ([True] if probe else [])
     assert calls[0]["credential_probe_authorized"] is probe
+
+
+@pytest.mark.anyio
+async def test_an_unrecorded_not_now_never_finishes_setup() -> None:
+    """Review of #1119: a failed local-only recording must not finish over the old policy."""
+
+    app = FinishUpTui(SimpleNamespace())  # pyright: ignore[reportArgumentType]
+    finished: list[bool] = []
+
+    async def ask(_view: BaseView) -> str:
+        return "local_only"
+
+    async def unrecorded() -> bool:
+        return False
+
+    async def finish(*, connected: bool) -> None:
+        finished.append(connected)
+
+    async def ready_reviewer() -> object:
+        raise AssertionError("an unrecorded answer must not fall through to reviewer readiness")
+
+    app.ask = ask  # pyright: ignore[reportAttributeAccessIssue]
+    app._record_local_only = unrecorded  # pyright: ignore[reportAttributeAccessIssue, reportPrivateUsage]
+    app._finish_setup = finish  # pyright: ignore[reportAttributeAccessIssue, reportPrivateUsage]
+    app.runtime.provider_posture = ready_reviewer  # pyright: ignore[reportAttributeAccessIssue]
+
+    assert await app.command_provider("local_agent_opt_in") == "local_only_unrecorded"
+    await app._run_initial_review("agent_opt_in", connected=True)  # pyright: ignore[reportPrivateUsage]
+    await app._run_initial_review("local_only", connected=True)  # pyright: ignore[reportPrivateUsage]
+    assert finished == []
