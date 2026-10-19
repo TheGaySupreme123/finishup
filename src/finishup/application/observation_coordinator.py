@@ -7074,7 +7074,7 @@ class ObservationCoordinator:
             prior = store.load_advice_snapshot(workspace)
             session_loader = getattr(store, "load_advice_snapshot_for_session", None)
             if callable(session_loader) and type(session_id) is str:
-                prior = session_loader(workspace=workspace, yoetz_session_id=session_id)
+                prior = session_loader(workspace=workspace, finishup_session_id=session_id)
             if type(prior) is AdviceSnapshot:
                 failed_items = tuple(
                     item

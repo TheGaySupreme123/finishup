@@ -235,7 +235,7 @@ async def _mirror_advice(session: _Session, task_runtime: TaskRuntime, host: _Ho
 
 def _assert_hook_failure(host: _Host, session: _Session, expected: bool) -> None:
     delivery = host.store.peek_advice_for_delivery(
-        host.workspace, yoetz_session_id=session.started.session_id, allow_standing=False
+        host.workspace, finishup_session_id=session.started.session_id, allow_standing=False
     )
     assert bool(delivery and "resolve_failed_command" in delivery.text) == expected
 
