@@ -2474,9 +2474,25 @@ isolated config and launch overrides; on 0.162.1 only, the launch also sets `age
 `features.goals=false`, `features.sleep_tool=false` and `skills.include_instructions=false`, because a
 model catalog entry (for example gpt-6.1-sol's `multi_agent_version` and `clock`) otherwise
 registers collaboration, goal and `sleep` tools without any environment (#1118). The same catalog's
-`tool_mode: code_mode_only` (code-mode `exec`/`wait`) and `send_user_message_async`
-(`request_user_input_async`) have no supported config off switch on 0.162.1; they stay registered
-and are refused on the wire if called. The protocol subset is generated with `--experimental` and
+`tool_mode: code_mode_only` (code-mode `exec`/`wait`), `send_user_message_async`
+(`request_user_input_async`) and `clock` (`clock.curr_time`) have no ordinary config off switch on
+0.162.1. For them the launch passes Codex's supported `model_catalog_json` key naming a FinishUP-owned
+derived catalog: the bundled 0.162.1 `gpt-6.1-sol` entry, as `codex debug models --bundled` exposes
+it, minus `tool_mode` and with `experimental_supported_tools` emptied, every other field unchanged.
+It is a generated packaged resource pinned by two digests (the source entry and the derived bytes),
+and it applies only when the bound release is 0.162.1, the bound model is `gpt-6.1-sol`, the bundled
+entry measured from the exact executable bytes the fence just re-hashed has the pinned source digest,
+and the packaged file has the pinned derived digest. Otherwise the launch is unchanged, those tools
+stay registered and are refused on the wire if called, and the closed reason is recorded once per
+process in the owner-only diagnostics. The catalog changes only the launch argv, which
+`launcher_sha256` already commits to in each attempt's evidence; the capability record, its checks
+and the isolated config are unchanged, so the profile stays v3. A real 0.162.1 run on a ChatGPT
+login showed the requests carry no tool at all with the catalog (and `exec`, `wait`,
+`request_user_input_async` and a nested `clock__curr_time` without it), and a two-turn reviewer
+exchange completed. Consequence: the reviewer no longer follows the account's live `/models` entry,
+which on 2026-10-19 differed from the bundled one (context window 500000 against 272000, plus
+collaboration and confirmation message text); it runs with the release's bundled values. The
+protocol subset is generated with `--experimental` and
 must carry `ThreadStartParams.environments`. `features.stable_environment_tools` is not set, because
 releases below 0.162.1 do not define it under `--strict-config`; with no environment it has nothing
 to expose. A reviewer session keeps one ephemeral thread; its first turn sends every admitted user

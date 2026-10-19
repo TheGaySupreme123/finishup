@@ -49,6 +49,7 @@ __all__ = [
     "CodexPlatform",
     "capability_record_path",
     "check_app_server_schema",
+    "codex_bundled_model_catalog",
     "codex_cli_version",
     "codex_platform_for",
     "codex_source_identity",
@@ -95,6 +96,8 @@ _CLI_VERSION: Final = re.compile(
 _IDENTITY: Final = re.compile(r"^openai-codex-npm-(darwin-arm64|linux-x64)-([0-9.]{5,32})$")
 _RECORD_MAX_BYTES: Final = 64 * 1024
 _SCHEMA_MAX_BYTES: Final = 16 * 1024 * 1024
+# ``codex debug models --bundled`` prints about 650 KiB for 0.162.1.
+_CATALOG_MAX_BYTES: Final = 8 * 1024 * 1024
 _SCHEMA_FILE: Final = "codex_app_server_protocol.v2.schemas.json"
 _SUBPROCESS_TIMEOUT_SECONDS: Final = 60.0
 # How long a killed candidate process group has to disappear before cleanup is unconfirmed.
@@ -907,6 +910,20 @@ type SubprocessRunner = Callable[[Sequence[str], Path, Mapping[str, str]], tuple
 
 
 def _run(argv: Sequence[str], cwd: Path, env: Mapping[str, str]) -> tuple[int, bytes]:
+    """Run one bounded candidate subprocess; at most 4 KiB of stdout is returned."""
+
+    return _run_bounded(argv, cwd, env, 4096)
+
+
+def _run_catalog(argv: Sequence[str], cwd: Path, env: Mapping[str, str]) -> tuple[int, bytes]:
+    """Run ``codex debug models --bundled``; stdout over the catalog bound reads as truncated."""
+
+    return _run_bounded(argv, cwd, env, _CATALOG_MAX_BYTES + 1)
+
+
+def _run_bounded(
+    argv: Sequence[str], cwd: Path, env: Mapping[str, str], limit: int
+) -> tuple[int, bytes]:
     """Run one bounded candidate subprocess; stdout is returned, stderr is discarded unread.
 
     The candidate leads its own new session, so it and every descendant it starts share one
@@ -937,7 +954,7 @@ def _run(argv: Sequence[str], cwd: Path, env: Mapping[str, str]) -> tuple[int, b
         raise ValueError(CODEX_PROBE_CLEANUP_UNCONFIRMED) from failure
     if failure is not None:
         raise failure
-    return cast(int, process.returncode), stdout[:4096]
+    return cast(int, process.returncode), stdout[:limit]
 
 
 def _kill_process_group(process: subprocess.Popen[bytes]) -> bool:
@@ -1063,6 +1080,36 @@ def codex_cli_version(
         if match is None:
             raise ValueError("codex_runtime_version_unknown")
         return match.group(1)
+    finally:
+        shutil.rmtree(scratch, ignore_errors=True)
+
+
+def codex_bundled_model_catalog(
+    executable: Path, *, scratch_parent: Path, runner: SubprocessRunner | None = None
+) -> object:
+    """Have the candidate print the model catalog compiled into its bytes, and parse it.
+
+    ``codex debug models --bundled`` serializes the bundled catalog without building a config,
+    reading a login or touching the network; it runs under a scratch home that is removed. Any
+    failure is the closed ``codex_bundled_catalog_unavailable`` token.
+    """
+
+    scratch = _scratch(scratch_parent)
+    try:
+        try:
+            code, output = (_run_catalog if runner is None else runner)(
+                (str(executable), "debug", "models", "--bundled"),
+                scratch,
+                _scratch_environment(scratch / "home"),
+            )
+        except (OSError, subprocess.SubprocessError) as error:
+            raise ValueError("codex_bundled_catalog_unavailable") from error
+        if code != 0 or not output or len(output) > _CATALOG_MAX_BYTES:
+            raise ValueError("codex_bundled_catalog_unavailable")
+        try:
+            return json.loads(output.decode("utf-8"))
+        except (UnicodeDecodeError, ValueError, RecursionError) as error:
+            raise ValueError("codex_bundled_catalog_unavailable") from error
     finally:
         shutil.rmtree(scratch, ignore_errors=True)
 

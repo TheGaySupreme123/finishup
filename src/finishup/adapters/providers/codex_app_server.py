@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import json
 import os
 import re
 import shutil
@@ -33,10 +34,19 @@ from finishup.adapters.providers.codex_capability import (
     CODEX_PROBE_CLEANUP_UNCONFIRMED,
     CodexCapabilityRecord,
     CodexPlatform,
+    codex_bundled_model_catalog,
     codex_version_key,
     host_codex_platform,
     read_capability_record,
     validate_capability_binding,
+)
+from finishup.adapters.providers.codex_reviewer_catalog import (
+    REVIEWER_CATALOG_MODEL,
+    REVIEWER_CATALOG_RUNTIME_VERSION,
+    ReviewerCatalogDecision,
+    bundled_entry_sha256,
+    packaged_reviewer_catalog_path,
+    resolve_reviewer_catalog,
 )
 from finishup.adapters.providers.data_use_catalog import data_use_record_for_endpoint
 from finishup.adapters.providers.openai_responses import (
@@ -421,9 +431,12 @@ _LAUNCH_OVERRIDES: Final = (
 #   ``update_goal``) and their ``thread/goal/*`` notifications;
 # - ``features.sleep_tool=false``: the default-on ``sleep`` tool a catalog ``clock`` entry exposes;
 # - ``skills.include_instructions=false``: no skills catalog text in the model's context.
-# Not removable by any supported key on 0.162.1: a catalog ``tool_mode="code_mode_only"`` forces
-# the code-mode ``exec``/``wait`` tools, and a catalog ``send_user_message_async`` entry forces
-# ``request_user_input_async``. Their items are not admitted, so a call still ends the turn.
+# Not removable by any ordinary key on 0.162.1: a catalog ``tool_mode="code_mode_only"`` forces
+# the code-mode ``exec``/``wait`` tools, and the catalog's ``send_user_message_async`` and
+# ``clock`` entries force ``request_user_input_async`` and ``clock.curr_time``. When every pin
+# holds, the launch replaces the catalog with FinishUP's derived one through the supported
+# ``model_catalog_json`` key (``codex_reviewer_catalog``), which removes exactly those three
+# fields. Otherwise they stay registered; their items are not admitted, so a call ends the turn.
 _RELEASE_LAUNCH_OVERRIDES: Final[Mapping[str, tuple[str, ...]]] = {
     "0.162.1": (
         "agents.enabled=false",
@@ -432,6 +445,13 @@ _RELEASE_LAUNCH_OVERRIDES: Final[Mapping[str, tuple[str, ...]]] = {
         "skills.include_instructions=false",
     ),
 }
+# The bundled reviewer-model entry digest the fence last measured from a launched executable,
+# keyed by that executable's SHA-256 (the bundled catalog is compiled into those bytes). Every
+# launch of the pinned release and model re-measures it (about 20 ms) before the argv is built.
+_BUNDLED_ENTRY_SHA256: dict[str, str | None] = {}
+# Fallback reasons already written to the owner-only diagnostics in this process, so a release
+# that never gets the catalog records its reason once rather than on every launch.
+_RECORDED_CATALOG_FALLBACKS: set[tuple[str, str, str]] = set()
 # Releases whose multi-turn reviewer session was reviewed from source (#1118 unit 3); any other
 # refuses a reviewer exchange (never falls back). Extend only after a capability cell.
 REVIEWER_LOOP_REVIEWED_RELEASES: Final = frozenset({"0.162.1"})
@@ -651,6 +671,21 @@ class CodexAppServerProfile:
             raise ValueError("codex_runtime_capability_evidence_stale")
 
     @property
+    def reviewer_model_catalog(self) -> ReviewerCatalogDecision:
+        """Whether this launch replaces the model catalog with the derived reviewer catalog.
+
+        It reads the bundled-entry digest the launch fence measured from these exact executable
+        bytes (``measure_reviewer_catalog``); before that measurement it never applies.
+        """
+
+        return resolve_reviewer_catalog(
+            runtime_version=self.runtime_version,
+            model=self.model,
+            measured_entry_sha256=_BUNDLED_ENTRY_SHA256.get(self.executable_sha256),
+            catalog_path=packaged_reviewer_catalog_path(),
+        )
+
+    @property
     def launcher_argv(self) -> tuple[str, ...]:
         args: list[str] = [
             str(self.executable_path),
@@ -658,12 +693,52 @@ class CodexAppServerProfile:
             "--stdio",
             "--strict-config",
         ]
-        for override in (
-            *_LAUNCH_OVERRIDES,
-            *_RELEASE_LAUNCH_OVERRIDES.get(self.runtime_version, ()),
-        ):
+        overrides = [*_LAUNCH_OVERRIDES, *_RELEASE_LAUNCH_OVERRIDES.get(self.runtime_version, ())]
+        catalog = self.reviewer_model_catalog.path
+        if catalog is not None:
+            # A TOML basic string: JSON's escapes are a subset of TOML's.
+            overrides.append(f"model_catalog_json={json.dumps(str(catalog))}")
+        for override in overrides:
             args.extend(("-c", override))
         return tuple(args)
+
+    def measure_reviewer_catalog(self) -> ReviewerCatalogDecision:
+        """Measure the launched bytes' bundled reviewer entry, then decide and record the outcome.
+
+        Runs only for the pinned release and model, after ``verify_local_binding`` re-hashed the
+        executable, under a scratch directory in the home's private ``runtime`` root. A fallback
+        writes its closed reason to the owner-only diagnostics once per process.
+        """
+
+        if (
+            self.runtime_version == REVIEWER_CATALOG_RUNTIME_VERSION
+            and self.model == REVIEWER_CATALOG_MODEL
+        ):
+            runtime_root = self.codex_home / "runtime"
+            measured: str | None
+            try:
+                ensure_owner_only_dir(runtime_root)
+                catalog = codex_bundled_model_catalog(
+                    self.executable_path, scratch_parent=runtime_root
+                )
+                measured = bundled_entry_sha256(catalog)
+            except ValueError as error:
+                if str(error) == CODEX_PROBE_CLEANUP_UNCONFIRMED:
+                    raise
+                measured = None
+            except OSError:
+                measured = None
+            _BUNDLED_ENTRY_SHA256[self.executable_sha256] = measured
+        decision = self.reviewer_model_catalog
+        key = (self.executable_sha256, self.model, decision.reason)
+        if decision.path is None and key not in _RECORDED_CATALOG_FALLBACKS:
+            _RECORDED_CATALOG_FALLBACKS.add(key)
+            record_bounded_event_without_raising(
+                component="codex_app_server",
+                operation="codex_reviewer_model_catalog",
+                reason=decision.reason,
+            )
+        return decision
 
     @property
     def launcher_sha256(self) -> str:
@@ -884,9 +959,14 @@ def _process_environment(profile: CodexAppServerProfile) -> dict[str, str]:
     }
 
 
+def _verify_and_measure(profile: CodexAppServerProfile) -> None:
+    profile.verify_local_binding()
+    profile.measure_reviewer_catalog()
+
+
 async def _launch(profile: CodexAppServerProfile) -> _CodexProcess:
     # Revalidate every launch, but do not hash the runtime executable on the service loop.
-    await asyncio.to_thread(profile.verify_local_binding)
+    await asyncio.to_thread(_verify_and_measure, profile)
     runtime_root = profile.codex_home / "runtime"
     ensure_owner_only_dir(runtime_root)
     verify_private_local_bundle(runtime_root)

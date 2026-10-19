@@ -126,8 +126,9 @@ _RESOURCE_LIMIT: Final = 4_194_304
 # check agent_next vectors (AGN-001), +1 status check_outcome vector (AGN-002). #1118 unit 2: +1
 # reviewer-reply 1.0.0 schema. #1118: +2 schemas (check-result 1.6.0, check-recorded 1.6.0) and
 # +1 canonical reviewer-record case (REV-001). #1122/#1123: +2 schemas (host-connection-batch
-# 1.0.0, ai-status 1.0.0) and +1 canonical host-connection-batch case.
-REVIEWED_RESOURCE_COUNT: Final = 326
+# 1.0.0, ai-status 1.0.0) and +1 canonical host-connection-batch case. #1118: +1 runtime config
+# (the reviewer's derived Codex 0.162.1 model catalog).
+REVIEWED_RESOURCE_COUNT: Final = 327
 _RESOURCE_KINDS: Final = frozenset(
     {
         "canonical_vector",

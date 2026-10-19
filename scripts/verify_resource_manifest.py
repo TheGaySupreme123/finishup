@@ -1882,6 +1882,12 @@ _INVENTORY_ENTRIES: Final[tuple[tuple[str, str, str, bool], ...]] = (
         "application/toml",
         True,
     ),
+    (
+        "support/codex-evaluator/reviewer-model-catalog-0.162.1.json",
+        "runtime_config",
+        "application/json",
+        True,
+    ),
 )
 
 
