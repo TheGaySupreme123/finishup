@@ -27,6 +27,7 @@ from finishup.ports.secret_memory import (
     ProviderAttemptAuthBinding,
     SecretMemoryError,
     SecretPurpose,
+    UserPresenceChallenge,
 )
 from finishup.service.vault import (
     VaultError,
@@ -427,6 +428,118 @@ async def test_discard_provider_credential_withdraws_an_unusable_key(tmp_path: P
 
 
 @pytest.mark.anyio
+@pytest.mark.parametrize("invalid", [None, "purpose", "target", "generation", "expired"])
+async def test_remove_provider_credential_requires_exact_fresh_proof(
+    tmp_path: Path, invalid: str | None
+) -> None:
+    memory = LocalSecretMemory()
+    service = _service(tmp_path, memory, _Clock())
+    await _initialize(service, memory)
+    binding = provider_credential_profile_binding("openai", "gpt-5", "openai-responses", "1")
+    other = provider_credential_profile_binding("openai", "gpt-5-mini", "openai-responses", "1")
+    for item in (binding, other):
+        proof = HumanAuthorizationProof(
+            "set-proof",
+            "provider_credential_set",
+            item.target_digest("set"),
+            7,
+            service.generation,
+            None,
+            9.0,
+            20.0,
+        )
+        await service.store_provider_credential(
+            "set",
+            item,
+            memory.capture(SecretPurpose.PROVIDER_CREDENTIAL, bytearray(b"sk-test-key-value-1119")),
+            proof,
+            10.0,
+        )
+    proof = HumanAuthorizationProof(
+        "remove-proof",
+        "provider_credential_rotate" if invalid == "purpose" else "provider_credential_remove",
+        other.target_digest("remove") if invalid == "target" else binding.target_digest("remove"),
+        8 if invalid == "generation" else 7,
+        service.generation,
+        None,
+        9.0,
+        9.5 if invalid == "expired" else 20.0,
+    )
+    if invalid is not None:
+        with pytest.raises((VaultError, SecretMemoryError)):
+            await service.remove_provider_credential(binding, proof, 10.0)
+        assert await service.has_provider_credential(binding) is True
+    else:
+        proof = await service.mint_human_authorization(
+            memory.capture(
+                SecretPurpose.PROVIDER_REAUTHENTICATION, bytearray(b"correct horse battery")
+            ),
+            UserPresenceChallenge(
+                "provider_credential_remove",
+                "sha256:" + "a" * 64,
+                binding.target_digest("remove"),
+                "sha256:" + "b" * 64,
+                7,
+                service.generation,
+                None,
+                20.0,
+            ),
+        )
+        attempt = ProviderAttemptAuthBinding(
+            binding.provider_id,
+            binding.model_id,
+            binding.endpoint_profile_id,
+            binding.endpoint_profile_version,
+            binding.purpose,
+            binding.authorization_scope_digest,
+            binding.purpose_digest,
+            "dsp_00000000-0000-4000-8000-000000000004",
+            "sha256:" + "4" * 64,
+            7,
+            15.0,
+        )
+        pending_handle = await service.provider_credential(attempt)
+        await service.remove_provider_credential(binding, proof, 10.0)
+        assert await service.has_provider_credential(binding) is False
+
+        class Callback:
+            async def inject_and_start(self, credential_view: memoryview) -> str:
+                raise AssertionError("a removed key must not start a new request")
+
+        with pytest.raises(SecretMemoryError):
+            await pending_handle.authorize_attempt(attempt, Callback())
+        with pytest.raises((VaultError, SecretMemoryError)):
+            await service.remove_provider_credential(binding, proof, 10.0)
+    assert await service.has_provider_credential(other) is True
+
+
+@pytest.mark.anyio
+async def test_remove_provider_credential_refuses_missing_and_locked(tmp_path: Path) -> None:
+    memory = LocalSecretMemory()
+    service = _service(tmp_path, memory, _Clock())
+    await _initialize(service, memory)
+    binding = provider_credential_profile_binding("openai", "gpt-5", "openai-responses", "1")
+
+    def proof() -> HumanAuthorizationProof:
+        return HumanAuthorizationProof(
+            "remove-proof",
+            "provider_credential_remove",
+            binding.target_digest("remove"),
+            7,
+            service.generation,
+            None,
+            9.0,
+            20.0,
+        )
+
+    with pytest.raises(VaultError, match="record_missing"):
+        await service.remove_provider_credential(binding, proof(), 10.0)
+    await service.lock()
+    with pytest.raises(KeyStoreError, match="locked"):
+        await service.remove_provider_credential(binding, proof(), 10.0)
+
+
+@pytest.mark.anyio
 async def test_uninitialized_keyring_has_no_passphrase_fallback(tmp_path: Path) -> None:
     memory = LocalSecretMemory()
     service = _service(tmp_path, memory, _Clock())
@@ -506,3 +619,69 @@ async def test_a_set_that_does_not_survive_staging_is_never_published(tmp_path: 
             publish=_publish_something_else,
         )
     memory.close()
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("failure", ["before", "after"])
+async def test_remove_checks_record_generation_and_refuses_ambiguous_deletion(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, failure: str
+) -> None:
+    from collections.abc import Mapping
+
+    from finishup.adapters.keys.encrypted_vault import EncryptedVaultError, VaultRecordKind
+
+    memory = LocalSecretMemory()
+    service = _service(tmp_path, memory, _Clock())
+    await _initialize(service, memory)
+    binding = provider_credential_profile_binding("openai", "gpt-5", "openai-responses", "1")
+    for _ in range(2):
+        proof = HumanAuthorizationProof(
+            "set-proof",
+            "provider_credential_set",
+            binding.target_digest("set"),
+            7,
+            service.generation,
+            None,
+            9.0,
+            20.0,
+        )
+        await service.store_provider_credential(
+            "set",
+            binding,
+            memory.capture(SecretPurpose.PROVIDER_CREDENTIAL, bytearray(b"sk-test-key-value-1119")),
+            proof,
+            10.0,
+        )
+    original = EncryptedVaultStore.delete_record
+    generations: list[int] = []
+
+    def delete(
+        store: EncryptedVaultStore,
+        kind: VaultRecordKind,
+        structural_binding: Mapping[str, str],
+        *,
+        expected_generation: int,
+    ) -> None:
+        generations.append(expected_generation)
+        assert kind is VaultRecordKind.PROVIDER_CREDENTIAL
+        assert dict(structural_binding) == binding.record_binding()
+        if failure == "before":
+            raise EncryptedVaultError("io_failure")
+        original(store, kind, structural_binding, expected_generation=expected_generation)
+        raise EncryptedVaultError("io_failure")
+
+    monkeypatch.setattr(EncryptedVaultStore, "delete_record", delete)
+    proof = HumanAuthorizationProof(
+        "remove-proof",
+        "provider_credential_remove",
+        binding.target_digest("remove"),
+        7,
+        service.generation,
+        None,
+        9.0,
+        20.0,
+    )
+    with pytest.raises(VaultError, match="vault_tampered"):
+        await service.remove_provider_credential(binding, proof, 10.0)
+    assert generations == [2]
+    assert await service.has_provider_credential(binding) is (failure == "before")

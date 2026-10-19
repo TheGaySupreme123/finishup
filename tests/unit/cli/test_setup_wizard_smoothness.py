@@ -272,6 +272,7 @@ def test_an_unreadable_configuration_keeps_the_api_key_question(
 
     monkeypatch.setattr(wizard, "_is_interactive_terminal", lambda: True)
     monkeypatch.setattr(wizard, "_service_reachability", reachable)
+    monkeypatch.setattr(wizard, "_restart_service_for_semantic_composition", reachable)
     monkeypatch.setattr(wizard, "load_config", unreadable)
     monkeypatch.setattr(wizard, "_prompt_credential_probe_authorization", lambda: False)
     monkeypatch.setattr(privacy_setup, "run_privacy_setup", privacy)
@@ -293,7 +294,7 @@ def _codex_provider_run(
 ) -> list[str]:
     """Drive the real Codex-subscription branch of the provider step; return markers written."""
 
-    from finishup.cli import codex_subscription, privacy_setup, provider_binding
+    from finishup.cli import ai_setup, codex_subscription, privacy_setup
 
     markers: list[str] = []
 
@@ -318,9 +319,7 @@ def _codex_provider_run(
     monkeypatch.setattr(wizard, "_is_interactive_terminal", lambda: True)
     monkeypatch.setattr(wizard, "_service_reachability", ready)
     monkeypatch.setattr(wizard, "_restart_service_for_semantic_composition", restarted)
-    monkeypatch.setattr(
-        provider_binding, "prompt_provider_endpoint_binding", _codex_subscription_choice
-    )
+    monkeypatch.setattr(ai_setup, "prompt_reviewer_binding", _codex_subscription_choice)
     monkeypatch.setattr(codex_subscription, "prompt_codex_subscription_setup", signed_in)
     monkeypatch.setattr(wizard, "load_config", _config(external_runtime=object()))
     monkeypatch.setattr(privacy_setup, "run_privacy_setup", privacy)
@@ -889,7 +888,7 @@ def test_no_privacy_next_step_when_the_privacy_step_never_ran(
 def test_a_skipped_provider_names_the_provider_step_not_the_privacy_step(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    from finishup.cli import privacy_setup, provider_binding
+    from finishup.cli import ai_setup, privacy_setup
 
     async def ready(**_kwargs: object) -> dict[str, object]:
         return {"reachable": True, "state": "ready"}
@@ -902,7 +901,7 @@ def test_a_skipped_provider_names_the_provider_step_not_the_privacy_step(
 
     monkeypatch.setattr(wizard, "_is_interactive_terminal", lambda: True)
     monkeypatch.setattr(wizard, "_service_reachability", ready)
-    monkeypatch.setattr(provider_binding, "prompt_provider_endpoint_binding", skipped)
+    monkeypatch.setattr(ai_setup, "prompt_reviewer_binding", skipped)
     monkeypatch.setattr(privacy_setup, "run_privacy_setup", never)
 
     assert anyio.run(wizard.run_provider_setup) == 20
@@ -921,7 +920,7 @@ def test_the_codex_wizard_prints_each_privacy_and_credential_step_once(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     import finishup.config.load as config_load
-    from finishup.cli import privacy_setup, provider_binding, provider_status
+    from finishup.cli import ai_setup, privacy_setup, provider_status
     from finishup.config.write import fireworks_provider
 
     _codex_only(monkeypatch, home, tmp_path, "ai_powered")
@@ -958,7 +957,7 @@ def test_the_codex_wizard_prints_each_privacy_and_credential_step_once(
     monkeypatch.setattr(wizard, "_interactive_provider_setup", _REAL_PROVIDER_SETUP)
     monkeypatch.setattr(wizard, "load_config", _config(external_runtime=None))
     monkeypatch.setattr(config_load, "load_config", _config(provider=provider))
-    monkeypatch.setattr(provider_binding, "prompt_provider_endpoint_binding", bind)
+    monkeypatch.setattr(ai_setup, "prompt_reviewer_binding", bind)
     monkeypatch.setattr(privacy_setup, "run_privacy_setup", _declined_with_profile)
     monkeypatch.setattr(provider_status, "provider_status_report", status_report)
     monkeypatch.setattr(wizard, "_emit_human_report", _REAL_HUMAN_REPORT)

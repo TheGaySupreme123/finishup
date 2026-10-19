@@ -135,7 +135,7 @@ def prompt_provider_model(choice: str) -> str | None:
     typer.echo(f"  Suggested {preset.provider_id} models")
     typer.echo("  Repository-reviewed convenience list; availability depends on your account.")
     for index, model_id in enumerate(preset.suggested_models, start=1):
-        typer.echo(f"  {index}  {model_id}")
+        typer.echo(f"  {index}  {model_id}" + (" (recommended)" if index == 1 else ""))
     typer.echo("  c  Custom model ID")
     raw = typer.prompt("Select model", default="1").strip().lower()
     if raw in {"c", "custom", "manual"}:
@@ -154,6 +154,7 @@ def prompt_provider_endpoint_binding(
     *,
     path: Path | None = None,
     show_standalone_next_step: bool = True,
+    api_only: bool = False,
 ) -> Path | Literal["codex_subscription"] | None:
     """Prompt for a reviewed provider preset or custom origin; never asks for secrets.
 
@@ -163,23 +164,42 @@ def prompt_provider_endpoint_binding(
     """
 
     typer.echo("")
-    typer.echo("LLM endpoint (nonsecret)")
-    typer.echo("  1  Official OpenAI (api.openai.com)")
+    typer.echo("Choose an API provider" if api_only else "LLM endpoint (nonsecret)")
+    typer.echo("  1  OpenAI (recommended; api.openai.com)")
     typer.echo("  2  Fireworks AI (api.fireworks.ai/inference/v1)")
-    typer.echo("  3  Anthropic Claude (OpenAI-compatible Chat Completions)")
-    typer.echo("  4  Google Gemini (OpenAI-compatible Chat Completions)")
-    typer.echo("  5  OpenRouter (OpenAI-compatible Chat Completions)")
-    typer.echo("  6  Grok / xAI (OpenAI-compatible Chat Completions)")
-    typer.echo("  7  Vercel AI Gateway (OpenAI-compatible Responses)")
+    typer.echo(
+        "  3  Anthropic"
+        if api_only
+        else "  3  Anthropic Claude (OpenAI-compatible Chat Completions)"
+    )
+    typer.echo(
+        "  4  Google Gemini"
+        if api_only
+        else "  4  Google Gemini (OpenAI-compatible Chat Completions)"
+    )
+    typer.echo(
+        "  5  OpenRouter" if api_only else "  5  OpenRouter (OpenAI-compatible Chat Completions)"
+    )
+    typer.echo(
+        "  6  Grok (xAI)" if api_only else "  6  Grok / xAI (OpenAI-compatible Chat Completions)"
+    )
+    typer.echo(
+        "  7  Vercel AI Gateway"
+        if api_only
+        else "  7  Vercel AI Gateway (OpenAI-compatible Responses)"
+    )
     typer.echo("  8  Custom OpenAI-compatible HTTPS origin")
-    typer.echo("  9  Codex with ChatGPT subscription (Codex-managed OAuth; no API key)")
+    if not api_only:
+        typer.echo("  9  Codex with ChatGPT subscription (Codex-managed OAuth; no API key)")
     typer.echo("  s  Skip for now")
-    raw = typer.prompt("Select", default="s").strip().lower()
+    raw = typer.prompt("Select", default="1" if api_only else "s").strip().lower()
     if raw in {"s", "skip", ""}:
         return None
     allowed = {"1", "2", "3", "4", "5", "6", "7", "8", "9"}
+    if api_only:
+        allowed.remove("9")
     if raw not in allowed:
-        typer.echo("invalid_request: choose 1, 2, 3, 4, 5, 6, 7, 8, 9, or s", err=True)
+        typer.echo("invalid_request: choose a listed provider number or s", err=True)
         return None
     if raw == "9":
         return "codex_subscription"

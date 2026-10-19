@@ -522,7 +522,7 @@ class FinishUpTui(App[int]):
         self._flow = self.run_worker(self._dispatch(command.name), name="command", exclusive=True)
 
     async def _dispatch(self, name: str) -> None:
-        handlers: dict[str, Callable[[], Awaitable[None]]] = {
+        handlers: dict[str, Callable[[], Awaitable[object]]] = {
             "status": self.command_status,
             "observe": self.command_observe,
             "work": self.command_work,
@@ -742,16 +742,22 @@ class FinishUpTui(App[int]):
         # Only an explicit local answer finishes as local-only. Dismiss (None) is handled by
         # the first-run callers before storage or registration, so it must not fall through here.
         if choice == "local_only":
-            # Setup finishes only once the local-only choice is recorded; otherwise an earlier
-            # AI-review policy would stay in force behind a "finished" setup.
+            # The setup marker is written only over a recorded answer (review of #1119).
             if await self._record_local_only():
                 await self._finish_setup(connected=connected)
             return
         if choice not in {"agent_opt_in", "ai_powered"}:
             return
-        await self.command_provider(
+        provider_choice = await self.command_provider(
             conversation_review="local_agent_opt_in" if choice == "agent_opt_in" else "ai_powered"
         )
+        if provider_choice == "local_only":
+            await self._finish_setup(connected=connected)
+            return
+        if provider_choice == "local_only_unrecorded":
+            # "Not now" could not be recorded, so the earlier policy may still allow AI-powered
+            # review. Finishing here would describe a setup that did not happen.
+            return
         provider = await self.runtime.provider_posture()
         if (
             not provider.endpoint_bound
@@ -821,8 +827,7 @@ class FinishUpTui(App[int]):
 
         The Private recipe with the explicit ``local_only`` conversation setting, through the
         trusted questionnaire; it narrows, so no widening ceremony runs. Where the terminal cannot
-        open it, say the exact command instead. Returns whether the setting was recorded; setup
-        finishes only when it was.
+        open it, say the exact command instead.
         """
 
         try:
@@ -845,8 +850,8 @@ class FinishUpTui(App[int]):
                 "Local checks only was not recorded",
                 ("Run 'finishup privacy conversations local-only' from your shell.",),
             )
-            return False
-        return True
+
+        return getattr(report, "outcome", "failed") in {"configured", "unchanged"}
 
     async def _choose_harnesses(
         self,
@@ -2612,22 +2617,52 @@ class FinishUpTui(App[int]):
             ),
         )
 
-    async def command_provider(self, conversation_review: str | None = None) -> None:
+    async def command_provider(self, conversation_review: str | None = None) -> str | None:
         """Bind a reviewer, approve its privacy policy, then store its key.
 
         ``conversation_review`` is a first-run answer already taken (ADR-049): the privacy
         policy drafted here carries it and the questionnaire does not ask again.
         """
 
-        options = self.runtime.provider_options()
+        from finishup.tui.ai_setup import choose_connection, choose_model
+
+        connection = await choose_connection(self.ask)
+        if connection is None:
+            return None
+        if connection == "local_only":
+            return "local_only" if await self._record_local_only() else "local_only_unrecorded"
+        if connection == "codex_subscription":
+            await self._command_codex_subscription(conversation_review=conversation_review)
+            return None
+        options = tuple(
+            option
+            for option in self.runtime.provider_options()
+            if option.choice != "codex_subscription"
+        )
         chosen = await self.ask(
             SelectionView(
                 name="provider",
-                title="Choose a provider for optional deeper review",
+                title="Choose an API provider",
                 options=[
-                    Option(option.choice, option.label, option.endpoint_text) for option in options
+                    Option(
+                        option.choice,
+                        option.label
+                        + (" (recommended)" if option.choice == "official_openai" else ""),
+                        option.endpoint_text,
+                    )
+                    for option in options
                 ]
                 + [
+                    Option(
+                        "key",
+                        "Enter or replace the stored key",
+                        "Hidden key entry in the trusted terminal.",
+                    ),
+                    Option(
+                        "remove_key",
+                        "Remove the stored key",
+                        "Confirm and reauthenticate in the trusted terminal.",
+                    ),
                     Option(
                         "codex_status",
                         "Codex subscription status",
@@ -2669,6 +2704,38 @@ class FinishUpTui(App[int]):
         if chosen == "codex_subscription":
             await self._command_codex_subscription(conversation_review=conversation_review)
             return
+        if chosen == "key":
+            await self._run_confidential(
+                "Provider API key",
+                self.runtime.store_provider_credential,
+                fallback_command="finishup ai key",
+            )
+            return
+        if chosen == "remove_key":
+            try:
+                status = await self.hand_over_terminal(self.runtime.remove_provider_credential)
+            except SuspendNotSupported:
+                self.say(Level.UNPROVEN, "Run 'finishup ai forget-key' from your own terminal.")
+                return
+            except RuntimeError_ as error:
+                self._report(error)
+                return
+            if status == "cancelled":
+                self.say(Level.OPTIONAL, "The stored key was kept.")
+            elif status in {"removed", "removed_not_ready"}:
+                self.say(
+                    Level.ACTIVE if status == "removed" else Level.UNPROVEN,
+                    "The stored key was removed."
+                    if status == "removed"
+                    else "The stored key was removed; readiness could not reload. Run finishup ai status.",
+                    (
+                        "AI-powered review cannot use this provider and model until you enter a key again with finishup ai key; keys stored for other models stay stored.",
+                        "If the key may have leaked, also revoke it at the provider.",
+                    ),
+                )
+            else:
+                self.say(Level.UNPROVEN, "Key removal was not confirmed. Run finishup ai status.")
+            return
         if chosen == "codex_status":
             await self._command_codex_subscription_status()
             return
@@ -2699,17 +2766,12 @@ class FinishUpTui(App[int]):
             if await self.ask(entry) is None:
                 return
             origin = entry.value.strip()
-        model_entry = TextEntryView(
-            name="provider-model",
-            title=option.label,
-            label="Model identifier",
-            initial=option.default_model,
-            placeholder="model id",
+        model = await choose_model(
+            self.ask, option.label, self.runtime.provider_models(option.choice)
         )
-        if await self.ask(model_entry) is None:
+        if model is None:
             self.say(Level.OPTIONAL, "No provider was configured.")
-            return
-        model = model_entry.value.strip()
+            return None
 
         confirmed = await self.ask(
             ApprovalView(
@@ -2736,6 +2798,7 @@ class FinishUpTui(App[int]):
                     offer_recommended=conversation_review not in _ADD_ON_ANSWERS,
                     conversation_review=conversation_review,
                     ai_review_add_on=conversation_review in _ADD_ON_ANSWERS,
+                    credential_probe=True,
                 )
             )
         except SuspendNotSupported:
@@ -2782,7 +2845,7 @@ class FinishUpTui(App[int]):
         status = await self._run_confidential(
             "Provider API key",
             self.runtime.store_provider_credential,
-            fallback_command="finishup provider credential set",
+            fallback_command="finishup ai key",
         )
         posture = await self.runtime.provider_posture()
         if status is None:

@@ -20,6 +20,7 @@ from pydantic import BaseModel, ValidationError
 
 from finishup import __version__
 from finishup.cli.agent_start import AGENT_START_HANDOFF
+from finishup.cli.ai import ai_app, register_credential_remove
 from finishup.cli.bootstrap import (
     control_failure as _shared_control_failure,
 )
@@ -243,6 +244,7 @@ app.add_typer(service_app, name="service")
 app.add_typer(instance_app, name="instance")
 service_app.add_typer(auto_unlock_app, name="auto-unlock")
 service_app.add_typer(recovery_app, name="recovery")
+app.add_typer(ai_app, name="ai")
 app.add_typer(provider_app, name="provider")
 provider_app.add_typer(credential_app, name="credential")
 provider_app.add_typer(codex_subscription_app, name="codex-subscription")
@@ -4633,8 +4635,15 @@ def _provider_credential_command(action: str) -> Callable[..., None]:
     return command
 
 
+def run_configured_provider_credential(action: Literal["set", "rotate"]) -> None:
+    """Reuse the configured profile's trusted hidden-entry command (no secret arguments)."""
+
+    _provider_credential_command(action)()
+
+
 credential_app.command("set")(_provider_credential_command("set"))
 credential_app.command("rotate")(_provider_credential_command("rotate"))
+register_credential_remove(credential_app)
 
 
 @codex_subscription_app.command("setup")

@@ -33,6 +33,19 @@ gates on #1056. This heading takes the release date when 0.3.0 is tagged. See
   `finishup setup vault --passphrase` keeps a typed, never-stored passphrase for a new vault, and
   `finishup service auto-unlock status` shows where the key lives. Recovery snapshots never carry
   it.
+- **Optional AI-powered review is easier to set up.** One shared reviewer question in setup and
+  `/provider`: ChatGPT subscription, API key, or Not now (local checks only). API setup offers
+  updated October 2026 models, mandatory privacy approval, and hidden key entry. Custom model IDs
+  remain available (ADR-006 amendment).
+- **New `finishup ai setup|key|forget-key|model|status|on|off` commands.** `ai setup --every-task` reviews
+  every task. Stray arguments are refused without being echoed, so a pasted key never lands in a
+  terminal or transcript. Key entry picks set or rotate;
+  model changes explain exact-model key binding and reopen safe entry; off keeps the key.
+  `ai key` replaces a stored key, and `ai forget-key` (also `provider credential remove`)
+  removes it after default-No confirmation and trusted-terminal owner reauthentication.
+  `/provider` offers the same removal path. Binding and privacy settings stay unchanged;
+  status reports absence after readiness reload. Revoke leaked keys at the provider too.
+  Privacy widening still requires reauthentication.
 
 ### Yoetz is now FinishUP
 

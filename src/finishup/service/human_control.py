@@ -44,6 +44,7 @@ from finishup.service.confidential_protocol import (
     PortableRecoveryTarget,
     PrivacyDecisionResult,
     PrivacyPendingTarget,
+    ProviderCredentialRemoveResult,
     ProviderCredentialResult,
     ProviderCredentialTarget,
     RetryAction,
@@ -80,6 +81,8 @@ _HUMAN_CONTROL_REASONS: Final = frozenset(
         "closed",
         "internal_error",
         "kind_forbidden",
+        "record_missing",
+        "vault_locked",
         "pending_not_actionable",
         "pending_unavailable",
         "phase_invalid",
@@ -199,6 +202,13 @@ class _HumanEffects(Protocol):
         proof: HumanAuthorizationProof,
         now_monotonic: float,
     ) -> ProviderCredentialResult: ...
+
+    async def remove_provider_credential(
+        self,
+        target: ProviderCredentialTarget,
+        proof: HumanAuthorizationProof,
+        now_monotonic: float,
+    ) -> ProviderCredentialRemoveResult: ...
 
     async def rotate_vault_passphrase(
         self,
@@ -689,6 +699,7 @@ class HumanControlService:
         if kind in {
             HumanCeremonyKind.PROVIDER_CREDENTIAL_SET,
             HumanCeremonyKind.PROVIDER_CREDENTIAL_ROTATE,
+            HumanCeremonyKind.PROVIDER_CREDENTIAL_REMOVE,
             # The owner asked for this exact view by running the command; the decision is the
             # reauthentication itself (ADR-009 round 3, ADR-016 decision 4).
             HumanCeremonyKind.OWNER_RECEIPT_VIEW,
@@ -853,7 +864,13 @@ class HumanControlService:
         proof = session.proof
         if proof is None:
             raise HumanControlError("reauthentication_unavailable")
-        if session.request.ceremony_kind is HumanCeremonyKind.PRIVACY_POLICY_DECISION:
+        if session.request.ceremony_kind is HumanCeremonyKind.PROVIDER_CREDENTIAL_REMOVE:
+            result = await self._effects.remove_provider_credential(
+                cast(ProviderCredentialTarget, session.request.target),
+                proof,
+                self._sample_monotonic(),
+            )
+        elif session.request.ceremony_kind is HumanCeremonyKind.PRIVACY_POLICY_DECISION:
             result = await self._effects.decide_privacy(
                 cast(PrivacyPendingTarget, session.request.target),
                 "approve",
@@ -1133,6 +1150,10 @@ class HumanControlService:
             ),
             HumanCeremonyKind.PROVIDER_CREDENTIAL_ROTATE: (
                 "provider_credential_rotate",
+                SecretPurpose.PROVIDER_REAUTHENTICATION,
+            ),
+            HumanCeremonyKind.PROVIDER_CREDENTIAL_REMOVE: (
+                "provider_credential_remove",
                 SecretPurpose.PROVIDER_REAUTHENTICATION,
             ),
             HumanCeremonyKind.PRIVACY_POLICY_DECISION: (

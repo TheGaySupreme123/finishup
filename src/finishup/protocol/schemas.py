@@ -64,7 +64,9 @@ __all__ = [
 SCHEMA_NAMESPACE: Final = "https://schemas.yoetz.dev/0.1/"
 SCHEMA_MANIFEST_SCHEMA: Final = "yoetz.schema-manifest/1.0.0"
 SCHEMA_MANIFEST_VERSION: Final = "1.0.0"
-SCHEMA_MEMBER_COUNT: Final = 233  # #1119: additive host-connection batch report
+SCHEMA_MEMBER_COUNT: Final = (
+    234  # #1119: host-connection batch report and nonsecret ai-status 1.0.0
+)
 
 _DRAFT_2020_12: Final = "https://json-schema.org/draft/2020-12/schema"
 _SCHEMA_MEDIA_TYPE: Final = "application/schema+json"
@@ -494,7 +496,7 @@ def _derive_role(path: str) -> SchemaArtifactRole:
         return SchemaArtifactRole.SETUP_CONTRACT
     if directory == "integrations" and filename.startswith("host-connection-"):
         return SchemaArtifactRole.SETUP_CONTRACT
-    if directory == "integrations" and filename.startswith("setup-status-"):
+    if directory == "integrations" and filename.startswith(("setup-status-", "ai-status-")):
         return SchemaArtifactRole.SETUP_CONTRACT
     if directory == "integrations" and filename.startswith("setup-readiness-"):
         return SchemaArtifactRole.SETUP_CONTRACT
@@ -826,7 +828,7 @@ def _load_catalog_state() -> _CatalogState:
     )
     request_versions_dict = _request_result_versions(entries)
     event_versions_dict = _event_payload_versions(entries)
-    if len(request_versions_dict) != 55 or len(event_versions_dict) != 29:
+    if len(request_versions_dict) != 56 or len(event_versions_dict) != 29:
         _protocol_error("schema_catalog_incomplete")
 
     catalog = SchemaCatalog(
@@ -1035,7 +1037,7 @@ def _build_manifest_index() -> _ManifestIndex:
         id_by_identity[(name, version)] = expected_id
         entries.append((name, version, member.schema_kind, member.artifact_role))
     request_versions = _request_result_versions(entries)
-    if len(request_versions) != 55 or len(_event_payload_versions(entries)) != 29:
+    if len(request_versions) != 56 or len(_event_payload_versions(entries)) != 29:
         _protocol_error("schema_catalog_incomplete")
     return _ManifestIndex(
         member_bytes=MappingProxyType(member_bytes),

@@ -865,6 +865,7 @@ class FinishUpRuntime:
         offer_recommended: bool = False,
         conversation_review: str | None = None,
         ai_review_add_on: bool = False,
+        credential_probe: bool = False,
     ) -> object:
         """Hand the trusted questionnaire to the CLI implementation.
 
@@ -895,6 +896,11 @@ class FinishUpRuntime:
             "custom",
         }:
             raise RuntimeError_("privacy_recipe_invalid", "the privacy recipe is invalid")
+        from finishup.cli.setup import prompt_credential_probe_authorization
+
+        credential_probe_authorized = (
+            prompt_credential_probe_authorization() if credential_probe else False
+        )
         try:
             return await run_privacy_setup(
                 recipe_hint=cast(
@@ -912,6 +918,7 @@ class FinishUpRuntime:
                 workspace_locator=self._cwd,
                 conversation_review=conversation,
                 ai_review_add_on=ai_review_add_on,
+                credential_probe_authorized=credential_probe_authorized,
             )
         except (ControlError, HumanCeremonyCliError, OSError, ValueError) as error:
             raise RuntimeError_(
@@ -1622,6 +1629,14 @@ class FinishUpRuntime:
         )
         return tuple(options)
 
+    def provider_models(self, choice: str) -> tuple[str, ...]:
+        """The same default-first reviewed catalog the prompt wizard uses."""
+
+        from finishup.config.write import PROVIDER_PRESETS
+
+        preset = PROVIDER_PRESETS.get(choice)
+        return () if preset is None else preset.suggested_models
+
     def codex_subscription_defaults(self) -> tuple[str, str, str, str]:
         """Return eligible nonsecret defaults; setup still capability-checks the runtime.
 
@@ -1929,7 +1944,27 @@ class FinishUpRuntime:
             )
         except HumanCeremonyCliError as error:
             raise RuntimeError_(error.reason, "the credential ceremony did not complete")
-        return str(getattr(result, "activation_status", "unknown"))
+        status = str(getattr(result, "activation_status", "unknown"))
+        if status == "stored":
+            from finishup.cli.setup import restart_service_for_semantic_composition
+
+            await restart_service_for_semantic_composition(report_startup_failure=False)
+        return status
+
+    async def remove_provider_credential(self) -> str:
+        """The same owner-only terminal confirmation, reauthentication and readiness reload."""
+
+        import typer
+
+        from finishup.cli.ai import forget_key
+
+        try:
+            return await forget_key()
+        except (typer.Exit, typer.Abort) as error:
+            raise RuntimeError_(
+                "provider_credential_remove_unconfirmed",
+                "key removal was not confirmed; run finishup ai status",
+            ) from error
 
     async def initialize_passphrase_vault(self) -> None:
         from finishup.cli.unlock import HumanCeremonyCliError, initialize_passphrase_vault

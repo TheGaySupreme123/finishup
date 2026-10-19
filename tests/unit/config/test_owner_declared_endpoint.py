@@ -278,52 +278,52 @@ def test_provider_preset_aliases_and_unknown_choices_are_bounded() -> None:
     assert caught.value.reason_code == "config_value_invalid"
 
 
-def test_provider_model_catalog_matches_august_2026_review() -> None:
+def test_provider_model_catalog_matches_october_2026_review() -> None:
     expected_models = {
         "official_openai": (
-            "gpt-5.6-sol",
-            "gpt-5.6-terra",
-            "gpt-5.6-luna",
+            "gpt-6.1-sol",
+            "gpt-6-astra",
+            "gpt-6-luna",
+            "gpt-6-sol",
         ),
         "fireworks": (
-            "accounts/fireworks/models/qwen3-235b-a22b",
-            "accounts/fireworks/models/minimax-m3",
+            "accounts/fireworks/models/kimi-k3",
+            "accounts/fireworks/models/glm-5p3",
+            "accounts/fireworks/models/qwen3p8-max",
         ),
         "anthropic": (
-            "claude-sonnet-5",
-            "claude-opus-5",
-            "claude-fable-5",
-            "claude-haiku-4-5-20251001",
+            "claude-opus-5-5",
+            "claude-sonnet-5-5",
+            "claude-haiku-5-5",
+            "claude-fable-5-1",
         ),
         "google_gemini": (
-            "gemini-3.6-flash",
+            "gemini-4-argon",
+            "gemini-3.8-flash",
             "gemini-3.5-flash-lite",
         ),
         "openrouter": (
-            "openai/gpt-5.6-sol",
-            "openai/gpt-5.6-terra",
-            "openai/gpt-5.6-luna",
-            "anthropic/claude-sonnet-5",
-            "anthropic/claude-opus-5",
-            "anthropic/claude-fable-5",
-            "google/gemini-3.6-flash",
-            "x-ai/grok-4.6",
+            "openai/gpt-6.1-sol",
+            "openai/gpt-6-astra",
+            "anthropic/claude-opus-5.5",
+            "anthropic/claude-sonnet-5.5",
+            "google/gemini-4-argon",
+            "x-ai/grok-4.7",
+            "moonshotai/kimi-k3",
         ),
         "grok": (
-            "grok-4.6",
-            "grok-4.5",
+            "grok-4.7",
             "grok-4.3",
-            "grok-4.20-0309-reasoning",
-            "grok-4.20-0309-non-reasoning",
+            "grok-4.6",
         ),
         "vercel_ai_gateway": (
-            "anthropic/claude-sonnet-5",
-            "anthropic/claude-fable-5",
-            "openai/gpt-5.6-sol",
-            "openai/gpt-5.6-terra",
-            "openai/gpt-5.6-luna",
-            "spacexai/grok-4.6",
-            "google/gemini-3.6-flash",
+            "openai/gpt-6.1-sol",
+            "openai/gpt-6-astra",
+            "anthropic/claude-opus-5.5",
+            "anthropic/claude-sonnet-5.5",
+            "google/gemini-4-argon",
+            "spacexai/grok-4.7",
+            "moonshotai/kimi-k3",
         ),
     }
 

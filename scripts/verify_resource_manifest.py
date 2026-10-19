@@ -309,6 +309,12 @@ _INVENTORY_ENTRIES: Final[tuple[tuple[str, str, str, bool], ...]] = (
         True,
     ),
     (
+        "schemas/integrations/ai-status-1.0.0.schema.json",
+        "json_schema",
+        "application/schema+json",
+        True,
+    ),
+    (
         "fixtures/canonical/host-connection-batch.case.json",
         "canonical_vector",
         "application/json",

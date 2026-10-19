@@ -198,7 +198,7 @@ application errors — already describe real conditions and pass through unchang
 The service exposes three fixed owner-only same-UID endpoints: ordinary control; YZS1 one-secret
 ingress; and YZH1 multi-phase human control. YZH1 is the sole challenge/binding creator, returns
 bounded structural previews, supports zero-secret keyring retry, coordinates provider credential
-set/rotate, accepts typed privacy decisions, and owns the exact ceremony for changing or disabling
+set/rotate/remove, accepts typed privacy decisions, and owns the exact ceremony for changing or disabling
 idle relock. Durable policy widening, credential changes, and idle-security weakening
 require internal strong reauthentication; a `confirm_every_request` decision already inside the
 durable policy uses exact foreground digest-bound consent and creates no reusable authority. YZS1
@@ -249,6 +249,32 @@ compromised agent can forge it. One-shot provider credential bytes may enter the
 from authorize stdin after warning acknowledgement and are overwritten best-effort. Provider
 credentials become opaque adapter-scoped handles in the service vault; provider adapters and
 normal clients never receive reusable credential bytes.
+
+**2026-10-19 credential-removal amendment (issue #1119).**
+`provider_credential_remove` is an owner-only YZH1 ceremony for one exact
+`ProviderCredentialTarget(action="remove")`, with a bounded preview and target digest binding.
+It starts at `AuthorizationRequiredPhase`, using the same scoped OS-presence or vault-secret
+reauthentication paths as rotation (`provider_reauthentication`); it then commits without a
+`provider_credential` secret phase. The helper always requires the trusted foreground terminal,
+even when scoped auto-unlock supplies reauthentication. The existing production presence scope
+is unchanged; a platform adapter outside that scope cannot authorize removal. Locked vaults and
+missing records refuse (`vault_locked`, `record_missing`). The vault consumes the exact single-use
+proof before deleting with `expected_generation`; only confirmed deletion returns
+`ProviderCredentialRemoveResult(status="removed")`. Matching unused provider handles are invalidated,
+including on an ambiguous deletion, so they cannot start a later request. Already-started requests
+cannot be recalled. The CLI confirms with default No; the full-screen interface hands over the
+terminal. Binding and privacy policy stay unchanged. This ceremony is deliberately absent from
+ADR-015 elevated bootstrap, `finishup consent`, delegated chat authorization and MCP.
+
+Known limit (review of #1119, accepted for this release). Where scoped auto-unlock supplies the
+reauthentication factor, the default for a generated-passphrase vault whose owner never learned
+the passphrase, a process that runs as the same user and controls a foreground pseudo-terminal can
+complete removal without a human. That is the same authority `provider_credential_set` and
+`provider_credential_rotate` already have with the same factor. Removal discloses nothing; its worst
+case is a deleted key that the owner enters again. Requiring an owner-entered factor or action-bound
+OS presence would leave removal unusable for the default vault until production OS presence covers
+credential ceremonies. That stricter rule should therefore land for set, rotate and remove together;
+it is a follow-up on #1119.
 
 `UnlockCoordinator` solely owns the persistent passphrase throttle: admission delay, in-progress
 reservation, failure charge, success reset, crash re-arm, and repair. It calls cryptographic vault

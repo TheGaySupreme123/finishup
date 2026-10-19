@@ -224,8 +224,8 @@ class ProviderCredentialBinding:
             "purpose_digest": self.purpose_digest,
         }
 
-    def target_digest(self, action: Literal["set", "rotate"]) -> str:
-        if action not in {"set", "rotate"}:
+    def target_digest(self, action: Literal["set", "rotate", "remove"]) -> str:
+        if action not in {"set", "rotate", "remove"}:
             raise ValueError("provider_credential_action_invalid")
         return canonical_digest(
             {
@@ -1179,6 +1179,51 @@ class VaultService:
                 reason = "record_missing" if exc.reason == "record_missing" else "vault_tampered"
                 raise VaultError(reason) from exc
 
+    async def remove_provider_credential(
+        self,
+        binding: ProviderCredentialBinding,
+        proof: HumanAuthorizationProof,
+        now_monotonic: float,
+        *,
+        target_digest: str | None = None,
+    ) -> None:
+        """Remove one exact record after fresh owner authorization; absence is a refusal."""
+
+        if type(binding) is not ProviderCredentialBinding:
+            raise TypeError("provider_credential_binding_invalid")
+        async with self._mutex:
+            store, generation = self._ready_store()
+            proof.consume(
+                "provider_credential_remove",
+                binding.target_digest("remove") if target_digest is None else target_digest,
+                self._service_generation,
+                generation,
+                None,
+                now_monotonic,
+            )
+            try:
+                current = store.record_generation(
+                    VaultRecordKind.PROVIDER_CREDENTIAL, binding.record_binding()
+                )
+                if current is None:
+                    raise VaultError("record_missing")
+                store.delete_record(
+                    VaultRecordKind.PROVIDER_CREDENTIAL,
+                    binding.record_binding(),
+                    expected_generation=current,
+                )
+            except EncryptedVaultError as exc:
+                reason = "record_missing" if exc.reason == "record_missing" else "vault_tampered"
+                raise VaultError(reason) from exc
+            finally:
+                # A handle minted before removal must not start a later dispatch, even if the
+                # durable deletion had an ambiguous outcome. Already-started requests cannot
+                # be recalled; removing a key does not revoke it at its provider.
+                for handle in self._provider_handles:
+                    if handle.matches_credential(binding):
+                        handle.invalidate()
+            self._provider_generations.pop(binding, None)
+
     async def discard_provider_credential(self, binding: ProviderCredentialBinding) -> None:
         """Withdraw one exact provider credential record.
 
@@ -1446,6 +1491,7 @@ class VaultService:
         expected = {
             "provider_credential_set": SecretPurpose.PROVIDER_REAUTHENTICATION,
             "provider_credential_rotate": SecretPurpose.PROVIDER_REAUTHENTICATION,
+            "provider_credential_remove": SecretPurpose.PROVIDER_REAUTHENTICATION,
             "privacy_policy_widen": SecretPurpose.PRIVACY_REAUTHENTICATION,
             "owner_receipt_view": SecretPurpose.PRIVACY_REAUTHENTICATION,
             "idle_relock_policy_change": SecretPurpose.SECURITY_REAUTHENTICATION,
@@ -1691,6 +1737,17 @@ class _ProviderHandle(ProviderCredentialHandle):
         finally:
             view.release()
             _overwrite(secret)
+
+    def matches_credential(self, binding: ProviderCredentialBinding) -> bool:
+        return (
+            provider_credential_profile_binding(
+                self._binding.provider_id,
+                self._binding.model_id,
+                self._binding.endpoint_profile_id,
+                self._binding.endpoint_profile_version,
+            )
+            == binding
+        )
 
     def invalidate(self) -> None:
         with self._lock:

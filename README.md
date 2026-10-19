@@ -109,15 +109,14 @@ see [Linux](docs/usage/install-and-first-run.md#linux)); on Windows, install it 
 > installation, showing you every proposed change first:
 >
 > ```text
-> I want to install FinishUP (https://github.com/TheGaySupreme123/finishup). Start by fetching its
-> agent install guide and follow it exactly:
+> Install FinishUP for me (https://github.com/TheGaySupreme123/finishup). Fetch its agent install
+> guide and follow "The short version" at the top:
 >
 > curl -fsSL https://raw.githubusercontent.com/TheGaySupreme123/finishup/main/docs/usage/agent-start.md
 >
-> It tells you what to run yourself, what to ask me, and where to hand me the terminal. If your
-> sandbox blocks that fetch, ask me to approve it or to paste the guide. Setup's questions are
-> mine to answer, so ask me each one and wait, and show me any proposed change before it is
-> applied.
+> If your sandbox blocks that fetch, ask me to approve it or to paste the guide. Setup's questions
+> are mine to answer, so ask me each one and wait, and show me any proposed change before it is
+> applied. Never ask me for a key or password in chat; hand me the terminal for those.
 > ```
 
 `finishup` at a terminal opens a full-screen interface, and the first run walks setup inside it:
