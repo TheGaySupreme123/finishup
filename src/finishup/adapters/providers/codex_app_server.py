@@ -1124,6 +1124,8 @@ async def _require_model(
 async def _initialize(
     runtime: _CodexProcess, profile: CodexAppServerProfile, timeout: float = 10.0
 ) -> None:
+    """Initialize within one budget: the request and the notification share ``timeout``."""
+    stop = asyncio.get_running_loop().time() + timeout
     result = await runtime.request(
         0,
         "initialize",
@@ -1142,7 +1144,8 @@ async def _initialize(
         timeout,
     )
     _validate_initialize(profile, result)
-    await asyncio.wait_for(runtime.send({"method": "initialized"}), max(0.001, timeout))
+    left = stop - asyncio.get_running_loop().time()
+    await asyncio.wait_for(runtime.send({"method": "initialized"}), max(0.001, left))
 
 
 async def codex_account_status(profile: CodexAppServerProfile) -> CodexRuntimeStatus:

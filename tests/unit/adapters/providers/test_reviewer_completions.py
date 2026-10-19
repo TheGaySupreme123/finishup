@@ -1074,6 +1074,81 @@ async def test_f2_codex_send_that_never_drains_ends_at_the_deadline_and_close_re
     assert evidence is not None and evidence.case_disclosed and not evidence.turn_acknowledged
 
 
+async def test_f2_codex_initialize_and_its_notification_share_the_original_budget(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # The initialize reply arrives at 0.3 s of a 0.4 s budget, then the runtime stops reading the
+    # initialized notification: cleanup must start at the original deadline, not a fresh budget.
+    sent, release = asyncio.Event(), asyncio.Event()
+    started: list[float] = []
+
+    class _Slow(_CodexRuntime):
+        async def request(self, rid: int, method: str, params: object, timeout: float) -> object:
+            if method == "initialize":
+                await release.wait()
+            return await super().request(rid, method, params, timeout)
+
+        async def send(self, value: dict[str, object]) -> None:
+            if value.get("method") == "initialized":
+                sent.set()
+                await asyncio.Event().wait()
+
+    class _RealClock(_Clock):
+        def monotonic_seconds(self) -> float:
+            return time.monotonic()
+
+    runtime = _Slow(profile_for(record_for(b"c", b"h", version="0.162.1")), [_FINAL])
+
+    async def launch(profile: object) -> _CodexRuntime:
+        return runtime
+
+    async def cleanup(value: object) -> str:
+        started.append(time.monotonic())
+        return "terminated"
+
+    monkeypatch.setattr(codex, "_launch", launch)
+    monkeypatch.setattr(codex, "_cleanup", cleanup)
+    start = time.monotonic()
+    deadline = Deadline(_NOW + timedelta(seconds=0.4), start + 0.4)
+    session = ReviewerSession("review-a", deadline)
+    binding = ProviderBinding(
+        "openai-codex", runtime.profile.model, "codex-chatgpt-subscription", "1.0.0", "external"
+    )
+    case = _case(_FIRST, binding)
+    digest = "sha256:" + hashlib.sha256(case.payload).hexdigest()
+    auth = ProviderAttemptAuthBinding(
+        "openai-codex", runtime.profile.model, "codex-chatgpt-subscription", "1.0.0",
+        "semantic-review", _DIGEST, canonical_digest({"purpose": "semantic-review"}),
+        "dsp_70000000-0000-4000-8000-000000000001", digest, 1, deadline.monotonic_deadline,
+    )  # fmt: skip
+    authority = ExternalRuntimeAuthority(
+        auth.dispatch_id, digest, "hmac-sha256:" + "a" * 64, 1, deadline.monotonic_deadline
+    )
+    evaluator = codex.CodexAppServerEvaluator(
+        runtime.profile, auth, authority, _RealClock(), None, reply_schemas=_SCHEMAS
+    )
+
+    async def evaluate() -> SemanticResult:
+        token = CURRENT_REVIEWER_SESSION.set(session)
+        try:
+            return await evaluator.evaluate(case, deadline)
+        finally:
+            CURRENT_REVIEWER_SESSION.reset(token)
+
+    handle = asyncio.get_running_loop().call_later(0.3, release.set)
+    task = asyncio.create_task(evaluate())
+    try:
+        # The outer bounds only keep a regression from hanging the suite; results are observed.
+        await asyncio.wait_for(sent.wait(), 5)
+        closing = asyncio.create_task(session.aclose())
+        result = await asyncio.wait_for(task, 5)
+        assert await asyncio.wait_for(closing, 5) is None
+    finally:
+        handle.cancel()
+    assert type(result) is SemanticResultTimeout and session.held is None
+    assert started and started[0] <= deadline.monotonic_deadline + 0.1
+
+
 async def test_f2_cancelled_codex_turn_is_cleaned_up_not_retained(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
