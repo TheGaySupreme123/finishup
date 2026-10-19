@@ -4017,9 +4017,7 @@ def _add_reviewer_definitions(definitions: dict[str, JsonValue]) -> None:
         "disclosure": nullable(
             {"pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$", "type": "string"}
         ),
-        "lines": nullable(
-            {"items": count, "maxItems": 2, "minItems": 2, "type": "array"}
-        ),
+        "lines": nullable({"items": count, "maxItems": 2, "minItems": 2, "type": "array"}),
         "reason": nullable(token),
         "result_bytes": count,
         "result_digest": {"pattern": "^sha256:[0-9a-f]{64}$", "type": "string"},
@@ -4042,12 +4040,13 @@ def _add_reviewer_definitions(definitions: dict[str, JsonValue]) -> None:
         ),
         "status": enum("denied", "ok", "partial", "stale", "unavailable"),
     }
-    definitions["reviewer_read"] = {
+    reviewer_read: dict[str, JsonValue] = {
         "additionalProperties": False,
         "properties": read_properties,
-        "required": sorted(read_properties),
+        "required": cast(list[JsonValue], sorted(read_properties)),
         "type": "object",
     }
+    definitions["reviewer_read"] = reviewer_read
     record_properties: dict[str, JsonValue] = {
         "cleanup": nullable(token),
         "ended": nullable(token),
@@ -4056,12 +4055,13 @@ def _add_reviewer_definitions(definitions: dict[str, JsonValue]) -> None:
         "reads": {"items": {"$ref": "#/$defs/reviewer_read"}, "maxItems": 3, "type": "array"},
         "reads_used": enum("0", "1", "2", "3"),
     }
-    definitions["reviewer_record"] = {
+    reviewer_record: dict[str, JsonValue] = {
         "additionalProperties": False,
         "properties": record_properties,
-        "required": sorted(record_properties),
+        "required": cast(list[JsonValue], sorted(record_properties)),
         "type": "object",
     }
+    definitions["reviewer_record"] = reviewer_record
 
 
 def _add_status_check_outcome(definitions: dict[str, JsonValue]) -> None:
