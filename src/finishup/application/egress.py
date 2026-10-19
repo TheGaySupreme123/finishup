@@ -21,6 +21,7 @@ from finishup.domain.privacy import (
     AuthorizationScope,
     AuthorizationScopeKind,
     CandidateContext,
+    CandidateContextItem,
     ClassifiedContext,
     ConsentSource,
     ConversationReview,
@@ -373,12 +374,7 @@ def reviewer_history_admissible(
     scope_kind: AuthorizationScopeKind,
     roots: Iterable[str | None],
 ) -> bool:
-    """Whether a review conversation holding bytes read beneath ``roots`` may go on (#1118).
-
-    Checked for each read result and before every continuation: local-only review, a policy
-    refusal of this route, or a removed outside root ends it; revocation wins over context the
-    conversation already holds.
-    """
+    """Whether a review conversation holding bytes read beneath ``roots`` may go on (#1118)."""
 
     return semantic_policy_refusal(policy, binding, _SEMANTIC_PURPOSE, scope_kind) is None and all(
         root is None or root in policy.admitted_input_roots for root in roots
@@ -1124,31 +1120,51 @@ class PrivacyCoordinator:
             receipt,
         )
 
-    async def admit_reviewer_read(self, candidate: CandidateContext) -> dict[str, bytes] | str:
-        """Admit one reviewer read result as the packet's items are admitted (#1118 unit 2).
+    async def admit_reviewer_read(
+        self,
+        request_id: str,
+        scope: AuthorizationScope,
+        binding: ProviderBinding,
+        elements: tuple[tuple[DataCategory, bytes, str | None], ...],
+        envelope: bytes,
+    ) -> str | None:
+        """``None`` when a reviewer read result may be sent, else why it is withheld (#1118).
 
-        The same classification, category and data-class ceiling, never-send rules, owner-chosen
-        credential heuristic and root binding as the review packet. Returns each admitted item's
-        minimized bytes, or ``authorization_changed`` / ``privacy_withheld``. This is no channel
-        grant: the exchange that carries the result is admitted at the gateway on its own.
+        Each element is admitted as the packet's items are, and must pass unchanged; then the exact
+        encoded ``envelope`` is scanned. No channel grant: the gateway admits the exchange.
         """
 
-        binding = candidate.provider_binding
-        if binding is None:
-            return "privacy_withheld"
-        effective = await self._policies.effective_policy(candidate.scope)
-        roots = (item.input_root for item in candidate.items)
-        if not reviewer_history_admissible(effective.policy, binding, candidate.scope.kind, roots):
+        items = tuple(
+            CandidateContextItem(f"read-{n}", kind, scope, f"/reviewer/{n}", text, input_root=root)
+            for n, (kind, text, root) in enumerate(elements)
+        )
+        channel, purpose = EgressChannel.LLM_INFERENCE, "semantic-review-read"
+        candidate = CandidateContext(
+            request_id, channel, None, purpose, scope, None, binding, items
+        )
+        effective = await self._policies.effective_policy(scope)
+        roots = (root for _kind, _text, root in elements)
+        if not reviewer_history_admissible(effective.policy, binding, scope.kind, roots):
             return "authorization_changed"
         classified = self._classifier.classify(candidate, effective)
         decision = self._semantic_decision(classified, effective, binding)
         if decision.outcome is not PrivacyOutcome.COMPLETED:
             return "privacy_withheld"
         minimized = self._classifier.minimize_and_scan(classified, decision)
-        if minimized.forbidden_findings or minimized.heuristic_findings:
-            return "privacy_withheld"
         rows = cast(dict[str, list[dict[str, str]]], strict_json_parse(minimized.prepared_bytes))
-        return {row["item_id"]: base64.b64decode(row["content_base64"]) for row in rows["items"]}
+        offered = {item.item_id: item.plaintext for item in items}
+        admitted = {
+            row["item_id"]: base64.b64decode(row["content_base64"]) for row in rows["items"]
+        }
+        heuristic = external_review_credential_heuristic(effective.policy, binding)
+        if (
+            minimized.forbidden_findings
+            or minimized.heuristic_findings
+            or admitted != offered
+            or self._classifier.scan_exact_bytes(envelope, credential_heuristic=heuristic)
+        ):
+            return "privacy_withheld"
+        return None
 
     async def close(self) -> None:
         async with self._admission_lock:

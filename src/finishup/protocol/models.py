@@ -2668,7 +2668,7 @@ class ProviderJudgmentEnvelopeModel(_ClosedModel):
 # null, so a null defaulted field reads as its default.
 _ReviewerRef = Annotated[str, Field(min_length=1, max_length=128)]
 _ReviewerCursor = Annotated[str, Field(max_length=256)] | None
-_ReviewerMaxBytes = Annotated[int, Field(ge=256, le=8192)]
+_ReviewerMaxBytes = Annotated[int, Field(ge=1024, le=8192)]  # one whole result envelope
 
 
 class _ReviewerArgsModel(_ClosedModel):

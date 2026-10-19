@@ -2395,30 +2395,43 @@ require_part2=True)`. The root is an object wrapper; with no read allowance left
 offers only `FinalReply`. Strict wire form comes from `strict_output_schema`; the decoder still
 enforces what it drops, and reads a strict null as the field's default.
 
-The loop allows at most three reads, 8 KiB per complete result and 24 KiB in all, shared through
-the review job's step slots (`<job>:read:<n>`, reserved before the read runs, never refunded; a
-denied or empty read spends its slot; the same step with different arguments conflicts). After the
-cap only the final judgment is offered, and a read anyway ends the review incomplete with no
+The loop allows at most three reads, 8 KiB per complete result and 24 KiB in all. Every model turn
+(at most five), the one format repair and every read is a durable step of the review job
+(ADR-003, migration `0017`), reserved before it runs and never refunded; a denied or empty read
+spends its read. A job that already holds steps is not resumed: its review ends incomplete
+(`interrupted`, or `uncaptured_step` when a reserved step has no captured result). After the cap
+only the final judgment is offered, and a read anyway ends the review incomplete with no
 observation. One format repair is allowed per review, and the malformed text is not echoed back. A
-second malformed reply, a failed or uncertain model turn, the shared deadline, or a binding that no
-longer holds ends the review incomplete. Before every continuation the loop rechecks local-only
-review, the route's policy refusal and every outside root the conversation holds bytes from, so a
-removed root ends it.
+second malformed reply, a failed or uncertain model turn, a lost lease, or a binding that no longer
+holds ends the review incomplete. The shared deadline is checked after every await: a reply that
+arrives late is not used, a read is not started inside the final reserve, and a local read stops at
+five seconds or the reserve, whichever is first (a read in progress checks it per chunk and per
+listed entry). Before every continuation the loop rechecks local-only review, the route's policy
+refusal and every outside root the conversation holds bytes from, so a removed root ends it.
 
-Each read result is one or more candidate items through `PrivacyCoordinator.admit_reviewer_read`:
-the packet's own classification, category and data-class ceiling, never-send rules, owner-chosen
-credential heuristic and root binding. Cut points move clear of a recognized credential before a
-result is clipped. Packet and ledger reads cover the frozen case's rendered records, including items
-the bounded packet cut. Bytes the case never kept are `not_retained`. File reads use the trusted
-descriptor walk beneath a service-issued alias: the workspace (minus ignored, hidden,
-credential-named and excluded paths), an owner-admitted outside root limited to the task-declared
-subset, or a kept snapshot. Citations are checked against the union of the packet and the admitted
-results; a file result adds text only under the subject refs its alias names. An admitted result is
-not a channel grant: each exchange that carries it is admitted at the gateway on its own.
+A read result is fitted into its byte room first (`max_bytes` is at least 1,024, one whole
+envelope); spans, line spans, `truncated` and `next_cursor` describe exactly the fitted data. Then
+each content-bearing element (text, record text, listed name) goes through
+`PrivacyCoordinator.admit_reviewer_read` as one item: the packet's classification, category and
+data-class ceiling, never-send rules and root binding. An element the minimizer would change in any
+way withholds the whole result, and the exact encoded envelope is scanned under the owner's credential
+heuristic, so no label can carry what admission did not see. A file result's `source_ref` is its
+opaque `tool_ref`; the path is never echoed. Cut points move clear of a recognized credential. Packet
+and ledger reads cover the frozen case's rendered records, including items the bounded packet cut;
+bytes the case never kept are `not_retained`. File reads use the trusted descriptor walk beneath a
+service-issued alias: the workspace (minus ignored, hidden, credential-named and excluded paths), an
+owner-admitted outside root limited to the task-declared subset, or a kept snapshot. A listing
+applies the same rules to every child and inspects at most 128 entries. Cursors are opaque, issued
+by the broker and bound to their selector and source version: a forged or rebound cursor is
+`denied`/`invalid_request`, a changed source `stale`/`source_changed`. The loop's outcome carries the
+citation union of the packet as sent and every admitted result as sent; the existing
+`validate_semantic_judgment` fence checks the final judgment against it. An admitted result is not a
+channel grant: each exchange that carries it is admitted at the gateway on its own.
 
 The controller is adapted from mini-swe-agent's `DefaultAgent` (MIT, Kilian A. Lieret and Carlos
 E. Jimenez, `src/minisweagent/agents/default.py` at `40fa36522015a6bc6cf14411382b662b42083bf1`).
 Its copyright and permission notice is kept in `application/reviewer_loop.py`. Its shell
-environment, model framework, templating and trajectory logging are removed. The instruction leads
-with the goal, done condition, evidence, clues and constraints, and replaces the old packet-only
-sentences. The rest of the review rules are unchanged.
+environment, model framework, templating and trajectory logging are removed. The loop has one
+instruction of about 800 tokens in pstack's shape (goal, done condition, evidence, clues,
+constraints); it states the substantive honesty rules of the packet-only instruction once, including
+the citation union, and does not reuse that instruction's text.

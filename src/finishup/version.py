@@ -121,7 +121,7 @@ _RESOURCE_LIMIT: Final = 4_194_304
 # canonical server-filled publish and brief status vectors (CAN-022). W6 #1107: +1 canonical
 # check agent_next vectors (AGN-001), +1 status check_outcome vector (AGN-002). #1118 unit 2: +1
 # reviewer-reply 1.0.0 schema.
-REVIEWED_RESOURCE_COUNT: Final = 319
+REVIEWED_RESOURCE_COUNT: Final = 320
 _RESOURCE_KINDS: Final = frozenset(
     {
         "canonical_vector",

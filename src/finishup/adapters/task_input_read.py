@@ -35,8 +35,9 @@ import os
 import posixpath
 import stat
 import time
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass, replace
+from itertools import islice
 from typing import Final, Literal
 
 from finishup.adapters.input_summary import declared_binary_format, summarize_task_input
@@ -54,6 +55,7 @@ from finishup.ports.change_capture import (
 
 __all__ = [
     "MAX_TASK_INPUT_READ_BYTES",
+    "ReadDeadline",
     "clear_cut",
     "list_beneath",
     "read_text_beneath",
@@ -264,8 +266,11 @@ def _read_ends(
     owners: frozenset[int],
     head_limit: int,
     trust: _Trust | None,
+    expired: Callable[[], bool] | None = None,
 ) -> tuple[bytes, bytes, int] | None:
-    """``read_ends_beneath``; with ``trust``, every directory and the file must also pass it."""
+    """``read_ends_beneath``; with ``trust``, every directory and the file must also pass it.
+
+    ``expired`` is checked before each chunk; once true the read stops with ``ReadDeadline``."""
 
     parts = path.split(b"/")
     if not path or any(part in {b"", b".", b".."} for part in parts):
@@ -293,6 +298,8 @@ def _read_ends(
         chunks: list[bytes] = []
         read = 0
         while read < min(size, head_limit):
+            if expired is not None and expired():
+                raise ReadDeadline("reviewer_read_deadline")
             chunk = os.read(descriptor, min(_READ_CHUNK, head_limit - read))
             if not chunk:
                 break
@@ -660,69 +667,67 @@ def _outside_files(
                 os.close(descriptor)
 
 
-def clear_cut(data: bytes, cut: int, keep: Literal["head", "tail"]) -> int:
-    """``cut`` moved clear of any credential the shared scanner recognizes (``_cut_clear``)."""
+class ReadDeadline(Exception):
+    """A reviewer read ran past its local time budget (#1118); nothing it read is returned."""
 
-    return _cut_clear(data, cut, keep)
+
+clear_cut: Final = _cut_clear  # the reviewer broker's credential-safe cut (#1118)
 
 
 def _reviewer_open(
     root: str, relative: str, excluded: tuple[str, ...]
-) -> tuple[int, bytes, _Trust]:
-    """The open root, the checked relative path and the trust, for one reviewer read (#1118).
-
-    The same trusted walk as the outside read: ``_beneath`` refuses hidden and credential-named
-    components, ``excluded`` directories are refused by path and by device and inode.
-    """
+) -> tuple[int, bytes, _Trust] | None:
+    """The open root, checked path and trust of one reviewer read: the outside read's walk."""
 
     identities = _excluded_identities(excluded)
     folded = tuple(posixpath.normpath(path).casefold() for path in excluded if path.startswith("/"))
     full = posixpath.join(root, relative) if relative else root
     located = _beneath(full, (root,))
-    escapes = relative.startswith("/") or ".." in relative.split("/")
-    if identities is None or located is None or escapes or _folded_inside(full, folded):
-        raise PermissionError("reviewer_read_refused")
+    if identities is None or located is None or _folded_inside(full, folded):
+        return None
     owners = frozenset({0, os.geteuid() if hasattr(os, "geteuid") else os.getuid()})
     trust = _Trust(owners, identities)
     descriptor = _open_root(root, trust)
-    if descriptor is None:
-        raise PermissionError("reviewer_read_refused")
-    return descriptor, located[1], trust
+    return None if descriptor is None else (descriptor, located[1], trust)
 
 
 def read_text_beneath(
-    root: str,
-    relative: str,
-    *,
-    excluded: tuple[str, ...] = (),
-    limit: int = MAX_TASK_INPUT_READ_BYTES,
+    root: str, relative: str, *, excluded: tuple[str, ...], expired: Callable[[], bool]
 ) -> tuple[bytes, int] | None:
-    """Up to ``limit`` leading bytes and the size of one file beneath ``root``, or ``None``."""
+    """Up to 1 MiB of one trusted file beneath ``root`` and its size, or ``None``."""
 
-    try:
-        descriptor, path, trust = _reviewer_open(root, relative, excluded)
-    except PermissionError:
+    opened = _reviewer_open(root, relative, excluded)
+    if opened is None:
         return None
+    descriptor, path, trust = opened
     try:
-        ends = _read_ends(descriptor, path, owners=trust.owners, head_limit=limit, trust=trust)
+        ends = _read_ends(
+            descriptor,
+            path,
+            owners=trust.owners,
+            head_limit=MAX_TASK_INPUT_READ_BYTES,
+            trust=trust,
+            expired=expired,
+        )
     finally:
         os.close(descriptor)
     return None if ends is None else (ends[0], ends[2])
 
 
 def list_beneath(
-    root: str, relative: str, *, excluded: tuple[str, ...] = (), inspect: int = 128
+    root: str,
+    relative: str,
+    *,
+    excluded: tuple[str, ...],
+    expired: Callable[[], bool],
+    inspect: int = 128,
 ) -> tuple[tuple[str, bool], ...] | None:
-    """``(name, is_directory)`` of the visible entries of one directory beneath ``root``.
+    """``(name, is_directory)`` of the trusted, visible children among ``inspect`` examined."""
 
-    At most ``inspect`` names are examined, in name order. Hidden and credential-named entries,
-    links and entries of an untrusted kind are left out. ``None`` when the directory is refused.
-    """
-
-    try:
-        descriptor, path, trust = _reviewer_open(root, relative, excluded)
-    except PermissionError:
+    opened_root = _reviewer_open(root, relative, excluded)
+    if opened_root is None:
         return None
+    descriptor, path, trust = opened_root
     opened = [descriptor]
     try:
         current = descriptor
@@ -732,13 +737,20 @@ def list_beneath(
             if not trust.directory(os.fstat(current)):
                 return None
         entries: list[tuple[str, bool]] = []
-        for name in sorted(os.listdir(current))[:inspect]:
-            facts = os.stat(name, dir_fd=current, follow_symlinks=False)
-            if name.startswith(".") or credential_named_bytes(name.encode("utf-8", "replace")):
-                continue
-            if stat.S_ISREG(facts.st_mode) or trust.directory(facts):
-                entries.append((name, stat.S_ISDIR(facts.st_mode)))
-        return tuple(entries)
+        with os.scandir(current) as found:
+            for entry in islice(found, inspect):
+                if expired():
+                    raise ReadDeadline("reviewer_read_deadline")
+                try:
+                    hidden = entry.name.startswith(".") or credential_named_bytes(
+                        entry.name.encode("utf-8", errors="strict")
+                    )
+                    facts = entry.stat(follow_symlinks=False)
+                except UnicodeEncodeError, OSError:
+                    continue
+                if not hidden and (trust.file(facts) or trust.directory(facts)):
+                    entries.append((entry.name, stat.S_ISDIR(facts.st_mode)))
+        return tuple(sorted(entries))
     except OSError:
         return None
     finally:
