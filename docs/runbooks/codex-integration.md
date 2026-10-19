@@ -3616,3 +3616,14 @@ Verification: `tests/integration/application/test_publish_server_filled.py`,
 `tests/conformance/operations/test_status_contract.py` (brief and results-filter cases) and the
 MCP unit suites exercise the shared path. A live Codex session on macOS, Linux or WSL 2 is not
 recorded for this change; native Windows is not claimed.
+
+## Batch setup decision (2026-10-19, issue #1119)
+
+Codex participates in `setup run|disconnect|status --host all` and repeated `--host` selections on
+macOS, Linux and WSL 2 through the existing connection composition. Each executable and home is
+pinned in the continuation; interactive setup confirms each Codex home, the full-screen flow
+retains project trust, and the exact skill, activation and approved-check policy digests still
+reach the existing apply. One batch approval never supplies a missing Codex consent. A shared
+home or project changed by an earlier member can invalidate a later preview; stop and use the
+reported fresh continuation rather than applying a newly computed digest under the old approval.
+This adds orchestration coverage, not new native-host or platform certification.

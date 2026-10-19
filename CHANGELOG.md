@@ -6,6 +6,12 @@ that marks the pending version as unreleased above reverse-chronological release
 
 ## 0.3.0 — Unreleased
 
+- Setup can connect all detected coding agents or a chosen subset in one run (#1119). The prompt
+  wizard and full-screen first run offer one combined preview and approval; each agent keeps its
+  own authentication. `setup run`, `setup disconnect` and `setup status` accept `--host all` or
+  repeated `--host` selections. Batch acceptance binds every preview and reports partial results
+  separately, with a fresh continuation for the remaining agents.
+
 Public-alpha release candidate; publication remains gated by #785 and by the rename's release
 gates on #1056. This heading takes the release date when 0.3.0 is tagged. See
 [release notes](docs/releases/v0.3.0.md) for changes and validation limits.

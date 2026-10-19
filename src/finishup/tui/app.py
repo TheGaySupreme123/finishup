@@ -80,6 +80,7 @@ from finishup.tui.widgets.views import (
     BaseView,
     DetailsRequested,
     DetailsView,
+    MultiSelectionView,
     Option,
     SelectionView,
     TextEntryView,
@@ -608,6 +609,32 @@ class FinishUpTui(App[int]):
             await self._run_initial_review(review, connected=False)
             return
 
+        if len(detection.harnesses) > 1:
+            options = await self._choose_harnesses(detection.harnesses)
+            if not options:
+                self.say(Level.OPTIONAL, "Setup stopped. Nothing was changed.")
+                return
+            selected: list[HarnessOption] = []
+            for item in options:
+                if item.host == "codex":
+                    home = await self._choose_codex_home(item)
+                    if home is None:
+                        return
+                    from dataclasses import replace
+
+                    item = replace(item, config_root=str(home))
+                selected.append(item)
+            if any(item.host == "codex" for item in selected):
+                if not await self._confirm_project_trust(detection):
+                    return
+            review = await self._ask_review_mode()
+            if review is None:
+                return
+            if await self._connect_host_batch(selected, route="policy"):
+                await self._choose_storage(detection)
+                await self._run_initial_review(review, connected=True)
+            return
+
         # Each question can send the user back to the one before it, so the answered steps are
         # walked as a cursor rather than a straight line. Only the questions run in this loop;
         # once `_connect` applies a change there is nothing to step back to, and the loop ends.
@@ -815,6 +842,166 @@ class FinishUpTui(App[int]):
                 "Local checks only was not recorded",
                 ("Run 'finishup privacy conversations local-only' from your shell.",),
             )
+
+    async def _choose_harnesses(
+        self,
+        options: Sequence[HarnessOption],
+    ) -> tuple[HarnessOption, ...] | None:
+        if len(options) <= 1:
+            return tuple(options) or None
+        choice = await self.ask(
+            SelectionView(
+                name="agents",
+                title="Connect FinishUP to:",
+                options=[
+                    Option("all", f"All {len(options)} agents (recommended)"),
+                    Option("choose", "Choose which"),
+                ],
+                hint="enter to choose · esc to cancel",
+            )
+        )
+        if choice == "all":
+            return tuple(options)
+        if choice != "choose":
+            return None
+        view = MultiSelectionView(
+            name="agents-subset",
+            title="Choose the agents to connect",
+            options=[
+                Option(str(index), option.label, option.description)
+                for index, option in enumerate(options)
+            ],
+        )
+        if await self.ask(view) != "submit":
+            return None
+        return tuple(options[int(key)] for key in view.selected_keys) or None
+
+    async def _connect_host_batch(
+        self,
+        options: Sequence[HarnessOption],
+        *,
+        route: Literal["strict", "policy"],
+    ) -> bool:
+        from anyio.to_thread import run_sync
+
+        from finishup.cli import host_connection as single
+        from finishup.cli.host_batch import (
+            apply_batch,
+            batch_command,
+            batch_digest,
+            prepare_batch,
+            select_batch_installation,
+        )
+        from finishup.protocol.ids import IdKind, new_id
+
+        project = self.runtime.project_root()
+        try:
+            await run_sync(single.refuse_unservable_runtime)
+            installations = tuple(
+                [
+                    await run_sync(
+                        lambda option=option: select_batch_installation(
+                            option.host,
+                            Path(option.executable_path),
+                            None if option.config_root is None else Path(option.config_root),
+                        )
+                    )
+                    for option in options
+                ]
+            )
+            request = new_id(IdKind.REQUEST)
+            members = await prepare_batch(
+                installations, project, route=route, request_value=request
+            )
+            body: list[str] = []
+            details: list[str] = []
+            for member in members:
+                body.append(member.installation.label)
+                if member.installation.host == "codex":
+                    codex = IntegrationPlan(**cast(dict[str, Any], member.plan.body["codex_plan"]))
+                    body.extend(render_integration_preview(codex, self.body_width))
+                    details.extend(render_integration_technical_details(codex, self.body_width))
+                else:
+                    body.extend(single.connection_summary(member.plan))
+                details.extend(
+                    (
+                        str(member.installation.executable),
+                        str(member.installation.config_root),
+                        member.plan.digest,
+                    )
+                )
+                body.append("")
+            view = ApprovalView(
+                name="integration-batch",
+                title="Connect the selected agents",
+                body=body,
+                approve_label="Yes, connect these agents",
+                decline_label="No, keep this project unchanged",
+            )
+            digest = batch_digest(members)
+            view.technical_details = (*details, f"Combined preview: {digest}")
+            if await self.ask(view) != "approve":
+                self.say(Level.OPTIONAL, "Connections left unchanged.")
+                return False
+            try:
+                reports = await self.hand_over_terminal(lambda: apply_batch(members))
+            except SuspendNotSupported:
+                self.say(
+                    Level.UNPROVEN,
+                    "This terminal cannot hand over for connection approval",
+                    (
+                        batch_command(
+                            installations,
+                            project,
+                            action="connect",
+                            route=route,
+                            request_value=request,
+                            preview_digest=digest,
+                        ),
+                    ),
+                )
+                return False
+            for row in reports:
+                launch = row.get("launch")
+                self.say(
+                    Level.BLOCKED
+                    if row["outcome"] in {"incomplete", "not_attempted"}
+                    else Level.ACTIVE,
+                    f"{row['host']}: {row['outcome']}",
+                    (str(row["reason"]),)
+                    if "reason" in row
+                    else (
+                        "Start a fresh session: "
+                        + str(cast(dict[str, Any], launch)["shell_command"]),
+                    )
+                    if isinstance(launch, dict)
+                    else (),
+                )
+            remaining = tuple(
+                member.installation
+                for member, row in zip(members, reports, strict=True)
+                if row["outcome"] in {"incomplete", "not_attempted"}
+            )
+            if remaining:
+                self.say(
+                    Level.BLOCKED,
+                    "Some agents were not connected",
+                    (
+                        "Inspect status before retrying a partial connection. Preview the remaining agents:",
+                        batch_command(remaining, project, action="connect", route=route),
+                    ),
+                )
+                return False
+            return True
+        except single.CONNECTION_ERRORS as error:
+            from finishup.cli.host_batch import error_reason
+
+            self.say(
+                Level.BLOCKED,
+                "The selected connections could not be completed",
+                (error_reason(error),),
+            )
+            return False
 
     async def _choose_harness(self, options: Sequence[HarnessOption]) -> HarnessOption | None:
         if not options:

@@ -3569,6 +3569,20 @@ for _admission_action in ("status", "preview", "grant", "revoke"):
     integrate_admission_app.command(_admission_action)(_host_admission_command(_admission_action))
 
 
+def _setup_targets(
+    hosts: list[str] | None,
+    paths: list[Path] | None,
+    roots: list[Path] | None,
+) -> tuple[
+    str | tuple[str, ...] | None, Path | tuple[Path, ...] | None, Path | tuple[Path, ...] | None
+]:
+    if hosts and (len(hosts) > 1 or hosts == ["all"]):
+        return tuple(hosts), tuple(paths or ()), tuple(roots or ())
+    if (paths and len(paths) != 1) or (roots and len(roots) != 1):
+        raise typer.BadParameter("Supply one --host-path and --host-config-root per --host")
+    return hosts[0] if hosts else None, paths[0] if paths else None, roots[0] if roots else None
+
+
 @setup_app.command("run")
 def setup_run(
     non_interactive: Annotated[
@@ -3586,15 +3600,15 @@ def setup_run(
     route_profile: _ROUTE_PROFILE = None,
     json_output: _JSON = False,
     host: Annotated[
-        str | None,
-        typer.Option("--host", help="Agent to connect: codex, claude, cursor-ide or cursor-cli."),
+        list[str] | None,
+        typer.Option("--host", help="Agent to connect; repeat to choose several, or use all."),
     ] = None,
     host_path: Annotated[
-        Path | None, typer.Option("--host-path", help="Override the detected executable.")
+        list[Path] | None, typer.Option("--host-path", help="Executable for each --host, in order.")
     ] = None,
     host_config_root: Annotated[
-        Path | None,
-        typer.Option("--host-config-root", help="Override the selected host configuration."),
+        list[Path] | None,
+        typer.Option("--host-config-root", help="Configuration for each --host, in order."),
     ] = None,
     project: Annotated[Path | None, typer.Option("--project", help="Project to connect.")] = None,
     request_value: Annotated[
@@ -3604,12 +3618,18 @@ def setup_run(
     preview_digest: Annotated[
         str | None, typer.Option("--preview-digest", help="Exact connection plan to accept.")
     ] = None,
+    batch: Annotated[bool, typer.Option("--batch", hidden=True)] = False,
 ) -> None:
     """Run the guided first-run setup wizard."""
 
     if codex_home is not None and codex_path is None:
         raise typer.BadParameter("--codex-home requires --codex-path")
     chosen_route = _validated_route_profile(route_profile)
+    selected_host, selected_path, selected_root = _setup_targets(host, host_path, host_config_root)
+    if batch and isinstance(selected_host, str):
+        selected_host = (selected_host,)
+        selected_path = () if selected_path is None else (cast(Path, selected_path),)
+        selected_root = () if selected_root is None else (cast(Path, selected_root),)
 
     operation = _setup_operation("run_setup_wizard")
     _finish(
@@ -3621,9 +3641,9 @@ def setup_run(
                 accept=accept,
                 json_output=json_output,
                 route_profile=chosen_route,
-                host=host,
-                host_path=host_path,
-                host_config_root=host_config_root,
+                host=selected_host,
+                host_path=selected_path,
+                host_config_root=selected_root,
                 project=project,
                 request_value=request_value,
                 preview_digest=preview_digest,
@@ -3634,9 +3654,11 @@ def setup_run(
 
 @setup_app.command("disconnect")
 def setup_disconnect(
-    host: Annotated[str, typer.Option("--host", help="Agent to disconnect.")],
-    host_path: Annotated[Path | None, typer.Option("--host-path")] = None,
-    host_config_root: Annotated[Path | None, typer.Option("--host-config-root")] = None,
+    host: Annotated[
+        list[str], typer.Option("--host", help="Agent to disconnect; repeat or use all.")
+    ],
+    host_path: Annotated[list[Path] | None, typer.Option("--host-path")] = None,
+    host_config_root: Annotated[list[Path] | None, typer.Option("--host-config-root")] = None,
     codex_home: Annotated[Path | None, typer.Option("--codex-home")] = None,
     codex_path: _CODEX_PATH = None,
     project: Annotated[Path | None, typer.Option("--project")] = None,
@@ -3658,21 +3680,54 @@ def setup_disconnect(
             ),
         ),
     ] = False,
+    batch: Annotated[bool, typer.Option("--batch", hidden=True)] = False,
 ) -> None:
     """Preview and remove the selected integration, preserving FinishUP data."""
     from finishup.cli.host_connection import run_host_connection
 
+    selected, executable, config_root = _setup_targets(host, host_path, host_config_root)
+    if batch and isinstance(selected, str):
+        selected = (selected,)
+        executable = () if executable is None else (cast(Path, executable),)
+        config_root = () if config_root is None else (cast(Path, config_root),)
+    if isinstance(selected, tuple):
+        if codex_home is not None or codex_path is not None:
+            raise typer.BadParameter("Use --host-path and --host-config-root for each batch member")
+        from finishup.cli.host_batch import run_host_batch
+
+        _finish(
+            run_async(
+                lambda: run_host_batch(
+                    hosts=selected,
+                    executables=executable if isinstance(executable, tuple) else (),
+                    config_roots=config_root if isinstance(config_root, tuple) else (),
+                    project=(project or Path.cwd()).expanduser().resolve(),
+                    action="disconnect",
+                    route=cast(
+                        Literal["strict", "policy"] | None, _validated_route_profile(route_profile)
+                    ),
+                    accept=accept,
+                    interactive=not non_interactive and not json_output and sys.stdin.isatty(),
+                    request_value=request_value,
+                    preview_digest=preview_digest,
+                    json_output=json_output,
+                    remove_shared=remove_shared,
+                )
+            )
+        )
+        return
+    assert isinstance(selected, str)
     if codex_home is not None or codex_path is not None:
-        if host != "codex" or host_path is not None or host_config_root is not None:
+        if selected != "codex" or executable is not None or config_root is not None:
             raise typer.BadParameter("Codex options cannot be combined with other host targets")
-        host_path = None if codex_path is None else Path(codex_path)
-        host_config_root = codex_home
+        executable = None if codex_path is None else Path(codex_path)
+        config_root = codex_home
 
     _finish(
         run_host_connection(
-            host=host,
-            executable=host_path,
-            config_root=host_config_root,
+            host=selected,
+            executable=cast(Path | None, executable),
+            config_root=cast(Path | None, config_root),
             project=(project or Path.cwd()).expanduser().resolve(),
             action="disconnect",
             # Without --route-profile, a Codex home keeps its registered review mode.
@@ -3714,9 +3769,9 @@ def setup_status(
     ] = "local",
     codex_home: Annotated[Path | None, typer.Option("--codex-home")] = None,
     codex_path: _CODEX_PATH = None,
-    host: Annotated[str | None, typer.Option("--host")] = None,
-    host_path: Annotated[Path | None, typer.Option("--host-path")] = None,
-    host_config_root: Annotated[Path | None, typer.Option("--host-config-root")] = None,
+    host: Annotated[list[str] | None, typer.Option("--host")] = None,
+    host_path: Annotated[list[Path] | None, typer.Option("--host-path")] = None,
+    host_config_root: Annotated[list[Path] | None, typer.Option("--host-config-root")] = None,
     project: Annotated[Path | None, typer.Option("--project")] = None,
     route_profile: _ROUTE_PROFILE = None,
 ) -> None:
@@ -3724,20 +3779,52 @@ def setup_status(
 
     if operation not in {"local", "review", "connection"}:
         raise typer.BadParameter("--operation must be local, review or connection")
+    selected, executable, config_root = _setup_targets(host, host_path, host_config_root)
+    if isinstance(selected, tuple):
+        if next_step or codex_home is not None or codex_path is not None:
+            raise typer.BadParameter(
+                "Batch status uses --host-path/--host-config-root; --next needs one host"
+            )
+        from finishup.cli.host_batch import run_host_batch
+
+        _finish(
+            run_async(
+                lambda: run_host_batch(
+                    hosts=selected,
+                    executables=executable if isinstance(executable, tuple) else (),
+                    config_roots=config_root if isinstance(config_root, tuple) else (),
+                    project=(project or Path.cwd()).expanduser().resolve(),
+                    route=cast(
+                        Literal["strict", "policy"] | None, _validated_route_profile(route_profile)
+                    ),
+                    json_output=json_output,
+                    status_only=True,
+                )
+            )
+        )
+        return
+    # Keep the single-host and local-status paths on their released report contracts.
+    host_value = selected
+    host_executable = cast(Path | None, executable)
+    host_root = cast(Path | None, config_root)
     if codex_home is not None or codex_path is not None:
-        if host not in {None, "codex"} or host_config_root is not None or host_path is not None:
+        if (
+            host_value not in {None, "codex"}
+            or host_root is not None
+            or host_executable is not None
+        ):
             raise typer.BadParameter("Codex options cannot be combined with other host targets")
-        host, host_config_root = "codex", codex_home
-        host_path = None if codex_path is None else Path(codex_path)
+        host_value, host_root = "codex", codex_home
+        host_executable = None if codex_path is None else Path(codex_path)
     if next_step:
         from finishup.cli.setup_readiness import setup_next
 
         _finish(
             setup_next(
                 operation=cast(Literal["local", "review", "connection"], operation),
-                host=host,
-                executable=host_path,
-                config_root=host_config_root,
+                host=host_value,
+                executable=host_executable,
+                config_root=host_root,
                 project=(project or Path.cwd()).expanduser().resolve(),
                 # Review needs the AI-powered route; otherwise a Codex home keeps its mode.
                 route=cast(
@@ -3749,14 +3836,14 @@ def setup_status(
             )
         )
         return
-    if host is not None:
+    if host_value is not None:
         from finishup.cli.host_connection import run_host_connection
 
         _finish(
             run_host_connection(
-                host=host,
-                executable=host_path,
-                config_root=host_config_root,
+                host=host_value,
+                executable=host_executable,
+                config_root=host_root,
                 project=(project or Path.cwd()).expanduser().resolve(),
                 # Without --route-profile, a Codex home keeps its registered review mode.
                 route=cast(

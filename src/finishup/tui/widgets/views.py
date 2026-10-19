@@ -38,6 +38,7 @@ __all__ = [
     "BACK",
     "ApprovalView",
     "DetailsView",
+    "MultiSelectionView",
     "Option",
     "SelectionView",
     "TextEntryView",
@@ -359,6 +360,68 @@ class SelectionView(BaseView):
             event.stop()
             event.prevent_default()
             self.choose_number(int(key))
+
+
+class MultiSelectionView(SelectionView):
+    """Choose any nonempty subset; Enter submits and Escape always cancels."""
+
+    def __init__(self, *, name: str, options: Sequence[Option], title: str = "") -> None:
+        super().__init__(
+            name=name,
+            title=title,
+            options=options,
+            hint="space or number to toggle · enter to continue · esc to cancel",
+        )
+        self._checked: set[str] = set()
+
+    @property
+    def selected_keys(self) -> tuple[str, ...]:
+        return tuple(option.key for option in self.options if option.key in self._checked)
+
+    def toggle(self, key: str) -> None:
+        if any(option.key == key and not option.disabled for option in self.options):
+            self._checked.symmetric_difference_update((key,))
+            self._refresh_options()
+
+    def _option_lines(self) -> Text:
+        text = Text()
+        width = max(self.size.width - 2, 1) if self.size.width else 60
+        for index, option in enumerate(self.options):
+            if index:
+                text.append("\n")
+            text.append(
+                truncate(
+                    f"{'›' if index == self._cursor else ' '} {index + 1}. "
+                    f"[{'x' if option.key in self._checked else ' '}] {option.label}",
+                    width,
+                ),
+                style="bright_black"
+                if option.disabled
+                else "bold cyan"
+                if index == self._cursor
+                else "",
+            )
+            if option.description:
+                for line in wrap(option.description, max(width - 5, 1)):
+                    text.append("\n" + truncate(f"     {line}", width), style="bright_black")
+        return text
+
+    def on_key(self, event: events.Key) -> None:
+        if event.key in {"enter", "space"} or (event.key.isdigit() and event.key != "0"):
+            event.stop()
+            event.prevent_default()
+            if event.key == "enter":
+                if self.selected_keys:
+                    self.dismiss("submit")
+            elif event.key == "space":
+                if self.selected is not None:
+                    self.toggle(self.selected.key)
+            else:
+                index = int(event.key) - 1
+                if index < len(self.options):
+                    self.toggle(self.options[index].key)
+            return
+        super().on_key(event)
 
 
 class ApprovalView(SelectionView):

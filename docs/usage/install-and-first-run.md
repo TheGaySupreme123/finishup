@@ -2,8 +2,9 @@
 
 FinishUP was previously called Yoetz. Already using Yoetz? See [Upgrading from Yoetz](upgrading.md#upgrading-from-yoetz) instead.
 
-Choose an installed Codex, Claude Code, Cursor IDE or Cursor Agent CLI, select your project and
-review mode, then approve the connection preview. FinishUP handles each agent's installation steps
+Connect all the Codex, Claude Code, Cursor IDE and Cursor Agent CLI installations FinishUP finds,
+or choose some of them. Select your project and review mode once, then approve one combined
+connection preview. FinishUP handles each agent's installation steps
 and tells you when a fresh session or a local authentication prompt is needed. Exact installation
 details remain available when you need them. The desktop platforms are macOS, Linux, and Windows
 through WSL 2; this does not add native Windows or mobile support.
@@ -11,6 +12,25 @@ through WSL 2; this does not add native Windows or mobile support.
 Use `/connect` to connect or repair and `/disconnect` to remove an integration while retaining
 your FinishUP data. From a terminal, `finishup setup run`, `finishup setup status`, and
 `finishup setup disconnect --host codex|claude|cursor-ide|cursor-cli` expose the same lifecycle.
+Use `finishup setup run --host all` to connect every detected installation, or repeat the option,
+such as `--host codex --host claude`, to choose several. `finishup setup disconnect --host all`
+previews removing the detected integrations; `finishup setup status --host all --json` reports
+each installation separately. Disconnection keeps your FinishUP data and any shared pieces still
+needed by other projects.
+
+When several agents are found, both guided interfaces offer **all agents found (recommended)**
+or **choose which**. The prompt
+wizard accepts comma-separated numbers; the full-screen interface lets you select several agents
+with Space and continue with Enter. Codex still asks you to confirm its settings folder, and the
+full-screen interface still asks whether you trust the project. Each agent that needs operating-system
+authentication asks separately, with its name shown before the prompt.
+
+Without a terminal, setup shows every proposed change and one command to approve that exact batch.
+Use the command as shown: it retains every executable, settings folder, project, request identity
+and combined preview digest. `--accept` on its own cannot approve a batch. If any preview changed,
+setup refuses before changing any agent. If a later step fails, setup stops, reports each agent as
+completed, failed or not attempted, and gives a new preview command for the remaining agents.
+Inspect status before retrying a partial connection; completed steps are retained.
 You can connect several projects to the same agent installation one after another: each adds only
 what that project needs, disconnecting one keeps the others working, and `setup status` lists the
 connected projects. Connecting the same folder a second time under another path (a symlink, other
@@ -267,27 +287,14 @@ Setup is a linear path inside the interface, each finished step collapsing into 
 1. **Detection.** Installed Codex, Claude Code, Cursor IDE and Cursor Agent CLI, your project and its canonical Git common
    root (or resolved non-Git directory), whether system secure storage is available, and whether
    FinishUP is connected yet.
-2. **Which installation**, when several supported agents are found. Select your preferred agent
-   in the same setup flow. Friendly names lead;
-   executable paths appear on selection and under `D`.
-3. **Project trust.** The repository root and what project-local guidance and hooks are permitted
-   to do. Starting in a subfolder is called out, with the root the trust applies to.
-4. **The exact proposed change** — a discoverable project skill under `.agents/skills/finishup`,
-   managed plugin/hook source files under `.agents/plugins/finishup`, the `finishup mcp serve` MCP
-   registration, bounded structural event recording, and the approved-check policy digest — plus
-   what will *not* happen. Nothing is applied before an explicit approval, and the approval is
-   bound to the exact preview and policy digests that were displayed: if either has moved, the
-   apply refuses as stale rather than proceeding.
-5. **Installation activity**, with each step reported only once its postcondition was checked.
-6. **Secure storage**, with no question. FinishUP creates its vault and keeps the key in the system
-   keychain (macOS Keychain, or a running Secret Service on Linux). Where there is none (WSL,
-   headless Linux), it keeps the key in a file only your account can read, and the step says so;
-   see [Linux](#linux) for what that protects. Local-only setups get the same vault. To choose your
-   own passphrase instead, run `finishup setup vault --passphrase` before first setup: input is
-   masked with `*`, must be 16–1024 UTF-8 bytes with no control characters, FinishUP keeps no
-   copy, and you type it after every restart. Later changes use
-   `finishup service rotate-passphrase` (or **Change the passphrase** under `/service`).
-7. **Review mode** — how your tasks use AI-powered review. Every answer keeps FinishUP's local
+2. **All or choose some.** When several installations are found, “All N agents (recommended)” is
+   selected by default. “Choose which” opens a list: use Space to select agents and Enter to continue. Friendly names lead; executable
+   paths appear on selection and under `D`. Confirm the settings folder for each selected Codex
+   installation.
+3. **Project trust, when Codex is selected.** Confirm the repository root and what its project-local
+   guidance and hooks are permitted to do. Starting in a subfolder is called out, with the root
+   the trust applies to.
+4. **Review mode, once for all selected agents** — how your tasks use AI-powered review. Every answer keeps FinishUP's local
    checks on every task:
    1. **FinishUP (recommended)**: local checks; your agent can turn on AI-powered review for a
       task when it helps. Choosing this is your standing permission for that; the privacy policy
@@ -295,8 +302,25 @@ Setup is a linear path inside the interface, each finished step collapsing into 
    2. **FinishUP, local only**: agents may not turn on AI-powered review. No reviewer is set up.
    3. **AI-powered review on every task**: every task is reviewed, as in earlier releases.
 
-   All three connect your agent the same way, so you can change your mind later with
+   All three connect the selected agents the same way, so you can change your mind later with
    `finishup privacy conversations` without reconnecting.
+5. **One combined preview.** See every selected agent's changes together. Codex's preview retains
+   its project skill, plugin and hook files, MCP registration, bounded structural event recording
+   and approved-check policy digest. The preview also names other projects affected by a shared
+   review-mode change. One explicit approval binds every preview: a stale member refuses the
+   batch before any agent is changed.
+6. **Installation activity.** Each agent's result is reported separately. Agents that need
+   operating-system authentication ask in turn, with their name shown. A later failure stops the
+   batch and reports completed, failed and unattempted agents, with a new preview command for
+   the remaining ones.
+7. **Secure storage**, with no question. FinishUP creates its vault and keeps the key in the system
+   keychain (macOS Keychain, or a running Secret Service on Linux). Where there is none (WSL,
+   headless Linux), it keeps the key in a file only your account can read, and the step says so;
+   see [Linux](#linux) for what that protects. Local-only setups get the same vault. To choose your
+   own passphrase instead, run `finishup setup vault --passphrase` before first setup: input is
+   masked with `*`, must be 16–1024 UTF-8 bytes with no control characters, FinishUP keeps no
+   copy, and you type it after every restart. Later changes use
+   `finishup service rotate-passphrase` (or **Change the passphrase** under `/service`).
 8. **AI-powered review setup, for the first and third answers** — provider/model (or a ChatGPT
    subscription), hidden API-key entry, then the privacy options, which record your answer.
    **Assisted review** is the default choice; it is marked recommended only for an exact provider

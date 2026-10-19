@@ -2696,3 +2696,13 @@ Verification: `tests/integration/application/test_publish_server_filled.py`,
 `tests/conformance/operations/test_status_contract.py` (brief and results-filter cases) and the
 MCP unit suites exercise the shared path. A live Cursor session on macOS, Linux or WSL 2 is not
 recorded for this change; native Windows is not claimed.
+
+## Batch setup decision (2026-10-19, issue #1119)
+
+Cursor IDE and Cursor Agent CLI are separate selectable batch members for
+`setup run|disconnect|status --host all` and repeated `--host` selections on macOS, Linux and
+WSL 2. Each retains its existing project binding and plugin authentication, performed in order
+on the foreground terminal with the agent named. Shared plugins and project registrations can
+make another member stale after an earlier apply; that member is refused, reported separately,
+and requires the fresh preview continuation. No newly computed plan inherits the batch approval.
+Shared-piece retention and the existing native-host/platform evidence limits remain unchanged.

@@ -3487,6 +3487,114 @@ def _default_installation_choice(installations: Sequence[HostInstallation]) -> i
     return _path_codex_choice(codex) or 1
 
 
+def _choose_setup_installations(
+    installations: Sequence[HostInstallation],
+) -> tuple[HostInstallation, ...]:
+    typer.echo(
+        f"Connect FinishUP to: 1) all {len(installations)} agents found (recommended)  2) choose which"
+    )
+    choice = typer.prompt("Connect", type=IntRange(1, 2), default=1)
+    if choice == 1:
+        return tuple(installations)
+    for index, item in enumerate(installations, 1):
+        typer.echo(f"  {index}. {item.label} {item.version or ''} ({item.executable})")
+    while True:
+        raw = str(
+            typer.prompt(
+                "Agent numbers, separated by commas",
+                default=str(_default_installation_choice(installations)),
+            )
+        )
+        indexes: set[int]
+        try:
+            indexes = {int(value.strip()) - 1 for value in raw.split(",")}
+        except ValueError:
+            indexes = set()
+        if indexes and all(0 <= index < len(installations) for index in indexes):
+            return tuple(installations[index] for index in sorted(indexes))
+        typer.echo("Choose one or more of the listed numbers, separated by commas.")
+
+
+async def _run_setup_batch(
+    *,
+    hosts: Sequence[str],
+    host_paths: Sequence[Path],
+    config_roots: Sequence[Path],
+    installations: Sequence[HostInstallation] | None,
+    project: Path | None,
+    interactive: bool,
+    accept: bool,
+    json_output: bool,
+    route_profile: Literal["policy", "strict"] | None,
+    request_value: str | None,
+    preview_digest: str | None,
+) -> int:
+    from dataclasses import replace
+
+    from finishup.cli.host_batch import run_host_batch, select_installations
+    from finishup.cli.host_connection import CONNECTION_ERRORS
+
+    connected_project = _resolve_setup_project(project, interactive=interactive)
+    if connected_project is None:
+        return _emit_unconnectable_project("all", json_output=json_output)
+    selected = installations
+    if interactive:
+        try:
+            selected = (
+                tuple(selected)
+                if selected is not None
+                else select_installations(hosts, host_paths, config_roots)
+            )
+        except CONNECTION_ERRORS:
+            # The batch entrypoint renders the bounded selection error in its normal report.
+            return await run_host_batch(
+                hosts=hosts,
+                executables=host_paths,
+                config_roots=config_roots,
+                project=connected_project,
+                json_output=json_output,
+            )
+        confirmed: list[HostInstallation] = []
+        for item in selected:
+            if item.host == "codex":
+                home = Path(
+                    typer.prompt(
+                        f"Codex home used by {item.executable}", default=str(item.config_root)
+                    )
+                ).expanduser()
+                item = replace(item, config_root=home)
+            confirmed.append(item)
+        selected = tuple(confirmed)
+    review = _choose_review_mode() if interactive and route_profile is None else None
+    route = route_profile or ("policy" if review is not None else None)
+    result = await run_host_batch(
+        hosts=hosts,
+        executables=host_paths,
+        config_roots=config_roots,
+        installations=selected,
+        project=connected_project,
+        route=route,
+        accept=accept,
+        interactive=interactive,
+        request_value=request_value,
+        preview_digest=preview_digest,
+        json_output=json_output,
+    )
+    if result == 0 and interactive:
+        if review == "local_only":
+            result = await _run_local_only_privacy_setup(connected_project)
+        elif route == "policy":
+            result = await run_provider_setup(
+                conversation_review=None
+                if review is None
+                else review_choice_conversation_setting(review),
+                project=connected_project,
+            )
+        if result == 0:
+            _write_setup_marker("complete")
+    return result
+
+
 async def run_setup_wizard(
     *,
     non_interactive: bool,
@@ -3495,9 +3603,9 @@ async def run_setup_wizard(
     accept: bool,
     json_output: bool,
     route_profile: Literal["policy", "strict"] | None = None,
-    host: str | None = None,
-    host_path: Path | None = None,
-    host_config_root: Path | None = None,
+    host: str | tuple[str, ...] | None = None,
+    host_path: Path | tuple[Path, ...] | None = None,
+    host_config_root: Path | tuple[Path, ...] | None = None,
     project: Path | None = None,
     request_value: str | None = None,
     preview_digest: str | None = None,
@@ -3518,27 +3626,47 @@ async def run_setup_wizard(
     from finishup.adapters.integrations.host_discovery import discover_hosts
     from finishup.cli.host_connection import run_host_connection
 
+    if isinstance(host, tuple) or host == "all":
+        if codex_path is not None or codex_home is not None:
+            typer.echo("Use --host-path and --host-config-root for each batch member.", err=True)
+            return 2
+        return await _run_setup_batch(
+            hosts=host if isinstance(host, tuple) else (host,),
+            host_paths=host_path
+            if isinstance(host_path, tuple)
+            else (() if host_path is None else (host_path,)),
+            config_roots=host_config_root
+            if isinstance(host_config_root, tuple)
+            else (() if host_config_root is None else (host_config_root,)),
+            installations=None,
+            project=project,
+            interactive=interactive and not json_output,
+            accept=accept,
+            json_output=json_output,
+            route_profile=route_profile,
+            request_value=request_value,
+            preview_digest=preview_digest,
+        )
+    assert not isinstance(host_path, tuple)
+    assert not isinstance(host_config_root, tuple)
     if host is None and codex_path is None:
         installations = discover_hosts()
         alternatives = [item for item in installations if item.host != "codex"]
-        if alternatives and interactive:
-            typer.echo(
-                "Choose an agent to connect (one per run; run setup again to connect another):"
-            )
-            for index, item in enumerate(installations, 1):
-                typer.echo(f"  {index}. {item.label} {item.version or ''} ({item.executable})")
-            choice = int(
-                typer.prompt(
-                    "Agent",
-                    type=IntRange(1, len(installations)),
-                    default=_default_installation_choice(installations),
-                )
-            )
-            selected = installations[choice - 1]
-            host, host_path, host_config_root = (
-                selected.host,
-                selected.executable,
-                selected.config_root,
+        if len(installations) > 1 and interactive:
+            return await _run_setup_batch(
+                hosts=(),
+                host_paths=(),
+                config_roots=(),
+                installations=installations
+                if json_output
+                else _choose_setup_installations(installations),
+                project=project,
+                interactive=interactive and not json_output,
+                accept=accept,
+                json_output=json_output,
+                route_profile=route_profile,
+                request_value=request_value,
+                preview_digest=preview_digest,
             )
         elif alternatives and len(installations) == 1:
             selected = alternatives[0]

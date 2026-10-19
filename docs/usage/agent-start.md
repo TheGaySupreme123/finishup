@@ -156,11 +156,21 @@ Never forge OS presence or place credentials in ordinary arguments, environment,
 
 Guide these decisions in order:
 
-1. **Connect to Codex or not** — and which installation, when several are found. With no Codex,
-   integration is skipped and everything else still works.
+For agent-driven setup, preview with `finishup setup run --host all --non-interactive --json`, or
+repeat `--host`, for example `--host codex --host claude`. Show the combined preview and use its
+one continuation verbatim after approval. It pins each executable and settings folder plus the
+project, request identity and combined digest. A changed member refuses the whole batch before
+any write. A partial failure reports applied, failed and unattempted agents separately; inspect
+`finishup setup status --host all --json`, then use the new preview command for the remaining
+agents. Do not transfer the old approval to that new preview. The reverse path is
+`finishup setup disconnect --host all --non-interactive --json`, with the same approval rule.
+
+1. **Connect all or choose some** — connect every detected Codex, Claude Code, Cursor IDE and
+   Cursor Agent CLI installation, or select a subset. Confirm the Codex settings folder for each
+   selected Codex installation. With no agent, local FinishUP still works.
 2. **Project trust** (full-screen interface only) — applies to the whole repository root shown,
    not just the current folder; the prompt wizard folds trust into the approval in 4.
-3. **Review mode** — how tasks use AI-powered review. FinishUP's local checks run on every task
+3. **Review mode** — ask once for all selected agents. FinishUP's local checks run on every task
    whichever answer they choose:
    - **FinishUP (recommended)**: tasks start with local checks, and the agent turns on AI-powered
      review for a task when it helps. Choosing it is the user's standing permission for that; the
@@ -172,8 +182,10 @@ Guide these decisions in order:
    All three use the same MCP route (policy, `finishup mcp serve`), so the user can change the
    answer later with `finishup privacy conversations` without reconnecting. The interactive
    wizard registers it for every answer; a preview you run gets it from `--route-profile policy`.
-4. **Approve the exact proposed change** — project skill, plugin/hook sources, MCP registration;
-   digest-bound, explicit, no default answer.
+4. **Approve the exact proposed changes together** — project skill, plugin/hook sources and MCP
+   registration for every selected agent; digest-bound, explicit, no default approval. Keep Codex's
+   activation and policy-trust checks. Claude Code and Cursor still authenticate separately with
+   macOS or PAM, and name the agent asking.
 5. **Secret storage** — system secure storage or a FinishUP passphrase. The full-screen interface
    asks; the prompt wizard uses secure storage automatically and offers a passphrase only when it
    is unavailable.

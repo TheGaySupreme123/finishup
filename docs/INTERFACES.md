@@ -4068,6 +4068,28 @@ agent-authorized rotation stages a locally generated replacement. Startup reconc
 the active and staged scoped credential entries and retains only the candidate that authenticates
 the committed envelope.
 
+### Several-agent setup batches (issue #1119)
+
+`cli.host_batch` composes the existing host connection plans for CLI and full-screen first run.
+`HostConnectionBatchReport` is the additive `yoetz.host-connection-batch-report/1` contract
+(`integrations/host-connection-batch-1.0.0.schema.json`); it carries individual
+`HostConnectionBatchMember` outcomes (`preview|completed|unchanged|status|incomplete|not_attempted`)
+and preserves `connection_observed=false`. The released single-host contract is unchanged.
+`batch_digest` hashes canonical JSON for the sorted list of `{host, installation_path,
+request_id, preview_digest}` objects, ordered by those four fields. `prepare_batch` and
+`apply_batch` retain each exact per-host digest; every member is refreshed before the first write
+and per-host apply still revalidates under its configuration lock. There is no batch atomicity
+claim: a failed later host leaves earlier results intact and the remainder requires a fresh
+preview. `batch_command` pins repeated host/path/config-root selections plus project and explicit
+route; the hidden `--batch` flag preserves combined acceptance when only one target remains.
+`select_batch_installation` retains Codex's discovered, PATH-visible executable name during
+explicit replay (`select_installation(preserve_visible_name=True)`), including a symlinked
+launcher. Ordinary single-host selection keeps its released resolution behavior.
+The batch request identity is shared across independent per-host plans. `--host all` expands
+executable-backed discovery; it cannot discover configurations whose executable has been removed.
+`setup status --next` retains its single-target readiness contract. No new MCP or hook operation
+or receipt field is introduced.
+
 ### Privacy policy, disclosure, and outbound gateway
 
 The closed privacy enums are:

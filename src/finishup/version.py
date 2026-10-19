@@ -123,7 +123,7 @@ _RESOURCE_LIMIT: Final = 4_194_304
 # review-mode vectors (CAN-020). n6 item 4: +2 schemas (check-result 1.5.0,
 # check-recorded 1.5.0) and +1 canonical deferred-before-first-edit case (CAN-021). #1084: +1
 # canonical server-filled publish and brief status vectors (CAN-022).
-REVIEWED_RESOURCE_COUNT: Final = 316
+REVIEWED_RESOURCE_COUNT: Final = 318
 _RESOURCE_KINDS: Final = frozenset(
     {
         "canonical_vector",
@@ -156,6 +156,7 @@ _REQUEST_RESULT_VERSIONS: Final = (
     ("lineage-acceptance", "1.0.0"),
     ("lineage-origin", "1.0.0"),
     ("host-connection", "1.0.0"),
+    ("host-connection-batch", "1.0.0"),
     ("mcp-removal", "1.0.0"),
     ("isolation-report", "1.0.0"),
     ("operation-result", "1.0.0"),
