@@ -1226,45 +1226,89 @@ def verification_inputs_unresolved(projection: ProjectionState) -> bool:
     return any(_verification_operands(command)[1] for command in _verification_commands(projection))
 
 
-_SHELL_CONTROL: Final = frozenset({"&&", "||", ";", "|", "&"})
+_SHELL_PUNCTUATION: Final = "();<>|&\n"
+_SHELL_OPERATOR: Final = re.compile(r"&&|\|\||;;|>>|>&|&>|[;|&()<>\n]")
+_SHELL_CONTROL: Final = frozenset({"&&", "||", ";", ";;", "|", "&", "\n", "(", ")"})
 _SHELL_REDIRECT: Final = frozenset({">", ">>", "<", ">&", "&>"})
+# A directory change counts only as a plain statement: after the start, ``;``, a newline or an
+# ``&&`` that follows another such change, and before ``&&``, ``;``, a newline or the end.
+_PLAIN_BEFORE: Final = frozenset({";", "\n"})
+_PLAIN_AFTER: Final = frozenset({"&&", ";", "\n"})
+_DIRECTORY_CHANGE: Final = frozenset({"cd", "pushd", "popd"})
+_SHELL_COMPOUND: Final = frozenset(
+    {"if", "then", "elif", "else", "fi", "for", "while", "until", "do", "done", "case", "esac"}
+    | {"select", "function", "{", "}", "!", "[[", "eval", "source", ".", "exec"}
+)
+_ASSIGNMENT: Final = re.compile(r"[A-Za-z_][A-Za-z0-9_]*=")
+
+
+def _shell_words(command: str) -> list[str] | None:
+    """``command`` split like a shell into words and single control operators, or ``None``."""
+
+    lexer = shlex.shlex(command, posix=True, punctuation_chars=_SHELL_PUNCTUATION)
+    lexer.whitespace = " \t\r"
+    lexer.whitespace_split = True
+    try:
+        raw = list(lexer)
+    except ValueError:
+        return None
+    words: list[str] = []
+    for word in raw:
+        if word and all(char in _SHELL_PUNCTUATION for char in word):
+            words.extend(_SHELL_OPERATOR.findall(word))
+        else:
+            words.append(word)
+    return words
 
 
 def _verification_operands(command: str) -> tuple[list[str], bool]:
     """Literal file operands of one recorded command, resolved against its directory (AIP-2).
 
-    The command splits like a shell at control operators. A literal ``cd``/``pushd`` to a plain
-    relative or absolute directory moves the operand base; any other directory change (``cd -``,
-    ``cd $X``, ``cd ~``, a ``..`` that leaves the workspace, ``popd``, a subshell) makes later
-    operands unresolvable: they are omitted and reported (second value), never read as a
-    same-named file at the workspace root. A published action records no working directory, so
-    the base starts at the workspace root as before. Redirection targets are not operands.
+    Only a narrow literal subset is modelled. The command splits like a shell at control
+    operators and newlines. A ``cd``/``pushd`` to a plain relative or absolute directory moves the
+    operand base only as a plain statement (``cd tests && pytest x.py``, ``cd tests; ...``). Any
+    other directory change (``cd -``, ``cd $X``, ``cd ~``, a ``..`` that leaves the workspace,
+    ``popd``, one in a pipeline, behind a condition or an assignment prefix) and any subshell or
+    compound command make later operands unresolvable: they are omitted and reported (second
+    value), never read as a same-named file at the workspace root. A published action records no
+    working directory, so the base starts at the workspace root. Redirection targets are not
+    operands.
     """
 
-    lexer = shlex.shlex(command, posix=True, punctuation_chars=True)
-    lexer.whitespace_split = True
-    try:
-        words = list(lexer)
-    except ValueError:
+    words = _shell_words(command)
+    if words is None:
         return [], False
     found: list[str] = []
     unresolved = False
     base: str | None = ""
     segment: list[str] = []
-    for word in (*words, ";"):
+    before: str | None = None
+    chained = False
+    for word in (*words, "\n"):
         if word not in _SHELL_CONTROL:
             segment.append(word)
             continue
-        if not segment:
-            continue
-        head, operands = segment[0], segment[1:]
-        segment = []
-        if head in {"cd", "pushd"}:
-            base = _joined_directory(base, operands[0] if len(operands) == 1 else None)
-            continue
-        if head.startswith("(") or head == "popd":
+        assigned = 0
+        while assigned < len(segment) and _ASSIGNMENT.match(segment[assigned]):
+            assigned += 1
+        head, operands = (
+            (segment[assigned], segment[assigned + 1 :]) if segment[assigned:] else ("", [])
+        )
+        plain = (before is None or before in _PLAIN_BEFORE or (before == "&&" and chained)) and (
+            word in _PLAIN_AFTER
+        )
+        chained = False
+        if head in _DIRECTORY_CHANGE:
+            if head == "popd" or assigned or not plain:
+                base = None
+            else:
+                base = _joined_directory(base, operands[0] if len(operands) == 1 else None)
+                chained = True
+            operands = []
+        elif head in _SHELL_COMPOUND:
             base = None
-            continue
+        segment = []
+        before = word
         redirected = False
         for operand in operands:
             if redirected or operand in _SHELL_REDIRECT or operand.startswith("-"):
@@ -1279,6 +1323,8 @@ def _verification_operands(command: str) -> tuple[list[str], bool]:
                 unresolved = unresolved or joined is None
                 continue
             found.append(value)
+        if word in {"(", ")", ";;"}:
+            base = None
     return found, unresolved
 
 

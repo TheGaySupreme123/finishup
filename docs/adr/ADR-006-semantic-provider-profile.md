@@ -2461,7 +2461,8 @@ a request:
   ledgers; their composition path is retired once the loop is wired through the evaluator
   (unit 3).
 - **Verification oracles follow `cd` (AIP-2).** Operands of a recorded verification command
-  resolve against literal `cd`/`pushd` directories; an unresolvable change omits them and discloses
-  `verification_input_directory_unresolved`. **Task-statement paths keep `./` (AIP-5)**: `./x` is the
+  resolve against a plain literal `cd`/`pushd` statement (after the start, `;`, a newline or a
+  chained `cd ... &&`, and before `&&`, `;`, a newline or the end). Any other change (a pipeline,
+  condition, assignment prefix, subshell or compound command) is not modelled: later operands are
+  omitted and `verification_input_directory_unresolved` is disclosed. **Task-statement paths keep `./` (AIP-5)**: `./x` is the
   workspace-relative `x`, and `../x` is refused instead of becoming `/x`.
-
