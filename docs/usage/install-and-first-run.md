@@ -303,7 +303,8 @@ Setup is a linear path inside the interface, each finished step collapsing into 
    3. **AI-powered review on every task**: every task is reviewed, as in earlier releases.
 
    All three connect the selected agents the same way, so you can change your mind later with
-   `finishup privacy conversations` without reconnecting.
+   `finishup ai on` or `finishup ai off` without reconnecting;
+   `finishup privacy conversations` also offers per-review owner approval.
 5. **One combined preview.** See every selected agent's changes together. Codex's preview retains
    its project skill, plugin and hook files, MCP registration, bounded structural event recording
    and approved-check policy digest. The preview also names other projects affected by a shared
@@ -321,8 +322,14 @@ Setup is a linear path inside the interface, each finished step collapsing into 
    masked with `*`, must be 16–1024 UTF-8 bytes with no control characters, FinishUP keeps no
    copy, and you type it after every restart. Later changes use
    `finishup service rotate-passphrase` (or **Change the passphrase** under `/service`).
-8. **AI-powered review setup, for the first and third answers** — provider/model (or a ChatGPT
-   subscription), hidden API-key entry, then the privacy options, which record your answer.
+8. **AI reviewer, for the first and third answers** — "How should FinishUP reach an AI reviewer?"
+   Choose **Sign in with your ChatGPT subscription (uses Codex)**, **Use an API key**, or
+   **Not now — stay local for now**. Not now records local-only review. With an API key, choose
+   the provider, then a model (the recommended model comes first, with an option to type another
+   ID), complete the mandatory privacy step, and enter the key with hidden input. Only this path
+   asks whether to allow one content-free request to check the key (yes by default). ChatGPT
+   sign-in uses Codex's own account flow and asks for no API key. Add or change the reviewer later
+   with `finishup ai setup`; enter a key safely with `finishup ai key`.
    **Assisted review** is the default choice; it is marked recommended only for an exact provider
    route with current reviewed no-training evidence and retention no longer than 30 days, and
    otherwise (a ChatGPT subscription among them) the choice is yours. Assisted review is bounded

@@ -36,9 +36,9 @@ def test_development_manifest_is_truthful_and_complete() -> None:
             key=str.encode,
         )
     )
-    # 54 since the review-packet-row 2.0.0 provider contract (outbound-case role); 55 with the
-    # host-connection-batch report (issue #1119).
-    assert len(manifest.request_result_schema_versions) == 55
+    # 54 since the review-packet-row 2.0.0 provider contract (outbound-case role); 56 with the
+    # host-connection-batch report and ai-status (issue #1119).
+    assert len(manifest.request_result_schema_versions) == 56
     assert dict(manifest.request_result_schema_versions)["setup-readiness"] == "1.0.0"
     assert dict(manifest.request_result_schema_versions)["setup-status"] == "2.0.0"
     assert dict(manifest.request_result_schema_versions)["isolation-report"] == "1.0.0"

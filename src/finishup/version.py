@@ -123,7 +123,7 @@ _RESOURCE_LIMIT: Final = 4_194_304
 # review-mode vectors (CAN-020). n6 item 4: +2 schemas (check-result 1.5.0,
 # check-recorded 1.5.0) and +1 canonical deferred-before-first-edit case (CAN-021). #1084: +1
 # canonical server-filled publish and brief status vectors (CAN-022).
-REVIEWED_RESOURCE_COUNT: Final = 318
+REVIEWED_RESOURCE_COUNT: Final = 319
 _RESOURCE_KINDS: Final = frozenset(
     {
         "canonical_vector",
@@ -138,6 +138,7 @@ _RESOURCE_KINDS: Final = frozenset(
 )
 _REQUEST_RESULT_VERSIONS: Final = (
     ("actor-assertion", "1.0.0"),
+    ("ai-status", "1.0.0"),
     ("catalog", "7.0.0"),
     ("chat-user-attestation", "1.0.0"),
     ("check-request", "1.1.0"),

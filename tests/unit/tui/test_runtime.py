@@ -236,9 +236,18 @@ async def test_store_provider_credential_supplies_the_scoped_reauthentication_se
         lambda: bytearray(b"scoped-reauth"),
     )
 
+    reloads: list[bool] = []
+
+    async def reload(*, report_startup_failure: bool = True) -> dict[str, object]:
+        reloads.append(report_startup_failure)
+        return {"reachable": True, "state": "ready"}
+
+    monkeypatch.setattr("finishup.cli.setup.restart_service_for_semantic_composition", reload)
+
     status = await FinishUpRuntime(cwd=tmp_path).store_provider_credential()
 
     assert status == "stored"
+    assert reloads == [False]
     assert observed_workspaces == [tmp_path]
     assert len(observed) == 1
     credential, reauthentication = observed[0]

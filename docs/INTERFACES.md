@@ -21,6 +21,18 @@ change; the product words are their human names.
 "Deterministic" elsewhere in this registry keeps its ordinary meaning — reproducible ordering,
 replay, digests, and equality — and is not a check kind.
 
+## Optional AI-review owner commands (issue #1119)
+
+| Command / shared name | Contract |
+| --- | --- |
+| `finishup ai setup` | `cli.ai.ai_app`; `cli.ai_setup.REVIEWER_QUESTION` and `REVIEWER_CHOICES` provide the identical three choices to the wizard and TUI. Calls `run_provider_setup` with agent opt-in; provider/model → mandatory privacy ceremony → hidden key entry. Not now records `local_only`. `--set` remains supported. |
+| `finishup ai key` | Presence selects set or rotate; unknown refuses. Successful key entry reloads the service through existing composition so readiness uses the stored key. `cli.app.run_configured_provider_credential(action)` wraps the existing confidential command. No secret argv, environment, file, stdin option, JSON or MCP input is added. |
+| `finishup ai model [MODEL_ID]` | Current-marked reviewed catalog plus a custom ID. Config writes use the locked preimage check; provider keys remain exact-model-bound, with explicit reentry through `ai key`. The old binding stays stored. Codex uses its existing setup/capability ceremony. No privacy approval is inferred. |
+| `finishup ai status [--json]` | Read-only, no provider request or service startup. `protocol.ai_status.AIStatus`; `ai-status` 1.0.0, schema tag `finishup.ai-status/1`. Fields: `review_mode` (four conversation-review tokens or null), `reviewer` and `model` (string or null), `key_stored` and `privacy_permits_sending` (boolean or null for unknown). `key_stored` is presence for the configured API binding; false for Codex-owned OAuth. Privacy requires an observed repository grant, network permission and an enabled inference channel authorizing the exact provider/endpoint/model, and is false for local-only review. Human output is one line. Neither output proves a review ran. |
+| `finishup ai off` / `finishup ai on` | Existing repository conversation-review change path: `local_only` / `local_agent_opt_in`; widening retains separate reauthentication. Off preserves the key. No owner-facing remove-key ceremony exists; `ai forget-key` is deliberately absent. Revoke at the provider to invalidate a key. |
+| TUI `/provider` | Same reviewer question; API providers have friendly labels, a default-first model picker and custom ID entry. Only the API path offers the existing optional content-free credential probe before the trusted privacy ceremony. Secrets remain outside the UI. |
+
+
 ## Product name and legacy Yoetz identifiers (ADR-048)
 
 The product was named Yoetz through 0.2.5. The shared spellings, current and legacy, live in

@@ -243,16 +243,24 @@ recommendations. Each answer decides the next step; stop after each and wait.
 4. **Secret storage**: never a question. FinishUP creates its vault by itself during the terminal
    step. Tell the user where the key went when the result names it (system keychain, or a file
    only their account can read); do not offer a passphrase unless they ask for one.
-5. **Provider and model**, only after answer (a) or (c): list the presets from
-   `finishup provider catalog --json` with their suggested models and ask which one, or skip for
-   now. Recommend the preset whose retention terms match what they told you about privacy.
+5. **AI reviewer**, only after answer (a) or (c): ask "How should FinishUP reach an AI reviewer?
+   1) Sign in with your ChatGPT subscription (uses Codex) 2) Use an API key 3) Not now — stay
+   local for now". Not now means local-only review. On the API path show friendly providers and
+   models from `finishup provider catalog --json`, with the recommended default first and the
+   option to type another model ID. The user can instead run `finishup ai setup` for this flow.
 6. **Privacy policy**, only after answer (a) or (c): name the five options. Assisted review is the
    default; recommend it with its reason and trade-off, and name Expanded as the deeper option.
    With a ChatGPT subscription or another provider without reviewed data-use terms nothing is
    marked recommended, so the choice is theirs: say so. Private sends nothing for review, so their
    (a) or (c) answer would stay local under it. Their choice is applied only through the terminal
    ceremony or the exact prepared chat grant.
-7. **Credential**: never a question. Hand over the terminal for `finishup provider credential set`.
+7. **Credential**, only on the API path: never ask for the key in chat. Tell the user to run
+   `finishup ai key` in their own terminal after the privacy step. It uses hidden input and stores
+   the key in the encrypted local vault. It accepts no key argument, environment variable or file.
+   ChatGPT sign-in belongs to Codex and needs no API key. If the user explicitly chooses the
+   existing consent lane instead, first warn that chat may retain the key, offer terminal entry
+   as the stronger alternative, and use only `finishup consent ... --provider-credential-stdin`
+   for that one prepared, approved credential target. Never forward a key through MCP.
 
 When every answer is in, run the setup (the preview with `--route-profile policy`, whatever the
 answer; show its `route_profile`), then record the answer:
@@ -384,7 +392,7 @@ while local checks keep working. `finishup provider status --json` names each bl
 
 ```text
 finishup provider endpoint --provider <preset> --model <model>   # nonsecret; you may run this
-finishup provider credential set                                 # hidden local input when chat secret ingress is not selected
+finishup ai key                                                 # the user runs this in their own terminal
 finishup --privacy                                               # trusted-local fallback when chat authority is unavailable
 ```
 

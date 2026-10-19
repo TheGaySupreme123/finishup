@@ -1,7 +1,46 @@
 # Providers and credentials
 
-Binding a provider is nonsecret configuration. Provisioning a credential is a separate, deliberately
-awkward ceremony. The two never mix.
+AI-powered review is optional. Run `finishup ai setup` in your own terminal. It asks:
+
+> How should FinishUP reach an AI reviewer?
+> 1) Sign in with your ChatGPT subscription (uses Codex)
+> 2) Use an API key
+> 3) Not now — stay local for now
+
+With an API key, choose a provider (OpenAI is offered first), then a model. The first model is
+marked **recommended**; you can always type another model ID. Next, complete the mandatory
+privacy step and its separate reauthentication before hidden key entry. The optional question
+about one content-free key-verification request appears only on the API-key path; its default
+remains yes. A ChatGPT subscription uses Codex's own sign-in and never asks for an API key.
+**Not now** records local-only review; it does not leave AI-powered review switched on.
+`finishup --set` opens the same guided flow and keeps its existing provider/model shortcuts.
+
+| Command | What it does |
+| --- | --- |
+| `finishup ai setup` | Choose a reviewer and approve its privacy policy. Agent opt-in is the recommended mode. |
+| `finishup ai key` | Enter a key with hidden terminal input; automatically set or rotate the configured key. It goes into the encrypted local vault; FinishUP then reloads its reviewer. If the vault relocks, unlock it before use. |
+| `finishup ai model` | List this reviewer's models, mark the current one, and choose by number or type another ID. |
+| `finishup ai model MODEL_ID` | Switch to an exact model ID. |
+| `finishup ai status` | Show review mode, reviewer, model, key presence, and privacy permission for the exact model in one line. `--json` gives the same nonsecret facts; unreadable facts are unknown. |
+| `finishup ai off` | Set this repository to local checks only; the key stays stored. |
+| `finishup ai on` | Select agent opt-in in this repository through the existing privacy ceremony; widening requires reauthentication. |
+
+Stored API keys are bound to the exact provider, endpoint, and model. A model change preserves the
+old key for its old binding and opens `ai key` so you can enter it for the new model. Choosing the
+current model changes nothing. The new binding may need fresh privacy approval; model selection
+never supplies that approval. A Codex model change reuses Codex's setup and capability check,
+preserving Codex's own sign-in. It does not copy an OAuth credential into FinishUP.
+
+FinishUP has no individual stored-key removal ceremony, so there is no `ai forget-key` command.
+To invalidate a key, revoke it with the provider; its encrypted local record stays stored.
+`ai off` stops AI-powered review here without deleting that record.
+Never paste keys into agent chat. `ai key` accepts no key argument, environment variable, file,
+or stdin option. Binding a provider is nonsecret configuration; key entry is a separate ceremony.
+
+The suggested models were refreshed on 2026-10-19. These lists do not prove your account can use
+a model. Anthropic's compatible route omits optional sampling and tool-choice parameters, so it
+avoids the newer Claude models' restrictions on those parameters; responses remain prompt-only
+structured output, validated locally, with no claim of a live provider test.
 
 ## Reviewed presets
 
@@ -338,7 +377,7 @@ profile = "local-openai"
 provider_id = "openai"
 endpoint_profile_id = "openai-responses"
 endpoint_profile_version = "1.0.0"
-model = "gpt-4.1-mini"
+model = "gpt-6.1-sol"
 capability_profile = "openai-responses-structured-1"
 ```
 

@@ -2147,3 +2147,35 @@ a model follows them; [the evaluation runbook](../runbooks/reviewer-instruction-
 the procedure for a live replay. The instruction grew from 22.5 KB to about 29.8 KB, about 1.8k
 more input tokens per review under the bytes/4 estimate, against a median native review footprint
 of about 110k tokens.
+
+
+## Amendment — 2026-10-19: simple optional reviewer setup (issue #1119)
+
+Maintainer acknowledgement: the maintainer explicitly approved this scoped work on 2026-10-19,
+recorded in #1119. AI-powered review stays optional, with agent opt-in recommended. Both terminal
+surfaces ask one shared reviewer question: ChatGPT subscription through Codex, API key, or Not now.
+Not now records local-only conversation behavior. The API path orders friendly provider selection,
+a default-first reviewed model list (custom IDs remain possible), mandatory privacy approval, and
+hidden key entry. Only this path asks about the optional content-free key probe, keeping its yes
+default. Codex retains its own login, gpt-6.1-sol suggestion and gpt-6-luna fallback.
+
+The short `finishup ai setup|key|model|status|on|off` commands compose existing trusted ceremonies.
+They create no new secret ingress. After hidden key entry, the existing service-composition path
+reloads credential readiness in the CLI and terminal interface; a relocked vault is an unlock
+continuation, not a lost-key claim. Privacy widening remains a separate reauthenticated decision;
+neither model selection nor key storage supplies it. `--set` remains available. Status is a closed,
+nonsecret `ai-status` 1.0.0 contract and preserves unknowns, with structural readiness distinct from
+live review. Off narrows the repository setting without deleting credentials.
+
+The vault's credential identity includes the model. Changing an API model keeps the old record and
+explicitly opens hidden entry for the new binding, rather than copying a key across bindings or
+silently stranding it. Changing a Codex model reuses its existing setup/capability check and sign-in.
+There is no owner-facing individual credential-removal ceremony; do not invent `ai forget-key`.
+Provider revocation invalidates a key but does not erase its encrypted local record. A separately
+reviewed removal ceremony remains a gap owned by #1119.
+
+The October catalog follows the provider IDs reviewed on 2026-10-19. It proves bundled selection,
+not account entitlement or live interoperability. The Anthropic compatible adapter already omits
+`temperature`, `top_p`, `tools` and `tool_choice`; tests pin their absence for the new Opus, Sonnet,
+Haiku and Fable suggestions on review and probe requests. Its prompt-only output enforcement and
+local judgment validation remain unchanged. No live provider call is part of this change.

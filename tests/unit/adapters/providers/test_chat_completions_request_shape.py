@@ -348,3 +348,28 @@ def test_transport_and_status_failures_keep_their_public_class() -> None:
 def test_profile_rejects_an_unlisted_base_path_prefix() -> None:
     with pytest.raises(ValueError, match="chat_completions_profile_path_invalid"):
         _profile(prefix="/inference/v1")
+
+
+@pytest.mark.parametrize(
+    "model", ["claude-opus-5-5", "claude-sonnet-5-5", "claude-haiku-5-5", "claude-fable-5-1"]
+)
+@pytest.mark.parametrize("purpose", ["semantic-review", "credential-probe"])
+def test_october_anthropic_models_omit_incompatible_optional_parameters(
+    model: str, purpose: str
+) -> None:
+    from finishup.adapters.providers.factory import chat_completions_profile_from_provider_config
+    from finishup.config.write import anthropic_provider
+
+    provider = anthropic_provider(model=model)
+    profile = chat_completions_profile_from_provider_config(provider, now=_NOW)
+    case = replace(
+        _case(
+            provider_id=provider.provider_id,
+            model=model,
+            endpoint_profile_id=provider.endpoint_profile_id,
+        ),
+        purpose=purpose,
+    )
+    body = cast(dict[str, JsonValue], strict_json_parse(render_case(case, profile).body))
+    assert body["model"] == model
+    assert {"temperature", "top_p", "tool_choice", "tools", "response_format"}.isdisjoint(body)

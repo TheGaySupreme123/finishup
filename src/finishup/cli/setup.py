@@ -466,6 +466,12 @@ def _prompt_credential_probe_authorization() -> bool:
     )
 
 
+def prompt_credential_probe_authorization() -> bool:
+    """Use the same fixed, content-free probe question from the full-screen handoff."""
+
+    return _prompt_credential_probe_authorization()
+
+
 def _emit_hidden_credential_transition() -> None:
     """Make the first confidential-input boundary unmistakable."""
 
@@ -2697,7 +2703,7 @@ async def _interactive_provider_setup(
     *,
     provider_choice: str | None = None,
     model: str | None = None,
-    before_credential: Callable[[], Awaitable[str | None]] | None = None,
+    before_credential: Callable[[bool], Awaitable[str | None]] | None = None,
     storage_only: bool = False,
     project: Path | None = None,
 ) -> tuple[dict[str, JsonValue], dict[str, JsonValue]]:
@@ -2712,7 +2718,6 @@ async def _interactive_provider_setup(
     from finishup.cli.provider_binding import (
         ProviderEndpointChoice,
         apply_provider_endpoint_choice,
-        prompt_provider_endpoint_binding,
         prompt_provider_model,
     )
     from finishup.cli.unlock import (
@@ -2903,9 +2908,16 @@ async def _interactive_provider_setup(
             return _provider_setup_result(service, provider_report)
         typer.echo(f"{preset.provider_id} model: {selected_model}")
     else:
-        written = prompt_provider_endpoint_binding(
-            show_standalone_next_step=False,
+        from finishup.cli.ai_setup import prompt_reviewer_binding
+
+        written = prompt_reviewer_binding()
+    if written == "local_only":
+        local_result = await _run_local_only_privacy_setup(project)
+        provider_report.update(
+            {"review_mode": "local_only", "local_only_recorded": local_result == 0}
         )
+        wipe_auto_passphrase()
+        return _provider_setup_result(service, provider_report)
     if written == "codex_subscription":
         from finishup.cli.codex_subscription import prompt_codex_subscription_setup
 
@@ -2942,7 +2954,7 @@ async def _interactive_provider_setup(
         )
         service = await _restart_service_for_semantic_composition()
         if before_credential is not None:
-            blocked = await before_credential()
+            blocked = await before_credential(False)
             if blocked is not None:
                 provider_report["credential_reason"] = blocked
         wipe_auto_passphrase()
@@ -2966,7 +2978,7 @@ async def _interactive_provider_setup(
     if before_credential is not None:
         # The privacy step reports its own bounded reason; keep it instead of flattening every
         # cause to privacy_setup_incomplete.
-        blocked = await before_credential()
+        blocked = await before_credential(True)
         if blocked is not None:
             provider_report["credential_reason"] = blocked
             wipe_auto_passphrase()
@@ -3101,10 +3113,7 @@ def _emit_provider_setup_layer_report(*, privacy_outcome: str) -> None:
     typer.echo("Provider binding and vault credential storage succeeded; that layer is supported.")
     typer.echo("Other layers (ready vs not demonstrated by this path):")
     typer.echo(f"  SDK extra (semantic-openai): {_semantic_openai_extra_state()}")
-    typer.echo(
-        "  AI-powered evaluator: not composed "
-        "(_semantic_not_configured in ready composition; not demonstrated)"
-    )
+    typer.echo("  Reviewer configuration: reloaded; live AI-powered review not demonstrated")
     typer.echo(f"  Privacy policy: {privacy_outcome}")
     typer.echo("  Transport probe: not demonstrated")
     typer.echo("  Installed artifact evidence: not demonstrated")
@@ -3300,7 +3309,7 @@ async def run_provider_setup(
     # ``not_attempted`` only when the provider step stopped before reaching it.
     privacy_outcome = "not_attempted"
 
-    async def authorize_provider_channel() -> str | None:
+    async def authorize_provider_channel(api_key: bool | None = None) -> str | None:
         nonlocal privacy_outcome
         from finishup.cli.privacy_setup import adds_ai_review, run_privacy_setup
         from finishup.cli.unlock import HumanCeremonyCliError
@@ -3308,7 +3317,9 @@ async def run_provider_setup(
 
         try:
             external_runtime_configured = (
-                load_config({}, os.environ, None).external_runtime is not None
+                not api_key
+                if api_key is not None
+                else load_config({}, os.environ, None).external_runtime is not None
             )
         except ConfigError:
             # Same rule as the first-run wizard: an unreadable configuration keeps the API-key
@@ -3353,6 +3364,16 @@ async def run_provider_setup(
         project=project,
     )
     service, provider_report = _provider_setup_result(service, provider_report)
+    if provider_report.get("review_mode") == "local_only":
+        if provider_report.get("local_only_recorded") is True:
+            typer.echo(
+                "Local checks only. AI-powered review is off; add it later with finishup ai setup."
+            )
+            return 0
+        typer.echo(
+            "Local-only review was not recorded; run finishup ai off in your terminal.", err=True
+        )
+        return 20
     binding = provider_report.get("binding")
     credential = provider_report.get("credential")
     typer.echo("")
@@ -3406,6 +3427,15 @@ async def run_provider_setup(
             # No provider was chosen, so neither the privacy step nor a credential ran.
             typer.echo(_NEXT_PROVIDER_AFTER_SKIP)
         return 20
+    if credential == "stored":
+        # Credential presence and evaluator composition were snapshotted before hidden entry.
+        service = await _restart_service_for_semantic_composition()
+        if service.get("state") != "ready":
+            typer.echo(
+                "The key is stored. Run 'finishup service unlock', then 'finishup ai status' before using AI-powered review.",
+                err=True,
+            )
+            return 20
     if credential == "external_runtime_oauth":
         _emit_codex_subscription_layer_report(privacy_outcome=privacy_outcome)
     else:
@@ -3871,7 +3901,7 @@ async def run_setup_wizard(
     semantic_status: dict[str, JsonValue] | None = None
     if interactive and review_mode == "semantic":
 
-        async def authorize_provider_channel() -> str | None:
+        async def authorize_provider_channel(api_key: bool | None = None) -> str | None:
             nonlocal privacy
             from finishup.cli.privacy_setup import run_privacy_setup
             from finishup.cli.unlock import HumanCeremonyCliError
@@ -3879,7 +3909,9 @@ async def run_setup_wizard(
 
             try:
                 external_runtime_configured = (
-                    load_config({}, os.environ, None).external_runtime is not None
+                    not api_key
+                    if api_key is not None
+                    else load_config({}, os.environ, None).external_runtime is not None
                 )
             except ConfigError:
                 # This optional read only decides whether an API-credential probe applies. Keep
@@ -3939,6 +3971,12 @@ async def run_setup_wizard(
             project=codex_project,
         )
         service, provider = _provider_setup_result(service, provider)
+        if provider.pop("review_mode", None) == "local_only":
+            review_mode = "local_only"
+            review_choice = "local_only"
+            privacy["outcome"] = (
+                "configured" if provider.pop("local_only_recorded", False) else "failed"
+            )
         if service.get("state") == "ready" and provider.get("binding") == "configured":
             if provider.get("credential") == "stored":
                 service = await _restart_service_for_semantic_composition()
@@ -4035,6 +4073,13 @@ async def run_setup_wizard(
                 _append_next_step(next_steps, _NEXT_CREDENTIAL)
             elif provider.get("binding") == "configured":
                 _append_next_step(next_steps, _NEXT_RESTART)
+    elif review_mode == "local_only" and privacy.get("outcome") not in {
+        "configured",
+        "unchanged",
+        "not_changed",
+        "deferred",
+    }:
+        _append_next_step(next_steps, _NEXT_PRIVACY)
     elif review_mode != "local_only":
         if privacy.get("outcome") not in {"configured", "unchanged", "not_changed"}:
             _append_next_step(next_steps, _NEXT_PRIVACY)

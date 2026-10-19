@@ -522,7 +522,7 @@ class FinishUpTui(App[int]):
         self._flow = self.run_worker(self._dispatch(command.name), name="command", exclusive=True)
 
     async def _dispatch(self, name: str) -> None:
-        handlers: dict[str, Callable[[], Awaitable[None]]] = {
+        handlers: dict[str, Callable[[], Awaitable[object]]] = {
             "status": self.command_status,
             "observe": self.command_observe,
             "work": self.command_work,
@@ -747,9 +747,12 @@ class FinishUpTui(App[int]):
             return
         if choice not in {"agent_opt_in", "ai_powered"}:
             return
-        await self.command_provider(
+        provider_choice = await self.command_provider(
             conversation_review="local_agent_opt_in" if choice == "agent_opt_in" else "ai_powered"
         )
+        if provider_choice == "local_only":
+            await self._finish_setup(connected=connected)
+            return
         provider = await self.runtime.provider_posture()
         if (
             not provider.endpoint_bound
@@ -814,7 +817,7 @@ class FinishUpTui(App[int]):
         await self._record_local_only()
         await self._finish_setup(connected=connected)
 
-    async def _record_local_only(self) -> None:
+    async def _record_local_only(self) -> bool:
         """Record "local checks only; agents may not opt in" in the privacy policy (ADR-049).
 
         The Private recipe with the explicit ``local_only`` conversation setting, through the
@@ -832,16 +835,18 @@ class FinishUpTui(App[int]):
                 "This terminal cannot open the trusted privacy ceremony",
                 ("Run 'finishup privacy conversations local-only' from your shell.",),
             )
-            return
+            return False
         except RuntimeError_ as error:
             self._report(error)
-            return
+            return False
         if getattr(report, "outcome", "failed") not in {"configured", "unchanged"}:
             self.say(
                 Level.UNPROVEN,
                 "Local checks only was not recorded",
                 ("Run 'finishup privacy conversations local-only' from your shell.",),
             )
+
+        return getattr(report, "outcome", "failed") in {"configured", "unchanged"}
 
     async def _choose_harnesses(
         self,
@@ -2615,20 +2620,40 @@ class FinishUpTui(App[int]):
             ),
         )
 
-    async def command_provider(self, conversation_review: str | None = None) -> None:
+    async def command_provider(self, conversation_review: str | None = None) -> str | None:
         """Bind a reviewer, approve its privacy policy, then store its key.
 
         ``conversation_review`` is a first-run answer already taken (ADR-049): the privacy
         policy drafted here carries it and the questionnaire does not ask again.
         """
 
-        options = self.runtime.provider_options()
+        from finishup.tui.ai_setup import choose_connection, choose_model
+
+        connection = await choose_connection(self.ask)
+        if connection is None:
+            return None
+        if connection == "local_only":
+            return "local_only" if await self._record_local_only() else None
+        if connection == "codex_subscription":
+            await self._command_codex_subscription(conversation_review=conversation_review)
+            return None
+        options = tuple(
+            option
+            for option in self.runtime.provider_options()
+            if option.choice != "codex_subscription"
+        )
         chosen = await self.ask(
             SelectionView(
                 name="provider",
-                title="Choose a provider for optional deeper review",
+                title="Choose an API provider",
                 options=[
-                    Option(option.choice, option.label, option.endpoint_text) for option in options
+                    Option(
+                        option.choice,
+                        option.label
+                        + (" (recommended)" if option.choice == "official_openai" else ""),
+                        option.endpoint_text,
+                    )
+                    for option in options
                 ]
                 + [
                     Option(
@@ -2702,17 +2727,12 @@ class FinishUpTui(App[int]):
             if await self.ask(entry) is None:
                 return
             origin = entry.value.strip()
-        model_entry = TextEntryView(
-            name="provider-model",
-            title=option.label,
-            label="Model identifier",
-            initial=option.default_model,
-            placeholder="model id",
+        model = await choose_model(
+            self.ask, option.label, self.runtime.provider_models(option.choice)
         )
-        if await self.ask(model_entry) is None:
+        if model is None:
             self.say(Level.OPTIONAL, "No provider was configured.")
-            return
-        model = model_entry.value.strip()
+            return None
 
         confirmed = await self.ask(
             ApprovalView(
@@ -2739,6 +2759,7 @@ class FinishUpTui(App[int]):
                     offer_recommended=conversation_review not in _ADD_ON_ANSWERS,
                     conversation_review=conversation_review,
                     ai_review_add_on=conversation_review in _ADD_ON_ANSWERS,
+                    credential_probe=True,
                 )
             )
         except SuspendNotSupported:
@@ -2785,7 +2806,7 @@ class FinishUpTui(App[int]):
         status = await self._run_confidential(
             "Provider API key",
             self.runtime.store_provider_credential,
-            fallback_command="finishup provider credential set",
+            fallback_command="finishup ai key",
         )
         posture = await self.runtime.provider_posture()
         if status is None:

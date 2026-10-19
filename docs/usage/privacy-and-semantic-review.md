@@ -19,6 +19,19 @@ strict route cannot request external AI-powered review even if durable policy is
 is separate from the policy profiles below; see [Auto-approving an MCP
 route](auto-approving-agents.md).
 
+Use `finishup ai setup` to add a reviewer: choose ChatGPT sign-in, an API key, or **Not now —
+stay local for now**. The last answer records local-only review. On the API path the order is
+provider, model, mandatory privacy approval, then hidden key entry. Only that path offers a
+content-free key-verification request, separately from task-content permission. Your final privacy
+widening still needs its own reauthentication; selecting a reviewer or storing a key grants nothing.
+
+`finishup ai off` selects local-only review for this repository. The key stays encrypted in the
+vault; revoke it with the provider to invalidate it (there is no individual local removal command).
+`finishup ai on` selects agent opt-in through the same privacy approval path as
+`finishup privacy conversations agent-opt-in`. `finishup ai status` reports mode, reviewer,
+model, key presence, and whether repository privacy permits sending. A yes for privacy is not
+proof of account readiness, a task opting in, or a review having run. Unreadable facts are unknown.
+
 ## Which tasks use AI-powered review
 
 Every task starts with FinishUP's local checks unless you chose AI-powered review on every task.
