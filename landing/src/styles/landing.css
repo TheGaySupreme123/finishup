@@ -124,6 +124,15 @@ img, svg { max-width: 100%; }
   padding: 12px 6px;
 }
 .nav-links a.lnk:hover { color: var(--ink); }
+.motion-toggle {
+  padding: 8px;
+  border-radius: var(--radius-sm);
+  background: var(--surface-200);
+  color: var(--ink-muted);
+  font: 500 13px/1.5 var(--font-sans);
+}
+.motion-toggle:hover { background: var(--highlight); color: var(--ink); }
+.motion-toggle[hidden] { display: none; }
 
 /* ---------- Story: sticky artwork, scenes over it ---------- */
 .story { position: relative; }

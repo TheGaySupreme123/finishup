@@ -67,6 +67,6 @@ test("forced colours get the static story, with the figures written out as text"
   // In forced colours the artwork's dots carry no reliable contrast, so the page takes the
   // same static presentation as reduced motion, and follows the setting when it changes.
   assert.match(page, /const forced = window\.matchMedia\("\(forced-colors: active\)"\);/);
-  assert.match(page, /const animated = [^;]*!forced\.matches[^;]*;/, "forced colours turn the animated story off");
+  assert.match(page, /const canAnimate = [^;]*!forced\.matches[^;]*;/, "forced colours turn the animated story off");
   assert.match(page, /forced\.addEventListener\("change", syncPresentation\);/, "a change of the setting re-presents the story");
 });

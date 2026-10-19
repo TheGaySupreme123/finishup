@@ -103,6 +103,7 @@ const PAPER_URL = "[PAPER URL]";
           <a class="lnk" href={INSTALL_GUIDE} target="_blank" rel="noopener">Install</a>
           <a class="lnk" href={DOCS} target="_blank" rel="noopener">Docs</a>
           <a class="lnk" href={GITHUB} target="_blank" rel="noopener">GitHub</a>
+          <button class="motion-toggle" id="motion-toggle" type="button" aria-controls="story" aria-label="Pause animation" hidden>Pause</button>
           <button class="btn sm add-agent" type="button" aria-label="Set up with your agent" data-prompt={AGENT_PROMPT} hidden>Set up</button>
         </nav>
       </div>
@@ -206,6 +207,7 @@ const PAPER_URL = "[PAPER URL]";
       const narrow = window.matchMedia("(max-width: 719px)");
       const canvas = document.getElementById("particles") as HTMLCanvasElement | null;
       const story = document.getElementById("story");
+      const motionToggle = document.getElementById("motion-toggle") as HTMLButtonElement | null;
       const copies = Array.from(document.querySelectorAll<HTMLElement>(".copy"));
       const mainContent = document.getElementById("main-content");
       const planEl = document.getElementById("story-plan");
@@ -220,15 +222,35 @@ const PAPER_URL = "[PAPER URL]";
       let pageActive = true;
       // Set when the artwork cannot draw (no context, or WebGL lost for good): the static story.
       let artFailed = false;
+      let userPaused = false;
+      let layoutFits = true;
       let stopStory = () => {};
+
+      // Leave room for the copy's drift. If any scene cannot fit, let the whole story
+      // flow as text instead of clipping it inside the sticky stage.
+      function copyFits() {
+        if (!canvas || !story) return false;
+        const stage = canvas.getBoundingClientRect();
+        return Array.from(story.querySelectorAll<HTMLElement>(".hero-top, .hero-bottom, .copy-right, .copy-center")).every((el) => {
+          const r = el.getBoundingClientRect();
+          return r.top >= stage.top + 24 && r.bottom <= stage.bottom - 24
+            && r.left >= stage.left && r.right <= stage.right;
+        });
+      }
 
       function syncPresentation() {
         stopStory();
         stopStory = () => {};
         // Canvas support is checked without taking a context: a canvas that hands out a 2D
         // context can never give the artwork WebGL.
-        const animated = pageActive && !artFailed && !reduced.matches && !forced.matches && !compact.matches
+        const canAnimate = pageActive && !artFailed && !reduced.matches && !forced.matches && !compact.matches && layoutFits
           && !!canvas && typeof CanvasRenderingContext2D !== "undefined" && !!story && plan.length > 0;
+        const animated = canAnimate && !userPaused;
+        if (motionToggle) {
+          motionToggle.hidden = !canAnimate;
+          motionToggle.textContent = userPaused ? "Play" : "Pause";
+          motionToggle.setAttribute("aria-label", userPaused ? "Play animation" : "Pause animation");
+        }
         story?.classList.toggle("animated", animated);
         const spacer = story?.querySelector<HTMLElement>(".spacer");
         if (spacer && story) {
@@ -244,6 +266,11 @@ const PAPER_URL = "[PAPER URL]";
         }
         benchWith?.classList.remove("on");
         if (!animated || !canvas || !story) return;
+        if (!copyFits()) {
+          layoutFits = false;
+          syncPresentation();
+          return;
+        }
 
         // The 2D budget, and the denser one for browsers that can draw the dots with WebGL. The
         // WebGL count follows the area the artwork covers (the engine's px per scene unit,
@@ -349,6 +376,20 @@ const PAPER_URL = "[PAPER URL]";
       forced.addEventListener("change", syncPresentation);
       compact.addEventListener("change", syncPresentation);
       narrow.addEventListener("change", syncPresentation);
+      // Recheck after fonts settle or the viewport changes, without remounting artwork
+      // on every resize when the animated layout still fits.
+      function syncLayout() {
+        if (!layoutFits || (story?.classList.contains("animated") && !copyFits())) {
+          layoutFits = true;
+          syncPresentation();
+        }
+      }
+      window.addEventListener("resize", syncLayout);
+      document.fonts?.ready.then(syncLayout).catch(() => {});
+      motionToggle?.addEventListener("click", () => {
+        userPaused = !userPaused;
+        syncPresentation();
+      });
       window.addEventListener("pagehide", () => { pageActive = false; stopStory(); });
       window.addEventListener("pageshow", (e) => {
         if (!e.persisted && pageActive) return; // the first load, already presented
@@ -363,6 +404,7 @@ const PAPER_URL = "[PAPER URL]";
       const toastSub = document.getElementById("toast-sub");
       const toastClose = document.getElementById("toast-close");
       let hideTimer = 0;
+      let toastHovered = false;
       async function copyText(text: string): Promise<boolean> {
         if (!text) return false;
         try {
@@ -384,11 +426,14 @@ const PAPER_URL = "[PAPER URL]";
       // focus is on it (its link has to stay reachable).
       function hideSoon() {
         window.clearTimeout(hideTimer);
-        hideTimer = window.setTimeout(() => { if (toast) toast.hidden = true; }, 9000);
+        if (toastHovered || toast?.contains(document.activeElement)) return;
+        hideTimer = window.setTimeout(() => {
+          if (toast && !toastHovered && !toast.contains(document.activeElement)) toast.hidden = true;
+        }, 9000);
       }
-      toast?.addEventListener("pointerenter", () => window.clearTimeout(hideTimer));
+      toast?.addEventListener("pointerenter", () => { toastHovered = true; window.clearTimeout(hideTimer); });
       toast?.addEventListener("focusin", () => window.clearTimeout(hideTimer));
-      toast?.addEventListener("pointerleave", () => { if (!toast.contains(document.activeElement)) hideSoon(); });
+      toast?.addEventListener("pointerleave", () => { toastHovered = false; hideSoon(); });
       toast?.addEventListener("focusout", (e) => { if (!toast.contains(e.relatedTarget as Node | null)) hideSoon(); });
       toastClose?.addEventListener("click", () => { if (toast) toast.hidden = true; });
       for (const el of Array.from(document.querySelectorAll<HTMLButtonElement>(".add-agent"))) {
