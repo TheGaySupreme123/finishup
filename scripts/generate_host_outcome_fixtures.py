@@ -1,7 +1,7 @@
 """Write the host tool-outcome payload fixtures (issue #910) and their manifest members.
 
-Each case pins, per host and per tool-result event Yoetz consumes, the payload shape a hook or the
-Codex session stream delivers and the closed outcome Yoetz must record from it. Content is reduced
+Each case pins, per host and per tool-result event FinishUP consumes, the payload shape a hook or the
+Codex session stream delivers and the closed outcome FinishUP must record from it. Content is reduced
 to the structural keys; command, output, path and message text are short placeholders.
 
 The Codex shapes are derived from recorded Codex CLI 0.157.1 session rollouts (the DeepSWE v2

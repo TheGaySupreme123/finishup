@@ -134,16 +134,16 @@ class _Observation:
         return self.profiles
 
     def codex_session_commitment_for_session(
-        self, *, workspace: str, yoetz_session_id: str
+        self, *, workspace: str, finishup_session_id: str
     ) -> str | None:
-        if workspace != _WORKSPACE or yoetz_session_id != _SESSION:
+        if workspace != _WORKSPACE or finishup_session_id != _SESSION:
             return None
         return _SESSION_COMMITMENT
 
     def observation_route_for_session(
-        self, *, workspace: str, yoetz_session_id: str
+        self, *, workspace: str, finishup_session_id: str
     ) -> tuple[str, str, bool] | None:
-        if workspace != _WORKSPACE or yoetz_session_id != _SESSION:
+        if workspace != _WORKSPACE or finishup_session_id != _SESSION:
             return None
         return _SESSION_COMMITMENT, self.route_task, self.route_active
 

@@ -72,9 +72,9 @@ def _rollout(home: Path, thread: str, content: bytes) -> Path:
 def _mapping(session: str, *, task: str | None = None) -> LifecycleMapping:
     return mapping_from_start_ids(
         codex_session_id=session,
-        yoetz_task_id=task or new_id(IdKind.TASK),
-        yoetz_session_id=new_id(IdKind.SESSION),
-        yoetz_writer_id=new_id(IdKind.WRITER),
+        finishup_task_id=task or new_id(IdKind.TASK),
+        finishup_session_id=new_id(IdKind.SESSION),
+        finishup_writer_id=new_id(IdKind.WRITER),
         last_frontier=None,
     )
 
@@ -316,7 +316,7 @@ def test_post_tool_use_binds_the_child_lane_from_the_childs_transcript(
 
     parent = _mapping(_PARENT)
     store_mapping(parent, _state=tmp_path)
-    result = _attach_result(parent.yoetz_task_id)
+    result = _attach_result(parent.finishup_task_id)
     callback = _callback(
         _rollout(codex_home, _CHILD, _imp_015("child")),
         hook_event_name="PostToolUse",
@@ -340,7 +340,7 @@ def test_post_tool_use_binds_the_child_lane_from_the_childs_transcript(
 
     child = load_mapping(_child_lane(), _state=tmp_path)
     assert child is not None
-    assert (child.yoetz_task_id, child.yoetz_session_id, child.yoetz_writer_id) == (
+    assert (child.finishup_task_id, child.finishup_session_id, child.finishup_writer_id) == (
         result["task_id"],
         result["session_id"],
         result["writer_id"],
@@ -357,7 +357,7 @@ def test_without_a_transcript_the_root_session_attach_stays_unbound(tmp_path: Pa
         None,
         hook_event_name="PostToolUse",
         tool_name="mcp__finishup__start",
-        tool_response={"structuredContent": _attach_result(parent.yoetz_task_id)},
+        tool_response={"structuredContent": _attach_result(parent.finishup_task_id)},
     )
 
     assert bind_start_mapping_outcome(callback, _state=tmp_path) == "start_bind_child_lane_unbound"
@@ -511,7 +511,7 @@ def test_reconcile_refuses_an_unprovable_child_rollout_with_a_bounded_reason(
         store.grant_consent(other)
         store.bind_codex_session(other, _PARENT)
     if shape in {"lane_names_parent_task", "lane_bound_elsewhere"}:
-        task = parent.yoetz_task_id if shape == "lane_names_parent_task" else None
+        task = parent.finishup_task_id if shape == "lane_names_parent_task" else None
         store_mapping(_mapping(_child_lane(), task=task), _state=state)
     if shape == "lane_bound_elsewhere":
         other = store.workspace_commitment(str((tmp_path / "other").resolve()))
@@ -526,7 +526,7 @@ def test_reconcile_refuses_an_unprovable_child_rollout_with_a_bounded_reason(
     err = capsys.readouterr().err
     assert err.startswith(f"observation_reconcile_failed:{reason}: ")
     # The bounded reason never echoes a host thread, lane, task, or path.
-    for secret in (_PARENT, _CHILD, _child_lane(), parent.yoetz_task_id, str(child_rollout)):
+    for secret in (_PARENT, _CHILD, _child_lane(), parent.finishup_task_id, str(child_rollout)):
         assert secret not in err
     assert store.list_pending_outbox_rows(commitment) == ()
     assert store.codex_sessions_for_workspace(commitment) == before

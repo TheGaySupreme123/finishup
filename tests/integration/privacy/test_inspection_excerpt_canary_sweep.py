@@ -183,7 +183,7 @@ def test_inspection_snapshot_plaintext_and_ciphertext_stay_canary_free(tmp_path:
     ref = asyncio.run(persist())
     store.record_inspection_snapshot(
         workspace=_WORKSPACE,
-        yoetz_session_id=_SESSION,
+        finishup_session_id=_SESSION,
         subject_state_digest=_DIGEST,
         changed_paths_digest=_DIGEST,
         relative_paths=("src/env.py",),
@@ -199,7 +199,7 @@ def test_inspection_snapshot_plaintext_and_ciphertext_stay_canary_free(tmp_path:
     )
     snapshot = store.load_inspection_snapshot(
         workspace=_WORKSPACE,
-        yoetz_session_id=_SESSION,
+        finishup_session_id=_SESSION,
         subject_state_digest=_DIGEST,
     )
     assert snapshot is not None

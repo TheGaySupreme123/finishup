@@ -32,14 +32,14 @@ def task_pending_outbox_rows(
     store: LocalObservationStore,
     *,
     workspace_commitment: str,
-    yoetz_session_id: str,
+    finishup_session_id: str,
     codex_session_id: str | None = None,
     _state: Path | None = None,
 ) -> tuple[ObservationOutboxRow, ...]:
     """Return one workspace's pending outbox rows that can still change this task's facts.
 
     ``codex_session_id`` names the caller's own host session, counted without a mapping read;
-    ``None`` counts only host sessions whose mapping names ``yoetz_session_id``.
+    ``None`` counts only host sessions whose mapping names ``finishup_session_id``.
     """
 
     same_task: dict[str, bool] = {}
@@ -52,7 +52,7 @@ def task_pending_outbox_rows(
             else:
                 other = load_mapping(host_session, _state=_state)
                 same_task[host_session] = (
-                    other is not None and other.yoetz_session_id == yoetz_session_id
+                    other is not None and other.finishup_session_id == finishup_session_id
                 )
         if same_task[host_session]:
             rows.append(row)
@@ -63,7 +63,7 @@ def task_pending_outbox_count(
     store: LocalObservationStore,
     *,
     workspace_commitment: str,
-    yoetz_session_id: str,
+    finishup_session_id: str,
     codex_session_id: str | None = None,
     _state: Path | None = None,
 ) -> int:
@@ -73,7 +73,7 @@ def task_pending_outbox_count(
         task_pending_outbox_rows(
             store,
             workspace_commitment=workspace_commitment,
-            yoetz_session_id=yoetz_session_id,
+            finishup_session_id=finishup_session_id,
             codex_session_id=codex_session_id,
             _state=_state,
         )
@@ -89,7 +89,7 @@ def _stream_input_identity(source_identity: str) -> str:
 def session_pending_row_identities(
     store: LocalObservationStore,
     *,
-    yoetz_session_id: str,
+    finishup_session_id: str,
     _state: Path | None = None,
     now: float | None = None,
 ) -> frozenset[str]:
@@ -117,7 +117,7 @@ def session_pending_row_identities(
         if host_session not in same_task:
             mapping = load_mapping(host_session, _state=_state)
             same_task[host_session] = (
-                mapping is not None and mapping.yoetz_session_id == yoetz_session_id
+                mapping is not None and mapping.finishup_session_id == finishup_session_id
             )
         return same_task[host_session]
 
@@ -134,7 +134,7 @@ def session_pending_row_identities(
         # host sessions now so the wait covers them instead of reporting `complete` early.
         for host_session in store.buffered_admission_host_sessions(workspace):
             mapping = load_mapping(host_session, _state=_state)
-            if mapping is None or mapping.yoetz_session_id != yoetz_session_id:
+            if mapping is None or mapping.finishup_session_id != finishup_session_id:
                 continue
             store.flush_selected_admission(
                 workspace,
@@ -145,7 +145,7 @@ def session_pending_row_identities(
         for row in task_pending_outbox_rows(
             store,
             workspace_commitment=workspace,
-            yoetz_session_id=yoetz_session_id,
+            finishup_session_id=finishup_session_id,
             _state=_state,
         ):
             identities.add(

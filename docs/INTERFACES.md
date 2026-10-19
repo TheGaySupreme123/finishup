@@ -37,8 +37,8 @@ New output uses only the current spelling. Kept literals in code carry the label
 `YZO1`/`YZV1`/`YZH1`/`YZS1`, SQLite `application_id` `0x594F4554`, every `yoetz/<name>/v<n>` domain
 separator, `hmac-sha256/yoetz-privacy-egress-request-v1`, `yoetz-semantic-case-1.0.0`, keyring
 services `yoetz.vault-root.v1` and `yoetz.auto-unlock.v1`, every byte under `migrations/`, the
-columns `yoetz_session_id|yoetz_task_id|yoetz_writer_id`, the wire values
-`yoetz_engine|yoetz_cli|yoetz_owned|yoetz_runtime|yoetz_own_call|yoetz_process_state`, the
+columns `yoetz_session_id|yoetz_task_id|yoetz_writer_id` (Python names `finishup_*`), the wire
+values `yoetz_engine|yoetz_cli|yoetz_owned|yoetz_runtime|yoetz_own_call|yoetz_process_state`, the
 `yoetz_limit_*` prefix and the check-inspection `owner` value `yoetz`, the whole
 `yoetz.<name>/<n>` schema and record tag namespace, actor ids `yoetz:<role>`, the 154 schema files
 released at v0.2.5 (titles, consts and `$id`s under `https://schemas.yoetz.dev/0.1/`),

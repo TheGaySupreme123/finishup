@@ -75,16 +75,16 @@ def _fixture(tmp_path: Path) -> tuple[ObservationCoordinator, _Store, str, Lifec
     mapping = LifecycleMapping(
         mapping_version=1,
         codex_session_id=codex_session_id,
-        yoetz_task_id=new_id(IdKind.TASK),
-        yoetz_session_id=new_id(IdKind.SESSION),
-        yoetz_writer_id=new_id(IdKind.WRITER),
+        finishup_task_id=new_id(IdKind.TASK),
+        finishup_session_id=new_id(IdKind.SESSION),
+        finishup_writer_id=new_id(IdKind.WRITER),
         last_frontier=None,
     )
     store = _Store()
     runtime = SimpleNamespace(
-        task_id=mapping.yoetz_task_id,
-        session_id=mapping.yoetz_session_id,
-        writer_id=mapping.yoetz_writer_id,
+        task_id=mapping.finishup_task_id,
+        session_id=mapping.finishup_session_id,
+        writer_id=mapping.finishup_writer_id,
         observation=store,
     )
 
@@ -167,7 +167,7 @@ def _reservation_ticket(
     return ObservationCaptureTicket(
         workspace_commitment=_COMMITMENT,
         task_id=task_id,
-        yoetz_session_id=new_id(IdKind.SESSION),
+        finishup_session_id=new_id(IdKind.SESSION),
         session_commitment=_COMMITMENT,
         source=ObservationSource.CODEX_HOOK,
         source_identity="capture-reservation",
@@ -257,14 +257,14 @@ async def test_missing_capture_inventory_callback_refuses_before_reservation(
     coordinator, store, _session_commitment, mapping = _fixture(tmp_path)
     local = coordinator.local
     workspace = local.workspace_commitment(str(tmp_path.resolve()))
-    task_runtime = cast(TaskRuntime, SimpleNamespace(task_id=mapping.yoetz_task_id))
+    task_runtime = cast(TaskRuntime, SimpleNamespace(task_id=mapping.finishup_task_id))
 
     with pytest.raises(PublicOperationError) as refused:
         await coordinator._reserve_capture_ticket(  # noqa: SLF001  # pyright: ignore[reportPrivateUsage]
             workspace,
             task_runtime,
             cast(TaskObservationPort, store),
-            _reservation_ticket(mapping.yoetz_task_id),
+            _reservation_ticket(mapping.finishup_task_id),
             8,
         )
 
@@ -318,9 +318,9 @@ async def test_structural_row_keeps_both_capture_budget_gaps(tmp_path: Path, sta
     coordinator, store, session_commitment, mapping = _fixture(tmp_path)
     envelope = _envelope(session_commitment, identity="capture-budget-structural")
     staging_ticket = replace(
-        _reservation_ticket(mapping.yoetz_task_id),
+        _reservation_ticket(mapping.finishup_task_id),
         workspace_commitment=coordinator.local.workspace_commitment(str(tmp_path.resolve())),
-        yoetz_session_id=mapping.yoetz_session_id,
+        finishup_session_id=mapping.finishup_session_id,
         session_commitment=session_commitment,
         source_identity=envelope.source_identity,
         cursor=envelope.cursor,

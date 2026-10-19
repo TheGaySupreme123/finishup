@@ -61,7 +61,7 @@ def _ticket(
     return ObservationCaptureTicket(
         workspace_commitment="hmac-sha256:" + "1" * 64,
         task_id=command.task_id,
-        yoetz_session_id=command.session_id,
+        finishup_session_id=command.session_id,
         session_commitment="hmac-sha256:" + "2" * 64,
         source=ObservationSource.CLAUDE_HOOK,
         source_identity="hook:freeze-barrier",

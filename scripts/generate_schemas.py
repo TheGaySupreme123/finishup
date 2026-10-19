@@ -1,4 +1,4 @@
-"""Deterministic public JSON Schema generator and parity checker for the Yoetz protocol.
+"""Deterministic public JSON Schema generator and parity checker for the FinishUP protocol.
 
 Generates and verifies the reviewable JSON Schema files for the public six-operation
 request/result models, the read-only guidance tool, shared common values, durable event
@@ -1578,7 +1578,7 @@ def _check_recorded_v1_3_schema(entry: _RegistryEntry) -> dict[str, JsonValue]:
         "minItems": 1,
         "type": "array",
     }
-    # Issue #907: what an ``insufficient_packet`` review named as missing, classified by Yoetz
+    # Issue #907: what an ``insufficient_packet`` review named as missing, classified by FinishUP
     # (kind, packet refs, availability; never reviewer prose). Optional for the same reason, and
     # admitted only beside an ``insufficient_packet`` conclusion.
     definitions["missing_item"] = cast(
@@ -3301,7 +3301,8 @@ def _check_result_v1_3_schema(entry: _RegistryEntry) -> dict[str, JsonValue]:
         "additionalProperties": False,
         "properties": {
             "availability": {
-                # tb4n1 D1 (#983): Yoetz-limit classes join the closed vocabulary.
+                # tb4n1 D1 (#983): FinishUP-limit classes join the closed vocabulary; their
+                # ``yoetz_limit_*`` values are frozen legacy identifiers (ADR-048).
                 "enum": sorted(MISSING_ITEM_AVAILABILITIES, key=str.encode),
                 "type": "string",
             },
@@ -6247,7 +6248,7 @@ def _receipt_document_v1_3_schema(entry: _RegistryEntry) -> dict[str, JsonValue]
     findings["items"] = {"$ref": SCHEMA_NAMESPACE + "findings/finding-1.4.0.schema.json"}
     properties["children"] = {"$ref": "#/$defs/receipt_children"}
     # Issue #905 terminal states, disclosed by id; present only when non-empty.
-    # Issue #984: self-verified items (the agent verified a repair Yoetz could not prove).
+    # Issue #984: self-verified items (the agent verified a repair FinishUP could not prove).
     # Issue #1020: findings the reviewer repeated over the agent's reasoned rejection.
     for name in (
         "acknowledged_not_done_finding_ids",
@@ -8224,7 +8225,7 @@ def _control_v2_9_schema(entry: _RegistryEntry) -> dict[str, JsonValue]:
         }
         # Closed runtime facts the hook derives at the host boundary (#977): where a package
         # install resolved its interpreter, an edit outside the workspace, the effective user.
-        # ``write_scope`` also names an edit whose every path is scratch or Yoetz-owned (ADR-042),
+        # ``write_scope`` also names an edit whose every path is scratch or FinishUP-owned (ADR-042),
         # the agent's own notes, and a shell command that writes the workspace (ADR-045). The enum
         # is the hook's own closed set: a value the hook emits and this wire refuses fails client
         # validation on every drain pass and never reaches the ledger (#1039).
@@ -12572,7 +12573,7 @@ def canonical_digest_hex(data: bytes) -> str:
 
 
 def validate_schema_document(document: SchemaDocument) -> None:
-    """Recheck a generated document's dialect and Yoetz policy invariants."""
+    """Recheck a generated document's dialect and FinishUP policy invariants."""
 
     if document.json_schema.get("$schema") != _DRAFT_2020_12:
         raise SchemaGenerationError("schema_draft_unsupported", entries=(document.relative_path,))

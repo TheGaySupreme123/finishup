@@ -210,9 +210,9 @@ def test_observation_lane_requires_a_validated_child_mapping(tmp_path: Path) -> 
     store_mapping(
         mapping_from_start_ids(
             codex_session_id=host_session,
-            yoetz_task_id=parent_task,
-            yoetz_session_id=parent_session,
-            yoetz_writer_id=parent_writer,
+            finishup_task_id=parent_task,
+            finishup_session_id=parent_session,
+            finishup_writer_id=parent_writer,
             last_frontier=None,
         ),
         _state=tmp_path,
@@ -226,9 +226,9 @@ def test_observation_lane_requires_a_validated_child_mapping(tmp_path: Path) -> 
     store_mapping(
         mapping_from_start_ids(
             codex_session_id=task_lane,
-            yoetz_task_id=child_task,
-            yoetz_session_id=child_session,
-            yoetz_writer_id=child_writer,
+            finishup_task_id=child_task,
+            finishup_session_id=child_session,
+            finishup_writer_id=child_writer,
             last_frontier=None,
         ),
         _state=tmp_path,
@@ -268,9 +268,9 @@ def test_observation_lane_keeps_parent_but_marks_known_child_gap(tmp_path: Path)
     store_mapping(
         mapping_from_start_ids(
             codex_session_id=host_session,
-            yoetz_task_id=parent_task,
-            yoetz_session_id=parent_session,
-            yoetz_writer_id=parent_writer,
+            finishup_task_id=parent_task,
+            finishup_session_id=parent_session,
+            finishup_writer_id=parent_writer,
             last_frontier=None,
         ),
         _state=tmp_path,
@@ -316,9 +316,9 @@ def test_observation_lane_does_not_use_stale_host_alias_for_foreign_result(
     store_mapping(
         mapping_from_start_ids(
             codex_session_id=host_session,
-            yoetz_task_id=parent_task,
-            yoetz_session_id=parent_session,
-            yoetz_writer_id=parent_writer,
+            finishup_task_id=parent_task,
+            finishup_session_id=parent_session,
+            finishup_writer_id=parent_writer,
             last_frontier=None,
         ),
         _state=tmp_path,
@@ -332,9 +332,9 @@ def test_observation_lane_does_not_use_stale_host_alias_for_foreign_result(
     store_mapping(
         mapping_from_start_ids(
             codex_session_id=host_lane,
-            yoetz_task_id=old_child_task,
-            yoetz_session_id=old_child_session,
-            yoetz_writer_id=old_child_writer,
+            finishup_task_id=old_child_task,
+            finishup_session_id=old_child_session,
+            finishup_writer_id=old_child_writer,
             last_frontier=None,
         ),
         _state=tmp_path,
@@ -386,9 +386,9 @@ def test_observation_lane_routes_matching_result_through_task_alias_when_host_al
     store_mapping(
         mapping_from_start_ids(
             codex_session_id=host_session,
-            yoetz_task_id=parent_task,
-            yoetz_session_id=parent_session,
-            yoetz_writer_id=parent_writer,
+            finishup_task_id=parent_task,
+            finishup_session_id=parent_session,
+            finishup_writer_id=parent_writer,
             last_frontier=None,
         ),
         _state=tmp_path,
@@ -402,9 +402,9 @@ def test_observation_lane_routes_matching_result_through_task_alias_when_host_al
     store_mapping(
         mapping_from_start_ids(
             codex_session_id=host_lane,
-            yoetz_task_id=old_child_task,
-            yoetz_session_id=old_child_session,
-            yoetz_writer_id=old_child_writer,
+            finishup_task_id=old_child_task,
+            finishup_session_id=old_child_session,
+            finishup_writer_id=old_child_writer,
             last_frontier=None,
         ),
         _state=tmp_path,
@@ -418,9 +418,9 @@ def test_observation_lane_routes_matching_result_through_task_alias_when_host_al
     store_mapping(
         mapping_from_start_ids(
             codex_session_id=task_lane,
-            yoetz_task_id=current_child_task,
-            yoetz_session_id=current_child_session,
-            yoetz_writer_id=current_child_writer,
+            finishup_task_id=current_child_task,
+            finishup_session_id=current_child_session,
+            finishup_writer_id=current_child_writer,
             last_frontier=None,
         ),
         _state=tmp_path,
@@ -460,9 +460,9 @@ def test_valid_child_identity_without_lane_is_an_attribution_gap(tmp_path: Path)
     store_mapping(
         mapping_from_start_ids(
             codex_session_id=host_session,
-            yoetz_task_id=parent_task,
-            yoetz_session_id=parent_session,
-            yoetz_writer_id=parent_writer,
+            finishup_task_id=parent_task,
+            finishup_session_id=parent_session,
+            finishup_writer_id=parent_writer,
             last_frontier=None,
         ),
         _state=tmp_path,
@@ -2487,9 +2487,9 @@ def test_skip_service_session_start_never_opens_service_connection(
     store_mapping(
         mapping_from_start_ids(
             codex_session_id="probe-mapped",
-            yoetz_task_id=new_id(IdKind.TASK),
-            yoetz_session_id=new_id(IdKind.SESSION),
-            yoetz_writer_id=new_id(IdKind.WRITER),
+            finishup_task_id=new_id(IdKind.TASK),
+            finishup_session_id=new_id(IdKind.SESSION),
+            finishup_writer_id=new_id(IdKind.WRITER),
             last_frontier=None,
         ),
         _state=tmp_path,
@@ -2538,9 +2538,9 @@ def test_session_start_stale_mapping_advisory_keeps_advice_delivery(
     store_mapping(
         mapping_from_start_ids(
             codex_session_id="stale-observe",
-            yoetz_task_id=new_id(IdKind.TASK),
-            yoetz_session_id=new_id(IdKind.SESSION),
-            yoetz_writer_id=new_id(IdKind.WRITER),
+            finishup_task_id=new_id(IdKind.TASK),
+            finishup_session_id=new_id(IdKind.SESSION),
+            finishup_writer_id=new_id(IdKind.WRITER),
             last_frontier="0:genesis",
         ),
         _state=tmp_path,
@@ -2591,11 +2591,11 @@ def test_session_start_stale_mapping_advisory_keeps_advice_delivery(
         self: LocalObservationStore,
         workspace_arg: str,
         *,
-        yoetz_session_id: str | None = None,
+        finishup_session_id: str | None = None,
         allow_standing: bool = True,
         session_commitment: str | None = None,
     ) -> AdviceDelivery:
-        del self, workspace_arg, yoetz_session_id, allow_standing, session_commitment
+        del self, workspace_arg, finishup_session_id, allow_standing, session_commitment
         return advice
 
     def fake_commit(
@@ -2603,10 +2603,10 @@ def test_session_start_stale_mapping_advisory_keeps_advice_delivery(
         workspace_arg: str,
         identity: str,
         *,
-        yoetz_session_id: str | None = None,
+        finishup_session_id: str | None = None,
         session_commitment: str | None = None,
     ) -> None:
-        del self, workspace_arg, yoetz_session_id, session_commitment
+        del self, workspace_arg, finishup_session_id, session_commitment
         commits.append(identity)
 
     monkeypatch.setattr(LocalObservationStore, "peek_advice_for_delivery", fake_peek)
@@ -2702,9 +2702,9 @@ def test_session_start_status_read_carries_the_consented_locator(
     store_mapping(
         mapping_from_start_ids(
             codex_session_id="claude:compact-1",
-            yoetz_task_id=task_id,
-            yoetz_session_id=session_id,
-            yoetz_writer_id=writer_id,
+            finishup_task_id=task_id,
+            finishup_session_id=session_id,
+            finishup_writer_id=writer_id,
             last_frontier="0:genesis",
         ),
         _state=tmp_path,
@@ -2783,9 +2783,9 @@ def test_legacy_bound_session_probe_carries_the_host_payload_cwd(
     store_mapping(
         mapping_from_start_ids(
             codex_session_id="codex:legacy-compact-1",
-            yoetz_task_id=task_id,
-            yoetz_session_id=session_id,
-            yoetz_writer_id=writer_id,
+            finishup_task_id=task_id,
+            finishup_session_id=session_id,
+            finishup_writer_id=writer_id,
             last_frontier="0:genesis",
         ),
         _state=state,
@@ -2821,7 +2821,7 @@ def test_legacy_bound_session_probe_carries_the_host_payload_cwd(
     assert f"session_id {session_id} and writer_id {writer_id}" in context
     refreshed = load_mapping("codex:legacy-compact-1", _state=state)
     assert refreshed is not None
-    assert (refreshed.yoetz_session_id, refreshed.yoetz_writer_id) == (session_id, writer_id)
+    assert (refreshed.finishup_session_id, refreshed.finishup_writer_id) == (session_id, writer_id)
     diagnostics_path = state / "observation" / "hook-diagnostics.jsonl"
     assert not diagnostics_path.exists() or "status_workspace" not in (diagnostics_path.read_text())
 
@@ -2855,9 +2855,9 @@ def test_session_start_repository_fence_refusal_is_a_distinct_diagnostic(
     store_mapping(
         mapping_from_start_ids(
             codex_session_id=f"fence-{kind}",
-            yoetz_task_id=new_id(IdKind.TASK),
-            yoetz_session_id=new_id(IdKind.SESSION),
-            yoetz_writer_id=new_id(IdKind.WRITER),
+            finishup_task_id=new_id(IdKind.TASK),
+            finishup_session_id=new_id(IdKind.SESSION),
+            finishup_writer_id=new_id(IdKind.WRITER),
             last_frontier="0:genesis",
         ),
         _state=tmp_path,
@@ -3470,9 +3470,9 @@ def test_later_hook_recovers_pending_mapping_before_delivery(tmp_path: Path) -> 
     codex_session_id = "claude:pending-recovery"
     mapping = mapping_from_start_ids(
         codex_session_id=codex_session_id,
-        yoetz_task_id=new_id(IdKind.TASK),
-        yoetz_session_id=new_id(IdKind.SESSION),
-        yoetz_writer_id=new_id(IdKind.WRITER),
+        finishup_task_id=new_id(IdKind.TASK),
+        finishup_session_id=new_id(IdKind.SESSION),
+        finishup_writer_id=new_id(IdKind.WRITER),
         last_frontier=None,
     )
 
@@ -3564,9 +3564,9 @@ def test_later_hook_defers_delivery_while_pending_mapping_lock_is_busy(
     codex_session_id = "claude:busy-pending-recovery"
     mapping = mapping_from_start_ids(
         codex_session_id=codex_session_id,
-        yoetz_task_id=new_id(IdKind.TASK),
-        yoetz_session_id=new_id(IdKind.SESSION),
-        yoetz_writer_id=new_id(IdKind.WRITER),
+        finishup_task_id=new_id(IdKind.TASK),
+        finishup_session_id=new_id(IdKind.SESSION),
+        finishup_writer_id=new_id(IdKind.WRITER),
         last_frontier=None,
     )
     store.bind_codex_session(workspace, codex_session_id)
@@ -3652,16 +3652,16 @@ def test_pending_child_mapping_recovery_is_exact_session_scoped(tmp_path: Path) 
     child_session = "claude:parent-alias:child"
     parent = mapping_from_start_ids(
         codex_session_id=parent_session,
-        yoetz_task_id=new_id(IdKind.TASK),
-        yoetz_session_id=new_id(IdKind.SESSION),
-        yoetz_writer_id=new_id(IdKind.WRITER),
+        finishup_task_id=new_id(IdKind.TASK),
+        finishup_session_id=new_id(IdKind.SESSION),
+        finishup_writer_id=new_id(IdKind.WRITER),
         last_frontier="7:sha256:" + "a" * 64,
     )
     child = mapping_from_start_ids(
         codex_session_id=child_session,
-        yoetz_task_id=new_id(IdKind.TASK),
-        yoetz_session_id=new_id(IdKind.SESSION),
-        yoetz_writer_id=new_id(IdKind.WRITER),
+        finishup_task_id=new_id(IdKind.TASK),
+        finishup_session_id=new_id(IdKind.SESSION),
+        finishup_writer_id=new_id(IdKind.WRITER),
         last_frontier="2:sha256:" + "b" * 64,
     )
     store_mapping(parent, _state=tmp_path)
@@ -4442,7 +4442,7 @@ def test_auto_start_request_is_a_valid_paired_start_for_every_harness(
     assert outcome.reason is None
     assert outcome.mapping is not None
     assert outcome.mapping.codex_session_id == session
-    assert outcome.mapping.yoetz_task_id == _START_IDS["task_id"]
+    assert outcome.mapping.finishup_task_id == _START_IDS["task_id"]
     assert outcome.mapping.last_frontier == "3:sha256:" + "a" * 64
     stored = observe_hooks_module.load_mapping(session, _state=tmp_path)
     assert stored == outcome.mapping
@@ -4489,9 +4489,9 @@ def test_auto_start_recovers_before_create_with_a_known_local_selector(
 
     prior = observe_hooks_module.mapping_from_start_ids(
         codex_session_id=f"{harness_id}:ended-1",
-        yoetz_task_id=_START_IDS["task_id"],
-        yoetz_session_id=_START_IDS["session_id"],
-        yoetz_writer_id=_START_IDS["writer_id"],
+        finishup_task_id=_START_IDS["task_id"],
+        finishup_session_id=_START_IDS["session_id"],
+        finishup_writer_id=_START_IDS["writer_id"],
         last_frontier="3:sha256:" + "a" * 64,
     )
     observe_hooks_module.store_mapping(prior, _state=tmp_path)
@@ -4509,12 +4509,12 @@ def test_auto_start_recovers_before_create_with_a_known_local_selector(
 
     assert outcome.reason is None
     assert outcome.mapping is not None
-    assert outcome.mapping.yoetz_task_id == _START_IDS["task_id"]
-    assert outcome.mapping.yoetz_session_id == _SUCCESSOR_IDS["session_id"]
+    assert outcome.mapping.finishup_task_id == _START_IDS["task_id"]
+    assert outcome.mapping.finishup_session_id == _SUCCESSOR_IDS["session_id"]
     rewritten = observe_hooks_module.load_mapping(prior.codex_session_id, _state=tmp_path)
     assert rewritten is not None
-    assert rewritten.yoetz_session_id == _SUCCESSOR_IDS["session_id"]
-    assert rewritten.yoetz_writer_id == _SUCCESSOR_IDS["writer_id"]
+    assert rewritten.finishup_session_id == _SUCCESSOR_IDS["session_id"]
+    assert rewritten.finishup_writer_id == _SUCCESSOR_IDS["writer_id"]
     assert rewritten.last_frontier == prior.last_frontier
     (request,) = client.requests
     assert request.mode == "attach"
@@ -4535,9 +4535,9 @@ def test_workspace_conflict_recovery_never_selects_a_live_host_session(tmp_path:
     observe_hooks_module.store_mapping(
         observe_hooks_module.mapping_from_start_ids(
             codex_session_id=previous,
-            yoetz_task_id=_START_IDS["task_id"],
-            yoetz_session_id=_START_IDS["session_id"],
-            yoetz_writer_id=_START_IDS["writer_id"],
+            finishup_task_id=_START_IDS["task_id"],
+            finishup_session_id=_START_IDS["session_id"],
+            finishup_writer_id=_START_IDS["writer_id"],
             last_frontier=None,
         ),
         _state=tmp_path,
@@ -4563,9 +4563,9 @@ def test_auto_start_does_not_create_after_recovery_is_refused(tmp_path: Path) ->
 
     prior = observe_hooks_module.mapping_from_start_ids(
         codex_session_id="codex-ended-1",
-        yoetz_task_id=_START_IDS["task_id"],
-        yoetz_session_id=_START_IDS["session_id"],
-        yoetz_writer_id=_START_IDS["writer_id"],
+        finishup_task_id=_START_IDS["task_id"],
+        finishup_session_id=_START_IDS["session_id"],
+        finishup_writer_id=_START_IDS["writer_id"],
         last_frontier=None,
     )
     client = _StartFailureClient(PublicErrorCode.SESSION_CONFLICT)
@@ -4589,9 +4589,9 @@ def test_auto_start_rejects_a_recovery_response_for_a_different_task(tmp_path: P
 
     prior = observe_hooks_module.mapping_from_start_ids(
         codex_session_id="codex-ended-1",
-        yoetz_task_id=_START_IDS["task_id"],
-        yoetz_session_id=_START_IDS["session_id"],
-        yoetz_writer_id=_START_IDS["writer_id"],
+        finishup_task_id=_START_IDS["task_id"],
+        finishup_session_id=_START_IDS["session_id"],
+        finishup_writer_id=_START_IDS["writer_id"],
         last_frontier=None,
     )
     client = _WorkspaceConflictThenAttachClient(
@@ -4632,9 +4632,9 @@ def test_workspace_conflict_recovery_rejects_a_cross_workspace_session_binding(
     observe_hooks_module.store_mapping(
         observe_hooks_module.mapping_from_start_ids(
             codex_session_id=previous,
-            yoetz_task_id=_START_IDS["task_id"],
-            yoetz_session_id=_START_IDS["session_id"],
-            yoetz_writer_id=_START_IDS["writer_id"],
+            finishup_task_id=_START_IDS["task_id"],
+            finishup_session_id=_START_IDS["session_id"],
+            finishup_writer_id=_START_IDS["writer_id"],
             last_frontier=None,
         ),
         _state=tmp_path,
@@ -4678,9 +4678,9 @@ def test_recovery_rejects_cross_workspace_binding_during_revalidation_for_all_ho
     observe_hooks_module.store_mapping(
         observe_hooks_module.mapping_from_start_ids(
             codex_session_id=previous,
-            yoetz_task_id=_START_IDS["task_id"],
-            yoetz_session_id=_START_IDS["session_id"],
-            yoetz_writer_id=_START_IDS["writer_id"],
+            finishup_task_id=_START_IDS["task_id"],
+            finishup_session_id=_START_IDS["session_id"],
+            finishup_writer_id=_START_IDS["writer_id"],
             last_frontier=None,
         ),
         _state=tmp_path,
@@ -4762,9 +4762,9 @@ def test_recovery_rejects_a_changed_nonselected_candidate_for_all_hosts(
                 observe_hooks_module.store_mapping(
                     observe_hooks_module.mapping_from_start_ids(
                         codex_session_id=newer,
-                        yoetz_task_id=other_task,
-                        yoetz_session_id="ses_4b4e28ba-2fa1-4d3b-8f0a-0c1d2e3f4a5c",
-                        yoetz_writer_id="wri_4b4e28ba-2fa1-4d3b-8f0a-0c1d2e3f4a5d",
+                        finishup_task_id=other_task,
+                        finishup_session_id="ses_4b4e28ba-2fa1-4d3b-8f0a-0c1d2e3f4a5c",
+                        finishup_writer_id="wri_4b4e28ba-2fa1-4d3b-8f0a-0c1d2e3f4a5d",
                         last_frontier=None,
                     ),
                     _state=tmp_path,
@@ -4792,7 +4792,7 @@ def test_recovery_rejects_a_changed_nonselected_candidate_for_all_hosts(
     assert outcome.reason == "auto_attach_recovery_busy"
     assert client.requests == []
     changed = observe_hooks_module.load_mapping(newer, _state=tmp_path)
-    assert changed is not None and changed.yoetz_task_id == other_task
+    assert changed is not None and changed.finishup_task_id == other_task
 
 
 def test_workspace_conflict_recovery_does_not_cross_host_families(tmp_path: Path) -> None:
@@ -4807,9 +4807,9 @@ def test_workspace_conflict_recovery_does_not_cross_host_families(tmp_path: Path
     observe_hooks_module.store_mapping(
         observe_hooks_module.mapping_from_start_ids(
             codex_session_id=previous,
-            yoetz_task_id=_START_IDS["task_id"],
-            yoetz_session_id=_START_IDS["session_id"],
-            yoetz_writer_id=_START_IDS["writer_id"],
+            finishup_task_id=_START_IDS["task_id"],
+            finishup_session_id=_START_IDS["session_id"],
+            finishup_writer_id=_START_IDS["writer_id"],
             last_frontier=None,
         ),
         _state=tmp_path,
@@ -4838,13 +4838,13 @@ def test_workspace_conflict_recovery_rejects_multiple_local_task_ids(tmp_path: P
         observe_hooks_module.store_mapping(
             observe_hooks_module.mapping_from_start_ids(
                 codex_session_id=previous,
-                yoetz_task_id=task_id,
-                yoetz_session_id=(
+                finishup_task_id=task_id,
+                finishup_session_id=(
                     _START_IDS["session_id"]
                     if index == 0
                     else "ses_4b4e28ba-2fa1-4d3b-8f0a-0c1d2e3f4a5c"
                 ),
-                yoetz_writer_id=(
+                finishup_writer_id=(
                     _START_IDS["writer_id"]
                     if index == 0
                     else "wri_4b4e28ba-2fa1-4d3b-8f0a-0c1d2e3f4a5d"
@@ -4875,9 +4875,9 @@ def test_workspace_recovery_does_not_attach_while_predecessor_lock_is_held(
     observe_hooks_module.store_mapping(
         observe_hooks_module.mapping_from_start_ids(
             codex_session_id=previous,
-            yoetz_task_id=_START_IDS["task_id"],
-            yoetz_session_id=_START_IDS["session_id"],
-            yoetz_writer_id=_START_IDS["writer_id"],
+            finishup_task_id=_START_IDS["task_id"],
+            finishup_session_id=_START_IDS["session_id"],
+            finishup_writer_id=_START_IDS["writer_id"],
             last_frontier=None,
         ),
         _state=tmp_path,
@@ -4932,9 +4932,9 @@ def test_recovery_rewrites_every_ended_same_task_predecessor_mapping(
         observe_hooks_module.store_mapping(
             observe_hooks_module.mapping_from_start_ids(
                 codex_session_id=session_id,
-                yoetz_task_id=_START_IDS["task_id"],
-                yoetz_session_id=_START_IDS["session_id"],
-                yoetz_writer_id=_START_IDS["writer_id"],
+                finishup_task_id=_START_IDS["task_id"],
+                finishup_session_id=_START_IDS["session_id"],
+                finishup_writer_id=_START_IDS["writer_id"],
                 last_frontier="3:sha256:" + "a" * 64,
             ),
             _state=tmp_path,
@@ -4955,17 +4955,17 @@ def test_recovery_rewrites_every_ended_same_task_predecessor_mapping(
     )
 
     assert outcome.mapping is not None
-    assert outcome.mapping.yoetz_session_id == _SUCCESSOR_IDS["session_id"]
+    assert outcome.mapping.finishup_session_id == _SUCCESSOR_IDS["session_id"]
     for session_id in (older, newer):
         rewritten = observe_hooks_module.load_mapping(session_id, _state=tmp_path)
         assert rewritten is not None
-        assert rewritten.yoetz_session_id == _SUCCESSOR_IDS["session_id"]
-        assert rewritten.yoetz_writer_id == _SUCCESSOR_IDS["writer_id"]
+        assert rewritten.finishup_session_id == _SUCCESSOR_IDS["session_id"]
+        assert rewritten.finishup_writer_id == _SUCCESSOR_IDS["writer_id"]
         assert rewritten.last_frontier == "3:sha256:" + "a" * 64
     foreign_mapping = observe_hooks_module.load_mapping(foreign, _state=tmp_path)
     assert foreign_mapping is not None
-    assert foreign_mapping.yoetz_session_id == _START_IDS["session_id"]
-    assert foreign_mapping.yoetz_writer_id == _START_IDS["writer_id"]
+    assert foreign_mapping.finishup_session_id == _START_IDS["session_id"]
+    assert foreign_mapping.finishup_writer_id == _START_IDS["writer_id"]
 
 
 @pytest.mark.parametrize(
@@ -4997,9 +4997,9 @@ def test_recovery_leaves_an_ambiguous_predecessor_mapping_untouched_for_all_host
         observe_hooks_module.store_mapping(
             observe_hooks_module.mapping_from_start_ids(
                 codex_session_id=session_id,
-                yoetz_task_id=_START_IDS["task_id"],
-                yoetz_session_id=_START_IDS["session_id"],
-                yoetz_writer_id=_START_IDS["writer_id"],
+                finishup_task_id=_START_IDS["task_id"],
+                finishup_session_id=_START_IDS["session_id"],
+                finishup_writer_id=_START_IDS["writer_id"],
                 last_frontier=None,
             ),
             _state=tmp_path,
@@ -5025,9 +5025,9 @@ def test_recovery_leaves_an_ambiguous_predecessor_mapping_untouched_for_all_host
     authorized_mapping = observe_hooks_module.load_mapping(authorized, _state=tmp_path)
     ambiguous_mapping = observe_hooks_module.load_mapping(ambiguous, _state=tmp_path)
     assert authorized_mapping is not None
-    assert authorized_mapping.yoetz_session_id == _SUCCESSOR_IDS["session_id"]
+    assert authorized_mapping.finishup_session_id == _SUCCESSOR_IDS["session_id"]
     assert ambiguous_mapping is not None
-    assert ambiguous_mapping.yoetz_session_id == _START_IDS["session_id"]
+    assert ambiguous_mapping.finishup_session_id == _START_IDS["session_id"]
     assert store.codex_sessions_for_workspace(foreign_workspace) == (ambiguous,)
 
 
@@ -5048,18 +5048,18 @@ def test_rewrite_skips_live_and_other_task_mappings(tmp_path: Path) -> None:
         observe_hooks_module.store_mapping(
             observe_hooks_module.mapping_from_start_ids(
                 codex_session_id=session_id,
-                yoetz_task_id=task_id,
-                yoetz_session_id=_START_IDS["session_id"],
-                yoetz_writer_id=_START_IDS["writer_id"],
+                finishup_task_id=task_id,
+                finishup_session_id=_START_IDS["session_id"],
+                finishup_writer_id=_START_IDS["writer_id"],
                 last_frontier=None,
             ),
             _state=tmp_path,
         )
     successor = observe_hooks_module.mapping_from_start_ids(
         codex_session_id="codex-next-1",
-        yoetz_task_id=_START_IDS["task_id"],
-        yoetz_session_id=_SUCCESSOR_IDS["session_id"],
-        yoetz_writer_id=_SUCCESSOR_IDS["writer_id"],
+        finishup_task_id=_START_IDS["task_id"],
+        finishup_session_id=_SUCCESSOR_IDS["session_id"],
+        finishup_writer_id=_SUCCESSOR_IDS["writer_id"],
         last_frontier=None,
     )
     observe_hooks_module._rewrite_ended_predecessor_mappings(  # pyright: ignore[reportPrivateUsage]
@@ -5072,7 +5072,7 @@ def test_rewrite_skips_live_and_other_task_mappings(tmp_path: Path) -> None:
     for session_id in (live, other):
         untouched = observe_hooks_module.load_mapping(session_id, _state=tmp_path)
         assert untouched is not None
-        assert untouched.yoetz_session_id == _START_IDS["session_id"]
+        assert untouched.finishup_session_id == _START_IDS["session_id"]
 
 
 def test_new_sibling_admission_does_not_rewrite_live_predecessors(tmp_path: Path) -> None:
@@ -5087,9 +5087,9 @@ def test_new_sibling_admission_does_not_rewrite_live_predecessors(tmp_path: Path
     observe_hooks_module.store_mapping(
         observe_hooks_module.mapping_from_start_ids(
             codex_session_id=previous,
-            yoetz_task_id=_START_IDS["task_id"],
-            yoetz_session_id=_START_IDS["session_id"],
-            yoetz_writer_id=_START_IDS["writer_id"],
+            finishup_task_id=_START_IDS["task_id"],
+            finishup_session_id=_START_IDS["session_id"],
+            finishup_writer_id=_START_IDS["writer_id"],
             last_frontier="3:sha256:" + "a" * 64,
         ),
         _state=tmp_path,
@@ -5122,11 +5122,11 @@ def test_new_sibling_admission_does_not_rewrite_live_predecessors(tmp_path: Path
     )
 
     assert outcome.mapping is not None
-    assert outcome.mapping.yoetz_session_id == _SUCCESSOR_IDS["session_id"]
+    assert outcome.mapping.finishup_session_id == _SUCCESSOR_IDS["session_id"]
     predecessor = observe_hooks_module.load_mapping(previous, _state=tmp_path)
     assert predecessor is not None
-    assert predecessor.yoetz_session_id == _START_IDS["session_id"]
-    assert predecessor.yoetz_writer_id == _START_IDS["writer_id"]
+    assert predecessor.finishup_session_id == _START_IDS["session_id"]
+    assert predecessor.finishup_writer_id == _START_IDS["writer_id"]
 
 
 def test_locked_nonselected_predecessor_blocks_recovery_until_its_state_is_stable(
@@ -5146,9 +5146,9 @@ def test_locked_nonselected_predecessor_blocks_recovery_until_its_state_is_stabl
         observe_hooks_module.store_mapping(
             observe_hooks_module.mapping_from_start_ids(
                 codex_session_id=session_id,
-                yoetz_task_id=_START_IDS["task_id"],
-                yoetz_session_id=_START_IDS["session_id"],
-                yoetz_writer_id=_START_IDS["writer_id"],
+                finishup_task_id=_START_IDS["task_id"],
+                finishup_session_id=_START_IDS["session_id"],
+                finishup_writer_id=_START_IDS["writer_id"],
                 last_frontier=None,
             ),
             _state=tmp_path,
@@ -5176,7 +5176,7 @@ def test_locked_nonselected_predecessor_blocks_recovery_until_its_state_is_stabl
     for session_id in (older, newer):
         predecessor = observe_hooks_module.load_mapping(session_id, _state=tmp_path)
         assert predecessor is not None
-        assert predecessor.yoetz_session_id == _START_IDS["session_id"]
+        assert predecessor.finishup_session_id == _START_IDS["session_id"]
 
 
 def test_session_restart_cannot_clear_ended_state_while_recovery_holds_lock(
@@ -5249,9 +5249,9 @@ def _bind_ended_predecessors(
         observe_hooks_module.store_mapping(
             observe_hooks_module.mapping_from_start_ids(
                 codex_session_id=session_id,
-                yoetz_task_id=task_id,
-                yoetz_session_id=_START_IDS["session_id"],
-                yoetz_writer_id=_START_IDS["writer_id"],
+                finishup_task_id=task_id,
+                finishup_session_id=_START_IDS["session_id"],
+                finishup_writer_id=_START_IDS["writer_id"],
                 last_frontier=None,
             ),
             _state=_state,
@@ -5314,7 +5314,7 @@ def test_recovery_scan_reads_each_predecessor_mapping_once_per_pass(
     for session_id in predecessors:
         rewritten = observe_hooks_module.load_mapping(session_id, _state=tmp_path)
         assert rewritten is not None
-        assert rewritten.yoetz_session_id == _SUCCESSOR_IDS["session_id"]
+        assert rewritten.finishup_session_id == _SUCCESSOR_IDS["session_id"]
 
 
 def test_recovery_scan_is_not_repeated_while_the_predecessor_lock_is_held(
@@ -5380,7 +5380,7 @@ def test_recovery_prunes_consumed_predecessors_but_keeps_undrained_and_foreign_b
     # route and still answers the ended-unmapped quarantine question.
     pending = observe_hooks_module.load_mapping("codex-ended-pending", _state=tmp_path)
     assert pending is not None
-    assert pending.yoetz_writer_id == _SUCCESSOR_IDS["writer_id"]
+    assert pending.finishup_writer_id == _SUCCESSOR_IDS["writer_id"]
     assert store.codex_session_ended(workspace, "codex-ended-pending") is True
     # The pruned predecessor's mapping file stays for any late row that names it.
     assert observe_hooks_module.load_mapping("codex-ended-clean", _state=tmp_path) is not None
@@ -5704,7 +5704,7 @@ def test_session_start_auto_attaches_maps_and_drains_for_every_host(
     assert len(client.requests) == 1
     mapping = observe_hooks_module.load_mapping(session, _state=tmp_path)
     assert mapping is not None
-    assert mapping.yoetz_task_id == _START_IDS["task_id"]
+    assert mapping.finishup_task_id == _START_IDS["task_id"]
     assert store.find_workspace_for_codex_session(session) == workspace
     assert store.list_pending_outbox_rows(workspace) == ()
     rendered = out.getvalue().decode()
@@ -5772,12 +5772,12 @@ def test_fresh_session_reattaches_the_ended_workspace_task_and_drains_without_ma
 
     mapping = observe_hooks_module.load_mapping(second_session, _state=tmp_path)
     assert mapping is not None
-    assert mapping.yoetz_task_id == _START_IDS["task_id"]
-    assert mapping.yoetz_session_id == _SUCCESSOR_IDS["session_id"]
+    assert mapping.finishup_task_id == _START_IDS["task_id"]
+    assert mapping.finishup_session_id == _SUCCESSOR_IDS["session_id"]
     predecessor = observe_hooks_module.load_mapping(first_session, _state=tmp_path)
     assert predecessor is not None
-    assert predecessor.yoetz_session_id == _SUCCESSOR_IDS["session_id"]
-    assert predecessor.yoetz_writer_id == _SUCCESSOR_IDS["writer_id"]
+    assert predecessor.finishup_session_id == _SUCCESSOR_IDS["session_id"]
+    assert predecessor.finishup_writer_id == _SUCCESSOR_IDS["writer_id"]
     assert store.list_pending_outbox_rows(workspace) == ()
     assert _START_IDS["task_id"] in rendered
     assert [request.mode for request in client.requests] == [
@@ -6502,9 +6502,9 @@ def test_mapping_rotation_keeps_hook_ordinals_and_generation_monotonic(tmp_path:
         return LifecycleMapping(
             mapping_version=1,
             codex_session_id=codex_id,
-            yoetz_task_id=task_id,
-            yoetz_session_id=PREFIX_BY_KIND[IdKind.SESSION] + str(uuid.uuid4()),
-            yoetz_writer_id=PREFIX_BY_KIND[IdKind.WRITER] + str(uuid.uuid4()),
+            finishup_task_id=task_id,
+            finishup_session_id=PREFIX_BY_KIND[IdKind.SESSION] + str(uuid.uuid4()),
+            finishup_writer_id=PREFIX_BY_KIND[IdKind.WRITER] + str(uuid.uuid4()),
             last_frontier=None,
         )
 
@@ -6520,9 +6520,11 @@ def test_mapping_rotation_keeps_hook_ordinals_and_generation_monotonic(tmp_path:
 
     stored = load_mapping(codex_id, _state=tmp_path)
     assert stored is not None
-    assert stored.yoetz_session_id == third.yoetz_session_id
-    assert stored.yoetz_task_id == task_id
-    assert len({first.yoetz_session_id, second.yoetz_session_id, third.yoetz_session_id}) == 3
+    assert stored.finishup_session_id == third.finishup_session_id
+    assert stored.finishup_task_id == task_id
+    assert (
+        len({first.finishup_session_id, second.finishup_session_id, third.finishup_session_id}) == 3
+    )
     assert ordinals == [1, 2, 3]
     assert store.bind_codex_session(workspace, codex_id) == session
     assert store.current_session_generation(workspace, session) == generation

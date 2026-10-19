@@ -469,7 +469,7 @@ async def test_post_only_hosts_get_the_same_duplicate_classification(
 
     coordinator = build_coordinator(replay)
     command: Any = SimpleNamespace(
-        session_id=replay.mapping.yoetz_session_id, writer_id=replay.mapping.yoetz_writer_id
+        session_id=replay.mapping.finishup_session_id, writer_id=replay.mapping.finishup_writer_id
     )
     runtime = await coordinator.runtime.route(command)  # type: ignore[attr-defined]
 

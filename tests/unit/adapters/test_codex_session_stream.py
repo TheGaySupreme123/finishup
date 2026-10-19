@@ -2635,9 +2635,9 @@ def _selection_stream_fixture(
     store_mapping(
         mapping_from_start_ids(
             codex_session_id=session_id,
-            yoetz_task_id=_STREAM_TASK_ID,
-            yoetz_session_id=_STREAM_SESSION_ID,
-            yoetz_writer_id=_STREAM_WRITER_ID,
+            finishup_task_id=_STREAM_TASK_ID,
+            finishup_session_id=_STREAM_SESSION_ID,
+            finishup_writer_id=_STREAM_WRITER_ID,
             last_frontier=None,
         ),
         _state=tmp_path,

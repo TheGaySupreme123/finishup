@@ -173,7 +173,7 @@ def _stale_mapping_context(
         return (
             "FinishUP task mapping for this session is stale: the task was re-started under new "
             "session and writer ids. The service itself is healthy. Call start with mode=attach "
-            f"and session_id {mapping.yoetz_session_id} (task {mapping.yoetz_task_id}) to "
+            f"and session_id {mapping.finishup_session_id} (task {mapping.finishup_task_id}) to "
             "continue the same task. Do not open a new task with a different external_ref."
         )
     # The daemon named the superseding binding (`session_superseded`, #578): an agent that
@@ -184,7 +184,7 @@ def _stale_mapping_context(
         "session and writer ids. The service itself is healthy. The current binding for task "
         f"{replacement.task_id} is session_id {replacement.session_id} and writer_id "
         f"{replacement.writer_id}; if you hold those ids, continue with them. Otherwise call "
-        f"start with mode=attach and session_id {mapping.yoetz_session_id} to continue the same "
+        f"start with mode=attach and session_id {mapping.finishup_session_id} to continue the same "
         "task. Do not open a new task with a different external_ref."
     )
 
@@ -677,9 +677,9 @@ def _mapping_for_lane(
 ) -> LifecycleMapping:
     return mapping_from_start_ids(
         codex_session_id=lane_id,
-        yoetz_task_id=task_id,
-        yoetz_session_id=session_id,
-        yoetz_writer_id=writer_id,
+        finishup_task_id=task_id,
+        finishup_session_id=session_id,
+        finishup_writer_id=writer_id,
         last_frontier=last_frontier,
     )
 
@@ -738,7 +738,7 @@ def _pending_mapping_snapshot(
         elif first_kind == "store" and second_kind == "store":
             if first_mapping is None or second_mapping is None:
                 return _PendingMappingSnapshot(True, None)
-            conflicting = first_mapping.yoetz_task_id != second_mapping.yoetz_task_id
+            conflicting = first_mapping.finishup_task_id != second_mapping.finishup_task_id
         return _PendingMappingSnapshot(True, primary, conflicting=conflicting)
     except Exception:
         # An unreadable marker is still a pending lifecycle fact.  Fail closed so
@@ -798,9 +798,12 @@ def _persist_start_mappings(
                             operation, queued = snapshot.operation
                             if operation != "store" or queued is None:
                                 return "start_bind_deferred"
-                            if queued.yoetz_task_id != candidate.yoetz_task_id:
+                            if queued.finishup_task_id != candidate.finishup_task_id:
                                 return "start_bind_child_lane_unbound"
-                        if current is not None and current.yoetz_task_id != candidate.yoetz_task_id:
+                        if (
+                            current is not None
+                            and current.finishup_task_id != candidate.finishup_task_id
+                        ):
                             return "start_bind_child_lane_unbound"
                     queue_mapping_store(candidate, _state=_state)
                 return "start_bind_deferred"
@@ -828,12 +831,12 @@ def _persist_start_mappings(
                     if operation != "store" or queued is None:
                         return "start_bind_deferred"
                     if is_scoped_child_session_id(mapping.codex_session_id) and (
-                        queued.yoetz_task_id != mapping.yoetz_task_id
+                        queued.finishup_task_id != mapping.finishup_task_id
                     ):
                         return "start_bind_child_lane_unbound"
                 if not is_scoped_child_session_id(mapping.codex_session_id):
                     continue
-                if prior is not None and prior.yoetz_task_id != mapping.yoetz_task_id:
+                if prior is not None and prior.finishup_task_id != mapping.finishup_task_id:
                     return "start_bind_child_lane_unbound"
 
             # Replay only after the complete ownership preflight.  Re-read the files
@@ -852,7 +855,7 @@ def _persist_start_mappings(
                 if not is_scoped_child_session_id(mapping.codex_session_id):
                     continue
                 prior = load_mapping(mapping.codex_session_id, _state=_state)
-                if prior is not None and prior.yoetz_task_id != mapping.yoetz_task_id:
+                if prior is not None and prior.finishup_task_id != mapping.finishup_task_id:
                     return "start_bind_child_lane_unbound"
 
             for mapping in ordered:
@@ -1012,7 +1015,7 @@ def bind_start_mapping_outcome(
             return "start_bind_deferred"
         if identity_supplied and not identity_valid:
             return "start_bind_child_lane_unbound"
-        if existing is None or existing.yoetz_task_id == parent_task_id:
+        if existing is None or existing.finishup_task_id == parent_task_id:
             targets.append(
                 _mapping_for_lane(
                     codex_session_id,
@@ -1058,7 +1061,7 @@ def bind_start_mapping_outcome(
             return "start_bind_child_lane_unbound"
         if existing is None and not parent_pending:
             targets.append(result_mapping)
-        elif existing is not None and existing.yoetz_task_id == task_id:
+        elif existing is not None and existing.finishup_task_id == task_id:
             targets.append(result_mapping)
         elif identity_valid and child_identity is not None:
             try:
@@ -1096,7 +1099,7 @@ def bind_start_mapping_outcome(
         # the host supplies no child identity (the normal parent shape).
         if (
             (existing is not None or parent_pending)
-            and (existing is None or existing.yoetz_task_id != task_id)
+            and (existing is None or existing.finishup_task_id != task_id)
             and identity_valid
             and child_identity is not None
         ):
@@ -1110,7 +1113,7 @@ def bind_start_mapping_outcome(
             except ProtocolValueError, TypeError, ValueError:
                 return "start_bind_child_lane_unbound"
             prior_child = load_mapping(child_lane, _state=_state)
-            if prior_child is not None and prior_child.yoetz_task_id != task_id:
+            if prior_child is not None and prior_child.finishup_task_id != task_id:
                 return "start_bind_child_lane_unbound"
             targets.append(
                 _mapping_for_lane(
@@ -1250,11 +1253,11 @@ def _active_context(mapping: LifecycleMapping, frontier: str | None) -> str:
     token = frontier if frontier is not None else mapping.last_frontier
     frontier_text = token if token is not None else "unknown"
     return (
-        f"FinishUP task {mapping.yoetz_task_id} is mapped to this session at frontier "
-        f"{frontier_text} as session_id {mapping.yoetz_session_id} and writer_id "
-        f"{mapping.yoetz_writer_id}. For a new host session, after guidance reads and tool/schema "
+        f"FinishUP task {mapping.finishup_task_id} is mapped to this session at frontier "
+        f"{frontier_text} as session_id {mapping.finishup_session_id} and writer_id "
+        f"{mapping.finishup_writer_id}. For a new host session, after guidance reads and tool/schema "
         "discovery, call start with mode=attach and "
-        f"session_id {mapping.yoetz_session_id} before substantive material work. "
+        f"session_id {mapping.finishup_session_id} before substantive material work. "
         "Then read status with the returned session/writer ids; for compaction in an "
         "already-started host session, use your held current ids. After resume or compaction, "
         "read status once; keep the returned obligations and findings, then do the work; do not "
@@ -1326,8 +1329,8 @@ def _status_request(
                 "version": __version__,
                 "integration": "local_cli",
             },
-            "session_id": mapping.yoetz_session_id,
-            "writer_id": mapping.yoetz_writer_id,
+            "session_id": mapping.finishup_session_id,
+            "writer_id": mapping.finishup_writer_id,
             "view": view,
             "limit": limit,
             "at_frontier": None,
@@ -1481,9 +1484,9 @@ async def _read_recap_facts(
     try:
         facts = recap_facts_from_status(
             compact_branch,
-            task_id=mapping.yoetz_task_id,
-            session_id=mapping.yoetz_session_id,
-            writer_id=mapping.yoetz_writer_id,
+            task_id=mapping.finishup_task_id,
+            session_id=mapping.finishup_session_id,
+            writer_id=mapping.finishup_writer_id,
         )
         if facts is None:
             return None
@@ -1572,9 +1575,9 @@ async def _read_status(
         updated = LifecycleMapping(
             mapping_version=mapping.mapping_version,
             codex_session_id=mapping.codex_session_id,
-            yoetz_task_id=task_id,
-            yoetz_session_id=session_id,
-            yoetz_writer_id=writer_id,
+            finishup_task_id=task_id,
+            finishup_session_id=session_id,
+            finishup_writer_id=writer_id,
             last_frontier=frontier,
         )
         facts = (

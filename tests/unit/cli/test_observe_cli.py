@@ -1610,9 +1610,9 @@ def test_explicit_recovery_uses_full_mapped_native_session_id(
     store_mapping(
         mapping_from_start_ids(
             codex_session_id=session_id,
-            yoetz_task_id=new_id(IdKind.TASK),
-            yoetz_session_id=new_id(IdKind.SESSION),
-            yoetz_writer_id=new_id(IdKind.WRITER),
+            finishup_task_id=new_id(IdKind.TASK),
+            finishup_session_id=new_id(IdKind.SESSION),
+            finishup_writer_id=new_id(IdKind.WRITER),
             last_frontier=None,
         ),
         _state=state,
@@ -1701,9 +1701,9 @@ def test_explicit_recovery_refuses_rollout_bound_to_another_workspace(
     store_mapping(
         mapping_from_start_ids(
             codex_session_id=session_id,
-            yoetz_task_id=new_id(IdKind.TASK),
-            yoetz_session_id=new_id(IdKind.SESSION),
-            yoetz_writer_id=new_id(IdKind.WRITER),
+            finishup_task_id=new_id(IdKind.TASK),
+            finishup_session_id=new_id(IdKind.SESSION),
+            finishup_writer_id=new_id(IdKind.WRITER),
             last_frontier=None,
         ),
         _state=state,
@@ -1744,9 +1744,9 @@ def test_explicit_recovery_uses_full_mapping_for_compressed_rollout_variant(
     store_mapping(
         mapping_from_start_ids(
             codex_session_id=session_id,
-            yoetz_task_id=new_id(IdKind.TASK),
-            yoetz_session_id=new_id(IdKind.SESSION),
-            yoetz_writer_id=new_id(IdKind.WRITER),
+            finishup_task_id=new_id(IdKind.TASK),
+            finishup_session_id=new_id(IdKind.SESSION),
+            finishup_writer_id=new_id(IdKind.WRITER),
             last_frontier=None,
         ),
         _state=state,

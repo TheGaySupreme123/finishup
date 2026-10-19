@@ -103,9 +103,9 @@ def test_mapping_round_trip(tmp_path: Path) -> None:
     frontier = encode_frontier_token(sequence="0", head_digest="genesis")
     mapping = mapping_from_start_ids(
         codex_session_id=codex_session_id,
-        yoetz_task_id=task_id,
-        yoetz_session_id=session_id,
-        yoetz_writer_id=writer_id,
+        finishup_task_id=task_id,
+        finishup_session_id=session_id,
+        finishup_writer_id=writer_id,
         last_frontier=frontier,
     )
     store_mapping(mapping, _state=tmp_path)
@@ -121,9 +121,9 @@ def test_rejects_extra_keys_and_wrong_version(tmp_path: Path) -> None:
     store_mapping(
         mapping_from_start_ids(
             codex_session_id=codex_session_id,
-            yoetz_task_id=task_id,
-            yoetz_session_id=session_id,
-            yoetz_writer_id=writer_id,
+            finishup_task_id=task_id,
+            finishup_session_id=session_id,
+            finishup_writer_id=writer_id,
             last_frontier=None,
         ),
         _state=tmp_path,
@@ -186,9 +186,9 @@ def test_store_rejects_bad_ids(tmp_path: Path) -> None:
             LifecycleMapping(
                 mapping_version=1,
                 codex_session_id="ok-session",
-                yoetz_task_id="not-a-task",
-                yoetz_session_id=new_id(IdKind.SESSION),
-                yoetz_writer_id=new_id(IdKind.WRITER),
+                finishup_task_id="not-a-task",
+                finishup_session_id=new_id(IdKind.SESSION),
+                finishup_writer_id=new_id(IdKind.WRITER),
                 last_frontier=None,
             ),
             _state=tmp_path,
@@ -200,9 +200,9 @@ def test_clear_mapping(tmp_path: Path) -> None:
     store_mapping(
         mapping_from_start_ids(
             codex_session_id=codex_session_id,
-            yoetz_task_id=task_id,
-            yoetz_session_id=session_id,
-            yoetz_writer_id=writer_id,
+            finishup_task_id=task_id,
+            finishup_session_id=session_id,
+            finishup_writer_id=writer_id,
             last_frontier=None,
         ),
         _state=tmp_path,
@@ -217,9 +217,9 @@ def test_route_history_is_task_bound_and_malformed_history_fails_closed(
     codex_session_id, task_id, session_id, writer_id = _ids()
     mapping = mapping_from_start_ids(
         codex_session_id=codex_session_id,
-        yoetz_task_id=task_id,
-        yoetz_session_id=session_id,
-        yoetz_writer_id=writer_id,
+        finishup_task_id=task_id,
+        finishup_session_id=session_id,
+        finishup_writer_id=writer_id,
         last_frontier=None,
     )
     store_mapping(mapping, _state=tmp_path)
@@ -255,20 +255,20 @@ def test_route_history_is_bounded_to_the_newest_predecessors(tmp_path: Path) -> 
     codex_session_id, task_id, session_id, writer_id = _ids()
     current = mapping_from_start_ids(
         codex_session_id=codex_session_id,
-        yoetz_task_id=task_id,
-        yoetz_session_id=session_id,
-        yoetz_writer_id=writer_id,
+        finishup_task_id=task_id,
+        finishup_session_id=session_id,
+        finishup_writer_id=writer_id,
         last_frontier=None,
     )
     store_mapping(current, _state=tmp_path)
     predecessor_routes: list[tuple[str, str]] = []
     for _ in range(max_route_history + 1):
-        predecessor_routes.append((current.yoetz_session_id, current.yoetz_writer_id))
+        predecessor_routes.append((current.finishup_session_id, current.finishup_writer_id))
         current = mapping_from_start_ids(
             codex_session_id=codex_session_id,
-            yoetz_task_id=task_id,
-            yoetz_session_id=new_id(IdKind.SESSION),
-            yoetz_writer_id=new_id(IdKind.WRITER),
+            finishup_task_id=task_id,
+            finishup_session_id=new_id(IdKind.SESSION),
+            finishup_writer_id=new_id(IdKind.WRITER),
             last_frontier=None,
         )
         store_mapping(current, _state=tmp_path)
@@ -285,24 +285,24 @@ def test_route_history_namespace_cannot_overwrite_a_mapping(tmp_path: Path) -> N
     codex_session_id, task_id, session_id, writer_id = _ids()
     first = mapping_from_start_ids(
         codex_session_id=codex_session_id,
-        yoetz_task_id=task_id,
-        yoetz_session_id=session_id,
-        yoetz_writer_id=writer_id,
+        finishup_task_id=task_id,
+        finishup_session_id=session_id,
+        finishup_writer_id=writer_id,
         last_frontier=None,
     )
     successor = mapping_from_start_ids(
         codex_session_id=codex_session_id,
-        yoetz_task_id=task_id,
-        yoetz_session_id=new_id(IdKind.SESSION),
-        yoetz_writer_id=new_id(IdKind.WRITER),
+        finishup_task_id=task_id,
+        finishup_session_id=new_id(IdKind.SESSION),
+        finishup_writer_id=new_id(IdKind.WRITER),
         last_frontier=None,
     )
     colliding_session = f"{codex_session_id}.history"
     colliding = mapping_from_start_ids(
         codex_session_id=colliding_session,
-        yoetz_task_id=new_id(IdKind.TASK),
-        yoetz_session_id=new_id(IdKind.SESSION),
-        yoetz_writer_id=new_id(IdKind.WRITER),
+        finishup_task_id=new_id(IdKind.TASK),
+        finishup_session_id=new_id(IdKind.SESSION),
+        finishup_writer_id=new_id(IdKind.WRITER),
         last_frontier=None,
     )
 
@@ -314,7 +314,7 @@ def test_route_history_namespace_cannot_overwrite_a_mapping(tmp_path: Path) -> N
     assert load_mapping(colliding_session, _state=tmp_path) == colliding
     history = load_route_history(successor, _state=tmp_path)
     assert history is not None
-    assert history.routes == ((first.yoetz_session_id, first.yoetz_writer_id),)
+    assert history.routes == ((first.finishup_session_id, first.finishup_writer_id),)
     assert history.truncated is False
 
 
@@ -322,16 +322,16 @@ def test_clear_mapping_removes_route_history_sidecar(tmp_path: Path) -> None:
     codex_session_id, task_id, session_id, writer_id = _ids()
     first = mapping_from_start_ids(
         codex_session_id=codex_session_id,
-        yoetz_task_id=task_id,
-        yoetz_session_id=session_id,
-        yoetz_writer_id=writer_id,
+        finishup_task_id=task_id,
+        finishup_session_id=session_id,
+        finishup_writer_id=writer_id,
         last_frontier=None,
     )
     successor = mapping_from_start_ids(
         codex_session_id=codex_session_id,
-        yoetz_task_id=task_id,
-        yoetz_session_id=new_id(IdKind.SESSION),
-        yoetz_writer_id=new_id(IdKind.WRITER),
+        finishup_task_id=task_id,
+        finishup_session_id=new_id(IdKind.SESSION),
+        finishup_writer_id=new_id(IdKind.WRITER),
         last_frontier=None,
     )
     store_mapping(first, _state=tmp_path)
@@ -356,9 +356,9 @@ def test_private_atomic_write_cleans_temporary_on_initial_failure(
     codex_session_id, task_id, session_id, writer_id = _ids()
     mapping = mapping_from_start_ids(
         codex_session_id=codex_session_id,
-        yoetz_task_id=task_id,
-        yoetz_session_id=session_id,
-        yoetz_writer_id=writer_id,
+        finishup_task_id=task_id,
+        finishup_session_id=session_id,
+        finishup_writer_id=writer_id,
         last_frontier=None,
     )
 
@@ -388,16 +388,16 @@ def test_load_latest_mapping_uses_valid_mapping_write_recency(tmp_path: Path) ->
     second_session = "codex-session-def456"
     second = mapping_from_start_ids(
         codex_session_id=second_session,
-        yoetz_task_id=new_id(IdKind.TASK),
-        yoetz_session_id=new_id(IdKind.SESSION),
-        yoetz_writer_id=new_id(IdKind.WRITER),
+        finishup_task_id=new_id(IdKind.TASK),
+        finishup_session_id=new_id(IdKind.SESSION),
+        finishup_writer_id=new_id(IdKind.WRITER),
         last_frontier=None,
     )
     first = mapping_from_start_ids(
         codex_session_id=first_session,
-        yoetz_task_id=first_task,
-        yoetz_session_id=first_finishup_session,
-        yoetz_writer_id=first_writer,
+        finishup_task_id=first_task,
+        finishup_session_id=first_finishup_session,
+        finishup_writer_id=first_writer,
         last_frontier=None,
     )
     store_mapping(first, _state=tmp_path)
@@ -557,16 +557,16 @@ def test_pending_mapping_preserves_update_queued_during_apply(
     session, task, first_session, first_writer = _ids()
     first = mapping_from_start_ids(
         codex_session_id=session,
-        yoetz_task_id=task,
-        yoetz_session_id=first_session,
-        yoetz_writer_id=first_writer,
+        finishup_task_id=task,
+        finishup_session_id=first_session,
+        finishup_writer_id=first_writer,
         last_frontier=None,
     )
     second = mapping_from_start_ids(
         codex_session_id=session,
-        yoetz_task_id=task,
-        yoetz_session_id=new_id(IdKind.SESSION),
-        yoetz_writer_id=new_id(IdKind.WRITER),
+        finishup_task_id=task,
+        finishup_session_id=new_id(IdKind.SESSION),
+        finishup_writer_id=new_id(IdKind.WRITER),
         last_frontier=None,
     )
     original = codex_lifecycle_module.store_mapping
@@ -592,9 +592,9 @@ def test_new_mapping_does_not_reuse_history_left_by_interrupted_clear(tmp_path: 
     mappings = [
         mapping_from_start_ids(
             codex_session_id=host,
-            yoetz_task_id=task,
-            yoetz_session_id=new_id(IdKind.SESSION),
-            yoetz_writer_id=new_id(IdKind.WRITER),
+            finishup_task_id=task,
+            finishup_session_id=new_id(IdKind.SESSION),
+            finishup_writer_id=new_id(IdKind.WRITER),
             last_frontier=None,
         )
         for _ in range(3)

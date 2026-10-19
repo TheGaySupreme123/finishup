@@ -609,7 +609,7 @@ def _session_commitment_for_runtime(
     route_reader = getattr(observation, "observation_route_for_session", None)
     if callable(route_reader):
         try:
-            route = route_reader(workspace=workspace, yoetz_session_id=session_id)
+            route = route_reader(workspace=workspace, finishup_session_id=session_id)
         except Exception as exc:
             raise ValueError("content_capture_unavailable") from exc
         if type(route) is not tuple:

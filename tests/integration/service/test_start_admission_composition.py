@@ -302,7 +302,7 @@ async def test_ended_host_predecessor_automatically_recovers_with_unrelated_work
         await sibling_client.close()
     sibling = sibling_result.root
     assert isinstance(sibling, StartSuccessModel)
-    assert sibling.task_id != first.mapping.yoetz_task_id
+    assert sibling.task_id != first.mapping.finishup_task_id
     sibling_route = await application.start_catalog.resolve_route(sibling.session_id)
     store.bind_codex_session(commitment, successor)
 
@@ -318,6 +318,6 @@ async def test_ended_host_predecessor_automatically_recovers_with_unrelated_work
 
     assert recovered.mapping is not None, recovered.reason
     assert recovered.recovered
-    assert recovered.mapping.yoetz_task_id == first.mapping.yoetz_task_id
-    assert recovered.mapping.yoetz_session_id != first.mapping.yoetz_session_id
+    assert recovered.mapping.finishup_task_id == first.mapping.finishup_task_id
+    assert recovered.mapping.finishup_session_id != first.mapping.finishup_session_id
     assert await application.start_catalog.resolve_route(sibling.session_id) == sibling_route

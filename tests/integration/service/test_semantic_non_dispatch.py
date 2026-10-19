@@ -443,10 +443,10 @@ class _RoutedObservation:
         return _OBSERVATION_WORKSPACE
 
     def observation_route_for_session(
-        self, *, workspace: str, yoetz_session_id: str
+        self, *, workspace: str, finishup_session_id: str
     ) -> tuple[str, str, bool] | None:
         assert workspace == _OBSERVATION_WORKSPACE
-        assert yoetz_session_id == self.session_id
+        assert finishup_session_id == self.session_id
         return (_OBSERVATION_SESSION, self.route_task, True)
 
 
@@ -455,9 +455,9 @@ class _AmbiguousObservation:
         return (_OBSERVATION_WORKSPACE, "hmac-sha256:" + "d" * 64)
 
     def observation_route_for_session(
-        self, *, workspace: str, yoetz_session_id: str
+        self, *, workspace: str, finishup_session_id: str
     ) -> tuple[str, str, bool]:
-        del workspace, yoetz_session_id
+        del workspace, finishup_session_id
         return (_OBSERVATION_SESSION, _TASK, True)
 
 
@@ -465,8 +465,8 @@ class _MissingRouteObservation:
     def workspace_for_finishup_session(self, _session: str) -> str:
         return _OBSERVATION_WORKSPACE
 
-    def observation_route_for_session(self, *, workspace: str, yoetz_session_id: str) -> None:
-        del workspace, yoetz_session_id
+    def observation_route_for_session(self, *, workspace: str, finishup_session_id: str) -> None:
+        del workspace, finishup_session_id
         return None
 
 
