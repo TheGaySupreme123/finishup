@@ -1,0 +1,291 @@
+"""#1118: one review through the ready service to the real Codex evaluator and a fake app-server.
+
+The benchmark smoke ran the Codex subscription route and every review failed before anything was
+sent (``case_invalid``, ``codex_reviewer_session_unknown``): the service's first exchange carries
+the packet *and* the read catalog as two user messages, and the evaluator only opened a thread
+for a two-message history. The other service reviewer tests replace ``build_evaluator`` on the
+Responses route, so no test ran the service's own exchange bytes through
+``CodexAppServerEvaluator``. Here nothing on that path is scripted except the app-server process:
+the real composition builds ``CodexAppServerExternalFactory`` from the configured runtime binding,
+the real gateway renders, admits and consumes each exchange, and the real evaluator drives a
+JSONL app-server child through its own request, read and process-group cleanup code.
+"""
+
+from __future__ import annotations
+
+import json
+import subprocess
+from dataclasses import replace
+from pathlib import Path
+from typing import Any, cast
+
+import pytest
+
+from builders.codex_capability import binding_for, retained_runtime, write_home
+from builders.fake_codex_app_server import launcher
+from builders.multi_agent import INSTALLATION_ID, multi_agent_service
+from builders.privacy_policies import minimal_external_policy
+from builders.privacy_widenings import with_llm
+from builders.projection_workflow import ProjectionCase, project_case
+from finishup.adapters.integrations.observation_local import LocalObservationStore
+from finishup.adapters.providers import codex_app_server as codex
+from finishup.adapters.providers.codex_app_server import codex_binding_from_config
+from finishup.adapters.providers.codex_capability import host_codex_platform
+from finishup.adapters.providers.reviewer_reply import REVIEWER_LOOP_INSTRUCTION
+from finishup.adapters.repository_identity import resolve_repository_privacy_context
+from finishup.application.privacy_policy import (
+    DecidePrivacyPolicyRequest,
+    PolicyDecisionRequired,
+    ProposePrivacyPolicyRequest,
+    decide_privacy_policy,
+    privacy_propose_policy,
+)
+from finishup.config.models import FinishUpConfig
+from finishup.domain.privacy import AuthorizationScope, AuthorizationScopeKind, PrivacyPolicy
+from finishup.ports.control import ControlMethod, WorkspaceLocator
+from finishup.ports.keys import MacKeyPurpose
+from finishup.ports.privacy import (
+    EffectivePrivacyPolicy,
+    HumanAuthorityCapability,
+    HumanPolicyDecision,
+)
+from finishup.protocol.canonical import JsonValue, canonical_encode
+from finishup.protocol.ids import IdKind, new_id
+from finishup.protocol.models import CheckRequest, PublishWorkRequest, SemanticStatus, StartRequest
+
+pytestmark = pytest.mark.anyio
+
+_STATEMENT = "Make add(a, b) in calc.py return the sum of a and b, and keep test_calc.py passing."
+_READ: dict[str, JsonValue] = {
+    "reply": {
+        "action": "read_file",
+        "args": {
+            "root_id": "w1",
+            "path": "calc.py",
+            "mode": "text",
+            "start_line": 1,
+            "line_count": 40,
+        },
+    }
+}
+_FINAL: dict[str, JsonValue] = {
+    "reply": {
+        "final_judgment": {
+            "conclusion": "no_material_discrepancy",
+            "review_summary": "Read calc.py: add returns a + b.",
+            "verified": [],
+            "reviewer_challenges": [],
+            "prior_finding_verdicts": [],
+        }
+    }
+}
+
+
+@pytest.fixture(autouse=True)
+def work_has_begun(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The review runs as if the first edit were recorded (no pre-edit deferral)."""
+
+    import finishup.application.check as check_module
+
+    def edited(*_args: object) -> bool:
+        return True
+
+    monkeypatch.setattr(check_module, "material_edit_recorded", edited)
+
+
+async def _widen(service: object, commitment: str, policy: PrivacyPolicy) -> None:
+    """The owner's trusted step: widen this repository's policy to the Codex route."""
+
+    app, clock, vault = (getattr(service, name) for name in ("app", "clock", "vault"))
+    policy_app = app.privacy.policy_application
+    scope = AuthorizationScope(AuthorizationScopeKind.WORKSPACE, INSTALLATION_ID, commitment)
+    authority = await policy_app.policy_store.repository_authority(scope)
+    candidate = replace(policy, effective_scope=scope, created_at=clock.now_utc())
+    proposed = await privacy_propose_policy(
+        policy_app,
+        ProposePrivacyPolicyRequest(
+            authority.effective.effective_digest, candidate, authority.authority_digest, scope
+        ),
+    )
+    assert isinstance(proposed, PolicyDecisionRequired)
+    await decide_privacy_policy(
+        policy_app,
+        DecidePrivacyPolicyRequest(
+            proposed.prepared,
+            HumanPolicyDecision(
+                proposed.prepared.prepared_digest, True, clock.now_utc(), "hmac-sha256:" + "8" * 64
+            ),
+            HumanAuthorityCapability(
+                "established_passphrase",
+                "sha256:" + "9" * 64,
+                1,
+                str(getattr(vault.mode, "value", vault.mode)),
+                vault.generation,
+                True,
+            ),
+        ),
+    )
+
+
+async def test_a_service_review_runs_on_one_codex_thread_through_the_real_evaluator(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    tmp_path.chmod(0o700)
+    executable, record = retained_runtime(
+        tmp_path / "bundle", version="0.162.1", platform=host_codex_platform()
+    )
+    home = write_home(tmp_path / "codex-home")
+    runtime = binding_for(record, executable, home, reasoning_effort="medium")
+    script, log = tmp_path / "app-server-script.json", tmp_path / "app-server-wire.jsonl"
+    script.write_text(
+        json.dumps(
+            {
+                "codex_home": str(home),
+                "version": "0.162.1",
+                "model": runtime.model,
+                "efforts": ["low", "medium", "high", "xhigh"],
+                "answers": [canonical_encode(reply).decode() for reply in (_READ, _FINAL)],
+            }
+        )
+    )
+    # Only the child process is fake: launch it as Codex would be launched, then let the real
+    # ``_CodexProcess`` and ``_cleanup`` talk to it and end its process group.
+    monkeypatch.setattr(codex, "_launch", launcher(script, log))
+
+    workspace = (tmp_path / "work").resolve()
+    workspace.mkdir()
+    (workspace / "calc.py").write_text("def add(a, b):\n    return a + b\n")
+    for argv in (
+        ("init", "-q", "-b", "main"),
+        ("-c", "user.name=t", "-c", "user.email=t@example.invalid", "add", "."),
+        ("-c", "user.name=t", "-c", "user.email=t@example.invalid", "commit", "-qm", "base"),
+    ):
+        subprocess.run(("git", *argv), cwd=workspace, check=True, capture_output=True)
+
+    binding = codex_binding_from_config(runtime)
+    policy = with_llm(minimal_external_policy(), provider_binding=binding, max_tokens=65_536)
+    config = FinishUpConfig(profile="codex-subscription", external_runtime=runtime)
+    async with multi_agent_service(tmp_path / "state", config=config) as service:
+        policy_store = service.app.privacy.policy_application.policy_store  # type: ignore[union-attr]
+        original_effective_policy = policy_store.effective_policy
+        task_policy = [EffectivePrivacyPolicy(policy, 2, policy.policy_digest)]
+        task_scopes: list[AuthorizationScope] = []
+
+        async def effective_policy(_store: object, scope: AuthorizationScope) -> object:
+            if scope.kind is AuthorizationScopeKind.TASK:
+                task_scopes.append(scope)
+                return task_policy[-1]
+            return await original_effective_policy(scope)
+
+        monkeypatch.setattr(type(policy_store), "effective_policy", effective_policy)
+        lookup = service.vault.installation_mac_handle(MacKeyPurpose.CATALOG_LOOKUP)
+        repository = await resolve_repository_privacy_context(
+            WorkspaceLocator(str(workspace)), lookup
+        )
+        observations = LocalObservationStore(_state=service.root / "state")
+        observations.grant_consent(observations.workspace_commitment(str(workspace)))
+        common: dict[str, JsonValue] = {
+            "protocol_version": "0.1",
+            "schema_version": "1.0.0",
+            "actor": {"actor_id": "harness:reviewer-codex", "actor_type": "harness"},
+            "client": {
+                "kind": "cooperative_agent",
+                "version": "0.3.0",
+                "integration": "cooperative_mcp",
+            },
+        }
+        started = await service.app.start(
+            StartRequest.model_validate(
+                {
+                    **common,
+                    "request_id": new_id(IdKind.REQUEST),
+                    "mode": "create",
+                    "task_title": "Reviewer conversation on Codex",
+                    "workspace_ref": str(workspace),
+                    "external_ref": "reviewer-codex",
+                    "requested_view": "compact",
+                }
+            ),
+            repository_privacy_context=repository,
+        )
+        check_body: dict[str, JsonValue] = {
+            **common,
+            "request_id": new_id(IdKind.REQUEST),
+            "session_id": started.session_id,
+            "writer_id": started.writer_id,
+            "expected_frontier": started.frontier.model_dump(mode="json"),
+            "mode": "semantic_required",
+            "max_findings": "3",
+            "policy_packs": ["work-integrity/0.3.0"],
+        }
+
+        async def check() -> Any:
+            return await service.app.check(
+                CheckRequest.model_validate(check_body), repository_privacy_context=repository
+            )
+
+        assert getattr(await check(), "state") == "awaiting_input"
+        await service.app.publish_work(
+            PublishWorkRequest.model_validate(
+                {
+                    **common,
+                    "request_id": new_id(IdKind.REQUEST),
+                    "session_id": started.session_id,
+                    "writer_id": started.writer_id,
+                    "expected_frontier": started.frontier.model_dump(mode="json"),
+                    "event_drafts": [
+                        {
+                            "event_id": new_id(IdKind.EVENT),
+                            "schema": {"name": "plan_published", "version": "1.1.0"},
+                            "occurred_at": "2026-10-19T12:00:00.000Z",
+                            "causal_parents": [],
+                            "payload": {
+                                "plan_version": 1,
+                                "summary": "Fix add.",
+                                "obligation_refs": [],
+                                "task_statement": _STATEMENT,
+                            },
+                            "artifact_refs": [],
+                            "evidence_refs": [],
+                        }
+                    ],
+                }
+            ),
+            repository_privacy_context=repository,
+        )
+        await _widen(service, repository.commitment, policy)
+        authority = await policy_store.repository_authority(task_scopes[-1])
+        task_policy.append(authority.effective)
+
+        checked = await check()
+
+        # Before the fix no child was ever launched: the case failed as ``case_invalid``.
+        wire = [json.loads(line) for line in log.read_text().splitlines()] if log.exists() else []
+        methods = [request["method"] for request in wire]
+        assert type(checked).__name__ == "CheckCommitResult", (checked, methods)
+        provenance = getattr(checked, "semantic_provenance", None)
+        assert getattr(checked, "semantic_status") is SemanticStatus.SUCCEEDED, provenance
+        # One launch and one thread for the whole conversation, environment access disabled.
+        assert methods.count("initialize") == 1 and methods.count("thread/start") == 1
+        thread = next(request["params"] for request in wire if request["method"] == "thread/start")
+        assert thread["environments"] == []
+        assert thread["baseInstructions"] == REVIEWER_LOOP_INSTRUCTION
+        turns = [request["params"] for request in wire if request["method"] == "turn/start"]
+        assert len(turns) == 2 and {turn["threadId"] for turn in turns} == {"thr-fake"}
+        # The first turn carries both admitted user messages: the packet, then the read catalog.
+        first_input = cast(list[dict[str, str]], turns[0]["input"])
+        assert len(first_input) == 2 and "reviewer_catalog" in first_input[1]["text"]
+        assert "reviewer_catalog" not in first_input[0]["text"]
+        # The continuation sends only the new read result, with the reply schema every turn.
+        (observation,) = cast(list[dict[str, str]], turns[1]["input"])
+        assert "return a + b" in json.loads(observation["text"])["data"]["text"]
+        assert all(turn["outputSchema"] for turn in turns)
+
+        mcp_wire = await project_case(
+            service.app, ProjectionCase("check", ControlMethod.CHECK, check_body, checked), 7300
+        )
+        reviewer = cast(dict[str, JsonValue], mcp_wire["reviewer"])
+        assert (reviewer["exchanges"], reviewer["reads_used"]) == ("2", "1")
+        evidence = cast(dict[str, JsonValue], mcp_wire["semantic_provenance"])["runtime_evidence"]
+        # The session's own close ended the process group after the last turn.
+        assert cast(dict[str, JsonValue], evidence)["process_cleanup"] == "terminated"

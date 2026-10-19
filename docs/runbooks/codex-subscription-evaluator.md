@@ -28,8 +28,8 @@ Profile v3 adds three restrictions to every session, one-shot or loop: `initiali
 `experimentalApi: true` only so `thread/start` can send `environments: []`, which leaves no
 environment for shell, patch or file tools; the isolated config and launch overrides disable the
 `update_plan` and `experimental_request_user_input` utilities. A reviewer-loop session reuses one
-ephemeral thread across `turn/start` calls, sends only the new admitted input, and supplies the
-reply `outputSchema` on every turn. Any plan or compaction event, server request, native warning,
+ephemeral thread across `turn/start` calls: the first turn sends the packet and the read catalog,
+each later turn only the new admitted input, and every turn supplies the reply `outputSchema`. Any plan or compaction event, server request, native warning,
 reroute or tool item ends the turn and cleans up the process. The thread lives only in the review's
 own session, and the review closes it on every exit, including a deadline, a revoked admission or a
 second malformed answer; a close waits for the turn in flight. It is never resumed. A turn that

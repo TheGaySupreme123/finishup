@@ -2233,13 +2233,13 @@ class CodexAppServerEvaluator:
         instruction_sha256 = _INSTRUCTION_SHA256
         output_schema = _CODEX_JUDGMENT_JSON_SCHEMA
         instructions = SEMANTIC_REVIEW_INSTRUCTION
-        turn_text: str | None = None
+        turn_texts: tuple[str, ...] | None = None
         turn_completed = False
         try:
             exchange = reviewer_exchange(case.media_type, case.payload, self.reply_schemas)
             if exchange is not None:
                 # One reviewer-loop exchange (#1118 unit 3). Only a reviewed release runs it.
-                instructions, turn_text = exchange.history[0][1], exchange.history[-1][1]
+                instructions = exchange.history[0][1]
                 instruction_sha256 = exchange.prompt_digest
                 output_schema = cast(
                     dict[str, JsonValue], _codex_output_schema(cast(JsonValue, exchange.schema))
@@ -2252,16 +2252,20 @@ class CodexAppServerEvaluator:
                 # history must extend exactly what that thread holds, on the same profile.
                 held_any = None if session is None else session.held
                 held = held_any if isinstance(held_any, _ReviewerThread) else None
+                # A new thread takes every user message after the instruction (the packet, then
+                # the read catalog); a continuation adds exactly the one new user message.
+                sent = exchange.history[1:] if held is None else exchange.history[-1:]
                 if (
                     session is None
                     or session.closed
                     or session.deadline != deadline
                     or held is not held_any
-                    or (held is None) != (len(exchange.history) == 2)
+                    or any(role != "user" for role, _ in sent)
                     or (held is not None and held.profile != self.profile)
                     or (held is not None and exchange.history[:-1] not in held.prefixes)
                 ):
                     raise ValueError("codex_reviewer_session_unknown")
+                turn_texts = tuple(text for _, text in sent)
                 if held is not None:
                     session.held = None  # this turn owns the runtime until it retains it again
                     runtime, thread_id = held.runtime, held.thread_id
@@ -2301,8 +2305,10 @@ class CodexAppServerEvaluator:
                 thread_id = _validate_thread(runtime, self.profile, thread_result)
                 await _close_predisclosure_window(runtime, _remaining(deadline, self.clock))
             assert runtime is not None and thread_id is not None
-            case_text = (
-                case.payload.decode("utf-8", errors="strict") if turn_text is None else turn_text
+            case_texts = (
+                (case.payload.decode("utf-8", errors="strict"),)
+                if turn_texts is None
+                else turn_texts
             )
             strict_json_parse(case.payload)
             case_disclosed = True
@@ -2313,7 +2319,7 @@ class CodexAppServerEvaluator:
                     "approvalPolicy": "never",
                     "approvalsReviewer": "user",
                     "effort": budget.reasoning_effort,
-                    "input": [{"type": "text", "text": case_text}],
+                    "input": [{"type": "text", "text": text} for text in case_texts],
                     "model": self.profile.model,
                     "outputSchema": output_schema,
                     "personality": "none",

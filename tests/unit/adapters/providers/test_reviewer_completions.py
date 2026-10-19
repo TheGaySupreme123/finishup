@@ -418,6 +418,35 @@ async def test_codex_continuation_without_its_session_fails_before_disclosure(
     assert evidence.failure_stage == "case_invalid"
 
 
+async def test_codex_first_turn_carries_the_packet_and_the_read_catalog(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The service's first exchange is the packet then the catalog: both open the one thread."""
+
+    runtime = _CodexRuntime(
+        profile_for(record_for(b"c", b"h", version="0.162.1")), [_ACTION, _FINAL]
+    )
+    session = ReviewerSession("review-a", _DEADLINE)
+    first: tuple[ReviewerMessage, ...] = (*_FIRST, ("user", "catalog"))
+    cleanups: list[object] = []
+
+    opened = await _codex_exchange(monkeypatch, runtime, session, first, cleanups)
+    assert type(opened) is SemanticResultReply
+    turn = dict(runtime.requests)["turn/start"]
+    assert turn["input"] == [
+        {"type": "text", "text": "packet"},
+        {"type": "text", "text": "catalog"},
+    ]
+
+    runtime.requests.clear()
+    nxt: tuple[ReviewerMessage, ...] = (*first, ("assistant", _ACTION), ("user", "observation"))
+    second = await _codex_exchange(monkeypatch, runtime, session, nxt, cleanups)
+    assert type(second) is SemanticResultReply
+    assert [method for method, _ in runtime.requests] == ["turn/start"]
+    assert runtime.requests[0][1]["input"] == [{"type": "text", "text": "observation"}]
+    assert await session.aclose() == "terminated" and cleanups == [runtime]
+
+
 @pytest.mark.parametrize(
     ("event", "stage"),
     [
