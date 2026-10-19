@@ -153,6 +153,7 @@ def batch_command(
     remove_shared: bool = False,
     request_value: str | None = None,
     preview_digest: str | None = None,
+    json_output: bool = False,
 ) -> str:
     launcher = single.invoking_launcher()
     if launcher is None:
@@ -183,6 +184,8 @@ def batch_command(
             ("--request-id", request_value, "--preview-digest", preview_digest, "--accept")
         )
     command.append("--non-interactive")
+    if json_output:
+        command.append("--json")
     command.append("--batch")
     return shlex.join(command)
 
@@ -254,6 +257,12 @@ async def apply_batch(members: Sequence[BatchMember]) -> list[dict[str, JsonValu
             continue
         try:
             if member.plan.unchanged:
+                # Another process may have changed this agent while an earlier member was being
+                # applied; an unchanged preview is only true if it is still the same now.
+                if (
+                    await on_host(member.installation, member.refresh)
+                ).digest != member.plan.digest:
+                    raise ConnectionError("connection_preview_stale")
                 status = await on_host(member.installation, member.plan.status)
             else:
                 if member.plan.body.get("requires_os_presence") is not False:
@@ -395,6 +404,7 @@ async def run_host_batch(
             remove_shared=remove_shared,
             request_value=request,
             preview_digest=digest,
+            json_output=json_output,
         )
         if preview_digest is not None and preview_digest != digest:
             raise ConnectionError("connection_preview_stale")
@@ -404,7 +414,7 @@ async def run_host_batch(
                 typer.echo(member.installation.label)
                 for line in single.connection_summary(member.plan):
                     typer.echo(line)
-                if member.installation.host == "codex":
+                if member.installation.host == "codex" and "codex_plan" in member.plan.body:
                     from finishup.tui.models import IntegrationPlan
                     from finishup.tui.render import (
                         render_integration_preview,
@@ -433,7 +443,12 @@ async def run_host_batch(
             report["outcome"] = "incomplete"
             # A new preview, with no carried approval, covers just the failed/unattempted tail.
             report["next_step"] = batch_command(
-                remaining, project, action=action, route=route, remove_shared=remove_shared
+                remaining,
+                project,
+                action=action,
+                route=route,
+                remove_shared=remove_shared,
+                json_output=json_output,
             )
         else:
             report["outcome"] = "completed"
@@ -450,7 +465,12 @@ async def run_host_batch(
             report["members"] = cast(list[JsonValue], error.reports)
         if error_reason(error) == "connection_preview_stale":
             report["next_step"] = batch_command(
-                selected, project, action=action, route=route, remove_shared=remove_shared
+                selected,
+                project,
+                action=action,
+                route=route,
+                remove_shared=remove_shared,
+                json_output=json_output,
             )
         if "next_step" not in report:
             report["next_step"] = (

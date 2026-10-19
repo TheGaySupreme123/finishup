@@ -34,7 +34,13 @@ def batch_hosts(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> dict[str, An
             "Cursor Agent CLI",
         ),
     )
-    state: dict[str, Any] = {"hosts": hosts, "applied": [], "changed": set(), "fail": None}
+    state: dict[str, Any] = {
+        "hosts": hosts,
+        "applied": [],
+        "changed": set(),
+        "fail": None,
+        "unchanged": set(),
+    }
     launcher = tmp_path / "finishup"
     launcher.write_text("#!/bin/sh\nexit 0\n")
     launcher.chmod(0o700)
@@ -68,7 +74,7 @@ def batch_hosts(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> dict[str, An
             "request_id": kwargs["request_value"],
             "route_profile": kwargs.get("route") or "strict",
             "action": kwargs["action"],
-            "changes": ["install_plugin"],
+            "changes": [] if item.host in state["unchanged"] else ["install_plugin"],
             "state_before": "changed" if item.host in state["changed"] else "absent",
             "requires_os_presence": False,
         }
@@ -617,3 +623,74 @@ def test_codex_discovery_and_explicit_batch_replay_keep_the_same_visible_executa
 
     monkeypatch.setattr(host_connection, "probe_version", version)
     assert select_installations(["all"]) == select_installations(["codex"], [visible], [home])
+
+
+def test_an_unchanged_member_that_changes_mid_batch_is_stale_not_unchanged(
+    batch_hosts: dict[str, Any],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Review of #1119: an already-connected agent is re-checked when its turn comes."""
+
+    batch_hosts["unchanged"].add("cursor-cli")
+    original_apply = host_connection.apply_selected
+
+    def apply(plan: ConnectionPlan, refresh: Any) -> dict[str, JsonValue]:
+        status = original_apply(plan, refresh)
+        if plan.body["host"] == "claude":
+            batch_hosts["changed"].add("cursor-cli")
+        return status
+
+    monkeypatch.setattr(host_connection, "apply_selected", apply)
+    invoke_batch(tmp_path, request_value=REQUEST)
+    digest = json.loads(capsys.readouterr().out)["preview_digest"]
+    assert invoke_batch(tmp_path, request_value=REQUEST, preview_digest=digest, accept=True) == 1
+    report = json.loads(capsys.readouterr().out)
+    assert report["outcome"] == "incomplete"
+    assert [row["outcome"] for row in report["members"]] == ["completed", "incomplete"]
+    assert report["members"][1]["reason"] == "connection_preview_stale"
+    assert "--accept" not in report["next_step"]
+
+
+def test_a_text_disconnect_with_codex_previews_without_connect_details(
+    batch_hosts: dict[str, Any],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Review of #1119: disconnect plans carry no Codex activation plan to render."""
+
+    from finishup.cli.host_batch import run_host_batch
+
+    codex = HostInstallation("codex", tmp_path / "codex", "0.162.1", tmp_path / ".codex", "Codex")
+    hosts = (*batch_hosts["hosts"], codex)
+    monkeypatch.setattr(host_connection, "discover_hosts", lambda: hosts)
+    monkeypatch.setattr(
+        "finishup.adapters.integrations.host_discovery.discover_hosts", lambda: hosts
+    )
+    original_select = host_connection.select_installation
+
+    def select(
+        host: str, executable: Path | None = None, config_root: Path | None = None
+    ) -> HostInstallation:
+        return codex if host == "codex" else original_select(host, executable, config_root)
+
+    monkeypatch.setattr(host_connection, "select_installation", select)
+
+    async def run() -> int:
+        return await run_host_batch(
+            hosts=["all"], project=tmp_path, json_output=False, action="disconnect"
+        )
+
+    assert anyio.run(run) == 0
+    out = capsys.readouterr().out
+    assert "Codex" in out
+    assert batch_hosts["applied"] == []
+
+
+def test_a_json_preview_continuation_stays_json(
+    batch_hosts: dict[str, Any], tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    invoke_batch(tmp_path, request_value=REQUEST)
+    assert "--json" in shlex.split(json.loads(capsys.readouterr().out)["next_step"])

@@ -218,3 +218,82 @@ async def test_combined_tui_preview_preserves_codex_activation_and_one_approval(
     assert build.plan().skill_preview_digest in details
     assert "Combined preview:" in details
     assert applied == (["codex", "claude"] if approval == "approve" else [])
+
+
+@pytest.mark.anyio
+async def test_a_stale_batch_shows_each_outcome_and_a_fresh_preview(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Review of #1119: a change during approval keeps the outcomes and offers a fresh preview."""
+
+    from finishup.adapters.integrations.host_discovery import HostInstallation
+    from finishup.application.host_connection import ConnectionError, ConnectionPlan
+    from finishup.cli import host_batch, host_connection
+    from finishup.protocol.canonical import JsonValue
+
+    app = FinishUpTui()
+    options = (
+        HarnessOption("/opt/claude", "2.1.0", "Claude Code", "", host="claude"),
+        HarnessOption("/opt/agent", "1.0.0", "Cursor Agent CLI", "", host="cursor-cli"),
+    )
+    said: list[tuple[str, tuple[str, ...]]] = []
+
+    def select(
+        host: str, executable: Path, config_root: Path | None, **_: object
+    ) -> HostInstallation:
+        return HostInstallation(host, executable, "1.0.0", config_root or tmp_path, host)  # pyright: ignore[reportArgumentType]
+
+    async def prepare(
+        installations: Sequence[HostInstallation], project: Path, **kwargs: Any
+    ) -> tuple[host_batch.BatchMember, ...]:
+        members: list[host_batch.BatchMember] = []
+        for item in installations:
+            body: dict[str, JsonValue] = {
+                "host": item.host,
+                "executable": str(item.executable),
+                "config_root": str(item.config_root),
+                "project_root": str(project),
+                "route_profile": "policy",
+                "changes": ["install_plugin"],
+                "request_id": kwargs["request_value"],
+                "preview_digest": "sha256:" + "a" * 64,
+                "action": "connect",
+            }
+            plan = ConnectionPlan(body, lambda: {}, lambda: None)
+            members.append(host_batch.BatchMember(item, plan, lambda plan=plan: plan))
+        return tuple(members)
+
+    async def ask(_view: BaseView) -> str:
+        return "approve"
+
+    async def stale(members: Sequence[host_batch.BatchMember]) -> list[dict[str, JsonValue]]:
+        reports = [host_batch.member_report(member, "not_attempted") for member in members]
+        reports[1].update({"outcome": "incomplete", "reason": "connection_preview_stale"})
+        raise host_batch.BatchPreparationError(reports, ConnectionError("connection_preview_stale"))
+
+    async def hand_over(operation: Callable[[], Awaitable[Any]]) -> Any:
+        return await operation()
+
+    def say(_level: object, title: str, body: Sequence[str] = ()) -> None:
+        said.append((title, tuple(body)))
+
+    monkeypatch.setattr(app.runtime, "project_root", lambda: tmp_path)
+    monkeypatch.setattr(app, "ask", ask)
+    monkeypatch.setattr(app, "say", say)
+    monkeypatch.setattr(app, "hand_over_terminal", hand_over)
+    monkeypatch.setattr(host_connection, "refuse_unservable_runtime", lambda: None)
+    monkeypatch.setattr(host_connection, "select_installation", select)
+    launcher = tmp_path / "finishup"
+    launcher.write_text("#!/bin/sh\nexit 0\n")
+    launcher.chmod(0o700)
+    monkeypatch.setattr(host_connection, "invoking_launcher", lambda: (str(launcher),))
+    monkeypatch.setattr(host_batch, "prepare_batch", prepare)
+    monkeypatch.setattr(host_batch, "apply_batch", stale)
+
+    assert await app._connect_host_batch(options, route="policy") is False  # pyright: ignore[reportPrivateUsage]
+    titles = [title for title, _body in said]
+    assert "claude: not_attempted" in titles
+    assert "cursor-cli: incomplete" in titles
+    fresh = said[-1]
+    assert fresh[0] == "An agent changed before the connection was applied"
+    assert "--accept" not in fresh[1][-1] and "--host claude" in fresh[1][-1]

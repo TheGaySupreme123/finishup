@@ -886,6 +886,7 @@ class FinishUpTui(App[int]):
 
         from finishup.cli import host_connection as single
         from finishup.cli.host_batch import (
+            BatchPreparationError,
             apply_batch,
             batch_command,
             batch_digest,
@@ -961,22 +962,20 @@ class FinishUpTui(App[int]):
                     ),
                 )
                 return False
-            for row in reports:
-                launch = row.get("launch")
+            except BatchPreparationError as stale:
+                # An agent changed while the approval screen was open: nothing was applied. Show
+                # each agent's outcome and a fresh preview that carries no approval.
+                self._say_batch_rows(stale.reports)
                 self.say(
-                    Level.BLOCKED
-                    if row["outcome"] in {"incomplete", "not_attempted"}
-                    else Level.ACTIVE,
-                    f"{row['host']}: {row['outcome']}",
-                    (str(row["reason"]),)
-                    if "reason" in row
-                    else (
-                        "Start a fresh session: "
-                        + str(cast(dict[str, Any], launch)["shell_command"]),
-                    )
-                    if isinstance(launch, dict)
-                    else (),
+                    Level.BLOCKED,
+                    "An agent changed before the connection was applied",
+                    (
+                        "Nothing was changed. Review a fresh preview:",
+                        batch_command(installations, project, action="connect", route=route),
+                    ),
                 )
+                return False
+            self._say_batch_rows(reports)
             remaining = tuple(
                 member.installation
                 for member, row in zip(members, reports, strict=True)
@@ -1002,6 +1001,23 @@ class FinishUpTui(App[int]):
                 (error_reason(error),),
             )
             return False
+
+    def _say_batch_rows(self, reports: Sequence[Mapping[str, Any]]) -> None:
+        for row in reports:
+            launch = row.get("launch")
+            self.say(
+                Level.BLOCKED
+                if row["outcome"] in {"incomplete", "not_attempted"}
+                else Level.ACTIVE,
+                f"{row['host']}: {row['outcome']}",
+                (str(row["reason"]),)
+                if "reason" in row
+                else (
+                    "Start a fresh session: " + str(cast(dict[str, Any], launch)["shell_command"]),
+                )
+                if isinstance(launch, dict)
+                else (),
+            )
 
     async def _choose_harness(self, options: Sequence[HarnessOption]) -> HarnessOption | None:
         if not options:
