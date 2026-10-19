@@ -149,6 +149,7 @@ class FakeRuntime:
     applied_routes: list[str] = field(default_factory=lambda: [])
     applied_codex_homes: list[Path] = field(default_factory=lambda: [])
     ceremonies: list[str] = field(default_factory=lambda: [])
+    credential_probes: list[bool] = field(default_factory=lambda: [])
     bindings: list[tuple[str, str]] = field(default_factory=lambda: [])
     subscription_actions: list[str] = field(default_factory=lambda: [])
     subscription_setups: list[tuple[str, str, str, str, bool]] = field(default_factory=lambda: [])
@@ -204,8 +205,11 @@ class FakeRuntime:
         offer_recommended: bool = False,
         conversation_review: str | None = None,
         ai_review_add_on: bool = False,
+        credential_probe: bool = False,
     ) -> object:
         from finishup.cli.privacy_setup import PrivacySetupReport
+
+        self.credential_probes.append(credential_probe)
 
         # ``None`` means the CLI opens on its recommendation; the fake resolves it the same way
         # the real one does so the interface cannot be tested against a rule of its own. The
@@ -333,6 +337,12 @@ class FakeRuntime:
                 endpoint_profile_id="anthropic-openai-chat-completions",
                 endpoint_profile_version="1.0.0",
             ),
+        )
+
+    def provider_models(self, choice: str) -> tuple[str, ...]:
+        # Default-first, as the reviewed catalog the real runtime reads.
+        return tuple(
+            option.default_model for option in self.provider_options() if option.choice == choice
         )
 
     def save_provider_binding(

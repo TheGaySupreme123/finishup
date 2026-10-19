@@ -86,8 +86,17 @@ class _RepairRuntime(FakeRuntime):
 
 async def _choose(pilot: object, app: FinishUpTui, text: str) -> None:
     await run_command(pilot, app, "/provider")
+    # #1119: /provider first asks how to reach a reviewer; the Codex maintenance actions stay on
+    # the API provider picker behind "Use an API key".
+    connection = app.open_view
+    assert connection is not None
+    assert getattr(connection, "view_name", None) == "reviewer-connection"
+    await pilot.press("down")  # type: ignore[attr-defined]
+    await pilot.press("enter")  # type: ignore[attr-defined]
+    await pilot.pause()  # type: ignore[attr-defined]
     view = app.open_view
     assert view is not None
+    assert getattr(view, "view_name", None) == "provider"
     view.filter(text)  # type: ignore[attr-defined]
     await pilot.press("enter")  # type: ignore[attr-defined]
     await pilot.pause()  # type: ignore[attr-defined]

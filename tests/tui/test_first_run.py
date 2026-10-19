@@ -10,9 +10,15 @@ from textual.widgets import Input, Static
 
 from builders.tui_runtime import CLI, DESKTOP, FakeRuntime
 from finishup.tui.app import FinishUpTui
-from finishup.tui.models import IntegrationOutcome, LayerState, ReadinessLayer, VaultPosture
+from finishup.tui.models import (
+    HarnessOption,
+    IntegrationOutcome,
+    LayerState,
+    ReadinessLayer,
+    VaultPosture,
+)
 from finishup.tui.runtime import RuntimeError_
-from finishup.tui.widgets.views import Option, SelectionView
+from finishup.tui.widgets.views import MultiSelectionView, Option, SelectionView
 
 pytestmark = pytest.mark.anyio
 
@@ -116,30 +122,50 @@ async def test_the_layout_still_renders_on_a_small_or_narrow_terminal(
 
 
 async def test_multiple_installations_ask_which_one_before_previewing(
-    make_app: MakeApp,
+    make_app: MakeApp, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    # Issue #1119 (#1122): first run with several installations asks "all, or choose which",
+    # and only the chosen ones reach the one combined connection preview.
     runtime = FakeRuntime(harnesses=(DESKTOP, CLI))
     app = make_app(first_run=True, runtime=runtime)
+    batches: list[tuple[tuple[str, ...], str]] = []
+
+    async def connect_batch(selected: tuple[HarnessOption, ...], *, route: str) -> bool:
+        batches.append((tuple(option.executable_path for option in selected), route))
+        return False
+
+    monkeypatch.setattr(app, "_connect_host_batch", connect_batch)
     async with app.run_test(size=WIDE) as pilot:
         await pilot.pause()
         await pilot.press("enter")  # connect
         await pilot.pause()
         view = app.open_view
         assert view is not None
-        assert view.view_name == "harness"
-        labels = [option.label for option in _options(view)]
-        assert labels == ["Codex Desktop 0.44", "Codex CLI 0.44", "Choose another executable"]
-        await pilot.press("2")  # Codex CLI
+        assert view.view_name == "agents"
+        assert [option.key for option in _options(view)] == ["all", "choose"]
+        assert _selected(view).key == "all"
+        await pilot.press("down", "enter")  # choose which
         await pilot.pause()
+        subset = app.open_view
+        assert isinstance(subset, MultiSelectionView)
+        assert subset.view_name == "agents-subset"
+        labels = [option.label for option in subset.options]
+        assert labels == ["Codex Desktop 0.44", "Codex CLI 0.44"]
+        await pilot.press("2")  # toggle Codex CLI
+        await pilot.pause()
+        assert subset.selected_keys == ("1",)
+        await pilot.press("enter")
+        await pilot.pause()
+        assert app.open_view is not None
+        assert app.open_view.view_name == "trust"
+        assert batches == []
         await pilot.press("enter")  # trust
         await pilot.pause()
         await answer_review(pilot)
-        view = app.open_view
-        assert view is not None
-        assert view.view_name == "integration"
-        technical = "\n".join(view.technical_details)
-        assert CLI.executable_path in technical
-        assert DESKTOP.executable_path not in technical
+        # Only the chosen installation reaches the connection, on the policy route (ADR-049).
+        assert batches == [((CLI.executable_path,), "policy")]
+        assert DESKTOP.executable_path not in str(batches)
+        assert runtime.applied == []
 
 
 async def test_exact_codex_home_is_entered_separately_and_bound_to_the_plan(
@@ -232,12 +258,22 @@ async def test_a_tilde_codex_home_is_expanded_before_validation(
 async def test_an_empty_manual_executable_path_is_rejected_in_place(
     make_app: MakeApp,
 ) -> None:
+    # Issue #1119 (#1122): first run now picks agents as a batch; the one-installation picker
+    # with "Choose another executable" is the /connect command's.
     runtime = FakeRuntime(harnesses=(DESKTOP, CLI))
-    app = make_app(first_run=True, runtime=runtime)
+    app = make_app(runtime=runtime)
     async with app.run_test(size=WIDE) as pilot:
         await pilot.pause()
-        await pilot.press("enter")  # connect
+        app.composer.focus_input()
+        app.composer.text = "/connect"
         await pilot.pause()
+        await pilot.press("enter")
+        await pilot.pause()
+        await pilot.pause()
+        assert app.open_view is not None
+        assert app.open_view.view_name == "harness"
+        labels = [option.label for option in _options(app.open_view)]
+        assert labels == ["Codex Desktop 0.44", "Codex CLI 0.44", "Choose another executable"]
         await pilot.press("3")  # Choose another executable
         await pilot.pause()
         assert app.open_view is not None
@@ -305,22 +341,31 @@ async def test_b_on_the_local_review_question_reasks_it_without_cancelling(
 
 
 async def test_b_on_project_trust_returns_to_the_installation_picker(
-    make_app: MakeApp,
+    make_app: MakeApp, tmp_path: Path
 ) -> None:
-    runtime = FakeRuntime(harnesses=(DESKTOP, CLI))
-    app = make_app(first_run=True, runtime=runtime)
+    # Issue #1119 (#1122): several installations are now chosen as one batch with no back step,
+    # and a single installation has no picker. Back on project trust still re-asks the step
+    # before it, the exact Codex home for that installation, without cancelling or applying.
+    codex_home = tmp_path / "selected-codex-home"
+    codex_home.mkdir()
+    runtime = FakeRuntime(harnesses=(CLI,))
+    app = make_app(first_run=True, runtime=runtime, prompt_codex_home=True)
     async with app.run_test(size=WIDE) as pilot:
         await pilot.pause()
         await pilot.press("enter")  # connect
         await pilot.pause()
-        await pilot.press("2")  # Codex CLI
+        assert app.open_view is not None
+        assert app.open_view.view_name == "codex-home-path"
+        app.open_view.query_one("#view-entry", Input).value = str(codex_home)
+        await pilot.press("enter")
         await pilot.pause()
         assert app.open_view is not None
         assert app.open_view.view_name == "trust"
         await pilot.press("b")
         await pilot.pause()
         assert app.open_view is not None
-        assert app.open_view.view_name == "harness"
+        assert app.open_view.view_name == "codex-home-path"
+        assert "Setup stopped" not in transcript(app)
         assert runtime.applied == []
 
 
@@ -359,6 +404,11 @@ async def test_b_typed_into_a_searchable_picker_filters_and_does_not_go_back(
         await pilot.pause()
         await pilot.press("enter")
         await pilot.pause()
+        await pilot.pause()
+        # Issue #1119 (#1123): the reviewer-connection question precedes the API provider picker.
+        assert app.open_view is not None
+        assert app.open_view.view_name == "reviewer-connection"
+        await pilot.press("down", "enter")  # Use an API key
         await pilot.pause()
         view = app.open_view
         assert view is not None
@@ -544,10 +594,31 @@ async def test_a_preview_failure_reports_the_reason_and_stops(make_app: MakeApp)
 
 
 async def test_keychain_unavailable_disables_system_storage_but_offers_a_passphrase(
-    make_app: MakeApp,
+    make_app: MakeApp, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    runtime = FakeRuntime(secure_storage=False)
+    # Issue #1119 (#1122) removed the storage question. Without a usable keychain, first run
+    # sets up storage with no question asked, keeps the key in an owner-only file and says what
+    # that does and does not protect against; a personal passphrase stays an explicit command
+    # (`finishup setup vault --passphrase`), never a silent default.
+    runtime = FakeRuntime(
+        secure_storage=False,
+        vault=VaultPosture(reachable=True, state="locked", vault_mode="uninitialized"),
+    )
+
+    async def owner_file_storage() -> tuple[bool, str | None, str]:
+        runtime.ceremonies.append("set_up_storage")
+        return True, None, "owner_file"
+
+    monkeypatch.setattr(runtime, "set_up_storage_automatically", owner_file_storage)
     app = make_app(first_run=True, runtime=runtime)
+    opened: list[str] = []
+    ask = app.ask
+
+    async def recording_ask(view: object) -> str | None:
+        opened.append(getattr(view, "view_name", ""))
+        return await ask(view)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(app, "ask", recording_ask)
     async with app.run_test(size=WIDE) as pilot:
         await pilot.pause()
         await pilot.press("enter")  # connect
@@ -557,17 +628,15 @@ async def test_keychain_unavailable_disables_system_storage_but_offers_a_passphr
         await answer_review(pilot)
         await pilot.press("enter")  # approve
         await pilot.pause()
-        view = app.open_view
-        assert view is not None
-        assert view.view_name == "storage"
-        options = _options(view)
-        assert options[0].disabled is True
-        # The disabled row states the reason, never a bare "not available" (issue #721).
-        assert options[0].disabled_reason == (
-            "no credential store is loaded; FinishUP needs a test"
-        )
-        assert options[1].disabled is False
-        assert _selected(view).key == "passphrase"
+        assert "integration" in opened  # the recorder saw the real views
+        assert "storage" not in opened
+        assert runtime.ceremonies.count("set_up_storage") == 1
+        assert "initialize_keyring" not in runtime.ceremonies
+        assert "initialize_vault" not in runtime.ceremonies
+        text = transcript(app)
+        assert "Secure storage is set up" in text
+        assert "The vault key is kept in a file only your account can read." in text
+        assert "Other accounts cannot open it; programs running as you can." in text
 
 
 async def test_system_storage_selection_initializes_keyring_not_passphrase(
@@ -586,12 +655,11 @@ async def test_system_storage_selection_initializes_keyring_not_passphrase(
         await answer_review(pilot)
         await pilot.press("enter")  # approve
         await pilot.pause()
-        await pilot.press("enter")  # system secure storage
-        await pilot.pause()
-        await pilot.press("enter")  # approve terminal handoff
-        await pilot.pause()
-        assert "initialize_keyring" in runtime.ceremonies
+        # Issue #1119 (#1122): no storage question; an uninitialized vault is created through
+        # the automatic path, which uses the system keychain here, and never a passphrase.
+        assert runtime.ceremonies.count("set_up_storage") == 1
         assert "initialize_vault" not in runtime.ceremonies
+        assert "The vault key is kept in your system keychain." in transcript(app)
 
 
 async def test_setup_finishes_with_an_honest_summary_and_records_the_marker(
@@ -702,8 +770,10 @@ async def test_abandoning_semantic_setup_offers_a_coherent_local_only_finish(
         await answer_review(pilot, "semantic")
         await pilot.press("enter")  # approve the policy-route registration
         await pilot.pause()
-        await pilot.press("escape")  # skip storage
-        await pilot.pause()
+        # Issue #1119: storage is set up with no question, so the next view is the reviewer
+        # connection question.
+        assert app.open_view is not None
+        assert app.open_view.view_name == "reviewer-connection"
         await pilot.press("escape")  # abandon the provider choice
         await pilot.pause()
         view = app.open_view
@@ -732,10 +802,11 @@ async def test_declining_the_local_only_finish_says_setup_is_unfinished(
         await answer_review(pilot, "semantic")
         await pilot.press("enter")  # approve
         await pilot.pause()
-        await pilot.press("escape")  # skip storage
-        await pilot.pause()
+        # Issue #1119: no storage question; escape abandons the reviewer connection question.
         await pilot.press("escape")  # abandon the provider choice
         await pilot.pause()
+        assert app.open_view is not None
+        assert app.open_view.view_name == "semantic-incomplete"
         await pilot.press("down", "enter")  # "No, leave setup unfinished"
         await pilot.pause()
         assert app.markers_written == []  # type: ignore[attr-defined]

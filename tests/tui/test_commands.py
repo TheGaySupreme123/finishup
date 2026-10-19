@@ -11,7 +11,6 @@ from finishup.tui.app import FinishUpTui
 from finishup.tui.models import (
     CheckMode,
     PrivacyPosture,
-    ProviderOption,
     ProviderPosture,
     TaskStatusPage,
 )
@@ -36,6 +35,22 @@ async def run_command(pilot: object, app: FinishUpTui, command: str) -> None:
     app.composer.text = command
     await pilot.pause()  # type: ignore[attr-defined]
     await pilot.press("enter")  # type: ignore[attr-defined]
+    await pilot.pause()  # type: ignore[attr-defined]
+    await pilot.pause()  # type: ignore[attr-defined]
+
+
+async def choose_reviewer_connection(pilot: object, app: FinishUpTui, number: str) -> None:
+    """Answer the reviewer question /provider opens with (#1119): 1 ChatGPT via Codex, 2 API key."""
+
+    view = app.open_view
+    assert view is not None
+    assert view.view_name == "reviewer-connection"
+    assert [option.key for option in view.options] == [  # type: ignore[attr-defined]
+        "codex_subscription",
+        "api_key",
+        "local_only",
+    ]
+    await pilot.press(number)  # type: ignore[attr-defined]
     await pilot.pause()  # type: ignore[attr-defined]
     await pilot.pause()  # type: ignore[attr-defined]
 
@@ -496,11 +511,12 @@ async def test_the_provider_picker_is_searchable_over_the_reviewed_presets(
     async with app.run_test(size=WIDE) as pilot:
         await pilot.pause()
         await run_command(pilot, app, "/provider")
+        await choose_reviewer_connection(pilot, app, "2")  # an API key
         view = app.open_view
         assert view is not None
         assert view.view_name == "provider"
         labels = [option.label for option in view.options]  # type: ignore[attr-defined]
-        assert "OpenAI" in labels
+        assert "OpenAI (recommended)" in labels
         assert "Codex subscription status" in labels
         assert "Disconnect dedicated Codex home" in labels
         assert "Roll back FinishUP Codex binding" in labels
@@ -517,6 +533,7 @@ async def test_the_provider_flow_saves_a_binding_then_asks_for_the_key_separatel
     async with app.run_test(size=WIDE) as pilot:
         await pilot.pause()
         await run_command(pilot, app, "/provider")
+        await choose_reviewer_connection(pilot, app, "2")  # an API key
         await pilot.press("enter")  # OpenAI
         await pilot.pause()
         await pilot.press("enter")  # accept the default model
@@ -533,6 +550,8 @@ async def test_the_provider_flow_saves_a_binding_then_asks_for_the_key_separatel
         assert app.open_view is not None
         assert app.open_view.view_name == "confidential"
         assert runtime.ceremonies == ["privacy:metadata_only+recommended"]
+        # Only the API path offers the content-free key probe (#1119).
+        assert runtime.credential_probes == [True]
         assert runtime.privacy.repository_grant_state == "granted"
         assert "Exact repository grant: granted for this repository." in transcript(app)
 
@@ -545,6 +564,7 @@ async def test_cancelling_the_credential_handoff_stores_no_key(
     async with app.run_test(size=WIDE) as pilot:
         await pilot.pause()
         await run_command(pilot, app, "/provider")
+        await choose_reviewer_connection(pilot, app, "2")  # an API key
         await pilot.press("enter")
         await pilot.pause()
         await pilot.press("enter")
@@ -578,6 +598,7 @@ async def test_a_stored_provider_is_never_reported_as_a_tested_one(
     async with app.run_test(size=WIDE) as pilot:
         await pilot.pause()
         await run_command(pilot, app, "/provider")
+        await choose_reviewer_connection(pilot, app, "2")  # an API key
         # provider, model, endpoint confirmation, then the credential handoff.
         for _ in range(4):
             await pilot.press("enter")
@@ -595,6 +616,7 @@ async def test_provider_setup_ends_with_an_honest_readiness_summary(
     async with app.run_test(size=WIDE) as pilot:
         await pilot.pause()
         await run_command(pilot, app, "/provider")
+        await choose_reviewer_connection(pilot, app, "2")  # an API key
         for _ in range(4):  # provider, model, confirm, credential handoff
             await pilot.press("enter")
             await pilot.pause()
@@ -616,6 +638,7 @@ async def test_provider_setup_never_requests_a_key_without_an_exact_repository_g
     async with app.run_test(size=WIDE) as pilot:
         await pilot.pause()
         await run_command(pilot, app, "/provider")
+        await choose_reviewer_connection(pilot, app, "2")  # an API key
         for _ in range(3):  # provider, model, endpoint confirmation
             await pilot.press("enter")
             await pilot.pause()
@@ -635,6 +658,7 @@ async def test_provider_exposes_codex_status_disconnect_and_rollback(
     async with app.run_test(size=WIDE) as pilot:
         await pilot.pause()
         await run_command(pilot, app, "/provider")
+        await choose_reviewer_connection(pilot, app, "2")  # an API key
         view = app.open_view
         assert view is not None
         view.filter("status")  # type: ignore[attr-defined]
@@ -650,6 +674,7 @@ async def test_provider_exposes_codex_status_disconnect_and_rollback(
         ) in text
 
         await run_command(pilot, app, "/provider")
+        await choose_reviewer_connection(pilot, app, "2")  # an API key
         view = app.open_view
         assert view is not None
         view.filter("disconnect")  # type: ignore[attr-defined]
@@ -663,6 +688,7 @@ async def test_provider_exposes_codex_status_disconnect_and_rollback(
         assert "Codex subscription disconnected" in transcript(app)
 
         await run_command(pilot, app, "/provider")
+        await choose_reviewer_connection(pilot, app, "2")  # an API key
         view = app.open_view
         assert view is not None
         view.filter("roll back")  # type: ignore[attr-defined]
@@ -682,6 +708,7 @@ async def test_provider_can_switch_the_codex_account(make_app: MakeApp) -> None:
     async with app.run_test(size=WIDE) as pilot:
         await pilot.pause()
         await run_command(pilot, app, "/provider")
+        await choose_reviewer_connection(pilot, app, "2")  # an API key
         view = app.open_view
         assert view is not None
         view.filter("switch")  # type: ignore[attr-defined]
@@ -715,6 +742,7 @@ async def test_provider_switch_preserves_existing_subscription_model_when_omitte
     async with app.run_test(size=WIDE) as pilot:
         await pilot.pause()
         await run_command(pilot, app, "/provider")
+        await choose_reviewer_connection(pilot, app, "2")  # an API key
         view = app.open_view
         assert view is not None
         view.filter("switch")  # type: ignore[attr-defined]
@@ -753,6 +781,7 @@ async def test_provider_offers_the_suggested_codex_model_and_marks_it_as_a_sugge
     async with app.run_test(size=WIDE) as pilot:
         await pilot.pause()
         await run_command(pilot, app, "/provider")
+        await choose_reviewer_connection(pilot, app, "2")  # an API key
         view = app.open_view
         assert view is not None
         view.filter("switch")  # type: ignore[attr-defined]
@@ -792,6 +821,7 @@ async def test_provider_promises_no_fallback_to_an_existing_binding_on_the_sugge
     async with app.run_test(size=WIDE) as pilot:
         await pilot.pause()
         await run_command(pilot, app, "/provider")
+        await choose_reviewer_connection(pilot, app, "2")  # an API key
         view = app.open_view
         assert view is not None
         view.filter("switch")  # type: ignore[attr-defined]
@@ -818,28 +848,13 @@ async def test_provider_discloses_and_reports_a_reused_codex_login(make_app: Mak
 
     runtime = FakeRuntime()
     runtime.subscription_login_reused = True
-    base_options = runtime.provider_options()
-    codex_option = ProviderOption(
-        choice="codex_subscription",
-        label="Codex with ChatGPT subscription",
-        provider_id="openai-codex",
-        host="openai.com",
-        base_path_prefix=" through Codex-managed login",
-        default_model="gpt-5.6-luna",
-        api_style="Codex app-server v2 (stdio)",
-        endpoint_profile_id="codex-chatgpt-subscription",
-        endpoint_profile_version="1.0.0",
-    )
-    runtime.provider_options = lambda: (*base_options, codex_option)  # type: ignore[method-assign]
     app = make_app(runtime=runtime)
     async with app.run_test(size=WIDE) as pilot:
         await pilot.pause()
         await run_command(pilot, app, "/provider")
-        view = app.open_view
-        assert view is not None
-        view.filter("Codex with ChatGPT subscription")  # type: ignore[attr-defined]
-        await pilot.press("enter")
-        await pilot.pause()
+        # #1119: the ChatGPT-subscription setup is the reviewer question's first answer, no
+        # longer a row of the API provider picker.
+        await choose_reviewer_connection(pilot, app, "1")
         for _ in range(5):  # three entries, final and routine effort
             await pilot.press("enter")
             await pilot.pause()

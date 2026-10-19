@@ -206,6 +206,15 @@ async def test_digits_typed_into_a_search_field_filter_instead_of_selecting(
     async with app.run_test(size=WIDE) as pilot:
         await pilot.pause()
         await run_command(pilot, app, "/provider")
+        # #1119: /provider opens on the reviewer question; a digit selects there (no field owns
+        # the keyboard), and "2" (an API key) opens the searchable provider picker.
+        question = app.open_view
+        assert question is not None
+        assert question.view_name == "reviewer-connection"
+        assert question.accepts_printable_shortcuts is True
+        await pilot.press("2")
+        await pilot.pause()
+        await pilot.pause()
         view = app.open_view
         assert view is not None
         assert view.view_name == "provider"
