@@ -3217,6 +3217,20 @@ async def ensure_vault_ready() -> VaultReadiness:
     )
 
 
+async def _ensure_setup_vault() -> int:
+    """Create or unlock the vault before an interactive setup with no review step completes.
+
+    An explicit ``--route-profile strict`` skips the review question and both steps that set up
+    storage; local checks still need a ready vault, so the setup marker waits for one.
+    """
+
+    vault = await ensure_vault_ready()
+    if not vault.ready:
+        typer.echo(f"vault_setup_incomplete: {vault.reason}", err=True)
+        return 20
+    return 0
+
+
 async def _run_local_only_privacy_setup(project: Path | None) -> int:
     """Record the owner's "local only; agents may not opt in" answer (ADR-049).
 
@@ -3646,6 +3660,8 @@ async def _run_setup_batch(
                 else review_choice_conversation_setting(review),
                 project=connected_project,
             )
+        else:
+            result = await _ensure_setup_vault()
         if result == 0:
             _write_setup_marker("complete")
     return result
@@ -3777,6 +3793,8 @@ async def run_setup_wizard(
                     ),
                     project=connected_project,
                 )
+            else:
+                result = await _ensure_setup_vault()
             if result == 0:
                 _write_setup_marker("complete")
         return result
@@ -3968,7 +3986,9 @@ async def run_setup_wizard(
                 "profile": "unknown",
                 "grant_state": None,
                 "migration_state": None,
-                "reason": f"vault_{vault.reason}",
+                "reason": str(vault.reason)
+                if str(vault.reason).startswith("vault_")
+                else f"vault_{vault.reason}",
             }
         else:
             try:
