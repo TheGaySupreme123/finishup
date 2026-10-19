@@ -330,7 +330,7 @@ def _read_descriptor(descriptor: int) -> dict[str, object] | None:
         return None
     try:
         parsed: object = json.loads(raw)
-    except UnicodeError, ValueError:
+    except (UnicodeError, ValueError):
         return None
     return _valid_document(parsed)
 
@@ -511,7 +511,7 @@ def record_hook_pass_timing(
                 os.close(lock_descriptor)
         finally:
             _thread_lock.release()
-    except OSError, PathSafetyError, ValueError:
+    except (OSError, PathSafetyError, ValueError):
         return False
     return True
 
@@ -766,7 +766,7 @@ def hook_pass_timing_summary(
             dropped = _dropped_sample_count(directory)
         else:
             status = "absent"
-    except OSError, PathSafetyError:
+    except (OSError, PathSafetyError):
         status, document = "unreadable", None
     hour = _now_ms(_now) // _HOUR_MS
     entries = [] if document is None else cast(list[Mapping[str, object]], document["entries"])

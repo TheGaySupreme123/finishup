@@ -94,7 +94,7 @@ def installed_launcher(name: str = LAUNCHER_NAME) -> tuple[str, str] | None:
         if base64.urlsafe_b64encode(digest.digest()).rstrip(b"=").decode() != expected.value:
             return None
         return str(candidate), "sha256:" + digest.hexdigest()
-    except OSError, ValueError, PackageNotFoundError, InstanceIdentityError, PathSafetyError:
+    except (OSError, ValueError, PackageNotFoundError, InstanceIdentityError, PathSafetyError):
         return None
 
 

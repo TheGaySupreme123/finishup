@@ -110,7 +110,7 @@ def _upgrade_extras(path: Path) -> frozenset[str] | None:
         return None
     try:
         members: object = ast.literal_eval(value.args[0])
-    except ValueError, TypeError, MemoryError, RecursionError:
+    except (ValueError, TypeError, MemoryError, RecursionError):
         return None
     if not isinstance(members, (set, tuple, list)):
         return None
@@ -152,7 +152,7 @@ def check_sources(root: Path = _ROOT) -> list[str]:
         errors.append("transitional_extras_drift")
     try:
         upgrade_extras = _upgrade_extras(root / _EXTRAS_SOURCE)
-    except OSError, SyntaxError, ValueError:
+    except (OSError, SyntaxError, ValueError):
         upgrade_extras = None
     if upgrade_extras is None:
         errors.append("upgrade_extras_unreadable")
@@ -284,7 +284,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         version = cast(str, _project(_load_toml(_ROOT / "pyproject.toml"))["version"])
         try:
             errors = check_dist(cast(Path, args.dist), version)
-        except OSError, zipfile.BadZipFile, tarfile.TarError:
+        except (OSError, zipfile.BadZipFile, tarfile.TarError):
             errors = ["transitional_dist_unreadable"]
     if errors:
         for error in errors:

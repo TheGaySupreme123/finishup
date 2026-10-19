@@ -271,7 +271,7 @@ def normalize_local_response(
         if exchange is not None:
             return SemanticResultReply.parse(raw, succeeded)
         judgment = _judgment_from_json(strict_json_parse(raw))
-    except ValueError, TypeError, LookupError:
+    except (ValueError, TypeError, LookupError):
         return SemanticResultInvalid(
             _provenance(
                 profile,

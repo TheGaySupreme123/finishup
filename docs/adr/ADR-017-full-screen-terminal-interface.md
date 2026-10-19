@@ -235,3 +235,18 @@ approvals for one decision do not make it twice as considered; they make the fir
 the user learns to click through, and the formality lives in the surface that cannot authenticate
 anyone. The exact change and the authorization belong in the same place, and that place is the
 trusted terminal.
+
+## Amendment — batch first-run connections (2026-10-19, issue #1119)
+
+When several agent installations are detected, first run defaults to “All N agents
+(recommended)”; “Choose which” opens a nonempty multi-select. Space or a numbered shortcut toggles
+a member, Enter continues, and Escape cancels without approval. Codex home confirmation and
+project trust remain before the single review-mode question.
+
+One combined approval screen shows every selected host's preview, with exact digests and Codex
+activation/policy details available as technical details. It uses the same batch preflight and
+sequential apply as the CLI (ADR-012's 2026-10-19 amendment), retaining each host's authentication
+on the suspended foreground terminal. A failed or stale member stops later work; the transcript
+reports each outcome and the fresh preview continuation for the remaining agents. Setup storage
+and review configuration run once after the connections complete. The existing single-agent
+flow, post-setup inspection/repair commands and all privacy/secret-entry ceremonies remain.

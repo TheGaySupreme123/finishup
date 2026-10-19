@@ -3279,7 +3279,9 @@ def test_schema_catalog_reports_complete_registry() -> None:
     assert SCHEMA_NAMESPACE == "https://schemas.yoetz.dev/0.1/"
     assert SCHEMA_MANIFEST_SCHEMA == "yoetz.schema-manifest/1.0.0"
     assert SCHEMA_MANIFEST_VERSION == "1.0.0"
-    assert SCHEMA_MEMBER_COUNT == 235  # #1118: reviewer-reply 1.0.0, check-result/-recorded 1.6.0
+    # #1118: reviewer-reply 1.0.0, check-result/-recorded 1.6.0; #1119: host-connection batch
+    # report and ai-status 1.0.0
+    assert SCHEMA_MEMBER_COUNT == 237
     assert len(catalog.documents) == SCHEMA_MEMBER_COUNT
 
     paths = tuple(document.relative_path for document in catalog.documents)
@@ -3364,8 +3366,9 @@ def test_schema_catalog_record_shape_and_indexes_are_exact() -> None:
     manifest_bytes = root.joinpath("manifest.json").read_bytes()
     assert catalog.manifest_digest == f"sha256:{hashlib.sha256(manifest_bytes).hexdigest()}"
     assert (
-        sum(_count_refs(document.json_schema) for document in catalog.documents) == 8_355
-    )  # #1118 +225 (check-result 1.6.0 and check-recorded 1.6.0, which carry the reviewer record),
+        sum(_count_refs(document.json_schema) for document in catalog.documents) == 8_368
+    )  # #1119 +13: additive host-connection batch report references,
+    # #1118 +225 (check-result 1.6.0 and check-recorded 1.6.0, which carry the reviewer record),
     # #1118 unit 2 +27 (reviewer-reply 1.0.0), #1084 +55 (publish server_filled; status results_filter, brief_success, server_filled),
     # W6 #1107 +6 (status check_outcome and its overall_next/missing item defs),
     # +1 (review of PR #1088: reduced success server_filled),
@@ -3385,8 +3388,9 @@ def test_schema_name_derivation_and_version_maps_are_exact() -> None:
     event_versions = event_schema_versions(catalog)
     assert request_versions is catalog.request_result_versions
     assert event_versions is catalog.event_schema_versions
-    assert len(request_versions) == 55  # #1118 unit 2: reviewer-reply
+    assert len(request_versions) == 57  # #1118 unit 2: reviewer-reply; #1119: batch, ai-status
     assert len(event_versions) == 29
+    assert request_versions["ai-status"] == "1.0.0"
     assert tuple(request_versions) == tuple(sorted(request_versions, key=str.encode))
     assert tuple(event_versions) == tuple(sorted(event_versions, key=str.encode))
     assert set(request_versions.values()) == {

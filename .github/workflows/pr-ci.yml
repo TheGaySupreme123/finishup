@@ -339,6 +339,57 @@ jobs:
             -m "not fault and not soak and not live" -q --timeout=120
 
   # ---------------------------------------------------------------------------------------------
+  # older-python — the same bounded unit/conformance slice on every supported minor below the
+  # release cell (issue #1119). The release cell stays CPython 3.14.6 in unit-and-conformance.
+  # ---------------------------------------------------------------------------------------------
+  older-python:
+    name: older-python (${{ matrix.python }})
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.12", "3.13"]
+    permissions:
+      contents: read
+    env:
+      PYTHONHASHSEED: "0"
+    steps:
+      - name: Checkout (no persisted credentials)
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+          fetch-depth: 1
+          submodules: false
+          lfs: false
+
+      - name: Install uv (locked version)
+        uses: astral-sh/setup-uv@11f9893b081a58869d3b5fccaea48c9e9e46f990 # v8.3.2
+        with:
+          version: "0.11.29"
+          python-version: ${{ matrix.python }}
+          enable-cache: true
+          cache-dependency-glob: "uv.lock"
+
+      - name: uv sync --locked
+        run: uv sync --locked --all-extras --group dev
+
+      - name: Isolate HOME/XDG/FinishUP app data inside job temp directory
+        run: |
+          iso="${RUNNER_TEMP}/finishup-home"
+          mkdir -p "$iso"
+          echo "HOME=$iso" >> "$GITHUB_ENV"
+          echo "XDG_DATA_HOME=$iso/.local/share" >> "$GITHUB_ENV"
+          echo "XDG_CONFIG_HOME=$iso/.config" >> "$GITHUB_ENV"
+          echo "XDG_CACHE_HOME=$iso/.cache" >> "$GITHUB_ENV"
+          echo "YZCI_DENY_NETWORK=1" >> "$GITHUB_ENV"
+
+      - name: Unit, property, and conformance (bounded, excludes fault/soak/live)
+        run: |
+          uv run --locked pytest tests/unit tests/property tests/conformance \
+            -m "not fault and not soak and not live" -q --timeout=120
+
+  # ---------------------------------------------------------------------------------------------
   # sqlite-integration — bounded SQLite durability/migration/recovery integration cases.
   # ---------------------------------------------------------------------------------------------
   sqlite-integration:
@@ -632,6 +683,7 @@ jobs:
       - contracts-and-resources
       - format-lint-type
       - unit-and-conformance
+      - older-python
       - sqlite-integration
       - cli-mcp-subprocess
       - package-and-boundary
@@ -649,6 +701,7 @@ jobs:
             [contracts-and-resources]="${{ needs.contracts-and-resources.result }}"
             [format-lint-type]="${{ needs.format-lint-type.result }}"
             [unit-and-conformance]="${{ needs.unit-and-conformance.result }}"
+            [older-python]="${{ needs.older-python.result }}"
             [sqlite-integration]="${{ needs.sqlite-integration.result }}"
             [cli-mcp-subprocess]="${{ needs.cli-mcp-subprocess.result }}"
             [package-and-boundary]="${{ needs.package-and-boundary.result }}"

@@ -21,6 +21,19 @@ change; the product words are their human names.
 "Deterministic" elsewhere in this registry keeps its ordinary meaning — reproducible ordering,
 replay, digests, and equality — and is not a check kind.
 
+## Optional AI-review owner commands (issue #1119)
+
+| Command / shared name | Contract |
+| --- | --- |
+| `finishup ai setup` | `cli.ai.ai_app`; `cli.ai_setup.REVIEWER_QUESTION` and `REVIEWER_CHOICES` provide the identical three choices to the wizard and TUI. Calls `run_provider_setup` with agent opt-in, or `ai_powered` with `--every-task`; provider/model → mandatory privacy ceremony → hidden key entry. Not now records `local_only`. Every `ai` subcommand but `model` refuses extra arguments with exit 2 and a fixed message that never echoes them (a pasted key). `ai model` restores the previous model when the new model's key entry does not finish. `--set` remains supported. |
+| `finishup ai key` | Presence selects set or rotate; unknown refuses. Successful key entry reloads the service through existing composition so readiness uses the stored key. `cli.app.run_configured_provider_credential(action)` wraps the existing confidential command. No secret argv, environment, file, stdin option, JSON or MCP input is added. |
+| `finishup ai forget-key` / `finishup provider credential remove` | Configured API binding (fallback when the primary is Codex), provider/model preview, default-No confirmation, then trusted foreground `provider_credential_remove` reauthentication. No API secret input or chat consent; binding/privacy unchanged. Reload readiness and report presence only; unknown deletion never claims success. `/provider` uses `hand_over_terminal` for this same flow. |
+| `finishup ai model [MODEL_ID]` | Current-marked reviewed catalog plus a custom ID. Config writes use the locked preimage check; provider keys remain exact-model-bound, with explicit reentry through `ai key`. The old binding stays stored. Codex uses its existing setup/capability ceremony. No privacy approval is inferred. |
+| `finishup ai status [--json]` | Read-only, no provider request or service startup. `protocol.ai_status.AIStatus`; `ai-status` 1.0.0, schema tag `finishup.ai-status/1`. Fields: `review_mode` (four conversation-review tokens or null), `reviewer` and `model` (string or null), `key_stored` and `privacy_permits_sending` (boolean or null for unknown). `key_stored` is presence for the configured API binding; false for Codex-owned OAuth. Privacy requires an observed repository grant, network permission and an enabled inference channel authorizing the exact provider/endpoint/model, and is false for local-only review. Human output is one line. Neither output proves a review ran. |
+| `finishup ai off` / `finishup ai on` | Existing repository conversation-review change path: `local_only` / `local_agent_opt_in`; widening retains separate reauthentication. Off preserves the key; `ai forget-key` removes it (row above). Revoke at the provider to invalidate a key. |
+| TUI `/provider` | Same reviewer question; API providers have friendly labels, a default-first model picker and custom ID entry. Only the API path offers the existing optional content-free credential probe before the trusted privacy ceremony. Secrets remain outside the UI. |
+
+
 ## Product name and legacy Yoetz identifiers (ADR-048)
 
 The product was named Yoetz through 0.2.5. The shared spellings, current and legacy, live in
@@ -3980,6 +3993,19 @@ storage or handle minting. `ProviderAttemptAuthBinding` freezes those same field
 final request-body SHA-256 digest, service
 generation, and deadline. Minting a credential handle requires every shared field to match the
 stored credential binding; a scoped credential cannot authorize another model, scope, or purpose.
+`VaultService.remove_provider_credential(binding, proof, now_monotonic, *, target_digest=None)`
+consumes `provider_credential_remove` authority bound to the exact target, service/vault generations,
+and expiry. It requires a ready vault and an existing record, deletes under `expected_generation`,
+and invalidates matching unused attempt handles even on ambiguous deletion. Missing records refuse
+as `record_missing`; ambiguous deletion returns no removed result. No provider binding or privacy
+record is written. `ProviderCredentialRemovePreview(target)` binds the human preview;
+`ProviderCredentialRemoveResult(status="removed", kind="provider_credential_remove")` is the
+separate successful result, with no stored generation. The remove kind permits only
+`provider_reauthentication` on YZS1 and commits immediately after authorization; it never accepts a
+new provider key. `record_missing` and `vault_locked` are closed YZH1 server/client refusal codes
+passed through without input text. The trusted helper remains foreground-only, and the existing
+OS-presence scope is unchanged. Removal is absent from elevated bootstrap and agent-chat consent.
+
 `VaultService.has_provider_credential(binding)` reads only the exact structural record-generation
 index and returns presence; it neither decrypts the record nor creates a credential handle.
 `ProviderCredentialHandle.authorize_attempt(binding, inject_and_start)` is single-use: after exact
@@ -4009,7 +4035,7 @@ monotonic sample with the same floor rule.
 
 `HumanCeremonyKind` is exactly `vault_initialize`, `vault_passphrase_rotate`, `vault_unlock`, `keyring_retry`,
 `portable_recovery`, `installation_recovery`, `provider_credential_set`, `provider_credential_rotate`,
-`privacy_policy_decision`, `privacy_disclosure_decision`, `idle_relock_policy_change`, and
+`provider_credential_remove`, `privacy_policy_decision`, `privacy_disclosure_decision`, `idle_relock_policy_change`, and
 `owner_receipt_view`. `owner_receipt_view` opens directly at `AuthorizationRequiredPhase`
 (`privacy_reauthentication` purpose); on success its effect consumes the proof for the target
 digest and returns `OwnerReceiptViewResult(status="authorized", target_digest, grant_seconds=60)`.
@@ -4188,6 +4214,14 @@ as a typed orphan that `finishup service auto-unlock status` distinguishes
 resolves by proof, so retry never fails on `auto_unlock_entry_exists` from an abandoned
 same-attempt entry.
 
+`finishup service auto-unlock status` (`yoetz.auto-unlock-status/2`) also carries
+`custody: platform_store | owner_file | null` (issue #1119, ADR-008 amendment 2026-10-19); `null` when no entry is stored, since custody names where a stored entry lives. On a passphrase vault with no stored copy (the `setup vault --passphrase` choice) the `absent` state carries `next_command: null` and a `note` naming the optional `finishup service auto-unlock enable`, instead of suggesting `repair`. `owner_file`
+means the scoped secret lives in FinishUP's owner-only files under `<bundle>/auto-unlock/`, used
+only where no platform credential store is usable. `finishup setup vault --passphrase` creates a
+new vault from an owner-typed passphrase and keeps no copy; it refuses an initialized vault
+with `vault_already_initialized`. A local-only first run creates the vault with no question
+before its privacy step and stops with `vault_setup_incomplete: <reason>` when it cannot.
+
 A `repository_privacy_grant` result is commit-aware (issue #519). The service records the
 durable policy transition before it sends the correlated ceremony result, so when only the
 trailing close confirmation is missing, wrong, or lost with the connection, the confidential
@@ -4236,6 +4270,28 @@ replaces only the authenticated envelope. Manual rotation stages the user-select
 agent-authorized rotation stages a locally generated replacement. Startup reconciliation tries
 the active and staged scoped credential entries and retains only the candidate that authenticates
 the committed envelope.
+
+### Several-agent setup batches (issue #1119)
+
+`cli.host_batch` composes the existing host connection plans for CLI and full-screen first run.
+`HostConnectionBatchReport` is the additive `yoetz.host-connection-batch-report/1` contract
+(`integrations/host-connection-batch-1.0.0.schema.json`); it carries individual
+`HostConnectionBatchMember` outcomes (`preview|completed|unchanged|status|incomplete|not_attempted`)
+and preserves `connection_observed=false`. The released single-host contract is unchanged.
+`batch_digest` hashes canonical JSON for the sorted list of `{host, installation_path,
+request_id, preview_digest}` objects, ordered by those four fields. `prepare_batch` and
+`apply_batch` retain each exact per-host digest; every member is refreshed before the first write
+and per-host apply still revalidates under its configuration lock. There is no batch atomicity
+claim: a failed later host leaves earlier results intact and the remainder requires a fresh
+preview. `batch_command` pins repeated host/path/config-root selections plus project and explicit
+route; the hidden `--batch` flag preserves combined acceptance when only one target remains.
+`select_batch_installation` retains Codex's discovered, PATH-visible executable name during
+explicit replay (`select_installation(preserve_visible_name=True)`), including a symlinked
+launcher. Ordinary single-host selection keeps its released resolution behavior.
+The batch request identity is shared across independent per-host plans. `--host all` expands
+executable-backed discovery; it cannot discover configurations whose executable has been removed.
+`setup status --next` retains its single-target readiness contract. No new MCP or hook operation
+or receipt field is introduced.
 
 ### Privacy policy, disclosure, and outbound gateway
 

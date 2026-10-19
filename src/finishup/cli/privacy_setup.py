@@ -434,7 +434,7 @@ def _substantive_identity(policy: PrivacyPolicy) -> str:
 def _interactive_terminal() -> bool:
     try:
         return sys.stdin.isatty() and sys.stdout.isatty()
-    except OSError, ValueError:
+    except (OSError, ValueError):
         return False
 
 
@@ -444,7 +444,7 @@ def _output_is_controlling_tty() -> bool:
     try:
         fd = sys.stdout.fileno()
         return os.isatty(fd) and os.tcgetpgrp(fd) == os.getpgrp()
-    except AttributeError, OSError, ValueError:
+    except (AttributeError, OSError, ValueError):
         return False
 
 
@@ -1197,7 +1197,7 @@ def _reconcile_host_admission(policy: PrivacyPolicy, workspace_locator: Path) ->
                 + "; run 'finishup integrate <host> admission preview --action revoke "
                 "--project-root .' and review the host file."
             )
-    except HostAdmissionError, OSError:
+    except (HostAdmissionError, OSError):
         return
 
 
@@ -1397,7 +1397,7 @@ def _setup_snapshot_from_wire(raw: object) -> PrivacySetupSnapshot:
                 migration_state,
             ),
         )
-    except KeyError, TypeError, ValueError:
+    except (KeyError, TypeError, ValueError):
         raise ValueError("privacy_setup_snapshot_invalid") from None
 
 

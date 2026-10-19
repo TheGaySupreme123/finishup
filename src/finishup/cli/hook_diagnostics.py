@@ -564,7 +564,7 @@ def record_drain_failure(
             return False
         if disposition not in {"retry", "quarantine"}:
             return False
-    except ValueError, TypeError:
+    except (ValueError, TypeError):
         return False
     return _append_row(
         {
@@ -646,7 +646,7 @@ def _append_row(row: dict[str, object], *, _state: Path | None) -> bool:
                     os.close(descriptor)
             finally:
                 os.close(lock_descriptor)
-    except OSError, PathSafetyError, ValueError:
+    except (OSError, PathSafetyError, ValueError):
         return False
     return True
 
@@ -844,7 +844,7 @@ def _read_rows(
             for line in raw.splitlines():
                 try:
                     parsed: object = json.loads(line)
-                except UnicodeError, json.JSONDecodeError:
+                except (UnicodeError, json.JSONDecodeError):
                     continue
                 if type(parsed) is not dict:
                     continue
@@ -924,7 +924,7 @@ def _read_rows(
                         if type(row["ts"]) is not str or _parse_timestamp(row["ts"]) is None:
                             continue
                         attempts.append(JsonObject(cast(dict[str, JsonValue], row)))
-                    except ValueError, TypeError:
+                    except (ValueError, TypeError):
                         continue
                     continue
                 if set(row) in (
@@ -968,7 +968,7 @@ def _read_rows(
                         "ts": cast(str, row["ts"]),
                     }
                 )
-    except OSError, PathSafetyError:
+    except (OSError, PathSafetyError):
         return [], [], [], []
     return rows, timings, attempts, locks
 

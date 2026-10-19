@@ -236,9 +236,18 @@ async def test_store_provider_credential_supplies_the_scoped_reauthentication_se
         lambda: bytearray(b"scoped-reauth"),
     )
 
+    reloads: list[bool] = []
+
+    async def reload(*, report_startup_failure: bool = True) -> dict[str, object]:
+        reloads.append(report_startup_failure)
+        return {"reachable": True, "state": "ready"}
+
+    monkeypatch.setattr("finishup.cli.setup.restart_service_for_semantic_composition", reload)
+
     status = await FinishUpRuntime(cwd=tmp_path).store_provider_credential()
 
     assert status == "stored"
+    assert reloads == [False]
     assert observed_workspaces == [tmp_path]
     assert len(observed) == 1
     credential, reauthentication = observed[0]
@@ -305,6 +314,16 @@ def test_host_entries_report_platform_sandbox_and_storage_without_mutating(
     from finishup.tui import runtime as runtime_module
     from finishup.tui.models import LayerState
 
+    # The older-python CI lane runs this too; certify whichever interpreter is running so only
+    # the patched OS/CPU decides the platform line (issue #1119).
+    monkeypatch.setattr(
+        version_module,
+        "_CERTIFIED_PYTHON",
+        (
+            version_module.platform.python_implementation(),
+            tuple(version_module.sys.version_info[:3]),
+        ),
+    )
     monkeypatch.setattr(version_module.platform, "system", lambda: "Linux")
     monkeypatch.setattr(version_module.platform, "machine", lambda: "aarch64")
     monkeypatch.setattr(

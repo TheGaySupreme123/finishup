@@ -662,7 +662,7 @@ def _read_lock_stamp(descriptor: int) -> tuple[str, str, int | None]:
     try:
         raw = os.pread(descriptor, _STORE_LOCK_STAMP_MAX_BYTES, 0)
         parsed = json.loads(raw.decode("ascii")) if raw else None
-    except OSError, UnicodeDecodeError, ValueError:
+    except (OSError, UnicodeDecodeError, ValueError):
         return "unknown", "unknown", None
     if type(parsed) is not dict:
         return "unknown", "unknown", None
@@ -1513,7 +1513,7 @@ def _pending_rollout_items_from_json(raw: object) -> dict[str, PendingRolloutIte
             envelope = observation_envelope_from_json(
                 JsonObject(cast(Mapping[str, JsonValue], raw_envelope))
             )
-        except ProtocolValueError, TypeError, ValueError:
+        except (ProtocolValueError, TypeError, ValueError):
             continue
         if envelope.source_identity != identity or envelope.session_commitment != session:
             continue
@@ -1624,7 +1624,7 @@ def _code_mode_cells_from_json(raw: object) -> dict[str, _CodeModeCell]:
                 held_output = observation_envelope_from_json(
                     JsonObject(cast(Mapping[str, JsonValue], raw_held))
                 )
-            except ProtocolValueError, TypeError, ValueError:
+            except (ProtocolValueError, TypeError, ValueError):
                 held_output = None
         cells[key] = _CodeModeCell(
             start,
@@ -1756,7 +1756,7 @@ def _open_pre_deadline(receipt_time: Timestamp | None) -> Timestamp | None:
         return timestamp_from_datetime(
             receipt_time.as_datetime() + timedelta(milliseconds=_OPEN_PRE_TTL_MS)
         )
-    except OverflowError, ProtocolValueError, ValueError:
+    except (OverflowError, ProtocolValueError, ValueError):
         return None
 
 
@@ -1786,7 +1786,7 @@ def _safe_timestamp(value: object) -> Timestamp | None:
         return None
     try:
         return Timestamp(value)
-    except ProtocolValueError, TypeError, ValueError:
+    except (ProtocolValueError, TypeError, ValueError):
         return None
 
 
@@ -1811,7 +1811,7 @@ def _open_pre_from_json(
                 receipt_time=receipt_time,
                 deadline=_open_pre_deadline(receipt_time),
             )
-        except ProtocolValueError, TypeError, ValueError:
+        except (ProtocolValueError, TypeError, ValueError):
             return None
     if not isinstance(raw, Mapping):
         return None
@@ -1833,7 +1833,7 @@ def _open_pre_from_json(
     elif type(source_raw) is str:
         try:
             source = ObservationSource(source_raw)
-        except ValueError, TypeError:
+        except (ValueError, TypeError):
             return None
     else:
         return None
@@ -1860,7 +1860,7 @@ def _open_pre_from_json(
                 else None
             ),
         )
-    except ProtocolValueError, TypeError, ValueError:
+    except (ProtocolValueError, TypeError, ValueError):
         return None
 
 
@@ -2730,7 +2730,7 @@ def _loss_details_from_json(raw: object, lanes: set[str]) -> tuple[JsonObject, .
                 break
             try:
                 validate_sha256_digest(pairing)
-            except ProtocolValueError, TypeError, ValueError:
+            except (ProtocolValueError, TypeError, ValueError):
                 break
             valid_pairings.append(pairing)
         else:
@@ -2765,7 +2765,7 @@ def _load_session_advice(raw: object) -> dict[str, AdviceSnapshot]:
             result[key] = advice_snapshot_from_json(
                 JsonObject(cast(Mapping[str, JsonValue], value))
             )
-        except ProtocolValueError, TypeError, ValueError:
+        except (ProtocolValueError, TypeError, ValueError):
             continue
     return result
 
@@ -2832,7 +2832,7 @@ def _load_pressure_snapshots(raw: object) -> dict[str, PressureSnapshot]:
                 raw_low,
                 raw_identity,
             )
-        except ProtocolValueError, TypeError, ValueError:
+        except (ProtocolValueError, TypeError, ValueError):
             continue
     return loaded
 
@@ -2856,13 +2856,13 @@ def _capture_handoff_retirement_valid(entry: Mapping[str, JsonValue]) -> bool:
         if type(retired_at) is not str:
             return False
         Timestamp(retired_at)
-    except ProtocolValueError, TypeError, ValueError:
+    except (ProtocolValueError, TypeError, ValueError):
         return False
     if ticket_id is not None:
         try:
             if type(ticket_id) is not str or validate_sha256_digest(ticket_id) != ticket_id:
                 return False
-        except ProtocolValueError, TypeError, ValueError:
+        except (ProtocolValueError, TypeError, ValueError):
             return False
     return (
         entry.get("stage") in _CAPTURE_HANDOFF_STAGES
@@ -2894,7 +2894,7 @@ def _capture_handoff_retirement_ids_from_json(raw: object) -> tuple[str, ...]:
             continue
         try:
             ticket_id = validate_sha256_digest(item)
-        except ProtocolValueError, TypeError, ValueError:
+        except (ProtocolValueError, TypeError, ValueError):
             continue
         if ticket_id not in identities:
             identities.append(ticket_id)
@@ -2917,7 +2917,7 @@ def _capture_handoff_retirement_pending_from_json(raw: object) -> dict[str, str]
             continue
         try:
             ticket_id = validate_sha256_digest(raw_ticket_id)
-        except ProtocolValueError, TypeError, ValueError:
+        except (ProtocolValueError, TypeError, ValueError):
             continue
         if ticket_id != raw_ticket_id or _CAPTURE_BACKLOG_ROUTE_RE.fullmatch(raw_task_id) is None:
             continue
@@ -2964,7 +2964,7 @@ def _load_frontier_motion_notices(raw: object) -> dict[str, FrontierMotionNotice
                 cast(str, notice.get("task_id")),
                 cast(int, notice.get("recency_ordinal", 0)),
             )
-        except ProtocolValueError, TypeError, ValueError:
+        except (ProtocolValueError, TypeError, ValueError):
             continue
     return result
 
@@ -2987,7 +2987,7 @@ def _load_frontier_motion_delivered(raw: object) -> dict[str, _FrontierMotionDel
                 cast(str, entry.get("head_digest")),
                 cast(int, entry.get("recency_ordinal")),
             )
-        except ProtocolValueError, TypeError, ValueError:
+        except (ProtocolValueError, TypeError, ValueError):
             continue
     return result
 
@@ -3281,7 +3281,7 @@ def _ensure_content_capture_epoch(state: _WorkspaceState) -> str:
     if type(epoch) is str:
         try:
             return validate_sha256_digest(epoch)
-        except ProtocolValueError, TypeError, ValueError:
+        except (ProtocolValueError, TypeError, ValueError):
             pass
     epoch = _new_content_capture_epoch()
     state.content_capture_epoch = epoch
@@ -3392,7 +3392,7 @@ class _EnvelopeCodec:
             return None
         try:
             return json.dumps(raw, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
-        except TypeError, ValueError:
+        except (TypeError, ValueError):
             return None
 
     def validated_levels(self, key: str) -> int | None:
@@ -3703,7 +3703,7 @@ def _optional_routine_selection_envelope(envelope: ObservationEnvelope) -> bool:
         return False
     try:
         return observation_selection_route(envelope.structural_payload) is not None
-    except ProtocolValueError, TypeError, ValueError:
+    except (ProtocolValueError, TypeError, ValueError):
         return False
 
 
@@ -4294,7 +4294,7 @@ class LocalObservationStore:
             return False
         try:
             validate_sha256_digest(generation)
-        except ProtocolValueError, TypeError, ValueError:
+        except (ProtocolValueError, TypeError, ValueError):
             return False
         with self._reading():
             state = self._load(workspace_commitment)
@@ -4577,7 +4577,7 @@ class LocalObservationStore:
             workspace_commitment = validate_commitment(workspace_commitment)
             session_commitment = validate_commitment(session_commitment)
             reference = validate_read_protection_reference(reference)
-        except ProtocolValueError, TypeError, ValueError:
+        except (ProtocolValueError, TypeError, ValueError):
             raise
         if (
             type(count) is not int
@@ -4727,7 +4727,7 @@ class LocalObservationStore:
             validate_commitment(workspace_commitment)
             validate_commitment(session_commitment)
             attempt_id = read_protection_attempt_identity(envelope)
-        except ProtocolValueError, TypeError, ValueError:
+        except (ProtocolValueError, TypeError, ValueError):
             return False
         with self._reading():
             state = self._load(workspace_commitment)
@@ -4793,7 +4793,7 @@ class LocalObservationStore:
             validate_commitment(workspace_commitment)
             validate_commitment(session_commitment)
             attempt_id = read_protection_attempt_identity(envelope)
-        except ProtocolValueError, TypeError, ValueError:
+        except (ProtocolValueError, TypeError, ValueError):
             return None
         with self._reading():
             state = self._load(workspace_commitment)
@@ -4839,7 +4839,7 @@ class LocalObservationStore:
             validate_commitment(workspace_commitment)
             validate_commitment(session_commitment)
             attempt_id = read_protection_attempt_identity(envelope)
-        except ProtocolValueError, TypeError, ValueError:
+        except (ProtocolValueError, TypeError, ValueError):
             return False
         with self._lock:
             state = self._load(workspace_commitment)
@@ -4935,7 +4935,7 @@ class LocalObservationStore:
         stamp = set_at if set_at is not None else self._wall_timestamp()
         try:
             setting = ObservationSelectionSetting(selection, stamp, expires_at)
-        except ProtocolValueError, TypeError, ValueError:
+        except (ProtocolValueError, TypeError, ValueError):
             raise
         if setting.expired(stamp):
             raise _error(
@@ -7941,7 +7941,7 @@ class LocalObservationStore:
         for item in state.selection_loss_ranges:
             try:
                 loss = ObservationSelectionLoss.from_local_range_for_recovery(item)
-            except ProtocolValueError, TypeError, ValueError:
+            except (ProtocolValueError, TypeError, ValueError):
                 continue
             if (
                 item.get("lane") in state.selection_reported_loss_lanes
@@ -7973,7 +7973,7 @@ class LocalObservationStore:
                     break
                 try:
                     normalized = ObservationSelectionLoss.from_local_range_for_recovery(item)
-                except ProtocolValueError, TypeError, ValueError:
+                except (ProtocolValueError, TypeError, ValueError):
                     continue
                 if normalized.lane == lane:
                     matched = True
@@ -7990,7 +7990,7 @@ class LocalObservationStore:
                     active_lanes.add(
                         ObservationSelectionLoss.from_local_range_for_recovery(item).lane
                     )
-                except ProtocolValueError, TypeError, ValueError:
+                except (ProtocolValueError, TypeError, ValueError):
                     continue
             state.selection_reported_loss_lanes = tuple(
                 sorted(
@@ -8625,7 +8625,7 @@ class LocalObservationStore:
         try:
             workspace = validate_commitment(workspace)
             ticket_id = validate_sha256_digest(ticket_id)
-        except ProtocolValueError, TypeError, ValueError:
+        except (ProtocolValueError, TypeError, ValueError):
             raise ProtocolValueError("invalid_event_value_type")
         if (
             type(task_id) is not str
@@ -12016,7 +12016,7 @@ class LocalObservationStore:
             candidate = suffix
         try:
             return validate_commitment(candidate)
-        except ProtocolValueError, TypeError, ValueError:
+        except (ProtocolValueError, TypeError, ValueError):
             return None
 
     @staticmethod
@@ -12453,7 +12453,7 @@ class LocalObservationStore:
                 continue
             try:
                 source = ObservationSource(raw_source)
-            except ProtocolValueError, TypeError, ValueError:
+            except (ProtocolValueError, TypeError, ValueError):
                 continue
             coverage[source] = True
         for envelope in state.envelopes:
@@ -12525,7 +12525,7 @@ class LocalObservationStore:
             selection_runtime = observation_selection_runtime_status_from_json(
                 self.selection_runtime_status(workspace_commitment)
             )
-        except OSError, ProtocolValueError, TypeError, ValueError, RuntimeError:
+        except (OSError, ProtocolValueError, TypeError, ValueError, RuntimeError):
             # Selection status is an optional extension.  A legacy/corrupt
             # pressure projection must not hide the authoritative lifecycle
             # status or make a read fail open into invented budget facts.
@@ -13218,7 +13218,7 @@ class LocalObservationStore:
         else:
             try:
                 validate_sha256_digest(pending_consent_revocation)
-            except ProtocolValueError, TypeError, ValueError:
+            except (ProtocolValueError, TypeError, ValueError):
                 pending_consent_revocation = None
         pending_consent_projects: dict[str, int] | None = None
         raw_pending_projects = raw.get("pending_consent_projects")
@@ -13233,7 +13233,7 @@ class LocalObservationStore:
                     continue
                 try:
                     validate_id(IdKind.PROJECT, project_id)
-                except ProtocolValueError, TypeError, ValueError:
+                except (ProtocolValueError, TypeError, ValueError):
                     continue
                 pending_consent_projects[project_id] = generation
         if pending_consent_revocation is None:
@@ -13266,7 +13266,7 @@ class LocalObservationStore:
                     continue
                 try:
                     validate_commitment(lane)
-                except ProtocolValueError, TypeError, ValueError:
+                except (ProtocolValueError, TypeError, ValueError):
                     continue
                 dedup_lanes[key] = lane
         ended_sessions_raw = raw.get("ended_sessions") or ()
@@ -13305,7 +13305,7 @@ class LocalObservationStore:
                         clear_mapping=pending.get("clear_mapping", False),  # type: ignore[arg-type]
                     )
                 )
-            except ProtocolValueError, TypeError, ValueError:
+            except (ProtocolValueError, TypeError, ValueError):
                 continue
             if len(pending_lifecycles) >= _MAX_PENDING_LIFECYCLES:
                 break
@@ -13323,7 +13323,7 @@ class LocalObservationStore:
                     continue
                 try:
                     validate_commitment(session)
-                except ProtocolValueError, TypeError, ValueError:
+                except (ProtocolValueError, TypeError, ValueError):
                     continue
                 retained_codes = {
                     code
@@ -13360,7 +13360,7 @@ class LocalObservationStore:
                         Timestamp(last_seen),
                         seen.get("active", True) is True,
                     )
-                except ProtocolValueError, TypeError, ValueError:
+                except (ProtocolValueError, TypeError, ValueError):
                     continue
         legacy_seen = self._wall_timestamp()
         for code in cast(tuple[str, ...], gaps_raw):
@@ -13386,7 +13386,7 @@ class LocalObservationStore:
                 stream_partials[str(key)] = base64.b64decode(
                     value[4:].encode("ascii"), validate=True
                 )
-            except ValueError, OSError:
+            except (ValueError, OSError):
                 continue
         stream_call_tools: dict[str, dict[str, str]] = {}
         stream_call_tool_generations: dict[str, int] = {}
@@ -13602,7 +13602,7 @@ class LocalObservationStore:
                 last_attempt_at = (
                     None if last_attempt_raw is None else Timestamp(str(last_attempt_raw))
                 )
-            except ProtocolValueError, TypeError, ValueError:
+            except (ProtocolValueError, TypeError, ValueError):
                 last_attempt_at = None
             enqueued_at = _safe_timestamp(row.get("enqueued_at"))
             consecutive_raw = row.get("consecutive_reason_attempts")
@@ -13633,7 +13633,7 @@ class LocalObservationStore:
                         enqueued_at=enqueued_at,
                     )
                 )
-            except ProtocolValueError, TypeError, ValueError:
+            except (ProtocolValueError, TypeError, ValueError):
                 continue
         quarantine: list[tuple[str, ObservationEnvelope, str, Timestamp]] = []
         # Entries written before quarantined_at existed default to load time:
@@ -13671,7 +13671,7 @@ class LocalObservationStore:
                         quarantined_at,
                     )
                 )
-            except ProtocolValueError, TypeError, ValueError:
+            except (ProtocolValueError, TypeError, ValueError):
                 continue
         raw_quarantine_evicted_count = raw.get("quarantine_evicted_count", 0)
         quarantine_evicted_count = (
@@ -13704,7 +13704,7 @@ class LocalObservationStore:
         if type(raw_content_capture_epoch) is str:
             try:
                 content_capture_epoch = validate_sha256_digest(raw_content_capture_epoch)
-            except ProtocolValueError, TypeError, ValueError:
+            except (ProtocolValueError, TypeError, ValueError):
                 # A malformed or absent epoch is upgraded to a fresh nonce on
                 # the next durable save.  It must never make an old fence
                 # current by falling back to consent fields alone.
@@ -13716,7 +13716,7 @@ class LocalObservationStore:
             for item in cast(tuple[JsonValue, ...] | list[JsonValue], raw_read_protections):
                 try:
                     protection = read_protection_from_json(item)
-                except ProtocolValueError, TypeError, ValueError:
+                except (ProtocolValueError, TypeError, ValueError):
                     continue
                 protection_total = protection.remaining + len(protection.reserved_attempt_ids)
                 if protection_total > MAX_READ_PROTECTION_COUNT - read_protection_total:
@@ -13780,7 +13780,7 @@ class LocalObservationStore:
                         observed_at=Timestamp(raw_observed),
                         accounted_ticket_ids=accounted_ids,
                     )
-                except ProtocolValueError, TypeError, ValueError:
+                except (ProtocolValueError, TypeError, ValueError):
                     capture_backlog_scope_unknown = True
                     continue
                 if (
@@ -13806,7 +13806,7 @@ class LocalObservationStore:
                     continue
                 try:
                     validate_sha256_digest(raw_key)
-                except ProtocolValueError, TypeError, ValueError:
+                except (ProtocolValueError, TypeError, ValueError):
                     capture_backlog_scope_unknown = True
                     continue
                 if not isinstance(raw_reservation, Mapping):
@@ -13836,7 +13836,7 @@ class LocalObservationStore:
                         reserved_at=Timestamp(raw_reserved_at),
                         needs_reconcile=raw_needs_reconcile,
                     )
-                except ProtocolValueError, TypeError, ValueError:
+                except (ProtocolValueError, TypeError, ValueError):
                     capture_backlog_scope_unknown = True
                     continue
                 if _capture_reservation_key(reservation.ticket_id, reservation.task_id) != raw_key:
@@ -13873,7 +13873,7 @@ class LocalObservationStore:
                             observed_at=Timestamp(raw_observed),
                             route_count=raw_route_count,
                         )
-                    except ProtocolValueError, TypeError, ValueError:
+                    except (ProtocolValueError, TypeError, ValueError):
                         capture_backlog_scope_unknown = True
         if capture_reservation_bootstrap is not None:
             expected_proof = _capture_bootstrap_proof(
@@ -13898,7 +13898,7 @@ class LocalObservationStore:
                 selection_loss_lanes.add(
                     ObservationSelectionLoss.from_local_range_for_recovery(item).lane
                 )
-            except ProtocolValueError, TypeError, ValueError:
+            except (ProtocolValueError, TypeError, ValueError):
                 continue
         selection_reported_loss_lanes = tuple(
             sorted(

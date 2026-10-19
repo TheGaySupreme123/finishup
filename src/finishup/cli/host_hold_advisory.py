@@ -340,7 +340,7 @@ def _load_retry_ledger(path: Path) -> dict[str, int] | None:
         return None
     try:
         parsed = json.loads(raw.decode("utf-8"))
-    except UnicodeDecodeError, ValueError:
+    except (UnicodeDecodeError, ValueError):
         return None
     if not isinstance(parsed, dict):
         return None

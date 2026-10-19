@@ -365,8 +365,8 @@ def _wire_composed_provider_setup(
 ) -> dict[str, object]:
     """Keep the real composed wizard/provider flow and fake only external boundaries."""
 
+    import finishup.cli.ai_setup as ai_setup_module
     import finishup.cli.privacy_setup as privacy_setup_module
-    import finishup.cli.provider_binding as provider_binding_module
     import finishup.cli.provider_status as provider_status_module
     import finishup.cli.setup as setup_module
     import finishup.cli.unlock as unlock_module
@@ -380,7 +380,6 @@ def _wire_composed_provider_setup(
     )
     config_path = tmp_path / "config.toml"
     state: dict[str, object] = {
-        "binding_embedded_flags": [],
         "credential_targets": [],
         "privacy_calls": [],
         "reports": [],
@@ -397,13 +396,7 @@ def _wire_composed_provider_setup(
         state["restart_calls"] = cast(int, state["restart_calls"]) + 1
         return {"reachable": True, "state": "ready", "vault_mode": "os_managed"}
 
-    def prompt_binding(
-        *,
-        path: Path | None = None,
-        show_standalone_next_step: bool = True,
-    ) -> Path:
-        del path
-        cast(list[bool], state["binding_embedded_flags"]).append(show_standalone_next_step)
+    def prompt_binding() -> Path:
         config_path.write_text("[provider]\n", encoding="utf-8")
         return config_path
 
@@ -494,8 +487,8 @@ def _wire_composed_provider_setup(
     monkeypatch.setattr(setup_module, "_restart_service_for_semantic_composition", restart)
     monkeypatch.setattr(setup_module, "_emit_human_report", capture_report)
     monkeypatch.setattr(
-        provider_binding_module,
-        "prompt_provider_endpoint_binding",
+        ai_setup_module,
+        "prompt_reviewer_binding",
         prompt_binding,
     )
     monkeypatch.setattr(config_module, "load_config", load_config)
@@ -604,7 +597,15 @@ def test_setup_update_network_requires_yes_and_successful_trusted_commit(
         recommendation_calls.append(cast(bool, kwargs["allow_network"]))
         return {"outcome": "refreshed", "pending": []}
 
+    vault_calls: list[bool] = []
+
+    async def vault_ready() -> object:
+        # Issue #1119: a local-only answer creates the vault before its privacy step.
+        vault_calls.append(True)
+        return setup_module.VaultReadiness(True, None, "platform_store", {"state": "ready"})
+
     monkeypatch.setattr(setup_module, "_is_interactive_terminal", lambda: True)
+    monkeypatch.setattr(setup_module, "ensure_vault_ready", vault_ready)
     monkeypatch.setattr(privacy_setup_module, "run_privacy_setup", privacy_setup)
     monkeypatch.setattr(setup_module, "_resolve_setup_package_update", package_update)
     monkeypatch.setattr(setup_module, "_refresh_setup_recommendations", recommendations)
@@ -615,6 +616,7 @@ def test_setup_update_network_requires_yes_and_successful_trusted_commit(
     assert result.exit_code == 0, (result.output, result.exception)
     assert network_calls == [expected_network]
     assert recommendation_calls == [expected_network]
+    assert vault_calls == [True]
 
 
 def test_non_interactive_accept_registers_and_writes_marker(
@@ -865,13 +867,11 @@ def test_interactive_wizard_selects_harness_then_installation_and_requires_y_or_
         _finishup_entry("policy"),  # verify get
     ]
 
-    import finishup.cli.provider_binding as provider_binding
+    import finishup.cli.ai_setup as ai_setup
     import finishup.cli.setup as setup_module
 
     monkeypatch.setattr(setup_module, "_is_interactive_terminal", lambda: True)
-    monkeypatch.setattr(
-        provider_binding, "prompt_provider_endpoint_binding", _skip_provider_binding
-    )
+    monkeypatch.setattr(ai_setup, "prompt_reviewer_binding", _skip_provider_binding)
 
     # Harness 1, installation 2, local-only, update checks yes, then policy setup confirmation.
     result = _RUNNER.invoke(
@@ -913,13 +913,11 @@ def test_interactive_registration_n_declines_without_mutation(
     wizard_env: dict[str, object],
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    import finishup.cli.provider_binding as provider_binding
+    import finishup.cli.ai_setup as ai_setup
     import finishup.cli.setup as setup_module
 
     monkeypatch.setattr(setup_module, "_is_interactive_terminal", lambda: True)
-    monkeypatch.setattr(
-        provider_binding, "prompt_provider_endpoint_binding", _skip_provider_binding
-    )
+    monkeypatch.setattr(ai_setup, "prompt_reviewer_binding", _skip_provider_binding)
 
     result = _RUNNER.invoke(
         cli.app,
@@ -1161,7 +1159,6 @@ def test_composed_wizard_preserves_privacy_when_hidden_credential_input_is_empty
     assert semantic_status["semantic_ready"] is False
     assert semantic_status["repository_grant_state"] == "granted"
     assert report["marker_written"] is False
-    assert state["binding_embedded_flags"] == [False]
     # ADR-049 review round 1: the AI-powered review answer lists the AI recipes.
     assert state["privacy_calls"] == [(None, False, True, True)]
     assert state["ai_review_add_on"] is True
@@ -1232,7 +1229,6 @@ def test_composed_wizard_reaches_semantic_readiness_after_hidden_credential_stor
     assert cast(dict[str, object], report["semantic_status"])["semantic_ready"] is True
     assert report["next_steps"] == []
     assert report["marker_written"] is True
-    assert state["binding_embedded_flags"] == [False]
     # ADR-049 review round 1: the AI-powered review answer lists the AI recipes.
     assert state["privacy_calls"] == [(None, False, True, True)]
     assert state["ai_review_add_on"] is True
@@ -1675,7 +1671,7 @@ def test_interactive_preview_surfaces_a_route_profile_transition(
 ) -> None:
     """#389: a route change must be visible in the preview the human confirms."""
 
-    import finishup.cli.provider_binding as provider_binding
+    import finishup.cli.ai_setup as ai_setup
     import finishup.cli.setup as setup_module
 
     wizard_env["outputs"] = [
@@ -1686,9 +1682,7 @@ def test_interactive_preview_surfaces_a_route_profile_transition(
         _finishup_entry("policy"),  # verify get
     ]
     monkeypatch.setattr(setup_module, "_is_interactive_terminal", lambda: True)
-    monkeypatch.setattr(
-        provider_binding, "prompt_provider_endpoint_binding", _skip_provider_binding
-    )
+    monkeypatch.setattr(ai_setup, "prompt_reviewer_binding", _skip_provider_binding)
 
     # Installation, home, local-only review, update checks yes, confirm. ADR-049: every answer
     # registers the policy route, so an earlier strict registration visibly moves to it.
@@ -2022,6 +2016,9 @@ def test_provider_setup_success_reports_layers_without_ready_overclaim(
 
     monkeypatch.setattr(setup_module, "_is_interactive_terminal", lambda: True)
     monkeypatch.setattr(setup_module, "_service_reachability", fake_reachability)
+    monkeypatch.setattr(
+        setup_module, "_restart_service_for_semantic_composition", fake_reachability
+    )
     monkeypatch.setattr(setup_module, "_interactive_provider_setup", fake_interactive)
     monkeypatch.setattr("finishup.cli.privacy_setup.run_privacy_setup", fake_privacy_setup)
 
@@ -2031,7 +2028,8 @@ def test_provider_setup_success_reports_layers_without_ready_overclaim(
     assert "FinishUP is ready to use this provider." not in plain
     assert "Provider binding and vault credential storage succeeded" in plain
     assert "SDK extra (semantic-openai):" in plain
-    assert "_semantic_not_configured" in plain
+    assert "Reviewer configuration: reloaded" in plain
+    assert "_semantic_not_configured" not in plain
     assert "Privacy policy: configured" in plain
     assert "Transport probe: not demonstrated" in plain
     assert "Installed artifact evidence: not demonstrated" in plain
@@ -2096,7 +2094,6 @@ def test_uninitialized_provider_setup_provisions_auto_unlock(
     """The wizard must keep the auto-unlock write side reachable in product code."""
 
     import finishup.adapters.keys.os_keyring as keyring_module
-    import finishup.cli.provider_binding as binding_module
     import finishup.cli.setup as setup_module
     import finishup.cli.unlock as unlock_module
     import finishup.config.load as config_module
@@ -2153,7 +2150,7 @@ def test_uninitialized_provider_setup_provisions_auto_unlock(
         fake_promote,
     )
     monkeypatch.setattr(unlock_module, "initialize_passphrase_vault", fake_initialize)
-    monkeypatch.setattr(binding_module, "prompt_provider_endpoint_binding", _skip_provider_binding)
+    monkeypatch.setattr("finishup.cli.ai_setup.prompt_reviewer_binding", _skip_provider_binding)
     monkeypatch.setattr(config_module, "load_config", fake_load_config)
     monkeypatch.setattr(paths_module, "bundle_root", fake_bundle_root)
     monkeypatch.setattr(setup_module, "_service_reachability", fake_reachability)
@@ -2184,7 +2181,6 @@ def test_uninitialized_setup_refuses_preexisting_auto_unlock_entry(
     import hashlib
 
     import finishup.adapters.keys.os_keyring as keyring_module
-    import finishup.cli.provider_binding as binding_module
     import finishup.cli.setup as setup_module
     import finishup.cli.unlock as unlock_module
     import finishup.config.load as config_module
@@ -2244,7 +2240,7 @@ def test_uninitialized_setup_refuses_preexisting_auto_unlock_entry(
 
     monkeypatch.setattr(keyring_module, "AutoUnlockPassphraseStore", fake_store)
     monkeypatch.setattr(unlock_module, "initialize_passphrase_vault", fake_initialize)
-    monkeypatch.setattr(binding_module, "prompt_provider_endpoint_binding", _skip_provider_binding)
+    monkeypatch.setattr("finishup.cli.ai_setup.prompt_reviewer_binding", _skip_provider_binding)
     monkeypatch.setattr(config_module, "load_config", fake_load_config)
     monkeypatch.setattr(paths_module, "bundle_root", fake_bundle_root)
     monkeypatch.setattr(setup_module, "_service_reachability", fake_reachability)
@@ -2769,7 +2765,8 @@ def test_blocked_privacy_step_reports_its_own_reason_for_the_credential(
     async def fake_restart() -> dict[str, object]:
         return {"reachable": True, "state": "ready", "vault_mode": "os_keyring"}
 
-    async def blocked() -> str | None:
+    async def blocked(api_key: bool) -> str | None:
+        assert api_key is True
         return "privacy_authority_required"
 
     monkeypatch.setattr(config_module, "load_config", fake_load_config)

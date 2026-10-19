@@ -1354,7 +1354,7 @@ async def _execute_handle_attach(
         if callable(lookup):
             try:
                 record = cast(Callable[[str], object], lookup)(request.request_id)
-            except PublicOperationError, TypeError, ValueError:
+            except (PublicOperationError, TypeError, ValueError):
                 return False
             return (
                 getattr(record, "task_id", None) == current_handle.task_id
@@ -1673,7 +1673,7 @@ async def _append_delegation_event(
                 return None
             try:
                 candidate = lookup(session_id)
-            except TypeError, ValueError, PublicOperationError:
+            except (TypeError, ValueError, PublicOperationError):
                 return None
             return candidate if type(candidate) is str else None
 

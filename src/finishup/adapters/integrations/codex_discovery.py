@@ -60,7 +60,7 @@ def _default_version_runner(executable: str) -> str | None:
                 shell=False,
                 env=environment,
             )
-    except OSError, subprocess.SubprocessError:
+    except (OSError, subprocess.SubprocessError):
         return None
     if completed.returncode != 0:
         return None
@@ -89,7 +89,7 @@ def _windows_codex_app_directories() -> tuple[str, ...]:
             check=False,
             shell=False,
         )
-    except OSError, subprocess.SubprocessError:
+    except (OSError, subprocess.SubprocessError):
         return ()
     if completed.returncode != 0:
         return ()
@@ -214,6 +214,6 @@ def default_codex_home(environ: Mapping[str, str] | None = None) -> Path | None:
             candidate = build()
             if candidate.is_absolute() and not candidate.is_symlink() and candidate.is_dir():
                 return candidate
-        except OSError, RuntimeError:
+        except (OSError, RuntimeError):
             continue
     return None

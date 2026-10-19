@@ -568,7 +568,7 @@ async def _coordination_advice_status_items(
         project_ids = await cast(Callable[[str], Awaitable[tuple[str, ...]]], list_projects)(
             runtime.task_id
         )
-    except ProjectCommandError, PublicOperationError:
+    except (ProjectCommandError, PublicOperationError):
         return ()
     items: list[dict[str, JsonValue]] = []
     for project_id in sorted(set(project_ids), key=str.encode):
@@ -576,7 +576,7 @@ async def _coordination_advice_status_items(
             rows = await cast(Callable[..., Awaitable[tuple[CoordinationAdvice, ...]]], advice_for)(
                 runtime.task_id, project=project_id
             )
-        except ProjectCommandError, PublicOperationError:
+        except (ProjectCommandError, PublicOperationError):
             continue
         for advice in rows:
             target = getattr(advice, "target_task_id", None)
@@ -931,7 +931,7 @@ async def _operation_continuation(
                     expires_at=wait.pending_expires_at,
                     request_id=operation_request_id,
                 )
-            except TypeError, ValueError:
+            except (TypeError, ValueError):
                 continuation = None
     if continuation is None:
         return None
@@ -1644,7 +1644,7 @@ async def published_name_authorship(
         return ()
     try:
         loaded = await load_closure_basis(runtime, frontier)
-    except ClosureBasisUnavailable, PublicOperationError, TypeError, ValueError:
+    except (ClosureBasisUnavailable, PublicOperationError, TypeError, ValueError):
         return ()
     # A loaded envelope keeps its original redaction state after a later ``redaction_recorded``;
     # a publication redacted by its event ID or its payload object ID no longer vouches for the
@@ -2004,7 +2004,7 @@ async def _closure_readiness(
                     in_flight = check_in_flight
                     try:
                         live = await runtime.ledger.load_frontier()
-                    except PublicOperationError, TypeError, ValueError:
+                    except (PublicOperationError, TypeError, ValueError):
                         live = landed
                     else:
                         in_flight = live == landed and await _check_in_flight(runtime)

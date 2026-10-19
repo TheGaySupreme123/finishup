@@ -340,7 +340,7 @@ def _append_result_from_committed(record: object) -> AppendResult | None:
         return None
     try:
         parsed = strict_json_parse(record.result_canonical)
-    except ProtocolValueError, TypeError, ValueError:
+    except (ProtocolValueError, TypeError, ValueError):
         return None
     if not isinstance(parsed, Mapping):
         return None
@@ -373,7 +373,7 @@ def _append_result_from_committed(record: object) -> AppendResult | None:
             frontier_from_json(result_map["result_frontier"]),
             warnings,
         )
-    except KeyError, ProtocolValueError, TypeError, ValueError:
+    except (KeyError, ProtocolValueError, TypeError, ValueError):
         return None
 
 
@@ -1145,7 +1145,7 @@ class ObservationCoordinator:
                 if task_id is not None and (route is None or route[0] != task_id):
                     continue
                 loss = ObservationSelectionLoss.from_local_range_for_recovery(report)
-            except ProtocolValueError, TypeError, ValueError:
+            except (ProtocolValueError, TypeError, ValueError):
                 # A malformed route cannot be safely attributed to a task. A
                 # route-valid range is normalized by the recovery constructor;
                 # only the remaining unrouteable state stays local.
@@ -6996,7 +6996,7 @@ class ObservationCoordinator:
             from finishup.protocol.ids import PREFIX_BY_KIND
 
             return PREFIX_BY_KIND[IdKind.REQUEST] + str(_uuid.UUID(bytes=bytes(arr)))
-        except ValueError, TypeError:
+        except (ValueError, TypeError):
             return self.ids.new(IdKind.REQUEST)
 
     async def _lineage_refs_for_advice(

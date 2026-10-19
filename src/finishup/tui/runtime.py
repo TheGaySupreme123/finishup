@@ -548,10 +548,14 @@ def _host_entries() -> tuple[DoctorEntry, ...]:
             "platform_cell",
             "Platform",
             LayerState.UNPROVEN,
-            detail=f"{cell.os_name} {cell.machine} is an untested platform cell",
+            detail=(
+                f"{cell.os_name} {cell.machine} with Python {cell.python_version} "
+                "is an untested platform cell"
+            ),
             remediation=(
-                "FinishUP is certified on macOS arm64 and Linux x86-64 (glibc 2.28+); it installed here "
-                "but nothing has been proven on this cell, so expect no support claim"
+                "FinishUP is certified on macOS arm64 and Linux x86-64 (glibc 2.28+) with CPython "
+                "3.14.6; it installed here but nothing has been proven on this cell, so expect no "
+                "support claim"
             ),
         )
     sandbox = probe_check_sandbox()
@@ -582,9 +586,10 @@ def _host_entries() -> tuple[DoctorEntry, ...]:
             LayerState.NOT_CONFIGURED,
             detail=reason,
             remediation=(
-                "use a FinishUP passphrase instead (run /service, or "
-                "'finishup service initialize-passphrase'); nothing to do if this installation "
-                "already unlocks with one"
+                "nothing to do: setup keeps the vault key in a file only your account can read "
+                "here ('finishup service auto-unlock status' shows where); to type a passphrase "
+                "after each restart instead, create the vault with "
+                "'finishup setup vault --passphrase'"
             ),
         )
     return (platform_entry, sandbox_entry, storage_entry)
@@ -860,6 +865,7 @@ class FinishUpRuntime:
         offer_recommended: bool = False,
         conversation_review: str | None = None,
         ai_review_add_on: bool = False,
+        credential_probe: bool = False,
     ) -> object:
         """Hand the trusted questionnaire to the CLI implementation.
 
@@ -890,6 +896,11 @@ class FinishUpRuntime:
             "custom",
         }:
             raise RuntimeError_("privacy_recipe_invalid", "the privacy recipe is invalid")
+        from finishup.cli.setup import prompt_credential_probe_authorization
+
+        credential_probe_authorized = (
+            prompt_credential_probe_authorization() if credential_probe else False
+        )
         try:
             return await run_privacy_setup(
                 recipe_hint=cast(
@@ -907,6 +918,7 @@ class FinishUpRuntime:
                 workspace_locator=self._cwd,
                 conversation_review=conversation,
                 ai_review_add_on=ai_review_add_on,
+                credential_probe_authorized=credential_probe_authorized,
             )
         except (ControlError, HumanCeremonyCliError, OSError, ValueError) as error:
             raise RuntimeError_(
@@ -1461,7 +1473,7 @@ class FinishUpRuntime:
         try:
             async with self._client() as client:
                 status = await client.service_status()
-        except RuntimeError_, ControlError:
+        except (RuntimeError_, ControlError):
             return VaultPosture(reachable=False, state=None, vault_mode=None)
         state = getattr(getattr(status, "state", None), "value", None)
         return VaultPosture(
@@ -1489,7 +1501,7 @@ class FinishUpRuntime:
         try:
             async with self._client() as client:
                 effective = await client.privacy_get_setup(JsonObject({"schema_version": "2.0.0"}))
-        except RuntimeError_, ControlError:
+        except (RuntimeError_, ControlError):
             return PrivacyPosture(profile=None, llm_inference_enabled=None, readable=False)
         response = _mapping(effective)
         policy_map = _mapping(response.get("composed_policy"))
@@ -1616,6 +1628,14 @@ class FinishUpRuntime:
             )
         )
         return tuple(options)
+
+    def provider_models(self, choice: str) -> tuple[str, ...]:
+        """The same default-first reviewed catalog the prompt wizard uses."""
+
+        from finishup.config.write import PROVIDER_PRESETS
+
+        preset = PROVIDER_PRESETS.get(choice)
+        return () if preset is None else preset.suggested_models
 
     def codex_subscription_defaults(self) -> tuple[str, str, str, str]:
         """Return eligible nonsecret defaults; setup still capability-checks the runtime.
@@ -1924,7 +1944,27 @@ class FinishUpRuntime:
             )
         except HumanCeremonyCliError as error:
             raise RuntimeError_(error.reason, "the credential ceremony did not complete")
-        return str(getattr(result, "activation_status", "unknown"))
+        status = str(getattr(result, "activation_status", "unknown"))
+        if status == "stored":
+            from finishup.cli.setup import restart_service_for_semantic_composition
+
+            await restart_service_for_semantic_composition(report_startup_failure=False)
+        return status
+
+    async def remove_provider_credential(self) -> str:
+        """The same owner-only terminal confirmation, reauthentication and readiness reload."""
+
+        import typer
+
+        from finishup.cli.ai import forget_key
+
+        try:
+            return await forget_key()
+        except (typer.Exit, typer.Abort) as error:
+            raise RuntimeError_(
+                "provider_credential_remove_unconfirmed",
+                "key removal was not confirmed; run finishup ai status",
+            ) from error
 
     async def initialize_passphrase_vault(self) -> None:
         from finishup.cli.unlock import HumanCeremonyCliError, initialize_passphrase_vault
@@ -1941,6 +1981,17 @@ class FinishUpRuntime:
             await rotate_vault_passphrase()
         except HumanCeremonyCliError as error:
             raise RuntimeError_(error.reason, "the passphrase could not be changed")
+
+    async def set_up_storage_automatically(self) -> tuple[bool, str | None, str]:
+        """Create or unlock the vault with no question (issue #1119); see ``ensure_vault_ready``.
+
+        Returns readiness, the bounded reason when not ready, and the custody actually in use.
+        """
+
+        from finishup.cli.setup import ensure_vault_ready
+
+        vault = await ensure_vault_ready()
+        return vault.ready, vault.reason, vault.custody
 
     async def initialize_system_keyring(self) -> None:
         from finishup.cli.unlock import HumanCeremonyCliError, retry_keyring
@@ -2658,7 +2709,7 @@ class FinishUpRuntime:
         folders = _installation_folders_entry()
         folders_blocked = folders.state is LayerState.BLOCKED
         entries: list[DoctorEntry] = []
-        supported = (3, 14) <= sys.version_info[:2] < (3, 15)
+        supported = (3, 12) <= sys.version_info[:2] < (3, 15)
         entries.append(
             DoctorEntry(
                 "runtime",
@@ -2667,7 +2718,8 @@ class FinishUpRuntime:
                 detail=".".join(str(part) for part in sys.version_info[:3]),
                 remediation=""
                 if supported
-                else "FinishUP requires Python 3.14; reinstall with 'uv tool install finishup'",
+                else "FinishUP requires Python 3.12, 3.13 or 3.14; reinstall with "
+                "'uv tool install --managed-python --python 3.14 finishup'",
             )
         )
         package_detail = __version__

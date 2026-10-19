@@ -172,7 +172,7 @@ def _local_capture_fence(
         return None, {ObservationGapCode.CONTENT_CAPTURE_UNAVAILABLE.value}, True
     try:
         generation = validate_sha256_digest(generation)
-    except TypeError, ValueError:
+    except (TypeError, ValueError):
         return None, {ObservationGapCode.CONTENT_CAPTURE_UNAVAILABLE.value}, True
     return (
         _LocalCaptureFence(
@@ -263,7 +263,7 @@ class CapturedContentResolution:
         if self.local_fence_generation is not None:
             try:
                 validate_sha256_digest(self.local_fence_generation)
-            except TypeError, ValueError:
+            except (TypeError, ValueError):
                 raise ValueError("semantic_content_resolution_invalid") from None
         if (
             type(self.local_fence_profiles) is not tuple

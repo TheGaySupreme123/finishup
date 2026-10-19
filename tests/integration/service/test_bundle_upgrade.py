@@ -106,7 +106,7 @@ class _SuspendingBackupEffects(_Effects):
     ) -> BackupEvidence:
         self.started.set()
         await self.release.wait()
-        return await super().ensure_machine_backup(
+        return await super(_SuspendingBackupEffects, self).ensure_machine_backup(
             target, operation, before, existing_manifest_digest
         )
 

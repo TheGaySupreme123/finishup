@@ -142,11 +142,11 @@ connected through that installation keep their launcher path.
 ### 2. Move to the `finishup` command
 
 ```text
-uv tool install --compile-bytecode --managed-python --python 3.14.6 finishup
+uv tool install --managed-python --python 3.14 finishup
 ```
 
 If you installed `yoetz` with extras, install the same ones, for example
-`uv tool install --compile-bytecode --managed-python --python 3.14.6 'finishup[semantic-openai]'`.
+`uv tool install --managed-python --python 3.14 'finishup[semantic-openai]'`.
 `yoetz upgrade` ends with a *Move from the yoetz name* step that prints this command with your
 extras when it can confirm them, and otherwise asks you to add them yourself.
 

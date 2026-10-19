@@ -795,7 +795,7 @@ def _cursor_root_path(root: object) -> str | None:
         return uri
     try:
         parsed = urlsplit(uri)
-    except TypeError, ValueError:
+    except (TypeError, ValueError):
         return None
     if (
         parsed.scheme != "file"
@@ -808,7 +808,7 @@ def _cursor_root_path(root: object) -> str | None:
         return None
     try:
         path = unquote_to_bytes(parsed.path).decode("utf-8", errors="strict")
-    except UnicodeDecodeError, ValueError:
+    except (UnicodeDecodeError, ValueError):
         return None
     try:
         path_bytes = path.encode("utf-8")
@@ -1364,7 +1364,7 @@ async def _ensure_cursor_workspace_binding(
                         isolation_root=runtime.cursor_isolation_root,
                         project_binding=runtime.cursor_project_binding,
                     )
-                except CursorProjectMcpError, OSError, TypeError, ValueError:
+                except (CursorProjectMcpError, OSError, TypeError, ValueError):
                     registration_invalid = True
             if registration_invalid:
                 slot.workspace_binding_state = "failed"
@@ -1476,7 +1476,7 @@ async def _ensure_cursor_workspace_binding(
                                     isolation_root=runtime.cursor_isolation_root,
                                     project_binding=runtime.cursor_project_binding,
                                 )
-                            except CursorProjectMcpError, OSError, TypeError, ValueError:
+                            except (CursorProjectMcpError, OSError, TypeError, ValueError):
                                 latest_registration_invalid = True
                         if runtime.cursor_project_binding == "registered-project" and (
                             canonical_workspace_locator(runtime.cursor_project_directory)

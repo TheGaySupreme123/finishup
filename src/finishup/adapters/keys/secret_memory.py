@@ -226,7 +226,7 @@ class _LocalSecretHandle:
         finally:
             try:
                 mapping.close()
-            except BufferError, OSError:
+            except (BufferError, OSError):
                 pass
 
     def __repr__(self) -> str:
@@ -268,7 +268,7 @@ def _probe_page_lock(libc: ctypes.CDLL | None) -> bool:
             _unlock_mapping(libc, mapping, size)
         mapping.close()
         return locked
-    except OSError, BufferError, ValueError:
+    except (OSError, BufferError, ValueError):
         return False
 
 
@@ -280,7 +280,7 @@ def _lock_mapping(libc: ctypes.CDLL | None, mapping: mmap.mmap, size: int) -> bo
         result = libc.mlock(ctypes.c_void_p(address), ctypes.c_size_t(size))
         del buffer
         return result == 0
-    except AttributeError, BufferError, ValueError:
+    except (AttributeError, BufferError, ValueError):
         return False
 
 
@@ -291,7 +291,7 @@ def _unlock_mapping(libc: ctypes.CDLL | None, mapping: mmap.mmap, size: int) -> 
         buffer, address = _mapping_address(mapping)
         libc.munlock(ctypes.c_void_p(address), ctypes.c_size_t(size))
         del buffer
-    except AttributeError, BufferError, ValueError:
+    except (AttributeError, BufferError, ValueError):
         pass
 
 
@@ -305,7 +305,7 @@ def _exclude_from_core_dump(mapping: mmap.mmap, size: int) -> None:
         buffer, address = _mapping_address(mapping)
         libc.madvise(ctypes.c_void_p(address), ctypes.c_size_t(size), ctypes.c_int(16))
         del buffer
-    except AttributeError, BufferError, ValueError:
+    except (AttributeError, BufferError, ValueError):
         pass
 
 
@@ -316,7 +316,7 @@ def _suppress_core_dumps() -> bool:
         _, hard = resource.getrlimit(resource.RLIMIT_CORE)
         resource.setrlimit(resource.RLIMIT_CORE, (0, hard))
         return resource.getrlimit(resource.RLIMIT_CORE)[0] == 0
-    except OSError, ValueError:
+    except (OSError, ValueError):
         return False
 
 
@@ -331,5 +331,5 @@ def _overwrite_mapping(mapping: mmap.mmap, size: int) -> None:
             remaining -= chunk
         mapping.flush()
         mapping.seek(0)
-    except BufferError, OSError, ValueError:
+    except (BufferError, OSError, ValueError):
         pass

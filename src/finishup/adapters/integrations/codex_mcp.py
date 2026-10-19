@@ -382,7 +382,7 @@ def _legacy_distribution_installed() -> bool:
         distribution(LEGACY_LAUNCHER_NAME)
     except PackageNotFoundError:
         return False
-    except OSError, ValueError:
+    except (OSError, ValueError):
         return True
     return True
 
@@ -1025,7 +1025,7 @@ def read_bounded_toml(path: Path) -> Mapping[str, object] | None:
         if path.is_symlink() or not path.is_file() or path.stat().st_size > _OUTPUT_LIMIT_BYTES:
             return None
         return tomllib.loads(path.read_text(encoding="utf-8"))
-    except OSError, UnicodeError, tomllib.TOMLDecodeError:
+    except (OSError, UnicodeError, tomllib.TOMLDecodeError):
         return None
 
 
@@ -1071,7 +1071,7 @@ def project_transport_dependence(
 
     try:
         parsed = tomllib.loads(raw.decode("utf-8"))
-    except UnicodeError, tomllib.TOMLDecodeError:
+    except (UnicodeError, tomllib.TOMLDecodeError):
         return "unknown"
     servers = parsed.get("mcp_servers")
     if not isinstance(servers, Mapping):
@@ -1118,7 +1118,7 @@ def project_config_unreadable_reason(project: Path) -> str | None:
         return problem
     try:
         tomllib.loads(raw.decode("utf-8"))
-    except UnicodeError, tomllib.TOMLDecodeError:
+    except (UnicodeError, tomllib.TOMLDecodeError):
         return "not_valid_toml"
     return None
 
@@ -1158,7 +1158,7 @@ def _read_user_config(path: Path) -> Mapping[str, object] | None:
         if path.stat().st_size > _USER_CONFIG_LIMIT_BYTES:
             return None
         return tomllib.loads(path.read_bytes().decode("utf-8"))
-    except OSError, UnicodeError, tomllib.TOMLDecodeError:
+    except (OSError, UnicodeError, tomllib.TOMLDecodeError):
         return None
 
 

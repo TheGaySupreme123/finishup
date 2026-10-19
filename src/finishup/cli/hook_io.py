@@ -284,7 +284,7 @@ def stdout_json(value: JsonValue, stream: BinaryIO | None = None) -> bool:
         out.write(canonical_encode(value) + b"\n")
         out.flush()
         return True
-    except BrokenPipeError, OSError, ValueError:
+    except (BrokenPipeError, OSError, ValueError):
         return False
 
 
@@ -849,7 +849,7 @@ def _decode_image_string(value: str) -> bytes | None:
     compact = "".join(body.split())
     try:
         decoded = base64.b64decode(compact, validate=True)
-    except binascii.Error, ValueError:
+    except (binascii.Error, ValueError):
         return None
     return decoded or None
 
@@ -978,7 +978,7 @@ def _reduce_oversized_document(
         try:
             if len(canonical_encode(cast(JsonValue, stripped))) <= MAX_HOOK_STDIN_BYTES:
                 return _with_observed_images(stripped, parsed), False
-        except ProtocolValueError, TypeError, ValueError:
+        except (ProtocolValueError, TypeError, ValueError):
             pass
     identity = _cursor_identity_object(parsed, depth=0, allow=allow)
     return _with_observed_images(identity, parsed), True

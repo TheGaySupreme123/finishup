@@ -560,7 +560,7 @@ class WorkspaceFingerprintStore:
                     _write_small(self._directory / "bounded", failure.reason.encode("ascii"))
                 self._mark_failed(call_identity, failure.reason)
             return failure.reason
-        except OSError, PathSafetyError, ValueError:
+        except (OSError, PathSafetyError, ValueError):
             return "store_unusable"
         finally:
             if entered is not None:
@@ -591,7 +591,7 @@ class WorkspaceFingerprintStore:
                 return WorkspaceEffectReading(WORKSPACE_UNAVAILABLE, failed, fresh=False)
             try:
                 before = self._load(self._pending_path(call_identity), delete=True)
-            except OSError, PathSafetyError, ValueError:
+            except (OSError, PathSafetyError, ValueError):
                 before = None
             if before is None:
                 return WorkspaceEffectReading(WORKSPACE_UNAVAILABLE, "no_pre_snapshot")
@@ -677,7 +677,7 @@ class WorkspaceFingerprintStore:
                 if failure.backoff and failure.reason in _BACKOFF_SECONDS:
                     _write_small(self._directory / "bounded", failure.reason.encode("ascii"))
             return WorkspaceEffectReading(WORKSPACE_UNAVAILABLE, failure.reason)
-        except OSError, PathSafetyError, ValueError:
+        except (OSError, PathSafetyError, ValueError):
             return WorkspaceEffectReading(WORKSPACE_UNAVAILABLE, "store_unusable")
 
     def invalidate(self, call_identity: str, reason: UnavailableReason) -> None:
@@ -842,7 +842,7 @@ class WorkspaceFingerprintStore:
                 return None
             age = time.time() - marker.stat().st_mtime
             reason = marker.read_bytes()[:32].decode("ascii")
-        except OSError, UnicodeDecodeError:
+        except (OSError, UnicodeDecodeError):
             return None
         if reason == "too_large" and 0 <= age < _BACKOFF_SECONDS["too_large"]:
             return "too_large"
@@ -879,7 +879,7 @@ class WorkspaceFingerprintStore:
             if path.is_symlink():
                 return None
             raw = path.read_bytes()[:32].decode("ascii")
-        except OSError, UnicodeDecodeError:
+        except (OSError, UnicodeDecodeError):
             return None
         finally:
             with contextlib.suppress(OSError):
@@ -1176,7 +1176,7 @@ def _read_tally(path: Path) -> tuple[str, dict[str, object] | None]:
         os.close(descriptor)
     try:
         document = _valid_tally(json.loads(raw))
-    except UnicodeError, ValueError, RecursionError:
+    except (UnicodeError, ValueError, RecursionError):
         document = None
     return ("retained", document) if document is not None else ("unreadable", None)
 
@@ -1354,7 +1354,7 @@ def _note_reading(
                         )
                     )
             _replace_tally(directory, _folded_tally(document, key, reading, call, now_ms))
-    except OSError, PathSafetyError, ValueError:
+    except (OSError, PathSafetyError, ValueError):
         return False
     return True
 
@@ -1560,7 +1560,7 @@ def reading_tally_summary(directory: Path | None) -> JsonObject:
             if existing_owner_only_dir(directory):
                 status, document = _read_tally(directory / _READING_NAME)
                 dropped = _drop_count(directory)
-        except OSError, PathSafetyError:
+        except (OSError, PathSafetyError):
             status, document = "unreadable", None
     counts: Mapping[str, int] = (
         {} if document is None else cast(Mapping[str, int], document["counts"])

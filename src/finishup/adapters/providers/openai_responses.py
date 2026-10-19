@@ -2078,7 +2078,7 @@ def normalize_answer_text(
                 normalize_judgment(strict_json_parse(raw_bytes), require_part2=True), succeeded
             )
         )
-    except ValueError, TypeError, LookupError:
+    except (ValueError, TypeError, LookupError):
         return SemanticResultInvalid(
             prov(SemanticStatus.INVALID, SemanticFailureClass.RESPONSE_SCHEMA),
             raw_size=len(raw_bytes),
@@ -2268,7 +2268,7 @@ class OneAttemptCredentialTransport(httpx.AsyncBaseTransport):
         if content_length is not None:
             try:
                 declared_size = int(content_length)
-            except TypeError, ValueError:
+            except (TypeError, ValueError):
                 # Provider-controlled header text must not appear in structural errors.
                 await response.aclose()
                 raise ValueError("openai_response_content_length_invalid") from None

@@ -84,7 +84,7 @@ what was caught.
 
 ```sh
 # Install the latest published version from PyPI — the canonical distribution
-uv tool install --compile-bytecode --managed-python --python 3.14.6 finishup
+uv tool install --managed-python --python 3.14 finishup
 
 # Via npm — a dependency-free launcher that makes the same persistent uv install (needs uv)
 npx finishup
@@ -93,9 +93,11 @@ npx finishup
 uvx --python 3.14 finishup
 ```
 
-FinishUP needs Python 3.14. You do not need to have it: `uv` downloads the exact interpreter on
-demand, whatever other Pythons are on the machine, and the install is not affected by them.
-`pip install finishup` on an older Python cannot work, because the package requires 3.14. The npm
+FinishUP runs on Python 3.12, 3.13 or 3.14. You do not need to have one: `uv` downloads Python
+3.14 on demand, whatever other Pythons are on the machine, and the install is not affected by them.
+Keep `--python 3.14` in the command: uv 0.13 and later otherwise pick Python 3.15, which
+FinishUP's dependencies cannot install on yet. Releases are certified on CPython 3.14.6; any other interpreter (3.12, 3.13, or
+another 3.14 patch) runs and is tested, but reports itself as an untested cell. The npm
 package bundles no Python and no FinishUP code and never installs `uv` itself; it makes the same
 `uv tool install` and launches the exact matching Python distribution. FinishUP runs on macOS and Linux (certified on
 macOS arm64 and Linux x86-64 (glibc 2.28+); other Linux architectures install and report themselves as untested —
@@ -107,15 +109,14 @@ see [Linux](docs/usage/install-and-first-run.md#linux)); on Windows, install it 
 > installation, showing you every proposed change first:
 >
 > ```text
-> I want to install FinishUP (https://github.com/TheGaySupreme123/finishup). Start by fetching its
-> agent install guide and follow it exactly:
+> Install FinishUP for me (https://github.com/TheGaySupreme123/finishup). Fetch its agent install
+> guide and follow "The short version" at the top:
 >
 > curl -fsSL https://raw.githubusercontent.com/TheGaySupreme123/finishup/main/docs/usage/agent-start.md
 >
-> It tells you what to run yourself, what to ask me, and where to hand me the terminal. If your
-> sandbox blocks that fetch, ask me to approve it or to paste the guide. Setup's questions are
-> mine to answer, so ask me each one and wait, and show me any proposed change before it is
-> applied.
+> If your sandbox blocks that fetch, ask me to approve it or to paste the guide. Setup's questions
+> are mine to answer, so ask me each one and wait, and show me any proposed change before it is
+> applied. Never ask me for a key or password in chat; hand me the terminal for those.
 > ```
 
 `finishup` at a terminal opens a full-screen interface, and the first run walks setup inside it:

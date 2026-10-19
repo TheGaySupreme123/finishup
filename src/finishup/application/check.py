@@ -1431,7 +1431,7 @@ async def _current_project_advisory_notes(
                             len(counterpart_ids),
                         )
                     )
-                except TypeError, ValueError:
+                except (TypeError, ValueError):
                     # IDs are validated again at the structural result boundary.  An invalid adapter
                     # row is not allowed to become a public note or affect the check itself.
                     pass
@@ -1445,7 +1445,7 @@ async def _current_project_advisory_notes(
                             len(duplicate_task_ids),
                         )
                     )
-                except TypeError, ValueError:
+                except (TypeError, ValueError):
                     pass
         if len(notes) >= 64:
             break
@@ -2001,7 +2001,7 @@ def _recorded_work_refs(
     try:
         observed = observed_event_ids_from_coverage(coverage_by_ref)
         states = observed_failure_states(projection, observed, through=projection.frontier)
-    except TypeError, ValueError:
+    except (TypeError, ValueError):
         return _bounded_overall_refs(refs), False
     active_obligations: frozenset[ObligationId] = (
         frozenset(scope.effective_obligation_refs or ()) if scope.readable else frozenset()
@@ -2664,7 +2664,7 @@ async def _load_deterministic_result(
         if checkpoint_superseded:
             raise _DeterministicCheckpointSuperseded()
         return _DurableDeterministicResult(tuple(findings), executions)
-    except PublicOperationError, _DeterministicCheckpointSuperseded:
+    except (PublicOperationError, _DeterministicCheckpointSuperseded):
         raise
     except Exception as exc:
         raise PublicOperationError(
@@ -5581,7 +5581,7 @@ def _semantic_evaluator_accepts_lineage(app: Application) -> bool:
 
     try:
         parameters = tuple(inspect.signature(app.evaluate_semantic_check).parameters.values())
-    except TypeError, ValueError:
+    except (TypeError, ValueError):
         # An opaque callable may still accept the new optional argument; let the normal exception
         # fence below classify a genuine failure.
         return True
@@ -5600,7 +5600,7 @@ def _semantic_evaluator_accepts_keyword(app: Application, name: str) -> bool:
 
     try:
         parameters = tuple(inspect.signature(app.evaluate_semantic_check).parameters.values())
-    except TypeError, ValueError:
+    except (TypeError, ValueError):
         return False
     return any(
         parameter.name == name or parameter.kind is inspect.Parameter.VAR_KEYWORD
@@ -5613,7 +5613,7 @@ def _semantic_evaluator_accepts_complete_specification(app: Application) -> bool
 
     try:
         parameters = tuple(inspect.signature(app.evaluate_semantic_check).parameters.values())
-    except TypeError, ValueError:
+    except (TypeError, ValueError):
         return True
     return any(
         parameter.name == "require_complete_specification"
@@ -6571,7 +6571,7 @@ async def execute_check_commit(
         commit_parameters: Mapping[str, inspect.Parameter] = {}
         try:
             commit_parameters = inspect.signature(runtime.ledger.commit_check_if_current).parameters
-        except TypeError, ValueError:
+        except (TypeError, ValueError):
             commit_parameters = {}
         if commit_parameters and not any(
             parameter.kind is inspect.Parameter.VAR_KEYWORD

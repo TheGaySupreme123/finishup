@@ -2149,7 +2149,7 @@ def decode_reviewer_exchange(payload: bytes) -> tuple[ReviewerMessage, ...]:
     error = ValueError("reviewer_exchange_invalid")
     try:
         raw = strict_json_parse(payload)
-    except ProtocolValueError, ValueError:
+    except (ProtocolValueError, ValueError):
         raise error from None
     if type(raw) is not list or not 2 <= len(raw) <= _MAX_REVIEWER_MESSAGES:
         raise error

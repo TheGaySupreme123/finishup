@@ -827,7 +827,7 @@ def _holds_legacy_activation(anchor: Path) -> bool:
         if anchor.is_symlink() or not anchor.is_dir() or anchor.resolve() != anchor:
             return False
         snapshot = _load_marketplace(anchor / _MARKETPLACE_RELATIVE_PATH)
-    except IntegrationError, OSError:
+    except (IntegrationError, OSError):
         return False
     return snapshot is not None and snapshot[0] == _legacy_marketplace_bytes()
 
@@ -995,7 +995,7 @@ def _anchor_manifest_state(anchor: Path) -> Literal["serves", "missing", "foreig
         if not os.path.lexists(manifest):
             return "missing"
         snapshot = _load_marketplace(manifest)
-    except IntegrationError, OSError:
+    except (IntegrationError, OSError):
         return "foreign"
     registered, foreign = _classify_manifest(None if snapshot is None else snapshot[1])
     if not registered or foreign:
@@ -1009,7 +1009,7 @@ def _anchor_manifest_state(anchor: Path) -> Literal["serves", "missing", "foreig
         # Any managed render that byte-matches its own install marker (which inventories the
         # descriptor) serves; an edited or invalid descriptor does not.
         managed = plugin_tree_matches_marker(_read_managed_tree(source))
-    except IntegrationError, OSError:
+    except (IntegrationError, OSError):
         return "foreign"
     return "serves" if managed else "foreign"
 

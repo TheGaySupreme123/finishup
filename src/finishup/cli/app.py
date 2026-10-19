@@ -20,6 +20,7 @@ from pydantic import BaseModel, ValidationError
 
 from finishup import __version__
 from finishup.cli.agent_start import AGENT_START_HANDOFF
+from finishup.cli.ai import ai_app, register_credential_remove
 from finishup.cli.bootstrap import (
     control_failure as _shared_control_failure,
 )
@@ -243,6 +244,7 @@ app.add_typer(service_app, name="service")
 app.add_typer(instance_app, name="instance")
 service_app.add_typer(auto_unlock_app, name="auto-unlock")
 service_app.add_typer(recovery_app, name="recovery")
+app.add_typer(ai_app, name="ai")
 app.add_typer(provider_app, name="provider")
 provider_app.add_typer(credential_app, name="credential")
 provider_app.add_typer(codex_subscription_app, name="codex-subscription")
@@ -913,7 +915,7 @@ async def _call_workflow(
                 )
             return exit_code_for(PublicErrorCode.INTERNAL_ERROR)
         return _usage_failure()
-    except ProtocolValueError, ValidationError, ValueError:
+    except (ProtocolValueError, ValidationError, ValueError):
         return _usage_failure()
     except ControlError as error:
         return _control_failure(error, operation=method, check_mode=check_mode)
@@ -1858,7 +1860,7 @@ def closure_prepare_command(
 
     try:
         run_async(prepare)
-    except OSError, ProtocolValueError, ValidationError:
+    except (OSError, ProtocolValueError, ValidationError):
         _finish(_usage_failure())
     except ValueError as error:
         reason = str(error)
@@ -1977,7 +1979,7 @@ async def _call_support(
                 if line is not None:
                     typer.echo(line)
         return 0
-    except OSError, ProtocolValueError, ValidationError, ValueError:
+    except (OSError, ProtocolValueError, ValidationError, ValueError):
         return _usage_failure()
     except ControlError as error:
         return _control_failure(error)
@@ -1991,7 +1993,7 @@ def _effective_credential_heuristic_line(value: JsonValue) -> str | None:
 
     try:
         policy = cast(Mapping[str, JsonValue], cast(Mapping[str, JsonValue], value)["policy"])
-    except KeyError, TypeError:
+    except (KeyError, TypeError):
         return None
     if policy.get("credential_heuristic") != "disabled":
         return None
@@ -2042,7 +2044,7 @@ def _effective_task_statement_line(value: JsonValue) -> str | None:
             predates_section="task_statement" not in sections
             and policy["review_context_profile"] in {"goal_aware", "assisted", "expanded"},
         )
-    except KeyError, StopIteration, TypeError:
+    except (KeyError, StopIteration, TypeError):
         return None
     return "Task statement: " + text
 
@@ -2062,7 +2064,7 @@ def _effective_excerpt_limits_line(value: JsonValue) -> str | None:
         policy = decode_privacy_policy_canonical(
             canonical_encode(cast(Mapping[str, JsonValue], value)["policy"])
         )
-    except KeyError, TypeError, ValueError:
+    except (KeyError, TypeError, ValueError):
         return None
     return "Excerpt limits: " + policy_excerpt_limits_disclosure(policy)
 
@@ -2303,7 +2305,7 @@ async def _run_conversation_review_status(json_output: bool) -> int:
         snapshot = await get_privacy_setup_snapshot(Path.cwd())
     except ControlError as error:
         return _control_failure(error, json_output=json_output)
-    except OSError, ValueError:
+    except (OSError, ValueError):
         typer.echo("privacy_conversations_failed: privacy_setup_unreadable", err=True)
         return 20
     policy = snapshot.composed_policy
@@ -2389,7 +2391,7 @@ async def _run_input_roots_status(json_output: bool) -> int:
         snapshot = await get_privacy_setup_snapshot(Path.cwd())
     except ControlError as error:
         return _control_failure(error, json_output=json_output)
-    except OSError, ValueError:
+    except (OSError, ValueError):
         typer.echo("privacy_input_roots_failed: privacy_setup_unreadable", err=True)
         return 20
     roots = list(snapshot.composed_policy.admitted_input_roots)
@@ -2626,7 +2628,7 @@ def service_run(
 
         try:
             validate_id(IdKind.CORRELATION, startup_correlation_id)
-        except TypeError, ValueError:
+        except (TypeError, ValueError):
             _finish(_usage_failure())
     # Import-light: it must record a failure to import the daemon itself (#1040).
     from finishup.service.startup_failure import ServiceStartupError, record_startup_failure
@@ -2913,7 +2915,7 @@ def service_diagnostics(
         )
         _human_or_json(output, json_output=json_output)
         _finish(0 if records else 1)
-    except OSError, TypeError, ValueError:
+    except (OSError, TypeError, ValueError):
         _finish(_usage_failure())
 
 
@@ -3569,6 +3571,20 @@ for _admission_action in ("status", "preview", "grant", "revoke"):
     integrate_admission_app.command(_admission_action)(_host_admission_command(_admission_action))
 
 
+def _setup_targets(
+    hosts: list[str] | None,
+    paths: list[Path] | None,
+    roots: list[Path] | None,
+) -> tuple[
+    str | tuple[str, ...] | None, Path | tuple[Path, ...] | None, Path | tuple[Path, ...] | None
+]:
+    if hosts and (len(hosts) > 1 or hosts == ["all"]):
+        return tuple(hosts), tuple(paths or ()), tuple(roots or ())
+    if (paths and len(paths) != 1) or (roots and len(roots) != 1):
+        raise typer.BadParameter("Supply one --host-path and --host-config-root per --host")
+    return hosts[0] if hosts else None, paths[0] if paths else None, roots[0] if roots else None
+
+
 @setup_app.command("run")
 def setup_run(
     non_interactive: Annotated[
@@ -3586,15 +3602,15 @@ def setup_run(
     route_profile: _ROUTE_PROFILE = None,
     json_output: _JSON = False,
     host: Annotated[
-        str | None,
-        typer.Option("--host", help="Agent to connect: codex, claude, cursor-ide or cursor-cli."),
+        list[str] | None,
+        typer.Option("--host", help="Agent to connect; repeat to choose several, or use all."),
     ] = None,
     host_path: Annotated[
-        Path | None, typer.Option("--host-path", help="Override the detected executable.")
+        list[Path] | None, typer.Option("--host-path", help="Executable for each --host, in order.")
     ] = None,
     host_config_root: Annotated[
-        Path | None,
-        typer.Option("--host-config-root", help="Override the selected host configuration."),
+        list[Path] | None,
+        typer.Option("--host-config-root", help="Configuration for each --host, in order."),
     ] = None,
     project: Annotated[Path | None, typer.Option("--project", help="Project to connect.")] = None,
     request_value: Annotated[
@@ -3604,12 +3620,18 @@ def setup_run(
     preview_digest: Annotated[
         str | None, typer.Option("--preview-digest", help="Exact connection plan to accept.")
     ] = None,
+    batch: Annotated[bool, typer.Option("--batch", hidden=True)] = False,
 ) -> None:
     """Run the guided first-run setup wizard."""
 
     if codex_home is not None and codex_path is None:
         raise typer.BadParameter("--codex-home requires --codex-path")
     chosen_route = _validated_route_profile(route_profile)
+    selected_host, selected_path, selected_root = _setup_targets(host, host_path, host_config_root)
+    if batch and isinstance(selected_host, str):
+        selected_host = (selected_host,)
+        selected_path = () if selected_path is None else (cast(Path, selected_path),)
+        selected_root = () if selected_root is None else (cast(Path, selected_root),)
 
     operation = _setup_operation("run_setup_wizard")
     _finish(
@@ -3621,9 +3643,9 @@ def setup_run(
                 accept=accept,
                 json_output=json_output,
                 route_profile=chosen_route,
-                host=host,
-                host_path=host_path,
-                host_config_root=host_config_root,
+                host=selected_host,
+                host_path=selected_path,
+                host_config_root=selected_root,
                 project=project,
                 request_value=request_value,
                 preview_digest=preview_digest,
@@ -3634,9 +3656,11 @@ def setup_run(
 
 @setup_app.command("disconnect")
 def setup_disconnect(
-    host: Annotated[str, typer.Option("--host", help="Agent to disconnect.")],
-    host_path: Annotated[Path | None, typer.Option("--host-path")] = None,
-    host_config_root: Annotated[Path | None, typer.Option("--host-config-root")] = None,
+    host: Annotated[
+        list[str], typer.Option("--host", help="Agent to disconnect; repeat or use all.")
+    ],
+    host_path: Annotated[list[Path] | None, typer.Option("--host-path")] = None,
+    host_config_root: Annotated[list[Path] | None, typer.Option("--host-config-root")] = None,
     codex_home: Annotated[Path | None, typer.Option("--codex-home")] = None,
     codex_path: _CODEX_PATH = None,
     project: Annotated[Path | None, typer.Option("--project")] = None,
@@ -3658,21 +3682,54 @@ def setup_disconnect(
             ),
         ),
     ] = False,
+    batch: Annotated[bool, typer.Option("--batch", hidden=True)] = False,
 ) -> None:
     """Preview and remove the selected integration, preserving FinishUP data."""
     from finishup.cli.host_connection import run_host_connection
 
+    selected, executable, config_root = _setup_targets(host, host_path, host_config_root)
+    if batch and isinstance(selected, str):
+        selected = (selected,)
+        executable = () if executable is None else (cast(Path, executable),)
+        config_root = () if config_root is None else (cast(Path, config_root),)
+    if isinstance(selected, tuple):
+        if codex_home is not None or codex_path is not None:
+            raise typer.BadParameter("Use --host-path and --host-config-root for each batch member")
+        from finishup.cli.host_batch import run_host_batch
+
+        _finish(
+            run_async(
+                lambda: run_host_batch(
+                    hosts=selected,
+                    executables=executable if isinstance(executable, tuple) else (),
+                    config_roots=config_root if isinstance(config_root, tuple) else (),
+                    project=(project or Path.cwd()).expanduser().resolve(),
+                    action="disconnect",
+                    route=cast(
+                        Literal["strict", "policy"] | None, _validated_route_profile(route_profile)
+                    ),
+                    accept=accept,
+                    interactive=not non_interactive and not json_output and sys.stdin.isatty(),
+                    request_value=request_value,
+                    preview_digest=preview_digest,
+                    json_output=json_output,
+                    remove_shared=remove_shared,
+                )
+            )
+        )
+        return
+    assert isinstance(selected, str)
     if codex_home is not None or codex_path is not None:
-        if host != "codex" or host_path is not None or host_config_root is not None:
+        if selected != "codex" or executable is not None or config_root is not None:
             raise typer.BadParameter("Codex options cannot be combined with other host targets")
-        host_path = None if codex_path is None else Path(codex_path)
-        host_config_root = codex_home
+        executable = None if codex_path is None else Path(codex_path)
+        config_root = codex_home
 
     _finish(
         run_host_connection(
-            host=host,
-            executable=host_path,
-            config_root=host_config_root,
+            host=selected,
+            executable=cast(Path | None, executable),
+            config_root=cast(Path | None, config_root),
             project=(project or Path.cwd()).expanduser().resolve(),
             action="disconnect",
             # Without --route-profile, a Codex home keeps its registered review mode.
@@ -3688,10 +3745,21 @@ def setup_disconnect(
 
 
 @setup_app.command("vault")
-def setup_vault() -> None:
+def setup_vault(
+    passphrase: Annotated[
+        bool,
+        typer.Option(
+            "--passphrase",
+            help=(
+                "For a new vault, choose your own passphrase instead of a generated one kept "
+                "in the system keychain or a private file. You type it after every restart."
+            ),
+        ),
+    ] = False,
+) -> None:
     """Initialize or unlock storage in a trusted terminal, without provider setup."""
     operation = _setup_operation("run_vault_setup")
-    _finish(run_async(operation))
+    _finish(run_async(lambda: operation(passphrase=passphrase)))
 
 
 @setup_app.command("status")
@@ -3703,9 +3771,9 @@ def setup_status(
     ] = "local",
     codex_home: Annotated[Path | None, typer.Option("--codex-home")] = None,
     codex_path: _CODEX_PATH = None,
-    host: Annotated[str | None, typer.Option("--host")] = None,
-    host_path: Annotated[Path | None, typer.Option("--host-path")] = None,
-    host_config_root: Annotated[Path | None, typer.Option("--host-config-root")] = None,
+    host: Annotated[list[str] | None, typer.Option("--host")] = None,
+    host_path: Annotated[list[Path] | None, typer.Option("--host-path")] = None,
+    host_config_root: Annotated[list[Path] | None, typer.Option("--host-config-root")] = None,
     project: Annotated[Path | None, typer.Option("--project")] = None,
     route_profile: _ROUTE_PROFILE = None,
 ) -> None:
@@ -3713,20 +3781,52 @@ def setup_status(
 
     if operation not in {"local", "review", "connection"}:
         raise typer.BadParameter("--operation must be local, review or connection")
+    selected, executable, config_root = _setup_targets(host, host_path, host_config_root)
+    if isinstance(selected, tuple):
+        if next_step or codex_home is not None or codex_path is not None:
+            raise typer.BadParameter(
+                "Batch status uses --host-path/--host-config-root; --next needs one host"
+            )
+        from finishup.cli.host_batch import run_host_batch
+
+        _finish(
+            run_async(
+                lambda: run_host_batch(
+                    hosts=selected,
+                    executables=executable if isinstance(executable, tuple) else (),
+                    config_roots=config_root if isinstance(config_root, tuple) else (),
+                    project=(project or Path.cwd()).expanduser().resolve(),
+                    route=cast(
+                        Literal["strict", "policy"] | None, _validated_route_profile(route_profile)
+                    ),
+                    json_output=json_output,
+                    status_only=True,
+                )
+            )
+        )
+        return
+    # Keep the single-host and local-status paths on their released report contracts.
+    host_value = selected
+    host_executable = cast(Path | None, executable)
+    host_root = cast(Path | None, config_root)
     if codex_home is not None or codex_path is not None:
-        if host not in {None, "codex"} or host_config_root is not None or host_path is not None:
+        if (
+            host_value not in {None, "codex"}
+            or host_root is not None
+            or host_executable is not None
+        ):
             raise typer.BadParameter("Codex options cannot be combined with other host targets")
-        host, host_config_root = "codex", codex_home
-        host_path = None if codex_path is None else Path(codex_path)
+        host_value, host_root = "codex", codex_home
+        host_executable = None if codex_path is None else Path(codex_path)
     if next_step:
         from finishup.cli.setup_readiness import setup_next
 
         _finish(
             setup_next(
                 operation=cast(Literal["local", "review", "connection"], operation),
-                host=host,
-                executable=host_path,
-                config_root=host_config_root,
+                host=host_value,
+                executable=host_executable,
+                config_root=host_root,
                 project=(project or Path.cwd()).expanduser().resolve(),
                 # Review needs the AI-powered route; otherwise a Codex home keeps its mode.
                 route=cast(
@@ -3738,14 +3838,14 @@ def setup_status(
             )
         )
         return
-    if host is not None:
+    if host_value is not None:
         from finishup.cli.host_connection import run_host_connection
 
         _finish(
             run_host_connection(
-                host=host,
-                executable=host_path,
-                config_root=host_config_root,
+                host=host_value,
+                executable=host_executable,
+                config_root=host_root,
                 project=(project or Path.cwd()).expanduser().resolve(),
                 # Without --route-profile, a Codex home keeps its registered review mode.
                 route=cast(
@@ -3765,7 +3865,7 @@ async def _trusted_call(operation: Callable[[], Awaitable[object]], json_output:
         result = await operation()
         _human_or_json(result, json_output=json_output)
         return 0
-    except OSError, ProtocolValueError, ValueError:
+    except (OSError, ProtocolValueError, ValueError):
         return _usage_failure()
     except Exception as error:
         failure = _trusted_exception_failure(error)
@@ -3779,7 +3879,7 @@ def _recovery_store_read[T](operation: Callable[[], T]) -> tuple[T | None, int |
 
     try:
         return operation(), None
-    except OSError, ProtocolValueError, RuntimeError, ValueError:
+    except (OSError, ProtocolValueError, RuntimeError, ValueError):
         _stderr("storage_corrupt: the installation recovery set could not be read")
         return None, exit_code_for(PublicErrorCode.STORAGE_CORRUPT)
 
@@ -3921,8 +4021,17 @@ async def _service_auto_unlock_status(json_output: bool) -> int:
         state = "backend_unsupported"
     else:
         state = "rejected"
-    if state in {"stale", "absent", "rejected", "initialization_orphaned"}:
-        next_command: str | None = "finishup service auto-unlock repair"
+    note: str | None = None
+    if state == "absent" and vault_mode == "passphrase":
+        # Issue #1119: a typed passphrase with no stored copy is a choice (setup vault
+        # --passphrase), not a fault; storing it is optional and would undo that choice.
+        next_command: str | None = None
+        note = (
+            "Auto-unlock is off: you type your passphrase after each restart. To have FinishUP "
+            "keep it instead, run finishup service auto-unlock enable."
+        )
+    elif state in {"stale", "absent", "rejected", "initialization_orphaned"}:
+        next_command = "finishup service auto-unlock repair"
     elif state == "initialization_unreconciled":
         next_command = "finishup service restart"
     else:
@@ -3931,12 +4040,16 @@ async def _service_auto_unlock_status(json_output: bool) -> int:
         # Frozen legacy identifier (ADR-048): machine-readable report tag agents parse.
         "schema": "yoetz.auto-unlock-status/2",
         "state": state,
+        # Custody names where a stored entry lives; with no entry there is nothing to locate.
+        "custody": store.custody if "present" in slots.values() else None,
         "slots": dict(slots),
         "service_state": service_state,
         "service_state_reason": service_reason,
         "vault_mode": vault_mode,
         "next_command": next_command,
     }
+    if note is not None:
+        cast(dict[str, JsonValue], report)["note"] = note
     _human_or_json(report, json_output=json_output)
     return 0 if state == "provisioned" else 20
 
@@ -4023,6 +4136,7 @@ async def _service_auto_unlock_repair(json_output: bool) -> int:
                 return exit_code_for(PublicErrorCode.VAULT_LOCKED)
             store = _auto_unlock_store()
             store.save(passphrase)
+            custody = store.custody
         finally:
             for index in range(len(passphrase)):
                 passphrase[index] = 0
@@ -4039,6 +4153,9 @@ async def _service_auto_unlock_repair(json_output: bool) -> int:
         "schema": "yoetz.auto-unlock-repair/1",
         "outcome": "repaired",
         "service_state": "ready",
+        # Issue #1119: where the passphrase now lives (owner_file keeps it in a file only this
+        # account can read, which programs running as this account can also read).
+        "custody": custody,
         "next_command": "finishup service auto-unlock status",
     }
     _human_or_json(report, json_output=json_output)
@@ -4512,14 +4629,21 @@ def _provider_credential_command(action: str) -> Callable[..., None]:
 
         try:
             _finish(run_async(run))
-        except ProtocolValueError, ValueError:
+        except (ProtocolValueError, ValueError):
             _finish(_usage_failure())
 
     return command
 
 
+def run_configured_provider_credential(action: Literal["set", "rotate"]) -> None:
+    """Reuse the configured profile's trusted hidden-entry command (no secret arguments)."""
+
+    _provider_credential_command(action)()
+
+
 credential_app.command("set")(_provider_credential_command("set"))
 credential_app.command("rotate")(_provider_credential_command("rotate"))
+register_credential_remove(credential_app)
 
 
 @codex_subscription_app.command("setup")
@@ -5353,7 +5477,7 @@ def privacy_apply_desired(
             return 0
         try:
             tightening = is_privacy_tightening(current, candidate)
-        except TypeError, ValueError:
+        except (TypeError, ValueError):
             # Classification is the gate. If it cannot run, this is not a tighten, and the
             # command must not fall through to the widen message as if it had decided.
             return _usage_failure()
@@ -5420,7 +5544,7 @@ async def _privacy_pending(json_output: bool) -> int:
             result = await client.privacy_pending_list()
         finally:
             await client.close()
-    except ProtocolValueError, ValueError:
+    except (ProtocolValueError, ValueError):
         return _usage_failure()
     except ControlError as error:
         return _control_failure(error)
@@ -5514,7 +5638,7 @@ async def _privacy_receipts_list(page_size: int, cursor: str | None, json_output
             result = await client.privacy_receipts_list(request)
         finally:
             await client.close()
-    except ProtocolValueError, ValueError:
+    except (ProtocolValueError, ValueError):
         return _usage_failure()
     except ControlError as error:
         return _control_failure(error, json_output=json_output)
@@ -5551,7 +5675,7 @@ async def _privacy_receipts_get(receipt_id: str, json_output: bool) -> int:
             result = await client.privacy_receipts_get(request)
         finally:
             await client.close()
-    except ProtocolValueError, ValueError:
+    except (ProtocolValueError, ValueError):
         return _usage_failure()
     except ControlError as error:
         return _control_failure(error, json_output=json_output)
@@ -6082,7 +6206,7 @@ def elevated_authorize(
             if provider_credential_stdin:
                 try:
                     secret = _read_bounded_stdin_secret(8192)
-                except OSError, ValueError:
+                except (OSError, ValueError):
                     _stderr(
                         _bounded_failure_line(
                             "provider_credential_invalid", prefix="elevated_bootstrap"

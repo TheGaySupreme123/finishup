@@ -42,7 +42,7 @@ _CI_MARKERS: Final[tuple[str, ...]] = (
 def _real_terminal() -> bool:
     try:
         return sys.stdin.isatty() and sys.stdout.isatty()
-    except OSError, ValueError:
+    except (OSError, ValueError):
         return False
 
 
@@ -76,7 +76,7 @@ def tui_supported() -> bool:
 
     try:
         return find_spec("textual") is not None
-    except ImportError, ValueError:
+    except (ImportError, ValueError):
         return False
 
 

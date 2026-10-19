@@ -198,7 +198,7 @@ application errors — already describe real conditions and pass through unchang
 The service exposes three fixed owner-only same-UID endpoints: ordinary control; YZS1 one-secret
 ingress; and YZH1 multi-phase human control. YZH1 is the sole challenge/binding creator, returns
 bounded structural previews, supports zero-secret keyring retry, coordinates provider credential
-set/rotate, accepts typed privacy decisions, and owns the exact ceremony for changing or disabling
+set/rotate/remove, accepts typed privacy decisions, and owns the exact ceremony for changing or disabling
 idle relock. Durable policy widening, credential changes, and idle-security weakening
 require internal strong reauthentication; a `confirm_every_request` decision already inside the
 durable policy uses exact foreground digest-bound consent and creates no reusable authority. YZS1
@@ -249,6 +249,32 @@ compromised agent can forge it. One-shot provider credential bytes may enter the
 from authorize stdin after warning acknowledgement and are overwritten best-effort. Provider
 credentials become opaque adapter-scoped handles in the service vault; provider adapters and
 normal clients never receive reusable credential bytes.
+
+**2026-10-19 credential-removal amendment (issue #1119).**
+`provider_credential_remove` is an owner-only YZH1 ceremony for one exact
+`ProviderCredentialTarget(action="remove")`, with a bounded preview and target digest binding.
+It starts at `AuthorizationRequiredPhase`, using the same scoped OS-presence or vault-secret
+reauthentication paths as rotation (`provider_reauthentication`); it then commits without a
+`provider_credential` secret phase. The helper always requires the trusted foreground terminal,
+even when scoped auto-unlock supplies reauthentication. The existing production presence scope
+is unchanged; a platform adapter outside that scope cannot authorize removal. Locked vaults and
+missing records refuse (`vault_locked`, `record_missing`). The vault consumes the exact single-use
+proof before deleting with `expected_generation`; only confirmed deletion returns
+`ProviderCredentialRemoveResult(status="removed")`. Matching unused provider handles are invalidated,
+including on an ambiguous deletion, so they cannot start a later request. Already-started requests
+cannot be recalled. The CLI confirms with default No; the full-screen interface hands over the
+terminal. Binding and privacy policy stay unchanged. This ceremony is deliberately absent from
+ADR-015 elevated bootstrap, `finishup consent`, delegated chat authorization and MCP.
+
+Known limit (review of #1119, accepted for this release). Where scoped auto-unlock supplies the
+reauthentication factor, the default for a generated-passphrase vault whose owner never learned
+the passphrase, a process that runs as the same user and controls a foreground pseudo-terminal can
+complete removal without a human. That is the same authority `provider_credential_set` and
+`provider_credential_rotate` already have with the same factor. Removal discloses nothing; its worst
+case is a deleted key that the owner enters again. Requiring an owner-entered factor or action-bound
+OS presence would leave removal unusable for the default vault until production OS presence covers
+credential ceremonies. That stricter rule should therefore land for set, rotate and remove together;
+it is a follow-up on #1119.
 
 `UnlockCoordinator` solely owns the persistent passphrase throttle: admission delay, in-progress
 reservation, failure charge, success reset, crash re-arm, and repair. It calls cryptographic vault
@@ -449,3 +475,54 @@ home's credential file. FinishUP may create the exact nonsecret config and retai
 must not read, parse, hash, copy, export, log, or place credential bytes in the vault. Rollback
 removes only the FinishUP binding; disconnect first requires Codex to confirm logout and otherwise
 fails honestly.
+
+## Owner-only file custody where no platform store is usable (2026-10-19, issue #1119)
+
+**Owner decision (2026-10-19).** First-run setup must not ask a non-technical user to invent a vault
+passphrase. On machines without a usable platform credential store (WSL 2, headless Linux, a
+container), the generated auto-unlock passphrase is therefore kept in owner-only files instead.
+This replaces the earlier rule that no file fallback exists. The owner chose this knowing it
+weakens the at-rest boundary on those machines.
+
+- **Custody.** `AutoUnlockPassphraseStore` keeps its entries, slots and every staging, promotion
+  and proof-based recovery rule. Only the backend changes: `OwnerOnlyFileCredentialStore`
+  (`finishup.adapters.keys.owner_file_store`) stores each slot as one file named by its digest
+  account under `<bundle>/auto-unlock/` (directory `0700`, files `0600`).
+  - Every operation opens the custody directory once (`O_NOFOLLOW`), verifies that descriptor
+    (directory, euid-owned, `0700`), and resolves entry names against it, so a swapped path
+    component cannot redirect a read or write.
+  - Reads refuse anything that is not a regular, euid-owned, owner-only, single-link file.
+    Symlinks are refused (`O_NOFOLLOW`).
+  - Writes are atomic and complete: an exclusive temp file receives every byte, is fsynced,
+    renamed into place, and the directory is fsynced.
+  - Only the custody directory is created, and only inside an existing bundle root.
+  - Entry names are store-chosen digests; no user-controlled text reaches a path.
+- **Selection.** Existing file entries win, so an installation keeps its custody when a platform
+  store appears later. Otherwise an allowlisted platform store is used, including the first one
+  inside keyring's chainer wrapper. The file is used only when neither applies.
+  `service auto-unlock status` and `auto-unlock enable|repair` report
+  `custody: platform_store | owner_file`; setup and the terminal interface name the custody they
+  actually used, and the agent-chat `vault_initialize` and `vault_passphrase_rotate` danger texts
+  state both custodies and the same-user trade-off.
+- **Recovery snapshots never carry it.** ADR-024 self-contained snapshots skip
+  `<bundle>/auto-unlock/` (and the empty `auto-unlock-init.lock`) instead of refusing the bundle,
+  so recovery provisioning keeps working and an exported recovery set never holds the
+  passphrase beside the envelope it opens.
+- **What it protects.** The file custody protects the vault against other accounts on the
+  machine. It does **not** protect against software running as the same user, which can read the
+  file. On those machines the vault's at-rest protection is equivalent to the account's file
+  permissions. A backup or copy of the state folder includes the key. User docs say this plainly.
+- **Choice and reverse path.**
+  - `finishup setup vault --passphrase` creates a new vault from a passphrase the owner types,
+    and keeps no copy of it.
+  - For an existing vault, `service rotate-passphrase` changes the passphrase but still keeps the
+    new value in the current custody. The atomic delete-plus-rewrap `disable` ceremony this ADR
+    already requires stays unimplemented; a follow-up under issue #1119 owns it.
+- **Unchanged.**
+  - The vault-root key never uses this backend; `os_keyring` mode still requires an approved
+    platform store.
+  - Secrets still never travel through argv, environment, config, stdin, logs, ordinary control
+    or MCP.
+  - A pre-existing entry still blocks initialization rather than being adopted.
+  - The agent-chat `vault_initialize` lane (ADR-015) now succeeds on these machines through the
+    same helper-generated secret.

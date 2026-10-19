@@ -45,9 +45,7 @@ __all__ = [
 ]
 
 PACKAGE_UPDATE_UPGRADE_COMMAND: Final = "finishup upgrade"
-PACKAGE_INSTALL_COMMAND: Final = (
-    "uv tool install --compile-bytecode --managed-python --python 3.14.6 finishup"
-)
+PACKAGE_INSTALL_COMMAND: Final = "uv tool install --managed-python --python 3.14 finishup"
 # Frozen legacy identifier (ADR-048): the cache file keeps its schema tag so earlier releases
 # sharing the state directory still read it. The optional ``package`` member names the PyPI
 # identity that was polled; a cache without one was written by a release that polled ``yoetz``.
@@ -123,7 +121,7 @@ def installed_package_name() -> str:
 
     try:
         legacy = version(LEGACY_LAUNCHER_NAME)
-    except PackageNotFoundError, ValueError:
+    except (PackageNotFoundError, ValueError):
         return LAUNCHER_NAME
     return LEGACY_LAUNCHER_NAME if legacy == installed_package_version() else LAUNCHER_NAME
 
@@ -283,7 +281,7 @@ def load_package_update_cache(
         return None
     try:
         parsed: object = json.loads(raw.decode("utf-8"))
-    except UnicodeError, json.JSONDecodeError:
+    except (UnicodeError, json.JSONDecodeError):
         return None
     if type(parsed) is not dict:
         return None
@@ -359,7 +357,7 @@ def store_package_update_cache(
             return
         path.write_bytes(payload)
         path.chmod(0o600)
-    except OSError, PathSafetyError, ValueError:
+    except (OSError, PathSafetyError, ValueError):
         return
 
 

@@ -10,6 +10,43 @@ Public-alpha release candidate; publication remains gated by #785 and by the ren
 gates on #1056. This heading takes the release date when 0.3.0 is tagged. See
 [release notes](docs/releases/v0.3.0.md) for changes and validation limits.
 
+### Easier installation (#1119)
+
+- **Runs on Python 3.12, 3.13 and 3.14, with any uv from 0.11.29.** The install is now
+  `uv tool install --managed-python --python 3.14 finishup`: no exact patch to type, and uv fetches
+  Python 3.14 when the machine has none, whatever other Pythons are installed. `--python 3.14` keeps
+  uv 0.13 and later off their new default, Python 3.15, which FinishUP's dependencies cannot install
+  on yet. The npm launcher makes the same install.
+  Releases stay certified on CPython 3.14.6; any other interpreter runs and reports itself as an
+  untested cell (`platform_cell_untested`, `/doctor` "not proven"). The `<3.15` ceiling stays until
+  the locked native dependencies publish Python 3.15 wheels.
+- **Connect every agent at once.** Setup can connect all detected coding agents or a chosen
+  subset in one run. The prompt wizard and full-screen first run offer one combined preview and
+  approval; each agent keeps its own authentication. `setup run`, `setup disconnect` and
+  `setup status` accept `--host all` or repeated `--host` selections. Batch acceptance binds every
+  preview and reports partial results separately, with a fresh continuation for the remaining
+  agents.
+- **No vault question.** Every setup path, local only included, creates the vault with no
+  question. The key goes to the system keychain, or, where none is usable (WSL, headless Linux),
+  to a file only your account can read: other accounts cannot open it, programs running as you
+  can, and a copy of FinishUP's data folder includes it (ADR-008 amendment, an owner decision).
+  `finishup setup vault --passphrase` keeps a typed, never-stored passphrase for a new vault, and
+  `finishup service auto-unlock status` shows where the key lives. Recovery snapshots never carry
+  it.
+- **Optional AI-powered review is easier to set up.** One shared reviewer question in setup and
+  `/provider`: ChatGPT subscription, API key, or Not now (local checks only). API setup offers
+  updated October 2026 models, mandatory privacy approval, and hidden key entry. Custom model IDs
+  remain available (ADR-006 amendment).
+- **New `finishup ai setup|key|forget-key|model|status|on|off` commands.** `ai setup --every-task` reviews
+  every task. Stray arguments are refused without being echoed, so a pasted key never lands in a
+  terminal or transcript. Key entry picks set or rotate;
+  model changes explain exact-model key binding and reopen safe entry; off keeps the key.
+  `ai key` replaces a stored key, and `ai forget-key` (also `provider credential remove`)
+  removes it after default-No confirmation and trusted-terminal owner reauthentication.
+  `/provider` offers the same removal path. Binding and privacy settings stay unchanged;
+  status reports absence after readiness reload. Revoke leaked keys at the provider too.
+  Privacy widening still requires reauthentication.
+
 ### Yoetz is now FinishUP
 
 - **The product is renamed FinishUP** (#1055, [ADR-048](docs/adr/ADR-048-finishup-rebrand-and-frozen-legacy-identifiers.md)).

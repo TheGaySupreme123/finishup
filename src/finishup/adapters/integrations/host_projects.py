@@ -277,7 +277,7 @@ def recorded_members(config_root: Path) -> tuple[str, ...]:
     try:
         raw = _read_bounded(witness_path_for(config_root))
         return () if raw is None else _parse_record(raw)[0]
-    except HostProjectsError, OSError:
+    except (HostProjectsError, OSError):
         return ()
 
 
@@ -300,7 +300,7 @@ def _update_witness(
         ordered = tuple(sorted(item for item in members if _valid_root(item)))[:_MAX_PROJECTS]
         _private_lock_directory(path.parent)
         _replace_private_file(path, encode_projects(ordered))
-    except HostProjectsError, OSError, ValueError, PathSafetyError:
+    except (HostProjectsError, OSError, ValueError, PathSafetyError):
         return
 
 

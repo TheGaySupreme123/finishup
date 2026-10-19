@@ -717,7 +717,7 @@ class SqliteWriterThread:
                     continue
                 try:
                     result = job.function(db)
-                except apsw.BusyError, apsw.LockedError:
+                except (apsw.BusyError, apsw.LockedError):
                     job.future.set_exception(_WriterBusyError())
                 except BaseException as exc:
                     job.future.set_exception(exc)

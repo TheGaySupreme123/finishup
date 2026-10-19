@@ -2,8 +2,9 @@
 
 FinishUP was previously called Yoetz. Already using Yoetz? See [Upgrading from Yoetz](upgrading.md#upgrading-from-yoetz) instead.
 
-Choose an installed Codex, Claude Code, Cursor IDE or Cursor Agent CLI, select your project and
-review mode, then approve the connection preview. FinishUP handles each agent's installation steps
+Connect all the Codex, Claude Code, Cursor IDE and Cursor Agent CLI installations FinishUP finds,
+or choose some of them. Select your project and review mode once, then approve one combined
+connection preview. FinishUP handles each agent's installation steps
 and tells you when a fresh session or a local authentication prompt is needed. Exact installation
 details remain available when you need them. The desktop platforms are macOS, Linux, and Windows
 through WSL 2; this does not add native Windows or mobile support.
@@ -11,6 +12,25 @@ through WSL 2; this does not add native Windows or mobile support.
 Use `/connect` to connect or repair and `/disconnect` to remove an integration while retaining
 your FinishUP data. From a terminal, `finishup setup run`, `finishup setup status`, and
 `finishup setup disconnect --host codex|claude|cursor-ide|cursor-cli` expose the same lifecycle.
+Use `finishup setup run --host all` to connect every detected installation, or repeat the option,
+such as `--host codex --host claude`, to choose several. `finishup setup disconnect --host all`
+previews removing the detected integrations; `finishup setup status --host all --json` reports
+each installation separately. Disconnection keeps your FinishUP data and any shared pieces still
+needed by other projects.
+
+When several agents are found, both guided interfaces offer **all agents found (recommended)**
+or **choose which**. The prompt
+wizard accepts comma-separated numbers; the full-screen interface lets you select several agents
+with Space and continue with Enter. Codex still asks you to confirm its settings folder, and the
+full-screen interface still asks whether you trust the project. Each agent that needs operating-system
+authentication asks separately, with its name shown before the prompt.
+
+Without a terminal, setup shows every proposed change and one command to approve that exact batch.
+Use the command as shown: it retains every executable, settings folder, project, request identity
+and combined preview digest. `--accept` on its own cannot approve a batch. If any preview changed,
+setup refuses before changing any agent. If a later step fails, setup stops, reports each agent as
+completed, failed or not attempted, and gives a new preview command for the remaining agents.
+Inspect status before retrying a partial connection; completed steps are retained.
 You can connect several projects to the same agent installation one after another: each adds only
 what that project needs, disconnecting one keeps the others working, and `setup status` lists the
 connected projects. Connecting the same folder a second time under another path (a symlink, other
@@ -55,18 +75,23 @@ The npm command, `npx finishup`, starts setup directly.
 Install the latest published version through Python via [`uv`](https://docs.astral.sh/uv/):
 
 ```text
-uv tool install --compile-bytecode --managed-python --python 3.14.6 finishup
+uv tool install --managed-python --python 3.14 finishup
 finishup
 ```
 
-**Python.** FinishUP needs Python 3.14 and `uv` provides it: with `--managed-python` it downloads
-the exact interpreter on demand, so it does not matter which other Pythons are installed, which
-one `python3` resolves to, or whether pyenv, Homebrew, or a system Python is on your `PATH`. The
+**Python.** FinishUP runs on Python 3.12, 3.13 or 3.14 and `uv` provides one: with
+`--managed-python --python 3.14` it downloads Python 3.14 on demand (keep `--python 3.14`: uv 0.13
+and later otherwise pick Python 3.15, which FinishUP's dependencies cannot install on yet), so it
+does not matter which
+other Pythons are installed, which one `python3` resolves to, or whether pyenv, Homebrew, or a system Python is on your `PATH`. The
 install is unaffected by them and touches none of them. Only two configurations block it, and both
 say so in the error: `uv` configured never to download Pythons (`python-downloads = "never"`), and
 `uv` configured to use system interpreters only (`python-preference = "only-system"`) on a machine
-without 3.14. `pip install finishup` or `pipx install finishup` on an older Python cannot work; the
-package requires 3.14, and a pip that resolves it anyway is not installing FinishUP.
+without Python 3.12 to 3.14. Releases are certified on CPython 3.14.6. On any other interpreter
+(3.12, 3.13, or another 3.14 patch) FinishUP runs and is tested, but reports itself as an
+untested cell (see [Linux](#linux)). Prefer `uv` over
+`pip` or `pipx`: a shared or system Python is often writable by other accounts, which FinishUP
+refuses (below).
 
 **Git.** FinishUP reads your repository with the system Git, the first `git` in `/bin` or
 `/usr/bin`, never one that only your shell's `PATH` puts first (a conda or Homebrew Git, for
@@ -94,7 +119,7 @@ connection (MCP) and the hooks then stop with `release_runtime_group_writable` o
 for your installation, of the form
 
 ```bash
-chmod -R go-w ~/.local/share/uv/tools/finishup ~/.local/share/uv/python/cpython-3.14.6-<platform>
+chmod -R go-w ~/.local/share/uv/tools/finishup ~/.local/share/uv/python/cpython-<version>-<platform>
 ```
 
 To keep a later reinstall private from the start, run `umask 022` in that shell before
@@ -148,8 +173,9 @@ The connection-only path checks the selected host without requiring a provider o
 Use the command exactly as displayed: it retains the selected FinishUP installation and project.
 
 `finishup setup vault` initializes or unlocks only the selected installation's storage using the
-existing protected terminal ceremony. It diagnoses credential-store availability, retains the
-explicit passphrase fallback where needed, and stops before provider selection or privacy grants.
+existing protected terminal ceremony. A new vault gets a generated key kept in the system keychain,
+or in a file only your account can read where there is none; `--passphrase` lets you choose your
+own instead. It stops before provider selection or privacy grants.
 It requires a local interactive terminal; agents show that continuation without supplying secrets.
 
 If a service-dependent approval reports `ceremony_service_unavailable` before it is claimed,
@@ -171,7 +197,8 @@ marketplace conflict still requires inspecting the project; changing the home do
 ## Linux
 
 FinishUP runs on macOS and Linux. The certified cells are macOS 11 or later on Apple silicon and
-glibc 2.28 or later Linux on x86-64. The package also installs on other Linux architectures, such
+glibc 2.28 or later Linux on x86-64, both with CPython 3.14.6; the same machines on any other
+Python (3.12, 3.13, or another 3.14 patch) count as untested cells too. The package also installs on other Linux architectures, such
 as aarch64 (Raspberry Pi, Graviton, Asahi, or WSL on a Windows-on-ARM laptop); those installs are
 untested, not presumed compatible: `finishup version --json` lists `platform_cell_untested` under
 `limitations`, `finishup setup status --json` reports the cell, and `/doctor` shows the platform line
@@ -190,11 +217,13 @@ Three things on Linux differ from macOS, and each is reported once, up front, by
   places answer it: `/doctor`, `finishup setup status --json`, and
   `finishup observe checks status --json` (per workspace). `finishup service status` reports the
   local service itself and stays silent about the sandbox.
-- **System secure storage needs a running Secret Service.** The "system keyring" choice at setup
-  means macOS Keychain on macOS and, on Linux, a Freedesktop Secret Service on your session bus
-  (GNOME Keyring, or KWallet through its Secret Service bridge). Headless sessions, servers, and
-  WSL usually have none. Setup then disables that option, states the reason, and offers a FinishUP
-  passphrase, which is the supported route there.
+- **Where the vault key is kept.** Setup keeps the vault key in macOS Keychain on macOS and, on
+  Linux, in a Freedesktop Secret Service on your session bus (GNOME Keyring, or KWallet through its
+  Secret Service bridge). Headless sessions, servers, and WSL usually have none. There, setup keeps
+  the key in a file only your account can read, and says so. That protects your FinishUP data from
+  other accounts on the machine, but not from programs running as you, and a backup of
+  FinishUP's folder includes the key. To type a passphrase after every restart instead, run
+  `finishup setup vault --passphrase` before your first setup.
 - **State stays on a local disk.** A state directory on a network or cross-machine filesystem
   is refused with `path_on_network_filesystem`; the message names the safe location.
 
@@ -213,7 +242,7 @@ every command except `finishup version`, `--version`, and `--help` then refuses 
    ```text
    curl -LsSf https://astral.sh/uv/install.sh | sh
    source "$HOME/.local/bin/env"
-   uv tool install --compile-bytecode --managed-python --python 3.14.6 finishup
+   uv tool install --managed-python --python 3.14 finishup
    finishup
    ```
 
@@ -233,8 +262,9 @@ Inside WSL, the [Linux](#linux) notes above apply, with these specifics:
   `virtiofs`) whose locking and durability FinishUP has not certified, so a state directory there — including one
   named by `FINISHUP_ISOLATED_ROOT` — is refused with `path_on_network_filesystem`. Your projects
   can live on a Windows drive; FinishUP's own state cannot.
-- **Choose a FinishUP passphrase.** A default WSL session has no Secret Service, so system secure
-  storage is unavailable and setup says why.
+- **No passphrase to choose.** A default WSL session has no Secret Service, so setup keeps the
+  vault key in a file only your Linux account can read (see [Linux](#linux) for what that does
+  and does not protect).
 - **Install bubblewrap** (`sudo apt install bubblewrap`) before trusting a check policy whose
   checks deny network.
 - **Windows-on-ARM laptops** run an aarch64 Ubuntu, which is an untested platform cell (see
@@ -257,25 +287,14 @@ Setup is a linear path inside the interface, each finished step collapsing into 
 1. **Detection.** Installed Codex, Claude Code, Cursor IDE and Cursor Agent CLI, your project and its canonical Git common
    root (or resolved non-Git directory), whether system secure storage is available, and whether
    FinishUP is connected yet.
-2. **Which installation**, when several supported agents are found. Select your preferred agent
-   in the same setup flow. Friendly names lead;
-   executable paths appear on selection and under `D`.
-3. **Project trust.** The repository root and what project-local guidance and hooks are permitted
-   to do. Starting in a subfolder is called out, with the root the trust applies to.
-4. **The exact proposed change** — a discoverable project skill under `.agents/skills/finishup`,
-   managed plugin/hook source files under `.agents/plugins/finishup`, the `finishup mcp serve` MCP
-   registration, bounded structural event recording, and the approved-check policy digest — plus
-   what will *not* happen. Nothing is applied before an explicit approval, and the approval is
-   bound to the exact preview and policy digests that were displayed: if either has moved, the
-   apply refuses as stale rather than proceeding.
-5. **Installation activity**, with each step reported only once its postcondition was checked.
-6. **Secure storage** — the system keyring (macOS Keychain, or a running Secret Service on
-   Linux; see [Linux](#linux)), or a FinishUP passphrase. When the keyring is unusable the option is
-   disabled with the reason stated. A passphrase is entered on the
-   trusted terminal: input is masked with `*`, must be 16–1024 UTF-8 bytes with no control
-   characters, and the helper re-prompts after invalid or mismatched input. Later changes use
-   `finishup service rotate-passphrase` (or **Change the passphrase** under `/service`).
-7. **Review mode** — how your tasks use AI-powered review. Every answer keeps FinishUP's local
+2. **All or choose some.** When several installations are found, “All N agents (recommended)” is
+   selected by default. “Choose which” opens a list: use Space to select agents and Enter to continue. Friendly names lead; executable
+   paths appear on selection and under `D`. Confirm the settings folder for each selected Codex
+   installation.
+3. **Project trust, when Codex is selected.** Confirm the repository root and what its project-local
+   guidance and hooks are permitted to do. Starting in a subfolder is called out, with the root
+   the trust applies to.
+4. **Review mode, once for all selected agents** — how your tasks use AI-powered review. Every answer keeps FinishUP's local
    checks on every task:
    1. **FinishUP (recommended)**: local checks; your agent can turn on AI-powered review for a
       task when it helps. Choosing this is your standing permission for that; the privacy policy
@@ -283,10 +302,34 @@ Setup is a linear path inside the interface, each finished step collapsing into 
    2. **FinishUP, local only**: agents may not turn on AI-powered review. No reviewer is set up.
    3. **AI-powered review on every task**: every task is reviewed, as in earlier releases.
 
-   All three connect your agent the same way, so you can change your mind later with
-   `finishup privacy conversations` without reconnecting.
-8. **AI-powered review setup, for the first and third answers** — provider/model (or a ChatGPT
-   subscription), hidden API-key entry, then the privacy options, which record your answer.
+   All three connect the selected agents the same way, so you can change your mind later with
+   `finishup ai on` or `finishup ai off` without reconnecting;
+   `finishup privacy conversations` also offers per-review owner approval.
+5. **One combined preview.** See every selected agent's changes together. Codex's preview retains
+   its project skill, plugin and hook files, MCP registration, bounded structural event recording
+   and approved-check policy digest. The preview also names other projects affected by a shared
+   review-mode change. One explicit approval binds every preview: a stale member refuses the
+   batch before any agent is changed.
+6. **Installation activity.** Each agent's result is reported separately. Agents that need
+   operating-system authentication ask in turn, with their name shown. A later failure stops the
+   batch and reports completed, failed and unattempted agents, with a new preview command for
+   the remaining ones.
+7. **Secure storage**, with no question. FinishUP creates its vault and keeps the key in the system
+   keychain (macOS Keychain, or a running Secret Service on Linux). Where there is none (WSL,
+   headless Linux), it keeps the key in a file only your account can read, and the step says so;
+   see [Linux](#linux) for what that protects. Local-only setups get the same vault. To choose your
+   own passphrase instead, run `finishup setup vault --passphrase` before first setup: input is
+   masked with `*`, must be 16–1024 UTF-8 bytes with no control characters, FinishUP keeps no
+   copy, and you type it after every restart. Later changes use
+   `finishup service rotate-passphrase` (or **Change the passphrase** under `/service`).
+8. **AI reviewer, for the first and third answers** — "How should FinishUP reach an AI reviewer?"
+   Choose **Sign in with your ChatGPT subscription (uses Codex)**, **Use an API key**, or
+   **Not now — stay local for now**. Not now records local-only review. With an API key, choose
+   the provider, then a model (the recommended model comes first, with an option to type another
+   ID), complete the mandatory privacy step, and enter the key with hidden input. Only this path
+   asks whether to allow one content-free request to check the key (yes by default). ChatGPT
+   sign-in uses Codex's own account flow and asks for no API key. Add or change the reviewer later
+   with `finishup ai setup`; enter a key safely with `finishup ai key`.
    **Assisted review** is the default choice; it is marked recommended only for an exact provider
    route with current reviewed no-training evidence and retention no longer than 30 days, and
    otherwise (a ChatGPT subscription among them) the choice is yours. Assisted review is bounded

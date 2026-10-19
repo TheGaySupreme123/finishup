@@ -21,6 +21,14 @@ Storage-only continuation is `finishup setup vault` in a trusted terminal. This 
 no new native-session capability; Linux/WSL first-use and storage acceptance remain bounded by
 [the platform runbook](linux-and-wsl.md#setup-and-vault-acceptance-still-owned-by-737).
 
+AI-review setup decision (#1119, 2026-10-19): use the shared `finishup ai setup` / `/provider`
+question and `finishup ai key` in the owner's terminal; ChatGPT review is a separate Codex-owned
+login regardless of the connected agent. Agent opt-in remains recommended, Not now records
+local-only review, and `ai off` reverses it. Privacy widening and confidential entry retain their
+existing ceremonies on macOS, Linux and WSL 2; native host/platform parity is not inferred from
+these shared-flow tests. Individual stored-key removal remains a #1119 follow-up; revocation at
+the provider invalidates the key.
+
 ## Guided desktop connection (issue #767)
 
 Prefer `finishup setup run --host claude` for ordinary setup. It discovers the executable and
@@ -2855,3 +2863,24 @@ omissions name valid linked subjects. Packet omissions, coverage and omission to
 the existing CLI/MCP/TUI summaries and JSON, markdown and text receipts. Small packets are unchanged.
 These are shared-composer tests on macOS/Linux, not new native host or WSL session certification.
 No installation, upgrade, disconnect or reverse-state behavior changes.
+
+## Batch setup decision (2026-10-19, issue #1119)
+
+Claude Code participates in `setup run|disconnect|status --host all` and repeated `--host`
+selections through its existing plugin connection plan on macOS, Linux and WSL 2. The combined
+approval binds the executable, configuration, project, route and per-host preview; macOS or PAM
+authentication still runs for Claude Code on the foreground terminal, after the agent is named.
+Shared-project review-mode warnings and conservative shared-piece removal remain in the preview.
+Failures stop later members and preserve individual outcomes. Native-host/platform evidence
+limits elsewhere in this runbook still apply.
+
+
+## Provider key removal decision (2026-10-19, issue #1119)
+
+Same path on every host: the owner runs `finishup ai key` to replace a key, or
+`finishup ai forget-key` (`finishup provider credential remove`) to remove it after default-No
+confirmation and trusted-terminal reauthentication. `/provider` hands over the terminal for that
+same removal flow. Agents direct the owner to it and never run it; no MCP or chat-consent removal
+path is added. The configured API fallback is targeted when Codex is primary. Binding and privacy
+policy stay unchanged, and status is presence-only after readiness reload. Shared-path tests do not
+claim a new native-host or platform certification.

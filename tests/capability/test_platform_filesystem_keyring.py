@@ -113,7 +113,7 @@ def test_isolated_filesystem_and_sqlite_durability_cells(tmp_path: Path) -> None
     link = bundle / "symlink-trap"
     link.symlink_to(data)
     # Durable mutation paths must refuse symlink destinations (negative control).
-    symlink_rejected = link.is_symlink() and not link.is_file(follow_symlinks=False)
+    symlink_rejected = link.is_symlink() and not stat.S_ISREG(link.lstat().st_mode)
 
     db_path = bundle / "ledger.sqlite3"
     connection = apsw.Connection(str(db_path))

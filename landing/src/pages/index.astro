@@ -17,11 +17,11 @@ const DOCS = `${GITHUB}/tree/main/docs/usage`;
 const INSTALL_GUIDE = `${GITHUB}/blob/main/docs/usage/install-and-first-run.md`;
 const CONTACT_EMAIL = "support@finishup.dev";
 const VERSION = landingPackage.version;
-const AGENT_PROMPT = `I want to install FinishUP (${GITHUB}). Start by fetching its agent install guide and follow it exactly:
+const AGENT_PROMPT = `Install FinishUP for me (${GITHUB}). Fetch its agent install guide and follow "The short version" at the top:
 
 curl -fsSL https://raw.githubusercontent.com/TheGaySupreme123/finishup/main/docs/usage/agent-start.md
 
-It tells you what to run yourself, what to ask me, and where to hand me the terminal. If your sandbox blocks that fetch, ask me to approve it or to paste the guide. Then help me through the CLI: setup's questions are mine to answer, so ask me each one and wait, and show me any proposed change before it is applied.`;
+If your sandbox blocks that fetch, ask me to approve it or to paste the guide. Setup's questions are mine to answer, so ask me each one and wait, and show me any proposed change before it is applied. Never ask me for a key or password in chat; hand me the terminal for those.`;
 const TITLE = "FinishUP: agents start, FinishUP checks";
 const DESCRIPTION =
   "FinishUP checks recorded work evidence and shows what remains open. Open source, with local checks and optional AI-powered review. For Codex, Claude Code, and Cursor.";

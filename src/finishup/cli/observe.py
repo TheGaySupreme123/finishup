@@ -661,7 +661,7 @@ def _selection_accounting_payload(
         return JsonObject({})
     try:
         raw = accounting(commitment)
-    except OSError, ProtocolValueError, TypeError, ValueError, RuntimeError:
+    except (OSError, ProtocolValueError, TypeError, ValueError, RuntimeError):
         return JsonObject({})
     if not isinstance(raw, Mapping):
         return JsonObject({})
@@ -706,7 +706,7 @@ def _selection_runtime_payload(
         return None
     try:
         raw = runtime_status(commitment, session_commitment)
-    except OSError, ProtocolValueError, TypeError, ValueError, RuntimeError:
+    except (OSError, ProtocolValueError, TypeError, ValueError, RuntimeError):
         return None
     if not isinstance(raw, Mapping):
         return None
@@ -763,7 +763,7 @@ def _selection_runtime_payload(
 def _selection_capacity_profile(value: object) -> str:
     try:
         return ObservationCapacity.from_value(value).label
-    except TypeError, ValueError:
+    except (TypeError, ValueError):
         return DEFAULT_OBSERVATION_SELECTION.capacity.label
 
 
@@ -1671,7 +1671,7 @@ async def _drain_pass(
             result = observation_ingest_result_from_json(raw)
         except ControlError as exc:
             result = observation_control_failure(exc)
-        except ProtocolValueError, TypeError, ValueError:
+        except (ProtocolValueError, TypeError, ValueError):
             reason = "invalid_request" if stage == "request_encode" else "frame_invalid"
             result = ObservationControlFailure(
                 ObservationIngestDisposition.REJECTED,

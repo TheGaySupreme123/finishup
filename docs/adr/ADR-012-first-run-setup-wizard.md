@@ -358,8 +358,9 @@ availability, structured-output interoperability, provider data use, or E-007 ca
    `support/npm-launcher/` contains a dependency-free `package.json` (registry name
    `finishup`, version locked to the PyPI version) and `bin/finishup.js`, which requires `uv` on PATH
    (printing install guidance and exiting nonzero otherwise), makes the exact version a
-   persistent tool with `uv tool install --quiet --python 3.14 finishup==<version>` (a no-op once
-   present), and delegates to a versionless `uvx --python 3.14 finishup`, which runs that installed
+   persistent tool with `uv tool install --quiet --managed-python --python 3.14 finishup==<version>`
+   (a no-op once present; the 3.14 request keeps uv off a newer default Python, issue #1119), and delegates to a
+   versionless `uvx finishup`, which runs that installed
    tool environment rather than a cache-backed one, with untouched arguments and the child's
    exact exit code. It bundles no Python, downloads nothing itself, and duplicates no
    wizard logic — first-run behavior lives once, in the Python CLI. The persistent install was
@@ -812,3 +813,41 @@ exact repository-scoped categories, selection bounds, provider posture and reten
 the current trusted privacy ceremony; acceptance is still required. Unknown, stale or
 account-unqualified provider posture does not acquire a reviewed assurance. Existing durable policy
 bytes stay unchanged. Editing verification settings cannot enable egress or silently migrate policy.
+
+## Amendment — connect several detected agents (2026-10-19, issue #1119)
+
+Maintainer-authorized scope: one setup run connects all installations returned by executable-backed
+host discovery, or an explicit subset. `--host all` and repeatable `--host` apply to setup run,
+disconnect and status. Repeated `--host-path` and `--host-config-root` pair with the host selections
+in order; batch continuations always expand discovery to exact installations. The internal
+`--batch` selector preserves the batch contract when only one installation remains. Ordinary
+single-host JSON keeps its released shape.
+Codex's PATH-visible executable name, including a symlinked launcher, is retained through
+batch preview and explicit replay, as discovery requires; single-host resolution is unchanged.
+
+The prompt wizard offers all N agents found (recommended) or choose which, then accepts a
+comma-separated subset. Review mode is chosen once for the batch and applies to every member.
+One combined preview contains every per-host change and the existing cross-project warnings.
+Each selected Codex home is confirmed; project trust stays part of the prompt wizard's exact
+approval, and Codex's existing activation, skill and policy-trust digests are preserved. Claude
+Code and Cursor retain their separate OS-presence ceremonies, in order, naming the agent asking.
+
+The combined digest is SHA-256 over canonical JSON for the sorted list of objects with `host`,
+`installation_path`, `request_id` and `preview_digest`, sorted lexicographically by those fields
+in that order. Config root, project, route, disclosure and action are transitively bound by each
+member's preview digest. The batch request identity is supplied to each independent member.
+Non-interactive acceptance requires the returned request identity and combined digest together.
+Before the first write, every per-host preview is recomputed; any mismatch refuses the whole
+batch. Existing per-host locking and revalidation remain active during apply.
+
+Apply is sequential, with no rollback claim. A failure or stale later member stops the batch;
+reports identify completed, failed and unattempted installations separately and retain any
+partial status. The continuation previews only the remaining members, without carrying consent.
+This also covers interference between members sharing configuration or project files: their
+new preimages require fresh approval. Status is read-only, and disconnect uses the same digest
+rule while preserving FinishUP data and other projects' shared pieces.
+
+The additive batch JSON contract is `yoetz.host-connection-batch-report/1`, registered as
+`integrations/host-connection-batch-1.0.0.schema.json`; per-host reports and plans keep their
+existing identifiers. No MCP, hook or receipt contract changes. This amendment adds no platform
+or native-session certification beyond the existing adapters' evidence.

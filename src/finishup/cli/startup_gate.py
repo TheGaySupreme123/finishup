@@ -310,7 +310,7 @@ def _probe(scope: GateScope, workspace: str) -> bool:
             env=environment,
         )
         return result.returncode == 0 and result.stdout.strip() == b'{"ready": true}'
-    except OSError, subprocess.TimeoutExpired:
+    except (OSError, subprocess.TimeoutExpired):
         return False
 
 

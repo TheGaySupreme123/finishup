@@ -135,7 +135,7 @@ def claim_verification_report(
             )
             limitation = " ".join(part for part in (limitation, sentence) if part)
         return _pairing_lines(projection, records), limitation
-    except AssertionError, KeyError, TypeError, ValueError:
+    except (AssertionError, KeyError, TypeError, ValueError):
         return (), CLAIM_VERIFICATION_UNREADABLE
 
 

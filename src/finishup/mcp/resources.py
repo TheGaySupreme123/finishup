@@ -829,7 +829,7 @@ def _resolve_current_guidance_topic_uri(uri: str) -> str | None:
         return GUIDANCE_URI_PREFIX + renamed
     try:
         catalogued, aliases = _document_topic_anchors(document)
-    except ValueError, OSError:
+    except (ValueError, OSError):
         # An unreadable document resolves nothing; the caller keeps its ordinary refusal.
         return None
     slug = _guidance_anchor(anchor)

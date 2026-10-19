@@ -425,7 +425,7 @@ def _pinned_root(path: Path) -> str | None:
 
     try:
         existing: object = json.loads(path.read_bytes())
-    except OSError, ValueError:
+    except (OSError, ValueError):
         raise InstanceIdentityError("runtime_pin_invalid") from None
     if not isinstance(existing, dict):
         return None

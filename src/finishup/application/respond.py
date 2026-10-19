@@ -921,7 +921,7 @@ def _closure_after(
         if limitation is None:
             return RespondClosureAfterModel(todo_state=todo.value)
         return RespondClosureAfterModel(todo_state=todo.value, limitation=limitation.state)
-    except TypeError, ValueError:
+    except (TypeError, ValueError):
         return None
 
 

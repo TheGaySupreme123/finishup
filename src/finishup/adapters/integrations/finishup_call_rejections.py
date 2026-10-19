@@ -182,7 +182,7 @@ def _directory(state_root: Path | None) -> Path:
 def _parse(raw: bytes, schema: str = _SCHEMA) -> list[_Entry]:
     try:
         document = json.loads(raw.decode("utf-8"))
-    except UnicodeDecodeError, ValueError:
+    except (UnicodeDecodeError, ValueError):
         return []
     if not isinstance(document, Mapping):
         return []

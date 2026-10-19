@@ -10,9 +10,11 @@ manifests, the packaging/capability suites, and the release workflows under `.gi
 1. **Interpreter:** one exact CPython line, `>=3.14,<3.15` in metadata, tested/advertised patch
    `3.14.6` (refreshed at release lock). Writes gate on the exact tested
    patch/distribution/OS/ABI allowlist; import/`version`/read-only inspection work on any 3.14.
+   Amended 2026-10-19 (issue #1119): metadata admits `>=3.12,<3.15`; see the amendment below.
 2. **Project & build tooling:** `uv==0.11.29` for env/lock/run/tool-install/build; build backend
    requirement `uv_build>=0.11.29,<0.12`; prereleases are disallowed; committed `uv.lock`;
-   conventional `src/` layout.
+   conventional `src/` layout. Amended 2026-10-19 (issue #1119): `uv>=0.11.29` is the floor for
+   users and contributors; CI and release keep exactly `0.11.29`.
 3. **CLI framework:** Typer `0.27.0`, `pretty_exceptions_enable=False`; no Click-internal
    coupling. Async bridge: exactly one top-level `anyio.run(...)` per process entry (CLI command,
    MCP bridge, or foreground service); no nested event-loop helpers. Amended by ADR-012: bare
@@ -471,6 +473,44 @@ unit tests in which another effective uid plays the non-root user against files 
 `service run`, a hook, `service status` and `instance create --bind-runtime`; the previous release
 printed `permission_denied`, "could not be verified" and `internal_error`), including the
 root-created `.<prefix>-releases` layout above serving a hook.
+
+## Amendment — Python 3.12 floor and uv minimum (2026-10-19, issue #1119, owner decision)
+
+The owner asked for an install that works on whatever machine the user has, with Python and uv
+relaxed to minimums. Decision 1's single CPython line and decision 2's exact uv are replaced
+for users and contributors. Release reproducibility is unchanged.
+
+- **Interpreter range.** `requires-python = ">=3.12,<3.15"` in both the `finishup` and the
+  transitional `yoetz` distributions. Source must parse under the 3.12 grammar. In particular,
+  multi-type `except` clauses stay parenthesized (PEP 758's bare form is 3.14-only), and a
+  `slots=True` dataclass names its class in `super(...)`, because before 3.14 `slots=True`
+  rebuilds the class and a zero-argument `super()` binds the discarded original.
+  `tests/unit/test_python_floor.py` locks both rules against the floor read from
+  `pyproject.toml`. Ruff and Pyright target 3.12.
+- **Why the ceiling stays.** `apsw`, `pydantic-core` and `jiter` publish no CPython 3.15 wheels
+  at the locked versions. Without `<3.15`, an installer that picked 3.15 would try to compile
+  them from source. The ceiling lifts when the locked versions ship 3.15 wheels and the suites
+  pass on it.
+- **Install command.** `uv tool install --managed-python --python 3.14 finishup`. The exact patch
+  pin is gone; the minor request stays. A real WSL 2 run on Azure (2026-10-19) showed why: uv 0.13
+  defaults to the newly released CPython 3.15 even for a package declaring `<3.15`, and then fails
+  to build apsw from source. `--python 3.14` selects the newest supported minor (the certified
+  line) on every uv; a user may still ask for 3.12 or 3.13 explicitly.
+  `--managed-python` remains because a shared system Python (Homebrew's `/opt/homebrew`) is
+  group-writable, and the runtime refuses it (`release_runtime_group_writable`). The npm
+  launchers make the same install (`--managed-python --python 3.14`) and run `uvx finishup`
+  without an interpreter request, so they reuse the installed tool environment.
+- **uv.** `[tool.uv] required-version = ">=0.11.29"`. CI and the release workflow keep
+  `version: "0.11.29"` in every `setup-uv` step and record it in the candidate, so release
+  artifacts stay byte-reproducible. `test_build_tool_meets_the_minimum_version` replaces the
+  exact-version identity test. A uv 0.12 front-end re-serializes `pyproject.toml` in a locally
+  built sdist and keeps the original as `pyproject.toml.orig`; the sdist allowlist admits that
+  one member only when its bytes equal the source `pyproject.toml`.
+- **Evidence and claims.** The release cell stays CPython 3.14.6: release evidence, the packaging
+  suite and `docs/public-claims.json` keep naming it. PR CI adds `older-python`, which runs the
+  bounded unit, property and conformance slice on 3.12 and 3.13 and feeds `pr-ci-required`.
+  This means 3.12 and 3.13 are tested, not certified. The service, subprocess and packaging
+  suites still run only on the release cell. `/doctor` accepts 3.12 through 3.14.
 
 ## Implementation-lock identities
 

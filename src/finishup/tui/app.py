@@ -51,7 +51,6 @@ from finishup.tui.models import (
     IntegrationPlan,
     LayerState,
     PrivacyChoice,
-    StorageChoice,
 )
 from finishup.tui.render import (
     render_detection,
@@ -81,6 +80,7 @@ from finishup.tui.widgets.views import (
     BaseView,
     DetailsRequested,
     DetailsView,
+    MultiSelectionView,
     Option,
     SelectionView,
     TextEntryView,
@@ -522,7 +522,7 @@ class FinishUpTui(App[int]):
         self._flow = self.run_worker(self._dispatch(command.name), name="command", exclusive=True)
 
     async def _dispatch(self, name: str) -> None:
-        handlers: dict[str, Callable[[], Awaitable[None]]] = {
+        handlers: dict[str, Callable[[], Awaitable[object]]] = {
             "status": self.command_status,
             "observe": self.command_observe,
             "work": self.command_work,
@@ -607,6 +607,32 @@ class FinishUpTui(App[int]):
                 return
             await self._choose_storage(detection)
             await self._run_initial_review(review, connected=False)
+            return
+
+        if len(detection.harnesses) > 1:
+            options = await self._choose_harnesses(detection.harnesses)
+            if not options:
+                self.say(Level.OPTIONAL, "Setup stopped. Nothing was changed.")
+                return
+            selected: list[HarnessOption] = []
+            for item in options:
+                if item.host == "codex":
+                    home = await self._choose_codex_home(item)
+                    if home is None:
+                        return
+                    from dataclasses import replace
+
+                    item = replace(item, config_root=str(home))
+                selected.append(item)
+            if any(item.host == "codex" for item in selected):
+                if not await self._confirm_project_trust(detection):
+                    return
+            review = await self._ask_review_mode()
+            if review is None:
+                return
+            if await self._connect_host_batch(selected, route="policy"):
+                await self._choose_storage(detection)
+                await self._run_initial_review(review, connected=True)
             return
 
         # Each question can send the user back to the one before it, so the answered steps are
@@ -716,14 +742,22 @@ class FinishUpTui(App[int]):
         # Only an explicit local answer finishes as local-only. Dismiss (None) is handled by
         # the first-run callers before storage or registration, so it must not fall through here.
         if choice == "local_only":
-            await self._record_local_only()
-            await self._finish_setup(connected=connected)
+            # The setup marker is written only over a recorded answer (review of #1119).
+            if await self._record_local_only():
+                await self._finish_setup(connected=connected)
             return
         if choice not in {"agent_opt_in", "ai_powered"}:
             return
-        await self.command_provider(
+        provider_choice = await self.command_provider(
             conversation_review="local_agent_opt_in" if choice == "agent_opt_in" else "ai_powered"
         )
+        if provider_choice == "local_only":
+            await self._finish_setup(connected=connected)
+            return
+        if provider_choice == "local_only_unrecorded":
+            # "Not now" could not be recorded, so the earlier policy may still allow AI-powered
+            # review. Finishing here would describe a setup that did not happen.
+            return
         provider = await self.runtime.provider_posture()
         if (
             not provider.endpoint_bound
@@ -785,10 +819,10 @@ class FinishUpTui(App[int]):
             )
             return
         del option, codex_home  # The policy route stays registered (ADR-049).
-        await self._record_local_only()
-        await self._finish_setup(connected=connected)
+        if await self._record_local_only():
+            await self._finish_setup(connected=connected)
 
-    async def _record_local_only(self) -> None:
+    async def _record_local_only(self) -> bool:
         """Record "local checks only; agents may not opt in" in the privacy policy (ADR-049).
 
         The Private recipe with the explicit ``local_only`` conversation setting, through the
@@ -806,15 +840,193 @@ class FinishUpTui(App[int]):
                 "This terminal cannot open the trusted privacy ceremony",
                 ("Run 'finishup privacy conversations local-only' from your shell.",),
             )
-            return
+            return False
         except RuntimeError_ as error:
             self._report(error)
-            return
+            return False
         if getattr(report, "outcome", "failed") not in {"configured", "unchanged"}:
             self.say(
                 Level.UNPROVEN,
                 "Local checks only was not recorded",
                 ("Run 'finishup privacy conversations local-only' from your shell.",),
+            )
+
+        return getattr(report, "outcome", "failed") in {"configured", "unchanged"}
+
+    async def _choose_harnesses(
+        self,
+        options: Sequence[HarnessOption],
+    ) -> tuple[HarnessOption, ...] | None:
+        if len(options) <= 1:
+            return tuple(options) or None
+        choice = await self.ask(
+            SelectionView(
+                name="agents",
+                title="Connect FinishUP to:",
+                options=[
+                    Option("all", f"All {len(options)} agents (recommended)"),
+                    Option("choose", "Choose which"),
+                ],
+                hint="enter to choose · esc to cancel",
+            )
+        )
+        if choice == "all":
+            return tuple(options)
+        if choice != "choose":
+            return None
+        view = MultiSelectionView(
+            name="agents-subset",
+            title="Choose the agents to connect",
+            options=[
+                Option(str(index), option.label, option.description)
+                for index, option in enumerate(options)
+            ],
+        )
+        if await self.ask(view) != "submit":
+            return None
+        return tuple(options[int(key)] for key in view.selected_keys) or None
+
+    async def _connect_host_batch(
+        self,
+        options: Sequence[HarnessOption],
+        *,
+        route: Literal["strict", "policy"],
+    ) -> bool:
+        from anyio.to_thread import run_sync
+
+        from finishup.cli import host_connection as single
+        from finishup.cli.host_batch import (
+            BatchPreparationError,
+            apply_batch,
+            batch_command,
+            batch_digest,
+            prepare_batch,
+            select_batch_installation,
+        )
+        from finishup.protocol.ids import IdKind, new_id
+
+        project = self.runtime.project_root()
+        try:
+            await run_sync(single.refuse_unservable_runtime)
+            installations = tuple(
+                [
+                    await run_sync(
+                        lambda option=option: select_batch_installation(
+                            option.host,
+                            Path(option.executable_path),
+                            None if option.config_root is None else Path(option.config_root),
+                        )
+                    )
+                    for option in options
+                ]
+            )
+            request = new_id(IdKind.REQUEST)
+            members = await prepare_batch(
+                installations, project, route=route, request_value=request
+            )
+            body: list[str] = []
+            details: list[str] = []
+            for member in members:
+                body.append(member.installation.label)
+                if member.installation.host == "codex":
+                    codex = IntegrationPlan(**cast(dict[str, Any], member.plan.body["codex_plan"]))
+                    body.extend(render_integration_preview(codex, self.body_width))
+                    details.extend(render_integration_technical_details(codex, self.body_width))
+                else:
+                    body.extend(single.connection_summary(member.plan))
+                details.extend(
+                    (
+                        str(member.installation.executable),
+                        str(member.installation.config_root),
+                        member.plan.digest,
+                    )
+                )
+                body.append("")
+            view = ApprovalView(
+                name="integration-batch",
+                title="Connect the selected agents",
+                body=body,
+                approve_label="Yes, connect these agents",
+                decline_label="No, keep this project unchanged",
+            )
+            digest = batch_digest(members)
+            view.technical_details = (*details, f"Combined preview: {digest}")
+            if await self.ask(view) != "approve":
+                self.say(Level.OPTIONAL, "Connections left unchanged.")
+                return False
+            try:
+                reports = await self.hand_over_terminal(lambda: apply_batch(members))
+            except SuspendNotSupported:
+                self.say(
+                    Level.UNPROVEN,
+                    "This terminal cannot hand over for connection approval",
+                    (
+                        batch_command(
+                            installations,
+                            project,
+                            action="connect",
+                            route=route,
+                            request_value=request,
+                            preview_digest=digest,
+                        ),
+                    ),
+                )
+                return False
+            except BatchPreparationError as stale:
+                # An agent changed while the approval screen was open: nothing was applied. Show
+                # each agent's outcome and a fresh preview that carries no approval.
+                self._say_batch_rows(stale.reports)
+                self.say(
+                    Level.BLOCKED,
+                    "An agent changed before the connection was applied",
+                    (
+                        "Nothing was changed. Review a fresh preview:",
+                        batch_command(installations, project, action="connect", route=route),
+                    ),
+                )
+                return False
+            self._say_batch_rows(reports)
+            remaining = tuple(
+                member.installation
+                for member, row in zip(members, reports, strict=True)
+                if row["outcome"] in {"incomplete", "not_attempted"}
+            )
+            if remaining:
+                self.say(
+                    Level.BLOCKED,
+                    "Some agents were not connected",
+                    (
+                        "Inspect status before retrying a partial connection. Preview the remaining agents:",
+                        batch_command(remaining, project, action="connect", route=route),
+                    ),
+                )
+                return False
+            return True
+        except single.CONNECTION_ERRORS as error:
+            from finishup.cli.host_batch import error_reason
+
+            self.say(
+                Level.BLOCKED,
+                "The selected connections could not be completed",
+                (error_reason(error),),
+            )
+            return False
+
+    def _say_batch_rows(self, reports: Sequence[Mapping[str, Any]]) -> None:
+        for row in reports:
+            launch = row.get("launch")
+            self.say(
+                Level.BLOCKED
+                if row["outcome"] in {"incomplete", "not_attempted"}
+                else Level.ACTIVE,
+                f"{row['host']}: {row['outcome']}",
+                (str(row["reason"]),)
+                if "reason" in row
+                else (
+                    "Start a fresh session: " + str(cast(dict[str, Any], launch)["shell_command"]),
+                )
+                if isinstance(launch, dict)
+                else (),
             )
 
     async def _choose_harness(self, options: Sequence[HarnessOption]) -> HarnessOption | None:
@@ -1079,56 +1291,49 @@ class FinishUpTui(App[int]):
             return
 
     async def _choose_storage(self, detection: Detection) -> None:
-        choice = await self.ask(
-            SelectionView(
-                name="storage",
-                title="Where should FinishUP keep local secrets?",
-                options=[
-                    Option(
-                        StorageChoice.SYSTEM_KEYRING.value,
-                        "Use system secure storage",
-                        "Recommended. Unlocks automatically for the operating-system user.",
-                        disabled=not detection.secure_storage_available,
-                        disabled_reason=detection.secure_storage_reason
-                        or "not available on this machine",
-                    ),
-                    Option(
-                        StorageChoice.PASSPHRASE.value,
-                        "Use a FinishUP passphrase",
-                        "Enter a passphrase when FinishUP needs to unlock.",
-                    ),
-                ],
-                hint="enter to choose · esc to skip for now",
-            )
-        )
-        if choice is None:
-            return
+        """Create or unlock the vault with no question asked (issue #1119).
+
+        The key goes to the system keychain when one is usable, otherwise to a file only this
+        account can read. Choosing a personal passphrase stays available as an explicit command
+        for a new vault, ``finishup setup vault --passphrase``.
+        """
+
+        # A stopped service or a locked vault is not an early return: the automatic helper
+        # starts the service and creates or unlocks the vault, so first run ends with storage.
         posture = await self.runtime.vault_posture()
-        if not posture.reachable:
+        if posture.ready and posture.vault_mode not in {None, "uninitialized"}:
+            self.say(Level.VERIFIED, "Secure storage is already set up")
+            return
+        try:
+            ready, reason, custody = await self.hand_over_terminal(
+                self.runtime.set_up_storage_automatically
+            )
+        except SuspendNotSupported:
             self.say(
                 Level.UNPROVEN,
                 "Secure storage was not set up",
-                (
-                    "The local service is not running yet.",
-                    "Start it with 'finishup service run', then use /service.",
-                ),
+                ("Run this from your shell instead:", "", "    finishup setup vault"),
             )
             return
-        if posture.vault_mode not in {None, "uninitialized"}:
-            self.say(Level.VERIFIED, "Secure storage is already set up")
+        except RuntimeError_ as error:
+            self.say(Level.BLOCKED, "Secure storage was not set up", (error.reason,))
             return
-        if choice == StorageChoice.PASSPHRASE.value:
-            await self._run_confidential(
-                "Choose a FinishUP passphrase",
-                self.runtime.initialize_passphrase_vault,
-                fallback_command="finishup service initialize-passphrase",
+        if not ready:
+            self.say(
+                Level.BLOCKED,
+                "Secure storage was not set up",
+                (str(reason), "", "Run 'finishup setup vault' to try again."),
             )
-        else:
-            await self._run_confidential(
-                "Set up system secure storage",
-                self.runtime.initialize_system_keyring,
-                fallback_command=None,
-            )
+            return
+        where = {
+            "platform_store": ("The vault key is kept in your system keychain.",),
+            "owner_file": (
+                "The vault key is kept in a file only your account can read.",
+                "Other accounts cannot open it; programs running as you can.",
+            ),
+            "passphrase": ("FinishUP keeps no copy; you type your passphrase after a restart.",),
+        }.get(custody, ())
+        self.say(Level.VERIFIED, "Secure storage is set up", where)
 
     async def hand_over_terminal(self, operation: Callable[[], Awaitable[Any]]) -> Any:
         """Run ``operation`` with the full-screen interface suspended.
@@ -2412,22 +2617,52 @@ class FinishUpTui(App[int]):
             ),
         )
 
-    async def command_provider(self, conversation_review: str | None = None) -> None:
+    async def command_provider(self, conversation_review: str | None = None) -> str | None:
         """Bind a reviewer, approve its privacy policy, then store its key.
 
         ``conversation_review`` is a first-run answer already taken (ADR-049): the privacy
         policy drafted here carries it and the questionnaire does not ask again.
         """
 
-        options = self.runtime.provider_options()
+        from finishup.tui.ai_setup import choose_connection, choose_model
+
+        connection = await choose_connection(self.ask)
+        if connection is None:
+            return None
+        if connection == "local_only":
+            return "local_only" if await self._record_local_only() else "local_only_unrecorded"
+        if connection == "codex_subscription":
+            await self._command_codex_subscription(conversation_review=conversation_review)
+            return None
+        options = tuple(
+            option
+            for option in self.runtime.provider_options()
+            if option.choice != "codex_subscription"
+        )
         chosen = await self.ask(
             SelectionView(
                 name="provider",
-                title="Choose a provider for optional deeper review",
+                title="Choose an API provider",
                 options=[
-                    Option(option.choice, option.label, option.endpoint_text) for option in options
+                    Option(
+                        option.choice,
+                        option.label
+                        + (" (recommended)" if option.choice == "official_openai" else ""),
+                        option.endpoint_text,
+                    )
+                    for option in options
                 ]
                 + [
+                    Option(
+                        "key",
+                        "Enter or replace the stored key",
+                        "Hidden key entry in the trusted terminal.",
+                    ),
+                    Option(
+                        "remove_key",
+                        "Remove the stored key",
+                        "Confirm and reauthenticate in the trusted terminal.",
+                    ),
                     Option(
                         "codex_status",
                         "Codex subscription status",
@@ -2469,6 +2704,38 @@ class FinishUpTui(App[int]):
         if chosen == "codex_subscription":
             await self._command_codex_subscription(conversation_review=conversation_review)
             return
+        if chosen == "key":
+            await self._run_confidential(
+                "Provider API key",
+                self.runtime.store_provider_credential,
+                fallback_command="finishup ai key",
+            )
+            return
+        if chosen == "remove_key":
+            try:
+                status = await self.hand_over_terminal(self.runtime.remove_provider_credential)
+            except SuspendNotSupported:
+                self.say(Level.UNPROVEN, "Run 'finishup ai forget-key' from your own terminal.")
+                return
+            except RuntimeError_ as error:
+                self._report(error)
+                return
+            if status == "cancelled":
+                self.say(Level.OPTIONAL, "The stored key was kept.")
+            elif status in {"removed", "removed_not_ready"}:
+                self.say(
+                    Level.ACTIVE if status == "removed" else Level.UNPROVEN,
+                    "The stored key was removed."
+                    if status == "removed"
+                    else "The stored key was removed; readiness could not reload. Run finishup ai status.",
+                    (
+                        "AI-powered review cannot use this provider and model until you enter a key again with finishup ai key; keys stored for other models stay stored.",
+                        "If the key may have leaked, also revoke it at the provider.",
+                    ),
+                )
+            else:
+                self.say(Level.UNPROVEN, "Key removal was not confirmed. Run finishup ai status.")
+            return
         if chosen == "codex_status":
             await self._command_codex_subscription_status()
             return
@@ -2499,17 +2766,12 @@ class FinishUpTui(App[int]):
             if await self.ask(entry) is None:
                 return
             origin = entry.value.strip()
-        model_entry = TextEntryView(
-            name="provider-model",
-            title=option.label,
-            label="Model identifier",
-            initial=option.default_model,
-            placeholder="model id",
+        model = await choose_model(
+            self.ask, option.label, self.runtime.provider_models(option.choice)
         )
-        if await self.ask(model_entry) is None:
+        if model is None:
             self.say(Level.OPTIONAL, "No provider was configured.")
-            return
-        model = model_entry.value.strip()
+            return None
 
         confirmed = await self.ask(
             ApprovalView(
@@ -2536,6 +2798,7 @@ class FinishUpTui(App[int]):
                     offer_recommended=conversation_review not in _ADD_ON_ANSWERS,
                     conversation_review=conversation_review,
                     ai_review_add_on=conversation_review in _ADD_ON_ANSWERS,
+                    credential_probe=True,
                 )
             )
         except SuspendNotSupported:
@@ -2582,7 +2845,7 @@ class FinishUpTui(App[int]):
         status = await self._run_confidential(
             "Provider API key",
             self.runtime.store_provider_credential,
-            fallback_command="finishup provider credential set",
+            fallback_command="finishup ai key",
         )
         posture = await self.runtime.provider_posture()
         if status is None:

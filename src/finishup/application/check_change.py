@@ -381,7 +381,7 @@ def _redacted_inputs(inputs: tuple[TaskInputFile, ...]) -> tuple[TaskInputFile, 
                 limit = MAX_TASK_INPUT_TEXT_BYTES + 256
                 text = text[:limit].decode("utf-8", errors="ignore").encode("utf-8")
                 item = replace(item, text=text, redacted=True)
-        except ChangeCaptureUnavailable, ValueError:
+        except (ChangeCaptureUnavailable, ValueError):
             # Withheld whole, never offered partly redacted; the change itself still stands.
             continue
         kept.append(item)
@@ -1520,7 +1520,7 @@ _TOOL_COMPONENTS: Final = frozenset(
 def _lstat_or_none(path: str) -> os.stat_result | None:
     try:
         return os.lstat(path)
-    except OSError, ValueError:
+    except (OSError, ValueError):
         return None
 
 

@@ -333,6 +333,24 @@ _INVENTORY_ENTRIES: Final[tuple[tuple[str, str, str, bool], ...]] = (
         True,
     ),
     (
+        "schemas/integrations/host-connection-batch-1.0.0.schema.json",
+        "json_schema",
+        "application/schema+json",
+        True,
+    ),
+    (
+        "schemas/integrations/ai-status-1.0.0.schema.json",
+        "json_schema",
+        "application/schema+json",
+        True,
+    ),
+    (
+        "fixtures/canonical/host-connection-batch.case.json",
+        "canonical_vector",
+        "application/json",
+        True,
+    ),
+    (
         "schemas/integrations/setup-status-2.0.0.schema.json",
         "json_schema",
         "application/schema+json",
@@ -2266,7 +2284,7 @@ def sync_resource_tree(
     if previous_manifest.is_file() and not previous_manifest.is_symlink():
         try:
             previous_document = strict_json_parse(previous_manifest.read_bytes())
-        except TypeError, ValueError:
+        except (TypeError, ValueError):
             previous_document = None
         if isinstance(previous_document, Mapping):
             previous_entries = previous_document.get("entries")

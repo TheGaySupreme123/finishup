@@ -290,7 +290,7 @@ class StructuredLogger:
                 "",
                 extra={_STRUCTURAL_MARKER: True, _STRUCTURAL_FIELDS: safe},
             )
-        except KeyboardInterrupt, SystemExit:
+        except (KeyboardInterrupt, SystemExit):
             raise
         except BaseException:
             return

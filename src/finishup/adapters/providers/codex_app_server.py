@@ -789,7 +789,7 @@ class _CodexProcess:
             raise ValueError("codex_app_server_stderr_limit")
         try:
             message = _object(strict_json_parse(line[:-1]))
-        except ProtocolValueError, ValueError:
+        except (ProtocolValueError, ValueError):
             # A malformed JSONL envelope is transport failure, not a malformed final answer.
             raise ValueError("codex_app_server_message_invalid") from None
         reason = _sandbox_warning_reason(message)

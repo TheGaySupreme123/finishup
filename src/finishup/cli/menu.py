@@ -41,7 +41,7 @@ def menu_available() -> bool:
 
     try:
         return sys.stdin.isatty() and sys.stdout.isatty()
-    except OSError, ValueError:
+    except (OSError, ValueError):
         return False
 
 
@@ -643,6 +643,6 @@ def run_menu() -> int:
                 _privacy_menu()
             else:
                 _service_menu()
-        except click.exceptions.Abort, EOFError:
+        except (click.exceptions.Abort, EOFError):
             typer.echo("")
             return 0

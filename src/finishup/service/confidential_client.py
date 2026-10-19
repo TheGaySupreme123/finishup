@@ -91,6 +91,9 @@ _SECRET_PURPOSES_BY_KIND: Final[
             ConfidentialSecretPurpose.PROVIDER_CREDENTIAL,
         }
     ),
+    HumanCeremonyKind.PROVIDER_CREDENTIAL_REMOVE: frozenset(
+        {ConfidentialSecretPurpose.PROVIDER_REAUTHENTICATION}
+    ),
     HumanCeremonyKind.PROVIDER_CREDENTIAL_ROTATE: frozenset(
         {
             ConfidentialSecretPurpose.PROVIDER_REAUTHENTICATION,
@@ -130,6 +133,8 @@ _ERROR_REASONS: Final = frozenset(
         "protocol_error",
         "reauthentication_rate_limited",
         "reauthentication_unavailable",
+        "record_missing",
+        "vault_locked",
         "response_bytes",
         "secret_rejected",
         "service_unavailable",
@@ -161,6 +166,8 @@ _PASS_THROUGH_SERVER_CODES: Final = frozenset(
         "presence_timeout",
         "reauthentication_rate_limited",
         "reauthentication_unavailable",
+        "record_missing",
+        "vault_locked",
         "state_forbidden",
         "target_invalid",
     }

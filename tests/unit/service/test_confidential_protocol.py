@@ -1,3 +1,5 @@
+# pyright: reportPrivateUsage=false
+
 from __future__ import annotations
 
 import struct
@@ -89,7 +91,7 @@ def _binding(
 
 def _provider_target(action: str) -> ProviderCredentialTarget:
     return ProviderCredentialTarget(
-        action=cast(Literal["set", "rotate"], action),
+        action=cast(Literal["set", "rotate", "remove"], action),
         provider_id="openai",
         model_id="gpt-5",
         endpoint_profile_id="openai.responses",
@@ -178,6 +180,7 @@ def test_client_open_has_literal_reviewed_golden_bytes() -> None:
         ),
         (HumanCeremonyKind.PROVIDER_CREDENTIAL_SET, _provider_target("set")),
         (HumanCeremonyKind.PROVIDER_CREDENTIAL_ROTATE, _provider_target("rotate")),
+        (HumanCeremonyKind.PROVIDER_CREDENTIAL_REMOVE, _provider_target("remove")),
         (
             HumanCeremonyKind.PRIVACY_POLICY_DECISION,
             PrivacyPendingTarget("policy", "pending-policy"),
@@ -680,3 +683,31 @@ def test_a_decoded_privacy_preview_rejects_an_unknown_area_field_or_extra_key() 
         frame = struct.pack(">4sBBI", magic, version, frame_type, len(tampered)) + tampered
         with pytest.raises((ValueError, ConfidentialProtocolError)):
             decode_human_frame(frame)
+
+
+def test_remove_kind_target_preview_and_purpose_are_closed() -> None:
+    from finishup.ports.secret_memory import SecretPurpose
+    from finishup.service import confidential_protocol as protocol
+    from finishup.service.confidential_client import _SECRET_PURPOSES_BY_KIND
+    from finishup.service.elevated_bootstrap import catalog_payload
+    from finishup.service.human_control import HumanControlService
+
+    kind = HumanCeremonyKind("provider_credential_remove")
+    target = _provider_target("remove")
+    envelope = ClientOpenEnvelope("0" * 64, kind, target)
+    assert decode_human_frame(encode_human_frame(envelope)) == envelope
+    preview = protocol.ProviderCredentialRemovePreview(target)
+    assert protocol._preview_from_json(protocol._preview_to_json(preview)) == preview
+    result = protocol.ProviderCredentialRemoveResult()
+    assert protocol._result_from_json(protocol._result_to_json(result)) == result
+    assert HumanControlService._authorization_purpose(kind) == (
+        "provider_credential_remove",
+        SecretPurpose.PROVIDER_REAUTHENTICATION,
+    )
+    assert _SECRET_PURPOSES_BY_KIND[kind] == frozenset(
+        {ConfidentialSecretPurpose.PROVIDER_REAUTHENTICATION}
+    )
+    for other in ("set", "rotate"):
+        with pytest.raises(ValueError, match="ceremony_target_mismatch"):
+            ClientOpenEnvelope("0" * 64, kind, _provider_target(other))
+    assert "provider_credential_remove" not in str(catalog_payload())

@@ -452,7 +452,7 @@ def _validated_wire(value: object, schema_name: str) -> JsonObject:
         return frozen
     except ControlProtocolError:
         raise
-    except ProtocolValueError, TypeError, ValueError:
+    except (ProtocolValueError, TypeError, ValueError):
         raise ControlProtocolError("frame_invalid") from None
 
 
@@ -482,7 +482,7 @@ def _is_bounded_import(frame: JsonObject) -> bool:
         return False
     try:
         decoded = base64.b64decode(encoded, validate=True)
-    except ValueError, binascii.Error:
+    except (ValueError, binascii.Error):
         return False
     return len(decoded) <= _MAX_IMPORT_SOURCE_BYTES
 
@@ -508,7 +508,7 @@ def encode_control_frame(value: object) -> bytes:
         return struct.pack(">I", len(payload)) + payload
     except ControlProtocolError:
         raise
-    except ProtocolValueError, TypeError, ValueError, struct.error:
+    except (ProtocolValueError, TypeError, ValueError, struct.error):
         raise ControlProtocolError("frame_invalid") from None
 
 
@@ -542,7 +542,7 @@ def _decode_control_payload(payload: bytes) -> ControlFrame:
         return value
     except ControlProtocolError:
         raise
-    except ProtocolValueError, TypeError, ValueError:
+    except (ProtocolValueError, TypeError, ValueError):
         raise ControlProtocolError("frame_invalid") from None
 
 
@@ -624,7 +624,7 @@ async def write_control_frame(stream: ControlStream, value: object) -> None:
     encoded = encode_control_frame(value)
     try:
         await stream.send_all(encoded)
-    except asyncio.CancelledError, LocalControlTransportError:
+    except (asyncio.CancelledError, LocalControlTransportError):
         raise
     except BaseException:
         raise ControlProtocolError("transport_failed") from None
@@ -693,7 +693,7 @@ def _service_status_from_wire(value: object) -> ServiceStatus:
             session_monitor=cast(str, source["session_monitor"]),
             idle_relock_seconds=cast(int | None, source.get("idle_relock_seconds")),
         )
-    except KeyError, TypeError, ValueError:
+    except (KeyError, TypeError, ValueError):
         raise ControlProtocolError("frame_invalid") from None
 
 
@@ -735,7 +735,7 @@ def parse_control_request(frame: ControlFrame) -> ControlRequest:
                 wire.get("host_profile"),
             ),
         )
-    except KeyError, TypeError, ValueError:
+    except (KeyError, TypeError, ValueError):
         raise ControlProtocolError("frame_invalid") from None
 
 
@@ -795,7 +795,7 @@ def parse_control_result(frame: ControlFrame) -> ControlResult:
         )
     except ControlProtocolError:
         raise
-    except KeyError, TypeError, ValueError:
+    except (KeyError, TypeError, ValueError):
         raise ControlProtocolError("frame_invalid") from None
 
 

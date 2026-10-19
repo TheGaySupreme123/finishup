@@ -1062,7 +1062,7 @@ def _tree_digest(files: Mapping[str, bytes]) -> str:
 def _load_object(data: bytes) -> Mapping[str, JsonValue] | None:
     try:
         value = strict_json_parse(data)
-    except ProtocolValueError, UnicodeError:
+    except (ProtocolValueError, UnicodeError):
         return None
     return cast(Mapping[str, JsonValue], value) if isinstance(value, Mapping) else None
 
@@ -1124,7 +1124,7 @@ def _valid_marker(
         return False, None, None
     try:
         format_profile = PluginFormatProfile(cast(str, marker.get("format_profile")))
-    except TypeError, ValueError:
+    except (TypeError, ValueError):
         return False, None, None
     if format_profile not in {
         PluginFormatProfile.AGENT_PLUGINS_1,
@@ -1189,7 +1189,7 @@ def _inspect_legacy(
         return "foreign", None, None
     try:
         files = _safe_tree(legacy)
-    except CursorIntegrationError, OSError:
+    except (CursorIntegrationError, OSError):
         return "foreign", None, None
     if not _valid_marker(files)[0]:
         return "foreign", None, None
@@ -2262,7 +2262,7 @@ def _config_entries(
         if path.is_symlink() or not path.is_file() or path.stat().st_size > _MAX_FILE_BYTES:
             return None, None, False
         parsed = strict_json_parse(path.read_bytes())
-    except OSError, ProtocolValueError, UnicodeError:
+    except (OSError, ProtocolValueError, UnicodeError):
         return None, None, False
     if not isinstance(parsed, Mapping):
         return None, None, False
@@ -2671,7 +2671,7 @@ def discover_cursor_sdk(
     package_digest = _digest_file(package_metadata)
     try:
         metadata = strict_json_parse(package_metadata.read_bytes())
-    except ProtocolValueError, UnicodeError:
+    except (ProtocolValueError, UnicodeError):
         metadata = None
     version: object = None
     if isinstance(metadata, Mapping):

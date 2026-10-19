@@ -413,7 +413,12 @@ def test_sdist_member_inventory_matches_the_exact_allowlist(candidate: Candidate
         if not _is_reviewed_name_exemption(lowered):
             assert not any(marker in lowered for marker in _FORBIDDEN_NAME_MARKERS), member_name
         assert not lowered.endswith(_NATIVE_BINARY_SUFFIXES), member_name
-        if "/" not in rest:
+        if rest == "pyproject.toml.orig":
+            # uv 0.12 front-ends re-serialize pyproject.toml in the sdist and keep the original
+            # beside it. The project now admits any uv from 0.11.29 (issue #1119); release builds
+            # still use exactly 0.11.29. Only the byte-exact source file is admitted.
+            assert members[member_name] == (_REPO_ROOT / "pyproject.toml").read_bytes(), member_name
+        elif "/" not in rest:
             assert rest in allowed_top_level_files, f"unexpected top-level sdist file: {rest}"
         else:
             assert rest.startswith("src/finishup/"), f"unexpected sdist path: {rest}"

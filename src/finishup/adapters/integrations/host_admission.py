@@ -697,7 +697,7 @@ def _observe_codex(read: _Read, owner: McpOwnerForm | None) -> HostAdmissionEntr
         return HostAdmissionEntry(surface, HostAdmissionState.ABSENT, expected, None, None)
     try:
         parsed = tomllib.loads(read.raw.decode("utf-8"))
-    except UnicodeError, tomllib.TOMLDecodeError:
+    except (UnicodeError, tomllib.TOMLDecodeError):
         return _unknown(surface, expected, "file_invalid")
     digest = read.digest
     legacy = _codex_legacy_tables(read.raw, parsed)

@@ -537,7 +537,7 @@ class SqliteLedger:
                 or resolved.key_slot != expected_key_slot
             ):
                 return
-        except KeyError, OSError, TypeError, ValueError:
+        except (KeyError, OSError, TypeError, ValueError):
             return
         self._state.object_refs[resolved.object_id] = resolved
 
@@ -703,7 +703,7 @@ class SqliteLedger:
             if source["redaction"] == "present" and self._objects is not None:
                 try:
                     chunks = [chunk async for chunk in self._objects.open_verified(ref)]
-                except KeyError, OSError, ValueError:
+                except (KeyError, OSError, ValueError):
                     chunks = []
                 if chunks:
                     payload_json = strict_json_parse(b"".join(chunks))
@@ -917,7 +917,7 @@ class SqliteLedger:
                     )
                 except OSError as exc:
                     raise _public_error(PublicErrorCode.STORAGE_CORRUPT) from exc
-                except KeyError, TypeError, ValueError:
+                except (KeyError, TypeError, ValueError):
                     # Decode/shape/binding of this resume pointer is operation-scoped. The
                     # event chain already replayed; latching _recovery_failed here would make
                     # every later call STORAGE_CORRUPT for an intact ledger (#443).

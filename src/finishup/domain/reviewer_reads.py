@@ -190,7 +190,7 @@ def reviewer_record_from_wire(value: object) -> ReviewerRecord | None:
             cast(str | None, body["ended"]),
             cast(str | None, body["cleanup"]),
         )
-    except KeyError, TypeError, ValueError:
+    except (KeyError, TypeError, ValueError):
         return None
     return record
 

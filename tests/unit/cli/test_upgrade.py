@@ -457,9 +457,7 @@ def test_alias_move_step_installs_the_managed_python_pin_with_recorded_extras(
 
     move = steps[-1]
     assert (
-        "install the new name: uv tool install --compile-bytecode --managed-python --python 3.14.6 "
-        + package
-        + "."
+        "install the new name: uv tool install --managed-python --python 3.14 " + package + "."
     ) in move.detail
     assert "could not be confirmed" not in move.detail
 
@@ -543,7 +541,9 @@ def test_alias_upgrade_carries_the_yoetz_tool_extras_into_the_move(
     result = _RUNNER.invoke(app, ["upgrade"])
 
     assert result.exit_code == 0, result.output
-    assert "--python 3.14.6 'finishup[semantic-openai]'." in " ".join(result.output.split())
+    assert "--managed-python --python 3.14 'finishup[semantic-openai]'." in " ".join(
+        result.output.split()
+    )
     assert "could not be confirmed" not in result.output
 
 

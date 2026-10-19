@@ -11752,12 +11752,32 @@ _REGISTRY: Final[tuple[_RegistryEntry, ...]] = (
         ),
     ),
     _RegistryEntry(
+        "integrations/ai-status-1.0.0.schema.json",
+        "ai-status",
+        "1.0.0",
+        "request_result",
+        "setup-contract",
+        lambda: __import__("finishup.protocol.ai_status", fromlist=["AIStatus"]).AIStatus,
+    ),
+    _RegistryEntry(
         "integrations/setup-status-2.0.0.schema.json",
         "setup-status",
         "2.0.0",
         "request_result",
         "setup-contract",
         lambda: __import__("finishup.protocol.setup_status", fromlist=["SetupStatus"]).SetupStatus,
+    ),
+    _RegistryEntry(
+        "integrations/host-connection-batch-1.0.0.schema.json",
+        "host-connection-batch",
+        "1.0.0",
+        "request_result",
+        "setup-contract",
+        lambda: (
+            __import__(
+                "finishup.protocol.host_connection", fromlist=["HostConnectionBatchReport"]
+            ).HostConnectionBatchReport
+        ),
     ),
     _RegistryEntry(
         "receipts/receipt-document-1.0.0.schema.json",
@@ -12266,6 +12286,7 @@ _REGISTRY: Final[tuple[_RegistryEntry, ...]] = (
 # regenerating them would silently rewrite frozen history.
 _BUILDER_OWNED_SCHEMA_PATHS: Final[frozenset[str]] = frozenset(
     {
+        "integrations/ai-status-1.0.0.schema.json",
         # Role- and directory-bearing obligations (issue #1002).
         "events/obligation-published-1.1.0.schema.json",
         # The conversation review-mode switch (ADR-049).

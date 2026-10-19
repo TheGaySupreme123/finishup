@@ -404,7 +404,7 @@ def _backup_sqlite(source: Path, destination: Path) -> None:
         if journal_mode != ("delete",):
             raise OSError("backup_database_journal_mode")
         destination_connection.commit()
-    except OSError, sqlite3.Error:
+    except (OSError, sqlite3.Error):
         raise
     finally:
         if destination_connection is not None:
@@ -748,7 +748,7 @@ class SqliteBundleUpgradeEffects:
             keys = await self._load_bundle_keys(str(target.task_id))
         except KeyStoreError:
             raise
-        except OSError, RuntimeError, TypeError, ValueError:
+        except (OSError, RuntimeError, TypeError, ValueError):
             raise
         if type(keys) is not BundleKeys:
             raise _backup_failure("bundle_keys", retryable=False)
@@ -917,7 +917,7 @@ class SqliteBundleUpgradeEffects:
     def _try_verify_set(self, path: Path) -> VerifiedBackupSet | None:
         try:
             return verify_backup_set(path)
-        except MaintenanceError, OSError, TypeError, ValueError:
+        except (MaintenanceError, OSError, TypeError, ValueError):
             return None
 
     def _find_verified_set(
@@ -930,7 +930,7 @@ class SqliteBundleUpgradeEffects:
             task_dir = self._backup_root / str(task_id(target.task_id))
             _private_directory(task_dir)
             candidates = sorted(task_dir.iterdir(), key=lambda item: item.name.encode("utf-8"))
-        except OSError, TypeError, ValueError:
+        except (OSError, TypeError, ValueError):
             return None
         if len(candidates) > _MAX_BACKUP_SETS_TO_SCAN:
             return None
@@ -939,7 +939,7 @@ class SqliteBundleUpgradeEffects:
                 if not candidate.is_dir() or candidate.is_symlink():
                     continue
                 verified = verify_backup_set(candidate, expected_task_id=str(target.task_id))
-            except MaintenanceError, OSError, TypeError, ValueError:
+            except (MaintenanceError, OSError, TypeError, ValueError):
                 continue
             if (
                 verified.manifest.manifest_digest == manifest_digest

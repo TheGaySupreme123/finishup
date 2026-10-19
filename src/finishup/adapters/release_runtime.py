@@ -319,7 +319,7 @@ def _marker(prefix: Path) -> dict[str, str] | None:
         return None
     try:
         value: object = json.loads(_read_regular(path, limit=4096))
-    except OSError, ValueError:
+    except (OSError, ValueError):
         raise ReleaseRuntimeError("release_runtime_invalid") from None
     if not isinstance(value, dict):
         raise ReleaseRuntimeError("release_runtime_invalid")
@@ -492,7 +492,7 @@ def _reusable_bytecode(installed: Path, source: bytes) -> bytes | None:
     # The hash vouches for the header only; a truncated or corrupt payload is compiled instead.
     try:
         code: object = marshal.loads(data[16:])
-    except EOFError, ValueError, TypeError:
+    except (EOFError, ValueError, TypeError):
         return None
     if type(code) is not types.CodeType:
         return None
@@ -567,7 +567,7 @@ def _discard_abandoned_copies(root: Path) -> None:
                 or not _KEY.fullmatch(key)
             ):
                 continue
-        except OSError, ValueError:
+        except (OSError, ValueError):
             continue
         _remove_copy(path)
 
@@ -686,7 +686,7 @@ def installed_runtime_refusal() -> ReleaseRuntimeError | None:
         _members(prefix)
     except ReleaseRuntimeError as error:
         return error if str(error) in OWNERSHIP_TOKENS else None
-    except OSError, ValueError:
+    except (OSError, ValueError):
         return None
     return None
 

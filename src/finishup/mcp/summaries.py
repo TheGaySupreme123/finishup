@@ -914,7 +914,7 @@ def _semantic_withheld_item_tokens(source: Mapping[str, JsonValue]) -> tuple[str
         item_id = raw.get("item_id")
         try:
             validate_opaque_item_id(item_id)
-        except TypeError, ValueError:
+        except (TypeError, ValueError):
             continue
         result.append(f"{cast(str, item_id)} (never_send_heuristic)")
     return tuple(result)
@@ -936,7 +936,7 @@ def _semantic_redacted_value_tokens(source: Mapping[str, JsonValue]) -> tuple[st
     for raw in raw_items:
         try:
             item = SemanticRedactedValue.from_wire(raw)
-        except TypeError, ValueError:
+        except (TypeError, ValueError):
             continue
         ref = item.item_id if item.source_ref is None else item.source_ref
         what = "replaced" if item.disposition == "value_replaced" else "item withheld"
@@ -1587,7 +1587,7 @@ def _lineage_sentence(raw: object, code: str | None = None) -> str:
     for entry in cast(Sequence[object], raw):
         try:
             items.append(lineage_from_wire(entry))
-        except TypeError, ValueError:
+        except (TypeError, ValueError):
             continue
     texts = lineage_texts(items, code)
     return texts[0] if texts else ""

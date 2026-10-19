@@ -28,6 +28,9 @@ __all__ = [
 ]
 
 _MAX_CONFIG_BYTES: Final = 65_536
+# Anchored to the message end: a quoted key may contain the same words earlier in the text.
+_TOML_POSITION: Final = re.compile(r"\(at line ([0-9]+), column ([0-9]+)\)\Z")
+_TOML_AT_END: Final = re.compile(r"\(at end of document\)\Z")
 _INTEGER = re.compile(r"^-?[0-9]+$", re.ASCII)
 _SECRET_TOKENS: Final = ("api_key", "apikey", "token", "secret", "password")
 _VCS_MARKERS: Final = frozenset({".git", ".hg", ".svn", ".jj"})
@@ -241,16 +244,38 @@ def _read_config(path: Path) -> tuple[dict[str, object], bool]:
     if len(data) > _MAX_CONFIG_BYTES:
         raise ConfigError("config_file_too_large")
     try:
-        parsed = tomllib.loads(data.decode("utf-8"))
+        document = data.decode("utf-8")
+        parsed = tomllib.loads(document)
     except (UnicodeDecodeError, tomllib.TOMLDecodeError) as exc:
-        line = getattr(exc, "lineno", None)
-        column = getattr(exc, "colno", None)
+        line, column = _toml_error_position(exc, data)
         raise ConfigError(
             "config_toml_invalid",
             line=line if type(line) is int and line > 0 else None,
             column=column if type(column) is int and column > 0 else None,
         ) from None
     return cast(dict[str, object], parsed), True
+
+
+def _toml_error_position(exc: Exception, data: bytes) -> tuple[object, object]:
+    """Line and column of a TOML error, as integers only.
+
+    Python 3.14 exposes ``lineno``/``colno``; before that (the 3.12 floor, issue #1119) only the
+    message ends with ``(at line N, column M)`` or ``(at end of document)``, the latter computed
+    from the document as 3.14 does. Only the two integers leave this function.
+    """
+
+    line = getattr(exc, "lineno", None)
+    column = getattr(exc, "colno", None)
+    if line is None and isinstance(exc, tomllib.TOMLDecodeError):
+        message = str(exc)
+        found = _TOML_POSITION.search(message)
+        if found is not None:
+            line, column = int(found.group(1)), int(found.group(2))
+        elif _TOML_AT_END.search(message) is not None:
+            text = data.decode("utf-8")
+            line = text.count("\n") + 1
+            column = len(text.rsplit("\n", 1)[-1]) + 1
+    return line, column
 
 
 def _in_repository(path: Path) -> bool:

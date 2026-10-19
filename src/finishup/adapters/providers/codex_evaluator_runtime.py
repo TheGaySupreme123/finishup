@@ -294,7 +294,7 @@ def inspect_managed_runtime(bundle: Path, source_identity: str) -> ManagedRuntim
         return "unsafe"
     try:
         verify_private_local_bundle(directory)
-    except PathSafetyError, OSError:
+    except (PathSafetyError, OSError):
         return "unsafe"
     executable = _store_file_state(directory, _EXECUTABLE_NAME)
     if executable != "present":
@@ -315,7 +315,7 @@ def inspect_managed_runtime(bundle: Path, source_identity: str) -> ManagedRuntim
     try:
         executable_digest = _file_digest(directory / _EXECUTABLE_NAME)
         host_digest = _file_digest(directory / CODEX_CODE_MODE_HOST_NAME)
-    except OSError, ValueError:
+    except (OSError, ValueError):
         return "invalid"
     if (executable_digest, host_digest) != (
         record.executable_sha256,
@@ -393,7 +393,7 @@ def _stage_copy(descriptor: int, directory: Path) -> tuple[Path, str]:
 def _existing_digest(path: Path) -> str | None:
     try:
         return _file_digest(path)
-    except OSError, ValueError:
+    except (OSError, ValueError):
         return None
 
 
@@ -553,7 +553,7 @@ def provision_codex_runtime(
         )
         try:
             returncode = (_run_npm if runner is None else runner)(argv, staging)
-        except subprocess.TimeoutExpired, TimeoutError:
+        except (subprocess.TimeoutExpired, TimeoutError):
             raise ValueError("codex_evaluator_runtime_download_timeout") from None
         except OSError:
             raise ValueError("codex_evaluator_runtime_package_manager_unavailable") from None
