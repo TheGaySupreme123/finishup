@@ -27,6 +27,7 @@ replay, digests, and equality — and is not a check kind.
 | --- | --- |
 | `finishup ai setup` | `cli.ai.ai_app`; `cli.ai_setup.REVIEWER_QUESTION` and `REVIEWER_CHOICES` provide the identical three choices to the wizard and TUI. Calls `run_provider_setup` with agent opt-in, or `ai_powered` with `--every-task`; provider/model → mandatory privacy ceremony → hidden key entry. Not now records `local_only`. Every `ai` subcommand but `model` refuses extra arguments with exit 2 and a fixed message that never echoes them (a pasted key). `ai model` restores the previous model when the new model's key entry does not finish. `--set` remains supported. |
 | `finishup ai key` | Presence selects set or rotate; unknown refuses. Successful key entry reloads the service through existing composition so readiness uses the stored key. `cli.app.run_configured_provider_credential(action)` wraps the existing confidential command. No secret argv, environment, file, stdin option, JSON or MCP input is added. |
+| `finishup ai forget-key` / `finishup provider credential remove` | Configured API binding (fallback when the primary is Codex), provider/model preview, default-No confirmation, then trusted foreground `provider_credential_remove` reauthentication. No API secret input or chat consent; binding/privacy unchanged. Reload readiness and report presence only; unknown deletion never claims success. `/provider` uses `hand_over_terminal` for this same flow. |
 | `finishup ai model [MODEL_ID]` | Current-marked reviewed catalog plus a custom ID. Config writes use the locked preimage check; provider keys remain exact-model-bound, with explicit reentry through `ai key`. The old binding stays stored. Codex uses its existing setup/capability ceremony. No privacy approval is inferred. |
 | `finishup ai status [--json]` | Read-only, no provider request or service startup. `protocol.ai_status.AIStatus`; `ai-status` 1.0.0, schema tag `finishup.ai-status/1`. Fields: `review_mode` (four conversation-review tokens or null), `reviewer` and `model` (string or null), `key_stored` and `privacy_permits_sending` (boolean or null for unknown). `key_stored` is presence for the configured API binding; false for Codex-owned OAuth. Privacy requires an observed repository grant, network permission and an enabled inference channel authorizing the exact provider/endpoint/model, and is false for local-only review. Human output is one line. Neither output proves a review ran. |
 | `finishup ai off` / `finishup ai on` | Existing repository conversation-review change path: `local_only` / `local_agent_opt_in`; widening retains separate reauthentication. Off preserves the key. No owner-facing remove-key ceremony exists; `ai forget-key` is deliberately absent. Revoke at the provider to invalidate a key. |
@@ -3815,6 +3816,19 @@ storage or handle minting. `ProviderAttemptAuthBinding` freezes those same field
 final request-body SHA-256 digest, service
 generation, and deadline. Minting a credential handle requires every shared field to match the
 stored credential binding; a scoped credential cannot authorize another model, scope, or purpose.
+`VaultService.remove_provider_credential(binding, proof, now_monotonic, *, target_digest=None)`
+consumes `provider_credential_remove` authority bound to the exact target, service/vault generations,
+and expiry. It requires a ready vault and an existing record, deletes under `expected_generation`,
+and invalidates matching unused attempt handles even on ambiguous deletion. Missing records refuse
+as `record_missing`; ambiguous deletion returns no removed result. No provider binding or privacy
+record is written. `ProviderCredentialRemovePreview(target)` binds the human preview;
+`ProviderCredentialRemoveResult(status="removed", kind="provider_credential_remove")` is the
+separate successful result, with no stored generation. The remove kind permits only
+`provider_reauthentication` on YZS1 and commits immediately after authorization; it never accepts a
+new provider key. `record_missing` and `vault_locked` are closed YZH1 server/client refusal codes
+passed through without input text. The trusted helper remains foreground-only, and the existing
+OS-presence scope is unchanged. Removal is absent from elevated bootstrap and agent-chat consent.
+
 `VaultService.has_provider_credential(binding)` reads only the exact structural record-generation
 index and returns presence; it neither decrypts the record nor creates a credential handle.
 `ProviderCredentialHandle.authorize_attempt(binding, inject_and_start)` is single-use: after exact
@@ -3844,7 +3858,7 @@ monotonic sample with the same floor rule.
 
 `HumanCeremonyKind` is exactly `vault_initialize`, `vault_passphrase_rotate`, `vault_unlock`, `keyring_retry`,
 `portable_recovery`, `installation_recovery`, `provider_credential_set`, `provider_credential_rotate`,
-`privacy_policy_decision`, `privacy_disclosure_decision`, `idle_relock_policy_change`, and
+`provider_credential_remove`, `privacy_policy_decision`, `privacy_disclosure_decision`, `idle_relock_policy_change`, and
 `owner_receipt_view`. `owner_receipt_view` opens directly at `AuthorizationRequiredPhase`
 (`privacy_reauthentication` purpose); on success its effect consumes the proof for the target
 digest and returns `OwnerReceiptViewResult(status="authorized", target_digest, grant_seconds=60)`.

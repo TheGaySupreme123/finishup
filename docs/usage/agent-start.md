@@ -291,6 +291,10 @@ recommendations. Each answer decides the next step; stop after each and wait.
    existing consent lane instead, first warn that chat may retain the key, offer terminal entry
    as the stronger alternative, and use only `finishup consent ... --provider-credential-stdin`
    for that one prepared, approved credential target. Never forward a key through MCP.
+   To remove a stored key, tell the user to run `finishup ai forget-key` themselves in their own
+   terminal (or choose **Remove the stored key** under `/provider`). Agents never run this command
+   or its `finishup provider credential remove` alias; removal has no agent-chat consent lane.
+   For a replacement key, direct the user to `finishup ai key`.
 
 When every answer is in, run the setup (the preview with `--route-profile policy`, whatever the
 answer; show its `route_profile`), then hand over the terminal once for the line that records the

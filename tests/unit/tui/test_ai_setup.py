@@ -175,3 +175,49 @@ async def test_an_unrecorded_not_now_never_finishes_setup() -> None:
     await app._run_initial_review("agent_opt_in", connected=True)  # pyright: ignore[reportPrivateUsage]
     await app._run_initial_review("local_only", connected=True)  # pyright: ignore[reportPrivateUsage]
     assert finished == []
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("outcome", ["removed", "removed_not_ready", "cancelled", "unknown"])
+async def test_provider_menu_offers_remove_and_hands_terminal_back(outcome: str) -> None:
+    from collections.abc import Awaitable, Callable
+
+    from finishup.tui.runtime import FinishUpRuntime
+
+    events: list[str] = []
+    messages: list[str] = []
+    views: list[BaseView] = []
+
+    class Runtime(FinishUpRuntime):
+        async def remove_provider_credential(self) -> str:
+            events.append("remove")
+            return outcome
+
+    app = FinishUpTui(Runtime())
+    replies = iter(["api_key", "remove_key"])
+
+    async def ask(view: BaseView) -> str:
+        views.append(view)
+        return next(replies)
+
+    async def handover(operation: Callable[[], Awaitable[object]]) -> object:
+        events.append("handover")
+        return await operation()
+
+    def silent(*args: object, **_kwargs: object) -> None:
+        messages.append(str(args))
+
+    app.ask = ask  # pyright: ignore[reportAttributeAccessIssue]
+    app.hand_over_terminal = handover  # pyright: ignore[reportAttributeAccessIssue]
+    app.say = silent  # pyright: ignore[reportAttributeAccessIssue]
+    await app.command_provider()
+    assert events == ["handover", "remove"]
+    menu = views[1]
+    assert isinstance(menu, SelectionView)
+    assert any(option.label == "Remove the stored key" for option in menu.options)
+    if outcome in {"removed", "removed_not_ready"}:
+        assert any(
+            "was removed" in message and "finishup ai key" in message for message in messages
+        )
+    else:
+        assert all("was removed" not in message for message in messages)

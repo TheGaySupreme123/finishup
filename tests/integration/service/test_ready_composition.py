@@ -2729,6 +2729,26 @@ async def test_ready_composition_reports_exact_configured_credential_presence(
         other_config = FinishUpConfig(profile="local-openai", provider=other_provider)
         app = await application_factory(other_config)(1, vault.generation)
         assert app.provider_credential_connected is False
+        await app.close()
+        app = None
+
+        removal = HumanAuthorizationProof(
+            "provider-proof-for-removal",
+            "provider_credential_remove",
+            credential_binding.target_digest("remove"),
+            1,
+            vault.generation,
+            None,
+            1.0,
+            60.0,
+        )
+        await vault.remove_provider_credential(credential_binding, removal, 3.0)
+        app = await application_factory(config)(1, vault.generation)
+        assert app.provider_credential_connected is False
+        assert config.provider == provider
+        await app.close()
+        app = None
+
     finally:
         if app is not None:
             await app.close()

@@ -189,6 +189,8 @@ from finishup.service.confidential_protocol import (
     PrivacyPendingTarget,
     PrivacyPolicyDecisionPreview,
     PrivacyPolicyTransitionPreviewMember,
+    ProviderCredentialRemovePreview,
+    ProviderCredentialRemoveResult,
     ProviderCredentialResult,
     ProviderCredentialRotatePreview,
     ProviderCredentialSetPreview,
@@ -3525,20 +3527,27 @@ class _LockedHumanEffects:
                 return KeyringRetryPreview(operation), digest, None
             raise HumanControlError("kind_forbidden")
         if type(target) is ProviderCredentialTarget:
-            if not self._vault.ready or mode != "passphrase":
+            if target.action == "remove" and not self._vault.ready:
+                raise HumanControlError("vault_locked")
+            if not self._vault.ready or (mode != "passphrase" and target.action != "remove"):
                 raise HumanControlError("kind_forbidden")
-            if request.ceremony_kind not in {
-                HumanCeremonyKind.PROVIDER_CREDENTIAL_SET,
-                HumanCeremonyKind.PROVIDER_CREDENTIAL_ROTATE,
-            }:
-                raise HumanControlError("kind_forbidden")
-            if (request.ceremony_kind is HumanCeremonyKind.PROVIDER_CREDENTIAL_SET) != (
-                target.action == "set"
-            ):
+            if request.ceremony_kind.value != f"provider_credential_{target.action}":
                 raise HumanControlError("target_invalid")
             digest = target.target_digest()
             preview: HumanPreview
-            if target.action == "set":
+            if target.action == "remove":
+                from finishup.service.vault import provider_credential_profile_binding
+
+                binding = provider_credential_profile_binding(
+                    target.provider_id,
+                    target.model_id,
+                    target.endpoint_profile_id,
+                    target.endpoint_profile_version,
+                )
+                if not await self._vault.has_provider_credential(binding):
+                    raise HumanControlError("record_missing")
+                preview = ProviderCredentialRemovePreview(target)
+            elif target.action == "set":
                 preview = ProviderCredentialSetPreview(target)
             else:
                 preview = ProviderCredentialRotatePreview(target)
@@ -4046,8 +4055,11 @@ class _LockedHumanEffects:
             target.scope_digest,
             target.purpose_digest,
         )
+        action = target.action
+        if action != "set" and action != "rotate":
+            raise HumanControlError("target_invalid")
         await self._vault.store_provider_credential(
-            target.action,
+            action,
             binding,
             secret,
             proof,
@@ -4060,7 +4072,36 @@ class _LockedHumanEffects:
         # failed check hours later whose public reason cannot name authentication.
         if await self._provider_credential_refused(target, binding):
             raise HumanControlError("secret_rejected")
-        return ProviderCredentialResult(target.action, generation, "stored")
+        return ProviderCredentialResult(action, generation, "stored")
+
+    async def remove_provider_credential(
+        self,
+        target: ProviderCredentialTarget,
+        proof: HumanAuthorizationProof,
+        now_monotonic: float,
+    ) -> ProviderCredentialRemoveResult:
+        from finishup.service.vault import ProviderCredentialBinding
+
+        if target.action != "remove":
+            raise HumanControlError("target_invalid")
+        binding = ProviderCredentialBinding(
+            target.provider_id,
+            target.model_id,
+            target.endpoint_profile_id,
+            target.endpoint_profile_version,
+            target.purpose,
+            target.scope_digest,
+            target.purpose_digest,
+        )
+        try:
+            await self._vault.remove_provider_credential(
+                binding, proof, now_monotonic, target_digest=target.target_digest()
+            )
+        except VaultError as exc:
+            raise HumanControlError(
+                "record_missing" if exc.reason == "record_missing" else "internal_error"
+            ) from None
+        return ProviderCredentialRemoveResult()
 
     async def rotate_vault_passphrase(
         self,

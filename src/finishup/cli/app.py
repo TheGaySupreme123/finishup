@@ -20,7 +20,7 @@ from pydantic import BaseModel, ValidationError
 
 from finishup import __version__
 from finishup.cli.agent_start import AGENT_START_HANDOFF
-from finishup.cli.ai import ai_app
+from finishup.cli.ai import ai_app, register_credential_remove
 from finishup.cli.bootstrap import (
     control_failure as _shared_control_failure,
 )
@@ -4642,6 +4642,7 @@ def run_configured_provider_credential(action: Literal["set", "rotate"]) -> None
 
 credential_app.command("set")(_provider_credential_command("set"))
 credential_app.command("rotate")(_provider_credential_command("rotate"))
+register_credential_remove(credential_app)
 
 
 @codex_subscription_app.command("setup")

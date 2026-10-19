@@ -939,6 +939,7 @@ class UnlockCoordinator:
             allowed = {
                 "provider_credential_set": SecretPurpose.PROVIDER_REAUTHENTICATION,
                 "provider_credential_rotate": SecretPurpose.PROVIDER_REAUTHENTICATION,
+                "provider_credential_remove": SecretPurpose.PROVIDER_REAUTHENTICATION,
                 "privacy_policy_widen": SecretPurpose.PRIVACY_REAUTHENTICATION,
                 "owner_receipt_view": SecretPurpose.PRIVACY_REAUTHENTICATION,
                 "idle_relock_policy_change": SecretPurpose.SECURITY_REAUTHENTICATION,

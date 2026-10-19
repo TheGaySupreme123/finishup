@@ -82,6 +82,8 @@ __all__ = [
     "PrivacyPendingTarget",
     "PrivacyPolicyDecisionPreview",
     "PrivacyPolicyTransitionPreviewMember",
+    "ProviderCredentialRemovePreview",
+    "ProviderCredentialRemoveResult",
     "ProviderCredentialResult",
     "ProviderCredentialRotatePreview",
     "ProviderCredentialSetPreview",
@@ -178,6 +180,7 @@ class HumanCeremonyKind(str, Enum):  # noqa: UP042 - fixed wire strings
     INSTALLATION_RECOVERY = "installation_recovery"
     PROVIDER_CREDENTIAL_SET = "provider_credential_set"
     PROVIDER_CREDENTIAL_ROTATE = "provider_credential_rotate"
+    PROVIDER_CREDENTIAL_REMOVE = "provider_credential_remove"
     PRIVACY_POLICY_DECISION = "privacy_policy_decision"
     PRIVACY_DISCLOSURE_DECISION = "privacy_disclosure_decision"
     IDLE_RELOCK_POLICY_CHANGE = "idle_relock_policy_change"
@@ -324,7 +327,7 @@ class InstallationRecoveryTarget:
 
 @dataclass(frozen=True, slots=True)
 class ProviderCredentialTarget:
-    action: Literal["set", "rotate"]
+    action: Literal["set", "rotate", "remove"]
     provider_id: str
     model_id: str
     endpoint_profile_id: str
@@ -336,7 +339,7 @@ class ProviderCredentialTarget:
     kind: Literal["provider_credential"] = "provider_credential"
 
     def __post_init__(self) -> None:
-        if self.kind != "provider_credential" or self.action not in {"set", "rotate"}:
+        if self.kind != "provider_credential" or self.action not in {"set", "rotate", "remove"}:
             raise ValueError("provider_credential_target_invalid")
         _require_identity(self.provider_id, "provider_credential_target_invalid")
         if type(self.model_id) is not str or _MODEL.fullmatch(self.model_id) is None:
@@ -656,6 +659,20 @@ class ProviderCredentialRotatePreview:
 
 
 @dataclass(frozen=True, slots=True)
+class ProviderCredentialRemovePreview:
+    target: ProviderCredentialTarget
+    kind: Literal["provider_credential_remove"] = "provider_credential_remove"
+
+    def __post_init__(self) -> None:
+        if (
+            type(self.target) is not ProviderCredentialTarget
+            or self.target.action != "remove"
+            or self.kind != "provider_credential_remove"
+        ):
+            raise ValueError("provider_credential_preview_invalid")
+
+
+@dataclass(frozen=True, slots=True)
 class PrivacyPolicyTransitionPreviewMember:
     """One authority layer changed by a compound privacy decision.
 
@@ -829,6 +846,7 @@ type HumanPreview = (
     | InstallationRecoveryPreview
     | ProviderCredentialSetPreview
     | ProviderCredentialRotatePreview
+    | ProviderCredentialRemovePreview
     | PrivacyPolicyDecisionPreview
     | PrivacyDisclosureDecisionPreview
     | IdleRelockPolicyChangePreview
@@ -1010,6 +1028,16 @@ class ProviderCredentialResult:
 
 
 @dataclass(frozen=True, slots=True)
+class ProviderCredentialRemoveResult:
+    status: Literal["removed"] = "removed"
+    kind: Literal["provider_credential_remove"] = "provider_credential_remove"
+
+    def __post_init__(self) -> None:
+        if self.status != "removed" or self.kind != "provider_credential_remove":
+            raise ValueError("provider_credential_result_invalid")
+
+
+@dataclass(frozen=True, slots=True)
 class PrivacyDecisionResult:
     status: Literal["committed", "denied", "stale"]
     commitment: str
@@ -1059,6 +1087,7 @@ type HumanResult = (
     | PortableRecoveryResult
     | InstallationRecoveryResult
     | ProviderCredentialResult
+    | ProviderCredentialRemoveResult
     | PrivacyDecisionResult
     | IdleRelockPolicyResult
     | OwnerReceiptViewResult
@@ -1135,6 +1164,8 @@ _SERVER_ERROR_CODES: Final = frozenset(
         "frame_too_large",
         "peer_untrusted",
         "kind_forbidden",
+        "record_missing",
+        "vault_locked",
         # Another ceremony is already open on this service; nothing was opened (#1073).
         "ceremony_busy",
         # Too many recent failed confirmations (passphrase throttle, or OS presence prompts
@@ -1294,6 +1325,7 @@ def _validate_open_combination(kind: HumanCeremonyKind, target: HumanOpenTarget)
     elif kind in {
         HumanCeremonyKind.PROVIDER_CREDENTIAL_SET,
         HumanCeremonyKind.PROVIDER_CREDENTIAL_ROTATE,
+        HumanCeremonyKind.PROVIDER_CREDENTIAL_REMOVE,
     }:
         expected = ProviderCredentialTarget
     elif kind in {
@@ -1309,7 +1341,11 @@ def _validate_open_combination(kind: HumanCeremonyKind, target: HumanOpenTarget)
         raise ValueError("ceremony_target_mismatch")
     if type(target) is ProviderCredentialTarget:
         action = target.action
-        expected_action = "set" if kind is HumanCeremonyKind.PROVIDER_CREDENTIAL_SET else "rotate"
+        expected_action = {
+            HumanCeremonyKind.PROVIDER_CREDENTIAL_SET: "set",
+            HumanCeremonyKind.PROVIDER_CREDENTIAL_ROTATE: "rotate",
+            HumanCeremonyKind.PROVIDER_CREDENTIAL_REMOVE: "remove",
+        }[kind]
         if action != expected_action:
             raise ValueError("ceremony_target_mismatch")
     if type(target) is PrivacyPendingTarget:
@@ -1636,7 +1672,7 @@ def _target_from_json(value: JsonValue) -> HumanOpenTarget:
             },
         )
         return ProviderCredentialTarget(
-            action=cast(Literal["set", "rotate"], source["action"]),
+            action=cast(Literal["set", "rotate", "remove"], source["action"]),
             provider_id=cast(str, source["provider_id"]),
             model_id=cast(str, source["model_id"]),
             endpoint_profile_id=cast(str, source["endpoint_profile_id"]),
@@ -2034,8 +2070,17 @@ def _preview_to_json(value: HumanPreview) -> dict[str, JsonValue]:
             "target_envelope": value.target_envelope,
             "total_bytes": value.total_bytes,
         }
-    if type(value) in {ProviderCredentialSetPreview, ProviderCredentialRotatePreview}:
-        provider = cast(ProviderCredentialSetPreview | ProviderCredentialRotatePreview, value)
+    if type(value) in {
+        ProviderCredentialSetPreview,
+        ProviderCredentialRotatePreview,
+        ProviderCredentialRemovePreview,
+    }:
+        provider = cast(
+            ProviderCredentialSetPreview
+            | ProviderCredentialRotatePreview
+            | ProviderCredentialRemovePreview,
+            value,
+        )
         return {"kind": provider.kind, "target": human_target_json(provider.target)}
     if type(value) is PrivacyPolicyDecisionPreview:
         encoded: dict[str, JsonValue] = {
@@ -2167,11 +2212,17 @@ def _preview_from_json(value: JsonValue) -> HumanPreview:
             total_bytes=cast(int, source["total_bytes"]),
             native_prompt_available=cast(bool, source["native_prompt_available"]),
         )
-    if kind in {"provider_credential_set", "provider_credential_rotate"}:
+    if kind in {
+        "provider_credential_set",
+        "provider_credential_rotate",
+        "provider_credential_remove",
+    }:
         _keys(source, {"kind", "target"})
         target = _target_from_json(source["target"])
         if type(target) is not ProviderCredentialTarget:
             raise ValueError("human_preview_invalid")
+        if kind == "provider_credential_remove":
+            return ProviderCredentialRemovePreview(target)
         return (
             ProviderCredentialSetPreview(target)
             if kind == "provider_credential_set"
@@ -2342,6 +2393,8 @@ def _result_to_json(value: HumanResult) -> dict[str, JsonValue]:
             "result_commitment": value.result_commitment,
             "status": value.status,
         }
+    if type(value) is ProviderCredentialRemoveResult:
+        return {"kind": value.kind, "status": value.status}
     if type(value) is ProviderCredentialResult:
         return {
             "action": value.action,
@@ -2403,6 +2456,9 @@ def _result_from_json(value: JsonValue) -> HumanResult:
             cast(int, source["recovery_generation"]),
             cast(str, source["result_commitment"]),
         )
+    if kind == "provider_credential_remove":
+        _keys(source, {"kind", "status"})
+        return ProviderCredentialRemoveResult(cast(Literal["removed"], source["status"]))
     if kind == "provider_credential":
         _keys(source, {"action", "activation_status", "kind", "stored_generation"})
         return ProviderCredentialResult(

@@ -50,6 +50,8 @@ from finishup.service.confidential_protocol import (
     PrivacyDisclosureDecisionPreview,
     PrivacyPendingTarget,
     PrivacyPolicyDecisionPreview,
+    ProviderCredentialRemovePreview,
+    ProviderCredentialRemoveResult,
     ProviderCredentialResult,
     ProviderCredentialRotatePreview,
     ProviderCredentialSetPreview,
@@ -84,6 +86,7 @@ __all__ = [
     "portable_recovery",
     "read_vault_passphrase_for_auto_unlock",
     "retry_keyring",
+    "remove_provider_credential",
     "rotate_provider_credential",
     "rotate_vault_passphrase",
     "run_human_ceremony",
@@ -361,6 +364,12 @@ def _verify_preview(
     elif kind is HumanCeremonyKind.PROVIDER_CREDENTIAL_ROTATE:
         valid = (
             type(preview) is ProviderCredentialRotatePreview
+            and type(target) is ProviderCredentialTarget
+            and preview.target == target
+        )
+    elif kind is HumanCeremonyKind.PROVIDER_CREDENTIAL_REMOVE:
+        valid = (
+            type(preview) is ProviderCredentialRemovePreview
             and type(target) is ProviderCredentialTarget
             and preview.target == target
         )
@@ -790,8 +799,17 @@ def _render_preview(terminal: _CeremonyTerminal, preview: HumanPreview) -> None:
             f"{'create-only local .yirs file; path stays in this helper' if preview.operation in {'provision', 'rotate'} else 'no export'}\n"
             f"Items: {preview.item_count}; bytes: {preview.total_bytes}\n"
         )
-    elif type(preview) in {ProviderCredentialSetPreview, ProviderCredentialRotatePreview}:
-        provider = cast(ProviderCredentialSetPreview | ProviderCredentialRotatePreview, preview)
+    elif type(preview) in {
+        ProviderCredentialSetPreview,
+        ProviderCredentialRotatePreview,
+        ProviderCredentialRemovePreview,
+    }:
+        provider = cast(
+            ProviderCredentialSetPreview
+            | ProviderCredentialRotatePreview
+            | ProviderCredentialRemovePreview,
+            preview,
+        )
         terminal.write(
             f"Action: provider credential {provider.target.action}\n"
             f"Provider: {provider.target.provider_id}\n"
@@ -988,6 +1006,8 @@ def _expected_result_type(kind: HumanCeremonyKind) -> type[HumanResult]:
         HumanCeremonyKind.PROVIDER_CREDENTIAL_ROTATE,
     }:
         return ProviderCredentialResult
+    if kind is HumanCeremonyKind.PROVIDER_CREDENTIAL_REMOVE:
+        return ProviderCredentialRemoveResult
     if kind in {
         HumanCeremonyKind.PRIVACY_POLICY_DECISION,
         HumanCeremonyKind.PRIVACY_DISCLOSURE_DECISION,
@@ -1225,7 +1245,10 @@ def _validate_supplied_secrets(
     recovery_kind = kind is HumanCeremonyKind.INSTALLATION_RECOVERY
     if (
         (provider_credential is not None and not provider_kind)
-        or (provider_reauthentication is not None and not provider_kind)
+        or (
+            provider_reauthentication is not None
+            and not (provider_kind or kind is HumanCeremonyKind.PROVIDER_CREDENTIAL_REMOVE)
+        )
         or (passphrase is not None and not (passphrase_kind or passphrase_rotation_kind))
         or (installation_recovery_secret is not None and not recovery_kind)
         or (vault_rewrap_secret is not None and not (recovery_kind or passphrase_rotation_kind))
@@ -1672,6 +1695,20 @@ async def set_provider_credential(
         provider_reauthentication=provider_reauthentication,
     )
     return cast(ProviderCredentialResult, result)
+
+
+async def remove_provider_credential(
+    target: ProviderCredentialTarget,
+    provider_reauthentication: bytearray | None = None,
+) -> ProviderCredentialRemoveResult:
+    if target.action != "remove":
+        raise ValueError("provider_credential_target_invalid")
+    result = await run_human_ceremony(
+        HumanCeremonyKind.PROVIDER_CREDENTIAL_REMOVE,
+        target,
+        provider_reauthentication=provider_reauthentication,
+    )
+    return cast(ProviderCredentialRemoveResult, result)
 
 
 async def rotate_provider_credential(

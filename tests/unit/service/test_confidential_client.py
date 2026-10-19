@@ -455,7 +455,10 @@ class _RefusingHumanStream(_HumanStream):
 
 
 @pytest.mark.anyio
-@pytest.mark.parametrize("code", ["kind_forbidden", "state_forbidden", "ceremony_unsupported"])
+@pytest.mark.parametrize(
+    "code",
+    ["kind_forbidden", "state_forbidden", "ceremony_unsupported", "record_missing", "vault_locked"],
+)
 async def test_a_refusal_at_open_reaches_the_caller_as_its_bounded_reason(code: str) -> None:
     """tb4n1 A8: `finishup service idle-relock disabled` under the production daemon printed
     "service_unavailable: the confidential ceremony could not be completed" although the

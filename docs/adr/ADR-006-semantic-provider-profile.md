@@ -2159,7 +2159,7 @@ a default-first reviewed model list (custom IDs remain possible), mandatory priv
 hidden key entry. Only this path asks about the optional content-free key probe, keeping its yes
 default. Codex retains its own login, gpt-6.1-sol suggestion and gpt-6-luna fallback.
 
-The short `finishup ai setup|key|model|status|on|off` commands compose existing trusted ceremonies.
+The short `finishup ai setup|key|forget-key|model|status|on|off` commands compose existing trusted ceremonies.
 They create no new secret ingress. After hidden key entry, the existing service-composition path
 reloads credential readiness in the CLI and terminal interface; a relocked vault is an unlock
 continuation, not a lost-key claim. Privacy widening remains a separate reauthenticated decision;
@@ -2170,9 +2170,20 @@ live review. Off narrows the repository setting without deleting credentials.
 The vault's credential identity includes the model. Changing an API model keeps the old record and
 explicitly opens hidden entry for the new binding, rather than copying a key across bindings or
 silently stranding it. Changing a Codex model reuses its existing setup/capability check and sign-in.
-There is no owner-facing individual credential-removal ceremony; do not invent `ai forget-key`.
-Provider revocation invalidates a key but does not erase its encrypted local record. A separately
-reviewed removal ceremony remains a gap owned by #1119.
+**Credential-removal decision (2026-10-19, issue #1119).** The maintainer explicitly requested
+“make option to remove or switch”. `finishup ai key` already replaces the configured key through
+set or rotate; its help and status now say so. `finishup ai forget-key` and
+`finishup provider credential remove` show the exact provider/model, default confirmation to No,
+and use the new owner-only `provider_credential_remove` trusted-terminal ceremony (ADR-008).
+The full-screen `/provider` action hands over the terminal for the same flow. With a Codex primary,
+the key commands target its configured API fallback. Removal deletes only that credential record
+under its current generation, invalidates matching unused attempt handles, and reloads readiness.
+It neither changes the provider binding nor privacy authority, and needs no repository privacy
+grant because it cannot dispatch. Missing records refuse as `record_missing`; a locked vault
+refuses; ambiguous storage outcomes never report removal. Status remains presence-only. No new
+secret purpose, ordinary control/MCP method, or elevated-bootstrap/chat-consent operation is added.
+Local removal cannot recall requests already sent or revoke the key at its provider; the owner is
+told to revoke it there if it may have leaked.
 
 The October catalog follows the provider IDs reviewed on 2026-10-19. It proves bundled selection,
 not account entitlement or live interoperability. The Anthropic compatible adapter already omits

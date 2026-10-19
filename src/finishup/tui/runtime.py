@@ -1951,6 +1951,21 @@ class FinishUpRuntime:
             await restart_service_for_semantic_composition(report_startup_failure=False)
         return status
 
+    async def remove_provider_credential(self) -> str:
+        """The same owner-only terminal confirmation, reauthentication and readiness reload."""
+
+        import typer
+
+        from finishup.cli.ai import forget_key
+
+        try:
+            return await forget_key()
+        except (typer.Exit, typer.Abort) as error:
+            raise RuntimeError_(
+                "provider_credential_remove_unconfirmed",
+                "key removal was not confirmed; run finishup ai status",
+            ) from error
+
     async def initialize_passphrase_vault(self) -> None:
         from finishup.cli.unlock import HumanCeremonyCliError, initialize_passphrase_vault
 

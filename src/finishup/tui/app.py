@@ -2662,6 +2662,16 @@ class FinishUpTui(App[int]):
                 ]
                 + [
                     Option(
+                        "key",
+                        "Enter or replace the stored key",
+                        "Hidden key entry in the trusted terminal.",
+                    ),
+                    Option(
+                        "remove_key",
+                        "Remove the stored key",
+                        "Confirm and reauthenticate in the trusted terminal.",
+                    ),
+                    Option(
                         "codex_status",
                         "Codex subscription status",
                         "Structural account and model read; no task case.",
@@ -2701,6 +2711,38 @@ class FinishUpTui(App[int]):
             return
         if chosen == "codex_subscription":
             await self._command_codex_subscription(conversation_review=conversation_review)
+            return
+        if chosen == "key":
+            await self._run_confidential(
+                "Provider API key",
+                self.runtime.store_provider_credential,
+                fallback_command="finishup ai key",
+            )
+            return
+        if chosen == "remove_key":
+            try:
+                status = await self.hand_over_terminal(self.runtime.remove_provider_credential)
+            except SuspendNotSupported:
+                self.say(Level.UNPROVEN, "Run 'finishup ai forget-key' from your own terminal.")
+                return
+            except RuntimeError_ as error:
+                self._report(error)
+                return
+            if status == "cancelled":
+                self.say(Level.OPTIONAL, "The stored key was kept.")
+            elif status in {"removed", "removed_not_ready"}:
+                self.say(
+                    Level.ACTIVE if status == "removed" else Level.UNPROVEN,
+                    "The stored key was removed."
+                    if status == "removed"
+                    else "The stored key was removed; readiness could not reload. Run finishup ai status.",
+                    (
+                        "AI-powered review cannot send anything with this provider until you enter a key again with finishup ai key.",
+                        "If the key may have leaked, also revoke it at the provider.",
+                    ),
+                )
+            else:
+                self.say(Level.UNPROVEN, "Key removal was not confirmed. Run finishup ai status.")
             return
         if chosen == "codex_status":
             await self._command_codex_subscription_status()

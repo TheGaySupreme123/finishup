@@ -2714,3 +2714,14 @@ on the foreground terminal with the agent named. Shared plugins and project regi
 make another member stale after an earlier apply; that member is refused, reported separately,
 and requires the fresh preview continuation. No newly computed plan inherits the batch approval.
 Shared-piece retention and the existing native-host/platform evidence limits remain unchanged.
+
+
+## Provider key removal decision (2026-10-19, issue #1119)
+
+Same path on every host: the owner runs `finishup ai key` to replace a key, or
+`finishup ai forget-key` (`finishup provider credential remove`) to remove it after default-No
+confirmation and trusted-terminal reauthentication. `/provider` hands over the terminal for that
+same removal flow. Agents direct the owner to it and never run it; no MCP or chat-consent removal
+path is added. The configured API fallback is targeted when Codex is primary. Binding and privacy
+policy stay unchanged, and status is presence-only after readiness reload. Shared-path tests do not
+claim a new native-host or platform certification.

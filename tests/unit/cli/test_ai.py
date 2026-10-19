@@ -31,7 +31,7 @@ def test_ai_commands_are_discoverable_and_key_accepts_no_secret_input() -> None:
     runner = CliRunner()
     result = runner.invoke(cli.app, ["ai", "--help"])
     assert result.exit_code == 0, result.output
-    for name in ("setup", "key", "model", "status", "on", "off"):
+    for name in ("setup", "key", "forget-key", "model", "status", "on", "off"):
         assert name in result.output
     for arguments in (
         ["key", "secret-canary"],
@@ -42,12 +42,85 @@ def test_ai_commands_are_discoverable_and_key_accepts_no_secret_input() -> None:
         ["on", "secret-canary"],
         ["off", "secret-canary"],
         ["status", "secret-canary"],
+        ["forget-key", "secret-canary"],
+        ["forget-key", "--key", "secret-canary"],
     ):
         result = runner.invoke(cli.app, ["ai", *arguments])
         assert result.exit_code == 2
         # Review of #1119: a pasted key is never echoed back into the terminal or a transcript.
         assert "secret-canary" not in result.output
         assert "secret-canary" not in (result.stderr if result.stderr_bytes is not None else "")
+
+
+@pytest.mark.parametrize("command", [["ai", "forget-key"], ["provider", "credential", "remove"]])
+@pytest.mark.parametrize("answer", ["", "n", "y"])
+def test_forget_key_confirms_defaults_no_and_reloads(
+    monkeypatch: pytest.MonkeyPatch, command: list[str], answer: str
+) -> None:
+    calls: list[str] = []
+
+    async def status(**_: object) -> dict[str, object]:
+        return {
+            "credential_connected": True,
+            "endpoint": {
+                "provider_id": "openai",
+                "model": "gpt-5",
+                "endpoint_profile_id": "openai-responses",
+                "endpoint_profile_version": "1",
+                "credential_authority": "finishup_vault_api_credential",
+            },
+        }
+
+    async def remove(_target: object) -> None:
+        calls.append("ceremony")
+
+    async def reload(**_: object) -> dict[str, JsonValue]:
+        calls.append("reload")
+        return {"state": "ready"}
+
+    monkeypatch.setattr(provider_status, "provider_status_report", status)
+    monkeypatch.setattr(ai, "remove_configured_provider_credential", remove, raising=False)
+    monkeypatch.setattr(setup, "restart_service_for_semantic_composition", reload)
+    result = CliRunner().invoke(cli.app, command, input=answer + "\n")
+    assert result.exit_code == 0, result.output
+    assert "openai" in result.output and "gpt-5" in result.output
+    assert "[y/N]" in result.output
+    assert calls == (["ceremony", "reload"] if answer == "y" else [])
+    if answer == "y":
+        assert "cannot send" in result.output
+        assert "finishup ai key" in result.output
+        assert "revok" in result.output.lower()
+
+
+@pytest.mark.parametrize("stored", [False, None])
+def test_forget_key_refuses_missing_or_unknown_without_confirmation(
+    monkeypatch: pytest.MonkeyPatch, stored: bool | None
+) -> None:
+    async def status(**_: object) -> dict[str, object]:
+        return {
+            "credential_connected": stored,
+            "endpoint": {
+                "provider_id": "openai",
+                "model": "gpt-5",
+                "endpoint_profile_id": "openai-responses",
+                "endpoint_profile_version": "1",
+                "credential_authority": "finishup_vault_api_credential",
+            },
+        }
+
+    monkeypatch.setattr(provider_status, "provider_status_report", status)
+    result = CliRunner().invoke(cli.app, ["ai", "forget-key"])
+    assert result.exit_code == 20
+    assert ("record_missing" if stored is False else "unknown") in result.output
+    assert "[y/N]" not in result.output
+
+
+def test_forget_key_extra_arguments_are_never_echoed() -> None:
+    for command in (["ai", "forget-key"], ["provider", "credential", "remove"]):
+        result = CliRunner().invoke(cli.app, [*command, "--key", "secret-canary"])
+        assert result.exit_code == 2
+        assert "secret-canary" not in result.output
+        assert "This command takes no arguments" in result.output
 
 
 @pytest.mark.parametrize(("stored", "action"), [(False, "set"), (True, "rotate")])
@@ -514,3 +587,129 @@ def test_ai_key_reloads_readiness_after_the_hidden_ceremony(
     result = CliRunner().invoke(cli.app, ["ai", "key"])
     assert result.exit_code == 0, result.output
     assert events == ["hidden-entry", "reload"]
+
+
+@pytest.mark.parametrize("failure", ["record_missing", "ambiguous"])
+def test_forget_key_never_claims_ambiguous_or_missing_deletion(
+    monkeypatch: pytest.MonkeyPatch, failure: str
+) -> None:
+    async def status(**_: object) -> dict[str, object]:
+        return {
+            "credential_connected": True,
+            "endpoint": {
+                "provider_id": "openai",
+                "model": "gpt-5",
+                "endpoint_profile_id": "openai-responses",
+                "endpoint_profile_version": "1",
+                "credential_authority": "finishup_vault_api_credential",
+            },
+        }
+
+    async def remove(_target: object) -> None:
+        from finishup.service.confidential_client import ConfidentialClientError
+
+        raise ConfidentialClientError(failure)
+
+    async def reload(**_: object) -> dict[str, JsonValue]:
+        raise AssertionError("an unconfirmed removal must not report successful reload")
+
+    monkeypatch.setattr(provider_status, "provider_status_report", status)
+    monkeypatch.setattr(ai, "remove_configured_provider_credential", remove)
+    monkeypatch.setattr(setup, "restart_service_for_semantic_composition", reload)
+    result = CliRunner().invoke(cli.app, ["ai", "forget-key"], input="y\n")
+    assert result.exit_code == 20
+    assert "was removed" not in result.output
+    assert ("record_missing" if failure == "record_missing" else "not confirmed") in result.output
+
+
+def test_forget_key_targets_the_exact_api_fallback(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from finishup.service.confidential_protocol import ProviderCredentialTarget
+
+    stored = [True]
+    fallback = {
+        "provider_id": "openai",
+        "model": "gpt-5",
+        "endpoint_profile_id": "openai-responses",
+        "endpoint_profile_version": "1",
+        "credential_authority": "finishup_vault_api_credential",
+    }
+
+    async def status(**_: object) -> dict[str, object]:
+        return {
+            "endpoint": {
+                "provider_id": "openai-codex",
+                "model": "gpt-6.1-sol",
+                "credential_authority": "external_runtime_oauth",
+            },
+            "credential_connected": True,
+            "fallback_endpoint": fallback,
+            "fallback_credential_connected": stored[0],
+        }
+
+    async def remove(target: object) -> None:
+        assert isinstance(target, ProviderCredentialTarget)
+        assert target.action == "remove" and target.model_id == "gpt-5"
+        assert target.provider_id == "openai"
+        assert target.endpoint_profile_id == "openai-responses"
+        assert target.repository_privacy_commitment is None
+        stored[0] = False
+
+    monkeypatch.setattr(provider_status, "provider_status_report", status)
+    monkeypatch.setattr(ai, "remove_configured_provider_credential", remove)
+    result = CliRunner().invoke(cli.app, ["ai", "forget-key"], input="y\n")
+    assert result.exit_code == 0, result.output
+    assert "Provider: openai; model: gpt-5" in result.output
+    assert stored == [False]
+
+
+def test_ai_status_advertises_key_replacement_and_removal(monkeypatch: pytest.MonkeyPatch) -> None:
+    async def report() -> dict[str, JsonValue]:
+        return {
+            "review_mode": "local_only",
+            "reviewer": "openai",
+            "model": "gpt-5",
+            "key_stored": False,
+            "privacy_permits_sending": False,
+        }
+
+    monkeypatch.setattr(ai, "ai_status_report", report)
+    result = CliRunner().invoke(cli.app, ["ai", "status"])
+    assert result.exit_code == 0
+    assert "key stored: no" in result.output
+    assert "finishup ai key replaces" in result.output
+    assert "finishup ai forget-key removes" in result.output
+
+
+@pytest.mark.parametrize("failure", ["locked", "unavailable"])
+def test_forget_key_preserves_confirmed_removal_when_readiness_cannot_reload(
+    monkeypatch: pytest.MonkeyPatch, failure: str
+) -> None:
+    async def status(**_: object) -> dict[str, object]:
+        return {
+            "credential_connected": True,
+            "endpoint": {
+                "provider_id": "openai",
+                "model": "gpt-5",
+                "endpoint_profile_id": "openai-responses",
+                "endpoint_profile_version": "1",
+                "credential_authority": "finishup_vault_api_credential",
+            },
+        }
+
+    async def remove(_target: object) -> None:
+        return None
+
+    async def reload(**_: object) -> dict[str, JsonValue]:
+        if failure == "unavailable":
+            raise OSError("untrusted-canary")
+        return {"state": "locked"}
+
+    monkeypatch.setattr(provider_status, "provider_status_report", status)
+    monkeypatch.setattr(ai, "remove_configured_provider_credential", remove)
+    monkeypatch.setattr(setup, "restart_service_for_semantic_composition", reload)
+    result = CliRunner().invoke(cli.app, ["ai", "forget-key"], input="y\n")
+    assert result.exit_code == 20
+    assert "was removed" in result.output and "Key removal completed" in result.output
+    assert "untrusted-canary" not in result.output

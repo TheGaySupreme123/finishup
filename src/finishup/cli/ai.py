@@ -79,7 +79,7 @@ def setup(
     raise typer.Exit(code)
 
 
-async def key_action() -> Literal["set", "rotate"]:
+async def _configured_key() -> tuple[Mapping[str, Any], bool | None]:
     """Read presence only; unknown must never turn a rotation into an initial write."""
 
     from finishup.cli.provider_status import provider_status_report
@@ -98,7 +98,15 @@ async def key_action() -> Literal["set", "rotate"]:
             _fail(
                 "ChatGPT sign-in belongs to Codex. Use finishup provider codex-subscription setup."
             )
+        endpoint = fallback
         stored = report.get("fallback_credential_connected")
+    return endpoint, stored if type(stored) is bool else None
+
+
+async def key_action() -> Literal["set", "rotate"]:
+    """Read presence only; unknown must never become an initial write."""
+
+    _endpoint, stored = await _configured_key()
     if type(stored) is not bool:
         _fail("Key stored: unknown. Run finishup service unlock, then finishup ai key.")
     return "rotate" if stored else "set"
@@ -106,7 +114,7 @@ async def key_action() -> Literal["set", "rotate"]:
 
 @ai_app.command("key", context_settings=_NO_EXTRA_ARGS)
 def key_command(context: typer.Context) -> None:
-    """Enter the configured provider's key with hidden input in your own terminal."""
+    """Enter or replace the stored key. Use finishup ai forget-key to remove it."""
 
     _refuse_extra_arguments(context)
     key()
@@ -137,6 +145,97 @@ def key() -> None:
         _fail(
             "Key entry completed; unlock FinishUP before using it: finishup service unlock, then finishup ai status."
         )
+
+
+async def remove_configured_provider_credential(target: object) -> None:
+    """Enter only the trusted owner ceremony; removal never collects a provider secret."""
+
+    from finishup.cli.unlock import load_auto_unlock_reauthentication, remove_provider_credential
+    from finishup.service.confidential_protocol import ProviderCredentialTarget
+
+    if type(target) is not ProviderCredentialTarget:
+        raise ValueError("provider_credential_target_invalid")
+    await remove_provider_credential(target, load_auto_unlock_reauthentication())
+
+
+async def forget_key() -> Literal["removed", "cancelled", "removed_not_ready"]:
+    """Shared trusted-terminal flow for both CLI names and the full-screen handoff."""
+
+    from finishup.cli.setup import restart_service_for_semantic_composition
+    from finishup.cli.unlock import HumanCeremonyCliError
+    from finishup.service.confidential_client import ConfidentialClientError
+    from finishup.service.confidential_protocol import ProviderCredentialTarget
+    from finishup.service.vault import provider_credential_profile_binding
+
+    try:
+        endpoint, stored = await _configured_key()
+        if stored is False:
+            _fail("record_missing: no key is stored for this provider and model.")
+        if stored is None:
+            _fail("Key stored: unknown. Run finishup service unlock, then finishup ai status.")
+        binding = provider_credential_profile_binding(
+            cast(str, endpoint.get("provider_id")),
+            cast(str, endpoint.get("model")),
+            cast(str, endpoint.get("endpoint_profile_id")),
+            cast(str, endpoint.get("endpoint_profile_version")),
+        )
+        target = ProviderCredentialTarget(
+            "remove",
+            binding.provider_id,
+            binding.model_id,
+            binding.endpoint_profile_id,
+            binding.endpoint_profile_version,
+            binding.purpose,
+            binding.authorization_scope_digest,
+            binding.purpose_digest,
+        )
+        typer.echo(f"Provider: {endpoint.get('provider_id')}; model: {endpoint.get('model')}.")
+        if not typer.confirm("Remove the stored key for this provider and model?", default=False):
+            typer.echo("The stored key was kept.")
+            return "cancelled"
+        await remove_configured_provider_credential(target)
+    except ControlError as error:
+        raise typer.Exit(control_failure(error, json_output=False)) from None
+    except (HumanCeremonyCliError, ConfidentialClientError) as error:
+        if error.reason == "record_missing":
+            _fail("record_missing: no key is stored for this provider and model.")
+        _fail(
+            "Key removal was not confirmed. Run finishup service unlock, then finishup ai status."
+        )
+    except (ConfigError, OSError, ValueError):
+        _fail("Key removal was not confirmed. Run finishup ai status.")
+    typer.echo(
+        "The stored key was removed. AI-powered review cannot send anything with this provider "
+        "until you enter a key again with finishup ai key. If the key may have leaked, "
+        "also revoke it at the provider."
+    )
+    try:
+        service = await restart_service_for_semantic_composition()
+    except (ControlError, OSError, ValueError):
+        typer.echo(
+            "Key removal completed, but readiness could not reload. Run finishup ai status.",
+            err=True,
+        )
+        return "removed_not_ready"
+    if service.get("state") != "ready":
+        typer.echo("Key removal completed; unlock FinishUP, then run finishup ai status.", err=True)
+        return "removed_not_ready"
+    return "removed"
+
+
+@ai_app.command("forget-key", context_settings=_NO_EXTRA_ARGS)
+def forget_key_command(context: typer.Context) -> None:
+    """Remove the configured provider's key after owner reauthentication."""
+
+    _refuse_extra_arguments(context)
+    if _run(forget_key) == "removed_not_ready":
+        raise typer.Exit(20)
+
+
+def register_credential_remove(credential_app: typer.Typer) -> None:
+    """Register the provider spelling with the same non-echoing argument boundary."""
+
+    credential_app.command("remove", context_settings=_NO_EXTRA_ARGS)(forget_key_command)
 
 
 async def ai_status_report() -> dict[str, JsonValue]:
@@ -242,7 +341,8 @@ def status(
         f"Review: {modes.get(str(report['review_mode']), 'unknown')}; "
         f"reviewer: {report['reviewer'] or 'not configured'}; model: {report['model'] or 'not configured'}; "
         f"key stored: {_yes_no_unknown(report['key_stored'])}; "
-        f"privacy permits sending: {_yes_no_unknown(report['privacy_permits_sending'])}."
+        f"privacy permits sending: {_yes_no_unknown(report['privacy_permits_sending'])}. "
+        "finishup ai key replaces a stored key; finishup ai forget-key removes it."
     )
 
 
