@@ -11715,14 +11715,19 @@ outcome, early failures included, carry those digests. Branch and argument valid
 reply decoder. The gateway records a reply as `completed`. Each route bounds the whole exchange,
 local send and receive included, by the original deadline, and an answer that completes after it is
 never a reply: Responses and Chat return `late`, local returns `timeout`, and Codex reports the
-post-acknowledgement `deadline_expired` stage. The loop also discards an answer that returns after the deadline.
+post-acknowledgement `deadline_expired` stage. Codex bounds launch and every send and receive,
+stdin writes included, by that deadline; process cleanup runs after it, outside the inference
+budget. The loop also discards an answer that returns after the deadline.
 
 A review owns one `ReviewerSession(review_id, deadline)`. `ReviewerExchangeModel(binding, dispatch,
 session)` is the loop's `ReviewerModel`, used as `async with`: every dispatch runs with the session
 in `CURRENT_REVIEWER_SESSION` (the gateway must evaluate in that context), and leaving the block
 closes the session on every exit. The Codex adapter keeps its thread only in that session. It
 continues only when the history extends exactly what the thread holds, on the same profile and
-deadline; transcript content never selects a session. An exchange holds the session lock, a closed
+deadline: the thread with its answer, or, after an answer the loop's decoder rejected and left out
+of its history, the thread before that answer (the one format repair). Transcript content never
+selects a session, and only a completed turn is retained; a cancelled or timed-out one is cleaned
+up. An exchange holds the session lock, a closed
 session admits no exchange and retains nothing, and `aclose` waits for the exchange in flight before
 cleaning up. A completed Codex turn reports `runtime_evidence.process_cleanup = "retained"`, and
 `ReviewerSession.aclose()` returns the closing cleanup outcome. That value is domain-only until

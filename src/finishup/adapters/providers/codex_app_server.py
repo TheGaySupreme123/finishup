@@ -807,8 +807,9 @@ class _CodexProcess:
         request: dict[str, object] = {"id": request_id, "method": method}
         if params is not None:
             request["params"] = dict(params)
-        await self.send(request)
         request_deadline = asyncio.get_running_loop().time() + timeout
+        # The bound covers the write too: a runtime that stops reading stdin cannot hold it.
+        await asyncio.wait_for(self.send(request), max(0.001, timeout))
         for _ in range(_MAX_EVENT_COUNT):
             remaining = request_deadline - asyncio.get_running_loop().time()
             if remaining <= 0:
@@ -1141,7 +1142,7 @@ async def _initialize(
         timeout,
     )
     _validate_initialize(profile, result)
-    await runtime.send({"method": "initialized"})
+    await asyncio.wait_for(runtime.send({"method": "initialized"}), max(0.001, timeout))
 
 
 async def codex_account_status(profile: CodexAppServerProfile) -> CodexRuntimeStatus:
@@ -2156,7 +2157,9 @@ class _ReviewerThread:
     auth_mode: Literal["chatgpt"] | None
     plan_type: str | None
     token_usage: RuntimeTokenUsage | None
-    transcript: tuple[ReviewerMessage, ...]  # what the thread holds, its answer included
+    # The histories a next exchange may extend: the thread with its answer, and, after an answer
+    # the loop's decoder rejected and left out of its history, the same thread before that answer.
+    prefixes: tuple[tuple[ReviewerMessage, ...], ...]
 
     async def aclose(self) -> str:
         return await _cleanup_guaranteed(self.runtime)
@@ -2252,7 +2255,7 @@ class CodexAppServerEvaluator:
                     or held is not held_any
                     or (held is None) != (len(exchange.history) == 2)
                     or (held is not None and held.profile != self.profile)
-                    or (held is not None and held.transcript != exchange.history[:-1])
+                    or (held is not None and exchange.history[:-1] not in held.prefixes)
                 ):
                     raise ValueError("codex_reviewer_session_unknown")
                 if held is not None:
@@ -2262,7 +2265,10 @@ class CodexAppServerEvaluator:
                     token_usage = held.token_usage
             if held is None:
                 await report_semantic_progress(SemanticProgressPhase.RUNTIME_STARTING)
-                runtime = await _launch(self.profile)
+                # A launch cancelled by the deadline cleans up its own process (``_launch``).
+                runtime = await asyncio.wait_for(
+                    _launch(self.profile), _remaining(deadline, self.clock)
+                )
                 await _initialize(runtime, self.profile, _remaining(deadline, self.clock))
                 await report_semantic_progress(SemanticProgressPhase.ACCOUNT_MODEL_VALIDATION)
                 account_result = await runtime.request(
@@ -2466,15 +2472,17 @@ class CodexAppServerEvaluator:
                 and not session.closed
                 and runtime is not None
                 and thread_id is not None
-                and (failure is None or (failure == "invalid" and turn_completed))
+                and turn_completed
+                and failure in (None, "invalid")
             ):
-                # A completed turn keeps the thread in its review's session for the next exchange;
-                # the session closes it when the review ends, on every exit.
-                transcript: tuple[ReviewerMessage, ...] = exchange.history
+                # Only a completed turn keeps the thread in its review's session for the next
+                # exchange (never a cancelled or timed-out one); the session closes it on every exit.
+                prefixes: tuple[tuple[ReviewerMessage, ...], ...] = (exchange.history,)
                 if reply is not None:
-                    transcript = (*transcript, ("assistant", canonical_encode(reply).decode()))
+                    answer = ("assistant", canonical_encode(reply).decode())
+                    prefixes = ((*exchange.history, answer), exchange.history)
                 session.held = _ReviewerThread(
-                    self.profile, runtime, thread_id, auth_mode, plan_type, token_usage, transcript
+                    self.profile, runtime, thread_id, auth_mode, plan_type, token_usage, prefixes
                 )
                 cleanup = "retained"
             else:

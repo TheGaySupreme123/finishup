@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Any, cast
 
 import httpx
+import jsonschema
 import pytest
 
 from builders.codex_capability import profile_for, record_for
@@ -35,6 +36,7 @@ from finishup.adapters.providers.openai_responses import (
     owner_declared_data_use_profile,
 )
 from finishup.adapters.providers.openai_responses import render_case as render_responses
+from finishup.adapters.providers.reviewer_reply import ReviewerReplyInvalid, decode_reviewer_reply
 from finishup.application.reviewer_exchange import REVIEWER_REPLY_SCHEMAS, ReviewerExchangeModel
 from finishup.application.reviewer_loop import (
     ReviewerLoop,
@@ -73,6 +75,7 @@ from finishup.ports.semantic import (
 from finishup.protocol.canonical import (
     JsonValue,
     canonical_digest,
+    canonical_encode,
     strict_json_parse,
 )
 
@@ -918,6 +921,165 @@ async def test_r3_review_exit_closes_the_thread_when_admission_is_denied(
 
 
 # -- review round 2 regressions (F1-F3) ------------------------------------------------------------
+
+
+async def test_f1_codex_reply_the_decoder_rejects_still_gets_its_one_repair(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Schema-valid on the provider wire (uniqueItems is not in the strict form), decoder-invalid.
+    bad = {"reply": {"action": "read_ledger", "args": {
+        "refs": ["evt_1", "evt_1"], "view": "claims", "cursor": None, "max_bytes": 8192,
+    }}}  # fmt: skip
+    wire = codex._codex_output_schema(cast(Any, REVIEWER_REPLY_SCHEMAS.turn))  # pyright: ignore[reportPrivateUsage]
+    jsonschema.validate(bad, cast(Any, wire))
+    with pytest.raises(ReviewerReplyInvalid):
+        decode_reviewer_reply(cast(JsonValue, bad))
+    runtime = _CodexRuntime(
+        profile_for(record_for(b"c", b"h", version="0.162.1")),
+        [canonical_encode(cast(JsonValue, bad)).decode(), _FINAL],
+    )
+    cleanups: list[object] = []
+
+    async def dispatch(payload: bytes, media_type: str, deadline: Deadline) -> SemanticResult:
+        history = decode_reviewer_exchange(payload)
+        return await _codex_exchange(
+            monkeypatch, runtime, CURRENT_REVIEWER_SESSION.get(), history, cleanups
+        )
+
+    class _Reads(_NoReads):
+        def reads_allowed(self) -> bool:
+            return True
+
+        async def execute(self, action: object) -> str:
+            raise AssertionError("an invalid action never executes")
+
+    async def admissible(roots: frozenset[str]) -> bool:
+        return True
+
+    binding = ProviderBinding(
+        "openai-codex", runtime.profile.model, "codex-chatgpt-subscription", "1.0.0", "external"
+    )
+    async with ReviewerExchangeModel(
+        binding, dispatch, ReviewerSession("review-a", _DEADLINE)
+    ) as model:
+        outcome = await ReviewerLoop(
+            model, cast(Any, _Reads()), instruction="Review it.", packet="packet",
+            deadline=_DEADLINE, history_admissible=admissible, clock=_Clock().monotonic_seconds,
+            final_reserve_seconds=0.0,
+        ).run()  # fmt: skip
+    turns = [params for method, params in runtime.requests if method == "turn/start"]
+    assert outcome.status == "final" and len(turns) == 2 and cleanups == [runtime]
+    # The loop's history never carries the rejected action; Codex's thread already holds it.
+    assert all(turn.role != "assistant" or "evt_1" not in turn.content for turn in outcome.history)
+
+
+async def test_f2_codex_send_that_never_drains_ends_at_the_deadline_and_close_returns(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    entered, release = asyncio.Event(), asyncio.Event()
+
+    class _Stdin:  # a runtime that stops reading stdin at the turn
+        message: Any = None
+
+        def write(self, payload: bytes) -> None:
+            self.message = strict_json_parse(payload.rstrip(b"\n"))
+
+        async def drain(self) -> None:
+            if self.message.get("method") == "turn/start":
+                entered.set()
+                await release.wait()
+
+    real = cast(Any, codex)._CodexProcess  # the real send/request code, only stdin scripted
+
+    class _Blocked(_CodexRuntime):
+        process: Any = None
+
+        async def send(self, value: dict[str, object]) -> None:
+            await real.send(self, value)
+
+        async def request(self, rid: int, method: str, params: object, timeout: float) -> object:
+            if method != "turn/start":
+                return await super().request(rid, method, params, timeout)
+            return await real.request(self, rid, method, params, timeout)
+
+    class _RealClock(_Clock):
+        def monotonic_seconds(self) -> float:
+            return time.monotonic()
+
+    runtime = _Blocked(profile_for(record_for(b"c", b"h", version="0.162.1")), [_FINAL])
+    runtime.process = type("P", (), {"stdin": _Stdin()})()
+    cleanups: list[object] = []
+
+    async def launch(profile: object) -> _CodexRuntime:
+        return runtime
+
+    async def cleanup(value: object) -> str:
+        cleanups.append(value)
+        return "terminated"
+
+    monkeypatch.setattr(codex, "_launch", launch)
+    monkeypatch.setattr(codex, "_cleanup", cleanup)
+    deadline = Deadline(_NOW + timedelta(seconds=0.05), time.monotonic() + 0.05)
+    session = ReviewerSession("review-a", deadline)
+    binding = ProviderBinding(
+        "openai-codex", runtime.profile.model, "codex-chatgpt-subscription", "1.0.0", "external"
+    )
+    case = _case(_FIRST, binding)
+    digest = "sha256:" + hashlib.sha256(case.payload).hexdigest()
+    auth = ProviderAttemptAuthBinding(
+        "openai-codex", runtime.profile.model, "codex-chatgpt-subscription", "1.0.0",
+        "semantic-review", _DIGEST, canonical_digest({"purpose": "semantic-review"}),
+        "dsp_70000000-0000-4000-8000-000000000001", digest, 1, deadline.monotonic_deadline,
+    )  # fmt: skip
+    authority = ExternalRuntimeAuthority(
+        auth.dispatch_id, digest, "hmac-sha256:" + "a" * 64, 1, deadline.monotonic_deadline
+    )
+    evaluator = codex.CodexAppServerEvaluator(
+        runtime.profile, auth, authority, _RealClock(), None, reply_schemas=_SCHEMAS
+    )
+
+    async def evaluate() -> SemanticResult:
+        token = CURRENT_REVIEWER_SESSION.set(session)
+        try:
+            return await evaluator.evaluate(case, deadline)
+        finally:
+            CURRENT_REVIEWER_SESSION.reset(token)
+
+    turn = asyncio.create_task(evaluate())
+    await asyncio.wait_for(entered.wait(), 5)
+    closing = asyncio.create_task(session.aclose())
+    try:
+        # The outer bound only keeps a regression from hanging the suite; results are observed.
+        result = await asyncio.wait_for(turn, 5)
+        assert await asyncio.wait_for(closing, 5) is None
+    finally:
+        release.set()
+    assert type(result) is SemanticResultTimeout and session.held is None
+    assert cleanups == [runtime]
+    evidence = result.provenance.runtime_evidence
+    assert evidence is not None and evidence.case_disclosed and not evidence.turn_acknowledged
+
+
+async def test_f2_cancelled_codex_turn_is_cleaned_up_not_retained(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    entered = asyncio.Event()
+
+    class _Stalled(_CodexRuntime):
+        async def read(self, timeout: float) -> dict[str, object]:
+            entered.set()
+            await asyncio.Event().wait()
+            raise AssertionError("unreachable")
+
+    runtime = _Stalled(profile_for(record_for(b"c", b"h", version="0.162.1")), [_ACTION])
+    session = ReviewerSession("review-a", _DEADLINE)
+    cleanups: list[object] = []
+    turn = asyncio.create_task(_codex_exchange(monkeypatch, runtime, session, _FIRST, cleanups))
+    await asyncio.wait_for(entered.wait(), 5)
+    turn.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await turn
+    assert session.held is None and cleanups == [runtime]
 
 
 async def test_f3_failed_responses_generation_ends_without_another_inference() -> None:
