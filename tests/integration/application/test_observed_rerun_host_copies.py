@@ -29,10 +29,10 @@ from typing import cast
 
 import pytest
 
+from builders.review_manifests import follow_up_round, run_sources
 from finishup.adapters.integrations.codex_session_stream import SessionStreamReader
 from finishup.adapters.integrations.observation_local import STREAM_MAPPING_VERSION
 from finishup.application.missing_for_assessment import (
-    plan_review_follow_up,
     review_missing_for_assessment,
     supplied_since,
 )
@@ -300,10 +300,9 @@ async def test_a_codex_rerun_supplies_the_request_from_either_host_copy(
     resolved = await resolve_captured_semantic_content(
         runtime=runtime, frozen=frozen, workspace_commitment=workspace, local_observation=local
     )
-    follow_up = plan_review_follow_up(
-        projection, allowed, (request,), previous=None, shown_refs=frozenset()
+    follow_up = follow_up_round(
+        ("verification_output", (target,), run_sources(projection, target, allowed) | output)
     )
-    assert follow_up is not None
 
     def review(profile: ReviewContextProfile) -> tuple[bytes, list[str], frozenset[str]]:
         built = build_semantic_case(

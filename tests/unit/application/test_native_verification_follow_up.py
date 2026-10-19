@@ -14,8 +14,8 @@ from typing import cast
 import pytest
 
 from builders.policy_cases import evidence_record, make_case, record
+from builders.review_manifests import follow_up_round, run_sources
 from finishup.adapters.integrations.observation_local import LocalObservationStore
-from finishup.application.missing_for_assessment import plan_review_follow_up
 from finishup.application.observation_materialize import materialize_observation_envelope
 from finishup.application.semantic_case import CapturedSemanticContent
 from finishup.application.semantic_content import (
@@ -52,7 +52,6 @@ from unit.application.test_review_follow_up import (
     _OBSERVED_MARKER,
     _build,
     _provider_contents,
-    _requested,
     _send,
 )
 from unit.application.test_semantic_content import (
@@ -214,18 +213,11 @@ async def test_native_capture_follow_up(
     assert len(resolved.content) == 1  # Input is eligibility context only.
     if expected:
         assert resolved.content[0].observed_command == command
-    follow_up = plan_review_follow_up(
-        case.projection,
-        frozenset(str(ref) for ref in case.allowed_ids),
-        (
-            _requested(
-                "verification_output", str(next(iter(results))), availability="agent_suppliable"
-            ),
-        ),
-        previous=None,
-        shown_refs=frozenset(),
+    target = str(next(iter(results)))
+    allowed = frozenset(str(ref) for ref in case.allowed_ids)
+    follow_up = follow_up_round(
+        ("verification_output", (target,), run_sources(case.projection, target, allowed))
     )
-    assert follow_up is not None
     built = _build(
         case,
         follow_up=follow_up,

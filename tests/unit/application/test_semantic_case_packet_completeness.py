@@ -1249,8 +1249,7 @@ def test_a_verification_output_follow_up_keeps_its_slots_beside_small_inputs() -
     reviewer asked for arrives with the change in a small recipe exactly as it would with no
     inputs at all; the inputs only take what is left."""
 
-    from finishup.application.missing_for_assessment import plan_review_follow_up
-    from finishup.domain.events import MissingForAssessmentItem
+    from builders.review_manifests import follow_up_round, run_sources
 
     case = _react_case()
     allowed = frozenset(str(ref) for ref in case.allowed_ids)
@@ -1259,21 +1258,12 @@ def test_a_verification_output_follow_up_keeps_its_slots_beside_small_inputs() -
     )
 
     def build(targets: tuple[str, ...], inputs: tuple[TaskInputFile, ...]) -> list[str]:
-        follow_up = plan_review_follow_up(
-            case.projection,
-            allowed,
-            tuple(
-                MissingForAssessmentItem(
-                    kind="verification_output",
-                    target_refs=(target,),
-                    availability="agent_suppliable",
-                )
+        follow_up = follow_up_round(
+            *(
+                ("verification_output", (target,), run_sources(case.projection, target, allowed))
                 for target in targets
-            ),
-            previous=None,
-            shown_refs=frozenset(),
+            )
         )
-        assert follow_up is not None
         return _excerpt_ids(
             build_semantic_case(
                 case_id="cas_10000000-0000-4000-8000-000000000001",

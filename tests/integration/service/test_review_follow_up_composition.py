@@ -12,26 +12,26 @@ from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
 from dataclasses import replace
-from typing import Any, cast
+from typing import Any, Final, cast
 
 import pytest
 
 import integration.service.test_semantic_fallback_dispatch as fallback
 import integration.service.test_semantic_non_dispatch as non_dispatch
 from builders.ledger_adapters import append_command, memory_adapter, sqlite_adapter
-from builders.policy_cases import evd, res
+from builders.policy_cases import act, evd, res
+from builders.review_manifests import follow_up_round
 from finishup.adapters.memory.ledger import MemoryLedgerAdapter
 from finishup.adapters.sqlite.repository import SqliteLedger
 from finishup.application.check import (
     FinalSemanticEvaluation,
 )
 from finishup.application.egress import SemanticEgressProviderOutcome, SemanticEgressSuccess
-from finishup.application.missing_for_assessment import ReviewFollowUp, plan_review_follow_up
+from finishup.application.missing_for_assessment import ReviewFollowUp
 from finishup.application.semantic_case import (
     assemble_filtered_review_packet,
     review_packet_disclosure_result,
 )
-from finishup.domain.events import MissingForAssessmentItem
 from finishup.domain.findings import SemanticDispatchKind, SemanticFailureClass
 from finishup.domain.privacy import (
     REVIEW_PACKET_ITEM_ID,
@@ -167,21 +167,13 @@ class _ReviewerPrivacy(_Privacy):
         )
 
 
+_RUN_ONE: Final = ("verification_output", (str(res(1)),), {str(res(1)), str(act(1)), str(evd(1))})
+
+
 def _plan(case: DeterministicCase, first: FinalSemanticEvaluation) -> ReviewFollowUp:
-    follow_up = plan_review_follow_up(
-        case.projection,
-        frozenset(str(ref) for ref in case.allowed_ids),
-        (
-            MissingForAssessmentItem(
-                "verification_output", (str(res(1)),), "yoetz_limit_packet_room"
-            ),
-        ),
-        previous=None,
-        shown_refs=first.case_excerpt_refs,
-        shown_parts=first.case_excerpt_parts,
+    return follow_up_round(
+        _RUN_ONE, shown=first.case_excerpt_refs, shown_parts=first.case_excerpt_parts
     )
-    assert follow_up is not None
-    return follow_up
 
 
 def _at_lease_frontier(built: DeterministicCase, durable: FrozenCase) -> DeterministicCase:
@@ -379,18 +371,7 @@ async def test_shown_and_added_are_what_the_sent_packets_carried_not_the_compose
     manifest = second.provider_input_manifest
     assert manifest is not None
     assert [row["status"] for row in cast(Any, manifest["missing_inputs"])] == ["pending"]
-    later = plan_review_follow_up(
-        case.projection,
-        frozenset(str(ref) for ref in case.allowed_ids),
-        (
-            MissingForAssessmentItem(
-                "verification_output", (str(res(1)),), "yoetz_limit_packet_room"
-            ),
-        ),
-        previous=replace(follow_up, added_refs=follow_up.added_refs | added),
-        shown_refs=second.case_excerpt_refs,
-    )
-    assert later is not None and later.round == 2
+    later = replace(follow_up, round=2, added_refs=follow_up.added_refs | added)
     assert second.operation_lease is not None
 
     third = await evaluator(FrozenCase(case, second.operation_lease), (), runtime, follow_up=later)
@@ -479,19 +460,8 @@ class _GroupWithholdingPrivacy(_Privacy):
 @pytest.mark.anyio
 async def test_no_follow_up_is_sent_before_the_check_has_a_review_of_its_own() -> None:
     adapter = memory_adapter(append_command())
-    case, frozen, runtime, privacy, evaluator = await _setup(adapter)
-    shown_nothing = plan_review_follow_up(
-        case.projection,
-        frozenset(str(ref) for ref in case.allowed_ids),
-        (
-            MissingForAssessmentItem(
-                "verification_output", (str(res(1)),), "yoetz_limit_packet_room"
-            ),
-        ),
-        previous=None,
-        shown_refs=frozenset(),
-    )
-    assert shown_nothing is not None
+    _case, frozen, runtime, privacy, evaluator = await _setup(adapter)
+    shown_nothing = follow_up_round(_RUN_ONE)
     assert await evaluator(frozen, (), runtime, follow_up=shown_nothing) is None
     assert privacy.calls == 0
     assert (

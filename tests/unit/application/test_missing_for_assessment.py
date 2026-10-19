@@ -33,7 +33,6 @@ from finishup.application.missing_for_assessment import (
     check_change_binary_paths,
     check_change_text_paths,
     excerpt_span_key,
-    plan_review_follow_up,
     review_missing_for_assessment,
     supplied_since,
     unsuppliable_missing_kinds,
@@ -2121,7 +2120,7 @@ def test_supply_judgement_computes_each_commands_keyed_identity_once(
     assert sorted(calls) == sorted({_W6_COMMAND, *commands})
 
 
-def test_a_repeat_for_observed_output_shown_only_in_part_keeps_the_item_and_its_follow_up(
+def test_a_repeat_for_observed_output_shown_only_in_part_keeps_the_item(
     w6_key: str,
 ) -> None:
     """Long output clipped for packet room still has parts to add, so the repeat is not dropped."""
@@ -2147,15 +2146,6 @@ def test_a_repeat_for_observed_output_shown_only_in_part_keeps_the_item_and_its_
         )
         assert [item.kind for item in review.items] == ["verification_output"]
         assert "semantic_missing_already_supplied" not in review.gaps
-        follow_up = plan_review_follow_up(
-            case.projection,
-            allowed,
-            review.items,
-            previous=None,
-            shown_refs=frozenset(),
-            shown_parts=parts,
-        )
-        assert follow_up is not None
     # Parts that together cover the whole output carry it, like one whole excerpt.
     whole = frozenset(
         {excerpt_span_key(marked, 0, 2500, 5000), excerpt_span_key(marked, 2500, 5000, 5000)}

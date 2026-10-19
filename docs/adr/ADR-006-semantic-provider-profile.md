@@ -1948,7 +1948,7 @@ packet only lacked room for.
   `agent_suppliable` or `yoetz_limit_packet_room`, naming targets FinishUP holds rows for. Each target
   resolves to the rows whose excerpts carry it: the target, the rows an `evt_` target recorded, and
   for a run (an action or its result) the run's results, its action and the evidence they cite;
-  redacted rows never count (`plan_review_follow_up`). `task_statement`, `plan_or_claim_text` and
+  redacted rows never count (`plan_review_follow_up`, deleted by #1118 unit 4). `task_statement`, `plan_or_claim_text` and
   `prior_finding_context` are never answered by FinishUP (nor was `other`, until the 2026-10-18
   amendment below); a structurally unavailable, privacy-withheld, redacted or unsupported-type item
   is never re-sent.

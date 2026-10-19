@@ -9801,7 +9801,7 @@ and renders.** While a review concludes `insufficient_packet` and names
 a `current_diff_for_path`, `verification_output`, `command_identity` or (since issue #1102) `other`
 item that the fence kept as
 `agent_suppliable` or `yoetz_limit_packet_room` and whose targets FinishUP holds rows for
-(`application.missing_for_assessment.plan_review_follow_up`; `FOLLOW_UP_KINDS`;
+(a planner deleted by #1118 unit 4; `FOLLOW_UP_KINDS`;
 `ReviewFollowUp`), the same `check` rebuilds the case with those rows' excerpts ranked first within
 `follow_up_byte_budget` (half the approved `max_total_excerpt_bytes`, shared by every round) and
 asks again, at most `MAX_REVIEW_FOLLOW_UP_ROUNDS` (3) times and only when the rebuilt packet carries
@@ -9809,7 +9809,7 @@ a requested excerpt no earlier packet of the check carried. A target resolves to
 an `evt_` target recorded, and for a run its results, its action and the evidence they cite;
 redacted rows never count. A `verification_output` or `other` item (`OBSERVED_FOLLOW_UP_KINDS`) may
 also name hook-captured output of the newest run of each command those targets name
-(`observed_command_output_refs`), and a `current_diff_for_path` or `other` item
+(the same planner), and a `current_diff_for_path` or `other` item
 (`SECTION_FOLLOW_UP_KINDS`) the current check-time change sections of a named edit's paths. An
 `other` item is answered only from those recorded sources; one naming only an obligation, claim,
 plan or the statement plans no round, and the reviewer's reason never chooses content. Selection
