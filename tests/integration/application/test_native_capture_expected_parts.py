@@ -104,7 +104,7 @@ async def test_interrupted_handoff_cannot_finalize_missing_content_group(tmp_pat
         ticket = ObservationCaptureTicket(
             workspace_commitment=workspace,
             task_id=runtime.task_id,
-            yoetz_session_id=runtime.session_id,
+            finishup_session_id=runtime.session_id,
             session_commitment=session_commitment,
             source=ObservationSource.CLAUDE_HOOK,
             source_identity=request.envelope.source_identity,

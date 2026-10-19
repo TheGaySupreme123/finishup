@@ -171,9 +171,9 @@ class _Harness:
         store_mapping(
             mapping_from_start_ids(
                 codex_session_id=host_key,
-                yoetz_task_id=new_id(IdKind.TASK),
-                yoetz_session_id=self.session_id,
-                yoetz_writer_id=new_id(IdKind.WRITER),
+                finishup_task_id=new_id(IdKind.TASK),
+                finishup_session_id=self.session_id,
+                finishup_writer_id=new_id(IdKind.WRITER),
                 last_frontier="0:genesis",
             ),
             _state=tmp_path,

@@ -358,7 +358,7 @@ class SemanticAdviceScheduler(Protocol):
         candidates: Sequence[ObservationAdviceCandidate],
         basis: str,
         gaps: Sequence[str],
-        yoetz_session_id: str | None,
+        finishup_session_id: str | None,
     ) -> ObservationAdviceSemanticAddon | None: ...
 
 
@@ -412,7 +412,7 @@ class ObservationAdviceContextBuilder:
         workspace: str,
         store: ObservationContextStore,
         *,
-        yoetz_session_id: str | None = None,
+        finishup_session_id: str | None = None,
         session_commitment: str | None = None,
         lineage_refs: tuple[tuple[str, str], ...] = (),
     ) -> AdviceSnapshot | None:
@@ -467,10 +467,10 @@ class ObservationAdviceContextBuilder:
                     candidates=candidates,
                     basis=basis,
                     gaps=status.gaps,
-                    yoetz_session_id=yoetz_session_id,
+                    finishup_session_id=finishup_session_id,
                 )
             elif self.semantic_review is not None:
-                reviewed = self.semantic_review(candidates, basis, status.gaps, yoetz_session_id)
+                reviewed = self.semantic_review(candidates, basis, status.gaps, finishup_session_id)
                 if inspect.isawaitable(reviewed):
                     semantic = await reviewed
                 else:
@@ -479,8 +479,8 @@ class ObservationAdviceContextBuilder:
             semantic = self.semantic_addon(workspace)
         prior: AdviceSnapshot | None = None
         session_load = getattr(store, "load_advice_snapshot_for_session", None)
-        if callable(session_load) and type(yoetz_session_id) is str:
-            loaded = session_load(workspace=workspace, yoetz_session_id=yoetz_session_id)
+        if callable(session_load) and type(finishup_session_id) is str:
+            loaded = session_load(workspace=workspace, finishup_session_id=finishup_session_id)
             if type(loaded) is AdviceSnapshot:
                 prior = loaded
         if prior is None:

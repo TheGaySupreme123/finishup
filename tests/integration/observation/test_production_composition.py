@@ -113,7 +113,7 @@ async def test_dod_zero_coop_durable_observation_advice_composition(tmp_path: Pa
         )
         assert code == 0
         mapping = pipeline.auto_attach("dod-session-1")
-        assert mapping.yoetz_task_id == pipeline.task_id
+        assert mapping.finishup_task_id == pipeline.task_id
         assert pipeline.mapping_for("dod-session-1") is not None
 
         # Pre-mapping pending drain after attach
@@ -533,7 +533,7 @@ def test_compaction_resume_preserves_mapping_and_cursor(tmp_path: Path) -> None:
         )
         mapping = pipeline.mapping_for("life-compact")
         assert mapping is not None
-        assert mapping.yoetz_task_id == pipeline.task_id
+        assert mapping.finishup_task_id == pipeline.task_id
         status = pipeline.local.status(ObservationStatusQuery(pipeline.workspace))
         assert status.source_coverage[ObservationSource.CODEX_HOOK] is True
     finally:

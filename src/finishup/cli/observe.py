@@ -311,7 +311,10 @@ def _child_rollout_route(
         except ProtocolValueError:
             continue
         lane_mapping = load_mapping(lane, _state=state_root)
-        if lane_mapping is None or lane_mapping.yoetz_task_id == spawning_mapping.yoetz_task_id:
+        if (
+            lane_mapping is None
+            or lane_mapping.finishup_task_id == spawning_mapping.finishup_task_id
+        ):
             # No validated child attach published this lane, or the lane still names the
             # spawning session's own task: neither is a child route.
             continue

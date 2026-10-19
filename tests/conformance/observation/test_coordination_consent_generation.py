@@ -111,9 +111,9 @@ async def _composition(
         LifecycleMapping(
             mapping_version=1,
             codex_session_id=codex_session_id,
-            yoetz_task_id=task_id,
-            yoetz_session_id=new_id(IdKind.SESSION),
-            yoetz_writer_id=new_id(IdKind.WRITER),
+            finishup_task_id=task_id,
+            finishup_session_id=new_id(IdKind.SESSION),
+            finishup_writer_id=new_id(IdKind.WRITER),
             last_frontier=None,
         ),
         _state=tmp_path,

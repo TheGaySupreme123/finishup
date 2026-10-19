@@ -631,7 +631,7 @@ class ObservationCaptureTicket:
 
     workspace_commitment: str
     task_id: str
-    yoetz_session_id: str
+    finishup_session_id: str
     session_commitment: str
     source: ObservationSource
     source_identity: str
@@ -647,7 +647,7 @@ class ObservationCaptureTicket:
     def __post_init__(self) -> None:
         validate_commitment(self.workspace_commitment)
         object.__setattr__(self, "task_id", task_id(self.task_id))
-        object.__setattr__(self, "yoetz_session_id", session_id(self.yoetz_session_id))
+        object.__setattr__(self, "finishup_session_id", session_id(self.finishup_session_id))
         validate_commitment(self.session_commitment)
         if type(self.source) is not ObservationSource or self.source not in {
             ObservationSource.CLAUDE_HOOK,
@@ -788,7 +788,8 @@ def observation_capture_ticket_id(ticket: ObservationCaptureTicket) -> str:
             {
                 "workspace_commitment": ticket.workspace_commitment,
                 "task_id": ticket.task_id,
-                "yoetz_session_id": ticket.yoetz_session_id,
+                # Frozen legacy identifier (ADR-048): a key of the digested ticket identity.
+                "yoetz_session_id": ticket.finishup_session_id,
                 "session_commitment": ticket.session_commitment,
                 "source": ticket.source.value,
                 "source_identity": ticket.source_identity,
@@ -1465,7 +1466,7 @@ class ObservationInspectionSnapshot:
     """Immutable object bindings for one current changed-path inspection snapshot."""
 
     snapshot_id: str
-    yoetz_session_id: str
+    finishup_session_id: str
     subject_state_digest: str
     changed_paths_digest: str
     facts_object_id: str | None
@@ -1480,7 +1481,7 @@ class ObservationInspectionSnapshot:
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "snapshot_id", _token(self.snapshot_id))
-        object.__setattr__(self, "yoetz_session_id", session_id(self.yoetz_session_id))
+        object.__setattr__(self, "finishup_session_id", session_id(self.finishup_session_id))
         validate_sha256_digest(self.subject_state_digest)
         validate_sha256_digest(self.changed_paths_digest)
         if type(self.recorded_at) is not Timestamp:

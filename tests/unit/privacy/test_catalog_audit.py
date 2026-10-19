@@ -1259,7 +1259,7 @@ def _advice_repository() -> tuple[apsw.Connection, SqliteObservationAdviceSemant
     basis = f"sha256:{'9' * 64}"
     repository.schedule(
         workspace=_WORKSPACE,
-        yoetz_session_id=_SESSION,
+        finishup_session_id=_SESSION,
         basis_digest=basis,
         subject_digest=basis,
         coverage_gaps=(),
@@ -1354,7 +1354,7 @@ def test_cancelled_advice_attempt_reconciles_consumed_egress_to_unknown() -> Non
     with pytest.raises(asyncio.CancelledError):
         asyncio.run(worker.run_once())
 
-    row = repository.lookup(yoetz_session_id=_SESSION, basis_digest=basis)
+    row = repository.lookup(finishup_session_id=_SESSION, basis_digest=basis)
     assert row is not None
     assert (row.status, row.failure_reason) == ("cancelled", "cancelled")
     # Cancellation provenance: this row names the consumed egress reservation it reconciled and
@@ -1527,7 +1527,7 @@ def test_advice_cancellation_before_consume_leaves_authority_unspent() -> None:
     with pytest.raises(asyncio.CancelledError):
         asyncio.run(worker.run_once())
 
-    row = repository.lookup(yoetz_session_id=_SESSION, basis_digest=basis)
+    row = repository.lookup(finishup_session_id=_SESSION, basis_digest=basis)
     assert row is not None
     assert (row.status, row.failure_reason) == ("cancelled", "cancelled")
     assert (row.attempt_receipt, row.provider_identity) == (None, None)

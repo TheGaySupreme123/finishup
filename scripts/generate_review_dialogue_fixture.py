@@ -165,7 +165,7 @@ def document(root: Path) -> dict[str, Any]:
         "reason": "The task statement excludes the llvmlite upgrade.",
         "evidence_refs": [],
     }
-    # Issue #984: the agent repaired the first finding, Yoetz could not prove it, and the agent
+    # Issue #984: the agent repaired the first finding, FinishUP could not prove it, and the agent
     # verified it itself, citing its own recorded result. Rides response_recorded 1.1.0 too.
     self_verified: dict[str, Any] = {
         "finding_id": _FIRST,

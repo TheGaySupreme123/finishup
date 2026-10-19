@@ -130,9 +130,9 @@ def _seed_ended_predecessor(
     observe_hooks_module.store_mapping(
         observe_hooks_module.mapping_from_start_ids(
             codex_session_id=predecessor,
-            yoetz_task_id=_START_IDS["task_id"],
-            yoetz_session_id=_START_IDS["session_id"],
-            yoetz_writer_id=_START_IDS["writer_id"],
+            finishup_task_id=_START_IDS["task_id"],
+            finishup_session_id=_START_IDS["session_id"],
+            finishup_writer_id=_START_IDS["writer_id"],
             last_frontier=None,
         ),
         _state=state,
@@ -346,7 +346,7 @@ def test_new_session_during_recovery_is_retained_until_membership_can_bind(
     _assert_retained_for_session(converged, workspace, raw_session, event_kind="PostToolUse")
     successor_mapping = observe_hooks_module.load_mapping(successor, _state=state)
     assert successor_mapping is not None
-    assert successor_mapping.yoetz_session_id == _SUCCESSOR_IDS["session_id"]
+    assert successor_mapping.finishup_session_id == _SUCCESSOR_IDS["session_id"]
 
 
 @pytest.mark.parametrize(

@@ -365,7 +365,8 @@ async def test_v2_child_binds_one_accepted_child_and_reconciles_its_own_rollout(
         attached = await _delegate_and_attach(scenario)
         parent_mapping = load_mapping(_PARENT_THREAD, _state=scenario.state)
         assert (
-            parent_mapping is not None and parent_mapping.yoetz_task_id == scenario.parent.task_id
+            parent_mapping is not None
+            and parent_mapping.finishup_task_id == scenario.parent.task_id
         )
 
         callback = _child_attach_callback(
@@ -382,7 +383,7 @@ async def test_v2_child_binds_one_accepted_child_and_reconciles_its_own_rollout(
         )
         child_mapping = load_mapping(child_lane, _state=scenario.state)
         assert child_mapping is not None
-        assert (child_mapping.yoetz_task_id, child_mapping.yoetz_session_id) == (
+        assert (child_mapping.finishup_task_id, child_mapping.finishup_session_id) == (
             attached.task_id,
             attached.session_id,
         )

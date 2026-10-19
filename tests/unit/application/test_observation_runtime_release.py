@@ -123,9 +123,9 @@ def _setup(
     mapping = LifecycleMapping(
         mapping_version=1,
         codex_session_id=codex_id,
-        yoetz_task_id=task_id,
-        yoetz_session_id=session_id,
-        yoetz_writer_id=writer_id,
+        finishup_task_id=task_id,
+        finishup_session_id=session_id,
+        finishup_writer_id=writer_id,
         last_frontier=None,
     )
     db: Any = apsw.Connection(":memory:")  # pyright: ignore[reportUnknownMemberType, reportUnknownVariableType]

@@ -1,8 +1,9 @@
 """Write the reviewed Claude native child-hook capability fixture.
 
-The fixture records installed-host evidence separately from Yoetz activation and public
+The fixture records installed-host evidence separately from FinishUP activation and public
 workflow evidence.  The native child run uses a bounded loopback provider, so this generator
-deliberately keeps the production-auth and Yoetz-receipt limits in the fixture.
+deliberately keeps the production-auth and receipt limits in the fixture (their recorded
+tokens keep the frozen ``yoetz_`` spelling, ADR-048).
 """
 
 from __future__ import annotations

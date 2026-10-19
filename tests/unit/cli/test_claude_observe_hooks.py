@@ -180,9 +180,9 @@ def test_claude_successful_start_binds_only_structural_mapping(
     )
     mapping = load_mapping("claude:session-bind", _state=tmp_path)
     assert mapping is not None
-    assert mapping.yoetz_task_id == start_result["task_id"]
-    assert mapping.yoetz_session_id == start_result["session_id"]
-    assert mapping.yoetz_writer_id == start_result["writer_id"]
+    assert mapping.finishup_task_id == start_result["task_id"]
+    assert mapping.finishup_session_id == start_result["session_id"]
+    assert mapping.finishup_writer_id == start_result["writer_id"]
     assert mapping.last_frontier == "4:sha256:" + "a" * 64
 
     sanitized = strict_json_parse(cast(bytes, captured["stdin_bytes"]))
@@ -270,9 +270,9 @@ def test_claude_live_2_1_251_start_tool_response_binds(
     )
     mapping = load_mapping("claude:session-live", _state=tmp_path)
     assert mapping is not None
-    assert mapping.yoetz_task_id == "tsk_00000000-0000-4000-8000-000000000001"
-    assert mapping.yoetz_session_id == "ses_00000000-0000-4000-8000-000000000002"
-    assert mapping.yoetz_writer_id == "wri_00000000-0000-4000-8000-000000000003"
+    assert mapping.finishup_task_id == "tsk_00000000-0000-4000-8000-000000000001"
+    assert mapping.finishup_session_id == "ses_00000000-0000-4000-8000-000000000002"
+    assert mapping.finishup_writer_id == "wri_00000000-0000-4000-8000-000000000003"
     assert mapping.last_frontier == "1:sha256:" + "a" * 64
 
 
@@ -574,9 +574,9 @@ def test_claude_received_clear_clears_existing_lifecycle_mapping(tmp_path: Path)
     store_mapping(
         mapping_from_start_ids(
             codex_session_id=session,
-            yoetz_task_id=new_id(IdKind.TASK),
-            yoetz_session_id=new_id(IdKind.SESSION),
-            yoetz_writer_id=new_id(IdKind.WRITER),
+            finishup_task_id=new_id(IdKind.TASK),
+            finishup_session_id=new_id(IdKind.SESSION),
+            finishup_writer_id=new_id(IdKind.WRITER),
             last_frontier=None,
         ),
         _state=tmp_path,
@@ -611,9 +611,9 @@ def test_claude_received_clear_does_not_reopen_service_or_advisory(tmp_path: Pat
     store_mapping(
         mapping_from_start_ids(
             codex_session_id=session,
-            yoetz_task_id=new_id(IdKind.TASK),
-            yoetz_session_id=new_id(IdKind.SESSION),
-            yoetz_writer_id=new_id(IdKind.WRITER),
+            finishup_task_id=new_id(IdKind.TASK),
+            finishup_session_id=new_id(IdKind.SESSION),
+            finishup_writer_id=new_id(IdKind.WRITER),
             last_frontier=None,
         ),
         _state=tmp_path,
@@ -666,11 +666,11 @@ def test_claude_failure_advice_preserves_raw_event_and_commits_after_output(
         self: LocalObservationStore,
         workspace: str,
         *,
-        yoetz_session_id: str | None = None,
+        finishup_session_id: str | None = None,
         allow_standing: bool = True,
         session_commitment: str | None = None,
     ) -> AdviceDelivery:
-        del self, workspace, yoetz_session_id, allow_standing, session_commitment
+        del self, workspace, finishup_session_id, allow_standing, session_commitment
         return advice
 
     def fake_commit(
@@ -678,10 +678,10 @@ def test_claude_failure_advice_preserves_raw_event_and_commits_after_output(
         workspace: str,
         identity: str,
         *,
-        yoetz_session_id: str | None = None,
+        finishup_session_id: str | None = None,
         session_commitment: str | None = None,
     ) -> None:
-        del self, workspace, yoetz_session_id, session_commitment
+        del self, workspace, finishup_session_id, session_commitment
         commits.append(identity)
 
     monkeypatch.setattr(LocalObservationStore, "peek_advice_for_delivery", fake_peek)

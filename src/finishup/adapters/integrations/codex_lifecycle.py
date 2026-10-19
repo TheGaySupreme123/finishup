@@ -52,6 +52,8 @@ __all__ = [
 ]
 
 MAPPING_VERSION: Final = 1
+# Frozen legacy identifier (ADR-048): the stored mapping keys keep the ``yoetz_`` spelling; only
+# the Python field names are ``finishup_*``.
 _MAPPING_KEYS: Final = frozenset(
     {
         "mapping_version",
@@ -94,18 +96,19 @@ class LifecycleMapping:
 
     mapping_version: int
     codex_session_id: str
-    yoetz_task_id: str
-    yoetz_session_id: str
-    yoetz_writer_id: str
+    finishup_task_id: str
+    finishup_session_id: str
+    finishup_writer_id: str
     last_frontier: str | None
 
     def to_wire(self) -> dict[str, JsonValue]:
+        # Frozen legacy identifier (ADR-048): stored keys, see ``_MAPPING_KEYS``.
         return {
             "mapping_version": self.mapping_version,
             "codex_session_id": self.codex_session_id,
-            "yoetz_task_id": self.yoetz_task_id,
-            "yoetz_session_id": self.yoetz_session_id,
-            "yoetz_writer_id": self.yoetz_writer_id,
+            "yoetz_task_id": self.finishup_task_id,
+            "yoetz_session_id": self.finishup_session_id,
+            "yoetz_writer_id": self.finishup_writer_id,
             "last_frontier": self.last_frontier,
         }
 
@@ -354,7 +357,7 @@ def load_route_history(
         return None
     if decoded is None:
         return None
-    if decoded[0] != mapping.yoetz_task_id:
+    if decoded[0] != mapping.finishup_task_id:
         return RouteHistory((), False)
     return decoded[1]
 
@@ -372,7 +375,7 @@ def _write_route_history(
         canonical_encode(
             {
                 "schema": _ROUTE_HISTORY_SCHEMA,
-                "task_id": mapping.yoetz_task_id,
+                "task_id": mapping.finishup_task_id,
                 "routes": tuple(
                     {"session_id": session_id, "writer_id": writer_id}
                     for session_id, writer_id in routes
@@ -391,7 +394,7 @@ def _retain_predecessor_route(mapping: LifecycleMapping, *, _state: Path | None)
     prior = load_route_history(mapping, _state=_state)
     if prior is None:
         raise ProtocolValueError("unsupported_json_type")
-    route = (mapping.yoetz_session_id, mapping.yoetz_writer_id)
+    route = (mapping.finishup_session_id, mapping.finishup_writer_id)
     if route in prior.routes:
         return
     routes = (*prior.routes, route)
@@ -425,9 +428,9 @@ def _parse_mapping(
     return LifecycleMapping(
         mapping_version=MAPPING_VERSION,
         codex_session_id=codex_session_id,
-        yoetz_task_id=task_id,
-        yoetz_session_id=session_id,
-        yoetz_writer_id=writer_id,
+        finishup_task_id=task_id,
+        finishup_session_id=session_id,
+        finishup_writer_id=writer_id,
         last_frontier=frontier,
     )
 
@@ -493,7 +496,7 @@ def store_mapping(mapping: LifecycleMapping, *, _state: Path | None = None) -> N
         raise ProtocolValueError("unsupported_json_type")
     validated = _parse_mapping(mapping.to_wire(), expected_session=mapping.codex_session_id)
     previous = load_mapping(validated.codex_session_id, _state=_state)
-    if previous is None or previous.yoetz_task_id != validated.yoetz_task_id:
+    if previous is None or previous.finishup_task_id != validated.finishup_task_id:
         # A clear can stop after unlinking the mapping but before its history.
         # Reset that orphan before publishing a new attachment of the same host.
         history = _route_history_path(validated.codex_session_id, _state=_state)
@@ -501,10 +504,10 @@ def store_mapping(mapping: LifecycleMapping, *, _state: Path | None = None) -> N
             _write_route_history(validated, (), truncated=False, _state=_state)
     if (
         previous is not None
-        and previous.yoetz_task_id == validated.yoetz_task_id
+        and previous.finishup_task_id == validated.finishup_task_id
         and (
-            previous.yoetz_session_id != validated.yoetz_session_id
-            or previous.yoetz_writer_id != validated.yoetz_writer_id
+            previous.finishup_session_id != validated.finishup_session_id
+            or previous.finishup_writer_id != validated.finishup_writer_id
         )
     ):
         # Persist the predecessor before replacing the one-slot mapping. A
@@ -641,7 +644,7 @@ def apply_pending_mapping(codex_session_id: str, *, _state: Path | None = None) 
             existing_path = mapping_path(codex_session_id, _state=_state)
             if existing_path.exists() or existing_path.is_symlink():
                 existing = load_mapping(codex_session_id, _state=_state)
-                if existing is None or existing.yoetz_task_id != mapping.yoetz_task_id:
+                if existing is None or existing.finishup_task_id != mapping.finishup_task_id:
                     return False
         store_mapping(mapping, _state=_state)
     else:
@@ -933,9 +936,9 @@ class _WorkspaceRecoveryLock(_LifecycleLock):
 def mapping_from_start_ids(
     *,
     codex_session_id: str,
-    yoetz_task_id: str,
-    yoetz_session_id: str,
-    yoetz_writer_id: str,
+    finishup_task_id: str,
+    finishup_session_id: str,
+    finishup_writer_id: str,
     last_frontier: str | None,
 ) -> LifecycleMapping:
     """Build a validated mapping from already-extracted structural IDs."""
@@ -946,13 +949,13 @@ def mapping_from_start_ids(
         raise ProtocolValueError("invalid_frontier")
     if last_frontier is not None:
         parse_frontier_token(last_frontier)
-    if not is_valid_id(IdKind.TASK, yoetz_task_id):
+    if not is_valid_id(IdKind.TASK, finishup_task_id):
         raise ProtocolValueError("id_wrong_prefix")
     return LifecycleMapping(
         mapping_version=MAPPING_VERSION,
         codex_session_id=validate_codex_session_id(codex_session_id),
-        yoetz_task_id=validate_id(IdKind.TASK, yoetz_task_id),
-        yoetz_session_id=validate_id(IdKind.SESSION, yoetz_session_id),
-        yoetz_writer_id=validate_id(IdKind.WRITER, yoetz_writer_id),
+        finishup_task_id=validate_id(IdKind.TASK, finishup_task_id),
+        finishup_session_id=validate_id(IdKind.SESSION, finishup_session_id),
+        finishup_writer_id=validate_id(IdKind.WRITER, finishup_writer_id),
         last_frontier=last_frontier,
     )

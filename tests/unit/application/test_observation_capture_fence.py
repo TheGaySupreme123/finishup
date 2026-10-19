@@ -134,7 +134,7 @@ async def test_profile_rejection_fences_matching_pending_ticket(tmp_path: Path) 
     ticket = ObservationCaptureTicket(
         workspace_commitment=_WORKSPACE,
         task_id=_TASK,
-        yoetz_session_id="ses_bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+        finishup_session_id="ses_bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
         session_commitment=_COMMITMENT,
         source=ObservationSource.CLAUDE_HOOK,
         source_identity=envelope.source_identity,
@@ -171,7 +171,7 @@ async def test_profile_rejection_fences_matching_pending_ticket(tmp_path: Path) 
     )
 
     context = await coordinator._native_capture_context(  # noqa: SLF001  # pyright: ignore[reportPrivateUsage]
-        SimpleNamespace(task_id=_TASK, session_id=ticket.yoetz_session_id),  # type: ignore[arg-type]
+        SimpleNamespace(task_id=_TASK, session_id=ticket.finishup_session_id),  # type: ignore[arg-type]
         store,  # type: ignore[arg-type]
         workspace=_WORKSPACE,
         request=request,

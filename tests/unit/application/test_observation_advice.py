@@ -1283,14 +1283,14 @@ def test_semantic_observation_review_receives_the_trusted_finishup_session() -> 
             return None
 
     async def review(
-        candidates: object, basis: str, gaps: tuple[str, ...], yoetz_session_id: str | None
+        candidates: object, basis: str, gaps: tuple[str, ...], finishup_session_id: str | None
     ) -> None:
         del candidates, basis, gaps
-        observed.append(yoetz_session_id)
+        observed.append(finishup_session_id)
 
     builder = ObservationAdviceContextBuilder(semantic_review=review)  # type: ignore[arg-type]
     snapshot = asyncio.run(
-        builder.build(_COMMITMENT, _Store(), yoetz_session_id=session_id)  # type: ignore[arg-type]
+        builder.build(_COMMITMENT, _Store(), finishup_session_id=session_id)  # type: ignore[arg-type]
     )
 
     assert snapshot is not None

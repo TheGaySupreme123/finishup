@@ -148,7 +148,7 @@ def _rows(
     ).fetchall()
     rows: list[ObservationAdviceSemanticAttempt] = []
     for session, basis in keys:
-        row = repository.lookup(yoetz_session_id=str(session), basis_digest=str(basis))
+        row = repository.lookup(finishup_session_id=str(session), basis_digest=str(basis))
         assert row is not None
         rows.append(row)
     return tuple(rows)
@@ -171,8 +171,8 @@ def test_hook_path_build_enqueues_once_and_never_dispatches() -> None:
     store = _Store(repository)
     builder = _builder()
 
-    first = asyncio.run(builder.build(_COMMITMENT, store, yoetz_session_id=_SESSION))  # type: ignore[arg-type]
-    second = asyncio.run(builder.build(_COMMITMENT, store, yoetz_session_id=_SESSION))  # type: ignore[arg-type]
+    first = asyncio.run(builder.build(_COMMITMENT, store, finishup_session_id=_SESSION))  # type: ignore[arg-type]
+    second = asyncio.run(builder.build(_COMMITMENT, store, finishup_session_id=_SESSION))  # type: ignore[arg-type]
 
     assert first is not None and second is not None
     assert first.evidence_basis_digest == second.evidence_basis_digest
@@ -183,7 +183,7 @@ def test_hook_path_build_enqueues_once_and_never_dispatches() -> None:
     (attempt,) = _rows(db, repository)
     assert attempt.status == "pending"
     assert attempt.attempt_count == 0
-    assert attempt.yoetz_session_id == _SESSION
+    assert attempt.finishup_session_id == _SESSION
     assert attempt.coverage_gaps == tuple(sorted(_GAPS, key=str.encode))
     assert _packet(attempt)["coverage_gaps"] == list(sorted(_GAPS, key=str.encode))
     assert attempt.subject_digest == canonical_digest(cast(JsonValue, _packet(attempt)))
@@ -193,7 +193,7 @@ def test_stream_churn_reuses_condition_review_and_retains_the_prior_receipt() ->
     db, repository = _repository()
     store = _Store(repository)
     builder = _builder()
-    first = asyncio.run(builder.build(_COMMITMENT, store, yoetz_session_id=_SESSION))  # type: ignore[arg-type]
+    first = asyncio.run(builder.build(_COMMITMENT, store, finishup_session_id=_SESSION))  # type: ignore[arg-type]
     assert first is not None
     (first_row,) = _rows(db, repository)
 
@@ -222,7 +222,7 @@ def test_stream_churn_reuses_condition_review_and_retains_the_prior_receipt() ->
 
     # The reviewable rule summaries did not change, even though the stream digest did.
     store.failed_identity = "hook:fail-2"
-    second = asyncio.run(builder.build(_COMMITMENT, store, yoetz_session_id=_SESSION))  # type: ignore[arg-type]
+    second = asyncio.run(builder.build(_COMMITMENT, store, finishup_session_id=_SESSION))  # type: ignore[arg-type]
     assert second is not None
     assert second.evidence_basis_digest != first.evidence_basis_digest
     assert ADVICE_SEMANTIC_PENDING_GAP not in second.confidence_coverage.known_gaps
@@ -239,7 +239,7 @@ def test_unattempted_pending_rows_are_superseded_by_a_newer_basis() -> None:
     _db, repository = _repository()
     first = repository.schedule(
         workspace=_COMMITMENT,
-        yoetz_session_id=_SESSION,
+        finishup_session_id=_SESSION,
         basis_digest="sha256:" + "1" * 64,
         subject_digest="sha256:" + "1" * 64,
         coverage_gaps=_GAPS,
@@ -249,7 +249,7 @@ def test_unattempted_pending_rows_are_superseded_by_a_newer_basis() -> None:
     )
     second = repository.schedule(
         workspace=_COMMITMENT,
-        yoetz_session_id=_SESSION,
+        finishup_session_id=_SESSION,
         basis_digest="sha256:" + "2" * 64,
         subject_digest="sha256:" + "2" * 64,
         coverage_gaps=_GAPS,
@@ -260,7 +260,7 @@ def test_unattempted_pending_rows_are_superseded_by_a_newer_basis() -> None:
     assert isinstance(first, ObservationAdviceSemanticAttempt)
     assert isinstance(second, ObservationAdviceSemanticAttempt)
     assert second.status == "pending"
-    superseded = repository.lookup(yoetz_session_id=_SESSION, basis_digest=first.basis_digest)
+    superseded = repository.lookup(finishup_session_id=_SESSION, basis_digest=first.basis_digest)
     assert superseded is not None
     assert (superseded.status, superseded.failure_reason) == ("cancelled", "superseded")
     addon = addon_from_attempt(superseded)
@@ -273,7 +273,7 @@ def test_queue_bound_records_unavailable_without_an_attempt() -> None:
         session = f"ses_00000000-0000-4000-8000-00000000000{index + 2}"
         row = repository.schedule(
             workspace=_COMMITMENT,
-            yoetz_session_id=session,
+            finishup_session_id=session,
             basis_digest="sha256:" + str(index) * 64,
             subject_digest="sha256:" + str(index) * 64,
             coverage_gaps=(),
@@ -285,7 +285,7 @@ def test_queue_bound_records_unavailable_without_an_attempt() -> None:
         assert row.status == "pending"
     overflow = repository.schedule(
         workspace=_COMMITMENT,
-        yoetz_session_id=_SESSION,
+        finishup_session_id=_SESSION,
         basis_digest="sha256:" + "f" * 64,
         subject_digest="sha256:" + "f" * 64,
         coverage_gaps=(),
@@ -303,7 +303,7 @@ def test_queue_bound_records_unavailable_without_an_attempt() -> None:
     claimed = repository.claim_next(
         service_generation=1, lease_owner="svc", lease_expires_at=_later(), now=_clock()
     )
-    assert claimed is not None and claimed.yoetz_session_id != _SESSION
+    assert claimed is not None and claimed.finishup_session_id != _SESSION
 
 
 @pytest.mark.parametrize(
@@ -333,7 +333,7 @@ def test_non_success_outcomes_leave_a_truthful_gap_and_no_semantic_claim(
     db, repository = _repository()
     store = _Store(repository)
     builder = _builder()
-    pending = asyncio.run(builder.build(_COMMITMENT, store, yoetz_session_id=_SESSION))  # type: ignore[arg-type]
+    pending = asyncio.run(builder.build(_COMMITMENT, store, finishup_session_id=_SESSION))  # type: ignore[arg-type]
     assert pending is not None
 
     async def dispatch(
@@ -352,7 +352,7 @@ def test_non_success_outcomes_leave_a_truthful_gap_and_no_semantic_claim(
     assert asyncio.run(worker.run_once()) is not None
     (row,) = _rows(db, repository)
     assert row.failure_reason == expected_reason and row.finding_ids == ()
-    rebuilt = asyncio.run(builder.build(_COMMITMENT, store, yoetz_session_id=_SESSION))  # type: ignore[arg-type]
+    rebuilt = asyncio.run(builder.build(_COMMITMENT, store, finishup_session_id=_SESSION))  # type: ignore[arg-type]
     assert rebuilt is not None
     assert ADVICE_SEMANTIC_UNAVAILABLE_GAP in rebuilt.confidence_coverage.known_gaps
     assert ADVICE_SEMANTIC_PENDING_GAP not in rebuilt.confidence_coverage.known_gaps
@@ -365,7 +365,7 @@ def test_dispatch_exception_and_cancellation_are_recorded_not_succeeded() -> Non
         session = _SESSION if basis.endswith("a" * 64) else _SESSION[:-1] + "2"
         repository.schedule(
             workspace=_COMMITMENT,
-            yoetz_session_id=session,
+            finishup_session_id=session,
             basis_digest=basis,
             subject_digest=basis,
             coverage_gaps=(),
@@ -394,7 +394,7 @@ def test_dispatch_exception_and_cancellation_are_recorded_not_succeeded() -> Non
                 asyncio.run(worker.run_once())
         else:
             asyncio.run(worker.run_once())
-        row = repository.lookup(yoetz_session_id=session, basis_digest=basis)
+        row = repository.lookup(finishup_session_id=session, basis_digest=basis)
         assert row is not None
         assert row.status in {"failed", "cancelled"}
         assert row.failure_reason in ADVICE_SEMANTIC_FAILURE_REASONS
@@ -422,7 +422,7 @@ def test_cancellation_reconciliation_is_bounded_and_never_fabricates_provenance(
         session = _SESSION[:-1] + marker
         repository.schedule(
             workspace=_COMMITMENT,
-            yoetz_session_id=session,
+            finishup_session_id=session,
             basis_digest=basis,
             subject_digest=basis,
             coverage_gaps=(),
@@ -471,7 +471,7 @@ def test_cancellation_reconciliation_is_bounded_and_never_fabricates_provenance(
         with pytest.raises(asyncio.CancelledError):
             asyncio.run(worker.run_once())
 
-        row = repository.lookup(yoetz_session_id=session, basis_digest=basis)
+        row = repository.lookup(finishup_session_id=session, basis_digest=basis)
         assert row is not None
         assert (row.status, row.failure_reason) == ("cancelled", "cancelled")
         assert row.finding_ids == ()
@@ -487,7 +487,7 @@ def test_restart_reclaims_a_foreign_generation_lease_without_reporting_success()
     basis = "sha256:" + "c" * 64
     repository.schedule(
         workspace=_COMMITMENT,
-        yoetz_session_id=_SESSION,
+        finishup_session_id=_SESSION,
         basis_digest=basis,
         subject_digest=basis,
         coverage_gaps=_GAPS,
@@ -507,7 +507,7 @@ def test_restart_reclaims_a_foreign_generation_lease_without_reporting_success()
         )
         is None
     )
-    addon = addon_from_attempt(repository.lookup(yoetz_session_id=_SESSION, basis_digest=basis))
+    addon = addon_from_attempt(repository.lookup(finishup_session_id=_SESSION, basis_digest=basis))
     assert addon is not None and addon.failure_reason == "pending" and addon.finding_ids == ()
 
     # The next generation reclaims it and the attempt count reflects the interrupted try.
@@ -533,7 +533,7 @@ def test_restart_reclaims_a_foreign_generation_lease_without_reporting_success()
         outcome=ObservationAdviceSemanticOutcome(status="succeeded", attempt_receipt="egr_new"),
         recorded_at=_clock(),
     )
-    done = repository.lookup(yoetz_session_id=_SESSION, basis_digest=basis)
+    done = repository.lookup(finishup_session_id=_SESSION, basis_digest=basis)
     assert done is not None and (done.status, done.attempt_receipt) == ("succeeded", "egr_new")
 
 
@@ -542,7 +542,7 @@ def test_repeatedly_interrupted_rows_terminate_as_interrupted() -> None:
     basis = "sha256:" + "d" * 64
     repository.schedule(
         workspace=_COMMITMENT,
-        yoetz_session_id=_SESSION,
+        finishup_session_id=_SESSION,
         basis_digest=basis,
         subject_digest=basis,
         coverage_gaps=(),
@@ -564,7 +564,7 @@ def test_repeatedly_interrupted_rows_terminate_as_interrupted() -> None:
         )
         is None
     )
-    row = repository.lookup(yoetz_session_id=_SESSION, basis_digest=basis)
+    row = repository.lookup(finishup_session_id=_SESSION, basis_digest=basis)
     assert row is not None
     assert (row.status, row.failure_reason) == ("failed", "interrupted")
 
@@ -573,7 +573,7 @@ def test_supervisor_drains_registered_workers_and_reruns_advice_after_each_attem
     db, repository = _repository()
     store = _Store(repository)
     builder = _builder()
-    pending = asyncio.run(builder.build(_COMMITMENT, store, yoetz_session_id=_SESSION))  # type: ignore[arg-type]
+    pending = asyncio.run(builder.build(_COMMITMENT, store, finishup_session_id=_SESSION))  # type: ignore[arg-type]
     assert pending is not None
     (row,) = _rows(db, repository)
     dispatched: list[str] = []
@@ -617,7 +617,7 @@ def test_supervisor_drains_registered_workers_and_reruns_advice_after_each_attem
     asyncio.run(scenario())
     assert dispatched == [row.basis_digest]
     assert reruns == ["advice"] and idle == ["released"]
-    rebuilt = asyncio.run(builder.build(_COMMITMENT, store, yoetz_session_id=_SESSION))  # type: ignore[arg-type]
+    rebuilt = asyncio.run(builder.build(_COMMITMENT, store, finishup_session_id=_SESSION))  # type: ignore[arg-type]
     assert rebuilt is not None
     assert ADVICE_SEMANTIC_PENDING_GAP not in rebuilt.confidence_coverage.known_gaps
     assert ADVICE_SEMANTIC_UNAVAILABLE_GAP not in rebuilt.confidence_coverage.known_gaps
@@ -632,7 +632,7 @@ def test_foreground_rebind_cancels_slow_provider_and_records_terminal_gap() -> N
     basis = "sha256:" + "e" * 64
     repository.schedule(
         workspace=_COMMITMENT,
-        yoetz_session_id=_SESSION,
+        finishup_session_id=_SESSION,
         basis_digest=basis,
         subject_digest=basis,
         coverage_gaps=_GAPS,
@@ -673,7 +673,7 @@ def test_foreground_rebind_cancels_slow_provider_and_records_terminal_gap() -> N
         assert not supervisor.has_handle(_COMMITMENT)
 
     asyncio.run(scenario())
-    row = repository.lookup(yoetz_session_id=_SESSION, basis_digest=basis)
+    row = repository.lookup(finishup_session_id=_SESSION, basis_digest=basis)
     assert row is not None
     assert (row.status, row.failure_reason) == ("cancelled", "cancelled")
     assert repository.list_pending_workspaces() == ()
@@ -687,7 +687,7 @@ def test_foreground_rebind_also_releases_during_post_attempt_advice_rebuild() ->
     basis = "sha256:" + "f" * 64
     repository.schedule(
         workspace=_COMMITMENT,
-        yoetz_session_id=_SESSION,
+        finishup_session_id=_SESSION,
         basis_digest=basis,
         subject_digest=basis,
         coverage_gaps=_GAPS,
@@ -739,7 +739,7 @@ def test_foreground_rebind_also_releases_during_post_attempt_advice_rebuild() ->
         assert not supervisor.has_handle(_COMMITMENT)
 
     asyncio.run(scenario())
-    row = repository.lookup(yoetz_session_id=_SESSION, basis_digest=basis)
+    row = repository.lookup(finishup_session_id=_SESSION, basis_digest=basis)
     assert row is not None
     assert (row.status, row.attempt_receipt) == ("succeeded", "egr_after")
     assert idle == ["released"]
@@ -753,7 +753,7 @@ def test_rebind_retires_queued_workspace_while_another_provider_attempt_is_activ
     second_session = _SESSION[:-1] + "2"
     first_repository.schedule(
         workspace=_COMMITMENT,
-        yoetz_session_id=_SESSION,
+        finishup_session_id=_SESSION,
         basis_digest="sha256:" + "1" * 64,
         subject_digest="sha256:" + "1" * 64,
         coverage_gaps=_GAPS,
@@ -763,7 +763,7 @@ def test_rebind_retires_queued_workspace_while_another_provider_attempt_is_activ
     )
     second_repository.schedule(
         workspace=_COMMITMENT,
-        yoetz_session_id=second_session,
+        finishup_session_id=second_session,
         basis_digest="sha256:" + "2" * 64,
         subject_digest="sha256:" + "2" * 64,
         coverage_gaps=_GAPS,
@@ -779,8 +779,8 @@ def test_rebind_retires_queued_workspace_while_another_provider_attempt_is_activ
     async def dispatch(
         attempt: ObservationAdviceSemanticAttempt,
     ) -> ObservationAdviceSemanticOutcome:
-        dispatched.append(attempt.yoetz_session_id)
-        if attempt.yoetz_session_id == _SESSION:
+        dispatched.append(attempt.finishup_session_id)
+        if attempt.finishup_session_id == _SESSION:
             first_started.set()
             await release_first.wait()
         return ObservationAdviceSemanticOutcome(
@@ -826,9 +826,9 @@ def test_rebind_retires_queued_workspace_while_another_provider_attempt_is_activ
         await supervisor.stop()
 
     asyncio.run(scenario())
-    first = first_repository.lookup(yoetz_session_id=_SESSION, basis_digest="sha256:" + "1" * 64)
+    first = first_repository.lookup(finishup_session_id=_SESSION, basis_digest="sha256:" + "1" * 64)
     second = second_repository.lookup(
-        yoetz_session_id=second_session, basis_digest="sha256:" + "2" * 64
+        finishup_session_id=second_session, basis_digest="sha256:" + "2" * 64
     )
     assert first is not None and first.status == "succeeded"
     assert second is not None and second.status == "pending"
@@ -850,7 +850,7 @@ def test_repeated_rebind_preserves_consumed_attempt_provenance_and_releases_once
     basis = "sha256:" + "b" * 64
     repository.schedule(
         workspace=_COMMITMENT,
-        yoetz_session_id=_SESSION,
+        finishup_session_id=_SESSION,
         basis_digest=basis,
         subject_digest=basis,
         coverage_gaps=_GAPS,
@@ -905,7 +905,7 @@ def test_repeated_rebind_preserves_consumed_attempt_provenance_and_releases_once
         assert not supervisor.has_handle(_COMMITMENT)
 
     asyncio.run(scenario())
-    row = repository.lookup(yoetz_session_id=_SESSION, basis_digest=basis)
+    row = repository.lookup(finishup_session_id=_SESSION, basis_digest=basis)
     assert row is not None
     assert row.status == "cancelled"
     assert row.attempt_receipt == "egr_30000000-0000-4000-8000-0000000000d1"
@@ -1053,7 +1053,7 @@ _SUCCEEDED = ObservationAdviceSemanticOutcome(status="succeeded", attempt_receip
 def test_rate_limit_survives_repository_reopen_and_admits_changed_condition() -> None:
     db, repository = _repository()
     store = _Store(repository)
-    first = asyncio.run(_builder().build(_COMMITMENT, store, yoetz_session_id=_SESSION))  # type: ignore[arg-type]
+    first = asyncio.run(_builder().build(_COMMITMENT, store, finishup_session_id=_SESSION))  # type: ignore[arg-type]
     assert first is not None
     _complete_next(repository, _SUCCEEDED, at="2026-09-08T21:00:00.000Z")
     (original,) = _rows(db, repository)
@@ -1066,7 +1066,7 @@ def test_rate_limit_survives_repository_reopen_and_admits_changed_condition() ->
             _scheduler_builder("2026-09-08T21:02:59.000Z", revisits).build(
                 _COMMITMENT,
                 store,
-                yoetz_session_id=_SESSION,  # type: ignore[arg-type]
+                finishup_session_id=_SESSION,  # type: ignore[arg-type]
             )
         )
         assert deferred is not None
@@ -1081,7 +1081,7 @@ def test_rate_limit_survives_repository_reopen_and_admits_changed_condition() ->
         _scheduler_builder("2026-09-08T21:03:00.000Z").build(
             _COMMITMENT,
             store,
-            yoetz_session_id=_SESSION,  # type: ignore[arg-type]
+            finishup_session_id=_SESSION,  # type: ignore[arg-type]
         )
     )
     assert admitted_snapshot is not None
@@ -1096,13 +1096,13 @@ def test_unattempted_pending_row_does_not_consume_the_session_rate_limit() -> No
     # A row the provider never saw is superseded by the newer identity, not rate limited.
     db, repository = _repository()
     store = _Store(repository)
-    asyncio.run(_builder().build(_COMMITMENT, store, yoetz_session_id=_SESSION))  # type: ignore[arg-type]
+    asyncio.run(_builder().build(_COMMITMENT, store, finishup_session_id=_SESSION))  # type: ignore[arg-type]
     store.gaps = (ObservationGapCode.SOURCE_LAG.value,)
     asyncio.run(
         _scheduler_builder("2026-09-08T21:00:05.000Z").build(
             _COMMITMENT,
             store,
-            yoetz_session_id=_SESSION,  # type: ignore[arg-type]
+            finishup_session_id=_SESSION,  # type: ignore[arg-type]
         )
     )
     first, second = _rows(db, repository)
@@ -1155,7 +1155,7 @@ def test_identity_ignores_evidence_counts_but_not_new_candidates() -> None:
 def test_more_evidence_for_the_same_rule_reuses_the_reviewed_identity() -> None:
     db, repository = _repository()
     store = _Store(repository)
-    asyncio.run(_builder().build(_COMMITMENT, store, yoetz_session_id=_SESSION))  # type: ignore[arg-type]
+    asyncio.run(_builder().build(_COMMITMENT, store, finishup_session_id=_SESSION))  # type: ignore[arg-type]
     _complete_next(repository, _SUCCEEDED, at=_clock())
     envelopes = (
         _envelope("hook:fail", {"tool_name": "shell", "exit_status": 1, "correlation_id": "a"}),
@@ -1168,7 +1168,7 @@ def test_more_evidence_for_the_same_rule_reuses_the_reviewed_identity() -> None:
         _scheduler_builder("2026-09-08T22:00:00.000Z").build(
             _COMMITMENT,
             store,
-            yoetz_session_id=_SESSION,  # type: ignore[arg-type]
+            finishup_session_id=_SESSION,  # type: ignore[arg-type]
         )
     )
     assert later is not None
@@ -1187,7 +1187,7 @@ def test_authorization_missing_backs_off_instead_of_retrying_on_every_build() ->
 
     db, repository = _repository()
     store = _Store(repository)
-    asyncio.run(_builder().build(_COMMITMENT, store, yoetz_session_id=_SESSION))  # type: ignore[arg-type]
+    asyncio.run(_builder().build(_COMMITMENT, store, finishup_session_id=_SESSION))  # type: ignore[arg-type]
     _complete_next(
         repository,
         ObservationAdviceSemanticOutcome(
@@ -1201,7 +1201,7 @@ def test_authorization_missing_backs_off_instead_of_retrying_on_every_build() ->
         _scheduler_builder("2026-09-08T21:01:00.000Z", revisits, route_ready=False).build(
             _COMMITMENT,
             store,
-            yoetz_session_id=_SESSION,  # type: ignore[arg-type]
+            finishup_session_id=_SESSION,  # type: ignore[arg-type]
         )
     )
     assert held is not None
@@ -1214,7 +1214,7 @@ def test_authorization_missing_backs_off_instead_of_retrying_on_every_build() ->
         _scheduler_builder("2026-09-08T21:01:30.000Z", revisits, route_ready=True).build(
             _COMMITMENT,
             store,
-            yoetz_session_id=_SESSION,  # type: ignore[arg-type]
+            finishup_session_id=_SESSION,  # type: ignore[arg-type]
         )
     )
     assert backing_off is not None
@@ -1226,7 +1226,7 @@ def test_authorization_missing_backs_off_instead_of_retrying_on_every_build() ->
         _scheduler_builder("2026-09-08T21:03:01.000Z", route_ready=True).build(
             _COMMITMENT,
             store,
-            yoetz_session_id=_SESSION,  # type: ignore[arg-type]
+            finishup_session_id=_SESSION,  # type: ignore[arg-type]
         )
     )
     first, retry = _rows(db, repository)
@@ -1239,7 +1239,7 @@ def test_authorization_missing_backs_off_instead_of_retrying_on_every_build() ->
         _scheduler_builder("2026-09-08T21:30:00.000Z").build(
             _COMMITMENT,
             store,
-            yoetz_session_id=_SESSION,  # type: ignore[arg-type]
+            finishup_session_id=_SESSION,  # type: ignore[arg-type]
         )
     )
     assert ready is not None and ready.semantic_attempt_state == "ready"
@@ -1258,7 +1258,7 @@ def test_route_that_cannot_reach_a_provider_writes_no_row() -> None:
             _scheduler_builder("2026-09-08T21:00:00.000Z", revisits, route_ready=False).build(
                 _COMMITMENT,
                 store,
-                yoetz_session_id=_SESSION,  # type: ignore[arg-type]
+                finishup_session_id=_SESSION,  # type: ignore[arg-type]
             )
         )
         assert snapshot is not None
@@ -1286,7 +1286,7 @@ def test_probe_and_dispatch_disagreeing_never_loops() -> None:
             _scheduler_builder("2026-09-08T21:00:00.500Z", revisits, route_ready=True).build(
                 _COMMITMENT,
                 store,
-                yoetz_session_id=_SESSION,  # type: ignore[arg-type]
+                finishup_session_id=_SESSION,  # type: ignore[arg-type]
             )
         )
         if repository.list_pending_workspaces():
@@ -1301,7 +1301,7 @@ def test_probe_and_dispatch_disagreeing_never_loops() -> None:
 def test_provider_failure_backs_off_exponentially_then_retries_without_a_new_hook() -> None:
     db, repository = _repository()
     store = _Store(repository)
-    asyncio.run(_builder().build(_COMMITMENT, store, yoetz_session_id=_SESSION))  # type: ignore[arg-type]
+    asyncio.run(_builder().build(_COMMITMENT, store, finishup_session_id=_SESSION))  # type: ignore[arg-type]
     failed = ObservationAdviceSemanticOutcome(status="failed", failure_reason="provider_failed")
     _complete_next(repository, failed, at="2026-09-08T21:00:00.000Z")
     # Generation 1 backoff is the 180 s base; the rate limit is also 180 s.
@@ -1309,7 +1309,7 @@ def test_provider_failure_backs_off_exponentially_then_retries_without_a_new_hoo
         _scheduler_builder("2026-09-08T21:02:59.000Z").build(
             _COMMITMENT,
             store,
-            yoetz_session_id=_SESSION,  # type: ignore[arg-type]
+            finishup_session_id=_SESSION,  # type: ignore[arg-type]
         )
     )
     assert len(_rows(db, repository)) == 1
@@ -1317,7 +1317,7 @@ def test_provider_failure_backs_off_exponentially_then_retries_without_a_new_hoo
         _scheduler_builder("2026-09-08T21:03:00.000Z").build(
             _COMMITMENT,
             store,
-            yoetz_session_id=_SESSION,  # type: ignore[arg-type]
+            finishup_session_id=_SESSION,  # type: ignore[arg-type]
         )
     )
     assert len(_rows(db, repository)) == 2
@@ -1328,7 +1328,7 @@ def test_provider_failure_backs_off_exponentially_then_retries_without_a_new_hoo
         _scheduler_builder("2026-09-08T21:08:59.000Z", revisits).build(
             _COMMITMENT,
             store,
-            yoetz_session_id=_SESSION,  # type: ignore[arg-type]
+            finishup_session_id=_SESSION,  # type: ignore[arg-type]
         )
     )
     assert len(_rows(db, repository)) == 2
@@ -1337,7 +1337,7 @@ def test_provider_failure_backs_off_exponentially_then_retries_without_a_new_hoo
         _scheduler_builder("2026-09-08T21:09:00.000Z").build(
             _COMMITMENT,
             store,
-            yoetz_session_id=_SESSION,  # type: ignore[arg-type]
+            finishup_session_id=_SESSION,  # type: ignore[arg-type]
         )
     )
     rows = _rows(db, repository)
@@ -1350,7 +1350,7 @@ def test_retry_delay_schedule_is_bounded() -> None:
         return ObservationAdviceSemanticAttempt(
             attempt_id="a",
             workspace_commitment=_COMMITMENT,
-            yoetz_session_id=_SESSION,
+            finishup_session_id=_SESSION,
             basis_digest="b",
             subject_digest="sha256:" + "0" * 64,
             coverage_gaps=(),
@@ -1411,7 +1411,7 @@ def test_disabled_scheduler_never_enqueues() -> None:
         semantic_scheduler=ObservationAdviceSemanticScheduler(now=_clock, enabled=False)
     )
     snapshot = asyncio.run(
-        builder.build(_COMMITMENT, _Store(repository), yoetz_session_id=_SESSION)
+        builder.build(_COMMITMENT, _Store(repository), finishup_session_id=_SESSION)
     )  # type: ignore[arg-type]
     assert snapshot is not None and snapshot.ranked_items
     assert _rows(db, repository) == ()
@@ -1496,7 +1496,7 @@ def test_no_usable_provider_writes_no_row_and_reports_unavailable_once() -> None
     for failures in range(1, 9):
         # Every observation changes the candidate set, as a busy session would.
         store.failures = failures
-        snapshot = asyncio.run(builder.build(_COMMITMENT, store, yoetz_session_id=_SESSION))  # type: ignore[arg-type]
+        snapshot = asyncio.run(builder.build(_COMMITMENT, store, finishup_session_id=_SESSION))  # type: ignore[arg-type]
         assert snapshot is not None and snapshot.ranked_items
         snapshots.append(snapshot)
 
@@ -1514,7 +1514,7 @@ def test_no_usable_provider_writes_no_row_and_reports_unavailable_once() -> None
         assert snapshot.semantic_attempt_state == "disabled"
 
     # The same evidence rebuilt is the same advice: nothing new to deliver.
-    again = asyncio.run(builder.build(_COMMITMENT, store, yoetz_session_id=_SESSION))  # type: ignore[arg-type]
+    again = asyncio.run(builder.build(_COMMITMENT, store, finishup_session_id=_SESSION))  # type: ignore[arg-type]
     assert again is not None
     assert again.suppression_identity == snapshots[-1].suppression_identity
     assert again.confidence_coverage == snapshots[-1].confidence_coverage
@@ -1531,7 +1531,7 @@ def test_provider_probe_failure_admits_nothing() -> None:
         _readiness_builder(unreadable).build(
             _COMMITMENT,
             _Store(repository),
-            yoetz_session_id=_SESSION,  # type: ignore[arg-type]
+            finishup_session_id=_SESSION,  # type: ignore[arg-type]
         )
     )
     assert snapshot is not None
@@ -1548,14 +1548,14 @@ def test_binding_later_admits_advice_and_unbinding_stops_it_without_restart() ->
     readiness = _Readiness(False)
     builder = _readiness_builder(readiness)
 
-    unbound = asyncio.run(builder.build(_COMMITMENT, store, yoetz_session_id=_SESSION))  # type: ignore[arg-type]
+    unbound = asyncio.run(builder.build(_COMMITMENT, store, finishup_session_id=_SESSION))  # type: ignore[arg-type]
     assert unbound is not None
     assert ADVICE_SEMANTIC_UNAVAILABLE_GAP in unbound.confidence_coverage.known_gaps
     assert _rows(db, repository) == ()
 
     # The owner binds a provider and enables LLM inference: same scheduler, no restart.
     readiness.ready = True
-    bound = asyncio.run(builder.build(_COMMITMENT, store, yoetz_session_id=_SESSION))  # type: ignore[arg-type]
+    bound = asyncio.run(builder.build(_COMMITMENT, store, finishup_session_id=_SESSION))  # type: ignore[arg-type]
     assert bound is not None
     assert ADVICE_SEMANTIC_PENDING_GAP in bound.confidence_coverage.known_gaps
     assert ADVICE_SEMANTIC_UNAVAILABLE_GAP not in bound.confidence_coverage.known_gaps
@@ -1566,7 +1566,7 @@ def test_binding_later_admits_advice_and_unbinding_stops_it_without_restart() ->
     # pending work: the service dispatch drains it as ``provider_unavailable``.
     readiness.ready = False
     store.failures = 3
-    unbound_again = asyncio.run(builder.build(_COMMITMENT, store, yoetz_session_id=_SESSION))  # type: ignore[arg-type]
+    unbound_again = asyncio.run(builder.build(_COMMITMENT, store, finishup_session_id=_SESSION))  # type: ignore[arg-type]
     assert unbound_again is not None
     assert ADVICE_SEMANTIC_PENDING_GAP not in unbound_again.confidence_coverage.known_gaps
     assert ADVICE_SEMANTIC_UNAVAILABLE_GAP in unbound_again.confidence_coverage.known_gaps
@@ -1578,12 +1578,12 @@ def test_completed_review_stays_visible_after_the_provider_goes_away() -> None:
     store = _Store(repository)
     readiness = _Readiness(True)
     builder = _readiness_builder(readiness)
-    asyncio.run(builder.build(_COMMITMENT, store, yoetz_session_id=_SESSION))  # type: ignore[arg-type]
+    asyncio.run(builder.build(_COMMITMENT, store, finishup_session_id=_SESSION))  # type: ignore[arg-type]
     _complete_next(repository, _SUCCEEDED, at="2026-09-08T21:00:01.000Z")
     (completed,) = _rows(db, repository)
 
     readiness.ready = False
-    snapshot = asyncio.run(builder.build(_COMMITMENT, store, yoetz_session_id=_SESSION))  # type: ignore[arg-type]
+    snapshot = asyncio.run(builder.build(_COMMITMENT, store, finishup_session_id=_SESSION))  # type: ignore[arg-type]
     assert snapshot is not None
     assert snapshot.semantic_attempt_state == "ready"
     assert ADVICE_SEMANTIC_UNAVAILABLE_GAP not in snapshot.confidence_coverage.known_gaps
@@ -1668,7 +1668,7 @@ def test_cancelled_call_row_records_usage_unknown_when_the_lookup_is_blocked() -
     basis = "sha256:" + "9" * 64
     repository.schedule(
         workspace=_COMMITMENT,
-        yoetz_session_id=_SESSION,
+        finishup_session_id=_SESSION,
         basis_digest=basis,
         subject_digest=basis,
         coverage_gaps=(),
@@ -1711,7 +1711,7 @@ def test_cancelled_call_row_records_usage_unknown_when_the_lookup_is_blocked() -
     with pytest.raises(asyncio.CancelledError):
         asyncio.run(worker.run_once())
 
-    row = repository.lookup(yoetz_session_id=_SESSION, basis_digest=basis)
+    row = repository.lookup(finishup_session_id=_SESSION, basis_digest=basis)
     assert row is not None
     assert (row.status, row.failure_reason) == ("cancelled", "cancelled")
     assert row.provider_identity == "codex"
@@ -1750,7 +1750,7 @@ def test_preview_required_policy_skips_background_advice_with_a_typed_reason() -
         _preview_builder(True, revisits).build(
             _COMMITMENT,
             _Store(repository),  # type: ignore[arg-type]
-            yoetz_session_id=_SESSION,
+            finishup_session_id=_SESSION,
         )
     )
     assert snapshot is not None
@@ -1772,7 +1772,7 @@ def test_preview_probe_failure_fails_closed_as_unreachable() -> None:
         _preview_builder(RuntimeError("policy store unreadable"), []).build(
             _COMMITMENT,
             _Store(repository),  # type: ignore[arg-type]
-            yoetz_session_id=_SESSION,
+            finishup_session_id=_SESSION,
         )
     )
     assert snapshot is not None
@@ -1788,7 +1788,7 @@ def test_unattended_policy_still_admits_background_advice() -> None:
         _preview_builder(False, []).build(
             _COMMITMENT,
             _Store(repository),  # type: ignore[arg-type]
-            yoetz_session_id=_SESSION,
+            finishup_session_id=_SESSION,
         )
     )
     assert snapshot is not None

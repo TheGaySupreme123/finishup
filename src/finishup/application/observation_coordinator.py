@@ -555,10 +555,10 @@ def _observation_writer_routes(
     for mapping in route_history:
         candidates.extend(
             (
-                (mapping.yoetz_session_id, mapping.yoetz_writer_id),
+                (mapping.finishup_session_id, mapping.finishup_writer_id),
                 (
-                    mapping.yoetz_session_id,
-                    observation_writer_id(mapping.yoetz_task_id, mapping.yoetz_session_id),
+                    mapping.finishup_session_id,
+                    observation_writer_id(mapping.finishup_task_id, mapping.finishup_session_id),
                 ),
             )
         )
@@ -580,7 +580,7 @@ def _observation_writer_routes(
             candidates.extend(
                 (
                     (session_id, writer_id),
-                    (session_id, observation_writer_id(current.yoetz_task_id, session_id)),
+                    (session_id, observation_writer_id(current.finishup_task_id, session_id)),
                 )
             )
     return tuple(dict.fromkeys(candidates)), history_truncated
@@ -2015,7 +2015,7 @@ class ObservationCoordinator:
                 mapping = await self._local(
                     partial(self.mapping_loader, host_session, _state=self.state_root)
                 )
-                if mapping is None or mapping.yoetz_task_id not in remaining:
+                if mapping is None or mapping.finishup_task_id not in remaining:
                     continue
                 current_runtime, _ = await self._route_observation_mapping(
                     mapping, required_capabilities=frozenset({RuntimeCapability.WRITE})
@@ -2103,10 +2103,10 @@ class ObservationCoordinator:
             mapping = self.mapping_loader(codex_session_id, _state=self.state_root)
             if mapping is None:
                 continue
-            if task_id is not None and mapping.yoetz_task_id != task_id:
+            if task_id is not None and mapping.finishup_task_id != task_id:
                 continue
-            predecessor_session_id = mapping.yoetz_session_id
-            predecessor_writer_id = mapping.yoetz_writer_id
+            predecessor_session_id = mapping.finishup_session_id
+            predecessor_writer_id = mapping.finishup_writer_id
             runtime: TaskRuntime | None = None
             try:
                 runtime, mapping = await self._route_observation_mapping(mapping)
@@ -2256,7 +2256,7 @@ class ObservationCoordinator:
             if pending_ticket is not None:
                 if (
                     pending_ticket.session_commitment != request.envelope.session_commitment
-                    or pending_ticket.yoetz_session_id not in admitted_ticket_session_ids
+                    or pending_ticket.finishup_session_id not in admitted_ticket_session_ids
                     or pending_ticket.task_id != runtime.task_id
                     or pending_ticket.source is not request.envelope.source
                     or pending_ticket.source_identity != request.envelope.source_identity
@@ -2438,7 +2438,7 @@ class ObservationCoordinator:
                 staging_ticket = ObservationCaptureTicket(
                     workspace_commitment=workspace,
                     task_id=runtime.task_id,
-                    yoetz_session_id=runtime.session_id,
+                    finishup_session_id=runtime.session_id,
                     session_commitment=request.envelope.session_commitment,
                     source=request.envelope.source,
                     source_identity=request.envelope.source_identity,
@@ -2714,8 +2714,8 @@ class ObservationCoordinator:
         mapping = self.mapping_loader(codex_session_id, _state=self.state_root)
         if mapping is None:
             return _reject(ObservationGapCode.MAPPING_MISSING.value)
-        predecessor_session_id = mapping.yoetz_session_id
-        predecessor_writer_id = mapping.yoetz_writer_id
+        predecessor_session_id = mapping.finishup_session_id
+        predecessor_writer_id = mapping.finishup_writer_id
 
         workspace = await self._local(
             partial(self.local.find_workspace_for_codex_session, codex_session_id)
@@ -3649,11 +3649,11 @@ class ObservationCoordinator:
             task_ids: list[str] = []
             for codex_session_id in revoked_sessions:
                 mapping = self.mapping_loader(codex_session_id, _state=self.state_root)
-                if mapping is None or mapping.yoetz_task_id in seen_tasks:
+                if mapping is None or mapping.finishup_task_id in seen_tasks:
                     continue
-                seen_tasks.add(mapping.yoetz_task_id)
-                task_ids.append(mapping.yoetz_task_id)
-                mappings_by_task[mapping.yoetz_task_id] = mapping
+                seen_tasks.add(mapping.finishup_task_id)
+                task_ids.append(mapping.finishup_task_id)
+                mappings_by_task[mapping.finishup_task_id] = mapping
 
             planner = self.consent_invalidation_planner
             applier = self.consent_invalidation_applier
@@ -3783,9 +3783,9 @@ class ObservationCoordinator:
         try:
             result = recorder(
                 workspace=workspace,
-                yoetz_session_id=runtime.session_id,
-                yoetz_task_id=runtime.task_id,
-                yoetz_writer_id=runtime.writer_id,
+                finishup_session_id=runtime.session_id,
+                finishup_task_id=runtime.task_id,
+                finishup_writer_id=runtime.writer_id,
                 codex_session_commitment=envelope.session_commitment,
                 bound_at=timestamp_from_datetime(self.clock.now_utc()),
             )
@@ -4109,21 +4109,21 @@ class ObservationCoordinator:
         """
 
         current = mapping
-        seen = {mapping.yoetz_session_id}
+        seen = {mapping.finishup_session_id}
         last_error: PublicOperationError | None = None
         if route_history is not None:
             route_history.append(current)
         for _ in range(_MAX_SUPERSEDED_ROUTE_HOPS):
             try:
                 runtime = await self._route_observation_runtime(
-                    current.yoetz_task_id,
-                    current.yoetz_session_id,
+                    current.finishup_task_id,
+                    current.finishup_session_id,
                     required_capabilities=required_capabilities,
                 )
             except PublicOperationError as error:
                 last_error = error
                 successor = _session_superseded_binding(
-                    error, expected_task_id=current.yoetz_task_id
+                    error, expected_task_id=current.finishup_task_id
                 )
                 if successor is None:
                     raise
@@ -4134,8 +4134,8 @@ class ObservationCoordinator:
                 predecessor = current
                 current = replace(
                     current,
-                    yoetz_session_id=session_id,
-                    yoetz_writer_id=writer_id,
+                    finishup_session_id=session_id,
+                    finishup_writer_id=writer_id,
                 )
                 if route_history is not None:
                     route_history.append(current)
@@ -6456,9 +6456,9 @@ class ObservationCoordinator:
             now = timestamp_from_datetime(self.clock.now_utc())
             route_recorder(
                 workspace=workspace,
-                yoetz_session_id=runtime.session_id,
-                yoetz_task_id=runtime.task_id,
-                yoetz_writer_id=runtime.writer_id,
+                finishup_session_id=runtime.session_id,
+                finishup_task_id=runtime.task_id,
+                finishup_writer_id=runtime.writer_id,
                 codex_session_commitment=envelope.session_commitment,
                 bound_at=now,
             )
@@ -6605,7 +6605,7 @@ class ObservationCoordinator:
                 ObservationInspectionSnapshot | None,
                 inspect_loader(
                     workspace=workspace,
-                    yoetz_session_id=runtime.session_id,
+                    finishup_session_id=runtime.session_id,
                     subject_state_digest=current_digest,
                 ),
             )
@@ -6677,7 +6677,7 @@ class ObservationCoordinator:
                 relative_paths = ()
             inspect_recorder(
                 workspace=workspace,
-                yoetz_session_id=runtime.session_id,
+                finishup_session_id=runtime.session_id,
                 subject_state_digest=current_digest,
                 changed_paths_digest=changed_digest,
                 relative_paths=relative_paths,
@@ -6696,7 +6696,7 @@ class ObservationCoordinator:
                     ObservationInspectionSnapshot | None,
                     inspect_loader(
                         workspace=workspace,
-                        yoetz_session_id=runtime.session_id,
+                        finishup_session_id=runtime.session_id,
                         subject_state_digest=current_digest,
                     ),
                 )
@@ -7053,7 +7053,7 @@ class ObservationCoordinator:
             # from the durable route so the build stays session-scoped (#352).
             route_lookup = getattr(store, "codex_session_commitment_for_session", None)
             if callable(route_lookup):
-                routed = route_lookup(workspace=workspace, yoetz_session_id=session_id)
+                routed = route_lookup(workspace=workspace, finishup_session_id=session_id)
                 if type(routed) is str:
                     session_commitment = routed
         envelopes = scoped_session_envelopes(store, workspace, session_commitment)
@@ -7061,7 +7061,7 @@ class ObservationCoordinator:
         snapshot = await self.advice_context_builder.build(
             workspace,
             store,
-            yoetz_session_id=session_id if type(session_id) is str else None,
+            finishup_session_id=session_id if type(session_id) is str else None,
             session_commitment=session_commitment,
             lineage_refs=lineage_refs,
         )
@@ -7111,7 +7111,7 @@ class ObservationCoordinator:
             if callable(session_setter) and type(session_id) is str:
                 session_setter(
                     workspace=workspace,
-                    yoetz_session_id=session_id,
+                    finishup_session_id=session_id,
                     snapshot=snapshot,
                     updated_at=now,
                 )
@@ -7145,7 +7145,7 @@ class ObservationCoordinator:
                     partial(
                         self.local.set_session_advice_snapshot,
                         workspace,
-                        yoetz_session_id=session_id,
+                        finishup_session_id=session_id,
                         snapshot=snapshot,
                     )
                 )
@@ -7202,7 +7202,7 @@ class ObservationCoordinator:
             mapping = self.mapping_loader(codex_session_id, _state=self.state_root)
             if mapping is None:
                 continue
-            predecessor_writer_id = mapping.yoetz_writer_id
+            predecessor_writer_id = mapping.finishup_writer_id
             runtime: TaskRuntime | None = None
             try:
                 runtime, mapping = await self._route_observation_mapping(mapping)
@@ -7226,7 +7226,7 @@ class ObservationCoordinator:
                     if release is not None:
                         await release(runtime)
 
-    async def revisit_advice_semantic(self, workspace: str, yoetz_session_id: str) -> None:
+    async def revisit_advice_semantic(self, workspace: str, finishup_session_id: str) -> None:
         """Rebuild one session's advice once a deferred background review may run (#888).
 
         Called by the supervisor's revisit timer, never on the hook path. The rebuild re-runs the
@@ -7243,9 +7243,9 @@ class ObservationCoordinator:
         sessions = await self._local(partial(self.local.codex_sessions_for_workspace, workspace))
         for codex_session_id in sessions:
             mapping = self.mapping_loader(codex_session_id, _state=self.state_root)
-            if mapping is None or mapping.yoetz_session_id != yoetz_session_id:
+            if mapping is None or mapping.finishup_session_id != finishup_session_id:
                 continue
-            predecessor_writer_id = mapping.yoetz_writer_id
+            predecessor_writer_id = mapping.finishup_writer_id
             runtime: TaskRuntime | None = None
             try:
                 runtime, mapping = await self._route_observation_mapping(mapping)

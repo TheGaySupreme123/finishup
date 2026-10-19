@@ -1,4 +1,8 @@
-"""SQLite ObservationPort over bundle migration 0002 observation tables."""
+"""SQLite ObservationPort over bundle migration 0002 observation tables.
+
+Frozen legacy identifier (ADR-048): the ``yoetz_session_id``, ``yoetz_task_id`` and
+``yoetz_writer_id`` columns keep their migration spelling; the Python names are ``finishup_*``.
+"""
 
 from __future__ import annotations
 
@@ -695,7 +699,7 @@ class SqliteObservationStore:
         self,
         *,
         workspace: str,
-        yoetz_session_id: str,
+        finishup_session_id: str,
         snapshot: AdviceSnapshot,
         updated_at: Timestamp,
     ) -> None:
@@ -710,7 +714,7 @@ class SqliteObservationStore:
                 "snapshot_json=excluded.snapshot_json, updated_at=excluded.updated_at",
                 (
                     workspace,
-                    yoetz_session_id,
+                    finishup_session_id,
                     snapshot.suppression_identity,
                     payload,
                     updated_at.wire,
@@ -727,13 +731,13 @@ class SqliteObservationStore:
             )
 
     def load_advice_snapshot_for_session(
-        self, *, workspace: str, yoetz_session_id: str
+        self, *, workspace: str, finishup_session_id: str
     ) -> AdviceSnapshot | None:
         try:
             row = self._db.execute(
                 "SELECT snapshot_json FROM observation_session_advice "
                 "WHERE workspace_commitment = ? AND yoetz_session_id = ?",
-                (workspace, yoetz_session_id),
+                (workspace, finishup_session_id),
             ).fetchone()
         except Exception:
             # Pre-0004 bundles: fall back to workspace-scoped advice only.
@@ -746,7 +750,7 @@ class SqliteObservationStore:
         return advice_snapshot_from_json(JsonObject(cast(Mapping[str, JsonValue], parsed)))
 
     def codex_session_commitment_for_session(
-        self, *, workspace: str, yoetz_session_id: str
+        self, *, workspace: str, finishup_session_id: str
     ) -> str | None:
         """Return the mapped Codex session commitment for one FinishUP session, if routed."""
 
@@ -754,7 +758,7 @@ class SqliteObservationStore:
             row = self._db.execute(
                 "SELECT codex_session_commitment FROM observation_workspace_session_routes "
                 "WHERE workspace_commitment = ? AND yoetz_session_id = ?",
-                (workspace, yoetz_session_id),
+                (workspace, finishup_session_id),
             ).fetchone()
         except Exception:
             # Pre-0004 bundles carry no route table; callers fall back to
@@ -765,7 +769,7 @@ class SqliteObservationStore:
         return row[0]
 
     def observation_route_for_session(
-        self, *, workspace: str, yoetz_session_id: str
+        self, *, workspace: str, finishup_session_id: str
     ) -> tuple[str, str, bool] | None:
         """Return the durable session route with task and active state.
 
@@ -781,7 +785,7 @@ class SqliteObservationStore:
                 "SELECT codex_session_commitment, yoetz_task_id, active "
                 "FROM observation_workspace_session_routes "
                 "WHERE workspace_commitment = ? AND yoetz_session_id = ?",
-                (workspace, yoetz_session_id),
+                (workspace, finishup_session_id),
             ).fetchone()
         except Exception:
             return None
@@ -795,12 +799,12 @@ class SqliteObservationStore:
             return None
         return row[0], row[1], bool(row[2])
 
-    def workspace_for_finishup_session(self, yoetz_session_id: str) -> str | None:
+    def workspace_for_finishup_session(self, finishup_session_id: str) -> str | None:
         try:
             row = self._db.execute(
                 "SELECT workspace_commitment FROM observation_workspace_session_routes "
                 "WHERE yoetz_session_id = ?",
-                (yoetz_session_id,),
+                (finishup_session_id,),
             ).fetchone()
         except Exception:
             return None
@@ -812,9 +816,9 @@ class SqliteObservationStore:
         self,
         *,
         workspace: str,
-        yoetz_session_id: str,
-        yoetz_task_id: str,
-        yoetz_writer_id: str,
+        finishup_session_id: str,
+        finishup_task_id: str,
+        finishup_writer_id: str,
         codex_session_commitment: str,
         bound_at: Timestamp,
     ) -> bool:
@@ -840,9 +844,9 @@ class SqliteObservationStore:
                     "excluded.codex_session_commitment",
                     (
                         workspace,
-                        yoetz_session_id,
-                        yoetz_task_id,
-                        yoetz_writer_id,
+                        finishup_session_id,
+                        finishup_task_id,
+                        finishup_writer_id,
                         codex_session_commitment,
                         bound_at.wire,
                     ),
@@ -856,7 +860,7 @@ class SqliteObservationStore:
         self,
         *,
         workspace: str,
-        yoetz_session_id: str,
+        finishup_session_id: str,
         subject_state_digest: str,
         changed_paths_digest: str,
         relative_paths: tuple[str, ...],
@@ -876,7 +880,7 @@ class SqliteObservationStore:
                 JsonObject(
                     {
                         "workspace": workspace,
-                        "session": yoetz_session_id,
+                        "session": finishup_session_id,
                         "subject": subject_state_digest,
                     }
                 )
@@ -892,7 +896,7 @@ class SqliteObservationStore:
                 self._db.execute(
                     "UPDATE observation_inspection_snapshots SET is_current=0 "
                     "WHERE workspace_commitment=? AND yoetz_session_id=? AND is_current=1",
-                    (workspace, yoetz_session_id),
+                    (workspace, finishup_session_id),
                 )
                 self._db.execute(
                     "INSERT INTO observation_inspection_snapshots("
@@ -917,7 +921,7 @@ class SqliteObservationStore:
                     (
                         snapshot_id,
                         workspace,
-                        yoetz_session_id,
+                        finishup_session_id,
                         subject_state_digest,
                         changed_paths_digest,
                         paths_blob,
@@ -939,7 +943,7 @@ class SqliteObservationStore:
         self,
         *,
         workspace: str,
-        yoetz_session_id: str,
+        finishup_session_id: str,
         subject_state_digest: str,
     ) -> ObservationInspectionSnapshot | None:
         row = self._db.execute(
@@ -949,14 +953,14 @@ class SqliteObservationStore:
             "recorded_at "
             "FROM observation_inspection_snapshots WHERE workspace_commitment=? "
             "AND yoetz_session_id=? AND subject_state_digest=? AND is_current=1",
-            (workspace, yoetz_session_id, subject_state_digest),
+            (workspace, finishup_session_id, subject_state_digest),
         ).fetchone()
         if row is None:
             return None
         try:
             return ObservationInspectionSnapshot(
                 snapshot_id=cast(str, row[0]),
-                yoetz_session_id=cast(str, row[1]),
+                finishup_session_id=cast(str, row[1]),
                 subject_state_digest=cast(str, row[2]),
                 changed_paths_digest=cast(str, row[3]),
                 facts_object_id=cast(str | None, row[4]),
@@ -1356,7 +1360,7 @@ class SqliteObservationStore:
             ticket = ObservationCaptureTicket(
                 workspace_commitment=cast(str, row[1]),
                 task_id=cast(str, row[2]),
-                yoetz_session_id=cast(str, row[3]),
+                finishup_session_id=cast(str, row[3]),
                 session_commitment=cast(str, row[4]),
                 source=ObservationSource(cast(str, row[5])),
                 source_identity=cast(str, row[6]),
@@ -1559,7 +1563,7 @@ class SqliteObservationStore:
                     ticket_id,
                     ticket.workspace_commitment,
                     ticket.task_id,
-                    ticket.yoetz_session_id,
+                    ticket.finishup_session_id,
                     ticket.session_commitment,
                     ticket.source.value,
                     ticket.source_identity,

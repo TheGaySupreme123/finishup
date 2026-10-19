@@ -47,9 +47,9 @@ def test_attribution_gap_without_child_alias_never_peeks_parent_delivery(
     store_mapping(
         mapping_from_start_ids(
             codex_session_id=host_session,
-            yoetz_task_id=new_id(IdKind.TASK),
-            yoetz_session_id=new_id(IdKind.SESSION),
-            yoetz_writer_id=new_id(IdKind.WRITER),
+            finishup_task_id=new_id(IdKind.TASK),
+            finishup_session_id=new_id(IdKind.SESSION),
+            finishup_writer_id=new_id(IdKind.WRITER),
             last_frontier="0:genesis",
         ),
         _state=tmp_path,
@@ -108,9 +108,9 @@ def test_unbound_child_callbacks_never_use_parent_delivery(
     store.bind_codex_session(workspace, parent_lane)
     parent = mapping_from_start_ids(
         codex_session_id=parent_lane,
-        yoetz_task_id=new_id(IdKind.TASK),
-        yoetz_session_id=new_id(IdKind.SESSION),
-        yoetz_writer_id=new_id(IdKind.WRITER),
+        finishup_task_id=new_id(IdKind.TASK),
+        finishup_session_id=new_id(IdKind.SESSION),
+        finishup_writer_id=new_id(IdKind.WRITER),
         last_frontier="0:genesis",
     )
     store_mapping(parent, _state=tmp_path)
@@ -176,9 +176,9 @@ def test_standalone_start_in_child_preserves_parent_route(
     host_session = "standalone-shared-host"
     parent = mapping_from_start_ids(
         codex_session_id=host_session,
-        yoetz_task_id=new_id(IdKind.TASK),
-        yoetz_session_id=new_id(IdKind.SESSION),
-        yoetz_writer_id=new_id(IdKind.WRITER),
+        finishup_task_id=new_id(IdKind.TASK),
+        finishup_session_id=new_id(IdKind.SESSION),
+        finishup_writer_id=new_id(IdKind.WRITER),
         last_frontier="0:genesis",
     )
     store_mapping(parent, _state=tmp_path)
@@ -204,7 +204,7 @@ def test_standalone_start_in_child_preserves_parent_route(
     after = load_mapping(host_session, _state=tmp_path)
     if child_identity is None:
         assert outcome == "bound"
-        assert after is not None and after.yoetz_task_id == next_task
+        assert after is not None and after.finishup_task_id == next_task
     else:
         assert outcome in {"bound", "start_bind_child_lane_unbound"}
         assert after == parent
@@ -221,9 +221,9 @@ def test_claude_conflicting_nested_alias_does_not_persist_a_child_route(tmp_path
     store.bind_codex_session(workspace, parent_lane)
     parent = mapping_from_start_ids(
         codex_session_id=parent_lane,
-        yoetz_task_id=new_id(IdKind.TASK),
-        yoetz_session_id=new_id(IdKind.SESSION),
-        yoetz_writer_id=new_id(IdKind.WRITER),
+        finishup_task_id=new_id(IdKind.TASK),
+        finishup_session_id=new_id(IdKind.SESSION),
+        finishup_writer_id=new_id(IdKind.WRITER),
         last_frontier="0:genesis",
     )
     store_mapping(parent, _state=tmp_path)
@@ -240,7 +240,7 @@ def test_claude_conflicting_nested_alias_does_not_persist_a_child_route(tmp_path
                 "ok": True,
                 "outcome": "attached",
                 "task_id": child_task,
-                "parent_task_id": parent.yoetz_task_id,
+                "parent_task_id": parent.finishup_task_id,
                 "session_id": new_id(IdKind.SESSION),
                 "writer_id": new_id(IdKind.WRITER),
             }
@@ -276,9 +276,9 @@ def test_standalone_child_start_cannot_replace_a_locked_queued_parent(tmp_path: 
     host_session = "queued-standalone-shared-host"
     parent = mapping_from_start_ids(
         codex_session_id=host_session,
-        yoetz_task_id=new_id(IdKind.TASK),
-        yoetz_session_id=new_id(IdKind.SESSION),
-        yoetz_writer_id=new_id(IdKind.WRITER),
+        finishup_task_id=new_id(IdKind.TASK),
+        finishup_session_id=new_id(IdKind.SESSION),
+        finishup_writer_id=new_id(IdKind.WRITER),
         last_frontier="0:genesis",
     )
     queue_mapping_store(parent, _state=tmp_path)

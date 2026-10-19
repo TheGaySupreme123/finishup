@@ -195,7 +195,7 @@ def test_hook_serializes_advice_selection_through_commit_without_workspace_batch
         self: LocalObservationStore,
         workspace: str,
         *,
-        yoetz_session_id: str | None = None,
+        finishup_session_id: str | None = None,
         allow_standing: bool = True,
         session_commitment: str | None = None,
     ) -> AdviceDelivery | None:
@@ -205,7 +205,7 @@ def test_hook_serializes_advice_selection_through_commit_without_workspace_batch
         return original_peek(
             self,
             workspace,
-            yoetz_session_id=yoetz_session_id,
+            finishup_session_id=finishup_session_id,
             allow_standing=allow_standing,
             session_commitment=session_commitment,
         )
@@ -215,7 +215,7 @@ def test_hook_serializes_advice_selection_through_commit_without_workspace_batch
         workspace: str,
         delivery_identity: str,
         *,
-        yoetz_session_id: str | None = None,
+        finishup_session_id: str | None = None,
         session_commitment: str | None = None,
     ) -> None:
         phases.append(
@@ -225,7 +225,7 @@ def test_hook_serializes_advice_selection_through_commit_without_workspace_batch
             self,
             workspace,
             delivery_identity,
-            yoetz_session_id=yoetz_session_id,
+            finishup_session_id=finishup_session_id,
             session_commitment=session_commitment,
         )
 
@@ -644,11 +644,11 @@ def test_a_then_b_then_a_redelivers_a(tmp_path: Path) -> None:
     texts: list[str] = []
     persisted: list[str | None] = []
     for snapshot in (advice_a, advice_b, advice_a):
-        store.set_session_advice_snapshot(workspace, yoetz_session_id=session, snapshot=snapshot)
-        delivery = store.peek_advice_for_delivery(workspace, yoetz_session_id=session)
+        store.set_session_advice_snapshot(workspace, finishup_session_id=session, snapshot=snapshot)
+        delivery = store.peek_advice_for_delivery(workspace, finishup_session_id=session)
         assert delivery is not None
         store.commit_advice_delivery(
-            workspace, delivery.delivery_identity, yoetz_session_id=session
+            workspace, delivery.delivery_identity, finishup_session_id=session
         )
         texts.append(delivery.text)
         state = store._load(workspace)  # noqa: SLF001  # pyright: ignore[reportPrivateUsage]
@@ -670,9 +670,9 @@ def _map_session(tmp_path: Path, codex_session: str) -> str:
     store_mapping(
         mapping_from_start_ids(
             codex_session_id=codex_session,
-            yoetz_task_id=new_id(IdKind.TASK),
-            yoetz_session_id=finishup_session,
-            yoetz_writer_id=new_id(IdKind.WRITER),
+            finishup_task_id=new_id(IdKind.TASK),
+            finishup_session_id=finishup_session,
+            finishup_writer_id=new_id(IdKind.WRITER),
             last_frontier=None,
         ),
         _state=tmp_path,
@@ -761,7 +761,7 @@ def test_mapped_session_snapshot_still_delivers_its_own_failed_command(
         envelopes=1,
         payload={"tool_name": "shell", "exit_status": 1, "correlation_id": "own"},
     )
-    store.set_session_advice_snapshot(workspace, yoetz_session_id=finishup_session, snapshot=own)
+    store.set_session_advice_snapshot(workspace, finishup_session_id=finishup_session, snapshot=own)
 
     delivered = _run(tmp_path, "PostToolUse", "mapped-own", tool_name="shell", exit_status=0)
     assert "resolve_failed_command" in delivered

@@ -239,7 +239,7 @@ async def _pipeline(
         local.enable_content_capture(workspace, profile)
     session_commitment = local.bind_codex_session(workspace, codex_session_id)
 
-    task_id, yoetz_session_id, writer_id = identity or (
+    task_id, finishup_session_id, writer_id = identity or (
         _ids(IdKind.TASK, 1),
         _ids(IdKind.SESSION, 2),
         _ids(IdKind.WRITER, 3),
@@ -249,9 +249,9 @@ async def _pipeline(
             LifecycleMapping(
                 mapping_version=1,
                 codex_session_id=codex_session_id,
-                yoetz_task_id=task_id,
-                yoetz_session_id=yoetz_session_id,
-                yoetz_writer_id=writer_id,
+                finishup_task_id=task_id,
+                finishup_session_id=finishup_session_id,
+                finishup_writer_id=writer_id,
                 last_frontier=None,
             ),
             _state=state,
@@ -298,7 +298,7 @@ async def _pipeline(
     observation = ledger.open_observation_store()
     runtime = TaskRuntime(
         task_id=task_id,
-        session_id=yoetz_session_id,
+        session_id=finishup_session_id,
         writer_id=writer_id,
         capabilities=frozenset(
             {
@@ -689,9 +689,9 @@ async def _native_claude_case(
 
     observation.record_workspace_session_route(
         workspace=workspace,
-        yoetz_session_id=runtime.session_id,
-        yoetz_task_id=runtime.task_id,
-        yoetz_writer_id=cast(str, runtime.writer_id),
+        finishup_session_id=runtime.session_id,
+        finishup_task_id=runtime.task_id,
+        finishup_writer_id=cast(str, runtime.writer_id),
         codex_session_commitment=session_commitment,
         bound_at=Timestamp("2026-09-05T17:00:00.000Z"),
     )
@@ -1204,9 +1204,9 @@ async def test_ordinary_native_hook_content_reaches_prepared_semantic_packet(
         }
         assert await asyncio.to_thread(run_hook, "afterMCPExecution", start_payload) == 0
         mapping = load_mapping(codex_session_id, _state=tmp_path / "state")
-        assert mapping is not None and mapping.yoetz_task_id == runtime.task_id
-        assert mapping.yoetz_session_id == runtime.session_id
-        assert mapping.yoetz_writer_id == runtime.writer_id
+        assert mapping is not None and mapping.finishup_task_id == runtime.task_id
+        assert mapping.finishup_session_id == runtime.session_id
+        assert mapping.finishup_writer_id == runtime.writer_id
         assert client.requests == []  # Binding neither ingests nor captures another event.
     else:
         assert await asyncio.to_thread(run_hook, pre_event_name, pre_payload) == 0
@@ -1252,7 +1252,7 @@ async def test_ordinary_native_hook_content_reaches_prepared_semantic_packet(
     # still have been recorded by the coordinator before that optional policy path.
     assert task_observation.observation_route_for_session(
         workspace=workspace,
-        yoetz_session_id=runtime.session_id,
+        finishup_session_id=runtime.session_id,
     ) == (session_commitment, runtime.task_id, True)
     frontier = await ledger.load_frontier()
     frozen = await ledger.freeze_case(
@@ -1598,9 +1598,9 @@ async def test_native_manifest_survives_preappend_cancellation_and_structural_re
         reopened_observation = cast(SqliteObservationStore, reopened_runtime.observation)
         reopened_observation.record_workspace_session_route(
             workspace=workspace,
-            yoetz_session_id=reopened_runtime.session_id,
-            yoetz_task_id=reopened_runtime.task_id,
-            yoetz_writer_id=cast(str, reopened_runtime.writer_id),
+            finishup_session_id=reopened_runtime.session_id,
+            finishup_task_id=reopened_runtime.task_id,
+            finishup_writer_id=cast(str, reopened_runtime.writer_id),
             codex_session_commitment=session_commitment,
             bound_at=Timestamp("2026-09-05T17:00:00.000Z"),
         )
@@ -1708,7 +1708,7 @@ async def test_native_pending_ticket_replays_through_same_task_successor(
         logical_identity=observation_content_identity(structural_request.envelope),
     )
     assert pending_ticket is not None
-    assert pending_ticket.yoetz_session_id == predecessor_session
+    assert pending_ticket.finishup_session_id == predecessor_session
     successor_session = _ids(IdKind.SESSION, 990)
     successor_writer = _ids(IdKind.WRITER, 991)
     successor_runtime = replace(runtime, session_id=successor_session, writer_id=successor_writer)
@@ -1719,9 +1719,9 @@ async def test_native_pending_ticket_replays_through_same_task_successor(
         LifecycleMapping(
             mapping_version=current_mapping.mapping_version,
             codex_session_id=current_mapping.codex_session_id,
-            yoetz_task_id=runtime.task_id,
-            yoetz_session_id=successor_session,
-            yoetz_writer_id=successor_writer,
+            finishup_task_id=runtime.task_id,
+            finishup_session_id=successor_session,
+            finishup_writer_id=successor_writer,
             last_frontier=current_mapping.last_frontier,
         ),
         _state=tmp_path / "state",
@@ -1773,9 +1773,9 @@ async def test_native_pending_ticket_replays_through_same_task_successor(
 
     observation.record_workspace_session_route(
         workspace=workspace,
-        yoetz_session_id=successor_session,
-        yoetz_task_id=runtime.task_id,
-        yoetz_writer_id=successor_writer,
+        finishup_session_id=successor_session,
+        finishup_task_id=runtime.task_id,
+        finishup_writer_id=successor_writer,
         codex_session_commitment=session_commitment,
         bound_at=Timestamp("2026-09-05T17:00:00.000Z"),
     )
@@ -1959,7 +1959,7 @@ async def test_native_ticket_from_unproven_session_cannot_lend_content(
     unproven_ticket = ObservationCaptureTicket(
         workspace_commitment=workspace,
         task_id=runtime.task_id,
-        yoetz_session_id=_ids(IdKind.SESSION, 993),
+        finishup_session_id=_ids(IdKind.SESSION, 993),
         session_commitment=structural_request.envelope.session_commitment,
         source=structural_request.envelope.source,
         source_identity=structural_request.envelope.source_identity,
@@ -2210,13 +2210,13 @@ async def test_ready_composition_route_loss_after_resolution_blocks_native_dispa
             return self.delegate.workspace_for_finishup_session(session_id)
 
         def observation_route_for_session(
-            self, *, workspace: str, yoetz_session_id: str
+            self, *, workspace: str, finishup_session_id: str
         ) -> tuple[str, str, bool] | None:
             if self.lost:
                 return None
             return self.delegate.observation_route_for_session(
                 workspace=workspace,
-                yoetz_session_id=yoetz_session_id,
+                finishup_session_id=finishup_session_id,
             )
 
         def __getattr__(self, name: str) -> object:

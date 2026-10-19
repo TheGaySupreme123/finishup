@@ -1319,18 +1319,24 @@ def _task_lane_for_result(
     ):
         return _ObservationLane(host_session_id, host_session_id, attribution_gap=True)
     parent_mapping = load_mapping(host_session_id, _state=_state)
-    if parent_mapping is not None and task_id == parent_mapping.yoetz_task_id:
-        if nested_session_id is not None and nested_session_id != parent_mapping.yoetz_session_id:
+    if parent_mapping is not None and task_id == parent_mapping.finishup_task_id:
+        if (
+            nested_session_id is not None
+            and nested_session_id != parent_mapping.finishup_session_id
+        ):
             return _ObservationLane(host_session_id, host_session_id, attribution_gap=True)
         return _ObservationLane(host_session_id, host_session_id)
     if (
         result.get("outcome") == "delegated"
         and parent_mapping is not None
         and type(parent_task_id) is str
-        and parent_task_id == parent_mapping.yoetz_task_id
+        and parent_task_id == parent_mapping.finishup_task_id
     ):
         # A delegation result reserves a child but is still authored by the current owner.
-        if nested_session_id is not None and nested_session_id != parent_mapping.yoetz_session_id:
+        if (
+            nested_session_id is not None
+            and nested_session_id != parent_mapping.finishup_session_id
+        ):
             return _ObservationLane(host_session_id, host_session_id, attribution_gap=True)
         return _ObservationLane(host_session_id, host_session_id)
     try:
@@ -1343,14 +1349,14 @@ def _task_lane_for_result(
     except ProtocolValueError, TypeError, ValueError:
         return None
     child_mapping = load_mapping(task_lane, _state=_state)
-    if child_mapping is not None and child_mapping.yoetz_task_id == task_id:
-        if nested_session_id is not None and nested_session_id != child_mapping.yoetz_session_id:
+    if child_mapping is not None and child_mapping.finishup_task_id == task_id:
+        if nested_session_id is not None and nested_session_id != child_mapping.finishup_session_id:
             return _ObservationLane(host_session_id, host_session_id, attribution_gap=True)
         return _ObservationLane(host_session_id, task_lane, is_child=True)
     # An explicit lineage result with no matching task lane is known child work, but it cannot be
     # safely leased to the parent. Keep the structural event on the host lane and let the caller
     # record a mapping gap without sending it to the parent's service route.
-    if parent_mapping is not None and task_id != parent_mapping.yoetz_task_id:
+    if parent_mapping is not None and task_id != parent_mapping.finishup_task_id:
         return _ObservationLane(host_session_id, host_session_id, attribution_gap=True)
     if type(parent_task_id) is str and task_id != parent_task_id:
         # The result explicitly names a parent lineage even when the raw host
@@ -1512,13 +1518,16 @@ def _resolve_observation_lane(
         )
         if nested_session_supplied and not nested_session_valid:
             return _ObservationLane(host_session_id, host_session_id, attribution_gap=True)
-        if nested_session_id is not None and nested_session_id != reserved_mapping.yoetz_session_id:
+        if (
+            nested_session_id is not None
+            and nested_session_id != reserved_mapping.finishup_session_id
+        ):
             return _ObservationLane(host_session_id, host_session_id, attribution_gap=True)
         reserved_result = _narrow_tool_result(payload)
         if _result_task_id_is_malformed(reserved_result):
             return _ObservationLane(host_session_id, host_session_id, attribution_gap=True)
         result_task_id = _validated_result_task_id(reserved_result)
-        if result_task_id is not None and result_task_id != reserved_mapping.yoetz_task_id:
+        if result_task_id is not None and result_task_id != reserved_mapping.finishup_task_id:
             return _ObservationLane(host_session_id, host_session_id, attribution_gap=True)
         return _ObservationLane(host_session_id, host_session_id, is_child=True)
     if event_name in {"SubagentStart", "SubagentStop"}:
@@ -1571,8 +1580,11 @@ def _resolve_observation_lane(
         if child_lane is not None:
             child_mapping = load_mapping(child_lane, _state=_state)
             if child_mapping is not None:
-                if (result_task_id is None or result_task_id == child_mapping.yoetz_task_id) and (
-                    nested_session_id is None or nested_session_id == child_mapping.yoetz_session_id
+                if (
+                    result_task_id is None or result_task_id == child_mapping.finishup_task_id
+                ) and (
+                    nested_session_id is None
+                    or nested_session_id == child_mapping.finishup_session_id
                 ):
                     return _ObservationLane(host_session_id, child_lane, is_child=True)
                 # A stale host alias must not win over a service result naming
@@ -1612,7 +1624,7 @@ def _resolve_observation_lane(
 
     parent_mapping = load_mapping(host_session_id, _state=_state)
     if nested_session_id is not None and (
-        parent_mapping is None or nested_session_id != parent_mapping.yoetz_session_id
+        parent_mapping is None or nested_session_id != parent_mapping.finishup_session_id
     ):
         # A nested FinishUP request names a service session different from the
         # held parent binding. Without a validated child lane this is foreign
@@ -3426,7 +3438,7 @@ async def _try_auto_start(
             "workspace_ref": workspace_locator,
         }
         if recovery_mapping is not None:
-            request_body["session_id"] = recovery_mapping.yoetz_session_id
+            request_body["session_id"] = recovery_mapping.finishup_session_id
         request = StartRequest.model_validate(request_body)
     except ValidationError, ValueError, TypeError:
         # An authoring defect in this function, never a runtime condition: it
@@ -3435,7 +3447,7 @@ async def _try_auto_start(
 
     client: _StartClient | None = None
     attempt_started = time.monotonic()
-    recovered_task_id = None if recovery_mapping is None else recovery_mapping.yoetz_task_id
+    recovered_task_id = None if recovery_mapping is None else recovery_mapping.finishup_task_id
 
     def _remaining_deadline_ms() -> int:
         elapsed_ms = int((time.monotonic() - attempt_started) * 1_000)
@@ -3505,9 +3517,9 @@ async def _try_auto_start(
     try:
         mapping = mapping_from_start_ids(
             codex_session_id=codex_session_id,
-            yoetz_task_id=task_id,
-            yoetz_session_id=session_id,
-            yoetz_writer_id=writer_id,
+            finishup_task_id=task_id,
+            finishup_session_id=session_id,
+            finishup_writer_id=writer_id,
             last_frontier=last_frontier,
         )
     except Exception:
@@ -3528,9 +3540,9 @@ async def _try_auto_start(
     ):
         predecessor_mapping = mapping_from_start_ids(
             codex_session_id=recovery_mapping.codex_session_id,
-            yoetz_task_id=mapping.yoetz_task_id,
-            yoetz_session_id=mapping.yoetz_session_id,
-            yoetz_writer_id=mapping.yoetz_writer_id,
+            finishup_task_id=mapping.finishup_task_id,
+            finishup_session_id=mapping.finishup_session_id,
+            finishup_writer_id=mapping.finishup_writer_id,
             last_frontier=recovery_mapping.last_frontier,
         )
         try:
@@ -3709,7 +3721,7 @@ def _scan_ended_workspace_recovery(
         if session_id in unambiguous
         and (candidate := _load_recovery_candidate(session_id, _state=_state)) is not None
     )
-    if len({candidate.mapping.yoetz_task_id for candidate in candidates}) != 1:
+    if len({candidate.mapping.finishup_task_id for candidate in candidates}) != 1:
         return _RecoveryScan(None, lifecycles, eligible, candidates)
     return _RecoveryScan(_latest_mapping(candidates), lifecycles, eligible, candidates)
 
@@ -3873,18 +3885,18 @@ def _rewrite_one_ended_predecessor_mapping(
     if not store.codex_session_ended(workspace_commitment, session_id):
         return False
     predecessor = load_mapping(session_id, _state=_state)
-    if predecessor is None or predecessor.yoetz_task_id != successor.yoetz_task_id:
+    if predecessor is None or predecessor.finishup_task_id != successor.finishup_task_id:
         return False
     if (
-        predecessor.yoetz_session_id == successor.yoetz_session_id
-        and predecessor.yoetz_writer_id == successor.yoetz_writer_id
+        predecessor.finishup_session_id == successor.finishup_session_id
+        and predecessor.finishup_writer_id == successor.finishup_writer_id
     ):
         return True
     rewritten = mapping_from_start_ids(
         codex_session_id=predecessor.codex_session_id,
-        yoetz_task_id=successor.yoetz_task_id,
-        yoetz_session_id=successor.yoetz_session_id,
-        yoetz_writer_id=successor.yoetz_writer_id,
+        finishup_task_id=successor.finishup_task_id,
+        finishup_session_id=successor.finishup_session_id,
+        finishup_writer_id=successor.finishup_writer_id,
         last_frontier=predecessor.last_frontier,
     )
     try:
@@ -4018,7 +4030,7 @@ async def _try_workspace_auto_start(
             lifecycles=lifecycles,
         )
         recovery = scan.mapping
-        candidate_count = len({candidate.mapping.yoetz_task_id for candidate in scan.candidates})
+        candidate_count = len({candidate.mapping.finishup_task_id for candidate in scan.candidates})
         if candidate_count > 1:
             # Several independently bound predecessors are ambiguous. New
             # admission cannot turn that ambiguity into authority to resume.
@@ -4314,7 +4326,7 @@ def _task_pending_outbox_count(
     *,
     workspace_commitment: str,
     codex_session_id: str,
-    yoetz_session_id: str,
+    finishup_session_id: str,
     _state: Path | None,
 ) -> int:
     """Count local outbox rows still pending that can still change this task's observed facts.
@@ -4329,7 +4341,7 @@ def _task_pending_outbox_count(
     return task_pending_outbox_count(
         store,
         workspace_commitment=workspace_commitment,
-        yoetz_session_id=yoetz_session_id,
+        finishup_session_id=finishup_session_id,
         codex_session_id=codex_session_id,
         _state=_state,
     )
@@ -4340,7 +4352,7 @@ async def _finish_stop_drain(
     *,
     workspace_commitment: str,
     codex_session_id: str,
-    yoetz_session_id: str,
+    finishup_session_id: str,
     connect: HookDrainConnector | None,
     _state: Path | None,
     deadline: float,
@@ -4367,7 +4379,7 @@ async def _finish_stop_drain(
             task_pending_outbox_rows(
                 store,
                 workspace_commitment=workspace_commitment,
-                yoetz_session_id=yoetz_session_id,
+                finishup_session_id=finishup_session_id,
                 codex_session_id=codex_session_id,
                 _state=_state,
             )
@@ -4446,7 +4458,7 @@ def _decide_closure_gate(
     gate: ClosureGate | None = None
     try:
         if active_stop and (
-            closure_gate_turn_blocks(mapping.yoetz_session_id, _state=_state)
+            closure_gate_turn_blocks(mapping.finishup_session_id, _state=_state)
             >= MAX_GATE_BLOCKS_PER_TURN
         ):
             return None
@@ -4476,7 +4488,7 @@ def _decide_closure_gate(
                     store,
                     workspace_commitment=workspace_commitment,
                     codex_session_id=codex_session_id,
-                    yoetz_session_id=mapping.yoetz_session_id,
+                    finishup_session_id=mapping.finishup_session_id,
                     _state=_state,
                 )
                 > 0
@@ -4484,7 +4496,7 @@ def _decide_closure_gate(
         except Exception:
             pending = True
         # Blockers this session was already re-asked about are honoured without asking again.
-        reasked = closure_gate_reasked_blockers(mapping.yoetz_session_id, _state=_state)
+        reasked = closure_gate_reasked_blockers(mapping.finishup_session_id, _state=_state)
         # A recorded code-mode ``exec`` cell is the capability signal (#1079). No cell, a store
         # that cannot answer, or any error is the neutral close instruction. The host brand is not.
         code_mode = False
@@ -4498,8 +4510,8 @@ def _decide_closure_gate(
 
         async def _read() -> ClosureGate | None:
             return await read_closure_gate(
-                session_id=mapping.yoetz_session_id,
-                writer_id=mapping.yoetz_writer_id,
+                session_id=mapping.finishup_session_id,
+                writer_id=mapping.finishup_writer_id,
                 connect=cast(Callable[..., Awaitable[object]], connector),
                 # Frozen legacy identifier (ADR-048): a recorded actor id, kept for retry identity.
                 actor_id=f"yoetz:{harness_id}-hooks",
@@ -4514,12 +4526,12 @@ def _decide_closure_gate(
             reason = "closure_gate_not_required"
             return None
         if not active_stop and closure_gate_already_delivered(
-            mapping.yoetz_session_id, decided.identity, _state=_state
+            mapping.finishup_session_id, decided.identity, _state=_state
         ):
             reason = "closure_gate_repeat_suppressed"
             return None
         if active_stop and not record_closure_gate_delivered(
-            mapping.yoetz_session_id,
+            mapping.finishup_session_id,
             decided.identity,
             blocker_keys=decided.blocker_keys,
             active_stop=True,
@@ -4550,7 +4562,7 @@ def _standing_advice_carry(
     stop_note: bool,
     delivery_eligible: bool,
     workspace_commitment: str,
-    yoetz_session_id: str | None,
+    finishup_session_id: str | None,
     session_commitment: str,
     _state: Path | None,
 ) -> bool:
@@ -4568,7 +4580,7 @@ def _standing_advice_carry(
         if event == "Stop" and stop_note:
             pending = store.peek_advice_for_delivery(
                 workspace_commitment,
-                yoetz_session_id=yoetz_session_id,
+                finishup_session_id=finishup_session_id,
                 allow_standing=True,
                 session_commitment=session_commitment,
             )
@@ -4583,7 +4595,7 @@ def _standing_advice_carry(
 
 
 def _record_closure_gate_emitted(
-    yoetz_session_id: str,
+    finishup_session_id: str,
     closure_gate: ClosureGate,
     event: str,
     *,
@@ -4595,7 +4607,7 @@ def _record_closure_gate_emitted(
     with contextlib.suppress(BaseException):
         # An active-Stop re-check was remembered before it was written.
         if not active_stop and not record_closure_gate_delivered(
-            yoetz_session_id,
+            finishup_session_id,
             closure_gate.identity,
             blocker_keys=closure_gate.blocker_keys,
             _state=_state,
@@ -4658,7 +4670,7 @@ def _commit_emitted_advice(
     workspace_commitment: str,
     pending_delivery: AdviceDelivery,
     *,
-    yoetz_session_id: str | None,
+    finishup_session_id: str | None,
     session_commitment: str,
     event: str,
     standing_carry: bool,
@@ -4670,7 +4682,7 @@ def _commit_emitted_advice(
         store.commit_advice_delivery(
             workspace_commitment,
             pending_delivery.delivery_identity,
-            yoetz_session_id=yoetz_session_id,
+            finishup_session_id=finishup_session_id,
             session_commitment=session_commitment,
         )
         if event == "SessionStart":
@@ -5899,9 +5911,9 @@ def handle_observe(
                     structural_payload=JsonObject(
                         {
                             **envelope.structural_payload,
-                            "selection_task_id": route.yoetz_task_id,
-                            "selection_session_id": route.yoetz_session_id,
-                            "selection_writer_id": route.yoetz_writer_id,
+                            "selection_task_id": route.finishup_task_id,
+                            "selection_session_id": route.finishup_session_id,
+                            "selection_writer_id": route.finishup_writer_id,
                             "selection_authority_generation": authority.generation,
                         }
                     ),
@@ -5909,9 +5921,9 @@ def handle_observe(
                 selection_fence = canonical_digest(
                     JsonObject(
                         {
-                            "task": route.yoetz_task_id,
-                            "session": route.yoetz_session_id,
-                            "writer": route.yoetz_writer_id,
+                            "task": route.finishup_task_id,
+                            "session": route.finishup_session_id,
+                            "writer": route.finishup_writer_id,
                             "host_session": session_commitment,
                             "source": source.value,
                             "generation": source_generation,
@@ -6454,7 +6466,7 @@ def handle_observe(
                         store,
                         workspace_commitment=workspace_commitment,
                         codex_session_id=codex_session_id,
-                        yoetz_session_id=stop_mapping.yoetz_session_id,
+                        finishup_session_id=stop_mapping.finishup_session_id,
                         connect=cast(HookDrainConnector | None, connect),
                         _state=_state,
                         deadline=stop_drain_deadline,
@@ -6498,7 +6510,7 @@ def handle_observe(
         if resolved_event == "Stop" and not stop_already_active and mapping is not None:
             # A Stop the host did not continue starts a new turn for the gate's per-turn cap,
             # whether or not the gate is evaluated below (#985). Never raises.
-            reset_closure_gate_turn(mapping.yoetz_session_id, _state=_state)
+            reset_closure_gate_turn(mapping.finishup_session_id, _state=_state)
         if (
             resolved_event == "Stop"
             and not child_attribution_gap
@@ -6575,7 +6587,7 @@ def handle_observe(
             stop_note=(not child_attribution_gap and closure_gate is None and not skip_advice_loop),
             delivery_eligible=delivery_eligible,
             workspace_commitment=workspace_commitment,
-            yoetz_session_id=None if mapping is None else mapping.yoetz_session_id,
+            finishup_session_id=None if mapping is None else mapping.finishup_session_id,
             session_commitment=session_commitment,
             _state=_state,
         )
@@ -6586,7 +6598,7 @@ def handle_observe(
         )
         with delivery_gate as delivery_acquired:
             if delivery_eligible and delivery_acquired:
-                delivery_session_id = None if mapping is None else mapping.yoetz_session_id
+                delivery_session_id = None if mapping is None else mapping.finishup_session_id
                 # No frontier-motion notice rides this channel (#915). Every recorded
                 # notice describes observation-authored motion, which leaves a held
                 # cooperative frontier admissible (ADR-022), so it carried nothing to act
@@ -6595,7 +6607,7 @@ def handle_observe(
                 # state-sensitive operation.
                 delivery = store.peek_advice_for_delivery(
                     workspace_commitment,
-                    yoetz_session_id=delivery_session_id,
+                    finishup_session_id=delivery_session_id,
                     allow_standing=(
                         resolved_event in STANDING_ADVICE_CADENCE_EVENTS or standing_carry
                     ),
@@ -6650,7 +6662,7 @@ def handle_observe(
                 emitted = _stdout_json({}, stdout)
             if emitted and host_consumable and closure_gate is not None and mapping is not None:
                 _record_closure_gate_emitted(
-                    mapping.yoetz_session_id,
+                    mapping.finishup_session_id,
                     closure_gate,
                     resolved_event,
                     active_stop=stop_already_active,
@@ -6663,7 +6675,7 @@ def handle_observe(
                     store,
                     workspace_commitment,
                     pending_delivery,
-                    yoetz_session_id=delivery_session_id,
+                    finishup_session_id=delivery_session_id,
                     session_commitment=session_commitment,
                     event=resolved_event,
                     standing_carry=standing_carry,

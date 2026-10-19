@@ -2291,9 +2291,9 @@ async def test_nonretryable_post_route_session_conflict_is_ledger_rejected(
             )
 
     runtime = SimpleNamespace(
-        task_id=mapping.yoetz_task_id,
-        session_id=mapping.yoetz_session_id,
-        writer_id=observation_writer_id(mapping.yoetz_task_id, mapping.yoetz_session_id),
+        task_id=mapping.finishup_task_id,
+        session_id=mapping.finishup_session_id,
+        writer_id=observation_writer_id(mapping.finishup_task_id, mapping.finishup_session_id),
         observation=_Store(),
     )
 
@@ -2395,9 +2395,9 @@ async def test_ledger_event_invalid_is_terminal_not_service_unavailable(tmp_path
             )
 
     runtime = SimpleNamespace(
-        task_id=mapping.yoetz_task_id,
-        session_id=mapping.yoetz_session_id,
-        writer_id=observation_writer_id(mapping.yoetz_task_id, mapping.yoetz_session_id),
+        task_id=mapping.finishup_task_id,
+        session_id=mapping.finishup_session_id,
+        writer_id=observation_writer_id(mapping.finishup_task_id, mapping.finishup_session_id),
         observation=_Store(),
     )
 
@@ -2478,9 +2478,9 @@ async def test_storage_corrupt_blocks_session_for_coordinator_generation(tmp_pat
     mapping = LifecycleMapping(
         mapping_version=1,
         codex_session_id=codex_id,
-        yoetz_task_id=_task_id(),
-        yoetz_session_id=PREFIX_BY_KIND[IdKind.SESSION] + str(uuid.uuid4()),
-        yoetz_writer_id=PREFIX_BY_KIND[IdKind.WRITER] + str(uuid.uuid4()),
+        finishup_task_id=_task_id(),
+        finishup_session_id=PREFIX_BY_KIND[IdKind.SESSION] + str(uuid.uuid4()),
+        finishup_writer_id=PREFIX_BY_KIND[IdKind.WRITER] + str(uuid.uuid4()),
         last_frontier=None,
     )
     runtime = _CorruptRuntime()
@@ -3271,9 +3271,9 @@ async def test_rediscovery_drains_pending_repositories_for_every_bound_session(
         codex_id: LifecycleMapping(
             mapping_version=1,
             codex_session_id=codex_id,
-            yoetz_task_id=task_id,
-            yoetz_session_id=session_id,
-            yoetz_writer_id=PREFIX_BY_KIND[IdKind.WRITER] + str(uuid.uuid4()),
+            finishup_task_id=task_id,
+            finishup_session_id=session_id,
+            finishup_writer_id=PREFIX_BY_KIND[IdKind.WRITER] + str(uuid.uuid4()),
             last_frontier=None,
         )
         for codex_id, task_id, session_id in zip(codex_ids, task_ids, session_ids, strict=True)
@@ -3573,9 +3573,9 @@ async def test_duplicate_ingest_reconciles_ledger_instead_of_early_return(tmp_pa
     mapping = LifecycleMapping(
         mapping_version=1,
         codex_session_id=codex_id,
-        yoetz_task_id=_Runtime.task_id,
-        yoetz_session_id=_Runtime.session_id,
-        yoetz_writer_id=_Runtime.writer_id,
+        finishup_task_id=_Runtime.task_id,
+        finishup_session_id=_Runtime.session_id,
+        finishup_writer_id=_Runtime.writer_id,
         last_frontier=None,
     )
 
@@ -3653,9 +3653,9 @@ async def test_check_barrier_deferral_is_designed_backpressure(
             )
 
     runtime = SimpleNamespace(
-        task_id=mapping.yoetz_task_id,
-        session_id=mapping.yoetz_session_id,
-        writer_id=observation_writer_id(mapping.yoetz_task_id, mapping.yoetz_session_id),
+        task_id=mapping.finishup_task_id,
+        session_id=mapping.finishup_session_id,
+        writer_id=observation_writer_id(mapping.finishup_task_id, mapping.finishup_session_id),
         observation=_BarrierStore(),
     )
 
@@ -3735,10 +3735,10 @@ async def test_run_advice_scopes_envelopes_to_the_mapped_session(tmp_path: Path)
             )
 
         def codex_session_commitment_for_session(
-            self, *, workspace: str, yoetz_session_id: str
+            self, *, workspace: str, finishup_session_id: str
         ) -> str | None:
             del workspace
-            return session_b if yoetz_session_id == finishup_session else None
+            return session_b if finishup_session_id == finishup_session else None
 
         def load_advice_snapshot(self, workspace: str) -> None:
             del workspace
@@ -3930,9 +3930,9 @@ def _mapped_local(
     mapping = LifecycleMapping(
         mapping_version=1,
         codex_session_id=codex_id,
-        yoetz_task_id=_task_id(),
-        yoetz_session_id=PREFIX_BY_KIND[IdKind.SESSION] + str(uuid.uuid4()),
-        yoetz_writer_id=PREFIX_BY_KIND[IdKind.WRITER] + str(uuid.uuid4()),
+        finishup_task_id=_task_id(),
+        finishup_session_id=PREFIX_BY_KIND[IdKind.SESSION] + str(uuid.uuid4()),
+        finishup_writer_id=PREFIX_BY_KIND[IdKind.WRITER] + str(uuid.uuid4()),
         last_frontier=None,
     )
     return local, workspace, session, mapping
@@ -3953,12 +3953,12 @@ async def test_native_content_requires_matching_local_and_task_profile_grants(
     local.enable_content_capture(workspace, CLAUDE_CODE_ORDINARY_OBSERVATION_PROFILE_ID)
 
     db = apsw.Connection(":memory:")
-    initialize_bundle(db, {"task_id": mapping.yoetz_task_id, "owner_generation": "1"})
+    initialize_bundle(db, {"task_id": mapping.finishup_task_id, "owner_generation": "1"})
     task_store = SqliteObservationStore(db)
     runtime = SimpleNamespace(
-        task_id=mapping.yoetz_task_id,
-        session_id=mapping.yoetz_session_id,
-        writer_id=observation_writer_id(mapping.yoetz_task_id, mapping.yoetz_session_id),
+        task_id=mapping.finishup_task_id,
+        session_id=mapping.finishup_session_id,
+        writer_id=observation_writer_id(mapping.finishup_task_id, mapping.finishup_session_id),
         observation=task_store,
     )
 
@@ -4007,7 +4007,7 @@ async def test_native_content_requires_matching_local_and_task_profile_grants(
     async def bootstrap(workspace: str, runtime: TaskRuntime, store: TaskObservationPort) -> bool:
         # This fixture owns exactly one task bundle. Capture authority still
         # needs a complete budget inventory independently of its profile grant.
-        assert runtime.task_id == mapping.yoetz_task_id
+        assert runtime.task_id == mapping.finishup_task_id
         assert store is task_store
         return local.bootstrap_capture_reservations(
             workspace,
@@ -4110,19 +4110,19 @@ async def test_duplicate_ingest_reconstructed_append_detects_same_task_rewind(
         to_sequence=221,
         head_digest=delivered_digest,
         observation_record_count=1,
-        task_id=mapping.yoetz_task_id,
+        task_id=mapping.finishup_task_id,
     )
     delivered = local.peek_frontier_motion(workspace, codex_id)
     assert delivered is not None
     local.commit_frontier_motion_delivery(workspace, codex_id, delivered.delivery_identity)
 
     envelope = _envelope(session=session, identity="hook:rewound-duplicate")
-    batch = materialize_observation_envelope(envelope, task_id=mapping.yoetz_task_id)
+    batch = materialize_observation_envelope(envelope, task_id=mapping.finishup_task_id)
     assert batch.drafts
-    writer_id = observation_writer_id(mapping.yoetz_task_id, mapping.yoetz_session_id)
+    writer_id = observation_writer_id(mapping.finishup_task_id, mapping.finishup_session_id)
     rewound_digest = "sha256:" + "d" * 64
     committed_digest = observation_operation_digest(
-        task_id=mapping.yoetz_task_id,
+        task_id=mapping.finishup_task_id,
         logical_identity=canonical_logical_identity(envelope),
         draft_roles=tuple(item.role for item in batch.drafts),
     )
@@ -4178,14 +4178,14 @@ async def test_duplicate_ingest_reconstructed_append_detects_same_task_rewind(
             return Frontier(5, rewound_digest)
 
     db = apsw.Connection(":memory:")
-    initialize_bundle(db, {"task_id": mapping.yoetz_task_id, "owner_generation": "1"})
+    initialize_bundle(db, {"task_id": mapping.finishup_task_id, "owner_generation": "1"})
     observation = SqliteObservationStore(db)
     observation.grant_consent(workspace, Timestamp("2026-01-01T00:00:00.000Z"))
     observation.bind_session(workspace, session)
     assert (await observation.ingest(envelope)).disposition is ObservationIngestDisposition.ACCEPTED
     runtime = SimpleNamespace(
-        task_id=mapping.yoetz_task_id,
-        session_id=mapping.yoetz_session_id,
+        task_id=mapping.finishup_task_id,
+        session_id=mapping.finishup_session_id,
         writer_id=writer_id,
         ledger=_Ledger(),
         observation=observation,
@@ -4260,12 +4260,12 @@ async def test_pre_post_and_stream_copies_claim_without_storage_corrupt(tmp_path
 
     local, _workspace, session, mapping = _mapped_local(tmp_path, "claim-repro-309")
     db = apsw.Connection(":memory:")
-    initialize_bundle(db, {"task_id": mapping.yoetz_task_id, "owner_generation": "1"})
+    initialize_bundle(db, {"task_id": mapping.finishup_task_id, "owner_generation": "1"})
     store = SqliteObservationStore(db)
     runtime = SimpleNamespace(
-        task_id=mapping.yoetz_task_id,
-        session_id=mapping.yoetz_session_id,
-        writer_id=observation_writer_id(mapping.yoetz_task_id, mapping.yoetz_session_id),
+        task_id=mapping.finishup_task_id,
+        session_id=mapping.finishup_session_id,
+        writer_id=observation_writer_id(mapping.finishup_task_id, mapping.finishup_session_id),
         observation=store,
     )
 
@@ -4403,9 +4403,9 @@ async def test_post_only_replay_includes_historical_unpaired_role_set(tmp_path: 
             del kwargs
 
     runtime = SimpleNamespace(
-        task_id=mapping.yoetz_task_id,
-        session_id=mapping.yoetz_session_id,
-        writer_id=observation_writer_id(mapping.yoetz_task_id, mapping.yoetz_session_id),
+        task_id=mapping.finishup_task_id,
+        session_id=mapping.finishup_session_id,
+        writer_id=observation_writer_id(mapping.finishup_task_id, mapping.finishup_session_id),
         observation=_Store(),
     )
 
@@ -4560,7 +4560,7 @@ async def test_later_stream_failure_correction_projection_policy(
         _record_error,
     )
     db = apsw.Connection(":memory:")
-    initialize_bundle(db, {"task_id": mapping.yoetz_task_id, "owner_generation": "1"})
+    initialize_bundle(db, {"task_id": mapping.finishup_task_id, "owner_generation": "1"})
     store = SqliteObservationStore(db)
     core_unknown: MaterializedObservationBatch | None = None
     appended_roles: list[tuple[str, ...]] = []
@@ -4575,7 +4575,7 @@ async def test_later_stream_failure_correction_projection_policy(
         async def load_projection(
             self, loaded_session: str, view: object
         ) -> StoredProjection | None:
-            assert loaded_session == mapping.yoetz_session_id
+            assert loaded_session == mapping.finishup_session_id
             assert view is ProjectionView.CANDIDATE_FINDINGS
             assert core_unknown is not None
             if projection_state[0] == "missing":
@@ -4621,9 +4621,9 @@ async def test_later_stream_failure_correction_projection_policy(
             )
 
     runtime = SimpleNamespace(
-        task_id=mapping.yoetz_task_id,
-        session_id=mapping.yoetz_session_id,
-        writer_id=observation_writer_id(mapping.yoetz_task_id, mapping.yoetz_session_id),
+        task_id=mapping.finishup_task_id,
+        session_id=mapping.finishup_session_id,
+        writer_id=observation_writer_id(mapping.finishup_task_id, mapping.finishup_session_id),
         observation=store,
         ledger=_Ledger(),
     )
@@ -4844,9 +4844,9 @@ async def test_identity_claim_conflict_rejects_one_envelope_without_latching(
             )
 
     runtime = SimpleNamespace(
-        task_id=mapping.yoetz_task_id,
-        session_id=mapping.yoetz_session_id,
-        writer_id=observation_writer_id(mapping.yoetz_task_id, mapping.yoetz_session_id),
+        task_id=mapping.finishup_task_id,
+        session_id=mapping.finishup_session_id,
+        writer_id=observation_writer_id(mapping.finishup_task_id, mapping.finishup_session_id),
         observation=_ConflictStore(),
     )
 
@@ -4952,7 +4952,7 @@ class _ReattachCell:
         self.local, self.workspace, self.session, mapping = _mapped_local(tmp_path, codex_id)
         self.local_root = tmp_path
         self.codex_id = codex_id
-        self.task_id = mapping.yoetz_task_id
+        self.task_id = mapping.finishup_task_id
         self.mapping = mapping
         self.ids = FixedIds()
         self.objects = MemoryObjects(self.ids)
@@ -5034,9 +5034,9 @@ class _ReattachCell:
         self.mapping = LifecycleMapping(
             mapping_version=1,
             codex_session_id=self.codex_id,
-            yoetz_task_id=self.task_id,
-            yoetz_session_id=PREFIX_BY_KIND[IdKind.SESSION] + str(uuid.uuid4()),
-            yoetz_writer_id=PREFIX_BY_KIND[IdKind.WRITER] + str(uuid.uuid4()),
+            finishup_task_id=self.task_id,
+            finishup_session_id=PREFIX_BY_KIND[IdKind.SESSION] + str(uuid.uuid4()),
+            finishup_writer_id=PREFIX_BY_KIND[IdKind.WRITER] + str(uuid.uuid4()),
             last_frontier=None,
         )
 
@@ -5406,7 +5406,7 @@ async def test_pre_committed_before_upgrade_is_never_rematerialized_as_a_third_a
         ),
         role="action",
     )
-    session_id = cell.mapping.yoetz_session_id
+    session_id = cell.mapping.finishup_session_id
     runtime = await cell.runtime_port.route(
         SimpleNamespace(
             session_id=session_id, writer_id=observation_writer_id(cell.task_id, session_id)
@@ -5622,7 +5622,7 @@ async def test_session_superseded_reroutes_ingest_and_persists_mapping(
     from builders.ledger_adapters import FixedClock
 
     cell = _reattach_fixture(tmp_path, "superseded-577")
-    predecessor_session = cell.mapping.yoetz_session_id
+    predecessor_session = cell.mapping.finishup_session_id
     successor_session = PREFIX_BY_KIND[IdKind.SESSION] + str(uuid.uuid4())
     successor_writer = PREFIX_BY_KIND[IdKind.WRITER] + str(uuid.uuid4())
     stored = {"mapping": cell.mapping}
@@ -5670,8 +5670,8 @@ async def test_session_superseded_reroutes_ingest_and_persists_mapping(
     result = await cell.ingest(_envelope(session=cell.session, identity="hook:577", source=source))
     assert result.disposition is ObservationIngestDisposition.ACCEPTED, result.reason
     assert result.reason != ObservationGapCode.LEDGER_REJECTED.value
-    assert stored["mapping"].yoetz_session_id == successor_session
-    assert stored["mapping"].yoetz_writer_id == successor_writer
+    assert stored["mapping"].finishup_session_id == successor_session
+    assert stored["mapping"].finishup_writer_id == successor_writer
     assert cell.routed[-1][0] == successor_session
     assert cell.routed[-1][1] == observation_writer_id(cell.task_id, successor_session)
     assert not cell.local.list_quarantine(cell.workspace)
@@ -5751,8 +5751,8 @@ async def test_ingest_replays_legacy_operation_through_every_route_writer(
 
     cell = _reattach_fixture(tmp_path, f"legacy-replay-{hop_count}")
     predecessor = cell.mapping
-    sessions = [predecessor.yoetz_session_id]
-    cooperative_writers = [predecessor.yoetz_writer_id]
+    sessions = [predecessor.finishup_session_id]
+    cooperative_writers = [predecessor.finishup_writer_id]
     for _ in range(hop_count):
         sessions.append(PREFIX_BY_KIND[IdKind.SESSION] + str(uuid.uuid4()))
         cooperative_writers.append(PREFIX_BY_KIND[IdKind.WRITER] + str(uuid.uuid4()))
@@ -5889,8 +5889,8 @@ async def test_ingest_replays_legacy_operation_after_route_cache_restart(tmp_pat
     predecessor = cell.mapping
     successor = replace(
         predecessor,
-        yoetz_session_id=PREFIX_BY_KIND[IdKind.SESSION] + str(uuid.uuid4()),
-        yoetz_writer_id=PREFIX_BY_KIND[IdKind.WRITER] + str(uuid.uuid4()),
+        finishup_session_id=PREFIX_BY_KIND[IdKind.SESSION] + str(uuid.uuid4()),
+        finishup_writer_id=PREFIX_BY_KIND[IdKind.WRITER] + str(uuid.uuid4()),
     )
     store_mapping(predecessor, _state=tmp_path)
     envelope = _envelope(
@@ -5902,13 +5902,15 @@ async def test_ingest_replays_legacy_operation_after_route_cache_restart(tmp_pat
     batch = materialize_observation_envelope(envelope, task_id=cell.task_id)
     roles = tuple(item.role for item in batch.drafts)
     mapping_version = MATERIALIZATION_LEGACY_MAPPING_VERSIONS[0]
-    predecessor_derived_writer = observation_writer_id(cell.task_id, predecessor.yoetz_session_id)
+    predecessor_derived_writer = observation_writer_id(
+        cell.task_id, predecessor.finishup_session_id
+    )
     seeded_digest = observation_operation_digest(
         task_id=cell.task_id,
         logical_identity=canonical_logical_identity(envelope, mapping_version=mapping_version),
         draft_roles=roles,
         mapping_version=mapping_version,
-        session_id=predecessor.yoetz_session_id,
+        session_id=predecessor.finishup_session_id,
         writer_id=predecessor_derived_writer,
     )
     seeded_operation_id = ""
@@ -5927,8 +5929,8 @@ async def test_ingest_replays_legacy_operation_after_route_cache_restart(tmp_pat
 
     current_runtime = SimpleNamespace(
         task_id=cell.task_id,
-        session_id=successor.yoetz_session_id,
-        writer_id=observation_writer_id(cell.task_id, successor.yoetz_session_id),
+        session_id=successor.finishup_session_id,
+        writer_id=observation_writer_id(cell.task_id, successor.finishup_session_id),
         ledger=_Ledger(),
         observation=cell.store,
         objects=object(),
@@ -5937,7 +5939,7 @@ async def test_ingest_replays_legacy_operation_after_route_cache_restart(tmp_pat
     class _RuntimePort:
         async def route(self, command: object) -> object:
             session_id = cast(str, getattr(command, "session_id"))
-            if session_id == predecessor.yoetz_session_id:
+            if session_id == predecessor.finishup_session_id:
                 raise PublicOperationError(
                     PublicErrorCode.SESSION_NOT_FOUND,
                     "The requested session was replaced.",
@@ -5945,11 +5947,11 @@ async def test_ingest_replays_legacy_operation_after_route_cache_restart(tmp_pat
                     safe_details={
                         "reason_code": "session_superseded",
                         "task_id": cell.task_id,
-                        "session_id": successor.yoetz_session_id,
-                        "writer_id": successor.yoetz_writer_id,
+                        "session_id": successor.finishup_session_id,
+                        "writer_id": successor.finishup_writer_id,
                     },
                 )
-            assert session_id == successor.yoetz_session_id
+            assert session_id == successor.finishup_session_id
             return current_runtime
 
         async def release(self, released: object) -> None:
@@ -5984,10 +5986,10 @@ async def test_ingest_replays_legacy_operation_after_route_cache_restart(tmp_pat
     assert failed.reason == ObservationGapCode.SERVICE_UNAVAILABLE.value
     cached = load_mapping(cell.codex_id, _state=tmp_path)
     assert cached is not None
-    assert cached.yoetz_session_id == successor.yoetz_session_id
+    assert cached.finishup_session_id == successor.finishup_session_id
     history = load_route_history(cached, _state=tmp_path)
     assert history is not None
-    assert history.routes == ((predecessor.yoetz_session_id, predecessor.yoetz_writer_id),)
+    assert history.routes == ((predecessor.finishup_session_id, predecessor.finishup_writer_id),)
     assert history.truncated is False
 
     recovered = _Recovered(**common)  # type: ignore[arg-type]
@@ -6124,8 +6126,8 @@ async def test_successor_route_cache_preserves_concurrent_lifecycle_changes(
     store_mapping(predecessor, _state=tmp_path)
     successor = replace(
         predecessor,
-        yoetz_session_id=PREFIX_BY_KIND[IdKind.SESSION] + str(uuid.uuid4()),
-        yoetz_writer_id=PREFIX_BY_KIND[IdKind.WRITER] + str(uuid.uuid4()),
+        finishup_session_id=PREFIX_BY_KIND[IdKind.SESSION] + str(uuid.uuid4()),
+        finishup_writer_id=PREFIX_BY_KIND[IdKind.WRITER] + str(uuid.uuid4()),
     )
     expected = predecessor
     routed_runtime = cast(TaskRuntime, object())
@@ -6134,14 +6136,14 @@ async def test_successor_route_cache_preserves_concurrent_lifecycle_changes(
         class _Runtime:
             async def route(self, command: object) -> TaskRuntime:
                 nonlocal expected
-                if getattr(command, "session_id") == successor.yoetz_session_id:
+                if getattr(command, "session_id") == successor.finishup_session_id:
                     return routed_runtime
                 if concurrent_change == "locked":
                     assert locks.enter_context(
                         acquire_session_lock(predecessor.codex_session_id, _state=tmp_path)
                     )
                 elif concurrent_change == "rebound":
-                    expected = replace(predecessor, yoetz_task_id=_task_id())
+                    expected = replace(predecessor, finishup_task_id=_task_id())
                     store_mapping(expected, _state=tmp_path)
                 elif concurrent_change == "frontier":
                     expected = replace(predecessor, last_frontier="99:sha256:" + "a" * 64)
@@ -6154,9 +6156,9 @@ async def test_successor_route_cache_preserves_concurrent_lifecycle_changes(
                     retryable=False,
                     safe_details={
                         "reason_code": "session_superseded",
-                        "task_id": predecessor.yoetz_task_id,
-                        "session_id": successor.yoetz_session_id,
-                        "writer_id": successor.yoetz_writer_id,
+                        "task_id": predecessor.finishup_task_id,
+                        "session_id": successor.finishup_session_id,
+                        "writer_id": successor.finishup_writer_id,
                     },
                 )
 
@@ -6189,12 +6191,12 @@ async def test_missing_subagent_identity_is_durable_without_annotation(
 
     local, workspace, session, mapping = _mapped_local(tmp_path, "missing-subagent")
     db = apsw.Connection(":memory:")
-    initialize_bundle(db, {"task_id": mapping.yoetz_task_id, "owner_generation": "1"})
+    initialize_bundle(db, {"task_id": mapping.finishup_task_id, "owner_generation": "1"})
     task_store = SqliteObservationStore(db)
     runtime = SimpleNamespace(
-        task_id=mapping.yoetz_task_id,
-        session_id=mapping.yoetz_session_id,
-        writer_id=observation_writer_id(mapping.yoetz_task_id, mapping.yoetz_session_id),
+        task_id=mapping.finishup_task_id,
+        session_id=mapping.finishup_session_id,
+        writer_id=observation_writer_id(mapping.finishup_task_id, mapping.finishup_session_id),
         observation=task_store,
     )
 
@@ -6241,7 +6243,9 @@ async def test_missing_subagent_identity_is_durable_without_annotation(
     envelope = replace(
         _envelope(session=session, kind=event_kind, identity="hook:missing-subagent"),
         structural_payload=JsonObject(
-            {"lineage_child_task_id": mapping.yoetz_task_id} if event_kind == "PostToolUse" else {}
+            {"lineage_child_task_id": mapping.finishup_task_id}
+            if event_kind == "PostToolUse"
+            else {}
         ),
     )
     try:
@@ -6379,13 +6383,13 @@ async def test_native_activity_releases_runtime_before_lineage_callback(tmp_path
 
     local, workspace, session, mapping = _mapped_local(tmp_path, "native-activity-release")
     db = apsw.Connection(":memory:")
-    initialize_bundle(db, {"task_id": mapping.yoetz_task_id, "owner_generation": "1"})
+    initialize_bundle(db, {"task_id": mapping.finishup_task_id, "owner_generation": "1"})
     store = SqliteObservationStore(db)
     clock = FixedClock()
     runtime = SimpleNamespace(
-        task_id=mapping.yoetz_task_id,
-        session_id=mapping.yoetz_session_id,
-        writer_id=observation_writer_id(mapping.yoetz_task_id, mapping.yoetz_session_id),
+        task_id=mapping.finishup_task_id,
+        session_id=mapping.finishup_session_id,
+        writer_id=observation_writer_id(mapping.finishup_task_id, mapping.finishup_session_id),
         observation=store,
     )
     released = asyncio.Event()
@@ -6439,11 +6443,13 @@ async def test_native_activity_releases_runtime_before_lineage_callback(tmp_path
         assert (
             store.codex_session_commitment_for_session(
                 workspace=workspace,
-                yoetz_session_id=mapping.yoetz_session_id,
+                finishup_session_id=mapping.finishup_session_id,
             )
             == session
         )
-        assert calls == [(mapping.yoetz_task_id, mapping.yoetz_session_id, mapping.yoetz_writer_id)]
+        assert calls == [
+            (mapping.finishup_task_id, mapping.finishup_session_id, mapping.finishup_writer_id)
+        ]
         duplicate = await coordinator.ingest_request(request)
         assert duplicate.disposition is ObservationIngestDisposition.DUPLICATE
         # The duplicate re-offers the same evidence time; lineage applies it idempotently.
@@ -6475,10 +6481,10 @@ async def test_ended_predecessor_cannot_seed_successor_host_route(tmp_path: Path
     predecessor_mapping = LifecycleMapping(
         mapping_version=1,
         codex_session_id=predecessor_codex_id,
-        yoetz_task_id=task,
+        finishup_task_id=task,
         # Lifecycle recovery rewrites the ended predecessor's mapping to this successor route.
-        yoetz_session_id=current_session_id,
-        yoetz_writer_id=current_writer_id,
+        finishup_session_id=current_session_id,
+        finishup_writer_id=current_writer_id,
         last_frontier=None,
     )
     current_mapping = replace(predecessor_mapping, codex_session_id=current_codex_id)
@@ -6562,7 +6568,7 @@ async def test_ended_predecessor_cannot_seed_successor_host_route(tmp_path: Path
         assert (
             store.codex_session_commitment_for_session(
                 workspace=workspace,
-                yoetz_session_id=current_session_id,
+                finishup_session_id=current_session_id,
             )
             is None
         )
@@ -6578,7 +6584,7 @@ async def test_ended_predecessor_cannot_seed_successor_host_route(tmp_path: Path
         assert (
             store.codex_session_commitment_for_session(
                 workspace=workspace,
-                yoetz_session_id=current_session_id,
+                finishup_session_id=current_session_id,
             )
             == current_commitment
         )
@@ -6597,7 +6603,7 @@ async def test_ended_predecessor_cannot_seed_successor_host_route(tmp_path: Path
         assert (
             store.codex_session_commitment_for_session(
                 workspace=workspace,
-                yoetz_session_id=current_session_id,
+                finishup_session_id=current_session_id,
             )
             == current_commitment
         )
@@ -6637,9 +6643,9 @@ async def test_ingest_releases_runtime_when_final_backlog_feedback_fails(
             )
 
     runtime = SimpleNamespace(
-        task_id=mapping.yoetz_task_id,
-        session_id=mapping.yoetz_session_id,
-        writer_id=observation_writer_id(mapping.yoetz_task_id, mapping.yoetz_session_id),
+        task_id=mapping.finishup_task_id,
+        session_id=mapping.finishup_session_id,
+        writer_id=observation_writer_id(mapping.finishup_task_id, mapping.finishup_session_id),
         observation=_Store(),
     )
 

@@ -369,9 +369,9 @@ class ContractObservationPipeline:
 
         mapping = mapping_from_start_ids(
             codex_session_id=codex_session_id,
-            yoetz_task_id=self.task_id,
-            yoetz_session_id=self.session_id,
-            yoetz_writer_id=self.writer_id,
+            finishup_task_id=self.task_id,
+            finishup_session_id=self.session_id,
+            finishup_writer_id=self.writer_id,
             last_frontier=None,
         )
         store_mapping(mapping, _state=self.install.state)

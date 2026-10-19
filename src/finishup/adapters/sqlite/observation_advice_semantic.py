@@ -1,4 +1,8 @@
-"""SQLite repository for generation-fenced observation-advice AI-powered review attempts (#619)."""
+"""SQLite repository for generation-fenced observation-advice AI-powered review attempts (#619).
+
+Frozen legacy identifier (ADR-048): the ``yoetz_session_id`` column keeps its migration spelling;
+the Python name is ``finishup_session_id``.
+"""
 
 from __future__ import annotations
 
@@ -47,7 +51,7 @@ def _row(values: tuple[object, ...]) -> ObservationAdviceSemanticAttempt:
     return ObservationAdviceSemanticAttempt(
         attempt_id=str(values[0]),
         workspace_commitment=str(values[1]),
-        yoetz_session_id=str(values[2]),
+        finishup_session_id=str(values[2]),
         basis_digest=str(values[3]),
         subject_digest=str(values[4]),
         coverage_gaps=_string_tuple(values[5]),
@@ -82,7 +86,7 @@ class SqliteObservationAdviceSemanticRepository:
         self,
         *,
         workspace: str,
-        yoetz_session_id: str,
+        finishup_session_id: str,
         basis_digest: str,
         subject_digest: str,
         coverage_gaps: tuple[str, ...],
@@ -106,7 +110,7 @@ class SqliteObservationAdviceSemanticRepository:
         now = _parse_time(enqueued_at)
         inserted: object = None
         with self._db:
-            family = self._family(yoetz_session_id, basis_digest)
+            family = self._family(finishup_session_id, basis_digest)
             latest = family[0][0] if family else None
             if latest is not None:
                 if latest.status in {"pending", "running", "succeeded"}:
@@ -128,7 +132,7 @@ class SqliteObservationAdviceSemanticRepository:
                     "SELECT MAX(updated_at) FROM observation_advice_semantic_attempts "
                     "WHERE yoetz_session_id=? AND attempt_count>0 AND (failure_reason IS NULL "
                     "OR failure_reason NOT IN ('authorization_missing','provider_unavailable'))",
-                    (yoetz_session_id,),
+                    (finishup_session_id,),
                 ).fetchone()
                 if anchor_row is not None and anchor_row[0] is not None:
                     eligible = _parse_time(str(anchor_row[0])) + timedelta(
@@ -143,7 +147,7 @@ class SqliteObservationAdviceSemanticRepository:
             key = basis_digest if not family else f"{basis_digest}#{len(family)}"
             attempt_id = (
                 "sadv_"
-                + hashlib.sha256(f"{workspace}\0{yoetz_session_id}\0{key}".encode()).hexdigest()[
+                + hashlib.sha256(f"{workspace}\0{finishup_session_id}\0{key}".encode()).hexdigest()[
                     :48
                 ]
             )
@@ -154,7 +158,7 @@ class SqliteObservationAdviceSemanticRepository:
                 "UPDATE observation_advice_semantic_attempts SET status='cancelled',"
                 "failure_reason='superseded',updated_at=? "
                 "WHERE yoetz_session_id=? AND status='pending'",
-                (enqueued_at, yoetz_session_id),
+                (enqueued_at, finishup_session_id),
             )
             pending_row = self._db.execute(
                 "SELECT COUNT(*) FROM observation_advice_semantic_attempts "
@@ -179,7 +183,7 @@ class SqliteObservationAdviceSemanticRepository:
                 (
                     attempt_id,
                     workspace,
-                    yoetz_session_id,
+                    finishup_session_id,
                     key,
                     subject_digest,
                     _encode(coverage_gaps),
@@ -200,7 +204,7 @@ class SqliteObservationAdviceSemanticRepository:
         return _row(tuple(cast(Sequence[object], inserted)))
 
     def _family(
-        self, yoetz_session_id: str, identity: str
+        self, finishup_session_id: str, identity: str
     ) -> list[tuple[ObservationAdviceSemanticAttempt, str]]:
         """Every row of one identity for a session, newest first, with its ``updated_at``."""
 
@@ -208,25 +212,25 @@ class SqliteObservationAdviceSemanticRepository:
             f"SELECT {_COLUMNS},updated_at FROM observation_advice_semantic_attempts "
             "WHERE yoetz_session_id=? AND (basis_digest=? OR "
             "(basis_digest>=? AND basis_digest<?)) ORDER BY state_token DESC",
-            (yoetz_session_id, identity, identity + "#", identity + "$"),
+            (finishup_session_id, identity, identity + "#", identity + "$"),
         ).fetchall()
         return [
             (_row(cast(tuple[object, ...], tuple(row)[:-1])), str(tuple(row)[-1])) for row in rows
         ]
 
     def latest_for_identity(
-        self, *, yoetz_session_id: str, identity: str
+        self, *, finishup_session_id: str, identity: str
     ) -> ObservationAdviceSemanticAttempt | None:
-        family = self._family(yoetz_session_id, identity)
+        family = self._family(finishup_session_id, identity)
         return family[0][0] if family else None
 
     def lookup(
-        self, *, yoetz_session_id: str, basis_digest: str
+        self, *, finishup_session_id: str, basis_digest: str
     ) -> ObservationAdviceSemanticAttempt | None:
         row = self._db.execute(
             f"SELECT {_COLUMNS} FROM observation_advice_semantic_attempts "
             "WHERE yoetz_session_id=? AND basis_digest=?",
-            (yoetz_session_id, basis_digest),
+            (finishup_session_id, basis_digest),
         ).fetchone()
         return None if row is None else _row(cast(tuple[object, ...], tuple(row)))
 

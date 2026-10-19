@@ -700,10 +700,10 @@ def _task_pending_probe(
 ) -> Callable[[str, float], frozenset[str]]:
     """Read one FinishUP session's pending hook rows across workspaces (issue #1012)."""
 
-    def probe(yoetz_session_id: str, deadline: float) -> frozenset[str]:
+    def probe(finishup_session_id: str, deadline: float) -> frozenset[str]:
         with observation_store_lock_deadline(deadline):
             return session_pending_row_identities(
-                local, yoetz_session_id=yoetz_session_id, _state=state
+                local, finishup_session_id=finishup_session_id, _state=state
             )
 
     return probe
@@ -4570,7 +4570,7 @@ def _observation_workspace_for_runtime(runtime: TaskRuntime) -> str | None:
     except TypeError, ValueError:
         return None
     try:
-        route = route_lookup(workspace=workspace, yoetz_session_id=runtime.session_id)
+        route = route_lookup(workspace=workspace, finishup_session_id=runtime.session_id)
     except Exception:
         return None
     if type(route) is not tuple:
@@ -6655,7 +6655,7 @@ async def provide_service_ready_context(
                 return None
             observed_route = route_lookup(
                 workspace=workspace,
-                yoetz_session_id=session_id,
+                finishup_session_id=session_id,
             )
             if type(observed_route) is not tuple:
                 return None
@@ -7132,7 +7132,7 @@ async def provide_service_ready_context(
             return ObservationAdviceSemanticOutcome(
                 status="unavailable", failure_reason="provider_unavailable"
             )
-        route = await catalog.resolve_route(attempt.yoetz_session_id)
+        route = await catalog.resolve_route(attempt.finishup_session_id)
         if (
             route is None
             or route.state is not TaskRouteState.ACTIVE
@@ -7275,7 +7275,7 @@ async def provide_service_ready_context(
 
         return ObservationAdviceSemanticOutcome(status="cancelled", failure_reason="cancelled")
 
-    async def _advice_semantic_route_ready(yoetz_session_id: str) -> bool:
+    async def _advice_semantic_route_ready(finishup_session_id: str) -> bool:
         """The route leg of background advice admission (#923).
 
         The dispatch needs an ACTIVE route and a granted repository authority that admits
@@ -7284,7 +7284,7 @@ async def provide_service_ready_context(
         advice row at all instead of queuing one that ends ``authorization_missing``.
         """
 
-        route = await catalog.resolve_route(yoetz_session_id)
+        route = await catalog.resolve_route(finishup_session_id)
         if (
             route is None
             or route.state is not TaskRouteState.ACTIVE

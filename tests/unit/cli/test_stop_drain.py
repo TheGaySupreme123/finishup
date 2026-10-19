@@ -209,9 +209,9 @@ def _run_stop(
     store_mapping(
         mapping_from_start_ids(
             codex_session_id=host_key,
-            yoetz_task_id=new_id(IdKind.TASK),
-            yoetz_session_id=new_id(IdKind.SESSION),
-            yoetz_writer_id=new_id(IdKind.WRITER),
+            finishup_task_id=new_id(IdKind.TASK),
+            finishup_session_id=new_id(IdKind.SESSION),
+            finishup_writer_id=new_id(IdKind.WRITER),
             last_frontier="0:genesis",
         ),
         _state=tmp_path,
@@ -382,9 +382,9 @@ async def test_stop_keeps_waiting_while_a_slow_owner_moves_other_rows_first(
     store_mapping(
         mapping_from_start_ids(
             codex_session_id=ours,
-            yoetz_task_id=new_id(IdKind.TASK),
-            yoetz_session_id=session_id,
-            yoetz_writer_id=new_id(IdKind.WRITER),
+            finishup_task_id=new_id(IdKind.TASK),
+            finishup_session_id=session_id,
+            finishup_writer_id=new_id(IdKind.WRITER),
             last_frontier="0:genesis",
         ),
         _state=tmp_path,
@@ -416,7 +416,7 @@ async def test_stop_keeps_waiting_while_a_slow_owner_moves_other_rows_first(
             store,
             workspace_commitment=workspace,
             codex_session_id=ours,
-            yoetz_session_id=session_id,
+            finishup_session_id=session_id,
             connect=None,
             _state=tmp_path,
             deadline=10.0,
