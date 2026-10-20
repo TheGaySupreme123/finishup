@@ -643,6 +643,25 @@ async def test_v1_facade_ends_the_review_when_a_malformed_answer_lost_its_thread
     await session.aclose()
 
 
+async def test_v2_codex_model_verification_notification_is_discarded_unread(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """#1118 V2: 0.162.1 ``model/verification`` is account bookkeeping, not a forbidden event."""
+
+    runtime = _CodexRuntime(profile_for(record_for(b"c", b"h", version="0.162.1")), [_FINAL])
+    runtime.extra_event = {
+        "method": "model/verification",
+        "params": {"threadId": "thr1", "turnId": "turn1", "verifications": ["canary"]},
+    }
+    session = ReviewerSession("review-a", _DEADLINE)
+    result = await _codex_exchange(monkeypatch, runtime, session, _FIRST, [])
+    evidence = result.provenance.runtime_evidence
+    assert type(result) is SemanticResultReply, evidence
+    assert evidence is not None and evidence.failure_stage is None
+    assert "canary" not in repr(result)
+    await session.aclose()
+
+
 # -- review round 1 regressions (R1-R6) ------------------------------------------------------------
 
 

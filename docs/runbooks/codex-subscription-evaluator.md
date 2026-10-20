@@ -848,6 +848,15 @@ because the turn's `effort` and `summary` overrides produce the thread's first s
 It echoes settings FinishUP sent and is discarded unread on both the single-shot and the
 reviewer path (#1118).
 
+Codex 0.162.1 may also send `model/verification` during any turn: an account-verification
+recommendation (for example `trustedAccessForCyber`) carried in the upstream response's metadata.
+It needs no tool or environment, the bound model still answers, and it adds no input or authority,
+so it is discarded unread on both paths. A changed model is `model/rerouted` and still ends the
+attempt. Every other 0.162.1 notification the isolated reviewer configuration cannot produce
+(goals, skills, MCP startup, hooks, provider auth recovery, realtime, filesystem, Windows setup and
+lifecycle events) stays `event_forbidden`; the per-method inventory and its reachability evidence
+were reviewed against the `rust-v0.162.1` source for #1118.
+
 `semantic_case_content_over_item_limit` is a separate coverage gap on the disclosed case; it is
 reported alongside a stage, never inferred from one. `semantic_case_finding_refs_over_limit` is the
 same kind of case-composition gap: a local finding cited more than 16 subjects, so its prose and

@@ -2098,6 +2098,7 @@ async def test_informational_notifications_and_plan_items_are_discarded_unread(
         {"method": "thread/name/updated", "params": {"threadId": thread, "threadName": "canary"}},
         {"method": "turn/moderationMetadata", "params": {"metadata": {"note": "canary"}}},
         {"method": "model/safetyBuffering/updated", "params": {"threadId": thread}},
+        {"method": "model/verification", "params": {"verifications": ["canary"]}},
         {"method": "deprecationNotice", "params": {"message": "canary"}},
         {"method": "configWarning", "params": {"message": "canary"}},
         {"method": "thread/queue/changed", "params": {"threadId": thread}},

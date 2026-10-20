@@ -323,6 +323,14 @@ _NON_FINAL_PHASES: Final = frozenset({"commentary", "partial_answer"})
 # turn on every thread produces it (``codex-rs/app-server/src/bespoke_event_handling.rs``
 # ``ThreadSettingsApplied``; ``thread_state.rs`` ``note_thread_settings``). It is bookkeeping
 # about settings FinishUP itself sent, never a tool, plan or item event.
+# ``model/verification`` (Codex 0.162.1) relays an account-verification recommendation the
+# upstream response carried in its metadata (``codex-api/src/sse/responses.rs``
+# ``openai_verification_recommendation``; ``bespoke_event_handling.rs``). It needs no tool or
+# environment, so a healthy reviewer turn can carry it; the same bound model still answers (a
+# changed model is ``model/rerouted``, refused below), and the notification adds no input, tool,
+# or authority. It is bookkeeping about the owner's account, discarded unread (#1118 V2). Every
+# other 0.162.1 notification outside this set is unreachable under the reviewer's isolated
+# configuration or a real capability, and stays refused as ``event_forbidden``.
 _ALLOWED_NOTIFICATION_METHODS: Final = frozenset(
     {
         "account/updated",
@@ -339,6 +347,7 @@ _ALLOWED_NOTIFICATION_METHODS: Final = frozenset(
         "item/started",
         "model/rerouted",
         "model/safetyBuffering/updated",
+        "model/verification",
         "thread/compacted",
         "thread/name/updated",
         "thread/queue/changed",
