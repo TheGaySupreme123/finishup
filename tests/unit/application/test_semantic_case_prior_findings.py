@@ -69,7 +69,7 @@ from finishup.kernel.projections import (
     ObligationProjectionRecord,
     ProjectionRecord,
 )
-from finishup.ports.semantic import SemanticCase
+from finishup.ports.semantic import ReviewInputSection, SemanticCase
 from finishup.protocol.canonical import JsonValue, strict_json_parse
 from finishup.protocol.coverage import EvidenceImmutability
 from finishup.protocol.models import DataCategory, SemanticReason, SemanticStatus
@@ -1067,3 +1067,89 @@ def test_the_decision_the_disclosures_row_displaces_is_disclosed() -> None:
         and row.category is DataCategory.DECISION_EXCERPT
         for row in built.packet.omissions
     )
+
+
+def _prior_context(case: SemanticCase) -> ReviewInputSection:
+    manifest = case.packet.input_manifest
+    assert manifest is not None
+    return manifest.prior_finding_context
+
+
+def _ceiling_build(case: DeterministicCase, selection: ReviewSelectionPolicy) -> SemanticCase:
+    """Build under a channel ceiling just below the unconstrained prepared document."""
+
+    def build(ceiling: int | None) -> SemanticCase:
+        return build_semantic_case(
+            case_id="cas_10000000-0000-4000-8000-000000000001",
+            frozen_case=case,
+            dependency_digest="sha256:" + "b" * 64,
+            findings=(),
+            review_context_profile=ReviewContextProfile.GOAL_AWARE,
+            review_selection=selection,
+            policy_id="pvy_10000000-0000-4000-8000-000000000001",
+            policy_version="1",
+            prepared_byte_ceiling=ceiling,
+        )
+
+    full = build(None)
+    size = len(semantic_case_to_prepared_payload(full, {item.item_id for item in full.items}))
+    # The planner keeps a 4 KiB reserve below the ceiling, so this narrows an over-plan case.
+    return build(size + 4_096 - 1)
+
+
+def test_a_ceiling_narrowed_case_labels_withheld_finding_prose_partial() -> None:
+    """Issue #1118: the ceiling fallback drops allowed finding prose; the label must say so.
+
+    Before the fix the section read ``complete`` although the original finding text was cut,
+    so a follow-up review could rule a repaired finding unassessable without knowing why.
+    """
+
+    selection = ReviewSelectionPolicy.for_profile(ReviewContextProfile.GOAL_AWARE)
+    assert selection.include_finding_prose
+    full = _build(_numba_case(), selection=selection)
+    full_section = _prior_context(full)
+    assert full_section.status == "complete"
+
+    narrowed = _ceiling_build(_numba_case(), selection)
+
+    assert not any(
+        item.section == "prior_finding" and item.category is DataCategory.FINDING_SUMMARY
+        for item in narrowed.items
+    )
+    section = _prior_context(narrowed)
+    assert section.status == "partial"
+    assert "content_unselected" in section.omission_reasons
+    assert {str(fnd(1)), str(fnd(2))} <= set(section.omitted_refs)
+    omitted = {
+        omission.subject_ref
+        for omission in narrowed.packet.omissions
+        if omission.category is DataCategory.FINDING_SUMMARY and omission.reason == "not_selected"
+    }
+    assert {str(fnd(1)), str(fnd(2))} <= omitted
+
+
+def test_a_disallowed_finding_prose_category_stays_omitted_and_labelled() -> None:
+    selection = replace(
+        ReviewSelectionPolicy.for_profile(ReviewContextProfile.GOAL_AWARE),
+        include_finding_prose=False,
+    )
+
+    case = _ceiling_build(_numba_case(), selection)
+
+    assert not any(item.category is DataCategory.FINDING_SUMMARY for item in case.items)
+    section = _prior_context(case)
+    assert section.status == "partial"
+    assert "content_unselected" in section.omission_reasons
+
+
+def test_bound_truncated_prior_findings_are_labelled_partial() -> None:
+    extra = {
+        fnd(number): finding_record(_semantic(number, challenge=_CHALLENGE), 20 + number)
+        for number in range(3, 3 + MAX_PRIOR_FINDINGS)
+    }
+
+    section = _prior_context(_build(_numba_case(extra)))
+
+    assert section.status == "partial"
+    assert "content_unselected" in section.omission_reasons
+    assert {str(fnd(1)), str(fnd(2))} <= set(section.omitted_refs)

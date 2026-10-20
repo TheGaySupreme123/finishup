@@ -8138,6 +8138,10 @@ def _build_semantic_case_once(
     # 64-row timeline, and it takes only capacity the case bounds leave.
     prior_finding_ids: list[str] = []
     prior_finding_refs: list[str] = []
+    # What the prior-finding section could not carry, for its manifest label: an earlier finding
+    # cut by the section bounds, or finding prose a capacity narrowing withheld. Either makes the
+    # section ``partial``; it is never ``complete`` once any of it is missing.
+    prior_context_omitted_refs: set[str] = set()
     # A selection without the assessments section shows the reviewer no earlier finding at all;
     # when any is open, that is the same disclosed truncation as a full section.
     prior_findings_truncated = "deterministic_assessments" not in sections and bool(
@@ -8165,6 +8169,11 @@ def _build_semantic_case_once(
             prior_omissions.extend(
                 _omit(ref, DataCategory.FINDING_SUMMARY, "finding", "not_selected")
                 for ref in sorted({item.source_ref for item in prior_items})
+            )
+            prior_context_omitted_refs.update(prior_finding_refs)
+        if prior_findings_truncated:
+            prior_context_omitted_refs.update(
+                item.subject_ref for item in prior_omissions if item.reason == "not_selected"
             )
         if prior_omissions:
             omission_universe.update(prior_omissions)
@@ -8316,6 +8325,8 @@ def _build_semantic_case_once(
         pending_missing=pending_missing,
         supplied_missing=missing_answers,
         prior_finding_refs=prior_finding_refs,
+        prior_finding_context_partial=prior_findings_truncated or bool(prior_context_omitted_refs),
+        prior_finding_omitted_refs=tuple(sorted(prior_context_omitted_refs, key=str.encode)),
         check_time_change_selected=check_change_selected,
         check_time_change_unavailable=check_time_change_unavailable,
         review_phase=review_phase,
@@ -8835,6 +8846,8 @@ def review_input_manifest(
     omitted_item_total: int | None = None,
     supplied_missing: Sequence[Sequence[str]] = (),
     prior_finding_refs: Sequence[str] = (),
+    prior_finding_context_partial: bool = False,
+    prior_finding_omitted_refs: Sequence[str] = (),
     check_time_change_selected: bool = False,
     check_time_change_unavailable: bool = False,
     truncated_item_ids: Sequence[str] = (),
@@ -8855,6 +8868,10 @@ def review_input_manifest(
     excerpt sources FinishUP added for the item beyond the check's first packet, else ``pending``.
     A source counts as added when the packet carries a part of it (``excerpt_parts`` places each
     excerpt in its source) that the first packet did not carry (tb4n5).
+
+    ``prior_finding_context_partial`` says the case could not carry every earlier finding, or
+    withheld finding prose the owner allowed to fit a capacity bound; the section is then
+    ``partial`` with ``content_unselected`` and names ``prior_finding_omitted_refs``.
     """
 
     typed_statement = recorded_statement
@@ -9079,7 +9096,8 @@ def review_input_manifest(
         "not_selected"
         if "deterministic_assessments" not in sections
         else "partial"
-        if prior_items and {item.item_id for item in prior_items} & truncated
+        if prior_finding_context_partial
+        or (prior_items and {item.item_id for item in prior_items} & truncated)
         else "complete"
         if prior_items
         else "missing"
@@ -9089,8 +9107,14 @@ def review_input_manifest(
         status=prior_status,
         items=prior_items,
         source_refs=[item.source_ref for item in prior_items],
+        omitted_refs=prior_finding_omitted_refs if "deterministic_assessments" in sections else (),
         omission_reasons=(
-            ["truncated_payload"] if {item.item_id for item in prior_items} & truncated else []
+            (["truncated_payload"] if {item.item_id for item in prior_items} & truncated else [])
+            + (
+                ["content_unselected"]
+                if prior_finding_context_partial and "deterministic_assessments" in sections
+                else []
+            )
         ),
         revision=max((item.occurred_order for item in prior_items), default=None),
     )

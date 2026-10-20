@@ -350,9 +350,12 @@ FinishUP limit for this rule: the unchanged case is refused again, so `semantic_
 from it no longer reads as a transient retry; closure readiness ends such a closing review as
 `semantic_review_no_judgment` until a material change asks for it again.
 
-Not changed here (design-gated, owned with the review packet, #1118): the frozen review case drops
-the original finding prose under the inner ceiling fallback even when the owner admitted finding
-prose, and its `prior_finding_context` still reads `complete` when only the structural row survives.
-Until the packet keeps bounded finding substance ahead of unrelated excerpts, a follow-up review may
-still rule such a finding `unassessable`; this amendment makes the self-verification exit reachable
-for the agent, which does hold the finding's substance (status `findings` shows it).
+The review packet now labels the cut honestly (#1118): whenever the frozen case omits part of the
+prior-finding context (finding prose the inner ceiling fallback withheld even though the owner
+admitted it, or an earlier finding the section bounds could not carry), its `prior_finding_context`
+reads `partial` with `content_unselected` and names the omitted findings; it never reads `complete`.
+Not changed here (deferred to #1126): the fallback still drops that prose before unrelated bulk
+excerpts. Until the packet keeps bounded finding substance ahead of them, a follow-up review may
+still rule such a finding `unassessable`, now knowing its text was cut; this amendment makes the
+self-verification exit reachable for the agent, which does hold the finding's substance (status
+`findings` shows it).
