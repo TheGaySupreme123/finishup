@@ -1899,13 +1899,22 @@ def finding_resolution_attempt(
     records: tuple[LedgerRecord, ...],
     *,
     proof_state_cache: ProofStateCache | None = None,
+    require_review: bool = True,
 ) -> ResolutionAttempt | None:
-    """The newest later resolution attempt for a readable finding, or ``None`` when none exists."""
+    """The newest later resolution attempt for a readable finding, or ``None`` when none exists.
+
+    ``require_review=False`` drops only the completed-review requirement for an AI-powered
+    finding: the newest later check that ran the finding's policy to completion over its subject.
+    Its reasons describe the task as that check saw it; it can never resolve an AI-powered
+    finding, and ``could_resolve`` then means only that the policy and scope requirements held.
+    """
 
     finding_record = state.findings.get(finding_id)
     if finding_record is None or finding_record.payload is None:
         return None
-    return _resolution_attempt(state, finding_record, records, proof_state_cache)
+    return _resolution_attempt(
+        state, finding_record, records, proof_state_cache, require_review=require_review
+    )
 
 
 def _resolution_attempt(
@@ -1913,6 +1922,8 @@ def _resolution_attempt(
     finding_record: FindingProjectionRecord,
     records: tuple[LedgerRecord, ...],
     proof_state_cache: ProofStateCache | None,
+    *,
+    require_review: bool = True,
 ) -> ResolutionAttempt | None:
     finding = finding_record.payload
     assert finding is not None
@@ -1931,7 +1942,9 @@ def _resolution_attempt(
         (
             row
             for row in later_checks
-            if _could_resolve(state, row, finding, finding_record.source_frontier)
+            if _could_resolve(
+                state, row, finding, finding_record.source_frontier, require_review=require_review
+            )
         ),
         None,
     )
@@ -1996,7 +2009,12 @@ def _resolution_attempt(
 
 
 def _could_resolve(
-    state: ProjectionState, row: LedgerRecord, finding: Finding, finding_source_frontier: int
+    state: ProjectionState,
+    row: LedgerRecord,
+    finding: Finding,
+    finding_source_frontier: int,
+    *,
+    require_review: bool = True,
 ) -> bool:
     """Whether a recorded check is one that could ever resolve *finding* (issue #947).
 
@@ -2013,7 +2031,8 @@ def _could_resolve(
         and _policy_completed(check, finding)
         and _scope_covers(check, finding)
         and (
-            finding.origin is not FindingOrigin.SEMANTIC_MODEL_DERIVED
+            not require_review
+            or finding.origin is not FindingOrigin.SEMANTIC_MODEL_DERIVED
             or (
                 check.semantic_status is SemanticStatus.SUCCEEDED
                 and check.semantic_reason is SemanticReason.SEMANTIC_COMPLETED

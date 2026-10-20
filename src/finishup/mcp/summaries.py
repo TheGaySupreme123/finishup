@@ -1485,8 +1485,9 @@ def _check_lead_variants(
         return (
             "AI-powered review skipped: the reviewer twice in a row (or four times since the last "
             "assessed review) "
-            "could not assess the packet or an answered finding (verify it yourself; a repair "
-            "re-arms it until that cap); "
+            "could not assess the packet or an answered finding (verify it yourself and respond "
+            "self_verified to a finding you repaired; another check without a repair skips it "
+            "again, and a repair re-arms it until that cap); "
             f"local check verdict: {verdict}; {counts}",
             f"AI-powered review skipped (verify it yourself); local check verdict: {verdict}; "
             f"{counts}",

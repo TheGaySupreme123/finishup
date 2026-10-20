@@ -38,6 +38,15 @@ later check). The proof rules themselves are unchanged.
     that is unreadable or whose returned findings are unreadable (FinishUP cannot tell whether the
     issue fired again; a new check answers it).
 
+For an AI-powered finding the reviewer-side reasons come from that newest completed review, but
+the work-side task facts (``kernel.task_facts``: planned verification, edits after verification,
+requested outputs; and ``command_attempt_mismatch``) are recomputed by every check. When a newer
+check ran the finding's policy over its subject without completing a review (for example, review
+skipped after the reviewer twice could not assess the finding), those codes are read from that newer
+check instead (V5 #1118): a stale ``planned_verification_failed`` the agent has since cleared no
+longer refuses ``self_verified`` forever while the review that recorded it can never be repeated.
+A task fact the newer check still lists keeps refusing, so nothing is settled without evidence.
+
 Every other remaining reason is a FinishUP limit, so the finding is eligible. That includes
 ``observed_failure_not_rerun`` (#1104): FinishUP retires an observed failed command only when the
 same command (alone, or as a segment run as is inside a passing ``&&`` chain) or a planned
@@ -52,11 +61,12 @@ from typing import Final
 
 from finishup.domain.events import CheckRecordedPayload, LedgerRecord
 from finishup.domain.findings import FindingOrigin
-from finishup.domain.values import FindingId
+from finishup.domain.values import EventId, FindingId
 from finishup.kernel.finding_resolution import finding_resolution_attempt
 from finishup.kernel.gap_effect import GAP_EFFECT_TABLE, GapClass
 from finishup.kernel.projections import ProjectionState
-from finishup.kernel.task_fact_scope import scoped_resolution_reasons
+from finishup.kernel.task_fact_scope import COMMAND_ATTEMPT_MISMATCH_GAP, scoped_resolution_reasons
+from finishup.kernel.task_facts import TASK_FACT_GAPS
 from finishup.protocol.models import SemanticStatus
 
 __all__ = [
@@ -253,6 +263,36 @@ def _attempt_reasons(
     return scoped_resolution_reasons(reasons, state=state, finding_id=finding_id, records=records)
 
 
+# Work-side codes every check recomputes for the whole task; a newer check's view of them wins.
+_REFRESHED_CODES: Final = frozenset(
+    _COVERAGE_PREFIX + code for code in (*TASK_FACT_GAPS, COMMAND_ATTEMPT_MISMATCH_GAP)
+)
+
+
+def _refreshed_reasons(
+    state: ProjectionState,
+    finding_id: FindingId,
+    records: tuple[LedgerRecord, ...],
+    origin: FindingOrigin,
+    attempt_check: EventId,
+    newest_check: EventId,
+    reasons: tuple[str, ...],
+) -> tuple[str, ...]:
+    """*reasons* with their task facts read from a newer check that skipped the review (V5)."""
+
+    if origin is not FindingOrigin.SEMANTIC_MODEL_DERIVED or attempt_check == newest_check:
+        return reasons
+    fresh = finding_resolution_attempt(state, finding_id, records, require_review=False)
+    if fresh is None or not fresh.could_resolve or fresh.check_event_id == attempt_check:
+        return reasons
+    order = {row.event_id: index for index, row in enumerate(records)}
+    if order.get(fresh.check_event_id, -1) <= order.get(attempt_check, -1):
+        return reasons
+    kept = tuple(reason for reason in reasons if reason not in _REFRESHED_CODES)
+    current = tuple(reason for reason in fresh.reasons if reason in _REFRESHED_CODES)
+    return tuple(dict.fromkeys((*kept, *current)))
+
+
 def _evaluate(
     state: ProjectionState, finding_id: FindingId, records: tuple[LedgerRecord, ...]
 ) -> tuple[str | None, tuple[str, ...]]:
@@ -264,13 +304,24 @@ def _evaluate(
         not attempt.could_resolve and "finding_not_in_checked_frontier" in attempt.reasons
     ):
         return FINDING_NOT_RECHECKED, ()
+    reasons = attempt.reasons
+    if attempt.could_resolve:
+        reasons = _refreshed_reasons(
+            state,
+            finding_id,
+            records,
+            record.payload.origin,
+            attempt.check_event_id,
+            attempt.newest_check_event_id,
+            reasons,
+        )
     check = next((row.payload for row in records if row.event_id == attempt.check_event_id), None)
     undeliverable = (
         type(check) is CheckRecordedPayload
         and check.semantic_status in _DURABLE_UNDELIVERABLE_STATUSES
     )
     blocking = disqualifying_reasons(
-        _attempt_reasons(state, finding_id, records, attempt.reasons),
+        _attempt_reasons(state, finding_id, records, reasons),
         record.payload.origin,
         review_undeliverable=undeliverable,
     )

@@ -451,3 +451,19 @@ def test_the_closure_instruction_survives_optional_references_at_a_tight_bound()
     assert len(tight) <= 512
     assert "Closure: ready_with_limitations." in tight
     assert "Request the receipt." in tight
+
+
+def test_the_round_stopped_lead_names_the_self_verified_exit() -> None:
+    """#1118 V5: after the skip the agent is told the exit, not just to check again."""
+
+    text = summary_for_check(
+        _check(
+            semantic_reason="semantic_insufficient_packet",
+            coverage={"known_gaps": ["semantic_review_skipped_insufficient_packet"]},
+            observations_awaited={"state": "complete"},
+            semantic_route_required=False,
+        )
+    )
+    assert len(text) <= MAX_SUMMARY_BYTES
+    assert "respond self_verified to a finding you repaired" in text
+    assert "another check without a repair skips it again" in text

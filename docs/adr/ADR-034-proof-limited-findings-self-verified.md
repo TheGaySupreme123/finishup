@@ -316,3 +316,30 @@ fact (ADR-042 amendment of 2026-10-13): it refuses `self_verified` only on a fin
 mismatched obligation, the action that asserted the item, or the run or cited result linked into
 that relation, and the refusal names the obligation, item and run ids it needs. The eligibility
 rule is otherwise unchanged.
+
+## Amendment (2026-10-20, issue #1118 V5): task facts come from the newest check that ran the policy
+
+For an AI-powered finding, step 1 picks the newest later check that *completed a review*. After the
+reviewer twice could not assess the finding (`unassessable_review_exhausted`) or the packet
+(`semantic_review_skipped_insufficient_packet`), every later check skips the review, so that choice
+froze on the last review and on the task facts it recorded. In tb4h-smoke10c (bun-sourcemap-leak)
+the agent repaired a real reviewer finding, a regression test passed, and the agent then cleared the
+failed planned verification the last review had listed; each `self_verified` was still refused with
+that stale `coverage:planned_verification_failed`, and the closure loop ran for 51 more FinishUP
+calls with the repaired finding formally open.
+
+Task facts (`kernel.task_facts`) and `command_attempt_mismatch` are recomputed by every check over
+the whole task. When a newer check than that review ran the finding's policy to completion over its
+subject (`finding_resolution_attempt(..., require_review=False)`), eligibility reads those codes from
+the newer check and every other reason (the reviewer's verdict and packet limits) from the last
+completed review. A fact the newer check still lists, or a new one it lists, keeps refusing, and a
+reviewer that still saw the issue on a full packet keeps refusing. Nothing resolves: `self_verified`
+stays a disclosed, terminal answer that never makes a receipt read clean. Finding resolution, closure
+readiness and the Stop gate are unchanged. Host decision: kernel rule, identical on every host.
+
+Not changed here (design-gated, owned with the review packet, #1118): the frozen review case drops
+the original finding prose under the inner ceiling fallback even when the owner admitted finding
+prose, and its `prior_finding_context` still reads `complete` when only the structural row survives.
+Until the packet keeps bounded finding substance ahead of unrelated excerpts, a follow-up review may
+still rule such a finding `unassessable`; this amendment makes the self-verification exit reachable
+for the agent, which does hold the finding's substance (status `findings` shows it).
