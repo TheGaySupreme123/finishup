@@ -1739,8 +1739,9 @@ async def test_a_case_over_the_channel_ceiling_is_planned_below_it_and_disclosed
 ) -> None:
     """Issue #907 Phase 1b: more excerpts must not turn a runnable review into a denied one.
 
-    Quote-heavy excerpts cost about twice their bytes once escaped, so 64 selectable excerpts
-    would prepare a packet over 262,144 bytes that egress refuses whole. The case is rebuilt with
+    Quote-heavy excerpts cost about twice their bytes once escaped in the packet, and twice again
+    in the reviewer exchange that carries it (#1118), so 64 selectable excerpts would prepare a
+    disclosure over 262,144 bytes that egress refuses whole. The case is rebuilt with
     a smaller excerpt byte budget instead, the dropped excerpts are disclosed as
     ``content_unselected``, and a replay builds the identical case.
     """
@@ -1765,7 +1766,10 @@ async def test_a_case_over_the_channel_ceiling_is_planned_below_it_and_disclosed
     built = [row for row in _records(tmp_path) if row["operation"] == "semantic_case_built"]
     assert len(built) == 2
     assert all(1 <= cast(int, row["semantic_excerpt_ceiling_rounds"]) <= 4 for row in built)
-    assert all(16 < cast(int, row["semantic_excerpts_selected"]) < 64 for row in built)
+    # #1118: a quote costs four bytes once the packet is a JSON string in the reviewer exchange,
+    # so the planner measures that exchange and keeps fewer of these 4 KB quote runs (13 today)
+    # than the 17+ the packet-only estimate kept, which the real coordinator could not disclose.
+    assert all(0 < cast(int, row["semantic_excerpts_selected"]) < 64 for row in built)
     # Consent approved 64 excerpts and 128 KiB; the planner, not the owner, set the narrower
     # effective byte limit, and the diagnostics keep the two apart (R944-03).
     assert all(row["semantic_excerpt_count_approved"] == 64 for row in built)

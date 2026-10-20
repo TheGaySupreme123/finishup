@@ -40,7 +40,7 @@ from finishup.domain.privacy import (
     ReviewSelectionPolicy,
 )
 from finishup.domain.values import Frontier
-from finishup.ports.privacy import EffectivePrivacyPolicy
+from finishup.ports.privacy import EffectivePrivacyPolicy, MinimizedDisclosure
 from finishup.protocol.canonical import canonical_encode
 from finishup.protocol.models import DataCategory
 
@@ -1126,3 +1126,66 @@ def test_heuristic_value_lines_reads_raw_and_json_string_forms() -> None:
     assert heuristic_value_lines(b"plain words") == ()
     many = b"".join(b"API_TOKEN=abcdefgh%08d\n" % index for index in range(40))
     assert heuristic_value_lines(many) == tuple(range(1, 33))
+
+
+def _size_check_line() -> int:
+    """The line of ``MinimizedDisclosure``'s ``raise`` for a prepared payload over the cap."""
+
+    import inspect
+
+    import finishup.ports.privacy as privacy_module
+
+    lines, start = inspect.getsourcelines(privacy_module.MinimizedDisclosure.__post_init__)
+    check = next(i for i, text in enumerate(lines) if "> MAX_MINIMIZED_DISCLOSURE_BYTES" in text)
+    raised = next(i for i in range(check, len(lines)) if "raise _invalid()" in lines[i])
+    return start + raised
+
+
+def _rendered(minimized: MinimizedDisclosure, payload: bytes) -> MinimizedDisclosure:
+    """What egress does with an approved packet placed in a reviewer exchange (#1118)."""
+
+    return replace(minimized, prepared_bytes=payload, byte_count=len(payload))
+
+
+@pytest.mark.parametrize(
+    ("clean", "suspect", "redact"),
+    (
+        # The same file captured twice: identical bytes under two case items.
+        (b"def add(a, b):\n    return a + b\n", b"def add(a, b):\n    return a + b\n", False),
+        # A value replaced in place and reported by line.
+        (b"clean evidence", b'        self.api_key = "Zx81Kq0Lm2Pq9Rs7"\n', False),
+        # An item withheld because its value could not be redacted.
+        (b"clean evidence", b"API_TOKEN=abcdefgh12345678\n", True),
+    ),
+)
+def test_a_reviewer_exchange_can_only_fail_the_disclosure_on_its_size(
+    monkeypatch: pytest.MonkeyPatch, clean: bytes, suspect: bytes, redact: bool
+) -> None:
+    """#1118 smoke: four reviews ended ``coordinator_failure`` at ``finishup.ports.privacy:529``.
+
+    Placing the packet in the reviewer exchange changes only the prepared bytes, their count,
+    token estimate and digest; repeated captures, redacted values and withheld items were already
+    validated by the same constructor. Within the cap every such disclosure is valid; one byte
+    over it fails the size check, and that check is the one ``exception_origin`` names.
+    """
+
+    import finishup.adapters.privacy.local_enforcer as enforcer_module
+    from finishup.application.reviewer_run import reviewer_first_exchange
+    from finishup.observability.logging import exception_origin
+    from finishup.ports.privacy import MAX_MINIMIZED_DISCLOSURE_BYTES
+
+    if redact:
+        monkeypatch.setattr(enforcer_module, "redact_heuristic_spans", _no_op_redaction)
+    minimized = _minimize_all(_two_excerpt_semantic_candidate(clean, suspect))
+    if clean == suspect:
+        assert len(minimized.source_item_digests) == 2  # the packet envelope and one source
+    elif redact:
+        assert minimized.withheld_item_ids == ("suspect",) and minimized.redacted_values
+    else:
+        assert minimized.redacted_span_count and minimized.redacted_values
+    exchange = reviewer_first_exchange(minimized.prepared_bytes, '{"reviewer_catalog":{}}')
+    assert _rendered(minimized, exchange).byte_count == len(exchange)
+    assert _rendered(minimized, b"x" * MAX_MINIMIZED_DISCLOSURE_BYTES).byte_count > 0
+    with pytest.raises(ValueError, match="invalid_privacy_port_value") as raised:
+        _rendered(minimized, b"x" * (MAX_MINIMIZED_DISCLOSURE_BYTES + 1))
+    assert exception_origin(raised.value) == f"finishup.ports.privacy:{_size_check_line()}"

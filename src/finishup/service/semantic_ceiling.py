@@ -25,6 +25,7 @@ from finishup.adapters.privacy.local_enforcer import (
     EGRESS_BYTES_PER_TOKEN_ESTIMATE,
     clean_item_data_class,
 )
+from finishup.application.reviewer_run import reviewer_first_exchange
 from finishup.application.semantic_case import (
     SemanticCaseTooLarge,
     check_time_change_bytes_carried,
@@ -50,6 +51,9 @@ __all__ = [
     "channel_admission",
     "channel_prepared_limit",
     "plan_under_channel_ceiling",
+    "reviewer_exchange_limit",
+    "reviewer_exchange_measure",
+    "reviewer_read_room",
     "with_ceiling_planning_gap",
 ]
 
@@ -62,17 +66,27 @@ CEILING_PLANNING_GAP: Final = "content_unselected"
 
 
 # #1118: every byte of the reviewer conversation counts against the channel ceiling: the loop
-# instruction, the packet (sent as a JSON string, so escaping grows it), the read catalog, the
-# reviewer's replies and the read results. The packet is planned below the ceiling less this frame
-# and a fifth for escaping; the reads get only what the sent conversation leaves.
+# instruction, the packet (sent as a JSON string, so escaping grows it, up to twice for quoted code),
+# the read catalog, the reviewer's replies and the read results. The first exchange is measured
+# exactly, as ``reviewer_first_exchange`` renders it, and planned below the ceiling less this frame,
+# which keeps room for the reviewer's replies; the reads get only what the sent conversation leaves.
 REVIEWER_FRAME_BYTES: Final = 8192
 
 
-def reviewer_packet_limit(policy: PrivacyPolicy) -> int | None:
-    """The packet size the reviewer conversation's first exchange can carry under the ceiling."""
+def reviewer_exchange_limit(policy: PrivacyPolicy) -> int | None:
+    """The size the reviewer conversation's first exchange may reach under the ceiling."""
 
     limit = channel_prepared_limit(policy)
-    return None if limit is None else max(0, (limit - REVIEWER_FRAME_BYTES) * 4 // 5)
+    return None if limit is None else max(0, limit - REVIEWER_FRAME_BYTES)
+
+
+def reviewer_exchange_measure(catalog: str) -> Callable[[bytes], int]:
+    """The exact size of the first exchange that carries a prepared packet beside ``catalog``."""
+
+    def measure(packet: bytes) -> int:
+        return len(reviewer_first_exchange(packet, catalog))
+
+    return measure
 
 
 def reviewer_read_room(limit: int | None, sent: int) -> int:
@@ -167,10 +181,12 @@ def with_ceiling_planning_gap(gaps: Sequence[str]) -> tuple[str, ...]:
     return tuple(sorted({*gaps, CEILING_PLANNING_GAP}, key=str.encode))
 
 
-def _prepared_size(case: SemanticCase, admission: ChannelAdmission | None) -> int | None:
+def _prepared_size(
+    case: SemanticCase, admission: ChannelAdmission | None, measure: Callable[[bytes], int]
+) -> int | None:
     released = {item.item_id for item in case.items if admission is None or admission.admits(item)}
     try:
-        return len(semantic_case_to_prepared_payload(case, released))
+        return measure(semantic_case_to_prepared_payload(case, released))
     except SemanticCaseTooLarge:
         return None
 
@@ -197,11 +213,14 @@ def plan_under_channel_ceiling(
     limit: int | None,
     rebuild: Callable[[ReviewSelectionPolicy], SemanticCase],
     admission: ChannelAdmission | None = None,
+    measure: Callable[[bytes], int] = len,
 ) -> tuple[SemanticCase, ReviewSelectionPolicy, int]:
     """Return the case to review, the selection it was built with, and the rebuilds used.
 
     Sizes are those of the payload ``admission`` releases (every item when ``None``), so bytes
-    local privacy minimization withholds never cost an eligible excerpt its place.
+    local privacy minimization withholds never cost an eligible excerpt its place. ``measure``
+    turns that payload into the bytes the limit bounds: the payload itself by default, or the
+    exact reviewer exchange that carries it (#1118), so escaping is counted, not estimated.
 
     ``rebuild`` builds the same case under a narrower selection and adds the planning gap. The
     first rebuild omits lower-priority narrative with the primary excerpt budget intact. A
@@ -214,7 +233,7 @@ def plan_under_channel_ceiling(
 
     if limit is None:
         return case, selection, 0
-    size = _prepared_size(case, admission)
+    size = _prepared_size(case, admission, measure)
     excerpt_bytes = _excerpt_bytes(case)
     if size is None or size <= limit:
         return case, selection, 0
@@ -224,12 +243,12 @@ def plan_under_channel_ceiling(
     )
     rounds = 1
     protected = rebuild(approved)
-    protected_size = _prepared_size(protected, admission)
+    protected_size = _prepared_size(protected, admission, measure)
     if protected_size is None or protected_size <= limit:
         return protected, approved, rounds
     size, excerpt_bytes = protected_size, _excerpt_bytes(protected)
     base = rebuild(_with_excerpt_budget(approved, 0))
-    base_size = _prepared_size(base, admission)
+    base_size = _prepared_size(base, admission, measure)
     if base_size is None or base_size >= limit:
         # Even without excerpts the packet is over the ceiling: egress refuses it as before.
         return (
@@ -246,7 +265,7 @@ def plan_under_channel_ceiling(
         budget = room * excerpt_bytes // (size - base_size)
         candidate_selection = _with_excerpt_budget(approved, budget)
         candidate = rebuild(candidate_selection)
-        candidate_size = _prepared_size(candidate, admission)
+        candidate_size = _prepared_size(candidate, admission, measure)
         if candidate_size is None:
             break
         if candidate_size <= limit:

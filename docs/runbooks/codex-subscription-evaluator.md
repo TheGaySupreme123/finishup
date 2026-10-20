@@ -855,6 +855,18 @@ projected assessment were omitted from the case while the review still dispatche
 by the service before any evaluator runs, so it applies identically to every host and evaluator,
 and it is never a `coordinator_failure`.
 
+A large case is planned against the exact first reviewer exchange: the loop instruction, the
+packet (sent as a JSON string, so quoted code and JSON tool output can grow to nearly twice their
+size) and the read catalog, below the channel ceiling less 8 KiB, never above the 262,144 bytes one
+disclosure carries. Excerpts the plan cuts are disclosed as `content_unselected`, and the
+`semantic_case_built` counters show `semantic_excerpt_ceiling_rounds` above zero and, when the
+excerpt budget itself was reduced, `semantic_excerpt_byte_limit` below
+`semantic_excerpt_byte_approved`. An exchange that still does not fit is refused before anything
+is sent, as `blocked_by_policy`; nothing reaches the Codex child. Before the #1118 smoke fix such a
+case ended `coordinator_failure` with an owner diagnostic
+`semantic_attempt_privacy_dispatch_entered_failed` / `exception_value_error` at
+`finishup.ports.privacy:529`; on a current build that line no longer means an oversize review.
+
 ## Packaged live-evidence checklist
 
 Use an exact packaged FinishUP build and an isolated logged-in evaluator home. Record these as

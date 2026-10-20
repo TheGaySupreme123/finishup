@@ -58,7 +58,13 @@ from finishup.ports.semantic import (
 from finishup.protocol.canonical import canonical_encode
 from finishup.protocol.models import SemanticStatus
 
-__all__ = ["PACKET_TURN", "ReviewerRun", "reviewer_catalog", "run_reviewer"]
+__all__ = [
+    "PACKET_TURN",
+    "ReviewerRun",
+    "reviewer_catalog",
+    "reviewer_first_exchange",
+    "run_reviewer",
+]
 
 # The loop's packet turn; each exchange replaces it with the packet that exchange's admission
 # approved, followed by the read catalog.
@@ -106,6 +112,15 @@ def reviewer_catalog(roots: Sequence[ReadRoot], reads: int) -> str:
         rows.append(row)
     body = {"reviewer_catalog": {"reads_allowed": reads, "read_file_roots": rows}}
     return canonical_encode(cast(dict[str, object], body)).decode()  # pyright: ignore[reportArgumentType]
+
+
+def reviewer_first_exchange(packet: bytes, catalog: str) -> bytes:
+    """The exact first exchange that carries ``packet``: the loop instruction, the packet as a JSON
+    string and the read catalog. Ceiling planning measures it, so escaping is counted (#1118)."""
+
+    return encode_reviewer_exchange(
+        (("system", REVIEWER_LOOP_INSTRUCTION), ("user", packet.decode()), ("user", catalog))
+    )
 
 
 async def run_reviewer(

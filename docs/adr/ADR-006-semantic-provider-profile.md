@@ -2577,11 +2577,22 @@ credential probe keep their one-shot dispatch; no check uses it.
   provider keeps what it was sent, so FinishUP does not rewrite its history: the review ends
   incomplete and nothing more is sent.
 - **Every byte sent counts against the channel ceiling**: the loop instruction, the packet (as a
-  JSON string, so escaping grows it), the catalog, the replies and the reads. The packet is planned
-  below the ceiling less an 8 KiB frame, then a fifth for escaping; after each exchange the reads
-  may add only what the sent conversation leaves (less 2 KiB, then a fifth), and when that is under
-  the 1 KiB minimum the reviewer is offered only the final judgment. A conversation that still
-  outgrows the ceiling is refused whole at the next exchange, never trimmed.
+  JSON string, so escaping grows it), the catalog, the replies and the reads. Ceiling planning
+  measures the exact first exchange (instruction, packet as a JSON string, and the job's own read
+  catalog) and plans it below the ceiling less an 8 KiB frame kept for the reviewer's replies, so
+  escaping is counted rather than estimated: excerpts are cut, disclosed as `content_unselected`,
+  until it fits. After each exchange the reads may add only what the sent conversation leaves (less
+  2 KiB, then a fifth), and when that is under the 1 KiB minimum the reviewer is offered only the
+  final judgment. The ceiling here is never above the 262,144 bytes one prepared disclosure
+  carries, the receipt's `final_bytes` bound. An exchange that still outgrows the channel ceiling
+  or that bound is refused whole before a proposal exists (`blocked_by_policy` /
+  `policy_denied`), never trimmed and never sent.
+  *Amended 2026-10-20 (#1118 benchmark smoke):* the packet was first planned below the ceiling
+  less 8 KiB, then a fifth for escaping. Quoted code and JSON tool output escape twice in the
+  conversation (a 192,924-byte packet sent as a 271,615-byte exchange; a 200,469-byte one, from
+  captured output alone under the excerpt budget, as 281,486), and building that disclosure
+  raised, so four reviews ended `coordinator_failure`. The 262,144-byte bound is unchanged: it is
+  the per-disclosure quantity the receipt vocabulary fixes.
 - **Read roots.** `w1` is the workspace: the trusted walk's exclusions plus Git's ignore answer
   (an unanswerable ignore state refuses the path; outside a Git repository every workspace read is
   refused). `o<n>` is an owner-admitted outside root limited to the task-declared paths beneath it,

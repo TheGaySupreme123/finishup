@@ -11897,9 +11897,17 @@ as `outcome_unknown` and is never resent. For it, `operation_max_retries` is `0`
   per-continuation recheck; `admit_reviewer_read(..., envelope, history=None)` adds an admitted
   result's elements to `history` and refuses (`authorization_changed`) when the retained ones no
   longer hold.
-- `service.semantic_ceiling.reviewer_packet_limit(policy)` (the packet's planning ceiling:
-  `(channel_prepared_limit - REVIEWER_FRAME_BYTES) * 4 // 5`, `REVIEWER_FRAME_BYTES = 8192`) and
-  `reviewer_read_room(limit, sent)` (`(limit - sent - 2048) * 4 // 5`); `ReviewerBroker.total` is
+- `service.semantic_ceiling.reviewer_exchange_limit(policy)` (the first exchange's planning
+  ceiling: `channel_prepared_limit - REVIEWER_FRAME_BYTES`, `REVIEWER_FRAME_BYTES = 8192`),
+  `reviewer_exchange_measure(catalog)` (the exact size of
+  `application.reviewer_run.reviewer_first_exchange(packet, catalog)`: the loop instruction, the
+  packet as a JSON string and the read catalog, which `plan_under_channel_ceiling(..., measure=)`
+  sizes instead of the bare packet; the catalog is rendered from the job's own read roots before
+  planning, and names no case ref) and
+  `reviewer_read_room(limit, sent)` (`(limit - sent - 2048) * 4 // 5`). `PrivacyCoordinator`
+  refuses a rendered reviewer exchange over `MAX_MINIMIZED_DISCLOSURE_BYTES` before a proposal
+  exists, `blocked_by_policy` / `policy_denied` like an over-`max_bytes` one, so an oversize
+  conversation never surfaces as `coordinator_failure` (#1118 smoke). `ReviewerBroker.total` is
   lowered to `used + read_room` after each exchange, and `max_reads=0` is used where every exchange
   asks the owner first.
 - Read roots (`ReadRoot`): `w1` the workspace, refused where `probe_requested_paths` does not answer

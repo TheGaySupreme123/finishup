@@ -70,6 +70,7 @@ from finishup.observability.semantic_context import semantic_check_request
 from finishup.ports.clock import ClockPort
 from finishup.ports.ids import IdPort
 from finishup.ports.privacy import (
+    MAX_MINIMIZED_DISCLOSURE_BYTES,
     AgentProjectionRequest,
     DisclosureProposalRequest,
     EffectivePrivacyPolicy,
@@ -2087,6 +2088,23 @@ class PrivacyCoordinator:
             # conversation is the disclosed payload, so ceilings, the proposal and the gateway's
             # final scan all see its exact bytes; earlier read results were admitted on their own.
             payload = frame.render(packet_bytes)
+            if len(payload) > MAX_MINIMIZED_DISCLOSURE_BYTES:
+                # #1118: one disclosure carries at most this many bytes (the receipt's
+                # ``final_bytes`` bound). Ceiling planning keeps the first exchange under it and
+                # read room keeps later ones under it; a conversation that still outgrows it is
+                # refused whole before a proposal exists, never trimmed and never sent.
+                return await self._complete_semantic_predispatch(
+                    candidate,
+                    effective,
+                    PrivacyOutcome.BLOCKED_BY_POLICY,
+                    PrivacyReason.POLICY_DENIED,
+                    decision=decision,
+                    withheld_item_ids=minimized.withheld_item_ids,
+                    redacted_span_count=minimized.redacted_span_count,
+                    redacted_values=minimized.redacted_values,
+                    scan_stage=ReceiptSecretScanStage.PREPARED_CASE,
+                    scan_match_count=_minimized_scan_match_count(minimized),
+                )
             heuristic = external_review_credential_heuristic(effective.policy, binding)
             if self._classifier.scan_exact_bytes(payload, credential_heuristic=heuristic):
                 return await self._complete_semantic_predispatch(

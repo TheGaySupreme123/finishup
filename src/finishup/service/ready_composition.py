@@ -168,7 +168,7 @@ from finishup.application.projects import (
 )
 from finishup.application.recommendations import evaluate_recommendation_context, refresh_pending
 from finishup.application.reviewer_broker import MAX_READS, ReadRoot
-from finishup.application.reviewer_run import ReviewerRun, run_reviewer
+from finishup.application.reviewer_run import ReviewerRun, reviewer_catalog, run_reviewer
 from finishup.application.semantic_attempts import (
     SemanticAttemptAccounting,
     SemanticEndpointPlan,
@@ -439,7 +439,8 @@ from finishup.service.semantic_ceiling import (
     channel_admission,
     channel_prepared_limit,
     plan_under_channel_ceiling,
-    reviewer_packet_limit,
+    reviewer_exchange_limit,
+    reviewer_exchange_measure,
     reviewer_read_room,
     with_ceiling_planning_gap,
 )
@@ -5533,21 +5534,47 @@ def _privacy_gated_semantic_evaluator(
                     final_review=final_review,
                 )
 
+            # Ask-every-time: each further exchange would need its own approval, so the review
+            # offers no reads from its first exchange.
+            reviewer_reads = 0 if semantic_preview_required(policy) else MAX_READS
+
+            async def read_roots_for(case: SemanticCase) -> tuple[ReadRoot, ...]:
+                if runtime is None:
+                    return ()
+                return await _reviewer_read_roots(
+                    runtime,
+                    frozen.lease.operation_id,
+                    case,
+                    workspace_root=workspace_root,
+                    outside=(
+                        policy.admitted_input_roots if carries_task_inputs(review_selection) else ()
+                    ),
+                    inputs=review_inputs[0],
+                    protected=protected_directories,
+                    withheld=withheld,
+                    change_capture=change_capture,
+                )
+
             try:
                 # Plan below the channel ceiling before egress would refuse the whole packet: a
                 # smaller excerpt budget is a narrowing of the approved selection (issue #907).
                 approved_case = build_case(review_selection, tuple(captured_content_gaps))
+                # #1118: what is planned is the exact first exchange of the reviewer
+                # conversation (instruction, packet as a JSON string, read catalog), below the
+                # ceiling less the frame its replies need. The catalog names roots and paths
+                # only, never the case's refs, so the planned case carries the same one.
+                read_catalog = reviewer_catalog(await read_roots_for(approved_case), reviewer_reads)
                 semantic_case, planned_selection, ceiling_rounds = plan_under_channel_ceiling(
                     approved_case,
                     review_selection,
-                    # #1118: the packet leaves room for the reviewer conversation around it.
-                    reviewer_packet_limit(policy),
+                    reviewer_exchange_limit(policy),
                     lambda selection: build_case(
                         selection, with_ceiling_planning_gap(captured_content_gaps)
                     ),
                     # Size what egress will release to either destination, not the items local
                     # minimization withholds from the channel.
                     channel_admission(policy, (provider, fallback_binding)),
+                    reviewer_exchange_measure(read_catalog),
                 )
             except SemanticCaseCapacityExceeded as exc:
                 # Same pre-dispatch contract as an envelope that cannot be reduced: local
@@ -5835,19 +5862,7 @@ def _privacy_gated_semantic_evaluator(
             # Structural progress starts at the frozen execution deadline; a recovered job keeps
             # its original row, so replay never restarts its elapsed time (issue #571 A2).
             await _begin_semantic_progress(runtime, job, execution.expires_at, clock)
-            read_roots = await _reviewer_read_roots(
-                runtime,
-                frozen.lease.operation_id,
-                semantic_case,
-                workspace_root=workspace_root,
-                outside=(
-                    policy.admitted_input_roots if carries_task_inputs(review_selection) else ()
-                ),
-                inputs=review_inputs[0],
-                protected=protected_directories,
-                withheld=withheld,
-                change_capture=change_capture,
-            )
+            read_roots = await read_roots_for(semantic_case)
 
             def _dispatch_for(
                 binding: ProviderBinding,
@@ -6025,9 +6040,7 @@ def _privacy_gated_semantic_evaluator(
                                     None if not resume_first or wait is None else wait.pending_id
                                 ),
                                 clock=clock.monotonic_seconds,
-                                # Ask-every-time: each further exchange would need its own
-                                # approval, so the review offers no reads from its first exchange.
-                                reads=0 if semantic_preview_required(policy) else MAX_READS,
+                                reads=reviewer_reads,
                                 # Opaque read-source ids are the installation's keyed commitment.
                                 source_commitment=lambda data: runtime.objects.commitment_for(
                                     data, ObjectKind.SEMANTIC_RESPONSE
