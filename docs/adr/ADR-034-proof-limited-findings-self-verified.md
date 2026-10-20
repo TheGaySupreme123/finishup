@@ -337,6 +337,14 @@ reviewer that still saw the issue on a full packet keeps refusing. Nothing resol
 stays a disclosed, terminal answer that never makes a receipt read clean. Finding resolution, closure
 readiness and the Stop gate are unchanged. Host decision: kernel rule, identical on every host.
 
+The same refresh covers `no_material_change_since_finding` (#1118 V7). That reason is not a
+reviewer ruling: each check computes it from its own pre-check projection. After two
+`insufficient_packet` reviews with nothing recorded in between, the last review lists it; a repair
+through a shell command (an `ActionKind.COMMAND`, which does not re-arm the stopped review round)
+and a passing verification then reach only a local check that skips the review. Eligibility now
+reads that reason from the newer policy-complete check too, so the repair is no longer stranded on
+the old review's view. A newer check over unchanged work still lists it and still refuses.
+
 A review refused as `failed` / `case_capacity_exceeded` (0fb47f325) is likewise a durable
 FinishUP limit for this rule: the unchanged case is refused again, so `semantic_review_not_completed`
 from it no longer reads as a transient retry; closure readiness ends such a closing review as

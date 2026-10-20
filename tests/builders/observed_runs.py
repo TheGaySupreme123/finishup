@@ -182,7 +182,7 @@ def _logical_key(payload: EventPayload, identifier: EventId) -> str | None:
     plan_version = getattr(payload, "plan_version", None)
     if plan_version is not None:
         return str(plan_version)
-    if type(payload).__name__ == "DecisionRecordedPayload":
+    if type(payload).__name__ in {"DecisionRecordedPayload", "CheckRecordedPayload"}:
         return str(identifier)
     raise AssertionError("unsupported payload")
 

@@ -40,12 +40,15 @@ later check). The proof rules themselves are unchanged.
 
 For an AI-powered finding the reviewer-side reasons come from that newest completed review, but
 the work-side task facts (``kernel.task_facts``: planned verification, edits after verification,
-requested outputs; and ``command_attempt_mismatch``) are recomputed by every check. When a newer
-check ran the finding's policy over its subject without completing a review (for example, review
-skipped after the reviewer twice could not assess the finding), those codes are read from that newer
-check instead (V5 #1118): a stale ``planned_verification_failed`` the agent has since cleared no
-longer refuses ``self_verified`` forever while the review that recorded it can never be repeated.
-A task fact the newer check still lists keeps refusing, so nothing is settled without evidence.
+requested outputs; and ``command_attempt_mismatch``) and ``no_material_change_since_finding`` (read
+from each check's own pre-check projection) are recomputed by every check. When a newer check ran
+the finding's policy over its subject without completing a review (for example, review skipped
+after the reviewer twice could not assess the finding), those codes are read from that newer check
+instead (V5, V7 #1118): a stale ``planned_verification_failed`` the agent has since cleared, or a
+stale "no material change" after a repair recorded since (a shell command does not re-arm the
+stopped review), no longer refuses ``self_verified`` forever while the review that recorded it can
+never be repeated. A code the newer check still lists keeps refusing (unchanged work still refuses),
+so nothing is settled without evidence.
 
 Every other remaining reason is a FinishUP limit, so the finding is eligible. That includes
 ``observed_failure_not_rerun`` (#1104): FinishUP retires an observed failed command only when the
@@ -263,9 +266,13 @@ def _attempt_reasons(
     return scoped_resolution_reasons(reasons, state=state, finding_id=finding_id, records=records)
 
 
-# Work-side codes every check recomputes for the whole task; a newer check's view of them wins.
+# Work-side codes every check recomputes; a newer check's view of them wins. The material-change
+# reason is computed from each check's own pre-check projection, not by the reviewer (V7 #1118).
 _REFRESHED_CODES: Final = frozenset(
-    _COVERAGE_PREFIX + code for code in (*TASK_FACT_GAPS, COMMAND_ATTEMPT_MISMATCH_GAP)
+    {
+        *(_COVERAGE_PREFIX + code for code in (*TASK_FACT_GAPS, COMMAND_ATTEMPT_MISMATCH_GAP)),
+        "no_material_change_since_finding",
+    }
 )
 
 
@@ -278,7 +285,7 @@ def _refreshed_reasons(
     newest_check: EventId,
     reasons: tuple[str, ...],
 ) -> tuple[str, ...]:
-    """*reasons* with their task facts read from a newer check that skipped the review (V5)."""
+    """*reasons* with their work-side codes read from a newer check that skipped the review (V5, V7)."""
 
     if origin is not FindingOrigin.SEMANTIC_MODEL_DERIVED or attempt_check == newest_check:
         return reasons
