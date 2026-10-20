@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from dataclasses import replace
 from pathlib import Path
 from typing import cast
@@ -15,7 +16,7 @@ from finishup.adapters.privacy.catalog import (
 )
 from finishup.domain.privacy import ReviewSelectionPolicy
 from finishup.protocol.canonical import JsonValue, canonical_encode
-from finishup.protocol.schemas import validate_schema_instance
+from finishup.protocol.schemas import SchemaInstanceInvalid, validate_schema_instance
 
 
 def test_encode_local_only_matches_wire_schema() -> None:
@@ -100,3 +101,45 @@ def test_released_wire_policy_still_decodes() -> None:
     wire["schema_version"] = "1.0.0"
     validate_schema_instance("privacy-policy", "1.0.0", wire)
     assert decode_privacy_policy_canonical(canonical_encode(wire)) == original
+
+
+def _with_llm_ceilings(max_bytes: int, max_tokens: int):  # noqa: ANN202
+    from finishup.domain.privacy import EgressChannel
+
+    base = minimal_external_policy()
+    return replace(
+        base,
+        channel_policies=tuple(
+            replace(channel, max_bytes=max_bytes, max_tokens=max_tokens)
+            if channel.channel is EgressChannel.LLM_INFERENCE
+            else channel
+            for channel in base.channel_policies
+        ),
+    )
+
+
+def test_a_channel_ceiling_above_262144_bytes_is_written_only_as_1_3_0() -> None:
+    """#1118: the sized reviewer exchange bound (524,288 bytes) needs privacy-policy 1.3.0; a
+    policy within 262,144 bytes keeps its older version and bytes."""
+
+    within = encode_privacy_policy_json(_with_llm_ceilings(262_144, 65_536))
+    assert within["schema_version"] == "1.2.0"
+    validate_schema_instance("privacy-policy", "1.2.0", within)
+
+    raised = _with_llm_ceilings(524_288, 131_072)
+    wire = encode_privacy_policy_json(raised)
+    assert wire["schema_version"] == "1.3.0"
+    validate_schema_instance("privacy-policy", "1.3.0", wire)
+    assert decode_privacy_policy_canonical(canonical_encode(wire)) == raised
+    # 1.2.0 stays byte-identical, so it still refuses the wider ceiling.
+    relabelled: dict[str, JsonValue] = {**wire, "schema_version": "1.2.0"}
+    with pytest.raises(SchemaInstanceInvalid):
+        validate_schema_instance("privacy-policy", "1.2.0", relabelled)
+    # A mis-stamped older document is refused, not read as a wider approval.
+    with pytest.raises(ValueError, match="privacy_policy_row_corrupt"):
+        decode_privacy_policy_canonical(canonical_encode(relabelled))
+    over = cast(dict[str, JsonValue], json.loads(canonical_encode(wire)))
+    llm = cast(list[dict[str, JsonValue]], over["channel_policies"])[2]
+    llm["max_bytes"] = "524289"
+    with pytest.raises(SchemaInstanceInvalid):
+        validate_schema_instance("privacy-policy", "1.3.0", cast(JsonValue, over))

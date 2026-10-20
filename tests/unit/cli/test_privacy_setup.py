@@ -144,6 +144,32 @@ def test_assisted_review_is_bound_to_one_provider_and_bounded_categories() -> No
     assert candidate.supersedes_policy_digest == current.policy_digest
 
 
+def test_a_fresh_setup_writes_ceilings_the_sized_reviewer_route_can_use() -> None:
+    """#1118: setup's review-channel ceilings sit at the sized reviewer exchange bound (524,288
+    bytes, 131,072 tokens at the policy's four-bytes-per-token estimate), so they never bind
+    before the model's own budget, and the policy is written as privacy-policy 1.3.0."""
+
+    from finishup.adapters.privacy.catalog import encode_privacy_policy_json
+    from finishup.adapters.privacy.local_enforcer import estimated_token_count
+    from finishup.domain.reviewer_context import MAX_SIZED_EXCHANGE_BYTES
+    from finishup.protocol.schemas import validate_schema_instance
+
+    candidate = build_candidate_policy(
+        local_only_policy(), _answers(), now=datetime(2026, 10, 20, tzinfo=UTC)
+    )
+    llm = next(
+        channel
+        for channel in candidate.channel_policies
+        if channel.channel is EgressChannel.LLM_INFERENCE
+    )
+    assert (llm.max_bytes, llm.max_tokens) == (524_288, 131_072)
+    assert llm.max_bytes == MAX_SIZED_EXCHANGE_BYTES
+    assert estimated_token_count(llm.max_bytes) == llm.max_tokens
+    wire = encode_privacy_policy_json(candidate)
+    assert wire["schema_version"] == "1.3.0"
+    validate_schema_instance("privacy-policy", "1.3.0", wire)
+
+
 def test_unavailable_network_channels_fail_closed() -> None:
     with pytest.raises(ValueError, match="privacy_setup_channel_unsupported"):
         build_candidate_policy(

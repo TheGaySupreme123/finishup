@@ -117,3 +117,24 @@ def test_privacy_policy_wire_keeps_released_bytes_and_adds_the_section_only_in_1
             by_key[("expanded", "1.1.0")]["wire"]["review_selection"][key]
             == by_key[("expanded", "1.2.0")]["wire"]["review_selection"][key]
         )
+
+
+def test_privacy_policy_byte_ceiling_above_262144_is_only_1_3_0() -> None:
+    """#1118: a review channel ceiling above 262,144 bytes is written as 1.3.0, and only then."""
+
+    vectors = _case()["input"]["privacy_policy_byte_ceiling_wire"]["vectors"]
+    assert {vector["llm_max_bytes"] for vector in vectors} == {262_144, 524_288}
+    for vector in vectors:
+        wire = cast(dict[str, JsonValue], vector["wire"])
+        validate_schema_instance("privacy-policy", vector["schema_version"], wire)
+        policy = decode_privacy_policy_canonical(canonical_encode(wire))
+        assert encode_privacy_policy_json(policy) == wire
+        assert canonical_digest(wire) == vector["canonical_digest"]
+        assert (vector["schema_version"] == "1.3.0") == (vector["llm_max_bytes"] > 262_144)
+        if vector["llm_max_bytes"] <= 262_144:
+            assert vector["schema_version"] == vector["preset_version"]
+    assert {
+        (vector["preset_version"], vector["schema_version"])
+        for vector in vectors
+        if vector["llm_max_bytes"] > 262_144
+    } == {("1.2.0", "1.3.0")}

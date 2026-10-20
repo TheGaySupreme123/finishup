@@ -26,6 +26,7 @@ from finishup.adapters.privacy.catalog import (
     decode_privacy_policy_canonical,
     encode_privacy_policy_json,
 )
+from finishup.adapters.privacy.local_enforcer import estimated_token_count
 from finishup.application.start import _request_digest  # pyright: ignore[reportPrivateUsage]
 from finishup.domain.events import (
     ClientKind,
@@ -39,7 +40,7 @@ from finishup.domain.events import (
     decode_payload,
     encode_payload,
 )
-from finishup.domain.privacy import ReviewSelectionPolicy
+from finishup.domain.privacy import EgressChannel, ReviewSelectionPolicy
 from finishup.domain.values import Frontier, obligation_id
 from finishup.ports.start_catalog import (
     StartCommand,
@@ -192,6 +193,55 @@ def _privacy_policy_wire(root: Path) -> dict[str, Any]:
     return {"vectors": vectors}
 
 
+def _privacy_policy_byte_ceiling_wire(root: Path) -> dict[str, Any]:
+    """The review channel's byte ceiling at and above the pre-1.3.0 bound (#1118).
+
+    262,144 bytes keeps the version the review selection needs; 524,288 bytes (the sized reviewer
+    exchange bound, which setup now writes) is expressible only in 1.3.0. 1.3.0 inherits the
+    1.2.0 presets, so a raised ceiling pairs with the current preset vocabulary only.
+    """
+
+    vectors: list[dict[str, Any]] = []
+    for path, key in _POLICY_SOURCES:
+        source = json.loads((root / "fixtures" / path).read_bytes())
+        released = decode_privacy_policy_canonical(
+            canonical_encode(source["input"]["policies"][key])
+        )
+        for preset_version in ("1.1.0", "1.2.0"):
+            for max_bytes in (262_144, 524_288):
+                if preset_version == "1.1.0" and max_bytes > 262_144:
+                    continue
+                policy = replace(
+                    released,
+                    review_selection=ReviewSelectionPolicy.for_profile(
+                        released.review_context_profile, preset_version=preset_version
+                    ),
+                    channel_policies=tuple(
+                        replace(
+                            channel,
+                            max_bytes=max_bytes,
+                            max_tokens=estimated_token_count(max_bytes),
+                        )
+                        if channel.channel is EgressChannel.LLM_INFERENCE
+                        else channel
+                        for channel in released.channel_policies
+                    ),
+                )
+                wire = encode_privacy_policy_json(policy)
+                vectors.append(
+                    {
+                        "source": f"{path}#/input/policies/{key}",
+                        "review_context_profile": policy.review_context_profile.value,
+                        "preset_version": preset_version,
+                        "llm_max_bytes": max_bytes,
+                        "schema_version": wire["schema_version"],
+                        "wire": wire,
+                        "canonical_digest": canonical_digest(cast(JsonValue, wire)),
+                    }
+                )
+    return {"vectors": vectors}
+
+
 def document(root: Path) -> dict[str, Any]:
     identity = _start_identity()
     return {
@@ -201,10 +251,15 @@ def document(root: Path) -> dict[str, Any]:
         "purpose": (
             "Pin the task-statement event versions, start request identity without a statement, "
             "and the privacy-policy wire before and after the task_statement section and the "
-            "Expanded excerpt count."
+            "Expanded excerpt count, and the review channel byte ceiling above 262,144 bytes "
+            "that only privacy-policy 1.3.0 expresses."
         ),
         "minimum_versions": {"fixture_contract": "1.0.0", "protocol": "1.0"},
-        "owns_requirements": ["ISSUE-908/task-statement", "ISSUE-907/excerpt-count"],
+        "owns_requirements": [
+            "ISSUE-908/task-statement",
+            "ISSUE-907/excerpt-count",
+            "ISSUE-1118/policy-byte-ceiling",
+        ],
         "controls": {
             "clock": "fixture_supplied",
             "ids": "fixture_supplied",
@@ -216,6 +271,7 @@ def document(root: Path) -> dict[str, Any]:
             "event_vectors": _event_vectors(),
             "start_request_identity": identity,
             "privacy_policy_wire": _privacy_policy_wire(root),
+            "privacy_policy_byte_ceiling_wire": _privacy_policy_byte_ceiling_wire(root),
         },
         "expected": {
             # The digest a statement-free start had before the field existed (origin/0.3 at

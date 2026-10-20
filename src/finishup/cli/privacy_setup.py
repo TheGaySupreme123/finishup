@@ -50,6 +50,7 @@ from finishup.domain.privacy import (
     admitted_input_root_valid,
     conversation_review_widens,
 )
+from finishup.domain.reviewer_context import MAX_SIZED_EXCHANGE_BYTES
 from finishup.domain.task_statement import task_statement_disclosure_text
 from finishup.domain.values import JsonObject, validate_sha256_digest
 from finishup.protocol.canonical import JsonValue, canonical_digest, canonical_encode
@@ -125,7 +126,16 @@ _UPDATE_CHECKS_TTL_SECONDS: Final = 60
 # the real limit at a completely different size: 4096 tokens binds at 16 KiB, sixteen times
 # tighter than 256 KiB, and below the 128 KiB of excerpts the assisted and expanded review
 # selections are already allowed to gather. Derive one from the other so they cannot drift.
-_CASE_MAX_BYTES: Final = 256 * 1024
+#
+# The byte ceiling is the sized reviewer route's hard exchange bound (#1118): 524,288 bytes
+# (``MAX_SIZED_EXCHANGE_BYTES``), so a setup-written policy never binds below what the Codex
+# subscription route sized to its model's context may carry. The token ceiling is in the policy's
+# own unit (prepared bytes / 4), so 131,072 binds at exactly the same 524,288 bytes; the model's
+# per-exchange budget (169,144 estimated model tokens, at least 304,459 bytes of message text) is
+# enforced by the reviewer route itself and is reached first. Routes whose model context is not
+# sized still plan below their own 262,144-byte bound (``UNSIZED_EXCHANGE_BYTES``) whatever the
+# policy admits.
+_CASE_MAX_BYTES: Final = MAX_SIZED_EXCHANGE_BYTES
 _CASE_MAX_TOKENS: Final = estimated_token_count(_CASE_MAX_BYTES)
 
 _RECIPE_DEFAULTS: Final = {

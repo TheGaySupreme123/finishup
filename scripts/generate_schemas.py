@@ -491,6 +491,31 @@ def _add_task_statement_to_outbound_case(document: dict[str, JsonValue]) -> None
     content_items["maxItems"] = cast(int, content_items["maxItems"]) + MAX_REVIEW_EXCERPTS - 16
 
 
+def _privacy_policy_v1_3_schema(entry: _RegistryEntry) -> dict[str, JsonValue]:
+    """Let a channel's ``max_bytes`` reach the sized reviewer exchange bound (#1118).
+
+    Identical to 1.2.0 except that ``max_bytes`` admits up to 524,288 bytes
+    (``MAX_SIZED_EXCHANGE_BYTES``, the outbound-document bound ``MAX_EGRESS_CASE_BYTES``), so the
+    Codex subscription route sized to its model's context can use its whole exchange budget. A
+    policy whose ceilings fit 262,144 bytes keeps its older wire version and bytes.
+    """
+
+    document = _simple_versioned_schema(entry, "privacy/privacy-policy-1.2.0.schema.json", {})
+    document["title"] = f"Yoetz privacy policy {entry.schema_version}"
+    properties = cast(dict[str, JsonValue], document["properties"])
+    properties["schema_version"] = {"const": entry.schema_version}
+    definitions = cast(dict[str, dict[str, JsonValue]], document["$defs"])
+    definitions["max_524288_decimal"] = {
+        "$ref": SCHEMA_NAMESPACE
+        + "privacy/outbound-case-1.0.0.schema.json#/$defs/max_524288_decimal"
+    }
+    base = definitions["channel_policy_base"]
+    cast(dict[str, JsonValue], base["properties"])["max_bytes"] = {
+        "$ref": "#/$defs/max_524288_decimal"
+    }
+    return document
+
+
 def _admit_privacy_policy_v1_2(document: dict[str, JsonValue]) -> dict[str, JsonValue]:
     """Let the unreleased 2.9 control boundary carry the 1.2.0 privacy-policy wire (issue #908).
 
@@ -501,6 +526,7 @@ def _admit_privacy_policy_v1_2(document: dict[str, JsonValue]) -> dict[str, Json
 
     policy_v11 = SCHEMA_NAMESPACE + "privacy/privacy-policy-1.1.0.schema.json"
     policy_v12 = SCHEMA_NAMESPACE + "privacy/privacy-policy-1.2.0.schema.json"
+    policy_v13 = SCHEMA_NAMESPACE + "privacy/privacy-policy-1.3.0.schema.json"
     replacements = {
         SCHEMA_NAMESPACE
         + "privacy/privacy-policy-1.0.0.schema.json#/$defs/review_selection_policy": policy_v12
@@ -512,8 +538,9 @@ def _admit_privacy_policy_v1_2(document: dict[str, JsonValue]) -> dict[str, Json
             items = [rewrite(item, union_member=True) for item in value]
             refs = [item.get("$ref") for item in items if isinstance(item, dict)]
             if policy_v11 in refs and policy_v12 not in refs:
-                # A union that already admits the 1.1.0 document also admits 1.2.0.
+                # A union that already admits the 1.1.0 document also admits 1.2.0 and 1.3.0.
                 items.append({"$ref": policy_v12})
+                items.append({"$ref": policy_v13})
             return cast(JsonValue, items)
         if isinstance(value, dict):
             ref = value.get("$ref")
@@ -521,7 +548,10 @@ def _admit_privacy_policy_v1_2(document: dict[str, JsonValue]) -> dict[str, Json
                 return cast(JsonValue, {**value, "$ref": replacements[ref]})
             if ref == policy_v11 and len(value) == 1 and not union_member:
                 # A lone 1.1.0 policy document becomes either wire version.
-                return cast(JsonValue, {"anyOf": [{"$ref": policy_v11}, {"$ref": policy_v12}]})
+                return cast(
+                    JsonValue,
+                    {"anyOf": [{"$ref": policy_v11}, {"$ref": policy_v12}, {"$ref": policy_v13}]},
+                )
             return cast(JsonValue, {key: rewrite(item) for key, item in value.items()})
         return value
 
@@ -1853,7 +1883,8 @@ def _egress_receipt_v1_1_schema(entry: _RegistryEntry) -> dict[str, JsonValue]:
     # bytes (``MAX_SIZED_EXCHANGE_BYTES``, the outbound-document bound). 1.1.0 is unreleased, so
     # its bound widens in place; a 1.0.0 receipt keeps 262,144.
     definitions["max_524288_decimal"] = {
-        "$ref": SCHEMA_NAMESPACE + "privacy/outbound-case-1.0.0.schema.json#/$defs/max_524288_decimal"
+        "$ref": SCHEMA_NAMESPACE
+        + "privacy/outbound-case-1.0.0.schema.json#/$defs/max_524288_decimal"
     }
     counts = cast(dict[str, JsonValue], definitions["counts"])
     count_properties = cast(dict[str, JsonValue], counts["properties"])
@@ -11717,6 +11748,14 @@ _REGISTRY: Final[tuple[_RegistryEntry, ...]] = (
         lambda: __import__("finishup.domain.privacy", fromlist=["PrivacyPolicy"]).PrivacyPolicy,
     ),
     _RegistryEntry(
+        "privacy/privacy-policy-1.3.0.schema.json",
+        "privacy-policy",
+        "1.3.0",
+        "request_result",
+        "privacy-policy",
+        lambda: __import__("finishup.domain.privacy", fromlist=["PrivacyPolicy"]).PrivacyPolicy,
+    ),
+    _RegistryEntry(
         "privacy/setup-wizard-contract-1.0.0.schema.json",
         "setup-wizard-contract",
         "1.0.0",
@@ -12306,6 +12345,8 @@ _BUILDER_OWNED_SCHEMA_PATHS: Final[frozenset[str]] = frozenset(
         "events/session-resumed-1.2.0.schema.json",
         "privacy/outbound-case-1.2.0.schema.json",
         "privacy/privacy-policy-1.2.0.schema.json",
+        # The sized reviewer exchange bound (#1118).
+        "privacy/privacy-policy-1.3.0.schema.json",
         "events/check-recorded-1.3.0.schema.json",
         "events/check-recorded-1.4.0.schema.json",
         "events/check-recorded-1.5.0.schema.json",
@@ -12821,6 +12862,8 @@ def build_schema_documents(
             normalized = _privacy_policy_v1_1_schema(entry)
         elif entry.relative_path == "privacy/privacy-policy-1.2.0.schema.json":
             normalized = _privacy_policy_v1_2_schema(entry)
+        elif entry.relative_path == "privacy/privacy-policy-1.3.0.schema.json":
+            normalized = _privacy_policy_v1_3_schema(entry)
         elif entry.relative_path == "privacy/egress-receipt-1.1.0.schema.json":
             normalized = _egress_receipt_v1_1_schema(entry)
         elif entry.relative_path == "events/session-resumed-1.2.0.schema.json":

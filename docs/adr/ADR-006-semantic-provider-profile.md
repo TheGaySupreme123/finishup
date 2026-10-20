@@ -2671,12 +2671,28 @@ credential probe keep their one-shot dispatch; no check uses it.
   Receipts follow: `privacy/egress-receipt-1.1.0` (unreleased, widened in place)
   bounds `counts.final_bytes` at 524,288; a 1.0.0 receipt keeps 262,144.
 
-  The owner's setup ceilings bind first. Setup writes `max_bytes` 262,144 and `max_tokens` 65,536
-  into every policy (`cli/privacy_setup._CASE_MAX_BYTES`/`_CASE_MAX_TOKENS`, no owner prompt), and
-  `privacy/privacy-policy-1.2.0` caps `max_bytes` at 262,144, so a setup-written policy still
-  plans every exchange below 262,144 - 8,192 bytes on every route. Only an owner decision that
-  raises those defaults (and the policy schema's `max_bytes` maximum) lets the sized route use
-  its model budget; it is not taken here.
+  The owner's ceilings bind first. *Amended 2026-10-20 (#1118 maintainer decision: raise the
+  setup defaults).* Setup writes `max_bytes` 524,288 and `max_tokens` 131,072 into the review
+  channel (`cli/privacy_setup._CASE_MAX_BYTES` = `MAX_SIZED_EXCHANGE_BYTES`, `_CASE_MAX_TOKENS` =
+  `estimated_token_count(_CASE_MAX_BYTES)`, no owner prompt). The token ceiling is in the policy's
+  own unit (prepared bytes / 4), so it binds at the same 524,288 bytes, never before the byte
+  ceiling; the sized route's model budget (169,144 estimated model tokens, at least 304,459 bytes
+  of message text) is reached first, so a setup-written policy leaves that route its whole budget.
+  Routes that are not sized still plan below their own 262,144-byte bound whatever the policy
+  admits: the raised default never widens them. An owner's lower `max_bytes` or `max_tokens`
+  still wins on every route. Before this amendment setup wrote 262,144 bytes and 65,536 tokens,
+  which held the sized route at the old cap.
+
+  A channel ceiling above 262,144 bytes needs `privacy/privacy-policy-1.3.0`, identical to 1.2.0
+  except that `max_bytes` admits up to 524,288 (`max_524288_decimal`). 1.2.0 stays byte-identical.
+  A policy is still written at the oldest version that expresses it: a review channel within
+  262,144 bytes keeps its 1.1.0 or 1.2.0 bytes and digest, and only a wider ceiling writes 1.3.0;
+  an older document carrying more than 262,144 is refused as `privacy_policy_row_corrupt`. 1.3.0
+  inherits the 1.2.0 preset vocabulary, so a raised ceiling pairs with the current presets (setup
+  always writes them). The unreleased control 2.9.0 boundary and version manifest 2.3.0 admit
+  1.3.0 in place. An existing installation keeps the ceilings its owner approved: the raised
+  defaults reach it only when the owner re-runs `finishup --privacy` and approves the proposal,
+  which the approval screen shows as a widening of `max_bytes` and `max_tokens`.
   *Amended 2026-10-20 (#1118 benchmark smoke):* the packet was first planned below the ceiling
   less 8 KiB, then a fifth for escaping. Quoted code and JSON tool output escape twice in the
   conversation (a 192,924-byte packet sent as a 271,615-byte exchange; a 200,469-byte one, from

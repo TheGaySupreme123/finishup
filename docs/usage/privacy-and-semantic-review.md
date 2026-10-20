@@ -540,8 +540,8 @@ by the host is never used for review.
 Each review sends selected excerpts of recorded evidence, command output and changes, within limits
 you approved: at most 16 KiB per excerpt and 128 KiB of excerpts in total. The Assisted recipe also
 caps the count at 16 excerpts. From this version the Expanded recipe allows up to 64, so on a long
-session the byte budget, not the count, decides how much the reviewer sees. The byte limits and the
-per-case ceilings (256 KiB, 65,536 estimated tokens) do not change.
+session the byte budget, not the count, decides how much the reviewer sees. The excerpt byte limits do
+not change.
 
 How much one review may send is also bounded by what the reviewer model can hold. With the Codex
 subscription and its `gpt-6.1-sol` reviewer, FinishUP sizes each review message to that model's
@@ -549,8 +549,12 @@ context: at most about 169,000 estimated tokens and 512 KiB per exchange, leavin
 reviewer to think and answer without Codex shortening the conversation. Tokens are estimated
 conservatively from the text, so a review never assumes more room than the model has. Other
 reviewers (an API key provider, a local model, or another Codex model) keep the 256 KiB limit.
-Your own per-case ceilings always apply first: with the ceilings setup writes today (256 KiB,
-65,536 estimated tokens), a review sends no more than before. When a review does not fit, FinishUP
+Your own per-case ceilings always apply first. Setup now writes 512 KiB and 131,072 estimated
+tokens, which is exactly what the sized reviewer can take, so that reviewer gets its whole budget;
+the other reviewers still stay within 256 KiB. If you set lower ceilings, they win. A policy you
+approved earlier keeps its ceilings (256 KiB and 65,536 estimated tokens if setup wrote them):
+run `finishup --privacy` and approve the proposal to take the new ones. The approval screen shows
+the higher ceilings as a widening. When a review does not fit, FinishUP
 leaves out lower-priority excerpts and says so in the review's coverage, or, if even the required
 parts do not fit, reports `case_capacity_exceeded` without sending anything.
 

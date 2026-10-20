@@ -877,8 +877,12 @@ and output, and 30,600 for estimation error, so every exchange carries at most 1
 tokens (152,760 for the first) and at most 524,288 bytes, below Codex's own 1,048,576-character
 turn input limit. Tokens are estimated (1.8 ASCII bytes per token, one per non-ASCII byte), not
 counted with the model's tokenizer. Any other model on this route keeps 262,144 bytes and no
-token budget. The owner's `max_bytes` and `max_tokens` bind first: a policy written by setup
-(262,144 bytes, 65,536 estimated tokens) still keeps every exchange below 262,144 - 8,192 bytes. Excerpts the plan cuts are disclosed as `content_unselected`, and the
+token budget. The owner's `max_bytes` and `max_tokens` bind first. Setup writes 524,288 bytes
+and 131,072 estimated tokens (privacy-policy 1.3.0), so a freshly provisioned instance, including a
+benchmark instance set up through `finishup --privacy`, plans to the full model budget; a policy
+approved before #1118 (262,144 bytes, 65,536 tokens) keeps every exchange below 262,144 - 8,192
+bytes until the owner re-runs `finishup --privacy` and approves the widening. Verify with
+`finishup privacy show --json`: the `llm_inference` channel's `max_bytes` is `524288`. Excerpts the plan cuts are disclosed as `content_unselected`, and the
 `semantic_case_built` counters show `semantic_excerpt_ceiling_rounds` above zero and, when the
 excerpt budget itself was reduced, `semantic_excerpt_byte_limit` below
 `semantic_excerpt_byte_approved`. An exchange that still does not fit is refused before anything

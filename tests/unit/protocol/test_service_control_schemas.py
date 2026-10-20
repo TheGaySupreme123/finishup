@@ -1540,10 +1540,12 @@ def test_v29_request_admits_digest_only_image_facts_and_nothing_more() -> None:
 
 
 _POLICY_V12 = "https://schemas.yoetz.dev/0.1/privacy/privacy-policy-1.2.0.schema.json"
+_POLICY_V13 = "https://schemas.yoetz.dev/0.1/privacy/privacy-policy-1.3.0.schema.json"
 
 
 def _without_policy_v12(value: Any) -> Any:
-    """Undo the one other 2.9 change: admitting the privacy-policy 1.2.0 wire (issue #908)."""
+    """Undo the one other 2.9 change: admitting the privacy-policy 1.2.0 wire (issue #908) and,
+    beside it, the 1.3.0 wire (#1118)."""
 
     if isinstance(value, list):
         return [_without_policy_v12(item) for item in cast(list[Any], value)]
@@ -1552,7 +1554,12 @@ def _without_policy_v12(value: Any) -> Any:
     source = cast(dict[str, Any], value)
     branches = source.get("anyOf")
     if isinstance(branches, list) and {"$ref": _POLICY_V12} in branches:
-        kept = [branch for branch in cast(list[Any], branches) if branch != {"$ref": _POLICY_V12}]
+        assert {"$ref": _POLICY_V13} in branches
+        kept = [
+            branch
+            for branch in cast(list[Any], branches)
+            if branch not in ({"$ref": _POLICY_V12}, {"$ref": _POLICY_V13})
+        ]
         return kept[0] if len(kept) == 1 else {**source, "anyOf": kept}
     if source.get("$ref") == _POLICY_V12 + "#/$defs/review_selection_policy":
         return {

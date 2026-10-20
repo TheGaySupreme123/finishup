@@ -128,8 +128,11 @@ _MAX_RECONCILE_STARTED_ATTEMPTS: Final = 256
 # The newest privacy-policy wire version. A policy is encoded at the oldest version that can
 # express it exactly (``review_selection_policy_schema_version``), so every policy approved before
 # a newer review vocabulary existed keeps its historical 1.1.0 bytes.
-_PRIVACY_POLICY_WIRE_SCHEMA_VERSION: Final = "1.2.0"
-_PRIVACY_POLICY_WIRE_SCHEMA_VERSIONS: Final = frozenset({"1.0.0", "1.1.0", "1.2.0"})
+_PRIVACY_POLICY_WIRE_SCHEMA_VERSION: Final = "1.3.0"
+_PRIVACY_POLICY_WIRE_SCHEMA_VERSIONS: Final = frozenset({"1.0.0", "1.1.0", "1.2.0", "1.3.0"})
+# Wire 1.0.0-1.2.0 bound a channel's ``max_bytes`` at 262,144; 1.3.0 admits the sized reviewer
+# exchange bound, 524,288 (``MAX_EGRESS_CASE_BYTES``, #1118).
+_PRE_1_3_MAX_CHANNEL_BYTES: Final = 262_144
 _WIRE_CHANNEL_ORDER: Final = (
     EgressChannel.CAPABILITY_TESTING,
     EgressChannel.CRASH_DIAGNOSTICS,
@@ -708,6 +711,13 @@ def _policy_from_wire_mapping(source: dict[str, JsonValue]) -> PrivacyPolicy:
         # The credential-heuristic opt-out (issue #982) and the conversation setting (ADR-049)
         # exist from wire 1.2.0 on.
         raise ValueError("privacy_policy_row_corrupt")
+    if source.get("schema_version") != "1.3.0" and any(
+        _uint_from_json(_mapping(channel)["max_bytes"]) > _PRE_1_3_MAX_CHANNEL_BYTES
+        for channel in channels
+    ):
+        # Only 1.3.0 can carry a channel ceiling above 262,144 bytes (#1118); an older document
+        # that does is mis-stamped, not a wider approval.
+        raise ValueError("privacy_policy_row_corrupt")
     review_selection = _review_from_json(source["review_selection"])
     if source.get("schema_version") in {"1.0.0", "1.1.0"} and (
         review_selection_policy_schema_version(review_selection) != "1.1.0"
@@ -764,7 +774,7 @@ def decode_privacy_policy_canonical(data: bytes) -> PrivacyPolicy:
 
 
 def encode_privacy_policy_json(policy: PrivacyPolicy) -> dict[str, JsonValue]:
-    """Encode a privacy policy as its wire ``privacy-policy`` JSON object (1.1.0 or 1.2.0).
+    """Encode a privacy policy as its wire ``privacy-policy`` JSON object (1.1.0 to 1.3.0).
 
     Catalog rows stay domain-shaped; ordinary-control / CLI results must match the frozen
     schema (``local_sink_category_ceilings``, const ``never_send``, decimal counters).
@@ -823,9 +833,12 @@ def _privacy_policy_wire_version(policy: PrivacyPolicy) -> str:
     """The oldest wire version that expresses ``policy`` exactly.
 
     The credential-heuristic opt-out exists only from 1.2.0 on (issue #982); a policy that keeps
-    the default is still written at the version its review selection needs.
+    the default is still written at the version its review selection needs. A channel ceiling
+    above 262,144 bytes exists only from 1.3.0 on (#1118).
     """
 
+    if any(channel.max_bytes > _PRE_1_3_MAX_CHANNEL_BYTES for channel in policy.channel_policies):
+        return "1.3.0"
     version = review_selection_policy_schema_version(policy.review_selection)
     if (
         not policy.credential_heuristic_enforced

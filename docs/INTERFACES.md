@@ -10723,6 +10723,18 @@ plan. Names and contracts:
   `review_selection_policy_schema_version` (1.1.0 unless a 1.2.0-only section is selected), so an
   approval made before the section keeps its bytes and digest; a 1.0.0/1.1.0 row that names the
   section is `privacy_policy_row_corrupt`.
+- Privacy policy 1.3.0 (#1118): identical to 1.2.0 except that a channel's `max_bytes` admits up
+  to 524,288 (`max_524288_decimal`, `MAX_SIZED_EXCHANGE_BYTES`); 1.2.0 is byte-identical.
+  `adapters/privacy/catalog._privacy_policy_wire_version` writes 1.3.0 only when a channel's
+  `max_bytes` exceeds 262,144 (`_PRE_1_3_MAX_CHANNEL_BYTES`); a 1.0.0-1.2.0 document above that is
+  `privacy_policy_row_corrupt`. `PRIVACY_POLICY_SCHEMA_VERSION` and the version manifest's
+  `privacy-policy` request/result version are 1.3.0; control 2.9.0 (unreleased) admits it beside
+  1.1.0 and 1.2.0 in place. Setup's review channel ceilings (`cli/privacy_setup._CASE_MAX_BYTES` /
+  `_CASE_MAX_TOKENS`) are 524,288 bytes and 131,072 tokens (the same bytes at four per token), so
+  a setup-written policy is written as 1.3.0 and leaves the sized reviewer route its whole budget;
+  unsized routes still plan below `UNSIZED_EXCHANGE_BYTES` (`channel_prepared_limit`). Existing
+  policies keep their approved ceilings until the owner approves a new `finishup --privacy`
+  proposal (a `max_bytes`/`max_tokens` widening).
 - Statement-sourced obligations (ADR-032 amendment, TB4 pilot): an obligation maps the request
   when its `source_refs` names an event that recorded the current statement content.
   `RecordedTaskStatement.equivalent_event_ids` (from `current_task_statement`) lists every readable

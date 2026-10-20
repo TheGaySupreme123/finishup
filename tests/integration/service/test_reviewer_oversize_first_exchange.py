@@ -22,6 +22,7 @@ from typing import Any, cast
 
 import pytest
 
+import finishup.cli.privacy_setup as privacy_setup_module
 import finishup.service.ready_composition as ready_composition_module
 from builders.privacy_policies import minimal_external_policy
 from finishup.adapters.privacy.local_enforcer import estimated_token_count
@@ -68,6 +69,11 @@ from unit.application.test_semantic_case_packet_completeness import (
 
 # The setup's LLM channel ceilings (``cli/privacy_setup._CASE_MAX_BYTES``/``_CASE_MAX_TOKENS``).
 _CEILING = 256 * 1024
+# The ceilings a fresh ``--privacy`` setup writes (#1118): 524,288 bytes and 131,072 tokens.
+_SETUP_CEILINGS = (
+    privacy_setup_module._CASE_MAX_BYTES,  # pyright: ignore[reportPrivateUsage]
+    privacy_setup_module._CASE_MAX_TOKENS,  # pyright: ignore[reportPrivateUsage]
+)
 
 
 def _code_diff(files: int, lines: int) -> bytes:
@@ -426,12 +432,21 @@ def _sized_budget() -> ReviewerExchangeBudget:
 def test_the_benchmark_route_budget_is_the_model_context_less_its_reserves() -> None:
     budget = _sized_budget()
     assert budget == ReviewerExchangeBudget(MAX_SIZED_EXCHANGE_BYTES, 169_144, 152_760)
-    # The setup ceilings (256 KiB, 65,536 estimated tokens) bind before the model does.
+    # The ceilings setup writes leave the sized route its whole budget.
+    assert _SETUP_CEILINGS == (MAX_SIZED_EXCHANGE_BYTES, 131_072)
+    setup = reviewer_exchange_budget(_policy_for(_CODEX, *_SETUP_CEILINGS), (_CODEX,))
+    assert setup == budget
+    # An owner's lower ceilings (the old setup values, 256 KiB and 65,536 estimated tokens) bind
+    # before the model does, in bytes or in tokens.
     owner = reviewer_exchange_budget(_policy_for(_CODEX, _CEILING, 65_536), (_CODEX,))
     assert owner == ReviewerExchangeBudget(_CEILING, 169_144, 152_760)
-    # Any route FinishUP cannot size keeps the bound it always had, unset ceilings or not.
-    unsized = reviewer_exchange_budget(_policy_for(_BINDING, 0, 0), (_BINDING,))
-    assert unsized == ReviewerExchangeBudget(UNSIZED_EXCHANGE_BYTES)
+    tokens = reviewer_exchange_budget(_policy_for(_CODEX, _CEILING * 2, 40_000), (_CODEX,))
+    assert tokens == ReviewerExchangeBudget(160_000, 169_144, 152_760)
+    # Any route FinishUP cannot size keeps the bound it always had: unset ceilings, or the raised
+    # ceilings setup writes, never widen it.
+    for ceilings in ((0, 0), _SETUP_CEILINGS):
+        unsized = reviewer_exchange_budget(_policy_for(_BINDING, *ceilings), (_BINDING,))
+        assert unsized == ReviewerExchangeBudget(UNSIZED_EXCHANGE_BYTES)
     # With a fallback destination the narrower one binds.
     both = reviewer_exchange_budget(_policy_for(_CODEX, 0, 0), (_CODEX, _BINDING))
     assert both == ReviewerExchangeBudget(UNSIZED_EXCHANGE_BYTES)
@@ -443,14 +458,20 @@ def test_the_benchmark_route_budget_is_the_model_context_less_its_reserves() -> 
     ((_code_diff(files=8, lines=400), 0), (None, 16)),
     ids=("diff_parts", "captured_output_only"),
 )
+@pytest.mark.parametrize("ceilings", ((0, 0), _SETUP_CEILINGS), ids=("unset", "setup_written"))
 async def test_a_sized_route_carries_the_whole_selection_the_byte_cap_trimmed(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, diff: bytes | None, outputs: int
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    diff: bytes | None,
+    outputs: int,
+    ceilings: tuple[int, int],
 ) -> None:
     """The cases the 262,144-byte cap narrowed (``test_a_case_filling_the_excerpt_budget...``)
-    now reach the reviewer whole on the sized route, and still fit its context."""
+    now reach the reviewer whole on the sized route, under unset ceilings and under the ones a
+    fresh setup writes, and still fit its context."""
 
     built = _composed(monkeypatch, diff=diff, outputs=outputs)
-    policy = _policy_for(_CODEX, 0, 0)
+    policy = _policy_for(_CODEX, *ceilings)
     result, gateway, _runtime = await _run(
         tmp_path, monkeypatch, _FINAL, policy=policy, primary=_CODEX
     )
@@ -471,7 +492,8 @@ async def test_a_sized_route_carries_the_whole_selection_the_byte_cap_trimmed(
 async def test_the_owner_ceiling_still_binds_on_a_sized_route(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """The setup's 256 KiB / 65,536-token ceiling is the owner's, not the model's: it is kept."""
+    """An owner's lower 256 KiB / 65,536-token ceiling (the pre-#1118 setup values) is the
+    owner's, not the model's: it is kept."""
 
     built = _composed(monkeypatch, diff=_code_diff(files=8, lines=400))
     policy = _policy_for(_CODEX, _CEILING, 65_536)
@@ -485,11 +507,12 @@ async def test_the_owner_ceiling_still_binds_on_a_sized_route(
 
 
 @pytest.mark.anyio
+@pytest.mark.parametrize("ceilings", ((0, 0), _SETUP_CEILINGS), ids=("unset", "setup_written"))
 async def test_an_unsized_route_with_unset_ceilings_keeps_the_old_bound(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, ceilings: tuple[int, int]
 ) -> None:
     _composed(monkeypatch, diff=_code_diff(files=8, lines=400))
-    policy = _policy_for(_BINDING, 0, 0)
+    policy = _policy_for(_BINDING, *ceilings)
     result, gateway, _runtime = await _run(tmp_path, monkeypatch, _FINAL, policy=policy)
     assert result.status is SemanticStatus.SUCCEEDED, (result.status, result.reason)
     ((_media, history),) = gateway.exchanges

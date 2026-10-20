@@ -68,7 +68,7 @@ __all__ = [
 
 PROTOCOL_VERSION: Final = "0.1"
 CONTROL_PROTOCOL_VERSION: Final = "1.0"
-PRIVACY_POLICY_SCHEMA_VERSION: Final = "1.2.0"
+PRIVACY_POLICY_SCHEMA_VERSION: Final = "1.3.0"
 EGRESS_RECEIPT_SCHEMA_VERSION: Final = "1.1.0"
 PRIVACY_CLASSIFIER_RULESET_VERSION: Final = "privacy-classifier/0.1.0"
 ENGINE_VERSION: Final = "0.1.0"
@@ -127,8 +127,8 @@ _RESOURCE_LIMIT: Final = 4_194_304
 # reviewer-reply 1.0.0 schema. #1118: +2 schemas (check-result 1.6.0, check-recorded 1.6.0) and
 # +1 canonical reviewer-record case (REV-001). #1122/#1123: +2 schemas (host-connection-batch
 # 1.0.0, ai-status 1.0.0) and +1 canonical host-connection-batch case. #1118: +1 runtime config
-# (the reviewer's derived Codex 0.162.1 model catalog).
-REVIEWED_RESOURCE_COUNT: Final = 327
+# (the reviewer's derived Codex 0.162.1 model catalog), +1 schema (privacy-policy 1.3.0).
+REVIEWED_RESOURCE_COUNT: Final = 328
 _RESOURCE_KINDS: Final = frozenset(
     {
         "canonical_vector",
@@ -169,7 +169,7 @@ _REQUEST_RESULT_VERSIONS: Final = (
     ("outbound-case", "1.2.0"),
     ("pending-agent", "7.0.0"),
     ("prepare-result", "7.0.0"),
-    ("privacy-policy", "1.2.0"),
+    ("privacy-policy", "1.3.0"),
     ("provider-judgment", "1.2.0"),
     ("public-error", "1.0.0"),
     ("publish-work-request", "1.2.0"),
