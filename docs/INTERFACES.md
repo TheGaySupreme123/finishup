@@ -4904,7 +4904,14 @@ If the retained required structure still exceeds 131,072 bytes, AI-powered revie
 returns `failed/case_capacity_exceeded` before creating an AI-powered review job or invoking a
 provider. This additive reason belongs to the current 1.1 check/provenance schemas; released 1.0
 schemas retain their original bytes. Local findings remain recorded; no provider attempt is consumed
-and provenance stays null. The shared check/receipt gap is `semantic_case_capacity_exceeded`. A
+and provenance stays null. Since #1118 (owner decision recorded there) the same reason also covers
+disclosure capacity: a rendered disclosure over the channel's `max_bytes`, or a reviewer exchange
+over `MAX_MINIMIZED_DISCLOSURE_BYTES`, is refused by `PrivacyCoordinator` before a proposal exists
+and reported `failed/case_capacity_exceeded`, not `blocked_by_policy/network_egress_denied`. There
+a job attempt exists and ends on that terminal code, the privacy receipt records
+`blocked_by_policy` / `policy_denied` with `final_bytes` 0 (the receipt vocabulary is unchanged),
+provenance stays null, and nothing was sent. An over-`max_tokens` refusal keeps its policy
+mapping. The shared check/receipt gap is `semantic_case_capacity_exceeded`. A
 narrower claim/obligation scope is a new check, not a replay of the terminal request. Changing a
 text length or finding limit alone does not guarantee enough capacity.
 
@@ -10836,6 +10843,12 @@ plan. Names and contracts:
 - Resume (`PrivacyCoordinator._resume_admitted`) denies a stored `semantic-review` proposal,
   external or local-model, outside the current policy's excerpt limits or LLM `max_bytes` /
   `max_tokens` with `blocked_by_policy` / `policy_denied` before dispatch.
+- Capacity refusals (#1118): `SemanticEgressBlocked.capacity` is `(attempted, limit)` bytes on the
+  two size refusals (channel `max_bytes`; reviewer exchange over `MAX_MINIMIZED_DISCLOSURE_BYTES`),
+  only with `blocked_by_policy`, and only when `attempted > limit`. `_map_egress_to_final` maps it
+  to `failed/case_capacity_exceeded` and records `semantic_composition/
+  semantic_disclosure_capacity_exceeded` with `semantic_disclosure_attempted_bytes` and
+  `semantic_disclosure_limit_bytes` (integers, never content).
 - TUI: `PrivacyPosture.recipe_outdated` is true when the approved selection is an earlier version
   of its recipe. The privacy screen then offers the newer recipe instead of saying "already on the
   recommended privacy policy".
@@ -11912,8 +11925,9 @@ as `outcome_unknown` and is never resent. For it, `operation_max_retries` is `0`
   sizes instead of the bare packet; the catalog is rendered from the job's own read roots before
   planning, and names no case ref). `PrivacyCoordinator`
   refuses a rendered reviewer exchange over `MAX_MINIMIZED_DISCLOSURE_BYTES` before a proposal
-  exists, `blocked_by_policy` / `policy_denied` like an over-`max_bytes` one, so an oversize
-  conversation never surfaces as `coordinator_failure` (#1118 smoke). Later exchanges are fitted,
+  exists, with the receipt `blocked_by_policy` / `policy_denied` like an over-`max_bytes` one and
+  the check `failed/case_capacity_exceeded` (both carry `capacity`), so an oversize conversation
+  never surfaces as `coordinator_failure` (#1118 smoke) or as a network denial. Later exchanges are fitted,
   not estimated: `run_reviewer` gives the broker `exchange_room() = exchange_limit - sent[-1] -
   _REPAIR_NOTE_BYTES` (the last exchange rendered, and the room one format-repair notice needs),
   `ReviewerBroker.total` is lowered to `used + exchange_room()` after each exchange, and each result

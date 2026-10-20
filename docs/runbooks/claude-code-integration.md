@@ -1538,9 +1538,13 @@ its response-linked repair evidence and a change made after it, and accounted fo
 means what that review sent could not be recorded; run one new check, and disclose the finding if
 the code repeats. A newly reduced scope or a `truncated_payload` gap still blocks it (#904). Cross-host dogfood of this resolution rule on macOS, Linux and WSL 2
 has not been run yet; owner #904. `failed/case_capacity_exceeded` and
-`semantic_case_capacity_exceeded` mean the required packet could not fit before any provider
-attempt. Select a smaller claim/obligation scope for a new check. Shorter prose alone need not fix
-structural capacity.
+`semantic_case_capacity_exceeded` mean the required packet, or since #1118 the rendered review
+disclosure (the channel's byte ceiling or the 262,144-byte disclosure cap), could not fit, and
+nothing was sent. Select a smaller claim/obligation scope for a new check. Shorter prose alone need
+not fix structural capacity. A disclosure-capacity refusal has a `blocked_by_policy` /
+`policy_denied` privacy receipt with `final_bytes` 0, and `finishup service diagnostics
+--request-id req_…` shows `semantic_disclosure_capacity_exceeded` with the attempted size and the
+limit.
 
 For `coordinator_failure`, use the check's original request ID with
 `finishup service diagnostics --request-id req_…` to read bounded failure stages. Dispatch entry can

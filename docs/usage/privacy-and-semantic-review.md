@@ -592,7 +592,12 @@ refused) or in a folder you admitted, limited to the files the task names there.
 most 8 KiB and all reads together at most 24 KiB, and each passes the same policy, limits and
 never-send rules as the packet. Each further turn of the conversation is sent with its own privacy
 check and receipt, and the whole conversation, packet and reads included, must fit your channel
-limits: with tight limits the reviewer gets fewer reads or none. What a read returned keeps the
+limits: with tight limits the reviewer gets fewer reads or none. If the packet cannot be made to
+fit your channel's byte limit, or the conversation the 256 KiB a single send may carry, nothing is
+sent and the check reports `case_capacity_exceeded`, not a network denial: your privacy settings
+did not block it. The privacy receipt still lists that turn as blocked with nothing sent. A check over a
+narrower scope can fit; when your own byte limit was the one exceeded, so can a higher limit you
+approve. What a read returned keeps the
 category it was admitted under: if you withdraw that category, or your policy changes, while the
 conversation holds it, the review stops there incomplete and nothing more is sent. If your policy
 asks before every review, that review runs without reads and its first turn waits for your decision

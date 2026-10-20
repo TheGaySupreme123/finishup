@@ -808,7 +808,15 @@ case is not reduced. The code is disclosure: it bounds what the receipt may clai
 and it blocks finding resolution only as the #904 amendment below allows. The existing envelope
 byte limit and independent disclosure policy remain in force. Irreducible required structure fails
 before job/attempt creation with `case_capacity_exceeded` and `semantic_case_capacity_exceeded`
-coverage. Narrowing scope creates new work; it does not replay a terminal check or imply that the
+coverage. *Amended 2026-10-20 (#1118, owner decision):* `case_capacity_exceeded` also names
+disclosure capacity: a rendered disclosure over the channel's `max_bytes`, or a reviewer exchange
+over the 262,144-byte disclosure cap, was reported `blocked_by_policy` / `network_egress_denied`
+although network egress was permitted. It is now `failed/case_capacity_exceeded`, ending the job
+attempt that reached the refusal; the privacy receipt keeps `blocked_by_policy` / `policy_denied`
+(no new reason, no new receipt version), and the attempted size and limit are recorded as bounded
+integers. Like the structural case, it is a retryable `failed` outcome rather than an
+undeliverable one: a required closing review is still asked for, and the next check builds a new
+case. Narrowing scope creates new work; it does not replay a terminal check or imply that the
 reduced packet reviewed the whole task.
 
 A local finding wider than one case item's reference bound (16 subjects; findings may cite 64) is
@@ -2590,8 +2598,10 @@ credential probe keep their one-shot dispatch; no check uses it.
   left (an ordinary read action and a result without data); an action whose own bytes leave less
   than 1 KiB ends the review `read_limit`, unread and unsent. The ceiling here is never above the 262,144 bytes one prepared disclosure
   carries, the receipt's `final_bytes` bound. An exchange that still outgrows the channel ceiling
-  or that bound is refused whole before a proposal exists (`blocked_by_policy` /
-  `policy_denied`), never trimmed and never sent.
+  or that bound is refused whole before a proposal exists, never trimmed and never sent: the
+  receipt records `blocked_by_policy` / `policy_denied` and the check reports
+  `failed/case_capacity_exceeded` (owner decision on #1118), with the attempted rendered size and
+  the limit in a bounded diagnostic.
   *Amended 2026-10-20 (#1118 benchmark smoke):* the packet was first planned below the ceiling
   less 8 KiB, then a fifth for escaping. Quoted code and JSON tool output escape twice in the
   conversation (a 192,924-byte packet sent as a 271,615-byte exchange; a 200,469-byte one, from

@@ -343,6 +343,8 @@ async def test_oversize_bytes_blocks_admission() -> None:
     assert isinstance(result, SemanticEgressBlocked)
     assert result.outcome is PrivacyOutcome.BLOCKED_BY_POLICY
     assert result.reason is PrivacyReason.POLICY_DENIED
+    # #1118: the refusal is a size one; the receipt reason is unchanged, the sizes ride beside it.
+    assert result.capacity == (_OVERSIZE_BYTES, _POLICY_CEILING_BYTES)
     assert audit.prepared == []
 
 
@@ -354,7 +356,63 @@ async def test_oversize_tokens_blocks_admission() -> None:
     assert isinstance(result, SemanticEgressBlocked)
     assert result.outcome is PrivacyOutcome.BLOCKED_BY_POLICY
     assert result.reason is PrivacyReason.POLICY_DENIED
+    assert result.capacity is None  # the owner decision (#1118) widened bytes, not tokens
     assert audit.prepared == []
+
+
+def test_a_byte_capacity_refusal_is_reported_as_case_capacity_not_network_denial(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """#1118 owner decision: a refusal over the channel's ``max_bytes`` or the disclosure cap was
+    reported ``blocked_by_policy`` / ``network_egress_denied`` though network egress was allowed.
+    It is ``failed`` / ``case_capacity_exceeded`` now, with the sizes in a bounded diagnostic;
+    any other ``policy_denied`` refusal keeps its mapping."""
+
+    from finishup.protocol.models import SemanticReason, SemanticStatus
+    from finishup.service import ready_composition
+
+    events: list[dict[str, object]] = []
+
+    def record(**kwargs: object) -> str:
+        events.append(kwargs)
+        return ""
+
+    monkeypatch.setattr(ready_composition, "record_bounded_counts_without_raising", record)
+    request = "req_10000000-0000-4000-8000-000000000001"
+    sized = SemanticEgressBlocked(
+        request,
+        PrivacyOutcome.BLOCKED_BY_POLICY,
+        PrivacyReason.POLICY_DENIED,
+        capacity=(263_010, 262_144),
+    )
+    final = ready_composition._map_egress_to_final(  # pyright: ignore[reportPrivateUsage]
+        sized, ready_composition.IdPort()
+    )
+    assert (final.status, final.reason) == (
+        SemanticStatus.FAILED,
+        SemanticReason.CASE_CAPACITY_EXCEEDED,
+    )
+    (event,) = [e for e in events if e["operation"] == "semantic_disclosure_capacity_exceeded"]
+    assert event["counts"] == {
+        "semantic_disclosure_attempted_bytes": 263_010,
+        "semantic_disclosure_limit_bytes": 262_144,
+    }
+    assert event["request_id"] == request
+    plain = ready_composition._map_egress_to_final(  # pyright: ignore[reportPrivateUsage]
+        replace(sized, capacity=None), ready_composition.IdPort()
+    )
+    assert (plain.status, plain.reason) == (
+        SemanticStatus.BLOCKED_BY_POLICY,
+        SemanticReason.NETWORK_EGRESS_DENIED,
+    )
+    # Only a size refusal can carry sizes, and only an over-limit pair.
+    for capacity in ((262_144, 262_144), (-1, 0), (10, 5.0)):
+        with pytest.raises(ValueError, match="semantic_capacity_invalid"):
+            replace(sized, capacity=capacity)  # type: ignore[arg-type]
+    with pytest.raises(ValueError, match="semantic_capacity_invalid"):
+        SemanticEgressBlocked(
+            request, PrivacyOutcome.HUMAN_DENIED, PrivacyReason.HUMAN_DENIED, capacity=(2, 1)
+        )
 
 
 @pytest.mark.anyio

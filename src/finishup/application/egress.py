@@ -585,12 +585,25 @@ class SemanticEgressBlocked:
     redacted_span_count: int = 0
     # PL2-1: bounded item refs and line numbers of replaced or withheld values, never values.
     redacted_values: tuple[SemanticRedactedValue, ...] = ()
+    # #1118: a size refusal's ``(attempted, limit)`` bytes: the rendered disclosure that would have
+    # been sent and the bound it exceeds. The receipt stays ``blocked_by_policy`` /
+    # ``policy_denied``; the check reports ``case_capacity_exceeded`` from this. Never content.
+    capacity: tuple[int, int] | None = None
 
     def __post_init__(self) -> None:
         _validate_withheld_item_ids(self.withheld_item_ids)
         validate_semantic_redacted_values(self.redacted_values)
         if type(self.redacted_span_count) is not int or self.redacted_span_count < 0:
             raise ValueError("semantic_redacted_span_count_invalid")
+        if self.capacity is not None:
+            attempted, limit = self.capacity
+            if (
+                type(attempted) is not int
+                or type(limit) is not int
+                or not 0 <= limit < attempted
+                or self.outcome is not PrivacyOutcome.BLOCKED_BY_POLICY
+            ):
+                raise ValueError("semantic_capacity_invalid")
 
 
 @dataclass(frozen=True, slots=True)
@@ -2091,8 +2104,9 @@ class PrivacyCoordinator:
             if len(payload) > MAX_MINIMIZED_DISCLOSURE_BYTES:
                 # #1118: one disclosure carries at most this many bytes (the receipt's
                 # ``final_bytes`` bound). Ceiling planning keeps the first exchange under it and
-                # read room keeps later ones under it; a conversation that still outgrows it is
-                # refused whole before a proposal exists, never trimmed and never sent.
+                # read fitting keeps later ones under it; a conversation that still outgrows it
+                # is refused whole before a proposal exists, never trimmed and never sent, and
+                # reported as capacity, not as a network denial.
                 return await self._complete_semantic_predispatch(
                     candidate,
                     effective,
@@ -2104,6 +2118,7 @@ class PrivacyCoordinator:
                     redacted_values=minimized.redacted_values,
                     scan_stage=ReceiptSecretScanStage.PREPARED_CASE,
                     scan_match_count=_minimized_scan_match_count(minimized),
+                    capacity=(len(payload), MAX_MINIMIZED_DISCLOSURE_BYTES),
                 )
             heuristic = external_review_credential_heuristic(effective.policy, binding)
             if self._classifier.scan_exact_bytes(payload, credential_heuristic=heuristic):
@@ -2133,6 +2148,7 @@ class PrivacyCoordinator:
             if item.channel is EgressChannel.LLM_INFERENCE
         )
         if llm.max_bytes > 0 and minimized.byte_count > llm.max_bytes:
+            # #1118: over the channel's byte ceiling is a capacity refusal, not a network denial.
             return await self._complete_semantic_predispatch(
                 candidate,
                 effective,
@@ -2144,6 +2160,7 @@ class PrivacyCoordinator:
                 redacted_values=minimized.redacted_values,
                 scan_stage=ReceiptSecretScanStage.PREPARED_CASE,
                 scan_match_count=_minimized_scan_match_count(minimized),
+                capacity=(minimized.byte_count, llm.max_bytes),
             )
         if llm.max_tokens > 0 and minimized.token_count > llm.max_tokens:
             return await self._complete_semantic_predispatch(
@@ -2823,6 +2840,7 @@ class PrivacyCoordinator:
         scan_stage: ReceiptSecretScanStage = ReceiptSecretScanStage.NOT_RUN,
         scan_match_count: int = 0,
         scan_not_run_reason: PrivacyReason | None = None,
+        capacity: tuple[int, int] | None = None,
     ) -> SemanticEgressBlocked:
         now = self._clock.now_utc()
         pid = proposal_id or self._ids.new(IdKind.PRIVACY_PROPOSAL)
@@ -2972,6 +2990,7 @@ class PrivacyCoordinator:
             withheld_item_ids=withheld_item_ids,
             redacted_span_count=redacted_span_count,
             redacted_values=redacted_values,
+            capacity=capacity,
         )
 
     def _local_decision(

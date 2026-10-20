@@ -862,7 +862,9 @@ disclosure carries. Excerpts the plan cuts are disclosed as `content_unselected`
 `semantic_case_built` counters show `semantic_excerpt_ceiling_rounds` above zero and, when the
 excerpt budget itself was reduced, `semantic_excerpt_byte_limit` below
 `semantic_excerpt_byte_approved`. An exchange that still does not fit is refused before anything
-is sent, as `blocked_by_policy`; nothing reaches the Codex child. Before the #1118 smoke fix such a
+is sent, as `failed/case_capacity_exceeded` (its privacy receipt `blocked_by_policy` /
+`policy_denied`, before #1118's owner decision reported `network_egress_denied`); nothing reaches
+the Codex child. Before the #1118 smoke fix such a
 case ended `coordinator_failure` with an owner diagnostic
 `semantic_attempt_privacy_dispatch_entered_failed` / `exception_value_error` at
 `finishup.ports.privacy:529`; on a current build that line no longer means an oversize review.
@@ -871,13 +873,14 @@ A `semantic_case_built` line with `semantic_excerpt_ceiling_rounds` above zero b
 `semantic_excerpt_byte_limit` still equal to `semantic_excerpt_byte_approved`, followed by a
 `blocked_by_policy` `semantic-review` privacy receipt (`final_bytes` 0) and no
 `semantic_review_accounting` line for that request, is a planned case that could not be narrowed
-under the cap. Before the #1118 heat-pump-warranty fix this happened whenever a change too large
+under the cap; on a current build it also records `semantic_disclosure_capacity_exceeded` with
+`semantic_disclosure_attempted_bytes` and `semantic_disclosure_limit_bytes`. Before the #1118 heat-pump-warranty fix this happened whenever a change too large
 for the excerpt budget was offered decision sections first: the planner measured the change it
 kept from the change's first byte, found 0 against the protected floor, and kept the whole case.
 On a current build only a case that cannot fit while keeping that floor, or whose fixed material
 alone exceeds the cap, ends that way. Each read
-result is fitted to what the exact next exchange leaves, so a review no longer ends
-`blocked_by_policy` on a later exchange; a read action whose own bytes leave no room ends the review
+result is fitted to what the exact next exchange leaves, so a review no longer ends on a size
+refusal at a later exchange; a read action whose own bytes leave no room ends the review
 `read_limit`, with nothing sent.
 
 ## Packaged live-evidence checklist

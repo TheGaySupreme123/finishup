@@ -297,6 +297,10 @@ _LOG_FIELDS: Final = frozenset(
         "semantic_excerpt_count_cut_for_case_bound",
         "semantic_excerpt_byte_limit",
         "semantic_excerpt_ceiling_rounds",
+        # #1118: a capacity refusal's rendered disclosure size and the limit it
+        # exceeded (integers only, never content).
+        "semantic_disclosure_attempted_bytes",
+        "semantic_disclosure_limit_bytes",
         "semantic_check_change_parts_selected",
         "semantic_edit_evidence_in_case",
         # Issue #1102: task-input pilot counters (integers only, never a path).
@@ -436,6 +440,10 @@ _INTEGER_FIELDS: Final = frozenset(
         "semantic_excerpt_count_cut_for_case_bound",
         "semantic_excerpt_byte_limit",
         "semantic_excerpt_ceiling_rounds",
+        # #1118: a capacity refusal's rendered disclosure size and the limit it
+        # exceeded (integers only, never content).
+        "semantic_disclosure_attempted_bytes",
+        "semantic_disclosure_limit_bytes",
         "semantic_check_change_parts_selected",
         "semantic_edit_evidence_in_case",
         # Issue #1102: task-input pilot counters (integers only, never a path).

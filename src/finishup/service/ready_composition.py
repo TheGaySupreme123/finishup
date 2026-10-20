@@ -3562,8 +3562,28 @@ def _map_egress_to_final(
             case_content_gaps=_egress_case_content_gaps(result),
         )
     if type(result) is SemanticEgressBlocked:
+        mapped = _map_blocked(result.outcome, result.reason)
+        if result.capacity is not None:
+            # #1118: the rendered disclosure exceeded a size bound (the conversation's disclosure
+            # cap or the channel's ``max_bytes``) with network egress permitted. Nothing was sent;
+            # the receipt keeps ``blocked_by_policy`` / ``policy_denied``, and the check reports
+            # the case's capacity with the bounded sizes, never content.
+            attempted, limit = result.capacity
+            record_bounded_counts_without_raising(
+                component="semantic_composition",
+                operation="semantic_disclosure_capacity_exceeded",
+                outcome=SemanticReason.CASE_CAPACITY_EXCEEDED.value,
+                counts={
+                    "semantic_disclosure_attempted_bytes": attempted,
+                    "semantic_disclosure_limit_bytes": limit,
+                },
+                request_id=result.request_id,
+            )
+            mapped = FinalSemanticEvaluation(
+                SemanticStatus.FAILED, SemanticReason.CASE_CAPACITY_EXCEEDED
+            )
         return replace(
-            _map_blocked(result.outcome, result.reason),
+            mapped,
             semantic_withheld_item_ids=_egress_withheld_item_ids(result),
             semantic_redacted_values=_egress_redacted_values(result),
             case_content_gaps=_egress_case_content_gaps(result),

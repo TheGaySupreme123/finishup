@@ -45,12 +45,13 @@ from finishup.ports.semantic import (
     encode_reviewer_exchange,
 )
 from finishup.protocol.canonical import JsonValue
-from finishup.protocol.models import SemanticStatus
+from finishup.protocol.models import SemanticReason, SemanticStatus
 from finishup.service.semantic_ceiling import REVIEWER_FRAME_BYTES
 from integration.service.test_reviewer_conversation_composition import (
     _FINAL,  # pyright: ignore[reportPrivateUsage]
     _read_file,  # pyright: ignore[reportPrivateUsage]
     _run,  # pyright: ignore[reportPrivateUsage]
+    frozen_request,
 )
 from unit.application.test_semantic_case_packet_completeness import (
     _change,  # pyright: ignore[reportPrivateUsage]
@@ -193,9 +194,30 @@ async def test_an_exchange_over_the_disclosure_cap_is_refused_typed_and_never_se
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """When the rendered conversation still outgrows the cap, nothing is sent and the review ends
-    blocked by policy, never as a coordinator failure."""
+    as the case's capacity (#1118 owner decision), never as a coordinator failure and never as a
+    network denial: egress was allowed. The receipt still records ``blocked_by_policy`` /
+    ``policy_denied`` with nothing sent, the job ends on that reason, and a bounded diagnostic
+    carries the attempted size and the cap."""
 
     import finishup.application.reviewer_run as reviewer_run_module
+    from finishup.adapters.memory.privacy import MemoryPrivacyAudit
+
+    receipts: list[Any] = []
+    complete = MemoryPrivacyAudit.complete_decision
+
+    async def capture(self: MemoryPrivacyAudit, proposal_id: str, receipt: Any) -> None:  # noqa: ANN401
+        receipts.append(receipt)
+        await complete(self, proposal_id, receipt)
+
+    monkeypatch.setattr(MemoryPrivacyAudit, "complete_decision", capture)
+    events: list[dict[str, Any]] = []
+    record = ready_composition_module.record_bounded_counts_without_raising
+
+    def counted(**kwargs: Any) -> str:  # noqa: ANN401
+        events.append(kwargs)
+        return record(**kwargs)
+
+    monkeypatch.setattr(ready_composition_module, "record_bounded_counts_without_raising", counted)
 
     _composed(monkeypatch, diff=_code_diff(files=1, lines=20))
     real_catalog = reviewer_run_module.reviewer_catalog
@@ -206,9 +228,25 @@ async def test_an_exchange_over_the_disclosure_cap_is_refused_typed_and_never_se
         return json.dumps(body)
 
     monkeypatch.setattr(reviewer_run_module, "reviewer_catalog", oversize_catalog)
-    result, gateway, _runtime = await _run(tmp_path, monkeypatch, _FINAL, policy=_expanded_policy())
+    result, gateway, runtime = await _run(tmp_path, monkeypatch, _FINAL, policy=_expanded_policy())
     assert gateway.exchanges == []
-    assert result.status is SemanticStatus.BLOCKED_BY_POLICY, (result.status, result.reason)
+    assert (result.status, result.reason) == (
+        SemanticStatus.FAILED,
+        SemanticReason.CASE_CAPACITY_EXCEEDED,
+    )
+    assert result.provenance is None
+    (receipt,) = receipts
+    assert (receipt.outcome.value, receipt.safe_failure_reason.value) == (
+        "blocked_by_policy",
+        "policy_denied",
+    )
+    assert receipt.counts.final_bytes == 0
+    (event,) = [e for e in events if e["operation"] == "semantic_disclosure_capacity_exceeded"]
+    attempted = event["counts"]["semantic_disclosure_attempted_bytes"]
+    assert attempted > MAX_MINIMIZED_DISCLOSURE_BYTES
+    assert event["counts"]["semantic_disclosure_limit_bytes"] == MAX_MINIMIZED_DISCLOSURE_BYTES
+    job = await runtime.ledger.load_semantic_job(runtime.writer_id or "", frozen_request())
+    assert job is not None and job.terminal_code is SemanticReason.CASE_CAPACITY_EXCEEDED
 
 
 @pytest.mark.anyio
