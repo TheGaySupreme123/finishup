@@ -8350,7 +8350,11 @@ An unchanged newest check that failed with
 of asking for the same closing review. When the newest closing-review attempt that still covers
 this state ended `unavailable` (any reason) or `timeout` (no judgment), with no current closing
 review that succeeded, it is current too and adds the standing code `semantic_review_no_judgment`
-(n7 RC1, #1105); a newer current closing-review attempt with another outcome decides instead,
+(n7 RC1, #1105). A closing review that ended `failed` / `case_capacity_exceeded` counts the same
+way (#1118): the unchanged case is refused again, so it is retryable only after a material change,
+which asks for the closing review again; and `respond self_verified` reads that refusal as a durable
+FinishUP limit, not a transient `semantic_review_not_completed`. A newer current closing-review
+attempt with another outcome decides instead,
 while a newer local-only check (`not_requested`) asked for no review and changes nothing. The
 sentence defers to that check's own continuation (at most one new check, none after a retry that
 also returned no judgment), otherwise a finish that reports a required review as unmet

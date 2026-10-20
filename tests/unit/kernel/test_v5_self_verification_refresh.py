@@ -118,3 +118,26 @@ def test_a_skipped_review_alone_never_makes_a_finding_eligible() -> None:
     seen = replace(full, semantic_conclusion="challenges_returned", returned_finding_ids=(fnd(1),))
     records = _records(_row(8, seen), _row(12, _skipped()))
     assert self_verification_refusal(state, fnd(1), records) == FINDING_NOT_PROOF_LIMITED
+
+
+def test_a_capacity_refused_review_is_a_finishup_limit_not_a_retry() -> None:
+    """#1118: ``failed`` / ``case_capacity_exceeded`` is refused again on the unchanged case.
+
+    Read as a transient ``semantic_review_not_completed``, it told the agent to check again,
+    which met the same refusal: self-verification was unreachable for an unchanged case.
+    """
+
+    from finishup.protocol.models import SemanticReason, SemanticStatus
+
+    refused = replace(
+        fr._check(  # pyright: ignore[reportPrivateUsage]
+            tested=12,
+            coverage=fr._coverage(gaps=("semantic_case_capacity_exceeded",), semantic=True),  # pyright: ignore[reportPrivateUsage]
+        ),
+        semantic_status=SemanticStatus.FAILED,
+        semantic_reason=SemanticReason.CASE_CAPACITY_EXCEEDED,
+    )
+    records = _records(_row(12, refused))
+    state = _state()
+    assert self_verification_blocking_reasons(state, fnd(1), records) == ()
+    assert self_verification_refusal(state, fnd(1), records) is None

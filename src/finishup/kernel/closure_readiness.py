@@ -726,6 +726,20 @@ def _coordinator_failure(payload: CheckRecordedPayload) -> bool:
     )
 
 
+def _capacity_refused(payload: CheckRecordedPayload) -> bool:
+    """A closing review refused because its case did not fit the disclosure capacity (#1118).
+
+    ``failed`` / ``case_capacity_exceeded`` is retryable only when the case changes: the same
+    unchanged case is refused again. With nothing material after it, it ends like a review with
+    no judgment (disclosed, not asked again); a material change makes the walk ask again.
+    """
+
+    return (
+        payload.semantic_status is SemanticStatus.FAILED
+        and payload.semantic_reason is SemanticReason.CASE_CAPACITY_EXCEEDED
+    )
+
+
 def _closing_review_current_check(payload: CheckRecordedPayload, state: ProjectionState) -> bool:
     """Whether this check is a closing review that still covers *state*."""
 
@@ -815,7 +829,9 @@ def _closing_review_facts(
             # no AI-powered review, so it is no newer attempt: following the no-judgment
             # continuation's "go local-only" must not bring the closing-review request back.
             continue
-        if status in _NO_JUDGMENT_STATUSES and not newer_closing_attempt:
+        if (status in _NO_JUDGMENT_STATUSES or _capacity_refused(payload)) and not (
+            newer_closing_attempt
+        ):
             # The newest closing-review attempt on this state ended without a judgment. An
             # older current review that succeeded still wins; a staled one no longer does.
             no_judgment = True

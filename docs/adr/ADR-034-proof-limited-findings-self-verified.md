@@ -337,6 +337,11 @@ reviewer that still saw the issue on a full packet keeps refusing. Nothing resol
 stays a disclosed, terminal answer that never makes a receipt read clean. Finding resolution, closure
 readiness and the Stop gate are unchanged. Host decision: kernel rule, identical on every host.
 
+A review refused as `failed` / `case_capacity_exceeded` (0fb47f325) is likewise a durable
+FinishUP limit for this rule: the unchanged case is refused again, so `semantic_review_not_completed`
+from it no longer reads as a transient retry; closure readiness ends such a closing review as
+`semantic_review_no_judgment` until a material change asks for it again.
+
 Not changed here (design-gated, owned with the review packet, #1118): the frozen review case drops
 the original finding prose under the inner ceiling fallback even when the owner admitted finding
 prose, and its `prior_finding_context` still reads `complete` when only the structural row survives.

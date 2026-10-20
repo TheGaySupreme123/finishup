@@ -67,7 +67,7 @@ from finishup.kernel.gap_effect import GAP_EFFECT_TABLE, GapClass
 from finishup.kernel.projections import ProjectionState
 from finishup.kernel.task_fact_scope import COMMAND_ATTEMPT_MISMATCH_GAP, scoped_resolution_reasons
 from finishup.kernel.task_facts import TASK_FACT_GAPS
-from finishup.protocol.models import SemanticStatus
+from finishup.protocol.models import SemanticReason, SemanticStatus
 
 __all__ = [
     "FINDING_NOT_PROOF_LIMITED",
@@ -316,9 +316,14 @@ def _evaluate(
             reasons,
         )
     check = next((row.payload for row in records if row.event_id == attempt.check_event_id), None)
-    undeliverable = (
-        type(check) is CheckRecordedPayload
-        and check.semantic_status in _DURABLE_UNDELIVERABLE_STATUSES
+    undeliverable = type(check) is CheckRecordedPayload and (
+        check.semantic_status in _DURABLE_UNDELIVERABLE_STATUSES
+        # A case over the disclosure capacity is refused again until the case changes (#1118):
+        # rechecking the same state cannot complete the review, so it is a FinishUP limit.
+        or (
+            check.semantic_status is SemanticStatus.FAILED
+            and check.semantic_reason is SemanticReason.CASE_CAPACITY_EXCEEDED
+        )
     )
     blocking = disqualifying_reasons(
         _attempt_reasons(state, finding_id, records, reasons),

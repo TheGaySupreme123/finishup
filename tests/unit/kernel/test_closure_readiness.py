@@ -1098,3 +1098,55 @@ def test_a_mid_task_check_without_a_judgment_changes_nothing() -> None:
     split = derive_closure_readiness((), (), facts, semantic_review_required=True)
     assert "closing_review_required" in split.agent_actionable
     assert "semantic_review_no_judgment" not in split.standing_limitations
+
+
+def _capacity_refused_closing_review(
+    *, material_after: bool
+) -> tuple[ProjectionState, tuple[LedgerRecord, ...]]:
+    """A closing review refused as ``failed`` / ``case_capacity_exceeded`` (0fb47f325)."""
+
+    state, records, source = _closing_review_then(
+        SemanticStatus.UNAVAILABLE, SemanticReason.OUTCOME_UNKNOWN
+    )
+    unjudged = cast(AcceptedEvent, records[-1])
+    refused = replace(
+        cast(CheckRecordedPayload, unjudged.payload),
+        semantic_status=SemanticStatus.FAILED,
+        semantic_reason=SemanticReason.CASE_CAPACITY_EXCEEDED,
+        semantic_provenance=None,
+    )
+    records = (*records[:-1], _append_check(unjudged, refused, unjudged.ledger.ingestion_sequence))
+    if material_after:
+        sequence = records[-1].ledger.ingestion_sequence + 1
+        edit = _retarget_action(
+            source,
+            replace(cast(ActionRecordedPayload, source.payload), action_kind=ActionKind.EDIT),
+            sequence,
+        )
+        records = (*records, edit)
+    return state, records
+
+
+def test_a_capacity_refused_closing_review_on_an_unchanged_case_is_not_asked_again() -> None:
+    """#1118: a size refusal is retryable, but the same case is refused again.
+
+    0fb47f325 made it ``failed`` (retryable) instead of an undeliverable ``blocked_by_policy``, so
+    the Stop gate kept asking for the closing review and every unchanged recheck was refused
+    again. With nothing material after it, it ends disclosed as ``semantic_review_no_judgment``.
+    """
+
+    state, records = _capacity_refused_closing_review(material_after=False)
+    facts = closure_readiness_facts(state, records)
+    assert facts.closing_review_current is True
+    assert facts.closing_review_no_judgment is True
+    split = derive_closure_readiness((), (), facts, semantic_review_required=True)
+    assert "closing_review_required" not in split.agent_actionable
+    assert "semantic_review_no_judgment" in split.standing_limitations
+
+
+def test_a_capacity_refused_closing_review_is_asked_again_after_a_material_change() -> None:
+    state, records = _capacity_refused_closing_review(material_after=True)
+    facts = closure_readiness_facts(state, records)
+    assert facts.closing_review_current is False
+    asked = derive_closure_readiness((), (), facts, semantic_review_required=True)
+    assert "closing_review_required" in asked.agent_actionable
