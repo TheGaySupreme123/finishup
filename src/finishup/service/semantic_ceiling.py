@@ -25,6 +25,8 @@ from finishup.adapters.privacy.local_enforcer import (
     EGRESS_BYTES_PER_TOKEN_ESTIMATE,
     clean_item_data_class,
 )
+from finishup.adapters.providers.codex_reviewer_catalog import reviewer_model_context_window
+from finishup.adapters.providers.reviewer_reply import REVIEWER_LOOP_INSTRUCTION
 from finishup.application.reviewer_run import reviewer_first_exchange
 from finishup.application.semantic_case import (
     SemanticCaseTooLarge,
@@ -33,6 +35,10 @@ from finishup.application.semantic_case import (
     primary_material_selection,
     semantic_case_to_prepared_payload,
 )
+from finishup.config.models import (
+    CODEX_SUBSCRIPTION_ENDPOINT_PROFILE_ID,
+    CODEX_SUBSCRIPTION_PROVIDER_ID,
+)
 from finishup.domain.privacy import (
     DataClass,
     EgressChannel,
@@ -40,8 +46,15 @@ from finishup.domain.privacy import (
     ProviderBinding,
     ReviewSelectionPolicy,
 )
+from finishup.domain.reviewer_context import (
+    MAX_SIZED_EXCHANGE_BYTES,
+    UNSIZED_EXCHANGE_BYTES,
+    ReviewerContextWindow,
+    ReviewerExchangeBudget,
+    reviewer_token_budget,
+)
 from finishup.ports.privacy import MAX_MINIMIZED_DISCLOSURE_BYTES
-from finishup.ports.semantic import SemanticCase, SemanticCaseItem
+from finishup.ports.semantic import SemanticCase, SemanticCaseItem, reviewer_message_tokens
 from finishup.protocol.models import DataCategory
 
 __all__ = [
@@ -51,8 +64,10 @@ __all__ = [
     "channel_admission",
     "channel_prepared_limit",
     "plan_under_channel_ceiling",
+    "reviewer_exchange_budget",
     "reviewer_exchange_limit",
     "reviewer_exchange_measure",
+    "reviewer_route_window",
     "with_ceiling_planning_gap",
 ]
 
@@ -64,38 +79,106 @@ _ROUND_MARGIN_BYTES: Final = 2_048
 CEILING_PLANNING_GAP: Final = "content_unselected"
 
 
-# #1118: every byte of the reviewer conversation counts against the channel ceiling: the loop
+# #1118: every byte of the reviewer conversation counts against the exchange's byte limit: the loop
 # instruction, the packet (sent as a JSON string, so escaping grows it, up to twice for quoted code),
 # the read catalog, the reviewer's replies and the read results. The first exchange is measured
-# exactly, as ``reviewer_first_exchange`` renders it, and planned below the ceiling less this frame,
+# exactly, as ``reviewer_first_exchange`` renders it, and planned below the limit less this frame,
 # which keeps room for the reviewer's read actions, their results and a format-repair notice. Each
 # result is then fitted to what the exact next exchange leaves (``run_reviewer``'s
-# ``exchange_limit``), so no later exchange outgrows the ceiling either.
+# ``exchange_budget``), so no later exchange outgrows the limit either.
 REVIEWER_FRAME_BYTES: Final = 8192
 
 
-def reviewer_exchange_limit(policy: PrivacyPolicy) -> int | None:
-    """The size the reviewer conversation's first exchange may reach under the ceiling."""
+def reviewer_route_window(binding: ProviderBinding | None) -> ReviewerContextWindow | None:
+    """The reviewer model context of ``binding``'s route, when FinishUP can size it (#1118).
 
+    Only the Codex subscription route running the pinned reviewer model is sized, from the model
+    entry FinishUP ships for it. Every other route (the Responses and Chat Completions APIs, a
+    local model, another Codex model) has an owner-chosen model whose context FinishUP does not
+    know, so it keeps the unsized exchange bound.
+    """
+
+    if (
+        binding is None
+        or binding.transport != "external"
+        or binding.provider_id != CODEX_SUBSCRIPTION_PROVIDER_ID
+        or binding.endpoint_profile_id != CODEX_SUBSCRIPTION_ENDPOINT_PROFILE_ID
+    ):
+        return None
+    return reviewer_model_context_window(binding.model_id)
+
+
+def reviewer_exchange_budget(
+    policy: PrivacyPolicy, bindings: Iterable[ProviderBinding | None]
+) -> ReviewerExchangeBudget | None:
+    """What one exchange may carry to every one of ``bindings`` (#1118).
+
+    The narrowest of the owner's ``max_bytes`` and ``max_tokens`` ceilings (``max_tokens`` at the
+    estimate egress compares it with) and the route's hard byte bound, plus the model-token budget
+    when every destination's model context is sized; with a primary and a fallback the narrower
+    destination binds, so a fallback dispatch never outgrows its own model. ``None`` only without
+    an LLM channel.
+    """
+
+    present = [binding for binding in bindings if binding is not None]
+    windows = [reviewer_route_window(binding) for binding in present]
+    sized = [window for window in windows if window is not None]
+    if present and len(sized) == len(present):
+        budgets = [reviewer_token_budget(window) for window in sized]
+        limit = channel_prepared_limit(policy, route_bytes=MAX_SIZED_EXCHANGE_BYTES)
+        if limit is None:
+            return None
+        return ReviewerExchangeBudget(
+            limit,
+            min(budget.exchange_tokens for budget in budgets),
+            min(budget.first_exchange_tokens for budget in budgets),
+        )
     limit = channel_prepared_limit(policy)
-    return None if limit is None else max(0, limit - REVIEWER_FRAME_BYTES)
+    return None if limit is None else ReviewerExchangeBudget(limit)
 
 
-def reviewer_exchange_measure(catalog: str) -> Callable[[bytes], int]:
-    """The exact size of the first exchange that carries a prepared packet beside ``catalog``."""
+def reviewer_exchange_limit(budget: ReviewerExchangeBudget | None) -> int | None:
+    """The size the reviewer conversation's first exchange may reach, in bytes-equivalent."""
+
+    return None if budget is None else max(0, budget.byte_limit - REVIEWER_FRAME_BYTES)
+
+
+def reviewer_exchange_measure(
+    catalog: str, budget: ReviewerExchangeBudget | None = None
+) -> Callable[[bytes], int]:
+    """The size of the first exchange that carries a prepared packet beside ``catalog``.
+
+    It is the exchange's exact bytes, or, on a sized route, its estimated model tokens scaled so
+    that ``first_token_limit`` tokens measure exactly ``reviewer_exchange_limit`` (rounded up):
+    one number the planner compares with one limit, and it is within the limit only when both the
+    bytes and the tokens are.
+    """
+
+    limit = reviewer_exchange_limit(budget)
+    first = None if budget is None else budget.first_token_limit
+    fixed = reviewer_message_tokens(REVIEWER_LOOP_INSTRUCTION) + reviewer_message_tokens(catalog)
 
     def measure(packet: bytes) -> int:
-        return len(reviewer_first_exchange(packet, catalog))
+        size = len(reviewer_first_exchange(packet, catalog))
+        if first is None or limit is None:
+            return size
+        if first == 0:
+            return max(size, limit + 1)
+        tokens = fixed + reviewer_message_tokens(packet.decode())
+        return max(size, -(-tokens * limit // first))
 
     return measure
 
 
-def channel_prepared_limit(policy: PrivacyPolicy) -> int | None:
-    """The prepared-packet byte size the AI-powered review channel admits.
+def channel_prepared_limit(
+    policy: PrivacyPolicy, *, route_bytes: int = UNSIZED_EXCHANGE_BYTES
+) -> int | None:
+    """The prepared-payload byte size the AI-powered review channel admits.
 
     It is the narrowest of ``max_bytes``, ``max_tokens`` at the estimate egress uses, and the
-    largest disclosure the privacy port carries at all, so an unset (zero) or high Custom ceiling
-    still plans below what egress can prepare. ``None`` only without an LLM channel.
+    route's hard bound (``UNSIZED_EXCHANGE_BYTES`` unless the route's model context is sized), so
+    an unset (zero) or high Custom ceiling still plans below what egress can send. ``None`` only
+    without an LLM channel.
     """
 
     llm = next(
@@ -113,7 +196,7 @@ def channel_prepared_limit(policy: PrivacyPolicy) -> int | None:
         for limit in (llm.max_bytes, llm.max_tokens * EGRESS_BYTES_PER_TOKEN_ESTIMATE)
         if limit > 0
     ]
-    return min([MAX_MINIMIZED_DISCLOSURE_BYTES, *limits])
+    return min([min(route_bytes, MAX_MINIMIZED_DISCLOSURE_BYTES), *limits])
 
 
 @dataclass(frozen=True, slots=True)

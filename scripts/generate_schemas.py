@@ -1849,6 +1849,15 @@ def _egress_receipt_v1_1_schema(entry: _RegistryEntry) -> dict[str, JsonValue]:
         "enum": ["credential_probe", "observation_advice", "semantic_check"],
         "type": "string",
     }
+    # #1118: one reviewer exchange on a route sized to its model's context carries up to 524,288
+    # bytes (``MAX_SIZED_EXCHANGE_BYTES``, the outbound-document bound). 1.1.0 is unreleased, so
+    # its bound widens in place; a 1.0.0 receipt keeps 262,144.
+    definitions["max_524288_decimal"] = {
+        "$ref": SCHEMA_NAMESPACE + "privacy/outbound-case-1.0.0.schema.json#/$defs/max_524288_decimal"
+    }
+    counts = cast(dict[str, JsonValue], definitions["counts"])
+    count_properties = cast(dict[str, JsonValue], counts["properties"])
+    count_properties["final_bytes"] = {"$ref": "#/$defs/max_524288_decimal"}
     document["title"] = "Yoetz egress receipt 1.1.0"
     return document
 

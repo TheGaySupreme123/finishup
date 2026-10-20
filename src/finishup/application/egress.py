@@ -10,7 +10,7 @@ from collections.abc import Awaitable, Callable, Iterable
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta
 from enum import StrEnum
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING, Literal, cast
 
 from finishup.adapters.privacy.local_enforcer import SecretScanRuleset, estimated_token_count
 from finishup.domain.findings import SemanticDispatchKind
@@ -64,6 +64,7 @@ from finishup.domain.receipts import (
     SEMANTIC_PROVIDER_INPUT_MANIFEST_FAILURES,
     SEMANTIC_PROVIDER_INPUT_MANIFEST_MISSING_GAP,
 )
+from finishup.domain.reviewer_context import UNSIZED_EXCHANGE_BYTES, ReviewerExchangeBudget
 from finishup.observability.logging import record_unexpected_exception_without_raising
 from finishup.observability.privacy import redact_heuristic_spans
 from finishup.observability.semantic_context import semantic_check_request
@@ -95,6 +96,7 @@ from finishup.ports.semantic import (
     SemanticResultSuccess,
     SemanticResultTimeout,
     SemanticResultUnavailable,
+    reviewer_exchange_tokens,
     reviewer_packet_bytes,
 )
 from finishup.protocol.canonical import canonical_digest, canonical_encode, strict_json_parse
@@ -504,6 +506,9 @@ class ReviewerExchangeFrame:
     # The policy binding of the read results the conversation carries; admission refuses the
     # exchange when it no longer holds, so the consume fence sees only that one policy digest.
     history: ReviewerHistory | None = None
+    # #1118: what this exchange may carry on its route: its bytes and, on a route sized to its
+    # model's context, its estimated model tokens. ``None`` keeps the unsized byte bound.
+    budget: ReviewerExchangeBudget | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -589,6 +594,9 @@ class SemanticEgressBlocked:
     # been sent and the bound it exceeds. The receipt stays ``blocked_by_policy`` /
     # ``policy_denied``; the check reports ``case_capacity_exceeded`` from this. Never content.
     capacity: tuple[int, int] | None = None
+    # #1118: what ``capacity`` counts: bytes, or estimated model tokens on a route sized to its
+    # model's context.
+    capacity_unit: Literal["bytes", "tokens"] = "bytes"
 
     def __post_init__(self) -> None:
         _validate_withheld_item_ids(self.withheld_item_ids)
@@ -604,6 +612,10 @@ class SemanticEgressBlocked:
                 or self.outcome is not PrivacyOutcome.BLOCKED_BY_POLICY
             ):
                 raise ValueError("semantic_capacity_invalid")
+        if self.capacity_unit not in ("bytes", "tokens") or (
+            self.capacity_unit == "tokens" and self.capacity is None
+        ):
+            raise ValueError("semantic_capacity_invalid")
 
 
 @dataclass(frozen=True, slots=True)
@@ -2101,12 +2113,27 @@ class PrivacyCoordinator:
             # conversation is the disclosed payload, so ceilings, the proposal and the gateway's
             # final scan all see its exact bytes; earlier read results were admitted on their own.
             payload = frame.render(packet_bytes)
-            if len(payload) > MAX_MINIMIZED_DISCLOSURE_BYTES:
-                # #1118: one disclosure carries at most this many bytes (the receipt's
-                # ``final_bytes`` bound). Ceiling planning keeps the first exchange under it and
-                # read fitting keeps later ones under it; a conversation that still outgrows it
-                # is refused whole before a proposal exists, never trimmed and never sent, and
-                # reported as capacity, not as a network denial.
+            budget = frame.budget
+            byte_limit = min(
+                UNSIZED_EXCHANGE_BYTES if budget is None else budget.byte_limit,
+                MAX_MINIMIZED_DISCLOSURE_BYTES,
+            )
+            token_limit = None if budget is None else budget.token_limit
+            tokens = None if token_limit is None else reviewer_exchange_tokens(payload)
+            capacity: tuple[int, int] | None = None
+            capacity_unit: Literal["bytes", "tokens"] = "bytes"
+            if len(payload) > byte_limit:
+                capacity = (len(payload), byte_limit)
+            elif tokens is not None and token_limit is not None and tokens > token_limit:
+                capacity, capacity_unit = (tokens, token_limit), "tokens"
+            if capacity is not None:
+                # #1118: one exchange carries at most its route's bytes (never more than the
+                # receipt's ``final_bytes`` bound) and, on a route sized to its model's context,
+                # at most its estimated model-token budget. Ceiling planning keeps the first
+                # exchange under both and read fitting keeps later ones under both; a
+                # conversation that still outgrows them is refused whole before a proposal
+                # exists, never trimmed and never sent, and reported as capacity, not as a
+                # network denial.
                 return await self._complete_semantic_predispatch(
                     candidate,
                     effective,
@@ -2118,7 +2145,8 @@ class PrivacyCoordinator:
                     redacted_values=minimized.redacted_values,
                     scan_stage=ReceiptSecretScanStage.PREPARED_CASE,
                     scan_match_count=_minimized_scan_match_count(minimized),
-                    capacity=(len(payload), MAX_MINIMIZED_DISCLOSURE_BYTES),
+                    capacity=capacity,
+                    capacity_unit=capacity_unit,
                 )
             heuristic = external_review_credential_heuristic(effective.policy, binding)
             if self._classifier.scan_exact_bytes(payload, credential_heuristic=heuristic):
@@ -2841,6 +2869,7 @@ class PrivacyCoordinator:
         scan_match_count: int = 0,
         scan_not_run_reason: PrivacyReason | None = None,
         capacity: tuple[int, int] | None = None,
+        capacity_unit: Literal["bytes", "tokens"] = "bytes",
     ) -> SemanticEgressBlocked:
         now = self._clock.now_utc()
         pid = proposal_id or self._ids.new(IdKind.PRIVACY_PROPOSAL)
@@ -2991,6 +3020,7 @@ class PrivacyCoordinator:
             redacted_span_count=redacted_span_count,
             redacted_values=redacted_values,
             capacity=capacity,
+            capacity_unit=capacity_unit,
         )
 
     def _local_decision(

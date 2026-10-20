@@ -1672,11 +1672,13 @@ def _with_channel_ceiling(monkeypatch: pytest.MonkeyPatch, limit: int) -> None:
     ``channel_prepared_limit`` itself is covered in ``tests/unit/service/test_semantic_ceiling.py``.
     """
 
-    def fixed_limit(policy: object) -> int:
-        del policy
+    import finishup.service.semantic_ceiling as semantic_ceiling_module
+
+    def fixed_limit(policy: object, *, route_bytes: int = 0) -> int:
+        del policy, route_bytes
         return limit
 
-    monkeypatch.setattr(ready_composition_module, "channel_prepared_limit", fixed_limit)
+    monkeypatch.setattr(semantic_ceiling_module, "channel_prepared_limit", fixed_limit)
     _with_full_admission(monkeypatch)
 
 

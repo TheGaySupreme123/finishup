@@ -437,8 +437,8 @@ from finishup.service.project_coordination_authority import ProjectCoordinationG
 from finishup.service.semantic_attention import SemanticAttentionTracker
 from finishup.service.semantic_ceiling import (
     channel_admission,
-    channel_prepared_limit,
     plan_under_channel_ceiling,
+    reviewer_exchange_budget,
     reviewer_exchange_limit,
     reviewer_exchange_measure,
     with_ceiling_planning_gap,
@@ -3573,9 +3573,10 @@ def _map_egress_to_final(
                 component="semantic_composition",
                 operation="semantic_disclosure_capacity_exceeded",
                 outcome=SemanticReason.CASE_CAPACITY_EXCEEDED.value,
+                # A route sized to its model's context may refuse on estimated tokens instead.
                 counts={
-                    "semantic_disclosure_attempted_bytes": attempted,
-                    "semantic_disclosure_limit_bytes": limit,
+                    f"semantic_disclosure_attempted_{result.capacity_unit}": attempted,
+                    f"semantic_disclosure_limit_{result.capacity_unit}": limit,
                 },
                 request_id=result.request_id,
             )
@@ -5583,17 +5584,19 @@ def _privacy_gated_semantic_evaluator(
                 # ceiling less the frame its replies need. The catalog names roots and paths
                 # only, never the case's refs, so the planned case carries the same one.
                 read_catalog = reviewer_catalog(await read_roots_for(approved_case), reviewer_reads)
+                # The narrower of the two destinations' budgets: the review may be sent to either.
+                planned_budget = reviewer_exchange_budget(policy, (provider, fallback_binding))
                 semantic_case, planned_selection, ceiling_rounds = plan_under_channel_ceiling(
                     approved_case,
                     review_selection,
-                    reviewer_exchange_limit(policy),
+                    reviewer_exchange_limit(planned_budget),
                     lambda selection: build_case(
                         selection, with_ceiling_planning_gap(captured_content_gaps)
                     ),
                     # Size what egress will release to either destination, not the items local
                     # minimization withholds from the channel.
                     channel_admission(policy, (provider, fallback_binding)),
-                    reviewer_exchange_measure(read_catalog),
+                    reviewer_exchange_measure(read_catalog, planned_budget),
                 )
             except SemanticCaseCapacityExceeded as exc:
                 # Same pre-dispatch contract as an envelope that cannot be reduced: local
@@ -6064,8 +6067,9 @@ def _privacy_gated_semantic_evaluator(
                                 source_commitment=lambda data: runtime.objects.commitment_for(
                                     data, ObjectKind.SEMANTIC_RESPONSE
                                 ),
-                                # #1118: every later exchange is fitted under the cap.
-                                exchange_limit=channel_prepared_limit(policy),
+                                # #1118: every exchange stays within this destination's budget:
+                                # its byte bound and, on a sized route, its model-token budget.
+                                exchange_budget=reviewer_exchange_budget(policy, (binding,)),
                             )
                             stage = "response_mapping"
                             return _with_reviewer(await _mapped(run.result), run)

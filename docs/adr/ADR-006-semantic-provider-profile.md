@@ -2596,18 +2596,90 @@ credential probe keep their one-shot dispatch; no check uses it.
   needs, measured as the exchange encodes the result, escaping included. A result over that room
   keeps the longest head that fits, measured. A read is offered only while 2 KiB of that room is
   left (an ordinary read action and a result without data); an action whose own bytes leave less
-  than 1 KiB ends the review `read_limit`, unread and unsent. The ceiling here is never above the 262,144 bytes one prepared disclosure
-  carries, the receipt's `final_bytes` bound. An exchange that still outgrows the channel ceiling
-  or that bound is refused whole before a proposal exists, never trimmed and never sent: the
-  receipt records `blocked_by_policy` / `policy_denied` and the check reports
-  `failed/case_capacity_exceeded` (owner decision on #1118), with the attempted rendered size and
-  the limit in a bounded diagnostic.
+  than 1 KiB ends the review `read_limit`, unread and unsent. The ceiling here is the exchange
+  budget below, never above what one prepared disclosure carries. An exchange that still outgrows
+  it is refused whole before a proposal exists, never trimmed and never sent: the receipt records
+  `blocked_by_policy` / `policy_denied` and the check reports `failed/case_capacity_exceeded`
+  (owner decision on #1118), with the attempted size and the limit, in bytes or estimated tokens,
+  in a bounded diagnostic.
+- **Exchange budget sized to the reviewer model's context** (*Amended 2026-10-20, #1118 owner
+  decision: a token budget instead of the fixed 262,144-byte cap*). The whole conversation stays
+  in one Codex thread and compaction is refused on the reviewer path, so every exchange must fit
+  the model's context with room for the model to answer. One exchange may carry the narrowest of:
+  - the owner's channel ceilings: `max_bytes`, and `max_tokens` at the policy's own estimate
+    (prepared bytes / 4). Their meaning is unchanged; an owner ceiling is never overridden;
+  - the route's hard byte bound: 524,288 bytes (`MAX_SIZED_EXCHANGE_BYTES`, equal to the
+    outbound-document bound `MAX_EGRESS_CASE_BYTES`) on a sized route, 262,144 bytes
+    (`UNSIZED_EXCHANGE_BYTES`, the previous cap) on every other route. Both stay below Codex
+    0.162.1's own turn input limit of 1,048,576 characters (`MAX_USER_INPUT_TEXT_CHARS`);
+  - on a sized route only, the model-token budget, counted over the messages the model reads
+    (each message's text plus 8 tokens, not the JSON exchange around them).
+
+  The only sized route is the Codex subscription route running `gpt-6.1-sol`, sized from the
+  model entry FinishUP ships (`reviewer-model-catalog-0.162.1.json`: `context_window` 272,000,
+  `effective_context_window_percent` 95). Those are the bundled 0.162.1 values, so they hold
+  whether or not a launch applies the derived catalog (the live entry seen on 2026-10-19 was
+  larger, 500,000). Codex auto-compacts at 90% of the window when the entry sets no limit
+  (`ModelInfo::auto_compact_token_limit`), below the 95% usable share, so the ceiling is 244,800
+  tokens. From it FinishUP reserves 4,096 tokens for Codex's own turn framing (permissions,
+  environment context, reply schema), 40,960 for one turn's reasoning (32,768) and visible output
+  (8,192, `CODEX_OUTPUT_LIMIT_MAX`), and an eighth of the ceiling (30,600) for estimation error:
+  every exchange carries at most **169,144 estimated tokens**. The first exchange leaves 16,384
+  of them for what later exchanges add (replies, read results, a repair notice): **152,760**.
+  Ceiling planning measures the first exchange in both units at once (its bytes, and its tokens
+  scaled so that 152,760 tokens equal the byte limit less the 8 KiB frame); read room is the
+  smaller of what the next exchange's bytes and tokens leave (a message adds no more estimated
+  tokens than encoded bytes). With a primary and a fallback destination the narrower budget plans
+  the case; each dispatch is then held to its own destination's budget.
+
+  The Responses and Chat Completions routes, a local model and any other Codex model run an
+  owner-chosen model whose context FinishUP does not know; they are not sized and keep the
+  262,144-byte bound, with no token budget. A reviewer model with a published context would be
+  added here by its own decision.
+
+  Tokens are estimated, not counted: the model's tokenizer is not published, and the nearest
+  public one (`tiktoken` `o200k_base`) would be a new native dependency that downloads its
+  vocabulary on first use, a network channel FinishUP does not open, unless a 3.6 MB vocabulary
+  of unclear redistribution terms were vendored (an ADR-007 packaging decision). The estimate is
+  deterministic, so a recovered review rebuilds the same case: one token per byte at or above
+  0x80 (strict: byte-level BPE never yields more tokens than bytes) and 5/9 of a token per other
+  byte (1.8 bytes per token). Measured against `o200k_base` on 2026-10-20 (`tiktoken` 0.12, 1,129
+  samples):
+
+  | Content | bytes per o200k token | estimate / o200k |
+  |---|---|---|
+  | Repository files, raw and JSON-escaped once or twice (1,035) | 1.80-5.34 | 0.997-2.97 |
+  | Of those, Python and Markdown | 3.67-5.34 | 2.04-2.97 |
+  | `uv.lock`, `package-lock.json` | 2.15-2.57 | 1.20-1.43 |
+  | Message text of five real-shaped reviewer exchanges (quoted code diff, JSON tool output, decision-first diff, a real git diff with captured output) | 2.42-3.67 | 1.34-2.04 |
+  | Random SHA-256 hex and UUID JSON | 1.75-1.79 | 0.974-0.996 |
+  | CJK, Hebrew, Cyrillic and emoji text | 1.56-2.82 | 1.56-2.82 |
+  | `\u`-escaped non-ASCII and control characters | 1.66-4.00 | 0.922-2.22 |
+  | Random noise (base64, printable, letters) | 1.32-1.93 | 0.73-1.07 |
+
+  The estimate undercounts only dense random identifiers (by at most 2.6%; one UUID-dense Codex
+  rollout fixture by 0.3%), `\u`-escaped non-ASCII text (8%) and content made entirely of random
+  characters (27%). The estimation margin covers about 18% on a full exchange; beyond it the
+  review fails closed (Codex reports the context exceeded, or compacts, which the reviewer
+  refuses), never truncated. Compared with the 262,144-byte cap, a first exchange may now carry
+  up to 516,096 bytes and 152,760 estimated tokens (about 275 KB of ASCII message text): 1.1 to
+  1.5 times the old first exchange's bytes on the packets measured, the most for the
+  escape-heavy packets the old cap trimmed hardest.
+  Receipts follow: `privacy/egress-receipt-1.1.0` (unreleased, widened in place)
+  bounds `counts.final_bytes` at 524,288; a 1.0.0 receipt keeps 262,144.
+
+  The owner's setup ceilings bind first. Setup writes `max_bytes` 262,144 and `max_tokens` 65,536
+  into every policy (`cli/privacy_setup._CASE_MAX_BYTES`/`_CASE_MAX_TOKENS`, no owner prompt), and
+  `privacy/privacy-policy-1.2.0` caps `max_bytes` at 262,144, so a setup-written policy still
+  plans every exchange below 262,144 - 8,192 bytes on every route. Only an owner decision that
+  raises those defaults (and the policy schema's `max_bytes` maximum) lets the sized route use
+  its model budget; it is not taken here.
   *Amended 2026-10-20 (#1118 benchmark smoke):* the packet was first planned below the ceiling
   less 8 KiB, then a fifth for escaping. Quoted code and JSON tool output escape twice in the
   conversation (a 192,924-byte packet sent as a 271,615-byte exchange; a 200,469-byte one, from
   captured output alone under the excerpt budget, as 281,486), and building that disclosure
-  raised, so four reviews ended `coordinator_failure`. The 262,144-byte bound is unchanged: it is
-  the per-disclosure quantity the receipt vocabulary fixes.
+  raised, so four reviews ended `coordinator_failure`. The 262,144-byte bound was kept then; the
+  exchange budget amendment above replaced it on the sized route.
   *Amended 2026-10-20 (#1118 heat-pump-warranty probe):* two reviews ended `blocked_by_policy` /
   `network_egress_denied` on their first exchange, before any model turn. Their change did not
   fit the excerpt budget, so it was offered decision sections first and its leading parts start

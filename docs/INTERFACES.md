@@ -4448,8 +4448,11 @@ optional `cursor` and answers `snapshot_generation`, `receipts`, and `next_curso
 another page exists. Each wrapper names its `kind` (`local_disclosure` or `network_egress`) and
 carries the receipt in the `privacy/egress-receipt-1.0.0` vocabulary: every counter and version
 is a decimal string, optional fields are absent rather than null. `counts.final_bytes` is bounded by
-that vocabulary's 262,144 in the domain too (`MAX_RECEIPT_FINAL_BYTES`), not by the 512 KiB
-outbound-document bound, so the store can no longer hold a receipt the wire refuses. Unknown or
+the receipt's own vocabulary in the domain too, so the store can no longer hold a receipt the wire
+refuses: 262,144 for a 1.0.0 receipt (`MAX_RECEIPT_FINAL_BYTES_1_0`) and, since #1118, 524,288 for
+1.1.0 (`MAX_RECEIPT_FINAL_BYTES`, equal to the outbound-document bound; 1.1.0 is unreleased and its
+`max_524288_decimal` bound was widened in place) so a reviewer exchange on a route sized to its
+model's context can be receipted. Unknown or
 malformed keys, filters, page sizes, cursors, and receipt IDs are `invalid_request`; a cursor minted
 for a different query is the same non-retryable rejection, and `invalid_request` is reserved for
 those caller mistakes (issue #921). Stored rows are read one at a time: a row that cannot be read
@@ -4906,7 +4909,7 @@ provider. This additive reason belongs to the current 1.1 check/provenance schem
 schemas retain their original bytes. Local findings remain recorded; no provider attempt is consumed
 and provenance stays null. Since #1118 (owner decision recorded there) the same reason also covers
 disclosure capacity: a rendered disclosure over the channel's `max_bytes`, or a reviewer exchange
-over `MAX_MINIMIZED_DISCLOSURE_BYTES`, is refused by `PrivacyCoordinator` before a proposal exists
+over its exchange budget (bytes, or estimated model tokens on a sized route), is refused by `PrivacyCoordinator` before a proposal exists
 and reported `failed/case_capacity_exceeded`, not `blocked_by_policy/network_egress_denied`. There
 a job attempt exists and ends on that terminal code, the privacy receipt records
 `blocked_by_policy` / `policy_denied` with `final_bytes` 0 (the receipt vocabulary is unchanged),
@@ -10818,10 +10821,12 @@ plan. Names and contracts:
   composition state outside the envelope and digest. When non-excerpt items alone exceed the
   bound it raises `SemanticCaseCapacityExceeded` (the base of `LineageSemanticCapacityExceeded`),
   reported as `case_capacity_exceeded` with operation `semantic_not_dispatched_case_capacity`.
-- `service/semantic_ceiling.py`: `channel_prepared_limit(policy)` is the narrowest of the LLM
-  channel's `max_bytes`, `max_tokens × 4` (zero is unset) and `MAX_MINIMIZED_DISCLOSURE_BYTES`
-  (`ports/privacy.py`, 262,144), so an unset or high ceiling still plans below what egress can
-  prepare. `channel_admission(policy, bindings)` is the categories and data classes egress
+- `service/semantic_ceiling.py`: `channel_prepared_limit(policy, *, route_bytes=
+  UNSIZED_EXCHANGE_BYTES)` is the narrowest of the LLM channel's `max_bytes`, `max_tokens × 4` (zero
+  is unset), the route's hard bound (`domain/reviewer_context.py`: `UNSIZED_EXCHANGE_BYTES`
+  262,144, or `MAX_SIZED_EXCHANGE_BYTES` 524,288 on a sized route) and
+  `MAX_MINIMIZED_DISCLOSURE_BYTES` (`ports/privacy.py`, 524,288), so an unset or high ceiling still
+  plans below what egress can send. `channel_admission(policy, bindings)` is the categories and data classes egress
   releases to those destinations (LLM channel ceiling for external, local-model ceiling for
   `local_af_unix`, unioned), with each item's data class from the enforcer's
   `clean_item_data_class`. `plan_under_channel_ceiling` measures only the items that admission
@@ -11870,15 +11875,15 @@ The loop appends each reply to the history exactly as the model returned it (can
 
 `application.reviewer_run.run_reviewer(privacy, job_id=, case=, roots=, steps=, binding=, scope=,
 deadline=, first_request_id=, new_request_id=, candidate_for=, dispatch_guard=, resume_pending=,
-clock=, source_commitment=, reads=MAX_READS, exchange_limit=None) -> ReviewerRun(result, record,
+clock=, source_commitment=, reads=MAX_READS, exchange_budget=None) -> ReviewerRun(result, record,
 citable_refs, text_by_ref, paths)` runs one job attempt. The composition calls it for every attempt
 when its privacy object is the `PrivacyCoordinator` (a non-coordinator test double keeps the
 one-dispatch shape), with `steps = SqliteLedger.review_steps(handle)`, the attempt's
 `provider_request_id` for the first exchange, the job's read roots, `reads=0` where
 `semantic_preview_required(policy)`, `resume_pending` = the awaiting `SemanticDisclosureWait`'s
 `pending_id` for this job and attempt (else `None`), `source_commitment = runtime.objects.
-commitment_for(data, ObjectKind.SEMANTIC_RESPONSE)` and `exchange_limit =
-channel_prepared_limit(policy)`. Before it, the composition calls
+commitment_for(data, ObjectKind.SEMANTIC_RESPONSE)` and `exchange_budget =
+reviewer_exchange_budget(policy, (binding,))` (this attempt's destination). Before it, the composition calls
 `PrivacyCoordinator.recover_started_request(provider_request_id)`: a consumed first exchange maps
 as `outcome_unknown` and is never resent. For it, `operation_max_retries` is `0` and a fallback plan
 (new or persisted) is `semantic_attempts.one_conversation_plan(plan)`: both endpoints at
@@ -11887,7 +11892,7 @@ as `outcome_unknown` and is never resent. For it, `operation_max_retries` is `0`
 
 - `PrivacyCoordinator.evaluate_semantic(candidate, deadline, *, dispatch_guard=None, exchange=None)`
   and `resume(..., exchange=None)` take a `ReviewerExchangeFrame(media_type, render, input_roots,
-  history=None)`. With a frame, the pipeline minimizes the case as before; then, when `history`
+  history=None, budget=None)`. With a frame, the pipeline minimizes the case as before; then, when `history`
   is given, `history.admit_exchange(effective, binding, scope_kind, input_roots)` must hold or the
   exchange is refused `blocked_by_policy`/`policy_denied` before any proposal; then
   `render(approved_packet)` gives the payload (the packet as the first user turn, the read catalog
@@ -11917,19 +11922,47 @@ as `outcome_unknown` and is never resent. For it, `operation_max_retries` is `0`
   per-continuation recheck; `admit_reviewer_read(..., envelope, history=None)` adds an admitted
   result's elements to `history` and refuses (`authorization_changed`) when the retained ones no
   longer hold.
-- `service.semantic_ceiling.reviewer_exchange_limit(policy)` (the first exchange's planning
-  ceiling: `channel_prepared_limit - REVIEWER_FRAME_BYTES`, `REVIEWER_FRAME_BYTES = 8192`),
-  `reviewer_exchange_measure(catalog)` (the exact size of
+- Exchange budget (#1118 owner decision, ADR-006 "Exchange budget sized to the reviewer model's
+  context"). `domain.reviewer_context`: `estimated_model_tokens(text: bytes)` = one token per byte
+  ≥ 0x80 plus ⌈5/9 per other byte⌉; `ReviewerContextWindow(context_window, effective_percent)`;
+  `reviewer_token_budget(window) -> ReviewerTokenBudget(ceiling, exchange_tokens,
+  first_exchange_tokens)` with `ceiling = min(window × percent, window × AUTO_COMPACT_PERCENT
+  (90)) / 100`, `exchange_tokens = ceiling - RUNTIME_FRAMING_TOKENS (4,096) -
+  TURN_RESERVE_TOKENS (40,960) - ceiling // 8` and `first_exchange_tokens = exchange_tokens -
+  GROWTH_RESERVE_TOKENS (16,384)`; `ReviewerExchangeBudget(byte_limit, token_limit=None,
+  first_token_limit=None)`. `ports.semantic.reviewer_message_tokens(text)` = the estimate of the
+  text plus `MESSAGE_OVERHEAD_TOKENS` (8); `reviewer_exchange_tokens(payload)` sums it over the
+  decoded messages. `adapters.providers.codex_reviewer_catalog.reviewer_model_context_window(model)`
+  reads `context_window` and `effective_context_window_percent` from the packaged derived catalog
+  (only for `gpt-6.1-sol`, only at its pinned digest; else `None`).
+  `service.semantic_ceiling.reviewer_route_window(binding)` sizes only an `external`
+  `openai-codex` / `codex-chatgpt-subscription` binding through it, and
+  `reviewer_exchange_budget(policy, bindings)` is `ReviewerExchangeBudget(channel_prepared_limit(
+  policy, route_bytes=MAX_SIZED_EXCHANGE_BYTES), min exchange_tokens, min first_exchange_tokens)`
+  when every destination is sized, else `ReviewerExchangeBudget(channel_prepared_limit(policy))`
+  (`None` without an LLM channel). For `gpt-6.1-sol` (272,000 tokens, 95%) that is a 244,800-token
+  ceiling, 169,144 tokens per exchange and 152,760 for the first.
+- `service.semantic_ceiling.reviewer_exchange_limit(budget)` (the first exchange's planning
+  ceiling: `budget.byte_limit - REVIEWER_FRAME_BYTES`, `REVIEWER_FRAME_BYTES = 8192`),
+  `reviewer_exchange_measure(catalog, budget=None)` (the exact size of
   `application.reviewer_run.reviewer_first_exchange(packet, catalog)`: the loop instruction, the
   packet as a JSON string and the read catalog, which `plan_under_channel_ceiling(..., measure=)`
-  sizes instead of the bare packet; the catalog is rendered from the job's own read roots before
-  planning, and names no case ref). `PrivacyCoordinator`
-  refuses a rendered reviewer exchange over `MAX_MINIMIZED_DISCLOSURE_BYTES` before a proposal
-  exists, with the receipt `blocked_by_policy` / `policy_denied` like an over-`max_bytes` one and
-  the check `failed/case_capacity_exceeded` (both carry `capacity`), so an oversize conversation
-  never surfaces as `coordinator_failure` (#1118 smoke) or as a network denial. Later exchanges are fitted,
-  not estimated: `run_reviewer` gives the broker `exchange_room() = exchange_limit - sent[-1] -
-  _REPAIR_NOTE_BYTES` (the last exchange rendered, and the room one format-repair notice needs),
+  sizes instead of the bare packet; on a sized route the larger of those bytes and its estimated
+  tokens × limit / `first_token_limit`, rounded up, so it is within the limit only when both are;
+  the catalog is rendered from the job's own read roots before planning, and names no case ref).
+  The composition plans with `reviewer_exchange_budget(policy, (provider, fallback))`.
+  `PrivacyCoordinator` refuses a rendered reviewer exchange over `frame.budget.byte_limit`
+  (`UNSIZED_EXCHANGE_BYTES` without a budget, never above `MAX_MINIMIZED_DISCLOSURE_BYTES`) or over
+  its `token_limit` before a proposal exists, with the receipt `blocked_by_policy` /
+  `policy_denied` like an over-`max_bytes` one and the check `failed/case_capacity_exceeded` (both
+  carry `capacity`; `SemanticEgressBlocked.capacity_unit` is `bytes` or `tokens`, and the bounded
+  diagnostic names `semantic_disclosure_attempted_<unit>` / `semantic_disclosure_limit_<unit>`), so
+  an oversize conversation never surfaces as `coordinator_failure` (#1118 smoke) or as a network
+  denial. Later exchanges are fitted, not estimated: `run_reviewer` gives the broker
+  `exchange_room() = min(byte_limit - sent_bytes[-1] - _REPAIR_NOTE_BYTES, token_limit -
+  sent_tokens[-1] - _REPAIR_NOTE_TOKENS)` (the last exchange rendered, and the room one
+  format-repair notice needs; a message adds no more estimated tokens than encoded bytes, so token
+  room is granted as bytes),
   `ReviewerBroker.total` is lowered to `used + exchange_room()` after each exchange, and each result
   must fit what that room leaves after its read action, both measured by
   `ports.semantic.reviewer_message_bytes(role, text)` (the exact bytes one more message adds to an

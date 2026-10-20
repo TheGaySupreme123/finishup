@@ -857,14 +857,24 @@ and it is never a `coordinator_failure`.
 
 A large case is planned against the exact first reviewer exchange: the loop instruction, the
 packet (sent as a JSON string, so quoted code and JSON tool output can grow to nearly twice their
-size) and the read catalog, below the channel ceiling less 8 KiB, never above the 262,144 bytes one
-disclosure carries. Excerpts the plan cuts are disclosed as `content_unselected`, and the
+size) and the read catalog, below the exchange budget less 8 KiB. On this route with
+`gpt-6.1-sol` the budget is sized to the model's context (#1118, ADR-006): from the shipped entry's
+272,000-token window, Codex compacts at 90% (244,800 tokens; compaction is refused on the reviewer
+path), and FinishUP keeps 4,096 tokens for Codex's turn framing, 40,960 for one turn's reasoning
+and output, and 30,600 for estimation error, so every exchange carries at most 169,144 estimated
+tokens (152,760 for the first) and at most 524,288 bytes, below Codex's own 1,048,576-character
+turn input limit. Tokens are estimated (1.8 ASCII bytes per token, one per non-ASCII byte), not
+counted with the model's tokenizer. Any other model on this route keeps 262,144 bytes and no
+token budget. The owner's `max_bytes` and `max_tokens` bind first: a policy written by setup
+(262,144 bytes, 65,536 estimated tokens) still keeps every exchange below 262,144 - 8,192 bytes. Excerpts the plan cuts are disclosed as `content_unselected`, and the
 `semantic_case_built` counters show `semantic_excerpt_ceiling_rounds` above zero and, when the
 excerpt budget itself was reduced, `semantic_excerpt_byte_limit` below
 `semantic_excerpt_byte_approved`. An exchange that still does not fit is refused before anything
 is sent, as `failed/case_capacity_exceeded` (its privacy receipt `blocked_by_policy` /
 `policy_denied`, before #1118's owner decision reported `network_egress_denied`); nothing reaches
-the Codex child. Before the #1118 smoke fix such a
+the Codex child. The owner diagnostic `semantic_disclosure_capacity_exceeded` names the unit it
+exceeded: `semantic_disclosure_attempted_bytes`/`semantic_disclosure_limit_bytes`, or
+`..._tokens` for the model-token budget. Before the #1118 smoke fix such a
 case ended `coordinator_failure` with an owner diagnostic
 `semantic_attempt_privacy_dispatch_entered_failed` / `exception_value_error` at
 `finishup.ports.privacy:529`; on a current build that line no longer means an oversize review.

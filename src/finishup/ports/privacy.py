@@ -35,6 +35,7 @@ from finishup.domain.privacy import (
     PrivacyPolicy,
     ProviderBinding,
 )
+from finishup.domain.reviewer_context import MAX_SIZED_EXCHANGE_BYTES
 from finishup.domain.values import (
     format_rfc3339_millis,
     validate_commitment,
@@ -50,8 +51,10 @@ from finishup.protocol.redacted_values import (
     validate_semantic_redacted_values,
 )
 
-# The largest prepared disclosure the privacy port carries, whatever a channel ceiling allows.
-MAX_MINIMIZED_DISCLOSURE_BYTES: Final = 262_144
+# The largest prepared disclosure the privacy port carries, whatever a channel ceiling allows: the
+# hard byte bound of one reviewer exchange on a route sized to its model's context (#1118,
+# ``domain/reviewer_context.py``). A route FinishUP cannot size keeps ``UNSIZED_EXCHANGE_BYTES``.
+MAX_MINIMIZED_DISCLOSURE_BYTES: Final = MAX_SIZED_EXCHANGE_BYTES
 
 __all__ = [
     "MAX_MINIMIZED_DISCLOSURE_BYTES",
@@ -616,7 +619,7 @@ class DisclosureProposalRequest:
         _positive(self.policy_version)
         _positive(self.policy_generation)
         validate_sha256_digest(self.policy_digest)
-        _nonnegative(self.max_bytes, maximum=262_144)
+        _nonnegative(self.max_bytes, maximum=MAX_MINIMIZED_DISCLOSURE_BYTES)
         _nonnegative(self.max_tokens)
         _time(self.expires_at)
 

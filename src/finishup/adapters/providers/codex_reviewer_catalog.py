@@ -33,6 +33,7 @@ from importlib import resources
 from pathlib import Path
 from typing import Final, Literal, cast
 
+from finishup.domain.reviewer_context import ReviewerContextWindow
 from finishup.protocol.canonical import JsonValue, canonical_encode, strict_json_parse
 from finishup.protocol.errors import ProtocolValueError
 
@@ -49,6 +50,7 @@ __all__ = [
     "packaged_reviewer_catalog_path",
     "resolve_reviewer_catalog",
     "restore_source_entry",
+    "reviewer_model_context_window",
 ]
 
 # The one release and model the derivation was reviewed for (Codex tag ``rust-v0.162.1``,
@@ -208,3 +210,35 @@ def resolve_reviewer_catalog(
     if _sha256(data) != REVIEWER_CATALOG_DERIVED_SHA256:
         return ReviewerCatalogDecision(None, "derived_catalog_changed")
     return ReviewerCatalogDecision(catalog_path, "applied")
+
+
+def reviewer_model_context_window(model: str) -> ReviewerContextWindow | None:
+    """The pinned reviewer model's context window, read from the packaged derived catalog.
+
+    ``context_window`` and ``effective_context_window_percent`` are the bundled 0.162.1 values
+    byte for byte, so they hold whether or not a launch applies the file: without it a ChatGPT
+    login serves the live ``/models`` entry, whose window was larger (500,000) when measured.
+    ``None`` for any other model, or when the packaged file is missing or not its pinned bytes;
+    such a route keeps the unsized exchange bound.
+    """
+
+    if model != REVIEWER_CATALOG_MODEL:
+        return None
+    path = packaged_reviewer_catalog_path()
+    if path is None:
+        return None
+    try:
+        data = path.read_bytes()
+    except OSError:
+        return None
+    if _sha256(data) != REVIEWER_CATALOG_DERIVED_SHA256:
+        return None
+    try:
+        entry = _entry(strict_json_parse(data[:-1]), model)
+        window = entry.get("context_window")
+        percent = entry.get("effective_context_window_percent")
+        if type(window) is not int or type(percent) is not int:
+            return None
+        return ReviewerContextWindow(window, percent)
+    except (ProtocolValueError, ValueError):
+        return None

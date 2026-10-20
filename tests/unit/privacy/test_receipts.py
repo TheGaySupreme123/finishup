@@ -211,8 +211,9 @@ def test_counts_scan_and_destination_cross_field_invariants_fail_closed() -> Non
         # vocabulary's, not the outbound document's: it once followed MAX_EGRESS_CASE_BYTES to
         # 512 KiB, which let the store keep receipts the wire refuses (issue #921).
         ReceiptCounts(2, 2, 1, 1, 1, 10, MAX_RECEIPT_FINAL_BYTES + 1)
-    assert ReceiptCounts(2, 2, 1, 1, 1, 10, MAX_RECEIPT_FINAL_BYTES).final_bytes == 262_144
-    assert MAX_RECEIPT_FINAL_BYTES < MAX_EGRESS_CASE_BYTES
+    # #1118: a reviewer exchange on a sized route carries up to the outbound-document bound.
+    assert ReceiptCounts(2, 2, 1, 1, 1, 10, MAX_RECEIPT_FINAL_BYTES).final_bytes == 524_288
+    assert MAX_RECEIPT_FINAL_BYTES == MAX_EGRESS_CASE_BYTES
     with pytest.raises(ValueError, match="invalid_privacy_value"):
         ReceiptSecretScan("1", _DIGEST, 1, 1)  # type: ignore[arg-type]
     with pytest.raises(ValueError, match="invalid_privacy_value"):

@@ -9,6 +9,7 @@ from datetime import datetime
 from enum import Enum
 from typing import Final, Literal, cast
 
+from finishup.domain.reviewer_context import MAX_SIZED_EXCHANGE_BYTES
 from finishup.domain.values import (
     Frontier,
     format_rfc3339_millis,
@@ -33,6 +34,7 @@ __all__ = [
     "MAX_EGRESS_CASE_BYTES",
     "MAX_EGRESS_ITEM_BYTES",
     "MAX_RECEIPT_FINAL_BYTES",
+    "MAX_RECEIPT_FINAL_BYTES_1_0",
     "MAX_RECEIPT_NAME_AUTHORSHIP",
     "MAX_WITHHELD_ITEM_IDS",
     "MAX_PRIVACY_CHANGES",
@@ -137,12 +139,14 @@ MAX_EGRESS_ENVELOPE_BYTES: Final = 128 * 1024
 # to dispatch no matter how small its envelope was.
 MAX_EGRESS_CASE_BYTES: Final = 512 * 1024
 # A receipt's ``counts.final_bytes`` is bounded by the published receipt vocabulary
-# (``privacy/egress-receipt-1.0.0`` ``max_262144_decimal``), not by the outbound document bound
-# above. Every disclosure is prepared as one ``MinimizedDisclosure`` of at most 262,144 bytes and
-# every enabled channel's ``max_bytes`` is capped the same way, so no real receipt exceeds it. The
-# domain used to admit up to ``MAX_EGRESS_CASE_BYTES``, so a receipt between 256 and 512 KiB was
-# valid in the store and invalid on the wire, and failed every page it was listed on (issue #921).
-MAX_RECEIPT_FINAL_BYTES: Final = 262_144
+# (``privacy/egress-receipt-1.1.0`` ``max_524288_decimal``; 1.0.0 kept ``max_262144_decimal``), not
+# by the outbound document bound above, though they are now equal. Every disclosure is prepared as
+# one ``MinimizedDisclosure`` of at most ``MAX_SIZED_EXCHANGE_BYTES`` (524,288, #1118: a reviewer
+# exchange on a route sized to its model's context), so no real receipt exceeds it. The domain once
+# admitted more than the wire did, so a receipt between the two bounds was valid in the store and
+# invalid on the wire, and failed every page it was listed on (issue #921).
+MAX_RECEIPT_FINAL_BYTES: Final = MAX_SIZED_EXCHANGE_BYTES
+MAX_RECEIPT_FINAL_BYTES_1_0: Final = 262_144
 # The public receipt and semantic-result contracts carry at most 64 opaque item references. Keep
 # this bound in the shared privacy domain so proposals, prepared cases, receipts, and in-process
 # results reject an overlarge omission set before any object is finalized or encoded.
@@ -2911,6 +2915,11 @@ class EgressReceipt:
                 type(self.secret_scan) is ReceiptSecretScan
                 and self.secret_scan.credential_heuristic is not CredentialHeuristic.ENFORCED
             )
+            # The released 1.0 vocabulary stops at 262,144 final bytes (#1118 widened only 1.1).
+            or (
+                type(self.counts) is ReceiptCounts
+                and self.counts.final_bytes > MAX_RECEIPT_FINAL_BYTES_1_0
+            )
         ):
             # The released 1.0 wire contract has no safe place for omission identities or the
             # credential-heuristic opt-out.  Do not let a caller construct a value that a legacy
@@ -2975,6 +2984,11 @@ class LocalDisclosureReceipt:
             or (
                 type(self.secret_scan) is ReceiptSecretScan
                 and self.secret_scan.credential_heuristic is not CredentialHeuristic.ENFORCED
+            )
+            # The released 1.0 vocabulary stops at 262,144 final bytes (#1118 widened only 1.1).
+            or (
+                type(self.counts) is ReceiptCounts
+                and self.counts.final_bytes > MAX_RECEIPT_FINAL_BYTES_1_0
             )
         ):
             raise _invalid()

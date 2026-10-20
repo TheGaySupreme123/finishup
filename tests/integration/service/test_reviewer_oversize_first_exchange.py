@@ -35,19 +35,26 @@ from finishup.domain.events import EvidenceKind
 from finishup.domain.privacy import (
     EgressChannel,
     PrivacyPolicy,
+    ProviderBinding,
     ReviewContextProfile,
     ReviewSelectionPolicy,
 )
-from finishup.ports.privacy import MAX_MINIMIZED_DISCLOSURE_BYTES
+from finishup.domain.reviewer_context import (
+    MAX_SIZED_EXCHANGE_BYTES,
+    UNSIZED_EXCHANGE_BYTES,
+    ReviewerExchangeBudget,
+)
 from finishup.ports.semantic import (
     ReviewerMessage,
     SemanticResultReply,
     encode_reviewer_exchange,
+    reviewer_exchange_tokens,
 )
 from finishup.protocol.canonical import JsonValue
 from finishup.protocol.models import SemanticReason, SemanticStatus
-from finishup.service.semantic_ceiling import REVIEWER_FRAME_BYTES
+from finishup.service.semantic_ceiling import REVIEWER_FRAME_BYTES, reviewer_exchange_budget
 from integration.service.test_reviewer_conversation_composition import (
+    _BINDING,  # pyright: ignore[reportPrivateUsage]
     _FINAL,  # pyright: ignore[reportPrivateUsage]
     _read_file,  # pyright: ignore[reportPrivateUsage]
     _run,  # pyright: ignore[reportPrivateUsage]
@@ -177,7 +184,7 @@ async def test_a_case_filling_the_excerpt_budget_is_reviewed_within_the_disclosu
     assert result.status is SemanticStatus.SUCCEEDED, (result.status, result.reason)
     ((_media, history),) = gateway.exchanges
     # The exact first exchange the provider received fits the cap one disclosure carries.
-    assert len(_encoded(history)) <= MAX_MINIMIZED_DISCLOSURE_BYTES
+    assert len(_encoded(history)) <= UNSIZED_EXCHANGE_BYTES
     # Planning measured these same bytes: the renderer it uses is the one the exchange was sent in.
     assert reviewer_first_exchange(history[1][1].encode(), history[2][1]) == _encoded(history)
     # The full selection did not fit, so planning narrowed it and the packet says so.
@@ -224,7 +231,7 @@ async def test_an_exchange_over_the_disclosure_cap_is_refused_typed_and_never_se
 
     def oversize_catalog(roots: Any, reads: int) -> str:  # noqa: ANN401
         body = json.loads(real_catalog(roots, reads))
-        body["reviewer_catalog"]["padding"] = "x" * MAX_MINIMIZED_DISCLOSURE_BYTES
+        body["reviewer_catalog"]["padding"] = "x" * UNSIZED_EXCHANGE_BYTES
         return json.dumps(body)
 
     monkeypatch.setattr(reviewer_run_module, "reviewer_catalog", oversize_catalog)
@@ -243,8 +250,8 @@ async def test_an_exchange_over_the_disclosure_cap_is_refused_typed_and_never_se
     assert receipt.counts.final_bytes == 0
     (event,) = [e for e in events if e["operation"] == "semantic_disclosure_capacity_exceeded"]
     attempted = event["counts"]["semantic_disclosure_attempted_bytes"]
-    assert attempted > MAX_MINIMIZED_DISCLOSURE_BYTES
-    assert event["counts"]["semantic_disclosure_limit_bytes"] == MAX_MINIMIZED_DISCLOSURE_BYTES
+    assert attempted > UNSIZED_EXCHANGE_BYTES
+    assert event["counts"]["semantic_disclosure_limit_bytes"] == UNSIZED_EXCHANGE_BYTES
     job = await runtime.ledger.load_semantic_job(runtime.writer_id or "", frozen_request())
     assert job is not None and job.terminal_code is SemanticReason.CASE_CAPACITY_EXCEEDED
 
@@ -336,7 +343,7 @@ async def test_every_later_exchange_fits_the_cap_beside_a_long_read_action(
     assert result.status is SemanticStatus.SUCCEEDED, (result.status, result.reason)
     first, second = (history for _media, history in gateway.exchanges)
     assert len(_encoded(first)) > _CEILING - REVIEWER_FRAME_BYTES - 2048  # little room is left
-    assert len(_encoded(second)) <= MAX_MINIMIZED_DISCLOSURE_BYTES
+    assert len(_encoded(second)) <= UNSIZED_EXCHANGE_BYTES
     # The result was fitted to that room, not dropped: it still carries the file's head.
     observation = json.loads(second[-1][1])
     assert observation["status"] == "partial" and '\\"a\\" b' in observation["data"]["text"]
@@ -388,5 +395,171 @@ async def test_a_backslash_read_after_a_full_first_exchange_fits_the_cap(
     assert result.status is SemanticStatus.SUCCEEDED, (result.status, result.reason)
     first, second = (history for _media, history in gateway.exchanges)
     assert len(_encoded(first)) == 253_597  # the verifier's first exchange, exactly
-    assert len(_encoded(second)) <= MAX_MINIMIZED_DISCLOSURE_BYTES
+    assert len(_encoded(second)) <= UNSIZED_EXCHANGE_BYTES
     assert json.loads(second[-1][1])["data"] is not None  # fitted, not dropped
+
+
+# #1118 token budget: the Codex subscription route running the pinned reviewer model is sized to
+# that model's context; every other route keeps the 262,144-byte exchange bound.
+_CODEX = ProviderBinding(
+    "openai-codex", "gpt-6.1-sol", "codex-chatgpt-subscription", "1.0.0", "external"
+)
+
+
+def _policy_for(binding: ProviderBinding, max_bytes: int, max_tokens: int) -> PrivacyPolicy:
+    base = _expanded_policy()
+    channels = tuple(
+        replace(channel, provider_binding=binding, max_bytes=max_bytes, max_tokens=max_tokens)
+        if channel.channel is EgressChannel.LLM_INFERENCE
+        else channel
+        for channel in base.channel_policies
+    )
+    return replace(base, channel_policies=channels)
+
+
+def _sized_budget() -> ReviewerExchangeBudget:
+    budget = reviewer_exchange_budget(_policy_for(_CODEX, 0, 0), (_CODEX,))
+    assert budget is not None and budget.first_token_limit is not None
+    return budget
+
+
+def test_the_benchmark_route_budget_is_the_model_context_less_its_reserves() -> None:
+    budget = _sized_budget()
+    assert budget == ReviewerExchangeBudget(MAX_SIZED_EXCHANGE_BYTES, 169_144, 152_760)
+    # The setup ceilings (256 KiB, 65,536 estimated tokens) bind before the model does.
+    owner = reviewer_exchange_budget(_policy_for(_CODEX, _CEILING, 65_536), (_CODEX,))
+    assert owner == ReviewerExchangeBudget(_CEILING, 169_144, 152_760)
+    # Any route FinishUP cannot size keeps the bound it always had, unset ceilings or not.
+    unsized = reviewer_exchange_budget(_policy_for(_BINDING, 0, 0), (_BINDING,))
+    assert unsized == ReviewerExchangeBudget(UNSIZED_EXCHANGE_BYTES)
+    # With a fallback destination the narrower one binds.
+    both = reviewer_exchange_budget(_policy_for(_CODEX, 0, 0), (_CODEX, _BINDING))
+    assert both == ReviewerExchangeBudget(UNSIZED_EXCHANGE_BYTES)
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    ("diff", "outputs"),
+    ((_code_diff(files=8, lines=400), 0), (None, 16)),
+    ids=("diff_parts", "captured_output_only"),
+)
+async def test_a_sized_route_carries_the_whole_selection_the_byte_cap_trimmed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, diff: bytes | None, outputs: int
+) -> None:
+    """The cases the 262,144-byte cap narrowed (``test_a_case_filling_the_excerpt_budget...``)
+    now reach the reviewer whole on the sized route, and still fit its context."""
+
+    built = _composed(monkeypatch, diff=diff, outputs=outputs)
+    policy = _policy_for(_CODEX, 0, 0)
+    result, gateway, _runtime = await _run(
+        tmp_path, monkeypatch, _FINAL, policy=policy, primary=_CODEX
+    )
+    assert result.status is SemanticStatus.SUCCEEDED, (result.status, result.reason)
+    ((_media, history),) = gateway.exchanges
+    sent = _encoded(history)
+    budget = _sized_budget()
+    assert len(sent) > UNSIZED_EXCHANGE_BYTES  # more than the old cap could carry
+    assert len(sent) <= budget.byte_limit - REVIEWER_FRAME_BYTES
+    assert reviewer_exchange_tokens(sent) <= budget.first_token_limit  # type: ignore[operator]
+    # Nothing was narrowed: the planned case is the approved one.
+    assert len(built) == 1
+    packet = json.loads(history[1][1])
+    assert "content_unselected" not in packet["review_packet"]["coverage"]["known_gaps"]
+
+
+@pytest.mark.anyio
+async def test_the_owner_ceiling_still_binds_on_a_sized_route(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The setup's 256 KiB / 65,536-token ceiling is the owner's, not the model's: it is kept."""
+
+    built = _composed(monkeypatch, diff=_code_diff(files=8, lines=400))
+    policy = _policy_for(_CODEX, _CEILING, 65_536)
+    result, gateway, _runtime = await _run(
+        tmp_path, monkeypatch, _FINAL, policy=policy, primary=_CODEX
+    )
+    assert result.status is SemanticStatus.SUCCEEDED, (result.status, result.reason)
+    ((_media, history),) = gateway.exchanges
+    assert len(_encoded(history)) <= _CEILING - REVIEWER_FRAME_BYTES
+    assert len(built) > 1  # narrowed under the owner's ceiling
+
+
+@pytest.mark.anyio
+async def test_an_unsized_route_with_unset_ceilings_keeps_the_old_bound(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _composed(monkeypatch, diff=_code_diff(files=8, lines=400))
+    policy = _policy_for(_BINDING, 0, 0)
+    result, gateway, _runtime = await _run(tmp_path, monkeypatch, _FINAL, policy=policy)
+    assert result.status is SemanticStatus.SUCCEEDED, (result.status, result.reason)
+    ((_media, history),) = gateway.exchanges
+    assert len(_encoded(history)) <= UNSIZED_EXCHANGE_BYTES - REVIEWER_FRAME_BYTES
+
+
+@pytest.mark.anyio
+async def test_every_later_exchange_stays_within_the_token_budget(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A read after a first exchange planned up to the token budget is fitted to what the next
+    exchange's tokens and bytes leave."""
+
+    _composed(monkeypatch, diff=_decision_first_diff(40, 24, 12), outputs=35)
+
+    def write() -> None:
+        line = '{"id": %d, "m": "\\"a\\" b", "p": "C:\\\\x"}\n'
+        (tmp_path / "work" / "rows.py").write_text("".join(line % n for n in range(300)))
+
+    policy = _policy_for(_CODEX, 0, 0)
+    result, gateway, _runtime = await _run(
+        tmp_path, monkeypatch, _file_read("rows.py", write), _FINAL, policy=policy, primary=_CODEX
+    )
+    assert result.status is SemanticStatus.SUCCEEDED, (result.status, result.reason)
+    budget = _sized_budget()
+    exchanges = [_encoded(history) for _media, history in gateway.exchanges]
+    assert len(exchanges) == 2
+    assert len(exchanges[0]) > UNSIZED_EXCHANGE_BYTES  # a first exchange the old cap refused
+    assert reviewer_exchange_tokens(exchanges[0]) <= budget.first_token_limit  # type: ignore[operator]
+    for sent in exchanges:
+        assert len(sent) <= budget.byte_limit
+        assert reviewer_exchange_tokens(sent) <= budget.token_limit  # type: ignore[operator]
+
+
+@pytest.mark.anyio
+async def test_an_exchange_over_the_token_budget_is_refused_and_never_sent(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Under the byte bound but over the model-token budget (non-ASCII text, one token per byte):
+    nothing is sent and the review ends blocked by policy, never sent to overflow the context."""
+
+    import finishup.application.reviewer_run as reviewer_run_module
+
+    events: list[dict[str, Any]] = []
+    record = ready_composition_module.record_bounded_counts_without_raising
+
+    def counted(**kwargs: Any) -> str:  # noqa: ANN401
+        events.append(kwargs)
+        return record(**kwargs)
+
+    monkeypatch.setattr(ready_composition_module, "record_bounded_counts_without_raising", counted)
+    _composed(monkeypatch, diff=_code_diff(files=1, lines=20))
+    real_catalog = reviewer_run_module.reviewer_catalog
+
+    def heavy_catalog(roots: Any, reads: int) -> str:  # noqa: ANN401
+        body = json.loads(real_catalog(roots, reads))
+        body["reviewer_catalog"]["padding"] = "\u00e9" * 100_000  # 200,000 bytes and tokens
+        return json.dumps(body, ensure_ascii=False)
+
+    monkeypatch.setattr(reviewer_run_module, "reviewer_catalog", heavy_catalog)
+    policy = _policy_for(_CODEX, 0, 0)
+    result, gateway, _runtime = await _run(
+        tmp_path, monkeypatch, _FINAL, policy=policy, primary=_CODEX
+    )
+    assert gateway.exchanges == []
+    assert (result.status, result.reason) == (
+        SemanticStatus.FAILED,
+        SemanticReason.CASE_CAPACITY_EXCEEDED,
+    )
+    (event,) = [e for e in events if e["operation"] == "semantic_disclosure_capacity_exceeded"]
+    # Reported in the unit it exceeded: estimated tokens, under the byte bound.
+    assert event["counts"]["semantic_disclosure_limit_tokens"] == 169_144
+    assert event["counts"]["semantic_disclosure_attempted_tokens"] > 169_144

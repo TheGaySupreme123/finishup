@@ -47,6 +47,7 @@ from finishup.domain.privacy import (
     PrivacyReason,
     ProviderBinding,
 )
+from finishup.domain.reviewer_context import ReviewerExchangeBudget
 from finishup.domain.reviewer_reads import ReviewerRead, ReviewerRecord
 from finishup.ports.semantic import (
     Deadline,
@@ -59,7 +60,9 @@ from finishup.ports.semantic import (
     SemanticResultTimeout,
     decode_reviewer_exchange,
     encode_reviewer_exchange,
+    reviewer_exchange_tokens,
     reviewer_message_bytes,
+    reviewer_message_tokens,
 )
 from finishup.protocol.canonical import canonical_encode
 from finishup.protocol.models import SemanticStatus
@@ -80,6 +83,7 @@ _SOURCE_DOMAIN: Final = b"finishup/reviewer-read-source/v1\x00"
 # The one format-repair notice a conversation may still add after any exchange (its codes are the
 # service's own short names); every read leaves this room so that exchange fits the cap (#1118).
 _REPAIR_NOTE_BYTES: Final = reviewer_message_bytes("user", FORMAT_ERROR.format(code="x" * 64))
+_REPAIR_NOTE_TOKENS: Final = reviewer_message_tokens(FORMAT_ERROR.format(code="x" * 64))
 
 
 @dataclass(frozen=True, slots=True)
@@ -150,7 +154,7 @@ async def run_reviewer(
     clock: Callable[[], float],
     source_commitment: Callable[[bytes], Awaitable[str]],
     reads: int = MAX_READS,
-    exchange_limit: int | None = None,
+    exchange_budget: ReviewerExchangeBudget | None = None,
 ) -> ReviewerRun:
     """Run the review conversation for one job attempt and return its terminal result.
 
@@ -158,20 +162,26 @@ async def run_reviewer(
     since each further exchange would need its own approval. ``resume_pending`` names the proposal
     of a first exchange that waited for the owner before anything was sent: that exchange is
     resumed once, in the turn it already reserved, by its exact prepared identity.
-    ``exchange_limit`` is the most bytes one exchange may carry (#1118): each read result gets
-    only what the last exchange sent leaves of it, measured as the next exchange will encode the
-    read action and the result, less the room a format-repair notice may still need.
+    ``exchange_budget`` is what one exchange may carry (#1118): its bytes and, on a route sized to
+    its model's context, its estimated model tokens. Each read result gets only what the last
+    exchange sent leaves of both, measured as the next exchange will encode the read action and
+    the result, less the room a format-repair notice may still need. A message adds at most as
+    many estimated tokens as encoded bytes, so token room is granted as that many bytes.
     ``source_commitment`` is the installation's keyed object commitment; a file read's opaque
     source id is derived from it, so the id cannot be recomputed from a guessed path.
     """
 
     retained = ReviewerHistory()
-    sent: list[int] = []
+    sent: list[tuple[int, int]] = []
 
     def exchange_room() -> int | None:
-        if exchange_limit is None or not sent:
+        if exchange_budget is None or not sent:
             return None
-        return exchange_limit - sent[-1] - _REPAIR_NOTE_BYTES
+        size, tokens = sent[-1]
+        room = exchange_budget.byte_limit - size - _REPAIR_NOTE_BYTES
+        if exchange_budget.token_limit is not None:
+            room = min(room, exchange_budget.token_limit - tokens - _REPAIR_NOTE_TOKENS)
+        return room
 
     broker = ReviewerBroker(
         job_id=job_id,
@@ -198,11 +208,11 @@ async def run_reviewer(
             rendered = encode_reviewer_exchange(
                 (history[0], ("user", packet.decode()), ("user", catalog), *history[2:])
             )
-            sent.append(len(rendered))
+            sent.append((len(rendered), reviewer_exchange_tokens(rendered)))
             return rendered
 
         roots_held = tuple(sorted(broker.history_roots, key=str.encode))
-        frame = ReviewerExchangeFrame(media_type, render, roots_held, retained)
+        frame = ReviewerExchangeFrame(media_type, render, roots_held, retained, exchange_budget)
         if not results and resume_pending is not None:
             result = await privacy.resume_reviewer_exchange(
                 first_request_id,

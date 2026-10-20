@@ -543,6 +543,17 @@ caps the count at 16 excerpts. From this version the Expanded recipe allows up t
 session the byte budget, not the count, decides how much the reviewer sees. The byte limits and the
 per-case ceilings (256 KiB, 65,536 estimated tokens) do not change.
 
+How much one review may send is also bounded by what the reviewer model can hold. With the Codex
+subscription and its `gpt-6.1-sol` reviewer, FinishUP sizes each review message to that model's
+context: at most about 169,000 estimated tokens and 512 KiB per exchange, leaving room for the
+reviewer to think and answer without Codex shortening the conversation. Tokens are estimated
+conservatively from the text, so a review never assumes more room than the model has. Other
+reviewers (an API key provider, a local model, or another Codex model) keep the 256 KiB limit.
+Your own per-case ceilings always apply first: with the ceilings setup writes today (256 KiB,
+65,536 estimated tokens), a review sends no more than before. When a review does not fit, FinishUP
+leaves out lower-priority excerpts and says so in the review's coverage, or, if even the required
+parts do not fit, reports `case_capacity_exceeded` without sending anything.
+
 An Expanded policy you approved earlier keeps its 16-excerpt limit until you approve the new
 recipe. `finishup privacy show` and `finishup --privacy` show your current limits beside the ones the
 current recipe offers, and the approval screen marks the higher count as a widening. When many

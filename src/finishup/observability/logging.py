@@ -94,6 +94,8 @@ _FIELD_ORDER: Final = (
     # exceeded (integers only, never content).
     "semantic_disclosure_attempted_bytes",
     "semantic_disclosure_limit_bytes",
+    "semantic_disclosure_attempted_tokens",
+    "semantic_disclosure_limit_tokens",
     "semantic_check_change_parts_selected",
     "semantic_edit_evidence_in_case",
     # Issue #1102: task-input pilot counters (integers only, never a path).

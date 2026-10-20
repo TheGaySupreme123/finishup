@@ -28,6 +28,7 @@ from finishup.domain.findings import (
     SemanticProvenance,
     TokenUsage,
 )
+from finishup.domain.reviewer_context import MESSAGE_OVERHEAD_TOKENS, estimated_model_tokens
 from finishup.domain.values import (
     FindingId,
     Frontier,
@@ -106,7 +107,9 @@ __all__ = [
     "SemanticResultReply",
     "decode_reviewer_exchange",
     "encode_reviewer_exchange",
+    "reviewer_exchange_tokens",
     "reviewer_message_bytes",
+    "reviewer_message_tokens",
     "reviewer_exchange",
     "reviewer_packet_bytes",
     "ExternalRuntimeAuthority",
@@ -2152,6 +2155,22 @@ def reviewer_message_bytes(role: str, text: str) -> int:
     """
 
     return 1 + len(canonical_encode({"content": text, "role": role}))
+
+
+def reviewer_message_tokens(text: str) -> int:
+    """The estimated model tokens one message adds to the reviewer's context (#1118).
+
+    The model reads each message's text, not the exchange's JSON, so a JSON-escaped packet is
+    counted as the text it decodes to, plus the message's own framing.
+    """
+
+    return estimated_model_tokens(text.encode()) + MESSAGE_OVERHEAD_TOKENS
+
+
+def reviewer_exchange_tokens(payload: bytes) -> int:
+    """The estimated model tokens of every message an encoded exchange holds (#1118)."""
+
+    return sum(reviewer_message_tokens(text) for _role, text in decode_reviewer_exchange(payload))
 
 
 def decode_reviewer_exchange(payload: bytes) -> tuple[ReviewerMessage, ...]:

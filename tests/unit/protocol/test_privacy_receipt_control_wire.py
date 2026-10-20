@@ -31,6 +31,7 @@ from finishup.application.privacy_control import build_privacy_support_handlers
 from finishup.domain.privacy import (
     _PURPOSE,  # pyright: ignore[reportPrivateUsage]
     MAX_RECEIPT_FINAL_BYTES,
+    MAX_RECEIPT_FINAL_BYTES_1_0,
     ReceiptSecretScanStage,
 )
 from finishup.domain.values import JsonObject, freeze_json
@@ -354,24 +355,37 @@ def _at_final_bytes(view: PrivacyReceiptView, final_bytes: int) -> PrivacyReceip
     return LocalDisclosureReceiptView("local_disclosure", replace(view.receipt, counts=counts))
 
 
-def test_the_domain_final_bytes_bound_is_the_published_wire_bound() -> None:
-    """Issue #921: the domain admitted 512 KiB while the wire stops at 262,144."""
+@pytest.mark.parametrize(
+    ("version", "definition", "bound"),
+    [
+        ("1.0.0", "max_262144_decimal", MAX_RECEIPT_FINAL_BYTES_1_0),
+        # #1118: unreleased 1.1.0 widened in place to the outbound-document bound.
+        ("1.1.0", "max_524288_decimal", MAX_RECEIPT_FINAL_BYTES),
+    ],
+)
+def test_the_domain_final_bytes_bound_is_the_published_wire_bound(
+    version: str, definition: str, bound: int
+) -> None:
+    """Issue #921: the domain admitted 512 KiB while the wire stopped at 262,144."""
 
     outbound = json.loads(
         (_SCHEMA_ROOT / "privacy" / "outbound-case-1.0.0.schema.json").read_bytes()
     )
     egress = json.loads(
-        (_SCHEMA_ROOT / "privacy" / "egress-receipt-1.0.0.schema.json").read_bytes()
+        (_SCHEMA_ROOT / "privacy" / f"egress-receipt-{version}.schema.json").read_bytes()
     )
-    wire = re.compile(outbound["$defs"]["max_262144_decimal"]["pattern"])
+    wire = re.compile(outbound["$defs"][definition]["pattern"])
 
     assert egress["$defs"]["counts"]["properties"]["final_bytes"] == {
-        "$ref": "#/$defs/max_262144_decimal"
+        "$ref": f"#/$defs/{definition}"
     }
-    assert wire.fullmatch(str(MAX_RECEIPT_FINAL_BYTES)) is not None
-    assert wire.fullmatch(str(MAX_RECEIPT_FINAL_BYTES + 1)) is None
+    assert wire.fullmatch(str(bound)) is not None
+    assert wire.fullmatch(str(bound + 1)) is None
     with pytest.raises(ValueError, match="invalid_privacy_value"):
         replace(local_receipt_view().receipt.counts, final_bytes=MAX_RECEIPT_FINAL_BYTES + 1)
+    # A released 1.0 receipt never carries more than its vocabulary admits.
+    with pytest.raises(ValueError, match="invalid_privacy_value"):
+        _at_final_bytes(local_receipt_view(), MAX_RECEIPT_FINAL_BYTES_1_0 + 1)
 
 
 @pytest.mark.parametrize(
@@ -380,7 +394,7 @@ def test_the_domain_final_bytes_bound_is_the_published_wire_bound() -> None:
     ids=["local", "network"],
 )
 async def test_a_receipt_at_the_final_bytes_maximum_round_trips(view: PrivacyReceiptView) -> None:
-    maximal = _at_final_bytes(view, MAX_RECEIPT_FINAL_BYTES)
+    maximal = _at_final_bytes(view, MAX_RECEIPT_FINAL_BYTES_1_0)
 
     fetched = await _get(maximal, maximal.receipt.receipt_id)
     listed = await _list(maximal)
