@@ -228,7 +228,12 @@ from finishup.protocol.coverage import (
     PublicationChannel,
     coverage_for_channel,
 )
-from finishup.protocol.errors import ProtocolValueError, PublicErrorCode, PublicOperationError
+from finishup.protocol.errors import (
+    SESSION_NOT_FOUND_MESSAGE,
+    ProtocolValueError,
+    PublicErrorCode,
+    PublicOperationError,
+)
 from finishup.protocol.ids import IdKind, is_valid_id
 from finishup.protocol.policy_packs import CURRENT_POLICY_VERSIONS
 
@@ -4146,7 +4151,7 @@ class ObservationCoordinator:
             raise last_error
         raise PublicOperationError(
             PublicErrorCode.SESSION_NOT_FOUND,
-            "The requested task attachment was not found.",
+            SESSION_NOT_FOUND_MESSAGE,
             retryable=False,
         )
 

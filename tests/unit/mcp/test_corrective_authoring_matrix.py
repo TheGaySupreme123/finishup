@@ -280,6 +280,9 @@ def test_a_broken_reference_mirror_names_the_field_and_the_rule(
     assert "0000000000ff" not in error.message
     assert "finishup://guidance/publication-policy.md" in error.message
     assert error.message != "The event batch is invalid. Correct the event payload before retrying."
+    if envelope_field == "evidence_refs":
+        # tb4h V5 (#1118): the repair is to omit the service-filled envelope list.
+        assert "omit the draft envelope evidence_refs" in error.message
 
 
 # Only the ordinary cooperative families can also be published; the reserved ones are rejected by

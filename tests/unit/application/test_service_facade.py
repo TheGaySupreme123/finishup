@@ -207,6 +207,22 @@ async def test_task_workflows_name_a_missing_repository_context_distinctly(metho
 
 
 @pytest.mark.anyio
+async def test_v5_an_unknown_session_names_the_repair_without_echoing_ids() -> None:
+    """tb4h V5 (#1118): a spliced session id got only "not found" twice; say how to fix it."""
+
+    app = _application(_Catalog(_route(), None), enforce_repository_identity=True)
+    request = StatusRequest.model_construct(session_id=_RETIRED_SESSION, writer_id=_WRITER)
+
+    with pytest.raises(PublicOperationError) as caught:
+        await app.status(request)
+
+    assert caught.value.code is PublicErrorCode.SESSION_NOT_FOUND
+    assert "Copy session_id and writer_id verbatim from the start result" in caught.value.message
+    assert "mode attach" in caught.value.message
+    assert _RETIRED_SESSION not in caught.value.message and _WRITER not in caught.value.message
+
+
+@pytest.mark.anyio
 async def test_task_workflow_returns_current_binding_for_superseded_session() -> None:
     binding = SessionBinding(_TASK, _SESSION, _WRITER)
     catalog = _Catalog(_route(), binding)

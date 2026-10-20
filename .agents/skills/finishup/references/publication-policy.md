@@ -373,7 +373,16 @@ reason `obligation_resolution_mismatch` and invariant `meaning_fields_must_repea
 `open_to_resolved_only` for an invalid status transition). A resolved obligation whose work no
 longer holds may be reopened (`status: open`) or acknowledged as not done
 (`acknowledged_not_done` with its reason, on `1.1.0`), repeating every meaning field. The
-public error names the mismatched schema field names only — never their values. A worked open +
+public error names the mismatched schema field names (and, for `requested_items`, the item counts
+and positions) only — never their values.
+
+**Changing what an obligation asks for.** A published obligation's meaning is fixed. To add a
+`role` to an item, add a command that became known later, or reword it, do not republish the same
+id: publish a new `obligation_id` with the new meaning and, in the same batch, a `plan_revised`
+whose `obligation_changes` marks the old id `superseded` with a `reason` and
+`replacement_obligation_ids` naming the new id (the replacement joins the plan). A newly added
+obligation that replaces nothing is listed as `carried`. `added` and `modified` are not changes.
+A worked open +
 resolution pair lives in the `publish_work` tool input schema `examples` entry. Complete request
 bodies remain available at
 `finishup://guidance/request-templates.md#publish-work-plan-plus-obligation` if a host drops schema

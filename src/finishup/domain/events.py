@@ -225,6 +225,7 @@ __all__ = [
     "ReviewMode",
     "obligation_meaning_field_diffs",
     "public_error_for_obligation_resolution_mismatch",
+    "requested_item_changes",
     "public_error_for_no_obligations_reason_mismatch",
     "public_error_for_claim_revision_mismatch",
     "PayloadRef",
@@ -1692,11 +1693,36 @@ class ObligationResolutionMismatch(ValueError):
     # ``resolved``), a closed token. It lets ``open_to_resolved_only`` say whether the
     # obligation is already resolved, which every tb4n1 occurrence was.
     prior_status: str | None = None
+    # V5 #1118: the structural shape of the change, never a value. ``next_status`` is the status
+    # the draft sent (a closed token); ``item_counts`` the recorded and sent ``requested_items``
+    # lengths; ``item_changes`` each differing item position (1-based) with the closed names of its
+    # differing keys (``item_kind``, ``value``, ``role``).
+    next_status: str | None = None
+    item_counts: tuple[int, int] | None = None
+    item_changes: tuple[tuple[int, tuple[str, ...]], ...] = ()
 
     def __post_init__(self) -> None:
         if type(self.differing_fields) is not tuple:
             raise ProtocolValueError("invalid_event_value_type")
         if self.prior_status is not None and self.prior_status not in {"open", "resolved"}:
+            raise ProtocolValueError("invalid_event_value_type")
+        if self.next_status is not None and self.next_status not in {
+            status.value for status in ObligationStatus
+        }:
+            raise ProtocolValueError("invalid_event_value_type")
+        if self.item_counts is not None and (
+            type(self.item_counts) is not tuple
+            or len(self.item_counts) != 2
+            or any(type(count) is not int or count < 0 for count in self.item_counts)
+        ):
+            raise ProtocolValueError("invalid_event_value_type")
+        if type(self.item_changes) is not tuple or any(
+            type(position) is not int
+            or position < 1
+            or type(keys) is not tuple
+            or any(key not in _REQUESTED_ITEM_KEYS for key in keys)
+            for position, keys in self.item_changes
+        ):
             raise ProtocolValueError("invalid_event_value_type")
         ordered = tuple(sorted(self.differing_fields, key=str.encode))
         if len(ordered) != len(set(ordered)):
@@ -1924,6 +1950,43 @@ def _limitation_refs_complete_message(missing: tuple[ResultId, ...]) -> str:
     )
 
 
+_REQUESTED_ITEM_KEYS: Final = frozenset({"item_kind", "value", "role"})
+# At most this many differing item positions are named; the rest are counted.
+_MAX_NAMED_ITEM_CHANGES: Final = 4
+
+
+def requested_item_changes(
+    previous: tuple[RequestedItem, ...], nxt: tuple[RequestedItem, ...]
+) -> tuple[tuple[int, int], tuple[tuple[int, tuple[str, ...]], ...]]:
+    """The recorded and sent item counts, and each differing position with its differing keys."""
+
+    changes: list[tuple[int, tuple[str, ...]]] = []
+    for position, (before, after) in enumerate(zip(previous, nxt, strict=False), start=1):
+        keys = tuple(
+            key
+            for key in ("item_kind", "value", "role")
+            if getattr(before, key) != getattr(after, key)
+        )
+        if keys:
+            changes.append((position, keys))
+    return (len(previous), len(nxt)), tuple(changes)
+
+
+def _item_shape(mismatch: ObligationResolutionMismatch) -> str:
+    """``requested_items`` structure only: counts, positions and key names, never values."""
+
+    if mismatch.item_counts is None or "requested_items" not in mismatch.differing_fields:
+        return ""
+    recorded, sent = mismatch.item_counts
+    parts = [f"recorded {recorded} items, sent {sent}"]
+    for position, keys in mismatch.item_changes[:_MAX_NAMED_ITEM_CHANGES]:
+        parts.append(f"item {position} differs in {'/'.join(keys)}")
+    hidden = len(mismatch.item_changes) - _MAX_NAMED_ITEM_CHANGES
+    if hidden > 0:
+        parts.append(f"{hidden} more items differ")
+    return f" (requested_items: {'; '.join(parts)})"
+
+
 def public_error_for_obligation_resolution_mismatch(
     mismatch: ObligationResolutionMismatch,
     *,
@@ -1963,11 +2026,24 @@ def public_error_for_obligation_resolution_mismatch(
             f"Set status to resolved and retry with a new request_id. {guidance}"
         )
     else:
+        # tb4h V5 (#1118): 9 of 35 rejected calls changed a published obligation's meaning (a
+        # role, a newly known command, new wording) while carrying or resolving it, and the
+        # message called every one a "resolution" and never named the way to change meaning.
+        resolving = mismatch.next_status in {None, "resolved"}
+        lead = (
+            "a resolution repeats every meaning field byte-for-byte; only status and "
+            "resolution_evidence_refs may change"
+            if resolving
+            else "a republished obligation repeats every meaning field byte-for-byte; only its "
+            "status changes"
+        )
         message = (
-            "The event batch is invalid. Obligation resolution requires invariant "
-            f"{mismatch.invariant}; mismatched fields: {fields}. Repeat every meaning field "
-            "from the open obligation byte-for-byte (status view obligations shows the recorded "
-            "values); only status and resolution_evidence_refs may change. "
+            "The event batch is invalid. A published obligation's meaning is fixed (invariant "
+            f"{mismatch.invariant}); mismatched fields: {fields}{_item_shape(mismatch)}. "
+            f"Here {lead}: copy the recorded values from status view obligations. To change what "
+            "it asks for (add an item role, a newly known command, new wording), publish a new "
+            "obligation id with the new meaning and, in the same batch, a plan_revised marking "
+            "this one superseded with a reason and replacement_obligation_ids. "
             f"{guidance} Correct the event payload before retrying."
         )
     details: dict[str, str] = {"reason_code": "obligation_resolution_mismatch"}

@@ -381,6 +381,19 @@ _REFERENCE_LIST_CORRECTIONS: Final[Mapping[tuple[str, str], tuple[str, tuple[str
         }
     )
 )
+# Checked-in sentences for one field of a payload array item, keyed by ``(family, array,
+# field)``. tb4h V5 (#1118): seven plan revisions sent ``change`` "added" or "modified"; the enum
+# alone does not say that a newly published obligation is ``carried`` or how meaning changes.
+_PAYLOAD_ITEM_FIELD_CORRECTIONS: Final[Mapping[tuple[str, str, str], str]] = MappingProxyType(
+    {
+        ("plan_revised", "obligation_changes", "change"): (
+            "list a newly added obligation as carried and publish its obligation_published in the"
+            " same batch; to change an existing obligation's meaning mark it superseded with a"
+            " reason and replacement_obligation_ids naming the new obligation; waived drops it"
+            " with a reason"
+        ),
+    }
+)
 # Reference lists whose own absence or emptiness is the common mistake, so their sentence also
 # answers a rejection located at the list itself, not only at one of its members.
 _FIELD_LEVEL_REFERENCE_CORRECTIONS: Final = frozenset(
@@ -776,6 +789,7 @@ def authoring_hint(
             *_event_draft_hint_parts(document, locations),
             *((text, (text, "")) for text in _corrective_hint_parts(tool, locations)),
             *((text, (text, "")) for text in _reference_list_hint_parts(locations)),
+            *((text, (text, "")) for text in _payload_item_field_hint_parts(locations)),
             *((text, (text, "")) for text in _required_peer_hint_parts(document, locations)),
         ]
         for text, key in keyed_parts:
@@ -1651,6 +1665,24 @@ def _corrective_hint_parts(tool: str | None, locations: Sequence[Mapping[str, st
     return parts
 
 
+def _payload_item_field_hint_parts(locations: Sequence[Mapping[str, str]]) -> list[str]:
+    """Return the checked-in sentence for a rejected field of a payload array item."""
+
+    parts: list[str] = []
+    for location in locations:
+        pointer = location.get("field", "")
+        family = location.get("family")
+        if type(pointer) is not str or type(family) is not str:
+            continue
+        match = _EVENT_DRAFT_PAYLOAD_ITEM_FIELD_POINTER.fullmatch(pointer)
+        if match is None:
+            continue
+        text = _PAYLOAD_ITEM_FIELD_CORRECTIONS.get((family, match.group(1), match.group(2)))
+        if text is not None and text not in parts:
+            parts.append(text)
+    return parts[:_MAX_HINT_FIELDS]
+
+
 def _reference_list_hint_parts(locations: Sequence[Mapping[str, str]]) -> list[str]:
     """Return the checked-in id-kind sentence for a rejected payload reference-list member.
 
@@ -1692,7 +1724,18 @@ def _reference_list_hint_parts(locations: Sequence[Mapping[str, str]]) -> list[s
             if envelope is not None:
                 field_name = envelope.group(1)
                 expected = _ENVELOPE_REF_EXPECTATION[field_name]
-                text = _id_kind_clause(field_name, expected, location.get("received_prefix"))
+                # tb4h V5 (#1118): workspace paths were sent here three times; the envelope lists
+                # are service-filled, so the repair is to omit them, not to find an obj_ id.
+                text = (
+                    _id_kind_clause(field_name, expected, location.get("received_prefix"))
+                    + f"; the draft envelope {field_name} is filled by FinishUP, so omit it"
+                    + (
+                        " and name files in an action's attempted_items or an obligation's"
+                        " requested_items"
+                        if field_name == "artifact_refs"
+                        else " and put evidence ids in the payload's own evidence_refs"
+                    )
+                )
         if not text or text in parts:
             continue
         parts.append(text)
@@ -2501,6 +2544,13 @@ def _check_locatable_required_names() -> None:
                 )
         if field not in declared_by_family or not set(fields) <= _SAFE_LOCATION_SEGMENTS:
             raise RuntimeError("reference_list_correction_names_unknown_field")
+    for family, array, field in _PAYLOAD_ITEM_FIELD_CORRECTIONS:
+        payload = _payload_schema(cast(Mapping[str, JsonValue], publish_schema), family, "1.0.0")
+        properties = payload.get("properties") if payload is not None else None
+        if not isinstance(properties, Mapping) or array not in properties:
+            raise RuntimeError("payload_item_field_correction_names_unknown_field")
+        if field not in _SAFE_LOCATION_SEGMENTS:
+            raise RuntimeError("payload_item_field_correction_names_unknown_field")
     if set(_CHECKED_EXAMPLE_ID) - _CLOSED_ID_PREFIXES:
         raise RuntimeError("checked_example_id_prefix_unregistered")
     for expected in (

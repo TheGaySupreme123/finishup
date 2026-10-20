@@ -131,7 +131,11 @@ from finishup.protocol.canonical import (
     canonical_encode,
     strict_json_parse,
 )
-from finishup.protocol.errors import PublicErrorCode, PublicOperationError
+from finishup.protocol.errors import (
+    SESSION_NOT_FOUND_MESSAGE,
+    PublicErrorCode,
+    PublicOperationError,
+)
 from finishup.protocol.ids import IdKind, validate_id
 from finishup.protocol.models import (
     CheckAwaitingHumanModel,
@@ -1865,7 +1869,7 @@ class Application:
                 )
             raise PublicOperationError(
                 PublicErrorCode.SESSION_NOT_FOUND,
-                "The requested task attachment was not found.",
+                SESSION_NOT_FOUND_MESSAGE,
                 False,
             )
         if request_task_id is not None and request_task_id != route.task_id:

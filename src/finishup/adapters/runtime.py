@@ -48,7 +48,11 @@ from finishup.ports.runtime import (
     TaskRuntime,
 )
 from finishup.ports.start_catalog import SessionBinding, TaskRoute, TaskRouteState
-from finishup.protocol.errors import PublicErrorCode, PublicOperationError
+from finishup.protocol.errors import (
+    SESSION_NOT_FOUND_MESSAGE,
+    PublicErrorCode,
+    PublicOperationError,
+)
 
 __all__ = [
     "LocalBundleRuntime",
@@ -531,7 +535,7 @@ class LocalBundleRuntime(BundleRuntimePort):
                 )
             raise _error(
                 PublicErrorCode.SESSION_NOT_FOUND,
-                "The requested task attachment was not found.",
+                SESSION_NOT_FOUND_MESSAGE,
                 retryable=False,
             )
         if route.session_id != command.session_id or route.state is not TaskRouteState.ACTIVE:

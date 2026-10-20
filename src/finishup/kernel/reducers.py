@@ -41,6 +41,7 @@ from finishup.domain.events import (
     is_lineage_service_stamped,
     is_observation_authored,
     obligation_meaning_field_diffs,
+    requested_item_changes,
 )
 from finishup.domain.findings import Finding, ResponseDisposition
 from finishup.domain.task_statement import may_carry_task_statement
@@ -747,10 +748,16 @@ def _apply_obligation(
         valid_transition = (previous.status, payload.status) in _OBLIGATION_TRANSITIONS
         if not valid_transition or meaning_diffs:
             if meaning_diffs:
+                counts, changes = requested_item_changes(
+                    previous.requested_items, payload.requested_items
+                )
                 raise ObligationResolutionMismatch(
                     meaning_diffs,
                     invariant="meaning_fields_must_repeat",
                     event_id=event.event_id,
+                    next_status=payload.status.value,
+                    item_counts=counts,
+                    item_changes=changes,
                 )
             raise ObligationResolutionMismatch(
                 ("status",),

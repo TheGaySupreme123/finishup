@@ -309,3 +309,28 @@ def test_reduce_event_attaches_event_id_for_draft_attribution() -> None:
     with pytest.raises(ObligationResolutionMismatch) as caught:
         reduce_event(state, records[1], next_index)
     assert caught.value.event_id == records[1].event_id
+
+
+def test_v5_a_command_added_while_carrying_names_its_shape_and_the_supersede_path() -> None:
+    """tb4h V5 (#1118): adding a newly known command to a published obligation changes its meaning.
+
+    9 of 35 rejected calls changed a published obligation (a role, a new command, new wording);
+    the message called it a resolution and never named the way to change meaning. It now names
+    the structural shape (counts, positions, key names; never values) and the supersede path.
+    """
+
+    from finishup.domain.events import RequestedItem, RequestedItemKind
+
+    first = RequestedItem(RequestedItemKind.FILE, "secret-input-path.txt")
+    open_payload = _open_payload(requested_items=(first,))
+    changed = RequestedItem(RequestedItemKind.FILE, "other-path.txt")
+    added = RequestedItem(RequestedItemKind.COMMAND, "make secret-test")
+    edited = _open_payload(requested_items=(changed, added))
+    with pytest.raises(ObligationResolutionMismatch) as caught:
+        replay(_chain(open_payload, edited))
+    public = public_error_for_obligation_resolution_mismatch(caught.value, event_index=0)
+    assert "requested_items: recorded 1 items, sent 2; item 1 differs in value" in public.message
+    assert "superseded" in public.message and "replacement_obligation_ids" in public.message
+    assert "only its status changes" in public.message
+    for value in ("secret-input-path", "other-path", "make secret-test"):
+        assert value not in public.message

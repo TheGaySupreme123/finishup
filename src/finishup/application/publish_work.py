@@ -487,8 +487,10 @@ _SET_ORDER_CORRECTIONS: Final[Mapping[str, str]] = MappingProxyType(
     }
 )
 _REF_MIRROR_EVIDENCE_RULE: Final = (
-    "The event batch is invalid. The draft envelope evidence_refs must repeat the payload "
-    "evidence_refs exactly: the same ids in the same ascending order, or both empty. "
+    "The event batch is invalid. Put evidence ids in the payload's own evidence_refs and omit the "
+    "draft envelope evidence_refs: FinishUP fills it from the payload. When both are sent, the "
+    "envelope must repeat the payload evidence_refs exactly: the same ids in the same ascending "
+    "order, or both empty. "
     "example: payload evidence_refs "
     '["evd_00000000-0000-4000-8000-000000000001"] and envelope evidence_refs the same list. See '
     "finishup://guidance/publication-policy.md section reference mirrors. Correct the event payload "

@@ -415,3 +415,53 @@ def test_guidance_page_size_says_which_way_it_is_wrong(raw: object, expected: st
     message = _guidance_page_size_message(raw)
     assert expected in message
     assert "restart at page 0 whenever page_size changes" in message
+
+
+@pytest.mark.parametrize("change", ["added", "modified"])
+def test_v5_unknown_obligation_change_names_carried_and_the_supersede_path(change: str) -> None:
+    """tb4h V5 (#1118): five plan revisions sent "added" and one "modified"."""
+
+    message = _publish(
+        "plan_revised",
+        "1.0.0",
+        {
+            "plan_version": 2,
+            "supersedes_plan_version": 1,
+            "reason": _SECRET,
+            "summary": _SECRET,
+            "obligation_changes": [{"obligation_id": f"obl_{_UUID}1", "change": change}],
+        },
+    )
+    assert "list a newly added obligation as carried" in message
+    assert "mark it superseded with a reason and replacement_obligation_ids" in message
+    assert "change admits carried, superseded, waived" in message
+
+
+def test_v5_a_path_in_envelope_artifact_refs_says_omit_it() -> None:
+    """tb4h V5 (#1118): workspace paths sent as envelope artifact_refs (heat-pump, twice)."""
+
+    draft_payload: dict[str, object] = {
+        "action_id": f"act_{_UUID}1",
+        "action_kind": "edit",
+        "description": _SECRET,
+    }
+    request = {
+        **_IDENTITY,
+        "expected_frontier": {"sequence": "1", "head_digest": "sha256:" + "0" * 64},
+        "event_drafts": [
+            {
+                "event_id": "evt_00000000-0000-4000-8000-000000000001",
+                "schema": {"name": "action_recorded", "version": "1.0.0"},
+                "occurred_at": "2026-01-01T00:00:00.000Z",
+                "causal_parents": [],
+                "payload": draft_payload,
+                "artifact_refs": ["warranty_decisions.json"],
+                "evidence_refs": [],
+            }
+        ],
+    }
+    with pytest.raises(ValidationError) as caught:
+        PublishWorkRequest.model_validate(request)
+    message = invalid_request_message("publish_work", safe_validation_locations(caught.value))
+    assert "the draft envelope artifact_refs is filled by FinishUP, so omit it" in message
+    assert "warranty_decisions" not in message and _SECRET not in message

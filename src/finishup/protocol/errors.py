@@ -10,6 +10,7 @@ from types import MappingProxyType
 from typing import cast
 
 __all__ = [
+    "SESSION_NOT_FOUND_MESSAGE",
     "ADMITTED_CLAIM_REVISION_INVARIANTS",
     "ADMITTED_CONTINUATION_TOKENS",
     "PROTOCOL_REASON_CODES",
@@ -25,6 +26,15 @@ __all__ = [
     "attach_reason_continuation",
     "normalize_safe_details",
 ]
+
+# tb4h V5 (#1118): two calls spliced the writer id's tail onto the session id and got only "not
+# found". The message names the repair without echoing either id (no binding is disclosed).
+SESSION_NOT_FOUND_MESSAGE = (
+    "The requested task attachment was not found: session_id names no session this service "
+    "holds. Copy session_id and writer_id verbatim from the start result (ses_ and wri_ ids are "
+    "different values); to recover them, call start with mode attach and the same "
+    "workspace_ref and external_ref."
+)
 
 
 class PublicErrorCode(str, Enum):  # noqa: UP042 - the wire contract requires these exact bases

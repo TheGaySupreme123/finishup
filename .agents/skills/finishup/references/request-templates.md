@@ -358,7 +358,9 @@ file the request asks for only under a condition (written only for an incomplete
 malformed input) is not a `file` output: name the condition and the path in a `change` item and
 declare the source files that implement it `role: output`. Never write an empty or placeholder
 file to satisfy a `file` declaration; correct the plan instead (`workflow.md`, Findings and
-recheck).
+recheck). Declare roles when you first publish an obligation: a role, an item or a wording added
+later changes its meaning, which takes a new obligation id and a `superseded` plan change (see the
+revised-plan template), never a republish of the same id.
 Without a `role`, a `file` item is reported unchanged or outside only after an `edit` action
 names it. The requested outcome lives in `description` and `acceptance_criteria`;
 `outcome` is not an admitted `item_kind`. When you later attempt an item, copy that exact `value`
@@ -366,7 +368,10 @@ string into `attempted_items` on the `action_recorded` event that attempted it â
 template below. Matching is exact: do not normalize, reorder words, or paraphrase. A `command`
 item is the concrete command you will run, never a template: a value with a `<placeholder>` such
 as `<output-dir>` is refused with `requested_command_placeholder`. When the exact command is not
-known yet, state the check in `acceptance_criteria` instead.
+known yet, state the check in `acceptance_criteria` instead. A `command` item passes when it exits
+0: to verify an expected failure (a probe that must exit 1), name a command that asserts it, such as
+`! ./probe --trace` or a test that checks the exit status; a bare command that exits non-zero is
+recorded as a failed planned verification.
 
 ### Alternate `plan_published`: explicitly no obligations
 
@@ -696,6 +701,12 @@ true`; append it only after the preview accepts it. `disputes_refs` and
 This example carries an obligation and therefore omits `no_obligations_reason`; omission clears any
 earlier empty-scope reason. For a revised effective plan with zero obligation refs, include one
 current closed reason. A revision never inherits an earlier reason by omission.
+
+`change` admits only `carried`, `superseded` and `waived`. A newly added obligation is `carried`
+(publish its `obligation_published` in the same batch). To change an existing obligation's meaning
+(an item `role`, a newly known command, new wording), publish the replacement under a new id and
+mark the old one `{"obligation_id": "<old id>", "change": "superseded", "reason": "<why>",
+"replacement_obligation_ids": ["<new id>"]}`; `waived` drops one with a `reason`.
 
 ```json
 {
@@ -1438,6 +1449,22 @@ After reviewing that inventory, a schema-valid explicit attempt shape is:
     "requested_item_indexes": [0],
     "action_kind": "command",
     "command": "uv run pytest tests/integration/application/test_closure_composer.py"
+  }
+}
+```
+
+A resolve selection names evidence ids (`evd_`) in `evidence_refs` and result ids (`res_`) in
+`result_ids`; a result id in `evidence_refs` is refused as `closure_evidence_unavailable`:
+
+```json
+{
+  "session_id": "ses_00000000-0000-4000-8000-000000000001",
+  "writer_id": "wri_00000000-0000-4000-8000-000000000001",
+  "selection": {
+    "phase": "resolve",
+    "obligation_ids": ["obl_00000000-0000-4000-8000-000000000001"],
+    "evidence_refs": ["evd_00000000-0000-4000-8000-000000000001"],
+    "result_ids": ["res_00000000-0000-4000-8000-000000000001"]
   }
 }
 ```
