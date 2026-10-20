@@ -2421,6 +2421,9 @@ class CodexAppServerEvaluator:
                     or any(role != "user" for role, _ in sent)
                     or (held is not None and held.profile != self.profile)
                     or (held is not None and exchange.history[:-1] not in held.prefixes)
+                    # A review opens exactly one thread: once its thread is gone, a repair or
+                    # continuation must never reopen the conversation and resend the packet.
+                    or (held is None and session.opened)
                 ):
                     raise ValueError("codex_reviewer_session_unknown")
                 turn_texts = tuple(text for _, text in sent)
@@ -2430,6 +2433,8 @@ class CodexAppServerEvaluator:
                     auth_mode, plan_type = held.auth_mode, held.plan_type
                     token_usage = held.token_usage
             if held is None:
+                if exchange is not None and session is not None:
+                    session.opened = True
                 await report_semantic_progress(SemanticProgressPhase.RUNTIME_STARTING)
                 # A launch cancelled by the deadline cleans up its own process (``_launch``).
                 runtime = await asyncio.wait_for(
@@ -2601,9 +2606,12 @@ class CodexAppServerEvaluator:
                             raise ValueError("codex_app_server_event_forbidden")
                         if phase in _NON_FINAL_PHASES:
                             continue
-                        if text is None or not text:
-                            raise ValueError("codex_app_server_output_empty")
-                        (final_texts if phase == "final_answer" else untagged_texts).append(text)
+                        # An empty answer is still an answer: it is judged only after the
+                        # matching ``turn/completed`` proves the turn ended, so a completed empty
+                        # turn keeps its thread for the loop's one repair (#1118 V1).
+                        (final_texts if phase == "final_answer" else untagged_texts).append(
+                            text or ""
+                        )
                 if method != "turn/completed":
                     continue
                 await report_semantic_progress(SemanticProgressPhase.RESPONSE_VALIDATION)
@@ -2620,6 +2628,8 @@ class CodexAppServerEvaluator:
                 if len(candidates) != 1:
                     raise ValueError("codex_app_server_agent_message_count")
                 raw = candidates[0]
+                if not raw:
+                    raise ValueError("codex_app_server_output_empty")
                 raw_size = len(raw.encode("utf-8"))
                 if raw_size > _MAX_MESSAGE_BYTES:
                     raise ValueError("codex_app_server_output_oversize")

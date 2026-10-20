@@ -561,6 +561,88 @@ async def test_codex_keeps_a_malformed_turn_for_the_one_format_repair(
     assert [method for method, _ in runtime.requests] == ["turn/start"]
 
 
+async def test_v1_codex_empty_answer_keeps_its_thread_for_the_one_repair(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """#1118 V1: an empty final answer is judged after ``turn/completed``, so it is retained."""
+
+    runtime = _CodexRuntime(profile_for(record_for(b"c", b"h", version="0.162.1")), ["", _FINAL])
+    session = ReviewerSession("review-a", _DEADLINE)
+    cleanups: list[object] = []
+    first = await _codex_exchange(monkeypatch, runtime, session, _FIRST, cleanups)
+    evidence = first.provenance.runtime_evidence
+    assert type(first) is SemanticResultInvalid and evidence is not None
+    assert (evidence.failure_stage, evidence.process_cleanup) == ("output_empty", "retained")
+    assert cleanups == []
+    runtime.requests.clear()
+    repair: tuple[ReviewerMessage, ...] = (*_FIRST, ("user", "format_error: output_not_json."))
+    second = await _codex_exchange(monkeypatch, runtime, session, repair, cleanups)
+    assert type(second) is SemanticResultReply
+    assert runtime.requests == [("turn/start", runtime.requests[0][1])]
+    assert runtime.requests[0][1]["input"] == [
+        {"type": "text", "text": "format_error: output_not_json."}
+    ]
+    await session.aclose()
+
+
+async def test_v1_codex_review_never_reopens_a_lost_thread(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """#1118 V1: once a review's thread is gone, no history reopens it or resends the packet."""
+
+    runtime = _CodexRuntime(
+        profile_for(record_for(b"c", b"h", version="0.162.1")), [_FINAL, _FINAL]
+    )
+    runtime.extra_event = {"method": "warning", "params": {"message": "x"}}
+    session = ReviewerSession("review-a", _DEADLINE)
+    cleanups: list[object] = []
+    first = await _codex_exchange(monkeypatch, runtime, session, _FIRST, cleanups)
+    assert type(first) is not SemanticResultReply and cleanups == [runtime]
+    runtime.requests.clear()
+    runtime.extra_event = None
+    # A user-only repair history looks like an opening; it must not open a second thread.
+    repair: tuple[ReviewerMessage, ...] = (*_FIRST, ("user", "format_error: output_not_json."))
+    second = await _codex_exchange(monkeypatch, runtime, session, repair, cleanups)
+    evidence = second.provenance.runtime_evidence
+    assert type(second) is SemanticResultUnavailable and runtime.requests == []
+    assert evidence is not None and not evidence.case_disclosed
+    assert evidence.failure_stage == "case_invalid"
+
+
+async def test_v1_facade_ends_the_review_when_a_malformed_answer_lost_its_thread(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """#1118 V1: a malformed answer earns a repair only while its Codex thread is retained."""
+
+    runtime = _CodexRuntime(profile_for(record_for(b"c", b"h", version="0.162.1")), [""])
+    session = ReviewerSession("review-a", _DEADLINE)
+    retained = await _codex_exchange(monkeypatch, runtime, session, _FIRST, [])
+    evidence = retained.provenance.runtime_evidence
+    assert type(retained) is SemanticResultInvalid and evidence is not None
+    lost = SemanticResultInvalid(
+        replace(
+            retained.provenance,
+            runtime_evidence=replace(evidence, process_cleanup="terminated"),
+        ),
+        retained.raw_size,
+    )
+    binding = ProviderBinding(
+        "openai-codex", runtime.profile.model, "codex-chatgpt-subscription", "1.0.0", "external"
+    )
+    turns = [Turn(role, text) for role, text in _FIRST]
+    for result, raised in ((retained, ReviewerReplyInvalid), (lost, ReviewerModelError)):
+
+        async def dispatch(
+            payload: bytes, media_type: str, deadline: Deadline, result: SemanticResult = result
+        ) -> SemanticResult:
+            return result
+
+        model = ReviewerExchangeModel(binding, dispatch, session)
+        with pytest.raises(raised):
+            await model.complete(turns, REVIEWER_REPLY_SCHEMAS.turn, deadline=_DEADLINE)
+    await session.aclose()
+
+
 # -- review round 1 regressions (R1-R6) ------------------------------------------------------------
 
 

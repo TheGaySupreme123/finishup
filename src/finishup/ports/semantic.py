@@ -2266,11 +2266,14 @@ class ReviewerSession:
     in flight before it cleans up the held state. Transcript content never selects a session.
     """
 
-    __slots__ = ("closed", "deadline", "held", "lock", "review_id")
+    __slots__ = ("closed", "deadline", "held", "lock", "opened", "review_id")
 
     def __init__(self, review_id: str, deadline: Deadline) -> None:
         self.review_id, self.deadline = review_id, deadline
         self.held: ReviewerSessionHold | None = None
+        # Set once the provider opens this review's conversation; a stateful provider never
+        # opens a second one for the same review (a lost thread ends the review instead).
+        self.opened = False
         self.closed = False
         self.lock = asyncio.Lock()
 

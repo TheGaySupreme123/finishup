@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import json
 import subprocess
+from collections.abc import Mapping
 from dataclasses import replace
 from pathlib import Path
 from typing import Any, cast
@@ -127,9 +128,11 @@ async def _widen(service: object, commitment: str, policy: PrivacyPolicy) -> Non
     )
 
 
-async def test_a_service_review_runs_on_one_codex_thread_through_the_real_evaluator(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+async def _review(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, answers: list[str]
+) -> tuple[Any, list[dict[str, Any]], Mapping[str, JsonValue]]:
+    """One semantic check through the ready service; the checked result, wire and MCP wire."""
+
     tmp_path.chmod(0o700)
     executable, record = retained_runtime(
         tmp_path / "bundle", version="0.162.1", platform=host_codex_platform()
@@ -144,7 +147,7 @@ async def test_a_service_review_runs_on_one_codex_thread_through_the_real_evalua
                 "version": "0.162.1",
                 "model": runtime.model,
                 "efforts": ["low", "medium", "high", "xhigh"],
-                "answers": [canonical_encode(reply).decode() for reply in (_READ, _FINAL)],
+                "answers": answers,
             }
         )
     )
@@ -258,37 +261,88 @@ async def test_a_service_review_runs_on_one_codex_thread_through_the_real_evalua
         task_policy.append(authority.effective)
 
         checked = await check()
-
-        # Before the fix no child was ever launched: the case failed as ``case_invalid``.
         wire = [json.loads(line) for line in log.read_text().splitlines()] if log.exists() else []
-        methods = [request["method"] for request in wire]
-        assert type(checked).__name__ == "CheckCommitResult", (checked, methods)
-        provenance = getattr(checked, "semantic_provenance", None)
-        assert getattr(checked, "semantic_status") is SemanticStatus.SUCCEEDED, provenance
-        # One launch and one thread for the whole conversation, environment access disabled.
-        assert methods.count("initialize") == 1 and methods.count("thread/start") == 1
-        thread = next(request["params"] for request in wire if request["method"] == "thread/start")
-        assert thread["environments"] == []
-        assert thread["baseInstructions"] == REVIEWER_LOOP_INSTRUCTION
-        turns = [request["params"] for request in wire if request["method"] == "turn/start"]
-        assert len(turns) == 2 and {turn["threadId"] for turn in turns} == {"thr-fake"}
-        # The first turn carries both admitted user messages: the packet, then the read catalog.
-        first_input = cast(list[dict[str, str]], turns[0]["input"])
-        assert len(first_input) == 2 and "reviewer_catalog" in first_input[1]["text"]
-        assert "reviewer_catalog" not in first_input[0]["text"]
-        # The continuation sends only the new read result, with the reply schema every turn.
-        (observation,) = cast(list[dict[str, str]], turns[1]["input"])
-        assert "return a + b" in json.loads(observation["text"])["data"]["text"]
-        assert all(turn["outputSchema"] for turn in turns)
+        mcp_wire: Mapping[str, JsonValue] = {}
+        if type(checked).__name__ == "CheckCommitResult":
+            mcp_wire = await project_case(
+                service.app, ProjectionCase("check", ControlMethod.CHECK, check_body, checked), 7300
+            )
+        return checked, wire, mcp_wire
 
-        mcp_wire = await project_case(
-            service.app, ProjectionCase("check", ControlMethod.CHECK, check_body, checked), 7300
-        )
-        reviewer = cast(dict[str, JsonValue], mcp_wire["reviewer"])
-        assert (reviewer["exchanges"], reviewer["reads_used"]) == ("2", "1")
-        evidence = cast(dict[str, JsonValue], mcp_wire["semantic_provenance"])["runtime_evidence"]
-        # The session's own close ended the process group after the last turn.
-        assert cast(dict[str, JsonValue], evidence)["process_cleanup"] == "terminated"
-        # The replayed 0.162.1 wire (``thread/settings/updated`` before the first ack, reasoning,
-        # deltas, moderation metadata, usage) is admitted without any stage (#1118).
-        assert "failure_stage" not in cast(dict[str, JsonValue], evidence)
+
+def _encoded(*replies: dict[str, JsonValue]) -> list[str]:
+    return [canonical_encode(reply).decode() for reply in replies]
+
+
+async def test_a_service_review_runs_on_one_codex_thread_through_the_real_evaluator(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    checked, wire, mcp_wire = await _review(tmp_path, monkeypatch, _encoded(_READ, _FINAL))
+    # Before the fix no child was ever launched: the case failed as ``case_invalid``.
+    methods = [request["method"] for request in wire]
+    assert type(checked).__name__ == "CheckCommitResult", (checked, methods)
+    provenance = getattr(checked, "semantic_provenance", None)
+    assert getattr(checked, "semantic_status") is SemanticStatus.SUCCEEDED, provenance
+    # One launch and one thread for the whole conversation, environment access disabled.
+    assert methods.count("initialize") == 1 and methods.count("thread/start") == 1
+    thread = next(request["params"] for request in wire if request["method"] == "thread/start")
+    assert thread["environments"] == []
+    assert thread["baseInstructions"] == REVIEWER_LOOP_INSTRUCTION
+    turns = [request["params"] for request in wire if request["method"] == "turn/start"]
+    assert len(turns) == 2 and {turn["threadId"] for turn in turns} == {"thr-fake"}
+    # The first turn carries both admitted user messages: the packet, then the read catalog.
+    first_input = cast(list[dict[str, str]], turns[0]["input"])
+    assert len(first_input) == 2 and "reviewer_catalog" in first_input[1]["text"]
+    assert "reviewer_catalog" not in first_input[0]["text"]
+    # The continuation sends only the new read result, with the reply schema every turn.
+    (observation,) = cast(list[dict[str, str]], turns[1]["input"])
+    assert "return a + b" in json.loads(observation["text"])["data"]["text"]
+    assert all(turn["outputSchema"] for turn in turns)
+
+    reviewer = cast(dict[str, JsonValue], mcp_wire["reviewer"])
+    assert (reviewer["exchanges"], reviewer["reads_used"]) == ("2", "1")
+    evidence = cast(dict[str, JsonValue], mcp_wire["semantic_provenance"])["runtime_evidence"]
+    # The session's own close ended the process group after the last turn.
+    assert cast(dict[str, JsonValue], evidence)["process_cleanup"] == "terminated"
+    # The replayed 0.162.1 wire (``thread/settings/updated`` before the first ack, reasoning,
+    # deltas, moderation metadata, usage) is admitted without any stage (#1118).
+    assert "failure_stage" not in cast(dict[str, JsonValue], evidence)
+
+
+_MALFORMED = "not json"
+_REJECTED = '{"reply":{"action":"not_an_action","args":{}}}'
+
+
+@pytest.mark.parametrize(
+    ("answers", "repair_turn"),
+    [
+        pytest.param(["", *_encoded(_FINAL)], 1, id="empty-opening"),
+        pytest.param([*_encoded(_READ), "", *_encoded(_FINAL)], 2, id="read-empty"),
+        pytest.param([*_encoded(_READ), _MALFORMED, *_encoded(_FINAL)], 2, id="read-malformed"),
+        pytest.param([*_encoded(_READ), _REJECTED, *_encoded(_FINAL)], 2, id="read-rejected"),
+        pytest.param([_MALFORMED, *_encoded(_READ, _FINAL)], 1, id="malformed-then-read"),
+    ],
+)
+async def test_every_repair_continues_on_the_held_codex_thread(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, answers: list[str], repair_turn: int
+) -> None:
+    """#1118 V1: an empty, malformed or rejected answer is repaired on the same thread.
+
+    Before the fix an empty answer raised before its ``turn/completed``, so the runtime was not
+    retained: on the opening the repair reopened a second thread and resent the packet, and after
+    a read the repair history was refused as ``case_invalid``. Every shape now runs one launch,
+    one thread, the opening's two inputs once, and exactly one new input on every later turn.
+    """
+
+    checked, wire, _ = await _review(tmp_path, monkeypatch, answers)
+    methods = [request["method"] for request in wire]
+    provenance = getattr(checked, "semantic_provenance", None)
+    assert getattr(checked, "semantic_status") is SemanticStatus.SUCCEEDED, (provenance, methods)
+    assert methods.count("initialize") == 1 and methods.count("thread/start") == 1
+    turns = [request["params"] for request in wire if request["method"] == "turn/start"]
+    assert len(turns) == len(answers) and {turn["threadId"] for turn in turns} == {"thr-fake"}
+    assert len(cast(list[object], turns[0]["input"])) == 2
+    assert all(len(cast(list[object], turn["input"])) == 1 for turn in turns[1:])
+    # The turn after the bad answer carries only the loop's repair notice.
+    (repair,) = cast(list[dict[str, str]], turns[repair_turn]["input"])
+    assert repair["text"].startswith("format_error")

@@ -90,10 +90,15 @@ class ReviewerExchangeModel:
                 else (provenance.runtime_evidence.failure_stage)
             )
             failure = provenance.failure_class
-            if stage in _MALFORMED_STAGES or (
-                provenance.runtime_evidence is None
-                and failure is SemanticFailureClass.RESPONSE_SCHEMA
-            ):
+            evidence = provenance.runtime_evidence
+            # A repair extends the same conversation. A stateless route resends the history; a
+            # stateful runtime (Codex) can repair only on the thread it still holds, so an answer
+            # whose thread was not retained ends the review honestly instead (#1118 V1).
+            if (
+                stage in _MALFORMED_STAGES
+                and evidence is not None
+                and evidence.process_cleanup == "retained"
+            ) or (evidence is None and failure is SemanticFailureClass.RESPONSE_SCHEMA):
                 raise ReviewerReplyInvalid("output_not_json")
             reason = stage or (reason if failure is None else failure.value)
         # A failed, refused, late or uncertain turn ends the review; a bare judgment means the

@@ -2505,7 +2505,10 @@ must carry `ThreadStartParams.environments`. `features.stable_environment_tools`
 releases below 0.162.1 do not define it under `--strict-config`; with no environment it has nothing
 to expose. A reviewer session keeps one ephemeral thread; its first turn sends every admitted user
 message after the instruction (the packet, then the read catalog), each later turn only the new one,
-and it sends the reply `outputSchema` on every turn. Plan or compaction events, server requests, native
+and it sends the reply `outputSchema` on every turn. A repair continues on that same thread: an
+empty answer is judged only after its turn completes, so the thread is kept, and a review whose
+thread is gone ends incomplete rather than opening a second one and resending the packet.
+Plan or compaction events, server requests, native
 warnings, reroutes and tool items end it. No dynamic tools, MCP server, `turn/steer`, resume or
 fork is used. The thread belongs to the review's `ReviewerSession`, keyed by the review's identity
 rather than by transcript content. The reviewer facade closes it on every exit of the review, and a

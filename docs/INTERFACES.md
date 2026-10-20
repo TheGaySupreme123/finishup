@@ -11862,7 +11862,12 @@ the final exchange's evidence with that outcome before anything is persisted, so
 `complete(history, schema, deadline=)` returns the reply object. It raises the decoder's
 `ReviewerReplyInvalid("output_not_json")` only for a completed answer that is not one JSON object
 (API `response_schema` from a completed generation, Codex `output_not_json` or `output_empty`):
-the one repair. A Responses generation whose status is not `completed` (for example `failed`) is
+the one repair. A Codex answer earns it only while its thread is still held (`process_cleanup`
+`retained`): an empty final message is judged after its matching `turn/completed`, so a completed
+empty turn keeps the thread, and a malformed answer whose thread was not retained raises
+`ReviewerModelError` instead. A `ReviewerSession` records `opened` once its provider opens the
+conversation; the Codex evaluator refuses to open a second thread for an opened session
+(`case_invalid`), so no repair or continuation ever reopens the review or resends the packet. A Responses generation whose status is not `completed` (for example `failed`) is
 `unavailable` before its output is read, and its provider error text is not kept. Truncation,
 output limits and every other failed, refused, late or uncertain turn raise `ReviewerModelError`
 with the closed stage, failure class or status (for example
