@@ -444,8 +444,8 @@ async def test_a_local_read_past_its_time_ends_the_review(tmp_path: Path) -> Non
     broker.calls = 0
     broker.store = loop.store = _Steps()
 
-    async def slow(_action: object, expired: Callable[[], bool]) -> str:
-        del expired
+    async def slow(_action: object, expired: Callable[[], bool], reply: str = "") -> str:
+        del expired, reply
         raise ReadDeadline("reviewer_read_deadline")
 
     broker.execute = slow  # type: ignore[method-assign]

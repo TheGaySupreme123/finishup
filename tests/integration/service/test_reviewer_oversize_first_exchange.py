@@ -15,6 +15,7 @@ scripted; no model, network or credential is used.
 from __future__ import annotations
 
 import json
+from collections.abc import Callable
 from dataclasses import replace
 from pathlib import Path
 from typing import Any, cast
@@ -25,6 +26,11 @@ import finishup.service.ready_composition as ready_composition_module
 from builders.privacy_policies import minimal_external_policy
 from finishup.adapters.privacy.local_enforcer import estimated_token_count
 from finishup.application.reviewer_run import reviewer_first_exchange
+from finishup.application.semantic_case import (
+    check_time_change_bytes_carried,
+    check_time_change_floor_bytes_carried,
+    final_diff_floor,
+)
 from finishup.domain.events import EvidenceKind
 from finishup.domain.privacy import (
     EgressChannel,
@@ -33,10 +39,17 @@ from finishup.domain.privacy import (
     ReviewSelectionPolicy,
 )
 from finishup.ports.privacy import MAX_MINIMIZED_DISCLOSURE_BYTES
-from finishup.ports.semantic import ReviewerMessage, encode_reviewer_exchange
+from finishup.ports.semantic import (
+    ReviewerMessage,
+    SemanticResultReply,
+    encode_reviewer_exchange,
+)
+from finishup.protocol.canonical import JsonValue
 from finishup.protocol.models import SemanticStatus
+from finishup.service.semantic_ceiling import REVIEWER_FRAME_BYTES
 from integration.service.test_reviewer_conversation_composition import (
     _FINAL,  # pyright: ignore[reportPrivateUsage]
+    _read_file,  # pyright: ignore[reportPrivateUsage]
     _run,  # pyright: ignore[reportPrivateUsage]
 )
 from unit.application.test_semantic_case_packet_completeness import (
@@ -62,6 +75,33 @@ def _code_diff(files: int, lines: int) -> bytes:
                     f'"label": "say \\"ok\\""}}\n'
                 ).encode()
             )
+    return b"".join(out)
+
+
+def _decision_first_diff(files: int, lines: int, pad: int) -> bytes:
+    """Quoted Python edits with a decision past each file's opening rows.
+
+    Too large for the excerpt budget, this change is offered decision sections first (#983), so
+    its leading parts start inside the change, not at its first byte: the shape of the benchmark
+    change whose reviews were refused.
+    """
+
+    extra = ', "w": "\\"y\\" C:\\\\z"' * pad
+    out: list[bytes] = []
+    for index in range(files):
+        out.append(
+            (
+                f"diff --git a/pkg/m{index}.py b/pkg/m{index}.py\n--- a/pkg/m{index}.py\n"
+                f"+++ b/pkg/m{index}.py\n@@ -1,1 +1,{lines} @@\n"
+            ).encode()
+        )
+        for line in range(lines):
+            if line % 12 == 11:
+                out.append(f'+    if row["k{line}"] == "v\\"{line}\\"":\n'.encode())
+            else:
+                out.append(
+                    f'+    row = {{"id": "{index}-{line}", "q": "\\"x\\""{extra}}}\n'.encode()
+                )
     return b"".join(out)
 
 
@@ -169,3 +209,146 @@ async def test_an_exchange_over_the_disclosure_cap_is_refused_typed_and_never_se
     result, gateway, _runtime = await _run(tmp_path, monkeypatch, _FINAL, policy=_expanded_policy())
     assert gateway.exchanges == []
     assert result.status is SemanticStatus.BLOCKED_BY_POLICY, (result.status, result.reason)
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    ("files", "lines", "pad", "outputs"),
+    (
+        # A narrowed case fits at the first planned budget (the a1 refusal: two planning rounds).
+        (40, 24, 10, 35),
+        # The first planned budget is still over; the second fits (the a2 refusal: three rounds).
+        (24, 36, 12, 35),
+    ),
+    ids=("two_rounds", "three_rounds"),
+)
+async def test_a_decision_first_change_is_narrowed_under_the_cap_not_refused(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    files: int,
+    lines: int,
+    pad: int,
+    outputs: int,
+) -> None:
+    """#1118: two benchmark reviews ended ``blocked_by_policy`` / ``network_egress_denied`` in the
+    coordinator's cap check on their first exchange, before any model turn. Their change did not
+    fit, so it was offered decision sections first; ceiling planning then compared the diff
+    floor (change bytes of the leading parts) with the contiguous run from the change's first
+    byte, which such parts never start at: 0. Every narrowed candidate failed the floor and the
+    over-ceiling case was returned whole."""
+
+    built = _composed(monkeypatch, diff=_decision_first_diff(files, lines, pad), outputs=outputs)
+    result, gateway, _runtime = await _run(tmp_path, monkeypatch, _FINAL, policy=_expanded_policy())
+    assert result.status is SemanticStatus.SUCCEEDED, (result.status, result.reason)
+    ((_media, history),) = gateway.exchanges
+    assert len(_encoded(history)) <= _CEILING - REVIEWER_FRAME_BYTES
+    approved, planned = built[0], built[-1]
+    # Why the old comparison refused every narrowing: the leading parts never start at byte 0.
+    assert check_time_change_bytes_carried(approved) == 0
+    # The narrowed case still carries the change floor the approved selection protected.
+    floor = final_diff_floor(
+        approved,
+        ReviewSelectionPolicy.for_profile(ReviewContextProfile.EXPANDED),
+        _CEILING - REVIEWER_FRAME_BYTES,
+    )
+    assert check_time_change_floor_bytes_carried(planned) >= floor > 0
+    assert sum(i.content_bytes for i in planned.items if i.section == "excerpt") < sum(
+        i.content_bytes for i in approved.items if i.section == "excerpt"
+    )
+    packet = json.loads(history[1][1])
+    assert "content_unselected" in packet["review_packet"]["coverage"]["known_gaps"]
+
+
+def _file_read(path: str, write: Callable[[], None]) -> Callable[..., object]:
+    """A reviewer reply that asks for 200 lines of ``path``; ``write`` puts the file in place."""
+
+    def reply(_case: object, provenance: Any) -> object:  # noqa: ANN401
+        write()
+        action = _read_file(path)
+        cast(dict[str, dict[str, JsonValue]], action["reply"])["args"]["line_count"] = 200
+        return SemanticResultReply(action, provenance)
+
+    return reply
+
+
+@pytest.mark.anyio
+async def test_every_later_exchange_fits_the_cap_beside_a_long_read_action(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """#1118: the read room was estimated from the last exchange ((cap - sent - 2048) * 4/5 raw
+    result bytes), but the read action and its result travel as JSON strings in the next
+    exchange, escaping and all. A long escaped path beside a quoted result outgrew the cap, and
+    the coordinator refused the whole review on its second exchange. Each result now gets only
+    what the exact next exchange leaves."""
+
+    _composed(monkeypatch, diff=_decision_first_diff(32, 24, 12), outputs=16)
+    # A legal 507-character path whose characters JSON escapes as \u00XX, twice in the exchange.
+    parts = ("\x01" * 250, "\x02" * 250)
+    path = "/".join((*parts, "rows.py"))
+
+    def write() -> None:
+        folder = tmp_path / "work" / parts[0] / parts[1]
+        folder.mkdir(parents=True)
+        line = '{"id": %d, "m": "\\"a\\" b", "p": "C:\\\\x"}\n'
+        (folder / "rows.py").write_text("".join(line % n for n in range(300)))
+
+    result, gateway, _runtime = await _run(
+        tmp_path, monkeypatch, _file_read(path, write), _FINAL, policy=_expanded_policy()
+    )
+    assert result.status is SemanticStatus.SUCCEEDED, (result.status, result.reason)
+    first, second = (history for _media, history in gateway.exchanges)
+    assert len(_encoded(first)) > _CEILING - REVIEWER_FRAME_BYTES - 2048  # little room is left
+    assert len(_encoded(second)) <= MAX_MINIMIZED_DISCLOSURE_BYTES
+    # The result was fitted to that room, not dropped: it still carries the file's head.
+    observation = json.loads(second[-1][1])
+    assert observation["status"] == "partial" and '\\"a\\" b' in observation["data"]["text"]
+
+
+@pytest.mark.anyio
+async def test_an_escaping_heavy_read_keeps_the_longest_head_that_fits(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """#1118: a result over its room was cut by the excess in result bytes, but each quote costs
+    two result bytes, so a quoted file lost twice what it had to, or arrived with no data at
+    all. It now keeps the longest head that fits, measured."""
+
+    def write() -> None:
+        (tmp_path / "work" / "quotes.py").write_text(('x = "' + '\\"' * 40 + '"\n') * 200)
+
+    result, gateway, _runtime = await _run(
+        tmp_path, monkeypatch, _file_read("quotes.py", write), _FINAL, policy=_expanded_policy()
+    )
+    assert result.status is SemanticStatus.SUCCEEDED, (result.status, result.reason)
+    observation = gateway.exchanges[-1][1][-1][1]
+    body = json.loads(observation)
+    assert body["status"] == "partial" and body["data"] is not None
+    # Within a line-free head of the 8 KiB result room, not a quarter of it.
+    assert len(observation.encode()) > 8192 - 128
+
+
+@pytest.mark.anyio
+async def test_a_backslash_read_after_a_full_first_exchange_fits_the_cap(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """#1118 verifier V4: a first exchange of 253,597 bytes, under the planned target, left a
+    read room of (262,144 - 253,597 - 2,048) * 4/5 = 5,199 bytes. Backslash lines escape again
+    in the conversation, so the 5,100-byte result went out as 9,210 bytes, and the second
+    exchange reached 263,010, over the cap: the review was refused after its first exchange."""
+
+    _composed(monkeypatch, diff=_code_diff(8, 203), outputs=0)
+
+    def write() -> None:
+        (tmp_path / "work" / "calc.py").write_text(("\\" * 100 + "\n") * 150)
+
+    def read(_case: object, provenance: Any) -> object:  # noqa: ANN401
+        write()
+        return SemanticResultReply(_read_file("calc.py"), provenance)
+
+    result, gateway, _runtime = await _run(
+        tmp_path, monkeypatch, read, _FINAL, policy=_expanded_policy()
+    )
+    assert result.status is SemanticStatus.SUCCEEDED, (result.status, result.reason)
+    first, second = (history for _media, history in gateway.exchanges)
+    assert len(_encoded(first)) == 253_597  # the verifier's first exchange, exactly
+    assert len(_encoded(second)) <= MAX_MINIMIZED_DISCLOSURE_BYTES
+    assert json.loads(second[-1][1])["data"] is not None  # fitted, not dropped

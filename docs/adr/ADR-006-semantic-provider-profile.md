@@ -2581,9 +2581,14 @@ credential probe keep their one-shot dispatch; no check uses it.
   measures the exact first exchange (instruction, packet as a JSON string, and the job's own read
   catalog) and plans it below the ceiling less an 8 KiB frame kept for the reviewer's replies, so
   escaping is counted rather than estimated: excerpts are cut, disclosed as `content_unselected`,
-  until it fits. After each exchange the reads may add only what the sent conversation leaves (less
-  2 KiB, then a fifth), and when that is under the 1 KiB minimum the reviewer is offered only the
-  final judgment. The ceiling here is never above the 262,144 bytes one prepared disclosure
+  until it fits. A narrowed case must still carry the change floor the approved selection
+  protected, counted the same way on both sides: the change bytes of its leading parts. Each read
+  result then gets only what the exact next exchange leaves: the ceiling less the last exchange
+  sent, the read action as the next exchange encodes it and the room one format-repair notice
+  needs, measured as the exchange encodes the result, escaping included. A result over that room
+  keeps the longest head that fits, measured. A read is offered only while 2 KiB of that room is
+  left (an ordinary read action and a result without data); an action whose own bytes leave less
+  than 1 KiB ends the review `read_limit`, unread and unsent. The ceiling here is never above the 262,144 bytes one prepared disclosure
   carries, the receipt's `final_bytes` bound. An exchange that still outgrows the channel ceiling
   or that bound is refused whole before a proposal exists (`blocked_by_policy` /
   `policy_denied`), never trimmed and never sent.
@@ -2593,6 +2598,17 @@ credential probe keep their one-shot dispatch; no check uses it.
   captured output alone under the excerpt budget, as 281,486), and building that disclosure
   raised, so four reviews ended `coordinator_failure`. The 262,144-byte bound is unchanged: it is
   the per-disclosure quantity the receipt vocabulary fixes.
+  *Amended 2026-10-20 (#1118 heat-pump-warranty probe):* two reviews ended `blocked_by_policy` /
+  `network_egress_denied` on their first exchange, before any model turn. Their change did not
+  fit the excerpt budget, so it was offered decision sections first and its leading parts start
+  inside the change; ceiling planning compared the change floor with the contiguous run from the
+  change's first byte, 0 for such parts, so every narrowed candidate failed and the over-ceiling
+  case was returned whole (the diagnostic's excerpt byte limit stayed 131,072 after two and three
+  rounds). The in-builder planner made the same comparison. Read room was also an estimate
+  ((ceiling - sent - 2 KiB) * 4/5 raw result bytes) beside a read action and result that escape
+  again in the exchange, so a later exchange could outgrow the ceiling; and a result over its
+  room was cut by the excess in result bytes, so an escaping-heavy read lost far more than the
+  excess or arrived without data.
 - **Read roots.** `w1` is the workspace: the trusted walk's exclusions plus Git's ignore answer
   (an unanswerable ignore state refuses the path; outside a Git repository every workspace read is
   refused). `o<n>` is an owner-admitted outside root limited to the task-declared paths beneath it,

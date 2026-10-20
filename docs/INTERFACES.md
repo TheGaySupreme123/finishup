@@ -10047,7 +10047,8 @@ follow-up loop is deleted.
   captured either way. With `resume_reserved`, a store whose `usage()` is exactly `(1, 1)` runs turn
   1 again without reserving it; any other prior usage ends `interrupted` or `uncaptured_step`.
 - Broker: `application.reviewer_broker.ReviewerBroker(*, job_id, case, roots, store, admit,
-  packet_refs, packet_text)`; `execute(action, expired) -> str` returns the round-1 result envelope
+  packet_refs, packet_text, max_reads, exchange_room)`; `execute(action, expired, reply="") -> str`
+  returns the round-1 result envelope
   (`tool_ref` `<job>:read:<n>`, `call_index`, `status`, closed `reason`, `citable_refs`,
   `result_utf8_bytes`, `result_digest`, `bytes_remaining`, `next_cursor`, `data` with `text`,
   `records` or whole `entries` and `provenance` `source_ref`/`root_id`/`baseline`/`standing`/spans).
@@ -10055,7 +10056,10 @@ follow-up loop is deleted.
   `ReadRoot(alias, path, input_root, declared, excluded, subject_refs, snapshot, refuse)` is a
   service-issued alias. `admit(elements, envelope) -> reason | None` takes `ReadElement`
   `(category, bytes, input_root)` tuples. `history_roots` lists every outside root the conversation
-  holds bytes from.
+  holds bytes from. With `exchange_room` (#1118), `reads_allowed()` also needs `MIN_ROOM +
+  READ_ACTION_ROOM` (2 KiB) of it; `execute` subtracts the `reply` turn's bytes and raises
+  `ReadExchangeFull` before reserving when less than `MIN_ROOM` is left (the loop ends
+  `read_limit`), and a result over its room keeps the longest head that fits, measured.
 - Steps: `ports.semantic.ReviewStepStore.reserve(kind, ordinal, selector)`, `capture(kind, ordinal,
   result)`, `usage() -> (steps, uncaptured)`; `ReviewStepRefused` on a repeated step or a lost lease.
   `SqliteLedger.review_steps(handle)` is the durable store (`semantic_review_steps`, ADR-003).
@@ -10821,7 +10825,10 @@ plan. Names and contracts:
   A pending request retains one ordinary timeline slot, with history narrowed around it; independent
   lineage does not consume that request slot. The final diff
   floor (`final_diff_floor`) is the lesser of initially carried diff bytes and half the lesser of
-  the approved excerpt budget and final packet limit, rounded to the existing line-aligned parts. A no-excerpt probe only measures fixed cost;
+  the approved excerpt budget and final packet limit, rounded to the existing line-aligned parts.
+  Both planners compare it with `check_time_change_floor_bytes_carried(candidate)`, the change
+  bytes of the leading carried parts counted as the floor counts them, never with the contiguous
+  prefix from the change's first byte, which a decision-first offer does not start at (#1118). A no-excerpt probe only measures fixed cost;
   neither planner can return it below that floor. Impossible protected cases remain over limit
   for the existing egress refusal. It stops after at most `MAX_CEILING_PLANNING_ROUNDS` (4)
   planning rounds (plus the fixed-cost probe), and every rebuild
@@ -11850,15 +11857,15 @@ The loop appends each reply to the history exactly as the model returned it (can
 
 `application.reviewer_run.run_reviewer(privacy, job_id=, case=, roots=, steps=, binding=, scope=,
 deadline=, first_request_id=, new_request_id=, candidate_for=, dispatch_guard=, resume_pending=,
-clock=, source_commitment=, reads=MAX_READS, read_room=) -> ReviewerRun(result, record,
+clock=, source_commitment=, reads=MAX_READS, exchange_limit=None) -> ReviewerRun(result, record,
 citable_refs, text_by_ref, paths)` runs one job attempt. The composition calls it for every attempt
 when its privacy object is the `PrivacyCoordinator` (a non-coordinator test double keeps the
 one-dispatch shape), with `steps = SqliteLedger.review_steps(handle)`, the attempt's
 `provider_request_id` for the first exchange, the job's read roots, `reads=0` where
 `semantic_preview_required(policy)`, `resume_pending` = the awaiting `SemanticDisclosureWait`'s
 `pending_id` for this job and attempt (else `None`), `source_commitment = runtime.objects.
-commitment_for(data, ObjectKind.SEMANTIC_RESPONSE)` and `read_room =
-reviewer_read_room(channel_prepared_limit(policy), sent)`. Before it, the composition calls
+commitment_for(data, ObjectKind.SEMANTIC_RESPONSE)` and `exchange_limit =
+channel_prepared_limit(policy)`. Before it, the composition calls
 `PrivacyCoordinator.recover_started_request(provider_request_id)`: a consumed first exchange maps
 as `outcome_unknown` and is never resent. For it, `operation_max_retries` is `0` and a fallback plan
 (new or persisted) is `semantic_attempts.one_conversation_plan(plan)`: both endpoints at
@@ -11903,13 +11910,16 @@ as `outcome_unknown` and is never resent. For it, `operation_max_retries` is `0`
   `application.reviewer_run.reviewer_first_exchange(packet, catalog)`: the loop instruction, the
   packet as a JSON string and the read catalog, which `plan_under_channel_ceiling(..., measure=)`
   sizes instead of the bare packet; the catalog is rendered from the job's own read roots before
-  planning, and names no case ref) and
-  `reviewer_read_room(limit, sent)` (`(limit - sent - 2048) * 4 // 5`). `PrivacyCoordinator`
+  planning, and names no case ref). `PrivacyCoordinator`
   refuses a rendered reviewer exchange over `MAX_MINIMIZED_DISCLOSURE_BYTES` before a proposal
   exists, `blocked_by_policy` / `policy_denied` like an over-`max_bytes` one, so an oversize
-  conversation never surfaces as `coordinator_failure` (#1118 smoke). `ReviewerBroker.total` is
-  lowered to `used + read_room` after each exchange, and `max_reads=0` is used where every exchange
-  asks the owner first.
+  conversation never surfaces as `coordinator_failure` (#1118 smoke). Later exchanges are fitted,
+  not estimated: `run_reviewer` gives the broker `exchange_room() = exchange_limit - sent[-1] -
+  _REPAIR_NOTE_BYTES` (the last exchange rendered, and the room one format-repair notice needs),
+  `ReviewerBroker.total` is lowered to `used + exchange_room()` after each exchange, and each result
+  must fit what that room leaves after its read action, both measured by
+  `ports.semantic.reviewer_message_bytes(role, text)` (the exact bytes one more message adds to an
+  encoded exchange). `max_reads=0` is used where every exchange asks the owner first.
 - Read roots (`ReadRoot`): `w1` the workspace, refused where `probe_requested_paths` does not answer
   `ignored=False`, citable under the packet's excerpt refs; `o<n>` an admitted outside root with the
   task-declared paths beneath it (`declared`), and `s<n>` the same root served from the first kept

@@ -48,7 +48,7 @@ from finishup.adapters.providers.reviewer_reply import (
     reviewer_reply_schema,
 )
 from finishup.adapters.task_input_read import ReadDeadline
-from finishup.application.reviewer_broker import ReviewerBroker
+from finishup.application.reviewer_broker import ReadExchangeFull, ReviewerBroker
 from finishup.ports.semantic import Deadline, ReviewStepRefused, SemanticJudgment
 from finishup.protocol.canonical import JsonValue, canonical_encode
 
@@ -180,7 +180,16 @@ class ReviewerLoop:
                 if left <= 0:
                     return self.exit("deadline")  # the model's turn spent the read's time
                 stop_at = self.clock() + min(LOCAL_READ_SECONDS, left)
-                observation = await self.broker.execute(reply, lambda: self.clock() >= stop_at)
+                try:
+                    observation = await self.broker.execute(
+                        reply,
+                        lambda: self.clock() >= stop_at,
+                        self.messages[-1].content,
+                    )
+                except ReadExchangeFull:
+                    # The read action alone filled the room its exchange has under the cap:
+                    # nothing is read and nothing more is sent (#1118).
+                    return self.exit("read_limit")
                 self.remaining()
                 self.messages.append(Turn("user", observation))
         except ReviewerModelError as e:

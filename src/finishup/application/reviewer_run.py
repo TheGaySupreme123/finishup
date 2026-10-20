@@ -34,7 +34,12 @@ from finishup.application.reviewer_broker import (
     ReviewerBroker,
 )
 from finishup.application.reviewer_exchange import ReviewerExchangeModel
-from finishup.application.reviewer_loop import ReviewerLoop, ReviewerModelError, ReviewOutcome
+from finishup.application.reviewer_loop import (
+    FORMAT_ERROR,
+    ReviewerLoop,
+    ReviewerModelError,
+    ReviewOutcome,
+)
 from finishup.domain.privacy import (
     AuthorizationScope,
     CandidateContext,
@@ -54,6 +59,7 @@ from finishup.ports.semantic import (
     SemanticResultTimeout,
     decode_reviewer_exchange,
     encode_reviewer_exchange,
+    reviewer_message_bytes,
 )
 from finishup.protocol.canonical import canonical_encode
 from finishup.protocol.models import SemanticStatus
@@ -71,6 +77,9 @@ __all__ = [
 PACKET_TURN: Final = "[FinishUP review packet]"
 _INVALID_ENDINGS: Final = frozenset({"format_invalid", "read_limit", "turn_limit"})
 _SOURCE_DOMAIN: Final = b"finishup/reviewer-read-source/v1\x00"
+# The one format-repair notice a conversation may still add after any exchange (its codes are the
+# service's own short names); every read leaves this room so that exchange fits the cap (#1118).
+_REPAIR_NOTE_BYTES: Final = reviewer_message_bytes("user", FORMAT_ERROR.format(code="x" * 64))
 
 
 @dataclass(frozen=True, slots=True)
@@ -141,20 +150,29 @@ async def run_reviewer(
     clock: Callable[[], float],
     source_commitment: Callable[[bytes], Awaitable[str]],
     reads: int = MAX_READS,
-    read_room: Callable[[int], int] = lambda _sent: MAX_TOTAL_BYTES,
+    exchange_limit: int | None = None,
 ) -> ReviewerRun:
     """Run the review conversation for one job attempt and return its terminal result.
 
     ``reads`` is how many reads the review offers: none where every exchange asks the owner first,
     since each further exchange would need its own approval. ``resume_pending`` names the proposal
     of a first exchange that waited for the owner before anything was sent: that exchange is
-    resumed once, in the turn it already reserved, by its exact prepared identity. ``read_room``
-    says how many read bytes the channel ceiling leaves after a conversation of that many bytes.
+    resumed once, in the turn it already reserved, by its exact prepared identity.
+    ``exchange_limit`` is the most bytes one exchange may carry (#1118): each read result gets
+    only what the last exchange sent leaves of it, measured as the next exchange will encode the
+    read action and the result, less the room a format-repair notice may still need.
     ``source_commitment`` is the installation's keyed object commitment; a file read's opaque
     source id is derived from it, so the id cannot be recomputed from a guessed path.
     """
 
     retained = ReviewerHistory()
+    sent: list[int] = []
+
+    def exchange_room() -> int | None:
+        if exchange_limit is None or not sent:
+            return None
+        return exchange_limit - sent[-1] - _REPAIR_NOTE_BYTES
+
     broker = ReviewerBroker(
         job_id=job_id,
         case=case,
@@ -164,10 +182,10 @@ async def run_reviewer(
             first_request_id, scope, binding, elements, envelope, retained
         ),
         max_reads=reads,
+        exchange_room=exchange_room,
     )
     catalog = reviewer_catalog(roots, reads)
     results: list[SemanticEgressResult] = []
-    sent: list[int] = []
     # Read call -> the exchange (index into ``results``) that first carried its result, recorded
     # when that exchange was sent; a result no sent exchange carried has no disclosure.
     carried: dict[int, int] = {}
@@ -202,8 +220,9 @@ async def run_reviewer(
         if _receipt(result) is not None:
             for call in calls:
                 carried.setdefault(call, len(results) - 1)
-        if sent:  # what the next exchanges may still add under the channel ceiling
-            broker.total = min(MAX_TOTAL_BYTES, broker.used + read_room(sent[-1]))
+        room = exchange_room()
+        if room is not None:  # what the next exchanges may still add under the cap
+            broker.total = min(MAX_TOTAL_BYTES, broker.used + max(0, room))
         if type(result) is SemanticEgressReply or type(result) is SemanticEgressProviderOutcome:
             return result.result
         raise ReviewerModelError("reviewer_exchange_not_sent")

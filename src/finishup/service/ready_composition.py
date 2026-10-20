@@ -441,7 +441,6 @@ from finishup.service.semantic_ceiling import (
     plan_under_channel_ceiling,
     reviewer_exchange_limit,
     reviewer_exchange_measure,
-    reviewer_read_room,
     with_ceiling_planning_gap,
 )
 from finishup.service.vault import ProviderCredentialBinding, provider_credential_profile_binding
@@ -6045,9 +6044,8 @@ def _privacy_gated_semantic_evaluator(
                                 source_commitment=lambda data: runtime.objects.commitment_for(
                                     data, ObjectKind.SEMANTIC_RESPONSE
                                 ),
-                                read_room=lambda sent: reviewer_read_room(
-                                    channel_prepared_limit(policy), sent
-                                ),
+                                # #1118: every later exchange is fitted under the cap.
+                                exchange_limit=channel_prepared_limit(policy),
                             )
                             stage = "response_mapping"
                             return _with_reviewer(await _mapped(run.result), run)

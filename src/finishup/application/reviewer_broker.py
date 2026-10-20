@@ -25,7 +25,12 @@ from finishup.adapters.task_input_read import (
     read_text_beneath,
 )
 from finishup.ports.change_capture import TaskInputSnapshotSet
-from finishup.ports.semantic import ReviewStepStore, SemanticCase, SemanticCaseItem
+from finishup.ports.semantic import (
+    ReviewStepStore,
+    SemanticCase,
+    SemanticCaseItem,
+    reviewer_message_bytes,
+)
 from finishup.protocol.canonical import JsonValue, canonical_digest, canonical_encode
 from finishup.protocol.models import (
     DataCategory,
@@ -37,12 +42,16 @@ from finishup.protocol.models import (
     ReviewerFileActionModel,
 )
 
-__all__ = ["MAX_READS", "ReadElement", "ReadRoot", "ReviewerBroker"]
+__all__ = ["MAX_READS", "ReadElement", "ReadExchangeFull", "ReadRoot", "ReviewerBroker"]
 
 MAX_READS: Final = 3
 MAX_RESULT_BYTES: Final = 8192
 MAX_TOTAL_BYTES: Final = 24_576
-MIN_ROOM: Final = 1024  # past any envelope without data; below it only the final judgment remains
+# Past any envelope without data, as the exchange carries it; below it only the final judgment
+# remains.
+MIN_ROOM: Final = 1024
+# What an ordinary read action adds to its exchange, at most (#1118): offering a read leaves it.
+READ_ACTION_ROOM: Final = 1024
 _TEXT_BYTES: Final = 6144
 _MAX_RECORDS: Final = 8
 _PACKET_SECTIONS: Final = {
@@ -66,6 +75,12 @@ _LEDGER_VIEWS: Final = {
 # What admission sees of a result: each element's category, exact bytes and outside root.
 type ReadElement = tuple[DataCategory, bytes, str | None]
 type _Selected = tuple[str, list[_Piece], tuple[str, str, int] | None, int] | tuple[str, str]
+
+
+class ReadExchangeFull(Exception):
+    """The read action alone left its exchange no room for even a result without data (#1118).
+
+    Raised before the read is reserved; nothing is read and that exchange is never sent."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -127,8 +142,13 @@ class ReviewerBroker:
         packet_refs: frozenset[str] = frozenset(),
         packet_text: Mapping[str, tuple[str, ...]] | None = None,
         max_reads: int = MAX_READS,
+        exchange_room: Callable[[], int | None] = lambda: None,
     ) -> None:
         self.store, self._job, self._case, self._admit = store, job_id, case, admit
+        # #1118: the bytes the conversation's next exchange may still add under the disclosure
+        # cap (``None`` when unbounded). A result is fitted to what is left of it after the read
+        # action, measured as the exchange encodes both, escaping included.
+        self._exchange_room = exchange_room
         self._max_reads = min(max_reads, MAX_READS)
         # The read bytes this review may still add; the conversation lowers it to fit the channel.
         self.total = MAX_TOTAL_BYTES
@@ -143,11 +163,31 @@ class ReviewerBroker:
         self.text_by_ref = {ref: list(texts) for ref, texts in (packet_text or {}).items()}
 
     def reads_allowed(self) -> bool:
-        return self.calls < self._max_reads and self.total - self.used >= MIN_ROOM
+        # A read is offered only while its exchange can carry a read action of ordinary size
+        # (``READ_ACTION_ROOM``) beside a result without data; a longer action ends the review
+        # unsent (``ReadExchangeFull``) rather than outgrow the cap.
+        room = self._exchange_room()
+        return (
+            self.calls < self._max_reads
+            and self.total - self.used >= MIN_ROOM
+            and (room is None or room >= MIN_ROOM + READ_ACTION_ROOM)
+        )
 
-    async def execute(self, action: ReviewerActionModel, expired: Callable[[], bool]) -> str:
-        """Reserve the next read, run it, fit and admit it; return the result envelope."""
+    async def execute(
+        self, action: ReviewerActionModel, expired: Callable[[], bool], reply: str = ""
+    ) -> str:
+        """Reserve the next read, run it, fit and admit it; return the result envelope.
 
+        ``reply`` is the assistant turn that asked for the read, exactly as the conversation
+        carries it: the result travels in the same exchange, so it gets only what the reply
+        leaves of that exchange's room.
+        """
+
+        left = self._exchange_room()
+        if left is not None:
+            left -= reviewer_message_bytes("assistant", reply)
+            if left < MIN_ROOM:
+                raise ReadExchangeFull("reviewer_read_exchange_full")
         ordinal = self.calls + 1
         await self.store.reserve("read", ordinal, canonical_encode(action.model_dump(mode="json")))
         self.calls, tool_ref, args = ordinal, f"{self._job}:read:{ordinal}", action.args
@@ -160,13 +200,30 @@ class ReviewerBroker:
         if expired():  # completed past its local stop: discarded, never retained or sent
             raise ReadDeadline("reviewer_read_deadline")
         room = min(MAX_RESULT_BYTES, args.max_bytes, self.total - self.used)
-        encoded = await self._result(tool_ref, ordinal, selected, room)
+        encoded = await self._result(tool_ref, ordinal, selected, room, left)
         self.used += len(encoded)
         await self.store.capture("read", ordinal, encoded)
         return encoded.decode()
 
-    async def _result(self, tool_ref: str, ordinal: int, selected: _Selected, room: int) -> bytes:
-        """Fit the selection into ``room``, admit exactly what fits, and record what was sent."""
+    async def _result(
+        self,
+        tool_ref: str,
+        ordinal: int,
+        selected: _Selected,
+        room: int,
+        exchange_left: int | None = None,
+    ) -> bytes:
+        """Fit the selection into ``room``, admit exactly what fits, and record what was sent.
+
+        With ``exchange_left``, what the result adds to its exchange (``reviewer_message_bytes``)
+        must fit that too; an envelope without data always does (``MIN_ROOM``).
+        """
+
+        def over_by(encoded: bytes) -> int:
+            over = len(encoded) - room
+            if exchange_left is None:
+                return over
+            return max(over, reviewer_message_bytes("user", encoded.decode()) - exchange_left)
 
         def envelope(
             status: str,
@@ -206,21 +263,37 @@ class ReviewerBroker:
             share = min(_TEXT_BYTES, room) // count
             piece.end = _clear(piece.source, min(piece.stop, piece.start + share), "head")
         refs, cites, cursor, encoded = list[str](), dict[str, list[str]](), None, b""
-        while pieces := [piece for piece in pieces if piece.end > piece.start]:
+
+        def fitted(pieces: list[_Piece]) -> bytes:
+            nonlocal refs, cites, cursor
             more = left > 0 or len(pieces) < count
             cut = more or any(piece.end < piece.stop for piece in pieces)
             data, cites = _data(shape, pieces)
             refs = sorted(cites)[:16]  # the citation is what the result advertises, nothing more
             cursor = f"c{ordinal}" if page is not None and more else None
-            encoded = envelope("partial" if cut else "ok", None, data, refs, cursor)
-            over = len(encoded) - room
+            return envelope("partial" if cut else "ok", None, data, refs, cursor)
+
+        while pieces := [piece for piece in pieces if piece.end > piece.start]:
+            encoded = fitted(pieces)
+            over = over_by(encoded)
             if over <= 0:
                 break
             last = pieces[-1]
             if shape == "list" or (len(pieces) > 1 and last.end - last.start <= over + 64):
                 pieces.pop()
-            else:
-                last.end = _clear(last.source, max(last.start, last.end - over - 8), "head")
+                continue
+            # The longest head of the last piece that fits, measured: escaping makes one text
+            # byte cost several result and exchange bytes, so cutting ``over`` text bytes would
+            # discard far more than the excess (#1118). An empty head drops the piece.
+            fits, short = last.start, last.end
+            while short - fits > 1:
+                middle = (fits + short) // 2
+                last.end = _clear(last.source, middle, "head")
+                if last.end > fits and over_by(fitted(pieces)) <= 0:
+                    fits = last.end
+                else:
+                    short = middle
+            last.end = fits
         else:
             return envelope("unavailable", "byte_budget")
         elements = tuple((piece.category, piece.text, piece.root) for piece in pieces)

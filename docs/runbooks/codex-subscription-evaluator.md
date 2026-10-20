@@ -867,6 +867,19 @@ case ended `coordinator_failure` with an owner diagnostic
 `semantic_attempt_privacy_dispatch_entered_failed` / `exception_value_error` at
 `finishup.ports.privacy:529`; on a current build that line no longer means an oversize review.
 
+A `semantic_case_built` line with `semantic_excerpt_ceiling_rounds` above zero but
+`semantic_excerpt_byte_limit` still equal to `semantic_excerpt_byte_approved`, followed by a
+`blocked_by_policy` `semantic-review` privacy receipt (`final_bytes` 0) and no
+`semantic_review_accounting` line for that request, is a planned case that could not be narrowed
+under the cap. Before the #1118 heat-pump-warranty fix this happened whenever a change too large
+for the excerpt budget was offered decision sections first: the planner measured the change it
+kept from the change's first byte, found 0 against the protected floor, and kept the whole case.
+On a current build only a case that cannot fit while keeping that floor, or whose fixed material
+alone exceeds the cap, ends that way. Each read
+result is fitted to what the exact next exchange leaves, so a review no longer ends
+`blocked_by_policy` on a later exchange; a read action whose own bytes leave no room ends the review
+`read_limit`, with nothing sent.
+
 ## Packaged live-evidence checklist
 
 Use an exact packaged FinishUP build and an isolated logged-in evaluator home. Record these as

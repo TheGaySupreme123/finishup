@@ -243,6 +243,7 @@ __all__ = [
     "TASK_INPUT_ITEM_PREFIX",
     "CheckTimeChangeShownFile",
     "check_time_change_bytes_carried",
+    "check_time_change_floor_bytes_carried",
     "check_time_change_parts_carried",
     "check_time_change_sections_carried",
     "check_time_change_shown_files",
@@ -6642,7 +6643,7 @@ def build_semantic_case(
         candidate = build(middle)
         if fits(candidate):
             low = middle
-            if check_time_change_bytes_carried(candidate) >= floor:
+            if check_time_change_floor_bytes_carried(candidate) >= floor:
                 best = candidate
         else:
             high = middle
@@ -11124,6 +11125,26 @@ def check_time_change_sections_carried(
             elif high > leading:
                 carried.append((leading, high))
     return tuple(sorted(set(carried)))
+
+
+def check_time_change_floor_bytes_carried(case: SemanticCase) -> int:
+    """The change bytes the leading carried parts hold, counted as ``final_diff_floor`` counts.
+
+    The floor sums the change bytes of the leading offered parts, whatever their place in the
+    stored change. A change that does not fit is offered decisive sections first, so its leading
+    parts start inside the change and ``check_time_change_bytes_carried`` (the contiguous run
+    from byte 0) can be 0 however much of it a narrowed case still carries. Comparing that with
+    the floor refused every narrowing and returned the over-ceiling case (#1118). For a linear
+    offer both counts are the same bytes.
+    """
+
+    carried = check_time_change_parts_carried(case)
+    by_id = {item.item_id: item for item in case.items}
+    return sum(
+        _check_time_change_part_chunk_bytes(by_id[item_id].content)
+        for index in range(1, carried + 1)
+        if (item_id := f"{CHECK_TIME_CHANGE_ITEM_PREFIX}{index:03d}") in by_id
+    )
 
 
 def check_time_change_bytes_carried(

@@ -106,6 +106,7 @@ __all__ = [
     "SemanticResultReply",
     "decode_reviewer_exchange",
     "encode_reviewer_exchange",
+    "reviewer_message_bytes",
     "reviewer_exchange",
     "reviewer_packet_bytes",
     "ExternalRuntimeAuthority",
@@ -2141,6 +2142,16 @@ def encode_reviewer_exchange(history: tuple[ReviewerMessage, ...]) -> bytes:
     payload = canonical_encode([{"content": text, "role": role} for role, text in history])
     decode_reviewer_exchange(payload)
     return payload
+
+
+def reviewer_message_bytes(role: str, text: str) -> int:
+    """The exact bytes one more ``role`` message adds to an encoded exchange (#1118).
+
+    ``encode_reviewer_exchange`` is a compact canonical array, so a message after the first adds
+    its separator and its own canonical object, escaping included, and nothing else changes.
+    """
+
+    return 1 + len(canonical_encode({"content": text, "role": role}))
 
 
 def decode_reviewer_exchange(payload: bytes) -> tuple[ReviewerMessage, ...]:

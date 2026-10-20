@@ -28,7 +28,7 @@ from finishup.adapters.privacy.local_enforcer import (
 from finishup.application.reviewer_run import reviewer_first_exchange
 from finishup.application.semantic_case import (
     SemanticCaseTooLarge,
-    check_time_change_bytes_carried,
+    check_time_change_floor_bytes_carried,
     final_diff_floor,
     primary_material_selection,
     semantic_case_to_prepared_payload,
@@ -53,7 +53,6 @@ __all__ = [
     "plan_under_channel_ceiling",
     "reviewer_exchange_limit",
     "reviewer_exchange_measure",
-    "reviewer_read_room",
     "with_ceiling_planning_gap",
 ]
 
@@ -69,7 +68,9 @@ CEILING_PLANNING_GAP: Final = "content_unselected"
 # instruction, the packet (sent as a JSON string, so escaping grows it, up to twice for quoted code),
 # the read catalog, the reviewer's replies and the read results. The first exchange is measured
 # exactly, as ``reviewer_first_exchange`` renders it, and planned below the ceiling less this frame,
-# which keeps room for the reviewer's replies; the reads get only what the sent conversation leaves.
+# which keeps room for the reviewer's read actions, their results and a format-repair notice. Each
+# result is then fitted to what the exact next exchange leaves (``run_reviewer``'s
+# ``exchange_limit``), so no later exchange outgrows the ceiling either.
 REVIEWER_FRAME_BYTES: Final = 8192
 
 
@@ -87,14 +88,6 @@ def reviewer_exchange_measure(catalog: str) -> Callable[[bytes], int]:
         return len(reviewer_first_exchange(packet, catalog))
 
     return measure
-
-
-def reviewer_read_room(limit: int | None, sent: int) -> int:
-    """Read bytes the next exchanges can add after a conversation of ``sent`` bytes."""
-
-    if limit is None:
-        return 0
-    return max(0, (limit - sent - 2048) * 4 // 5)
 
 
 def channel_prepared_limit(policy: PrivacyPolicy) -> int | None:
@@ -269,7 +262,7 @@ def plan_under_channel_ceiling(
         if candidate_size is None:
             break
         if candidate_size <= limit:
-            if check_time_change_bytes_carried(candidate) >= floor:
+            if check_time_change_floor_bytes_carried(candidate) >= floor:
                 planned, planned_selection = candidate, candidate_selection
             break
         size, excerpt_bytes = candidate_size, _excerpt_bytes(candidate)
