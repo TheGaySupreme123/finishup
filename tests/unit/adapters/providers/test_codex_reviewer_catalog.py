@@ -346,3 +346,117 @@ def test_bundled_catalog_failures_are_one_closed_token(
         codex_bundled_model_catalog(
             Path("/opt/codex/codex"), scratch_parent=tmp_path, runner=_Runner(code, output)
         )
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("first_applied", [True, False])
+async def test_v3_evidence_records_the_argv_its_own_process_launched(
+    tmp_path: Path, first_applied: bool
+) -> None:
+    """#1118 V3: a concurrent launch's catalog measurement must not rewrite this attempt's record.
+
+    A launches (with or without the catalog); while its turn runs, B launches from the same
+    executable bytes with the opposite measured outcome, rewriting the shared measurement. Before
+    the fix A's evidence was rebuilt from that shared state at completion and recorded B's argv.
+    """
+
+    import asyncio
+    import tempfile
+    from dataclasses import replace
+    from datetime import timedelta
+
+    from builders.codex_capability import binding_for, retained_runtime, write_home
+    from finishup.ports.semantic import Deadline, SemanticResultSuccess
+    from unit.adapters.providers import test_codex_app_server as helpers
+
+    bundled = _bundled_catalog()
+    spawned: list[tuple[str, ...]] = []
+    tmp_path.chmod(0o700)
+    root = Path(tempfile.mkdtemp(dir=tmp_path))
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(module, "verify_private_local_bundle", lambda _path: None)  # pyright: ignore[reportUnknownLambdaType,reportUnknownArgumentType]
+        patch.setattr(module, "_BUNDLED_ENTRY_SHA256", {})
+        patch.setattr(module, "_RECORDED_CATALOG_FALLBACKS", set[object]())
+        patch.setattr(module, "record_bounded_event_without_raising", lambda **_kw: None)  # pyright: ignore[reportUnknownLambdaType,reportUnknownArgumentType]
+        executable, record = retained_runtime(root / "bundle", version="0.162.1")
+        home_a, home_b = write_home(root / "home-a"), write_home(root / "home-b")
+        profile_a = module.CodexAppServerProfile.from_config(
+            binding_for(record, executable, home_a, model=REVIEWER_CATALOG_MODEL)
+        )
+        profile_b = replace(profile_a, codex_home=home_b)
+
+        def catalog(_exe: Path, *, scratch_parent: Path) -> object:
+            applies = first_applied if scratch_parent.parent == home_a else not first_applied
+            if not applies:
+                raise ValueError("codex_bundled_catalog_unavailable")
+            return bundled
+
+        patch.setattr(module, "codex_bundled_model_catalog", catalog)
+
+        class FakeProcess:
+            stdin = stdout = stderr = None
+
+        async def spawn(*argv: str, **_kwargs: object) -> FakeProcess:
+            spawned.append(argv)
+            return FakeProcess()
+
+        patch.setattr(asyncio, "create_subprocess_exec", spawn)
+        wire = helpers._Runtime(profile_a)  # pyright: ignore[reportPrivateUsage]
+
+        async def request(
+            self: module._CodexProcess,  # pyright: ignore[reportPrivateUsage]
+            request_id: int,
+            method: str,
+            params: object,
+            timeout: float,
+        ) -> object:
+            wire.workdir = self.workdir
+            result = await wire.request(request_id, method, params, timeout)
+            if method == "initialize":
+                result["userAgent"] = (
+                    "finishup_semantic_evaluator/0.162.1 (Mac OS 26.6.2; arm64) unknown"
+                )
+            if method == "turn/start":
+                await module._launch(profile_b)  # pyright: ignore[reportPrivateUsage]
+            return result
+
+        async def read(_self: object, timeout: float) -> object:
+            return await wire.read(timeout)
+
+        async def send(_self: object, value: object) -> None:
+            await wire.send(cast(dict[str, object], value))
+
+        async def cleanup(_runtime: object) -> str:
+            return "terminated"
+
+        patch.setattr(module._CodexProcess, "request", request)  # pyright: ignore[reportPrivateUsage]
+        patch.setattr(module._CodexProcess, "read", read)  # pyright: ignore[reportPrivateUsage]
+        patch.setattr(module._CodexProcess, "send", send)  # pyright: ignore[reportPrivateUsage]
+        patch.setattr(module, "_cleanup", cleanup)
+        case = helpers._case()  # pyright: ignore[reportPrivateUsage]
+        case = replace(
+            case, provider_binding=replace(case.provider_binding, model_id=profile_a.model)
+        )
+        binding, authority = helpers._attempt(case)  # pyright: ignore[reportPrivateUsage]
+        binding = replace(binding, model_id=profile_a.model)
+        evaluator = module.CodexAppServerEvaluator(
+            profile_a,
+            binding,
+            authority,
+            helpers._Clock(),  # pyright: ignore[reportPrivateUsage]
+        )
+        deadline = Deadline(helpers._NOW + timedelta(seconds=30), 30.0)  # pyright: ignore[reportPrivateUsage]
+        result = await evaluator.evaluate(case, deadline)
+
+    assert isinstance(result, SemanticResultSuccess), result
+    assert len(spawned) == 2
+    assert ("model_catalog_json=" in " ".join(spawned[0])) is first_applied
+    assert ("model_catalog_json=" in " ".join(spawned[1])) is not first_applied
+    evidence = result.provenance.runtime_evidence
+    assert evidence is not None
+    assert evidence.launcher_sha256 == module.canonical_digest(
+        {"argv": list(spawned[0]), "version": 1}
+    )
+    assert evidence.launcher_sha256 != module.canonical_digest(
+        {"argv": list(spawned[1]), "version": 1}
+    )

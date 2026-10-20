@@ -96,7 +96,10 @@ per process to the owner-only diagnostics (component `codex_app_server`, operati
 When it applies, the launch adds `-c model_catalog_json="<packaged path>"` after the 0.162.1-only
 keys; `--strict-config` accepts it. Every launch of the pinned release and model re-measures the
 entry (about 20 ms) and keys the result by executable SHA-256. The change is visible in each attempt's
-`runtime_evidence.launcher_sha256`, which commits to the exact argv. The capability record, its
+`runtime_evidence.launcher_sha256`, which commits to the exact argv. A launch builds its argv once
+from its own measurement and the process keeps that digest, so the evidence of every turn it runs,
+including a retained reviewer thread, names what that process ran even when a concurrent launch
+of the same executable measured the other way (#1118 V3). The capability record, its
 checks, the isolated config and the profile (`codex-evaluator/capability/v3`) are unchanged:
 admission does not depend on the catalog, only the launch argv does, like the four 0.162.1 keys.
 

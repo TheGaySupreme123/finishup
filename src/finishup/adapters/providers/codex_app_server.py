@@ -20,7 +20,7 @@ import signal
 import stat
 import tempfile
 from collections import deque
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -696,6 +696,13 @@ class CodexAppServerProfile:
 
     @property
     def launcher_argv(self) -> tuple[str, ...]:
+        """The argv the current catalog decision would launch (``launcher_argv_for``)."""
+
+        return self.launcher_argv_for(self.reviewer_model_catalog)
+
+    def launcher_argv_for(self, decision: ReviewerCatalogDecision) -> tuple[str, ...]:
+        """The exact argv for one measured catalog *decision*, built once per launch."""
+
         args: list[str] = [
             str(self.executable_path),
             "app-server",
@@ -703,7 +710,7 @@ class CodexAppServerProfile:
             "--strict-config",
         ]
         overrides = [*_LAUNCH_OVERRIDES, *_RELEASE_LAUNCH_OVERRIDES.get(self.runtime_version, ())]
-        catalog = self.reviewer_model_catalog.path
+        catalog = decision.path
         if catalog is not None:
             # A TOML basic string: JSON's escapes are a subset of TOML's.
             overrides.append(f"model_catalog_json={json.dumps(str(catalog))}")
@@ -751,7 +758,7 @@ class CodexAppServerProfile:
 
     @property
     def launcher_sha256(self) -> str:
-        return canonical_digest({"argv": list(self.launcher_argv), "version": 1})
+        return launcher_digest(self.launcher_argv)
 
     def _record_matches(self, record: CodexCapabilityRecord) -> bool:
         return (
@@ -882,6 +889,9 @@ class _CodexProcess:
     pending_notifications: deque[Mapping[str, object]]
     sandbox_unavailable: bool = False
     sandbox_unavailable_reason: SandboxUnavailableReason | None = None
+    # The digest of the argv this process was spawned with, frozen at launch (#1118 V3): a later
+    # catalog measurement by another launch must never change what this process's evidence says.
+    launcher_sha256: str | None = None
 
     async def send(self, value: Mapping[str, object]) -> None:
         stdin = self.process.stdin
@@ -968,14 +978,24 @@ def _process_environment(profile: CodexAppServerProfile) -> dict[str, str]:
     }
 
 
-def _verify_and_measure(profile: CodexAppServerProfile) -> None:
+def launcher_digest(argv: Sequence[str]) -> str:
+    """The canonical digest runtime evidence records for one launch argv."""
+
+    return canonical_digest({"argv": list(argv), "version": 1})
+
+
+def _verify_and_measure(profile: CodexAppServerProfile) -> ReviewerCatalogDecision:
     profile.verify_local_binding()
-    profile.measure_reviewer_catalog()
+    return profile.measure_reviewer_catalog()
 
 
 async def _launch(profile: CodexAppServerProfile) -> _CodexProcess:
-    # Revalidate every launch, but do not hash the runtime executable on the service loop.
-    await asyncio.to_thread(_verify_and_measure, profile)
+    # Revalidate every launch, but do not hash the runtime executable on the service loop. The
+    # argv is built once from this launch's own measured decision and frozen on the process, so a
+    # concurrent launch's measurement can change neither what runs nor what evidence records.
+    decision = await asyncio.to_thread(_verify_and_measure, profile)
+    argv = profile.launcher_argv_for(decision)
+    frozen = launcher_digest(argv)
     runtime_root = profile.codex_home / "runtime"
     ensure_owner_only_dir(runtime_root)
     verify_private_local_bundle(runtime_root)
@@ -985,7 +1005,7 @@ async def _launch(profile: CodexAppServerProfile) -> _CodexProcess:
         os.chmod(workdir, 0o700)
         spawn_task = asyncio.create_task(
             asyncio.create_subprocess_exec(
-                *profile.launcher_argv,
+                *argv,
                 cwd=workdir,
                 env=_process_environment(profile),
                 stdin=asyncio.subprocess.PIPE,
@@ -1014,6 +1034,7 @@ async def _launch(profile: CodexAppServerProfile) -> _CodexProcess:
                 workdir=workdir,
                 stderr_task=asyncio.create_task(_drain_stderr(process.stderr)),
                 pending_notifications=deque(),
+                launcher_sha256=frozen,
             )
             try:
                 await _cleanup_guaranteed(owned)
@@ -1027,6 +1048,7 @@ async def _launch(profile: CodexAppServerProfile) -> _CodexProcess:
             workdir=workdir,
             stderr_task=asyncio.create_task(_drain_stderr(process.stderr)),
             pending_notifications=deque(),
+            launcher_sha256=frozen,
         )
     except BaseException:
         # Spawn cancellation above owns and cleans a returned process before it reaches here.
@@ -2712,7 +2734,13 @@ class CodexAppServerEvaluator:
             capability_cell_sha256=self.profile.capability_cell_sha256,
             capability_profile=self.profile.capability_profile,
             capability_evidence_expires_at=self.profile.capability_evidence_expires_at,
-            launcher_sha256=self.profile.launcher_sha256,
+            # What this attempt's process actually launched with, frozen at its launch; only an
+            # attempt that never launched reports the argv its profile would use now.
+            launcher_sha256=(
+                runtime.launcher_sha256
+                if isinstance(runtime, _CodexProcess) and runtime.launcher_sha256 is not None
+                else self.profile.launcher_sha256
+            ),
             isolated_config_sha256=self.profile.isolated_config_sha256,
             disclosed_case_sha256=_sha256_bytes(case.payload),
             instruction_sha256=instruction_sha256,
