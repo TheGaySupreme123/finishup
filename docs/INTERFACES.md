@@ -12180,13 +12180,20 @@ verification dependencies and generated-artifact roles remain an open design req
 
 `correctness_advisories` is the bounded routine-review note list on check-recorded 1.6.0,
 independent of findings. A `CorrectnessAdvisory` identity is the originating check's `evt_` id,
-colon, and its one-based ordinal (1–10). Summary/detail and subject refs retain the concern;
-subject frontier and semantic provenance belong to that check. `status view=history` filtered to
-`check_recorded` exposes the rows and their frontier-bound disposition with ordinary pagination.
+colon, and its one-based ordinal (1–10). Summary/detail and subject refs retain the concern; the
+subject refs are the challenge's fence-resolved `evt_`/`obl_`/`clm_` subjects (at most 64), never
+its raw `act_`/`res_`/`evd_` citations. A row that cannot be retained degrades to the review
+summary with a disclosure and never rejects the review. Subject frontier and semantic provenance
+belong to that check. `status view=history` filtered to `check_recorded` exposes the rows and
+their frontier-bound disposition with ordinary pagination; history stays session-scoped, so a
+note is retrieved in the session that recorded its check, while the receipt is task-wide.
 
 An optional `respond` targets this identity using the existing `finding_id`/`finding_frontier`
 keys. `addressed` means agent-reported with linked evidence; `declined` records the reason;
-absence is `no_recorded_response`. Source-redacted response details are `response_unavailable`.
+absence is `no_recorded_response`. A withheld response is `response_unavailable` when its check
+carries a single note; on a several-note check its target is withheld, so it is attached to no
+note and counted in `correctness_advisory_counts.response_unavailable` as not matched to a note.
+A withheld response never replaces a readable disposition.
 Typed `decision_recorded` 1.1.0 `advisory_response` records carry the target, disposition and mirrored
 evidence refs; `rationale` carries the reason. They are independent of review-mode switches and
 never change finding state, check applicability, closure readiness or receipt conclusions.

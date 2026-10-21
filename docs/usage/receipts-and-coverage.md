@@ -546,4 +546,5 @@ Your agent may optionally record its response through `respond`, using the advis
 `finding_id` and a current `finding_frontier`: `addressed` needs a reason and recorded evidence
 refs, while `declined` needs a reason. This records the agent's account, not independent proof.
 Retrieve the full index through `status view=history` with `filter.schema_name=check_recorded`,
-following `next_cursor` with the same filter and limit.
+following `next_cursor` with the same filter and limit. History lists one session's records, so
+read a note from the session that recorded its check; the receipt counts every note of the task.

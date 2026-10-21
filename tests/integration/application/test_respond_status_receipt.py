@@ -9605,37 +9605,263 @@ async def test_the_receipt_catch_all_keeps_its_message_and_names_the_reason(
     }
 
 
-@pytest.mark.parametrize("backend", ["memory", "sqlite"])
-@pytest.mark.parametrize("disposition", [None, "declined", "addressed"])
-async def test_correctness_advisory_survives_check_response_and_receipt(
-    backend: Literal["memory", "sqlite"], disposition: str | None, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """TAMP-like: a note survives later clean review output; silence never reports repair."""
-    import finishup.application.check as checks
-    from finishup.kernel.correctness_advisories import correctness_advisories
-    from finishup.protocol.models import StatusHistoryPageModel
+def _routine_note(summary: str, cited: str) -> ReviewerChallenge:
+    return ReviewerChallenge(
+        FindingKind.CODE_DEFECT,
+        summary,
+        (cited,),
+        "The edit computes the footprint in world coordinates.",
+        "The receptacle may never be rotated in practice.",
+        "Transform the object origin into the receptacle frame; test a rotated receptacle.",
+        "act",
+        "No rotated-receptacle case is in the packet.",
+    )
 
-    validate = checks.validate_semantic_judgment
 
-    def with_note(*args: Any, **kwargs: Any) -> checks.SemanticJudgmentReview:
-        review = validate(*args, **kwargs)
-        return replace(
-            review,
-            challenges_returned=1,
-            advisory_notes=1,
-            correctness_advisories=(
-                DomainJsonObject(
+async def _routine_advisory_task(
+    app: Application, *, seed: int
+) -> tuple[StartInternalResult, CheckCommitResult, dict[str, str]]:
+    """Start, publish an open obligation and an edit with its result, then run a routine check.
+
+    No completion claim is recorded, so the review is routine and a ``code_defect`` stays an
+    advisory note. The reviewer is the app's scripted evaluator; the fence is production's.
+    """
+
+    refs = {
+        "obligation": protocol_id("obl_", seed + 1),
+        "action_event": protocol_id("evt_", seed + 2),
+        "action": protocol_id("act_", seed + 3),
+        "result_event": protocol_id("evt_", seed + 4),
+        "result": protocol_id("res_", seed + 5),
+    }
+    started = await app.start(start_request(seed, title="Advisory exercise", refs=True))
+    published = await app.publish_work(
+        PublishWorkRequest.model_validate(
+            {
+                **_request_base(protocol_id("req_", seed + 6)),
+                "session_id": started.session_id,
+                "writer_id": started.writer_id,
+                "expected_frontier": _frontier(started.frontier),
+                "event_drafts": [
                     {
-                        "summary": "Geometry uses world AABBs instead of receptacle-frame footprints.",
-                        "detail": "Transform the object origin into the receptacle frame; test a rotated receptacle.",
-                        "subject_refs": (),
-                    }
-                ),
+                        "event_id": protocol_id("evt_", seed + 7),
+                        "schema": {"name": "obligation_published", "version": "1.0.0"},
+                        "occurred_at": "2026-07-19T12:00:00.000Z",
+                        "causal_parents": [],
+                        "payload": {
+                            "obligation_id": refs["obligation"],
+                            "description": "Place objects inside rotated receptacles.",
+                            "evidence_expectation": "A linked immutable result record.",
+                            "status": "open",
+                        },
+                        "artifact_refs": [],
+                        "evidence_refs": [],
+                    },
+                    {
+                        "event_id": refs["action_event"],
+                        "schema": {"name": "action_recorded", "version": "1.0.0"},
+                        "occurred_at": "2026-07-19T12:00:01.000Z",
+                        "causal_parents": [],
+                        "payload": {
+                            "action_id": refs["action"],
+                            "action_kind": "edit",
+                            "description": "Edit the placement geometry.",
+                        },
+                        "artifact_refs": [],
+                        "evidence_refs": [],
+                    },
+                    {
+                        "event_id": refs["result_event"],
+                        "schema": {"name": "result_recorded", "version": "1.0.0"},
+                        "occurred_at": "2026-07-19T12:00:02.000Z",
+                        "causal_parents": [refs["action_event"]],
+                        "payload": {
+                            "result_id": refs["result"],
+                            "action_id": refs["action"],
+                            "outcome": "success",
+                            "summary": "The placement geometry was edited.",
+                        },
+                        "artifact_refs": [],
+                        "evidence_refs": [],
+                    },
+                ],
+            }
+        )
+    )
+    checked = await app.check(
+        CheckRequest.model_validate(
+            {
+                **_request_base(protocol_id("req_", seed + 8)),
+                "session_id": started.session_id,
+                "writer_id": started.writer_id,
+                "expected_frontier": _frontier(published.result_frontier),
+                "mode": "semantic_required",
+            }
+        )
+    )
+    assert isinstance(checked, CheckCommitResult)
+    return started, checked, refs
+
+
+@pytest.mark.parametrize("backend", ["memory", "sqlite"])
+async def test_routine_notes_citing_a_result_and_an_action_reach_closing_with_the_review(
+    backend: Literal["memory", "sqlite"],
+) -> None:
+    """#1162 review blocker: ``res_``/``act_`` citations are legal for the fence; the stored note
+    keeps their resolved source events, and the review's other challenge is still committed."""
+
+    from finishup.kernel.correctness_advisories import correctness_advisories
+
+    seed = 216300
+
+    def round_one(_frozen: FrozenCase) -> tuple[ReviewerChallenge, ...]:
+        return (
+            _routine_note("Geometry uses world AABBs.", protocol_id("res_", seed + 5)),
+            _routine_note("Rotated receptacles are untested.", protocol_id("act_", seed + 3)),
+            ReviewerChallenge(
+                FindingKind.TASK_REQUIREMENT_UNMET,
+                "Placement inside rotated receptacles is not done.",
+                (protocol_id("obl_", seed + 1),),
+                "The obligation is open and no result covers rotated receptacles.",
+                "The work may be planned for later.",
+                "Implement rotated-receptacle placement and record the result.",
+                "act",
+                "The packet has no rotated-receptacle result.",
             ),
         )
 
-    monkeypatch.setattr(checks, "validate_semantic_judgment", with_note)
-    app, runtime, _ = _build_app(semantic="required", ledger_backend=backend)
+    app, runtime, _ = _build_app(
+        semantic="required",
+        ledger_backend=backend,
+        semantic_evaluator=_scripted_reviewer([round_one]),
+    )
+    started, checked, refs = await _routine_advisory_task(app, seed=seed)
+    # The review was admitted, not recorded as a rejected judgment.
+    assert checked.semantic_status is SemanticStatus.SUCCEEDED
+    assert [
+        item.kind
+        for item in checked.findings
+        if item.origin is FindingOrigin.SEMANTIC_MODEL_DERIVED
+    ] == [FindingKind.TASK_REQUIREMENT_UNMET]
+    ledger, _objects = runtime.resources[started.task_id]
+    records = tuple([r async for r in ledger.load_events(started.session_id)])
+    notes = correctness_advisories(records)
+    assert [note.concern["subject_refs"] for note in notes] == [
+        (refs["result_event"],),
+        (refs["action_event"],),
+    ]
+    assert notes[0].check.schema.version == "1.6.0"
+    receipt = await app.receipt(
+        ReceiptRequest.model_validate(
+            {
+                **_receipt_wire(
+                    request_seed=seed + 20,
+                    task_id=started.task_id,
+                    session=started.session_id,
+                    writer=started.writer_id,
+                    frontier=checked.result_frontier,
+                ),
+                "format": "text",
+                "include": "summary",
+            }
+        )
+    )
+    assert "Earlier correctness advisories: 2; no recorded response: 2" in str(receipt.as_json())
+
+
+@pytest.mark.parametrize("backend", ["memory", "sqlite"])
+async def test_history_never_shows_another_sessions_advisory_check(
+    backend: Literal["memory", "sqlite"],
+) -> None:
+    """#1162 review: history stays session-scoped; the receipt keeps the task-wide count."""
+
+    from finishup.protocol.models import StatusHistoryPageModel
+
+    seed = 216400
+
+    def round_one(_frozen: FrozenCase) -> tuple[ReviewerChallenge, ...]:
+        return (_routine_note("Geometry uses world AABBs.", protocol_id("res_", seed + 5)),)
+
+    app, _runtime, _ = _build_app(
+        semantic="required",
+        ledger_backend=backend,
+        semantic_evaluator=_scripted_reviewer([round_one]),
+    )
+    started, _checked, _refs = await _routine_advisory_task(app, seed=seed)
+    other = await app.start(start_request(seed + 30, title="Advisory exercise", refs=True))
+    assert other.task_id == started.task_id and other.session_id != started.session_id
+
+    async def history(session: str, writer: str, request_seed: int) -> StatusHistoryPageModel:
+        result = await app.status(
+            StatusRequest.model_validate(
+                {
+                    **_request_base(protocol_id("req_", request_seed)),
+                    "session_id": session,
+                    "writer_id": writer,
+                    "view": "history",
+                    "limit": "50",
+                }
+            )
+        )
+        assert isinstance(result.page, StatusHistoryPageModel)
+        return result.page
+
+    own = await history(started.session_id, started.writer_id, seed + 40)
+    noted = [item for item in own.items if getattr(item, "correctness_advisories", None)]
+    assert [item.schema_name for item in noted] == ["check_recorded"]
+    assert "world AABBs" in json.dumps([item.model_dump(mode="json") for item in noted])
+    foreign = await history(other.session_id, other.writer_id, seed + 41)
+    assert all(item.schema_name != "check_recorded" for item in foreign.items)
+    assert all(getattr(item, "correctness_advisories", None) is None for item in foreign.items)
+    assert all(getattr(item, "review_input_manifest", None) is None for item in foreign.items)
+    assert "world AABBs" not in json.dumps([item.model_dump(mode="json") for item in foreign.items])
+    # The receipt is task-wide and still counts the note for the other session.
+    receipt = await app.receipt(
+        ReceiptRequest.model_validate(
+            {
+                **_receipt_wire(
+                    request_seed=seed + 42,
+                    task_id=other.task_id,
+                    session=other.session_id,
+                    writer=other.writer_id,
+                    frontier=other.frontier,
+                ),
+                "format": "json",
+                "include": "summary",
+            }
+        )
+    )
+    assert "Earlier correctness advisories: 1; no recorded response: 1" in str(receipt.as_json())
+
+
+@pytest.mark.parametrize("backend", ["memory", "sqlite"])
+@pytest.mark.parametrize("disposition", [None, "declined", "addressed"])
+async def test_correctness_advisory_survives_check_response_and_receipt(
+    backend: Literal["memory", "sqlite"], disposition: str | None
+) -> None:
+    """TAMP-like: a note survives later clean review output; silence never reports repair.
+
+    The note comes from a scripted reviewer through the production fence (no patched validator).
+    """
+    from finishup.kernel.correctness_advisories import correctness_advisories
+    from finishup.protocol.models import StatusHistoryPageModel
+
+    def round_one(_frozen: FrozenCase) -> tuple[ReviewerChallenge, ...]:
+        return (
+            _routine_note(
+                "Geometry uses world AABBs instead of receptacle-frame footprints.",
+                protocol_id("res_", 216205),
+            ),
+        )
+
+    def clean_round(_frozen: FrozenCase) -> tuple[ReviewerChallenge, ...]:
+        return ()
+
+    app, runtime, _ = _build_app(
+        semantic="required",
+        ledger_backend=backend,
+        semantic_evaluator=_scripted_reviewer([round_one, clean_round]),
+    )
 
     def advisory_versions(_runtime: object) -> ReceiptVersionSlice:
         return replace(
@@ -9643,16 +9869,16 @@ async def test_correctness_advisory_survives_check_response_and_receipt(
         )
 
     app = replace(app, receipt_version_resolver=advisory_versions)
-    started, checked, _ = await _bootstrap_finding(app, seed=216200, mode="semantic_required")
+    started, checked, task_refs = await _routine_advisory_task(app, seed=216200)
     ledger, _objects = runtime.resources[started.task_id]
     records = tuple([r async for r in ledger.load_events(started.session_id)])
     notes = correctness_advisories(records)
     assert len(notes) == 1 and notes[0].response is None
+    assert notes[0].concern["subject_refs"] == (task_refs["result_event"],)
     assert notes[0].check.schema.version == "1.6.0"
     assert notes[0].check.payload.semantic_provenance is not None  # type: ignore[union-attr]
     frontier = checked.result_frontier
     # A second check returns no such note. Its silence cannot answer the earlier note.
-    monkeypatch.setattr(checks, "validate_semantic_judgment", validate)
     later = await app.check(
         CheckRequest.model_validate(
             {
@@ -9744,8 +9970,10 @@ async def test_correctness_advisory_survives_check_response_and_receipt(
     assert isinstance(status.page, StatusHistoryPageModel)
     row = status.page.items[0]
     advisory = getattr(row, "correctness_advisories")[0]
-    assert advisory["disposition"] == (disposition or "no_recorded_response")
-    assert "world AABBs" in advisory["summary"]
+    assert advisory.disposition == (disposition or "no_recorded_response")
+    assert "world AABBs" in str(advisory.summary)
+    assert advisory.subject_refs == (task_refs["result_event"],)
+    assert (advisory.response_event_id is None) is (disposition is None)
     assert getattr(row, "advisory_provenance") is not None
     from builders.status_wire import compact_status
     from finishup.cli.render import render_human_status

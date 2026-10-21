@@ -47,7 +47,7 @@ from finishup.domain.receipts import (
     SEMANTIC_CHALLENGES_REJECTED_GAP,
     SEMANTIC_PROCESS_STATE_FILTERED_GAP,
 )
-from finishup.domain.values import EventId, action_id, obligation_id
+from finishup.domain.values import EventId, JsonObject, action_id, obligation_id
 from finishup.kernel.deterministic_checks import (
     CaseAvailabilityFacts,
     DeterministicCase,
@@ -200,6 +200,94 @@ def test_a_routine_correctness_concern_is_an_advisory_note_not_a_finding() -> No
     # A caller that does not name the phase keeps the earlier behaviour.
     legacy = _review(case, concern, phase=None)
     assert [candidate.kind for candidate in legacy.candidates] == [FindingKind.CODE_DEFECT]
+
+
+def test_routine_notes_citing_a_result_or_action_keep_the_rest_of_the_review() -> None:
+    """#1162 review blocker: the fence accepts ``res_``/``act_`` citations and resolves them to
+    their source event. The retained advisory row stores those resolved subjects; storing the raw
+    citations failed the bounded row, rejected the whole review and dropped every challenge."""
+
+    from finishup.domain.correctness_advisories import validate_advisories
+    from finishup.domain.values import result_id
+
+    ledger = ObservedLedger()
+    _obligation(ledger)
+    edited = ledger.edit()
+    case = _case(ledger)
+    action_event, result_event = ledger.events_of(edited)
+    result_payload = case.projection.results[edited].payload
+    assert result_payload is not None
+    action_ref = str(getattr(result_payload, "action_id"))
+    result_ref = str(result_id(str(edited)))
+    assert action_ref.startswith("act_") and result_ref.startswith("res_")
+    by_result = _challenge(
+        FindingKind.CODE_DEFECT, result_ref, summary="Rotated frames are skipped"
+    )
+    by_action = _challenge(FindingKind.CODE_DEFECT, action_ref, summary="The footprint uses AABBs")
+    unmet = _challenge(
+        FindingKind.TASK_REQUIREMENT_UNMET, str(_OBLIGATION), summary="The decoder is unfinished"
+    )
+
+    review = _review(case, by_result, by_action, unmet, phase="routine")
+
+    assert [candidate.kind for candidate in review.candidates] == [
+        FindingKind.TASK_REQUIREMENT_UNMET
+    ]
+    assert review.advisory_notes == 2
+    assert review.rejected_by_reason == ()
+    assert [row["subject_refs"] for row in review.correctness_advisories] == [
+        (str(result_event),),
+        (str(action_event),),
+    ]
+    assert [row["summary"] for row in review.correctness_advisories] == [
+        "Rotated frames are skipped",
+        "The footprint uses AABBs",
+    ]
+    validate_advisories(review.correctness_advisories)
+    assert "FinishUP note:" not in review.review_summary
+
+
+def test_an_unretainable_advisory_row_degrades_to_the_summary_with_a_disclosure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """#1162: an advisory-shape problem never discards an otherwise valid review.
+
+    No reachable provider output fails the row once its subjects are fence-resolved (provider
+    challenges are capped at three), so the row bound itself is narrowed here; the fence, the
+    case and every other step are the production path.
+    """
+
+    import finishup.application.check as checks
+    from finishup.domain.correctness_advisories import validate_advisories
+
+    def refuse_second(rows: tuple[JsonObject, ...]) -> None:
+        validate_advisories(rows)
+        if any("second" in str(row["summary"]) for row in rows):
+            raise ValueError("advisory_row_shape")
+
+    monkeypatch.setattr(checks, "validate_advisories", refuse_second)
+    ledger = ObservedLedger()
+    _obligation(ledger)
+    edited = ledger.edit()
+    case = _case(ledger)
+    event = str(case.projection.results[edited].source_event_id)
+    first = _challenge(FindingKind.CODE_DEFECT, event, summary="The first concern")
+    second = _challenge(FindingKind.CODE_DEFECT, event, summary="The second concern")
+    unmet = _challenge(
+        FindingKind.TASK_REQUIREMENT_UNMET, str(_OBLIGATION), summary="The decoder is unfinished"
+    )
+
+    review = _review(case, first, second, unmet, phase="routine")
+
+    assert [candidate.kind for candidate in review.candidates] == [
+        FindingKind.TASK_REQUIREMENT_UNMET
+    ]
+    assert review.advisory_notes == 2
+    assert [row["summary"] for row in review.correctness_advisories] == ["The first concern"]
+    assert "The second concern" in review.review_summary
+    assert "FinishUP note: 1 reviewer correctness note(s) above are kept in this summary only" in (
+        review.review_summary
+    )
 
 
 def test_an_incomplete_work_challenge_stays_a_finding_in_a_routine_review() -> None:

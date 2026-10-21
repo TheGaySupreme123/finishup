@@ -5355,6 +5355,34 @@ class StatusHistoryItemModel(_ClosedModel):
     ]
 
 
+_ADVISORY_SUBJECT_REF_PATTERN: Final = (
+    r"^(?:evt|obl|clm)_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+)
+_ADVISORY_EVIDENCE_REF_PATTERN: Final = (
+    r"^(?:evd|res)_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+)
+
+
+class StatusHistoryCorrectnessAdvisoryModel(_ClosedModel):
+    """#1162: one routine correctness note on its check's history row, with its recorded status.
+
+    Typed so the result-leaf registry covers exactly the leaves it can emit: prose is
+    ``finding_summary`` content (or its omission), every other leaf is a closed token or an id.
+    """
+
+    optional_non_null_fields = frozenset({"reason", "response_event_id", "evidence_refs"})
+    summary: String1To8192 | OmittedContentModel
+    detail: String1To8192 | OmittedContentModel
+    subject_refs: tuple[Annotated[str, Field(pattern=_ADVISORY_SUBJECT_REF_PATTERN)], ...]
+    advisory_id: Annotated[str, Field(pattern=ADVISORY_ID_PATTERN)]
+    disposition: Literal["addressed", "declined", "no_recorded_response", "response_unavailable"]
+    reason: String1To4096 | OmittedContentModel | None = None
+    response_event_id: EventIdWire | None = None
+    evidence_refs: (
+        tuple[Annotated[str, Field(pattern=_ADVISORY_EVIDENCE_REF_PATTERN)], ...] | None
+    ) = None
+
+
 class StatusHistoryItemV14Model(StatusHistoryItemModel):
     """v1.4 history row: a completed check's provider-bound input coverage, and time provenance."""
 
@@ -5367,7 +5395,7 @@ class StatusHistoryItemV14Model(StatusHistoryItemModel):
             "advisory_subject_frontier",
         }
     )
-    correctness_advisories: tuple[JsonValue, ...] | None = None
+    correctness_advisories: tuple[StatusHistoryCorrectnessAdvisoryModel, ...] | None = None
     advisory_provenance: JsonValue | None = None
     advisory_subject_frontier: FrontierModel | None = None
     review_input_manifest: ReviewInputManifestModel | None = None
@@ -8187,6 +8215,8 @@ _STATUS_HISTORY_STRUCTURAL_POINTERS: Final = (
         ),
     )
     + _prefix_leaf_patterns("/page/items/*/review_input_manifest", _REVIEW_INPUT_MANIFEST_LEAVES)
+    # #1162: like the check result's ``/semantic_provenance``, the container itself is structural.
+    + ("/page/items/*/advisory_provenance",)
     + _prefix_leaf_patterns("/page/items/*/advisory_provenance", _SEMANTIC_PROVENANCE_LEAVES)
     + _prefix_leaf_patterns("/page/items/*/advisory_subject_frontier", FRONTIER_LEAVES)
     + _prefix_leaf_patterns(
@@ -8834,7 +8864,7 @@ def _build_result_leaf_rules() -> tuple[_ResultLeafRule, ...]:
         ):
             raise RuntimeError("invalid_result_leaf_classification")
     if (
-        len(result) != 1867
+        len(result) != 1868
     ):  # ... #1017 +3, #1027 +5, tb4n3 LO +9, W2-A +46, LF +34 (fact_lineage), W2-B +2,
         # tb4n4 #1044 +7 (closure_readiness.undeclared_references), #1048 +38 (inspection),
         # #1047 +2 (follow_up_round), tb4n5 +3 (publish action_notices),
@@ -8846,7 +8876,8 @@ def _build_result_leaf_rules() -> tuple[_ResultLeafRule, ...]:
         # W6 +1 check (agent_next) / +15 status (operation check_outcome),
         # #1118 +18 check (reviewer), +1 check_recorded 1.6.0; #1139 +8 check/status delivery
         # #1140 +83 check (shared readiness, including one repository-excerpt leaf),
-        # #1144/#1149 +3 receipt (disproved ids and stopped status/reason)
+        # #1144/#1149 +3 receipt (disproved ids and stopped status/reason),
+        # #1162 +95 (advisory history, readiness summary, receipt counts; +1 provenance container)
         raise RuntimeError("incomplete_result_leaf_registry")
     return result
 

@@ -1141,20 +1141,71 @@ def test_an_unadmitted_outside_task_input_changes_neither_the_stop_gate_nor_the_
     assert "/" not in sentence.replace("<folder>", "")
 
 
-def test_advisory_only_stop_never_continues_the_agent(
-    tmp_path: Path, host: _Host, capsys: pytest.CaptureFixture[str]
+# Stop output fields each host documents (re-read 2026-10-22). Codex: Stop/SubagentStop accept the
+# common output fields (continue, stopReason, systemMessage, suppressOutput) plus decision/reason.
+# Claude Code: every event accepts the common JSON output fields, Stop included, plus
+# decision/reason and hookSpecificOutput.additionalContext; systemMessage is shown to the user.
+_CODEX_STOP_FIELDS = frozenset(
+    {"continue", "stopReason", "systemMessage", "suppressOutput", "decision", "reason"}
+)
+_CLAUDE_STOP_FIELDS = frozenset({*_CODEX_STOP_FIELDS, "hookSpecificOutput"})
+
+
+def _advisory_note() -> str:
+    from finishup.domain.events import LedgerRecord
+    from finishup.domain.values import JsonObject
+    from finishup.kernel.correctness_advisories import CorrectnessAdvisory, advisory_closing_text
+
+    check = "evt_00000000-0000-4000-8000-000000000001"
+    concern = JsonObject({"summary": "Concern", "detail": "Advice", "subject_refs": ()})
+    rows = tuple(
+        CorrectnessAdvisory(f"{check}:{n}", cast(LedgerRecord, None), concern) for n in (1, 2, 3, 4)
+    )
+    return advisory_closing_text(rows, unmatched_withheld=1)
+
+
+@pytest.mark.parametrize("gated", [False, True], ids=["advisory_only", "with_closure_gate"])
+def test_advisory_stop_note_uses_only_each_hosts_admitted_channel(
+    tmp_path: Path, host: _Host, capsys: pytest.CaptureFixture[str], gated: bool
 ) -> None:
-    session = "advisory-only"
+    """#1162: the note never continues the agent, alone or beside an active closure gate."""
+
+    session = f"advisory-{'gated' if gated else 'only'}"
     h = _Harness(tmp_path, host.key(session))
-    h.readiness = _readiness(state="ready_with_limitations", actionable=())
-    text = "Earlier correctness advisories: 1; no recorded response: 1. Non-blocking; status view=history."
+    if not gated:
+        h.readiness = _readiness(state="ready_with_limitations", actionable=())
+    text = _advisory_note()
     h.readiness.correctness_advisory_summary = text
     output = _stop(h, host, session)
-    assert "decision" not in output
-    assert "followup_message" not in output
-    assert "hookSpecificOutput" not in output
+    err = capsys.readouterr().err
+    assert h.reasons() == (["closure_gate_continued"] if gated else ["closure_gate_not_required"])
     if host.name == "cursor":
-        assert output == {}
-        assert text.replace(". ", "\n") in capsys.readouterr().err
-    else:
+        # Cursor's Stop stdout only continues the agent; the note stays on bounded stderr.
+        assert output == ({} if not gated else {"followup_message": output["followup_message"]})
+        if gated:
+            assert "FinishUP closure gate" in output["followup_message"]
+        assert "correctness advisories" not in json.dumps(output)
+        lines = err.splitlines()
+        assert lines and all(len(line) <= 200 for line in lines)
+        for sentence in text.split(". "):
+            assert sentence in lines
+        assert "Earlier correctness advisories: 4; no recorded response: 4" in lines
+        assert any(line.startswith("Retrieve status view=history") for line in lines)
+        return
+    assert output["systemMessage"] == text
+    allowed = _CODEX_STOP_FIELDS if host.name == "codex" else _CLAUDE_STOP_FIELDS
+    assert set(output) <= allowed
+    if not gated:
         assert output == {"systemMessage": text}
+        return
+    if host.name == "codex":
+        assert set(output) == {"decision", "reason", "systemMessage"}
+        assert output["decision"] == "block"
+        gate_text = output["reason"]
+    else:
+        assert set(output) == {"hookSpecificOutput", "systemMessage"}
+        assert output["hookSpecificOutput"]["hookEventName"] == "Stop"
+        gate_text = output["hookSpecificOutput"]["additionalContext"]
+    assert "FinishUP closure gate" in gate_text
+    # The gate message stays the gate's own; the advisory note never rides the continuation.
+    assert "correctness advisories" not in gate_text

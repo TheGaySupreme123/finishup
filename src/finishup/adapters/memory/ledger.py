@@ -250,6 +250,7 @@ from finishup.protocol.models import (
     StatusCompactObligationModel,
     StatusEvidenceItemModel,
     StatusFindingItemModel,
+    StatusHistoryCorrectnessAdvisoryModel,
     StatusHistoryItemModel,
     StatusHistoryItemV14Model,
     StatusLatestCheckModel,
@@ -1629,12 +1630,15 @@ def _projection_items(
             correctness_advisories,
         )
 
+        # The index is task-wide (a response may come from any session), but history stays
+        # session-scoped: another session's check row, its notes and its review-input manifest
+        # never appear here. The receipt carries the task-wide count and identities.
         notes_by_check: dict[str, list[CorrectnessAdvisory]] = {}
         for note in correctness_advisories(records):
             notes_by_check.setdefault(str(note.check.event_id), []).append(note)
         result_history: list[StatusHistoryItemModel | StatusHistoryItemV14Model] = []
         for row in records:
-            if row.session_id != session and str(row.event_id) not in notes_by_check:
+            if row.session_id != session:
                 continue
             manifest = (
                 None
@@ -1657,7 +1661,7 @@ def _projection_items(
                 history_extras["review_input_manifest"] = manifest_model
             notes = tuple(notes_by_check.get(str(row.event_id), ()))
             if notes:
-                note_rows: list[dict[str, JsonValue]] = []
+                note_rows: list[StatusHistoryCorrectnessAdvisoryModel] = []
                 for note in notes:
                     entry = dict(note.concern.items())
                     entry.update(
@@ -1666,6 +1670,8 @@ def _projection_items(
                             "disposition": note.disposition.replace(" ", "_"),
                         }
                     )
+                    if note.response is not None:
+                        entry["response_event_id"] = note.response.event_id
                     if note.response is not None and isinstance(
                         note.response.payload, DecisionRecordedPayload
                     ):
@@ -1674,11 +1680,16 @@ def _projection_items(
                         entry.update(
                             {
                                 "reason": answer.rationale,
-                                "response_event_id": note.response.event_id,
                                 "evidence_refs": answer.advisory_response["evidence_refs"],
                             }
                         )
-                    note_rows.append(entry)
+                    note_rows.append(
+                        StatusHistoryCorrectnessAdvisoryModel.model_validate(
+                            _plain_mapping_for_model(
+                                cast(JsonValue, entry), reason="correctness_advisory_shape_invalid"
+                            )
+                        )
+                    )
                 history_extras["correctness_advisories"] = tuple(note_rows)
                 checked = cast(CheckRecordedPayload, row.payload)
                 history_extras["advisory_subject_frontier"] = dict(

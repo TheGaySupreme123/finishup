@@ -102,7 +102,6 @@ from finishup.domain.values import (
     EvidenceId,
     FindingId,
     Frontier,
-    JsonObject,
     ObligationId,
     ReceiptId,
     ResultId,
@@ -140,8 +139,10 @@ from finishup.kernel.completion_scope import (
     completion_scope_differences,
 )
 from finishup.kernel.correctness_advisories import (
+    advisory_counts,
     advisory_summary,
     correctness_advisories,
+    correctness_advisory_index,
     receipt_advisory_items,
 )
 from finishup.kernel.delivered_set import (
@@ -2987,6 +2988,9 @@ def build_receipt(
     )
     # The export profiles clear gap details; the sections they keep never copy a path (#1044).
     name_paths = redaction_profile is ReceiptRedactionProfile.FULL_LOCAL
+    advisory_index = correctness_advisory_index(context.records)
+    notes = advisory_index.rows
+    advisory_render = receipt_advisory_items(notes, redaction_profile)
     sections = _sections(
         check_change_gap_texts={
             code: text
@@ -3049,11 +3053,11 @@ def build_receipt(
         reviewer_sentence=_reviewer_sentence(context.applicable_check),
         reviewer_advisory=_reviewer_advisory_item(context.applicable_check, redaction_profile),
         correctness_advisory_summary=(
-            advisory_summary(notes) if (notes := correctness_advisories(context.records)) else ""
+            advisory_summary(notes, unmatched_withheld=advisory_index.unmatched_withheld)
+            if notes
+            else ""
         ),
-        correctness_advisory_items=(
-            advisory_render := receipt_advisory_items(notes, redaction_profile)
-        )[0],
+        correctness_advisory_items=advisory_render[0],
         correctness_advisory_omitted=advisory_render[1],
         attempt_explanations=tuple(
             f"{obligation.obligation_id} command item {attempt.requested_item_index}: {attempt.relation}. "
@@ -3209,17 +3213,7 @@ def build_receipt(
         sections=sections,
         children=children,
         correctness_advisory_counts=(
-            JsonObject(
-                {
-                    "total": str(len(notes)),
-                    "no_recorded_response": str(sum(note.response is None for note in notes)),
-                    "response_unavailable": str(
-                        sum(note.disposition == "response_unavailable" for note in notes)
-                    ),
-                }
-            )
-            if notes and terminal_sections
-            else None
+            advisory_counts(advisory_index) if notes and terminal_sections else None
         ),
         semantic_provenance=(
             None

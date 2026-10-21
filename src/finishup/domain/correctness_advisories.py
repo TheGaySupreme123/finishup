@@ -10,6 +10,8 @@ ADVISORY_ID_PATTERN = (
     r"^evt_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}:(?:[1-9]|10)$"
 )
 MAX_ADVISORIES_PER_CHECK = 10
+# A note keeps the fence-resolved subjects of its challenge, which a finding bounds the same way.
+MAX_ADVISORY_SUBJECT_REFS = 64
 ADVISORY_RESPONSE_STATEMENT = "Correctness advisory disposition (agent-reported; non-blocking)."
 
 
@@ -30,7 +32,7 @@ def validate_advisories(rows: tuple[JsonObject, ...]) -> None:
         refs = row["subject_refs"]
         if (
             type(refs) is not tuple
-            or len(refs) > 32
+            or len(refs) > MAX_ADVISORY_SUBJECT_REFS
             or any(
                 type(ref) is not str
                 or re.fullmatch(
@@ -85,7 +87,11 @@ def validate_advisory_counts(counts: JsonObject) -> None:
             or int(value) > 2**63 - 1
         ):
             raise ProtocolValueError("invalid_event_value_type")
-    if int(str(counts["no_recorded_response"])) + int(str(counts["response_unavailable"])) > int(
-        str(counts["total"])
+    # A withheld response that cannot be matched to one note of a several-note check is counted
+    # as unavailable while those notes keep their own status, so the two counts may overlap.
+    total = int(str(counts["total"]))
+    if (
+        int(str(counts["no_recorded_response"])) > total
+        or int(str(counts["response_unavailable"])) > total
     ):
         raise ProtocolValueError("invalid_event_value_type")

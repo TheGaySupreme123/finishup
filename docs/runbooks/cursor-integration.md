@@ -3029,12 +3029,15 @@ are shared across macOS, Linux and Windows through WSL 2; no native Windows supp
 Routine reviewer correctness notes persist independently of findings. Receipts (all formats and
 include levels), CLI/MCP and terminal-interface status/history show the original check, subjects,
 provenance and optional agent-reported disposition. No response is required and no advisory creates
-a closure gate. The shared guidance asks final prose to retain material advisory statuses.
+a closure gate. The shared guidance asks final prose to retain material advisory statuses. Status
+history is session-scoped: a note is listed in the history of the session that recorded its check,
+while the receipt counts every note of the task.
 
 At Stop, Codex and Claude Code receive the structural count/status disclosure through the common
 owner-facing `systemMessage`, without a blocking decision or model-feedback continuation. Cursor's
-Stop stdout supports only continuing advice, so its non-blocking disclosure goes to stderr; UI
-visibility depends on the host's diagnostic display. Full retrieval stays available in the shared
+Stop stdout supports only continuing advice, so its non-blocking disclosure goes to stderr, one
+structural sentence per line within the 200-character stderr line bound, also beside an active
+closure gate's `followup_message`; UI visibility depends on the host's diagnostic display. Full retrieval stays available in the shared
 receipt and `status view=history` filtered to `check_recorded`. Model receipt of these Stop
 diagnostics and live host/OS parity have not been established by unit hook-contract tests.
 Follow-up owner for any richer non-continuing host channel: issue #1162.

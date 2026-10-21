@@ -2106,11 +2106,14 @@ async def _closure_readiness(
     if loaded is not None:
         from finishup.kernel.correctness_advisories import (
             advisory_closing_text,
-            correctness_advisories,
+            correctness_advisory_index,
         )
 
-        if notes := correctness_advisories(loaded.records):
-            optional_fields["correctness_advisory_summary"] = advisory_closing_text(notes)
+        advisory_index = correctness_advisory_index(loaded.records)
+        if advisory_index.rows:
+            optional_fields["correctness_advisory_summary"] = advisory_closing_text(
+                advisory_index.rows, unmatched_withheld=advisory_index.unmatched_withheld
+            )
     if cause is not None:
         optional_fields["check_cause"] = cause
     if facts.fact_lineage:

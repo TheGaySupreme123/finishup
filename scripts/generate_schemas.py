@@ -2403,14 +2403,23 @@ def _check_recorded_v1_5_schema(entry: _RegistryEntry) -> dict[str, JsonValue]:
 
 
 def _correctness_advisories_schema(*, history: bool = False) -> dict[str, JsonValue]:
-    from finishup.domain.correctness_advisories import ADVISORY_ID_PATTERN
+    """#1162: routine correctness notes; subjects are the fence-resolved refs of the challenge.
+
+    The fence resolves an ``act_``/``res_``/``evd_`` citation to its source event and a cited
+    finding to its subjects, so a note carries at most the subjects a finding may name (64).
+    """
+
+    from finishup.domain.correctness_advisories import (
+        ADVISORY_ID_PATTERN,
+        MAX_ADVISORY_SUBJECT_REFS,
+    )
 
     properties: dict[str, JsonValue] = {
         "summary": {"type": "string", "minLength": 1, "maxLength": 8192},
         "detail": {"type": "string", "minLength": 1, "maxLength": 8192},
         "subject_refs": {
             "type": "array",
-            "maxItems": 32,
+            "maxItems": MAX_ADVISORY_SUBJECT_REFS,
             "uniqueItems": True,
             "items": {
                 "type": "string",
@@ -2550,8 +2559,12 @@ def _admit_advisory_dispositions(
 def _check_recorded_v1_6_schema(entry: _RegistryEntry) -> dict[str, JsonValue]:
     """#1118: check-recorded 1.6.0 is 1.5.0 plus the optional reviewer conversation record.
 
-    A new version, never an in-place amendment: a 1.4.0/1.5.0 reader keeps rejecting the field,
+    A new version relative to the released line: a 1.4.0/1.5.0 reader keeps rejecting the field,
     and an older build preserves a 1.6.0 event it does not know as an opaque unknown version.
+    #1162 adds the optional ``correctness_advisories`` in place. That follows the repository rule
+    for wire versions: an unreleased version on an integration line may be amended in place until
+    it ships in a release; a released version is never amended. 1.6.0 is on no release tag and on
+    neither ``main`` nor ``0.3``, so only builds of this unreleased line ever read it.
     """
 
     document = _check_recorded_v1_5_schema(entry)
@@ -7032,10 +7045,12 @@ def _publish_work_request_v1_2_schema(entry: _RegistryEntry) -> dict[str, JsonVa
 
 
 def _decision_recorded_v1_1_schema(entry: _RegistryEntry) -> dict[str, JsonValue]:
-    """Add the required ``review_mode`` switch to the released decision shape (ADR-049).
+    """Add ``review_mode`` or ``advisory_response`` to the released decision shape.
 
     Derived from the frozen 1.0.0 bytes; every other field is unchanged. A decision rides 1.1.0
-    iff it switches the conversation's review mode, so 1.1.0 requires the field.
+    iff it switches the conversation's review mode (ADR-049) or records a non-blocking
+    correctness-advisory response (ADR-006, #1162), so 1.1.0 requires exactly one of the two.
+    1.1.0 is unreleased and amended in place under the same rule as check-recorded 1.6.0.
     """
 
     document = _load_versioned_template(entry, "events/decision-recorded-1.0.0.schema.json")
