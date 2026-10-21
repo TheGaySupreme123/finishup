@@ -1013,12 +1013,15 @@ def test_repeated_failure_keeps_legacy_ids_reason_responses_duplicate_links_and_
     from finishup.domain.events import EventSchema, ResponseRecordedPayload
     from finishup.domain.findings import ResponseDisposition
     from finishup.kernel.projections import duplicate_link_holds
+    from finishup.kernel.receipt_capacity import current_receipt_findings
 
     ledger = ObservedLedger()
     failed = ledger.fail("pytest -q")
     pair = ledger.events_of(failed)
     original = ledger.advice_finding(pair, number=90)
-    duplicate = ledger.advice_finding(pair, number=1)  # Earliest event wins, not lowest ID.
+    # Same issue key, recorded later: receipts, status and check report this row, so advice
+    # names it too (#1165 review), whatever its ID sorts as.
+    duplicate = ledger.advice_finding(pair, number=1)
     ledger.respond(original, ResponseDisposition.ACKNOWLEDGED, reason="Original answer")
     ledger.append(
         EventSchema("response_recorded", "1.1.0"),
@@ -1043,8 +1046,11 @@ def test_repeated_failure_keeps_legacy_ids_reason_responses_duplicate_links_and_
             findings=state.findings,
         )
         assert state.findings == before
-        assert bound.ranked_finding_ids == (original,)
-        assert bound.ranked_items[0].detail == state.findings[original].payload.detail  # type: ignore[union-attr]
+        assert bound.ranked_finding_ids == (duplicate,)
+        assert bound.ranked_finding_ids == tuple(
+            finding.finding_id for finding in current_receipt_findings(state)
+        )
+        assert bound.ranked_items[0].detail == state.findings[duplicate].payload.detail  # type: ignore[union-attr]
         assert state.responses[original].payload.reason == "Original answer"  # type: ignore[union-attr]
         assert duplicate_link_holds(state, duplicate) == original
         return bound
@@ -1057,6 +1063,86 @@ def test_repeated_failure_keeps_legacy_ids_reason_responses_duplicate_links_and_
     ledger.redact(ledger.events_of(passing)[1])
     assert replay(ledger.prefix).findings[original].retired_by_event_id is None
     bind()
+
+
+def test_advice_and_receipt_name_the_same_row_when_the_ledger_already_holds_copies() -> None:
+    """#1165 review: an older build recorded one failed pair twice with the same issue key.
+
+    Receipts, status and check keep the newest row per issue key. Advice used to bind to the
+    earliest copy, so the hook asked for an answer on a row the receipt no longer showed and
+    answering it left the receipt's row open.
+    """
+
+    from builders.observed_runs import observed_receipt
+    from finishup.domain.receipts import ReceiptSectionKey
+    from finishup.kernel.receipt_capacity import current_receipt_findings
+
+    ledger = ObservedLedger()
+    pair = ledger.events_of(ledger.fail("pytest -q"))
+    earlier = ledger.advice_finding(pair, number=90)
+    later = ledger.advice_finding(pair, number=91)
+    state = replay(ledger.prefix)
+    snapshot = _failed_snapshot("hook:copies")
+    bound = bind_failed_command_advice(
+        snapshot,
+        task_id="task-1",
+        subject_refs={snapshot.ranked_finding_ids[0]: pair},
+        event_schemas={str(record.event_id): record.schema.name for record in ledger.prefix},
+        findings=state.findings,
+    )
+    receipt_ids = tuple(finding.finding_id for finding in current_receipt_findings(state))
+    assert receipt_ids == (later,)
+    assert bound.ranked_finding_ids == receipt_ids
+    section = next(
+        section
+        for section in observed_receipt(ledger).sections
+        if section.key is ReceiptSectionKey.FINDINGS_AND_DISPOSITIONS
+    )
+    assert str(later) in section.body and str(earlier) not in section.body
+
+
+def test_cached_binding_is_reused_only_while_it_still_matches_the_ledger() -> None:
+    """#1165 review: the binding cache must never crash, rescan needlessly, or go stale.
+
+    An advice-only row (``provider_not_ready``) has no ledger finding and must not defeat a
+    hit. A changed evidence ref under a cached ID, or a cached ID that a newer copy with the
+    same issue key has superseded on the receipt, returns ``None`` so the coordinator
+    recomputes instead of raising ``KeyError`` or naming a superseded row.
+    """
+
+    from finishup.application.observation_coordinator import (
+        _rebound_cached_advice,  # pyright: ignore[reportPrivateUsage]  # noqa: PLC2701
+    )
+
+    ledger = ObservedLedger()
+    pair = ledger.events_of(ledger.fail("pytest -q"))
+    recorded = ledger.advice_finding(pair, number=90)
+    fresh = _failed_snapshot("hook:cached")
+    failed_item = fresh.ranked_items[0]
+    advisory = replace(
+        failed_item,
+        finding_id=finding_id("fnd_00000000-0000-4000-8000-000000000777"),
+        rule_code="provider_not_ready",
+        evidence_refs=(),
+    )
+    snapshot = replace(
+        fresh,
+        ranked_items=(failed_item, advisory),
+        ranked_finding_ids=(failed_item.finding_id, advisory.finding_id),
+    )
+    cached = (replace(failed_item, finding_id=recorded), advisory)
+    findings = replay(ledger.prefix).findings
+
+    rebound = _rebound_cached_advice(cached, snapshot, findings)
+    assert rebound is not None
+    assert rebound.ranked_finding_ids == (recorded, advisory.finding_id)
+    assert rebound.ranked_items[0].evidence_refs == failed_item.evidence_refs
+
+    moved = (replace(cached[0], evidence_refs=("hook:probe:failed",)), advisory)
+    assert _rebound_cached_advice(moved, snapshot, findings) is None
+
+    ledger.advice_finding(pair, number=91)
+    assert _rebound_cached_advice(cached, snapshot, replay(ledger.prefix).findings) is None
 
 
 def test_delivery_identity_distinguishes_successive_failed_commands() -> None:

@@ -27,7 +27,10 @@ from finishup.domain.observation import (
     ObservationStatusQuery,
 )
 from finishup.domain.values import validate_sha256_digest
-from finishup.kernel.finding_resolution import retired_failed_command_finding_ids
+from finishup.kernel.finding_resolution import (
+    current_finding_records,
+    retired_failed_command_finding_ids,
+)
 from finishup.kernel.finding_retirement import is_observed_failed_command_finding
 from finishup.kernel.policies.observation_advice import (
     OBSERVATION_ADVICE_POLICY_ID,
@@ -532,9 +535,12 @@ def bind_failed_command_advice(
     """Bind failed-command advice to its accepted action/result pair (#1160).
 
     Hook and stream envelopes can name the same ledger events. Their provisional advice IDs
-    differ, but the durable concern does not. Prefer the earliest readable observation finding
-    already naming that pair, preserving its ID and original reason across upgrades. Nothing
-    rewrites the finding, its responses, duplicate links, or replay-derived retirement proof.
+    differ, but the durable concern does not. Reuse a readable observation finding already
+    naming that pair, preserving its ID and original reason across upgrades. Only the row
+    receipts, status and check report is eligible (``current_finding_records``: the newest per
+    issue key), so on a ledger that already holds copies the hook and the receipt name the same
+    ID; among current rows that differ only in extra refs the earliest wins. Nothing rewrites
+    the finding, its responses, duplicate links, or replay-derived retirement proof.
     """
 
     def pair(refs: Sequence[str]) -> tuple[str, str] | None:
@@ -543,9 +549,11 @@ def bind_failed_command_advice(
         return (actions[0], results[0]) if len(actions) == len(results) == 1 else None
 
     originals: dict[tuple[str, str], FindingProjectionRecord] = {}
-    for record in findings.values():
-        if not isinstance(record, FindingProjectionRecord):
-            continue
+    for record in current_finding_records(
+        candidate
+        for candidate in findings.values()
+        if isinstance(candidate, FindingProjectionRecord)
+    ):
         if not is_observed_failed_command_finding(record) or record.payload is None:
             continue
         key = pair(record.payload.subject_refs)

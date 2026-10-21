@@ -146,14 +146,18 @@ unsupported claims and unbounded duplicate findings.
 
    Failed-command findings additionally bind to their **accepted action/result event pair**
    before materialization and snapshot delivery (issue #1160). Different observer envelopes
-   naming that same pair reuse one task-scoped finding ID. On upgrade the earliest readable
+   naming that same pair reuse one task-scoped finding ID. On upgrade a readable
    observation-authored failed-command finding for the pair supplies its existing ID, summary
    and reason; subsequent snapshots carry fresh observation context without appending another
-   finding or rewriting the original. A missing or ambiguous accepted pair does not establish
-   equivalence. Separate invocations remain separate concerns even for identical commands.
-   Existing historical duplicates and their IDs are retained, so responses and `duplicate_of`
-   links still work. Retirement and redaction continue to follow ADR-025 for each recorded
-   finding. Receipts retain the original triggering events and first-recorded frontier beside
+   finding or rewriting the original. Only a row that receipts, status and check report is
+   eligible: the newest row per issue key, the same selection `current_receipt_findings` makes,
+   so the hook and the receipt name the same ID. Among eligible rows for one pair (rows that
+   differ in extra subject refs) the earliest recorded wins. A missing or ambiguous accepted pair
+   does not establish equivalence. Separate invocations remain separate concerns even for
+   identical commands. This stops new copies; it does not merge copies an older build already
+   recorded. Those historical duplicates and their IDs are retained, so responses and
+   `duplicate_of` links still work. Retirement and redaction continue to follow ADR-025 for each
+   recorded finding. Receipts retain the original triggering events and first-recorded frontier beside
    the current resolution basis. This shared binding applies to Codex, Claude Code and Cursor;
    no host payload or wire-schema change is required.
 

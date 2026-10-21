@@ -190,6 +190,7 @@ from finishup.domain.workspace_effect import (
     workspace_write_scopes,
     workspace_write_scopes_from_summary,
 )
+from finishup.kernel.finding_resolution import current_finding_records
 from finishup.kernel.projections import ProjectionRecord, ProjectionState
 from finishup.observability.logging import record_unexpected_exception_without_raising
 from finishup.observability.privacy import prepare_persisted_plaintext
@@ -251,6 +252,8 @@ _ADVICE_FINDING_KIND_BY_RULE: Final = MappingProxyType(
     }
 )
 
+# Failed-command advice bindings kept per coordinator (#1160), least recently used evicted.
+_ADVICE_BINDING_CACHE_LIMIT: Final = 64
 _LEGACY_UNPAIRED_REPLAY_PROFILE: Final = "legacy-paired-replay"
 # How many recent hook generations a post-compaction stream completion may search for its
 # hook call (#1019). Each Codex SessionStart (compact, resume, clear) is one generation.
@@ -334,6 +337,64 @@ def _materialized_advice_items(items: Sequence[AdviceItem]) -> tuple[AdviceItem,
         item
         for item in items
         if item.origin == "deterministic" and item.rule_code in _ADVICE_FINDING_KIND_BY_RULE
+    )
+
+
+def _rebound_cached_advice(
+    cached: tuple[AdviceItem, ...],
+    snapshot: AdviceSnapshot,
+    findings: Mapping[FindingId, ProjectionRecord[Finding]],
+) -> AdviceSnapshot | None:
+    """Reapply cached failed-command bindings (#1160) to a fresh snapshot, or ``None``.
+
+    Reuse only identities, original prose and condition keys, never cached coverage or
+    retirement. Only materialized items need a readable finding in the live projection: an
+    advice-only row such as ``provider_not_ready`` never has one. A bound failed-command ID must
+    still be the row receipts report (``current_finding_records``). Any mismatch, such as a
+    changed evidence ref or a superseded or unreadable row, returns ``None`` so the caller
+    recomputes the binding instead of failing on the hook path.
+    """
+
+    failed_rule = "failed_command_unresolved"
+    by_evidence = {
+        item.evidence_refs: item for item in snapshot.ranked_items if item.rule_code == failed_rule
+    }
+    if len(by_evidence) != sum(item.rule_code == failed_rule for item in snapshot.ranked_items):
+        return None
+    by_id = {item.finding_id: item for item in snapshot.ranked_items}
+    current_ids = frozenset(
+        record.payload.finding_id
+        for record in current_finding_records(findings.values())
+        if record.payload is not None
+    )
+    rebound: list[AdviceItem] = []
+    for item in cached:
+        if item.rule_code == failed_rule:
+            fresh = by_evidence.get(item.evidence_refs)
+            if fresh is None or item.finding_id not in current_ids:
+                return None
+            rebound.append(
+                replace(
+                    fresh,
+                    finding_id=item.finding_id,
+                    summary=item.summary,
+                    detail=item.detail,
+                    condition_identity=item.condition_identity,
+                )
+            )
+            continue
+        fresh = by_id.get(item.finding_id)
+        if fresh is None:
+            return None
+        rebound.append(fresh)
+    for item in _materialized_advice_items(rebound):
+        record = findings.get(item.finding_id)
+        if record is None or record.payload is None:
+            return None
+    return replace(
+        snapshot,
+        ranked_items=tuple(rebound),
+        ranked_finding_ids=tuple(item.finding_id for item in rebound),
     )
 
 
@@ -7476,39 +7537,14 @@ class ObservationCoordinator:
             else {}
         )
         binding_key = (runtime.task_id, snapshot.ranked_finding_ids)
-        cached = self._advice_binding_cache.get(binding_key)
-        current = {(item.rule_code, item.evidence_refs): item for item in snapshot.ranked_items}
-        if (
-            cached is not None
-            and len(current) == len(snapshot.ranked_items)
-            and all(
-                (record := projected_findings.get(item.finding_id)) is not None
-                and record.payload is not None
-                for item in cached
-            )
-        ):
-            # Reuse only identities, original prose and condition keys, never cached coverage
-            # or retirement. The live projection must still contain every readable finding.
+        cached = self._advice_binding_cache.pop(binding_key, None)
+        if cached is not None:
+            # Least recently used leaves first: a hit moves its key to the newest position.
+            self._advice_binding_cache[binding_key] = cached
             # Routine observations then need no event-stream scan or extra operation lookup.
-            rebound = tuple(
-                replace(
-                    current[item.rule_code, item.evidence_refs],
-                    finding_id=item.finding_id,
-                    summary=item.summary,
-                    detail=item.detail,
-                    condition_identity=item.condition_identity,
-                )
-                if item.rule_code == "failed_command_unresolved"
-                else next(
-                    fresh for fresh in snapshot.ranked_items if fresh.finding_id == item.finding_id
-                )
-                for item in cached
-            )
-            return replace(
-                snapshot,
-                ranked_items=rebound,
-                ranked_finding_ids=tuple(item.finding_id for item in rebound),
-            )
+            rebound = _rebound_cached_advice(cached, snapshot, projected_findings)
+            if rebound is not None:
+                return rebound
         candidate_items = tuple(
             item
             for item in candidate_items
@@ -7579,13 +7615,16 @@ class ObservationCoordinator:
             event_schemas=event_schemas,
             findings=projected_findings,
         )
-        self._advice_binding_cache[binding_key] = snapshot.ranked_items
-        self._advice_binding_cache[runtime.task_id, snapshot.ranked_finding_ids] = (
-            snapshot.ranked_items
-        )
-        while len(self._advice_binding_cache) > 64:
+        # Later passes look up either key: the bound IDs when the builder reissues the stored
+        # snapshot, the provisional IDs when new evidence rebuilds it. Both are refreshed here
+        # and on every hit, so overflow evicts the least recently used entries, not these.
+        for key in ((runtime.task_id, snapshot.ranked_finding_ids), binding_key):
+            self._advice_binding_cache.pop(key, None)
+            self._advice_binding_cache[key] = snapshot.ranked_items
+        while len(self._advice_binding_cache) > _ADVICE_BINDING_CACHE_LIMIT:
             self._advice_binding_cache.pop(next(iter(self._advice_binding_cache)))
-        refs_by_evidence = {item.evidence_refs: refs for item, refs in items}
+        # Keyed by rule as well: two rules citing the same envelope keep their own refs.
+        refs_by_evidence = {(item.rule_code, item.evidence_refs): refs for item, refs in items}
         for item, _refs in items:
             if item.rule_code != "failed_command_unresolved":
                 continue
@@ -7600,11 +7639,11 @@ class ObservationCoordinator:
             }:
                 # The durable challenge names the stable trigger. Other changing envelope
                 # citations stay in the snapshot and cannot change its append identity.
-                refs_by_evidence[item.evidence_refs] = trigger
+                refs_by_evidence[item.rule_code, item.evidence_refs] = trigger
         items = [
-            (item, refs_by_evidence[item.evidence_refs])
+            (item, refs_by_evidence[item.rule_code, item.evidence_refs])
             for item in _materialized_advice_items(snapshot.ranked_items)
-            if item.evidence_refs in refs_by_evidence
+            if (item.rule_code, item.evidence_refs) in refs_by_evidence
             and (
                 (existing := projected_findings.get(item.finding_id)) is None
                 or existing.payload is None

@@ -5350,6 +5350,189 @@ async def test_one_failed_pair_keeps_one_finding_across_observer_copies_and_fron
     assert len(_schema_rows(cell, "finding_recorded")) == 2
 
 
+async def _advise_cell(cell: _ReattachCell) -> None:
+    """Run the production advice pass for the cell's mapped session (the stub skips it)."""
+
+    from types import SimpleNamespace
+
+    runtime = await cell.runtime_port.route(
+        SimpleNamespace(
+            session_id=cell.mapping.finishup_session_id,
+            writer_id=observation_writer_id(cell.task_id, cell.mapping.finishup_session_id),
+        )
+    )
+    await ObservationCoordinator._run_advice(  # pyright: ignore[reportPrivateUsage]  # noqa: SLF001
+        cell.coordinator,
+        cell.workspace,
+        runtime,
+        cell.store,
+        session_commitment=cell.session,
+    )
+
+
+def _count_event_scans(cell: _ReattachCell, monkeypatch: pytest.MonkeyPatch) -> list[int]:
+    """Count full event-log reads: the cost the advice binding cache exists to avoid."""
+
+    scans = [0]
+    load_events = cell.ledger.load_events
+
+    def counted_events(session_id: str, *, after: int = 0, through: int | None = None):
+        scans[0] += 1
+        return load_events(session_id, after=after, through=through)
+
+    monkeypatch.setattr(cell.ledger, "load_events", counted_events)
+    return scans
+
+
+def _failed_work_rows(cell: _ReattachCell) -> list[AcceptedEvent]:
+    from finishup.domain.findings import FindingKind
+
+    return [
+        row
+        for row in _schema_rows(cell, "finding_recorded")
+        if type(row.payload) is Finding and row.payload.kind is FindingKind.FAILED_WORK_OMITTED
+    ]
+
+
+@pytest.mark.anyio
+async def test_failed_command_beside_advice_only_rows_does_not_rescan_the_event_log(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """#1165 review: ``provider_not_ready`` never has a ledger finding to read back.
+
+    The binding cache required every ranked item to be a readable finding, so a snapshot of a
+    failed command plus that advice-only row re-read the whole event log on every hook pass.
+    """
+
+    from finishup.application.observation_advice import ObservationAdviceContextBuilder
+    from finishup.kernel.policies.observation_advice import ObservationCompositionFact
+
+    cell = _reattach_fixture(tmp_path, "dedupe-1165-provider")
+    cell.coordinator.advice_context_builder = ObservationAdviceContextBuilder(
+        composition=ObservationCompositionFact(
+            semantic_configured=True,
+            semantic_ready=False,
+            provider_factory_ids=("provider-a",),
+            connected_provider_ids=(),
+        )
+    )
+    failed = _envelope(
+        session=cell.session, kind="PostToolUse", identity="hook:1165:failed", exit_status=2
+    )
+    assert (await cell.ingest(failed)).disposition is ObservationIngestDisposition.ACCEPTED
+    scans = _count_event_scans(cell, monkeypatch)
+    await _advise_cell(cell)
+    assert scans[0] >= 1
+    first = cell.store.load_advice_snapshot(cell.workspace)
+    assert first is not None
+    assert {item.rule_code for item in first.ranked_items} == {
+        "failed_command_unresolved",
+        "provider_not_ready",
+    }
+    findings = _failed_work_rows(cell)
+    assert len(findings) == 1
+
+    scans[0] = 0
+    await _advise_cell(cell)
+    assert scans[0] == 0, "an advice-only row must not force an event-log rescan"
+    assert _failed_work_rows(cell) == findings
+    later = cell.store.load_advice_snapshot(cell.workspace)
+    assert later is not None and later.ranked_finding_ids == first.ranked_finding_ids
+
+
+@pytest.mark.anyio
+async def test_changed_evidence_under_a_cached_binding_recomputes_instead_of_raising(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """#1165 review: a cached failed-command ID whose evidence ref moved raised ``KeyError``.
+
+    The hook path must recompute the binding from the ledger instead, keep the one recorded
+    finding, and refresh the cache so the following pass is a hit again.
+    """
+
+    cell = _reattach_fixture(tmp_path, "dedupe-1165-evidence")
+    failed = _envelope(
+        session=cell.session, kind="PostToolUse", identity="hook:1165:evidence", exit_status=2
+    )
+    assert (await cell.ingest(failed)).disposition is ObservationIngestDisposition.ACCEPTED
+    await _advise_cell(cell)
+    findings = _failed_work_rows(cell)
+    assert len(findings) == 1
+    original = findings[0].payload
+    assert type(original) is Finding
+    cache = cell.coordinator._advice_binding_cache  # pyright: ignore[reportPrivateUsage]  # noqa: SLF001
+    assert cache
+    for key, items in tuple(cache.items()):
+        cache[key] = tuple(
+            replace(item, evidence_refs=("hook:probe:failed",))
+            if item.rule_code == "failed_command_unresolved"
+            else item
+            for item in items
+        )
+
+    scans = _count_event_scans(cell, monkeypatch)
+    await _advise_cell(cell)
+    assert scans[0] >= 1, "a stale binding must be recomputed from the ledger"
+    assert _failed_work_rows(cell) == findings
+    persisted = cell.store.load_advice_snapshot(cell.workspace)
+    assert persisted is not None
+    (item,) = (
+        row for row in persisted.ranked_items if row.rule_code == "failed_command_unresolved"
+    )
+    assert item.finding_id == original.finding_id
+    assert item.evidence_refs == ("hook:1165:evidence",)
+
+    scans[0] = 0
+    await _advise_cell(cell)
+    assert scans[0] == 0
+
+
+@pytest.mark.anyio
+async def test_binding_cache_evicts_the_key_routine_passes_use_last(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """#1165 review: the bounded cache dropped the key routine passes look up first.
+
+    Eviction was first-in first-out and a hit did not refresh its key, so the long-lived key a
+    task hit on every pass was the oldest entry once other bindings arrived. A hit now moves
+    its key to the newest position, and overflow evicts the least recently used entries.
+    """
+
+    cell = _reattach_fixture(tmp_path, "dedupe-1165-eviction")
+    failed = _envelope(
+        session=cell.session, kind="PostToolUse", identity="hook:1165:eviction", exit_status=2
+    )
+    assert (await cell.ingest(failed)).disposition is ObservationIngestDisposition.ACCEPTED
+    await _advise_cell(cell)
+    cache = cell.coordinator._advice_binding_cache  # pyright: ignore[reportPrivateUsage]  # noqa: SLF001
+    own = {key for key in cache if key[0] == cell.task_id}
+    assert own
+    for number in range(70):  # Other tasks' bindings arrive after this task's.
+        cache[f"tsk_other_{number}", ()] = ()
+    scans = _count_event_scans(cell, monkeypatch)
+    await _advise_cell(cell)
+    assert scans[0] == 0
+    hit = next(reversed(cache))
+    assert hit in own, "a hit must refresh its key"
+
+    # A new binding overflows the bound: the least recently used entries leave, not the hit.
+    other = replace(
+        failed,
+        source_identity="hook:1165:eviction-other",
+        structural_payload=JsonObject(
+            {"tool_name": "shell", "tool_call_id": "c2", "correlation_id": "c2", "exit_status": 2}
+        ),
+    )
+    assert (await cell.ingest(other)).disposition is ObservationIngestDisposition.ACCEPTED
+    await _advise_cell(cell)
+    assert len(cache) == 64
+    assert hit in cache
+    assert ("tsk_other_0", ()) not in cache
+
+
 @pytest.mark.anyio
 async def test_paired_pre_then_post_records_one_action_linked_to_its_result(
     tmp_path: Path,
