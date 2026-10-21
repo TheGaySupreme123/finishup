@@ -296,6 +296,7 @@ from finishup.protocol.coverage import (
 from finishup.protocol.errors import PublicErrorCode, PublicOperationError
 from finishup.protocol.ids import IdKind, validate_opaque_item_id
 from finishup.protocol.models import (
+    MAX_OBJECT_PLAINTEXT_BYTES,
     MAX_REVIEW_TEXT_BYTES,
     MISSING_FOR_ASSESSMENT_KINDS,
     CheckRequest,
@@ -3618,6 +3619,18 @@ async def _publish_deterministic_result(
         runtime.task_id,
         app.clock.now_utc(),
     )
+    if len(canonical) > MAX_OBJECT_PLAINTEXT_BYTES:
+        raise PublicOperationError(
+            PublicErrorCode.LIMIT_EXCEEDED,
+            "The local check result checkpoint exceeds its capacity. Retain this task and "
+            "report the limitation; unchanged check retries cannot reduce it.",
+            False,
+            safe_details={
+                "reason_code": "check_result_capacity_exceeded",
+                "count": len(canonical),
+                "limit": MAX_OBJECT_PLAINTEXT_BYTES,
+            },
+        )
     staged = await runtime.objects.stage(
         ObjectSource(data=canonical, declared_size=len(canonical)),
         metadata,

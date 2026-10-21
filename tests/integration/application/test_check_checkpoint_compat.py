@@ -13,6 +13,7 @@ from typing import NoReturn, cast
 
 import pytest
 
+import finishup.application.check as check_module
 from builders.ledger_adapters import MemoryObjects, ownership_fence
 from builders.start_application import (
     MemoryStartRuntime,
@@ -389,3 +390,25 @@ async def test_malformed_superseded_checkpoint_content_stays_storage_corrupt(
         await wedged.app.check(wedged.request)
     assert corrupt.value.code is PublicErrorCode.STORAGE_CORRUPT
     assert corrupt.value.retryable is False
+
+
+async def test_oversized_local_result_is_typed_terminal_and_replayable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A real checkpoint limit must never become check_pipeline_failed or remain pending."""
+
+    wedged = await _wedge_check_at_local_ready(monkeypatch)
+    monkeypatch.setattr(check_module, "MAX_OBJECT_PLAINTEXT_BYTES", 1)
+    request = wedged.request.model_copy(update={"request_id": protocol_id("req_", 50_000)})
+    for _ in range(2):
+        with pytest.raises(PublicOperationError) as caught:
+            await wedged.app.check(request)
+        error = caught.value
+        assert error.code is PublicErrorCode.LIMIT_EXCEEDED
+        assert error.retryable is False
+        assert error.safe_details["reason_code"] == "check_result_capacity_exceeded"
+        assert error.safe_details["continuation"] == "check_capacity_handoff"
+    operation = await wedged.ledger.lookup_operation(wedged.writer_id, request.request_id)
+    assert operation is not None
+    assert operation.state is OperationState.COMPLETE
+    assert operation.phase is CheckPhase.TERMINAL

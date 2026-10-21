@@ -17,6 +17,7 @@ from typing import Literal, cast
 import apsw
 import pytest
 
+import finishup.adapters.objects.check_resume as resume_module
 from conformance.adapters.test_ledger_port import (
     _fence,  # pyright: ignore[reportPrivateUsage]
     _GatedObjects,  # pyright: ignore[reportPrivateUsage]
@@ -346,10 +347,15 @@ async def test_pending_import_refusal_is_typed_counted_and_clears_on_admission()
 
 
 @pytest.mark.anyio
-async def test_sqlite_freeze_merges_over_concurrent_lifecycle_motion() -> None:
+@pytest.mark.parametrize("paged", (False, True))
+async def test_sqlite_freeze_merges_over_concurrent_lifecycle_motion(
+    monkeypatch: pytest.MonkeyPatch, paged: bool
+) -> None:
     """Another check's phase write during staging no longer discards this admission."""
 
     command = ledger_command(unknown=True)
+    if paged:
+        monkeypatch.setattr(resume_module, "MAX_OBJECT_PLAINTEXT_BYTES", 512)
     clock = _SteppingClock()
     adapter, gate = _adapter("sqlite", command, clock, gated=True)
     assert isinstance(adapter, SqliteLedger) and gate is not None
@@ -389,6 +395,17 @@ async def test_sqlite_freeze_merges_over_concurrent_lifecycle_motion() -> None:
         )
     )
     assert durable == {first_request: "local_ready", second_request: "reserved"}
+    if paged:
+        page_ids = {
+            row[0] for row in db.execute("SELECT object_id FROM objects WHERE kind='check_resume'")
+        }
+        assert len(page_ids) > 2
+        staged_pages = {
+            ref.object_id
+            for ref in gate._refs.values()  # pyright: ignore[reportPrivateUsage]
+            if ref.metadata.media_type == resume_module.CHECK_RESUME_PAGE_MEDIA_TYPE
+        }
+        assert staged_pages <= page_ids
     assert (command.writer_id, second_request) not in (
         adapter._state.check_reservations  # pyright: ignore[reportPrivateUsage]
     )
