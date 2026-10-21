@@ -3383,6 +3383,13 @@ the invoking client on exactly three surfaces: `finishup observe checks status` 
 issue #720's "report it in `finishup service status`"; the rationale and the Linux/WSL operator detail
 live in [`runbooks/linux-and-wsl.md`](runbooks/linux-and-wsl.md#approved-check-sandbox).
 
+Setup refuses home-folder project locators unless `setup run --allow-home-project` is explicit.
+The reviewed native launcher then carries `--home-project <absolute-home>` for later locator
+resolution; only exactly the current home is excepted, never the filesystem root or an unsafe
+path. Connection disclosure and report `status.home_project_allowed` name this choice, within the
+existing extensible status object (ADR-012, 2026-10-21). It grants no observation or disclosure
+authority. Status and disconnect do not require a new connect opt-in.
+
 The versioned ordinary-control hello may carry one optional trusted `workspace_locator` derived by
 the client itself: CLI/UI use their actual process working directory and the MCP bridge uses its
 configured/session working directory. It is never populated from an operation body or public

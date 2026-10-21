@@ -28,6 +28,7 @@ from finishup.adapters.integrations.host_projects import (
     same_directory,
     write_connected_projects,
 )
+from finishup.config.home_project import home_project_allowed
 from finishup.domain.values import RequestId
 from finishup.ports.plugin_artifacts import (
     ArtifactAuthority,
@@ -819,6 +820,8 @@ def prepare_connection(
 
     else:
         raise ConnectionError("connection_host_unsupported")
+    if home_project_allowed(project):
+        admission.disclosure["home_project_allowed"] = True
     body["preview_digest"] = plan_digest(body, admission.disclosure)
     return ConnectionPlan(body, status, apply, admission.disclosure)
 

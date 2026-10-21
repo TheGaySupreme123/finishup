@@ -2613,6 +2613,15 @@ applies on macOS, Linux and Windows through WSL 2.
   (local-only, or the provider's disclosure policy) and an API key's repository binding then use
   that folder; otherwise setup stops with `workspace_locator_invalid` and a next step (it used to
   fail as `internal_error` after every answer).
+  An intentional home-folder workspace (such as a container with `WORKDIR /root`) uses
+  `--project "$HOME" --allow-home-project`, also with `--non-interactive`; default setup still
+  refuses home, and `/`, symlinks, and unsafe ownership/writability remain refused. The same
+  choice reaches native hooks and MCP through the reviewed exact-home launcher argument.
+  JSON previews and results report `status.home_project_allowed` (inside each batch member).
+  `setup disconnect --host claude --project "$HOME" --non-interactive --json` previews
+  removal without a new home opt-in; approve that exact preview. Observation and disclosure
+  remain separate. Adapter tests cover the locator/renderer decisions; no additional native
+  host or OS certification is claimed (issue #1154).
 - **After a Codex-subscription sign-in.** The guided provider step reports the Codex-held credential
   (`external_runtime_oauth`) as ready instead of `Credential: unknown` with exit 20, shows the bound
   model and any fallback, asks no API-key verification question, and prints its own layer report

@@ -17,6 +17,7 @@ from jsonschema.exceptions import ValidationError
 from finishup import __version__
 from finishup.adapters.integrations.codex_plugin import render_plugin_install_tree
 from finishup.config.foreign_write import project_root_admitted, writable_by_others
+from finishup.config.home_project import home_project_allowed
 from finishup.domain.values import RequestId
 from finishup.domain.values import request_id as validate_request_id
 from finishup.legacy_names import (
@@ -722,7 +723,12 @@ def _validate_project(target: ArtifactTarget) -> tuple[Path, str]:
     root = Path(target.project_root)
     if not root.is_absolute():
         root = Path.cwd() / root
-    if root == Path(root.anchor) or root == Path.home() or root.is_symlink() or not root.is_dir():
+    if (
+        root == Path(root.anchor)
+        or (root == Path.home() and not home_project_allowed(root))
+        or root.is_symlink()
+        or not root.is_dir()
+    ):
         raise _error(PluginArtifactReason.TARGET_UNTRUSTED)
     current = Path(root.anchor)
     for part in root.parts[1:]:

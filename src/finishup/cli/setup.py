@@ -201,7 +201,8 @@ def _canonical_setup_workspace(workspace: Path | None = None) -> Path:
 
 _NEXT_PROJECT: Final = (
     "Run 'finishup setup run' from inside the project folder you want to connect, or pass "
-    "--project <folder>. Your home folder and the filesystem root cannot be connected."
+    '--project <folder>. To connect your home folder intentionally, pass --project "$HOME" '
+    "--allow-home-project. The filesystem root cannot be connected."
 )
 _NEXT_PRIVACY_AFTER_PROVIDER: Final = (
     "Next: from the project folder, run 'finishup --privacy' to choose the disclosure policy for "
@@ -232,6 +233,7 @@ def _emit_unconnectable_project(host: str, *, json_output: bool) -> int:
                     "connection_observed": False,
                     "outcome": "incomplete",
                     "reason": "workspace_locator_invalid",
+                    "status": {"home_project_allowed": False},
                     "next_step": _NEXT_PROJECT,
                 },
                 sort_keys=True,
@@ -261,7 +263,8 @@ def _resolve_setup_project(project: Path | None, *, interactive: bool) -> Path |
         return None
     typer.echo(
         "FinishUP connects an agent to one project folder. This folder cannot be connected "
-        "(your home folder, the filesystem root, and symlinked paths are refused)."
+        "(your home folder needs --allow-home-project; the filesystem root and symlinked "
+        "paths are refused)."
     )
     while True:
         answer = typer.prompt(
@@ -3709,6 +3712,43 @@ async def run_setup_wizard(
     host_path: Path | tuple[Path, ...] | None = None,
     host_config_root: Path | tuple[Path, ...] | None = None,
     project: Path | None = None,
+    allow_home_project: bool = False,
+    request_value: str | None = None,
+    preview_digest: str | None = None,
+) -> int:
+    """Require a fresh explicit home opt-in, including for unattended accepted previews."""
+
+    from finishup.config.home_project import home_project_scope
+
+    with home_project_scope((project or Path.cwd()) if allow_home_project else None):
+        return await _run_setup_wizard(
+            non_interactive=non_interactive,
+            codex_path=codex_path,
+            codex_home=codex_home,
+            accept=accept,
+            json_output=json_output,
+            route_profile=route_profile,
+            host=host,
+            host_path=host_path,
+            host_config_root=host_config_root,
+            project=project,
+            request_value=request_value,
+            preview_digest=preview_digest,
+        )
+
+
+async def _run_setup_wizard(
+    *,
+    non_interactive: bool,
+    codex_path: str | None,
+    codex_home: Path | None,
+    accept: bool,
+    json_output: bool,
+    route_profile: Literal["policy", "strict"] | None = None,
+    host: str | tuple[str, ...] | None = None,
+    host_path: Path | tuple[Path, ...] | None = None,
+    host_config_root: Path | tuple[Path, ...] | None = None,
+    project: Path | None = None,
     request_value: str | None = None,
     preview_digest: str | None = None,
 ) -> int:
@@ -4208,6 +4248,7 @@ async def run_setup_wizard(
 
     report: dict[str, JsonValue] = {
         "discovered": [_binary_row(binary) for binary in binaries],
+        "home_project_allowed": codex_project == Path.home(),
         "integration": integration,
         "marker_written": marker_written,
         "next_steps": next_steps,

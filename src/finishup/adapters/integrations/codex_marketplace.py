@@ -61,6 +61,7 @@ from finishup.adapters.integrations.toml_tables import (
     strip_exact_table,
 )
 from finishup.config.foreign_write import project_root_admitted, writable_by_others
+from finishup.config.home_project import home_project_allowed
 from finishup.ports.integrations import (
     IntegrationError,
     IntegrationReason,
@@ -521,7 +522,12 @@ def _validated_project(target: IntegrationTarget) -> Path:
     root = Path(target.project_root)
     if not root.is_absolute():
         root = Path.cwd() / root
-    if root == Path(root.anchor) or root == Path.home() or root.is_symlink() or not root.is_dir():
+    if (
+        root == Path(root.anchor)
+        or (root == Path.home() and not home_project_allowed(root))
+        or root.is_symlink()
+        or not root.is_dir()
+    ):
         raise _error(IntegrationReason.TARGET_UNTRUSTED)
     try:
         stat = root.stat()
