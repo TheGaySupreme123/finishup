@@ -2813,7 +2813,9 @@ The active reviewer loop and the packet-only provider instruction now share boun
 and acceptance paragraphs (`REVIEWER_JUDGMENT_CALIBRATION`, `REVIEWER_ACCEPTANCE_INSTRUCTION`).
 They distinguish a `decision_needed` choice from a clear unmet requirement, flag destructive costs,
 require repeated comparable timings for regression claims, and test the decisive acceptance
-measurement. The loop remains one compact instruction: 6,479 UTF-8 bytes / 1,033 words,
+measurement. The compact core asks for a choice, never a repair, on `decision_needed`.
+Other challenges name the repair or exact missing artifact. The loop remains one compact
+instruction: 6,496 UTF-8 bytes / 1,034 words,
 compared with the earlier 4,371 bytes / 736 words, capped by tests at 6,500 UTF-8 bytes
 and 1,050 words. This explicit increase carries the requested judgment rules on the actual
 conversation path; it does not replace the compact core with the full packet-only prompt.

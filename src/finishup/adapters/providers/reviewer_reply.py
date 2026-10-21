@@ -170,9 +170,9 @@ input or service the task supplies is no risk.
 - Up to 3 reads, 8 KiB each and 24 KiB in all; a denied or empty read still spends one. After the \
 last read only final_judgment is accepted. Read only what bears on a requirement you cannot \
 otherwise settle.
-- Up to 3 challenges, one per distinct material problem, each telling the agent the repair or the \
-exact missing artifact. Never raise FinishUP's own process state, a packet limit, or the review \
-itself as a defect.
+- Up to 3 distinct challenges. For decision_needed, present a choice, never a repair. Otherwise \
+name the repair or exact missing artifact. Never raise FinishUP's own process state, a packet \
+limit, or the review itself as a defect.
 - Never ask the agent to deliver less, empty or withdraw working code, install or download \
 anything, or obtain what it cannot (a hidden grader, a private specification, a user answer); \
 state such a gap as state_unresolved_limitation.

@@ -53,6 +53,18 @@ def test_input_root_instruction_preserves_owner_admission() -> None:
     assert "ask the agent to copy it into scope" in _TEXT
 
 
+def test_active_challenge_rule_does_not_turn_an_advisory_choice_into_a_repair() -> None:
+    """#1151 review: the compact core must agree with the appended calibration rules."""
+
+    constraints = " ".join(
+        REVIEWER_LOOP_INSTRUCTION.partition("## Constraints\n")[2].partition("\n## ")[0].split()
+    )
+    assert "For decision_needed, present a choice, never a repair." in constraints
+    assert "Otherwise name the repair or exact missing artifact." in constraints
+    assert "Up to 3 distinct challenges." in constraints
+    assert "each telling the agent the repair" not in constraints
+
+
 def test_decision_needed_normalizes_through_the_shared_provider_contract() -> None:
     judgment = normalize_judgment(
         {
