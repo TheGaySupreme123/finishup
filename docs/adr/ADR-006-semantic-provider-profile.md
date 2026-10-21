@@ -2921,7 +2921,10 @@ cache-write (Codex only) and output tokens, how many model requests it made, the
 reuse from the review's previous exchange, how much of that its first request reused, and one
 closed miss label: `compaction`, `first_turn`, `none`, `schema_or_settings_change`, `retry` or
 `unexplained`, the first that applies (see INTERFACES, "Per-exchange prompt-cache telemetry").
-`none` allows a 1,024-token shortfall, one minimum cache block. Every exchange of a review names
+`none` allows a 1,024-token shortfall, one minimum cache block. A compaction is recorded, by its
+index and label alone, even when it comes before any usage report. A Codex turn whose previous turn
+reported no usage records no counts, because its starting total is unknown. Every exchange of a
+review names
 the review's first provider request id, so the records join the attempt row; the owner reads them
 with `finishup service diagnostics --request-id`, and an exporter that copies the diagnostics ring
 carries them.
@@ -2959,15 +2962,19 @@ schema and its media type on every turn and gets no notice, so an owner-approved
 still resumes by its exact bytes. The media types keep their meaning; the final one now appears only
 in such reviews.
 
-**Append-only.** A Codex continuation may add more than one user message after the longest history
-its thread holds, each as its own text input. A history that does not extend what the thread holds
-still fails closed. The notice is never merged into a read result, so a result's bytes and digest
+**Append-only.** A Codex continuation may add up to two user messages after the longest history
+its thread holds (a read result or repair notice, then the no-reads-left notice), each as its own
+text input. An empty, longer or non-user suffix, or a history that does not extend what the thread
+holds, still fails closed. The notice is never merged into a read result, so a result's bytes and digest
 are unchanged. An exchange history admits 13 messages (one more, for the notice).
 
 **Size guard.** Every read leaves exchange room, in bytes and estimated tokens, for the notice
 beside the one format-repair notice. The exchange that carries the notice, and a repair after it,
-therefore still fits the cap. An exchange that outgrows the cap is still refused whole, never
-trimmed. The reviewer path still refuses Codex compaction (it would replace history FinishUP
+therefore still fits the cap. Ceiling planning keeps an 8 KiB frame in the first exchange, but a
+first exchange it could not plan may sit inside the room the notices need. In that rare case the
+loop narrows the schema to final-only, as before this amendment, instead of appending the notice:
+a cache miss on that turn, never a refused review. An exchange that outgrows the cap is still
+refused whole, never trimmed. The reviewer path still refuses Codex compaction (it would replace history FinishUP
 inspected and disclosed). The exchange budget keeps every exchange below Codex's auto-compact
 threshold with its estimation margin, and the #1172 telemetry labels a compaction if one ever
 occurs.

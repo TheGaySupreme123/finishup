@@ -10092,7 +10092,9 @@ follow-up loop is deleted.
   action then still ends `read_limit` with no observation. A review whose first turn offers no read
   keeps the final-only schema and gets no notice, so an owner-approved first exchange resumes by
   the same bytes. Every read leaves exchange room for that notice beside the one format-repair
-  notice (`reviewer_run._NOTICE_ROOM_BYTES`/`_TOKENS`).
+  notice (`reviewer_run._NOTICE_ROOM_BYTES`/`_TOKENS`). When the next exchange has no room left for
+  it (`ReviewerBroker.notice_fits()` is false: only a first exchange admitted inside that frame),
+  the loop narrows the schema to final-only instead, as before, and appends nothing.
 - Broker: `application.reviewer_broker.ReviewerBroker(*, job_id, case, roots, store, admit,
   packet_refs, packet_text, max_reads, exchange_room)`; `execute(action, expired, reply="") -> str`
   returns the round-1 result envelope
@@ -11900,7 +11902,7 @@ provider-wire schemas as `ReviewerReplySchemas` (`REVIEWER_REPLY_SCHEMAS`, the s
 | Responses | `input` is the payload verbatim, `text.format` the reply schema, `store:false` kept, no tools | no schemas installed |
 | Chat Completions | `messages` is the payload verbatim, strict `response_format`, no functions or tool calls; the SDK posts the canonical rendered body itself, so the exact-body guard sees the audited bytes | `prompt_only` endpoints (unavailable, never relabelled) |
 | Local model | one frame `{"messages", "protocol": "finishup-reviewer-completion-1", "reply_schema"}` | a profile naming any other protocol (and a completion profile receiving a one-shot case) |
-| Codex subscription | one ephemeral thread per review, held in its `ReviewerSession`; the first turn sends every user message after the instruction (the packet, then the read catalog) as its text inputs, each later turn sends only the user messages after the longest history the thread holds (a read result or repair notice, and before the final turn the no-reads-left notice as a separate input), with the same `outputSchema`, effort and model every turn | releases outside `REVIEWER_LOOP_REVIEWED_RELEASES` (`0.162.1`), no or a closed session, a continuation that does not extend the held thread (`case_invalid`), plan/compaction/tool/request/warning events |
+| Codex subscription | one ephemeral thread per review, held in its `ReviewerSession`; the first turn sends every user message after the instruction (the packet, then the read catalog) as its text inputs, each later turn sends only the user messages after the longest history the thread holds (a read result or repair notice, and before the final turn the no-reads-left notice as a separate input; at most two), with the same `outputSchema`, effort and model every turn | releases outside `REVIEWER_LOOP_REVIEWED_RELEASES` (`0.162.1`), no or a closed session, a continuation that does not extend the held thread (`case_invalid`), plan/compaction/tool/request/warning events |
 
 A completed turn returns `SemanticResultReply(reply, provenance)`: the parsed reply object, not
 yet decoded. `reviewer_exchange(media_type, payload, schemas)` computes the exchange's history,
@@ -11964,7 +11966,8 @@ more request, and that snapshot's `last` names the request (a repeated snapshot 
 Responses reads `usage.input_tokens`, `usage.input_tokens_details.cached_tokens` and
 `usage.output_tokens`; Chat Completions `prompt_tokens`, `prompt_tokens_details.cached_tokens` and
 `completion_tokens`. An answer without those counts records nothing, nor does a Codex turn whose
-thread reported no usage before it (its starting counters are unknown). The local model route
+previous turn reported no usage or had a usage snapshot refused (its starting counters are
+unknown). A compaction is still recorded then, by its index and label alone. The local model route
 records nothing (FinishUP observes no provider prompt cache there), nor does the credential probe.
 
 `reviewer_cache_miss` is the first that applies: `compaction` (a `thread/compacted` notification or

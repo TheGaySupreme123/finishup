@@ -25,6 +25,7 @@ from finishup.ports.semantic import (
     ReviewerMessage,
     ReviewerSession,
     SemanticResult,
+    SemanticResultReply,
     SemanticResultUnavailable,
     decode_reviewer_exchange,
     reviewer_exchange,
@@ -77,6 +78,9 @@ class _ThreeReads:
     def reads_allowed(self) -> bool:
         return self.calls < 3
 
+    def notice_fits(self) -> bool:
+        return True
+
     async def execute(self, action: object, expired: object, reply: str = "") -> str:
         self.calls += 1
         return canonical_encode({"call_index": self.calls, "status": "ok"}).decode()
@@ -119,7 +123,7 @@ async def test_a_three_read_codex_review_keeps_every_turns_settings_byte_identic
             [(90_000, 0, 50)],
             [(92_000, 89_984, 50)],
             [(94_000, 91_904, 50)],
-            [(96_000, 93_952, 50)],
+            [(96_000, 0, 50)],  # a scripted miss on the final turn
         ],
     )
     session = ReviewerSession("review-a", _DEADLINE)
@@ -155,8 +159,9 @@ async def test_a_three_read_codex_review_keeps_every_turns_settings_byte_identic
     inputs = [[item["text"] for item in cast(list[dict[str, str]], t["input"])] for t in turns]
     assert inputs[0] == ["packet"]
     assert [len(texts) for texts in inputs[1:]] == [1, 1, 2] and inputs[3][1] == FINAL_TURN
-    # With the schema stable, no turn after the first misses the cache.
-    assert labels == ["first_turn", "none", "none", "none"]
+    # The final turn's scripted miss is unexplained, not a schema or settings change: the
+    # telemetry's digest of what each turn sent beside its messages saw no change either.
+    assert labels == ["first_turn", "none", "none", "unexplained"]
 
 
 async def test_codex_refuses_a_continuation_that_rewrites_what_the_thread_holds(
@@ -209,3 +214,47 @@ async def test_responses_bodies_keep_one_schema_and_extend_the_previous_input() 
     for before, after in zip(inputs, inputs[1:], strict=False):
         assert after[: len(before)] == before  # everything sent before, unchanged and first
     assert cast(dict[str, JsonValue], inputs[-1][-1]) == {"content": FINAL_TURN, "role": "user"}
+
+
+async def test_codex_refuses_an_empty_or_three_message_continuation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    request = "req_74000000-0000-4000-8000-000000000021"
+    too_long: tuple[ReviewerMessage, ...] = (
+        *_FIRST,
+        ("assistant", _READ),
+        ("user", "observation"),
+        ("user", FINAL_TURN),
+        ("user", "one more"),
+    )
+    for history in (_FIRST, too_long):  # nothing new; three new messages
+        runtime = _UsageRuntime([_READ, _FINAL], [[(90_000, 0, 50)], [(92_000, 0, 50)]])
+        session = ReviewerSession("review-a", _DEADLINE)
+        await _exchange(monkeypatch, runtime, session, _FIRST, request)
+        runtime.requests.clear()
+        result = await _exchange(monkeypatch, runtime, session, history, request)
+        assert type(result) is SemanticResultUnavailable and runtime.requests == []
+        await session.aclose()
+
+
+async def test_codex_carries_a_repair_and_the_notice_as_two_inputs(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """After an answer that was not JSON, reads can end too: the repair notice and the
+    no-reads-left notice follow the held thread, each its own input."""
+
+    runtime = _UsageRuntime(["not json", _FINAL], [[(90_000, 0, 50)], [(90_200, 89_984, 50)]])
+    session = ReviewerSession("review-a", _DEADLINE)
+    request = "req_74000000-0000-4000-8000-000000000031"
+    await _exchange(monkeypatch, runtime, session, _FIRST, request)
+    runtime.requests.clear()
+    repair = "format_error: output_not_json. Reply with exactly one read action or final_judgment."
+    history: tuple[ReviewerMessage, ...] = (*_FIRST, ("user", repair), ("user", FINAL_TURN))
+    result = await _exchange(monkeypatch, runtime, session, history, request)
+    assert type(result) is SemanticResultReply
+    (turn,) = [params for method, params in runtime.requests if method == "turn/start"]
+    assert [item["text"] for item in cast(list[dict[str, str]], turn["input"])] == [
+        repair,
+        FINAL_TURN,
+    ]
+    await session.aclose()

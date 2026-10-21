@@ -139,6 +139,19 @@ def test_unreported_usage_records_nothing_and_leaves_the_next_prefix_unknown() -
     assert "reviewer_prefix_tokens" not in counts
 
 
+def test_a_compaction_without_usage_is_still_labelled() -> None:
+    state = ReviewerCacheState()
+    _opened(state)
+    request, counts = exchange_cache_counts(
+        state, request_id=_LATER, settings="s", roles=_NEXT_ROLES, usage=None, compacted=True
+    )
+    # It can come before any usage snapshot: the index and the label still reach the record.
+    assert (request, counts) == (
+        _REQUEST,
+        {"reviewer_exchange_index": 2, "reviewer_cache_miss": "compaction"},
+    )
+
+
 def test_cache_writes_are_recorded_only_where_the_provider_reports_them() -> None:
     usage = ExchangeCacheUsage(10, 0, 1, 1, 0, 10, cache_write_input_tokens=7)
     _request, counts = exchange_cache_counts(
