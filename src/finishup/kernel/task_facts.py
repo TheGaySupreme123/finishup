@@ -1909,6 +1909,7 @@ def task_fact_signals(
         projection, observed, cooperative_event_ids_from_records(prefix), prefix
     )
     from finishup.kernel.verification_freshness import (
+        CALLER_ASSERTED_INPUTS,
         RERUN_QUESTION,
         VerificationFreshness,
         verification_freshness,
@@ -2029,6 +2030,8 @@ def task_fact_signals(
                 delta = by_event.get(latest.action_event)
                 if delta is not None and delta.state == "unknown":
                     markers.add((RERUN_QUESTION, obligation))
+                if delta is not None and delta.caller_asserted:
+                    markers.add((CALLER_ASSERTED_INPUTS, obligation))
                 if delta is not None and delta.state == "stale":
                     markers.add((PLANNED_VERIFICATION_STALE_GAP, obligation))
                     lineage.append(
@@ -2107,6 +2110,9 @@ def task_fact_signals(
         delta = by_event.get(verification_runs[-1].action_event)
         if delta is not None and delta.state == "unknown":
             markers.add((RERUN_QUESTION, None))
+        if delta is not None and delta.caller_asserted:
+            # Freshness held only on the caller's complete-declaration assertion: disclosed.
+            markers.add((CALLER_ASSERTED_INPUTS, None))
 
     # Runtime facts.
     # Frozen legacy identifier (ADR-048): recorded wire token value.

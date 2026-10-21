@@ -490,5 +490,42 @@ def test_ai_staleness_is_a_non_blocking_rerun_question() -> None:
     )
     assert len(review.candidates) == 1
     assert review.candidates[0].kind is FindingKind.DECISION_NEEDED
+    assert review.candidates[0].summary == "Is a verification rerun needed after these changes?"
+    # The reviewer's own summary is kept as detail (PR #1167 review).
+    assert review.candidates[0].detail == (
+        "Reviewer observation: Verification predates an edit"
+        " Main agent: verification predates an edit."
+    )
     assert review.candidates[0].challenge is not None
     assert review.candidates[0].challenge.requested_next_step == "answer_question"
+
+
+def test_a_stale_evidence_concern_not_about_a_verification_run_keeps_its_kind_and_text() -> None:
+    """PR #1167 review: only a verification-rerun concern becomes the rerun question."""
+
+    ledger = ObservedLedger()
+    ledger.plan("pytest -q")
+    ledger.passes("pytest -q")
+    edited = ledger.edit()
+    edit_event, _ = ledger.events_of(edited)
+    case = _case(ledger)
+    challenge = _challenge(
+        FindingKind.STALE_EVIDENCE_FOR_CHANGED_STATE,
+        str(edit_event),
+        summary="The cited edit evidence describes an older file state",
+    )
+    review = validate_semantic_judgment(
+        case,
+        (),
+        SemanticJudgment("challenges_returned", (challenge,)),
+        _provenance(),
+        expected_frontier=case.frontier,
+        review_phase="final",
+    )
+    assert [candidate.kind for candidate in review.candidates] == [
+        FindingKind.STALE_EVIDENCE_FOR_CHANGED_STATE
+    ]
+    assert review.candidates[0].summary == "The cited edit evidence describes an older file state"
+    assert review.candidates[0].detail == (
+        "Main agent: the cited edit evidence describes an older file state."
+    )

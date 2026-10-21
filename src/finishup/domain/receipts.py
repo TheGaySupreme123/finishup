@@ -570,6 +570,11 @@ TASK_FACT_GAP_SENTENCES: Final[Mapping[str, str]] = MappingProxyType(
             " or respond acknowledged with a reasoned explanation that a rerun is not needed."
             " This question does not block closure."
         ),
+        "verification_inputs_caller_asserted": (
+            "Verification freshness relied on the caller-asserted complete input list for that"
+            " run: a later change outside the declared inputs was treated as unrelated. FinishUP"
+            " did not observe which files the check read."
+        ),
         "planned_verification_stale": (
             "A recorded verification input changed after the planned verification ran."
         ),

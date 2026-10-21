@@ -613,7 +613,8 @@ def render_deterministic_finding_text(
             "Is a verification rerun needed after the recorded changes?",
             f"Subjects: {', '.join(refs)}. Review the verification and later changes. Rerun it"
             " or respond acknowledged with a reasoned explanation that a rerun is not needed."
-            " Freshness is a non-blocking question on AI review; unknown inputs never demand a rerun.",
+            " This question does not block closure: unknown inputs never demand a rerun, and on"
+            " AI review a known input change is asked about rather than blocked.",
         )
     detail = f"Subjects: {', '.join(refs)}. Main agent: {template.next_action}"
     if kind is FindingKind.LEDGER_STALE_OR_INCOMPLETE and gap_codes:
@@ -1649,7 +1650,13 @@ def deterministic_case_from_json(value: JsonValue) -> DeterministicCase:
             freshness_rows: list[VerificationFreshness] = []
             for raw in _case_json_array(source["verification_freshness"]):
                 row = _case_json_array(raw)
-                if len(row) != 4 or type(row[0]) is not str or type(row[1]) is not str:
+                if (
+                    len(row) != 6
+                    or type(row[0]) is not str
+                    or type(row[1]) is not str
+                    or type(row[4]) is not str
+                    or (row[5] is not None and type(row[5]) is not str)
+                ):
                     raise _invalid_case()
                 texts = _case_json_array(row[2])
                 if any(type(text) is not str for text in texts):
@@ -1660,6 +1667,8 @@ def deterministic_case_from_json(value: JsonValue) -> DeterministicCase:
                         row[1],
                         cast(tuple[str, ...], tuple(texts)),
                         tuple(event_id(cast(str, ref)) for ref in _case_json_array(row[3])),
+                        row[4],
+                        row[5],
                     )
                 )
             freshness = tuple(freshness_rows)

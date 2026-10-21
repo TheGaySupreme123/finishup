@@ -1597,6 +1597,7 @@ stamping across ids this round).
 ADR-042's intelligent freshness amendment supersedes the global last-edit rule above. Only a
 known changed verification input produces a deterministic stale fact; unknown dependencies or
 change coverage yield the standing `verification_rerun_question`. Stop never demands a rerun for
-that question. AI-route freshness is always advisory, with recorded verification, known changed
+that question, nor for the `verification_inputs_caller_asserted` disclosure that freshness relied
+on a caller-asserted complete input declaration. AI-route freshness is always advisory, with recorded verification, known changed
 paths and short change summaries presented for the agent's rerun or reasoned `respond` decision.
 Actual failures, missing verification and unrelated obligation/finding gates retain their rules.

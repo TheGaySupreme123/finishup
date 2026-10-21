@@ -2,19 +2,27 @@
 
 # pyright: reportPrivateUsage=false
 
+import json
 from collections.abc import Iterator
 
 import pytest
 
 from builders.observed_runs import INSTALLATION_KEY, ObservedLedger
-from finishup.domain.events import ClaimKind, ClaimRecordedPayload, EventSchema, ResultOutcome
-from finishup.domain.values import claim_id
+from finishup.domain.events import (
+    ClaimKind,
+    ClaimRecordedPayload,
+    EventSchema,
+    EvidenceKind,
+    EvidenceRecordedPayload,
+    ResultOutcome,
+)
+from finishup.domain.values import ResultId, claim_id, evidence_id, timestamp_from_string
+from finishup.domain.workspace_effect import workspace_path_identity
 from finishup.kernel.deterministic_checks import CaseAvailabilityFacts, build_deterministic_case
 from finishup.kernel.policies.work_integrity import _uncorroborated_completion_findings
 from finishup.kernel.reducers import replay
 from finishup.kernel.task_facts import register_command_identity_key, task_fact_signals
-
-VERIFICATION_RERUN_QUESTION_GAP = "verification_rerun_question"
+from finishup.protocol.coverage import EvidenceImmutability
 
 
 @pytest.fixture(autouse=True)
@@ -24,13 +32,45 @@ def installation_key() -> Iterator[None]:
     register_command_identity_key(None)
 
 
-def test_indirect_changed_workspace_cannot_keep_prior_test_fresh() -> None:
+def _declare_inputs(ledger: ObservedLedger, run: ResultId, *inputs: str) -> None:
+    """Record the per-run input declaration ADR-042 defines for *run*."""
+
+    ledger.append(
+        EventSchema("evidence_recorded", "1.0.0"),
+        EvidenceRecordedPayload(
+            evidence_id("evd_00000000-0000-4000-8000-000000000992"),
+            EvidenceKind.OTHER,
+            EvidenceImmutability.METADATA_ONLY,
+            timestamp_from_string("2026-10-21T12:00:00.000Z"),
+            reference=f"finishup-verification-inputs/v1:{run}",
+            description=json.dumps({"inputs": list(inputs), "outputs": [], "complete": True}),
+        ),
+        observed=False,
+    )
+
+
+@pytest.mark.parametrize("declared", [False, True])
+def test_indirect_changed_workspace_cannot_keep_prior_test_fresh(declared: bool) -> None:
+    """An indirect change keeps an earlier test fresh only when it provably misses its inputs.
+
+    With the run's inputs declared and the changed path known, both freshness consumers agree the
+    test is stale. With unknown inputs, both ask instead: a question, never a staleness assertion.
+    """
+
     ledger = ObservedLedger()
     ledger.plan("python -m unittest -q")
     ledger.edit(write_scope="workspace")
     tested = ledger.passes("python -m unittest -q")
+    if declared:
+        _declare_inputs(ledger, tested, "app.py")
     ledger.run(
-        "python modify.py", ResultOutcome.SUCCESS, runner="other", workspace_effect="changed"
+        "python modify.py",
+        ResultOutcome.SUCCESS,
+        runner="other",
+        workspace_effect="changed",
+        workspace_changed_entries=(
+            (workspace_path_identity(INSTALLATION_KEY, "app.py"),) if declared else None
+        ),
     )
     ledger.append(
         EventSchema("claim_recorded", "1.0.0"),
@@ -45,9 +85,10 @@ def test_indirect_changed_workspace_cannot_keep_prior_test_fresh() -> None:
     state = replay(ledger.prefix)
     facts = task_fact_signals(state, ledger.prefix)
     case = build_deterministic_case(state, ledger.prefix, CaseAvailabilityFacts())
-    assert "verification_rerun_question" in facts.codes
-    assert "verification_rerun_question" in facts.codes
-    assert not _uncorroborated_completion_findings(case)
+    assert ("verification_rerun_question" in facts.codes) is not declared
+    assert ("edited_after_last_verification" in facts.codes) is declared
+    assert ("planned_verification_stale" in facts.codes) is declared
+    assert len(_uncorroborated_completion_findings(case)) == (1 if declared else 0)
 
 
 @pytest.mark.parametrize(
@@ -101,7 +142,8 @@ def test_actual_workspace_classes_control_both_freshness_consumers(
     state = replay(ledger.prefix)
     facts = task_fact_signals(state, ledger.prefix)
     assert ("verification_rerun_question" in facts.codes) is stale
-    assert ("verification_rerun_question" in facts.codes) is stale
+    # No recorded input: the class decides whether to ask, never whether the test is stale.
+    assert not {"edited_after_last_verification", "planned_verification_stale"} & set(facts.codes)
     case = build_deterministic_case(state, ledger.prefix, CaseAvailabilityFacts())
     assert not _uncorroborated_completion_findings(case)
     restored = deterministic_case_from_json(deterministic_case_to_json(case))
@@ -160,9 +202,18 @@ def test_code_change_wins_over_later_exempt_duplicate() -> None:
     ],
 )
 @pytest.mark.parametrize("output", [True, False])
+@pytest.mark.parametrize("named", [True, False])
 def test_declared_output_precedence_applies_to_actual_changed_classes(
-    scope: str, path: str, output: bool
+    scope: str, path: str, output: bool, named: bool
 ) -> None:
+    """A declared output overrides its class exemption; a declared input changed is stale.
+
+    The change writes exactly *path*. As a declared output it still counts (no exempt class hides
+    a delivery) but is not a verification input, so it asks. As a requested input whose change is
+    named, it makes the verification stale. An input FinishUP cannot compare, or a change whose
+    paths are unknown, asks: an exempt class never hides a possible input change.
+    """
+
     from finishup.domain.events import (
         ObligationPublishedPayload,
         ObligationStatus,
@@ -205,8 +256,12 @@ def test_declared_output_precedence_applies_to_actual_changed_classes(
         runner="other",
         workspace_effect="changed",
         workspace_write_scopes=(scope,),
+        workspace_changed_entries=(
+            (workspace_path_identity(INSTALLATION_KEY, path),) if named else None
+        ),
     )
-    assert (
-        "verification_rerun_question"
-        in task_fact_signals(replay(ledger.prefix), ledger.prefix).codes
-    ) is True
+    codes = set(task_fact_signals(replay(ledger.prefix), ledger.prefix).codes)
+    stale = not output and named and not path.startswith("/")
+    assert ("planned_verification_stale" in codes) is stale
+    assert ("edited_after_last_verification" in codes) is stale
+    assert ("verification_rerun_question" in codes) is not stale

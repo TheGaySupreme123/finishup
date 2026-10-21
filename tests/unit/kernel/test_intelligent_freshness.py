@@ -8,7 +8,7 @@ from dataclasses import replace
 
 import pytest
 
-from builders.observed_runs import INSTALLATION_KEY, ObservedLedger
+from builders.observed_runs import INSTALLATION_KEY, ObservedLedger, observed_receipt
 from finishup.application.check import CheckScope, _freshness_candidate, run_deterministic_policies
 from finishup.domain.events import (
     ClaimKind,
@@ -16,10 +16,23 @@ from finishup.domain.events import (
     EventSchema,
     EvidenceKind,
     EvidenceRecordedPayload,
+    ObligationPublishedPayload,
+    ObligationStatus,
+    PlanPublishedPayload,
+    RequestedItem,
+    RequestedItemKind,
+    RequestedItemRole,
     ResultOutcome,
 )
 from finishup.domain.findings import FINDING_KIND_TRAITS, Finding, ResponseDisposition
-from finishup.domain.values import claim_id, evidence_id, finding_id, timestamp_from_string
+from finishup.domain.values import (
+    ResultId,
+    claim_id,
+    evidence_id,
+    finding_id,
+    obligation_id,
+    timestamp_from_string,
+)
 from finishup.domain.workspace_effect import workspace_path_identity
 from finishup.kernel.deterministic_checks import (
     CaseAvailabilityFacts,
@@ -80,6 +93,22 @@ def changed(ledger: ObservedLedger, path: str, *, observed: bool = True) -> None
     )
 
 
+def producing_run(ledger: ObservedLedger, command: str, *paths: str) -> ResultId:
+    """A verification run whose own trusted comparison records that it wrote *paths*."""
+
+    return ledger.run(
+        command,
+        ResultOutcome.SUCCESS,
+        exit_status=0,
+        runner="test",
+        workspace_effect="changed",
+        workspace_write_scopes=("workspace",),
+        workspace_changed_entries=tuple(
+            sorted(workspace_path_identity(INSTALLATION_KEY, path) for path in paths)
+        ),
+    )
+
+
 def case_for(ledger: ObservedLedger):
     return build_deterministic_case(replay(ledger.prefix), ledger.prefix, CaseAvailabilityFacts())
 
@@ -103,10 +132,43 @@ def test_outputs_and_unrelated_changes_do_not_stale_a_known_input_set(path: str)
 def test_evidence_output_does_not_require_a_complete_dependency_claim() -> None:
     ledger = ObservedLedger()
     ledger.plan("pytest -q")
-    run = ledger.passes("pytest -q")
+    run = producing_run(ledger, "pytest -q", "evidence.json")
     manifest(ledger, run, complete=False)
     changed(ledger, "evidence.json")
     assert not verification_freshness(replay(ledger.prefix), ledger.prefix)
+
+
+def test_an_output_the_verification_never_wrote_cannot_hide_a_later_edit() -> None:
+    """PR #1167 review: an output exemption covers only bytes the verification itself produced.
+
+    A pre-existing source file listed only as an output under ``complete: false`` stays a possible
+    input: editing it later asks instead of passing silently.
+    """
+
+    ledger = ObservedLedger()
+    ledger.plan("pytest -q")
+    run = ledger.passes("pytest -q")
+    ledger.append(
+        EventSchema("evidence_recorded", "1.0.0"),
+        EvidenceRecordedPayload(
+            evidence_id("evd_00000000-0000-4000-8000-000000001167"),
+            EvidenceKind.OTHER,
+            EvidenceImmutability.METADATA_ONLY,
+            timestamp_from_string("2026-10-21T12:00:00.000Z"),
+            reference=f"finishup-verification-inputs/v1:{run}",
+            description=json.dumps(
+                {"inputs": [], "outputs": ["src/control.py"], "complete": False}
+            ),
+        ),
+        observed=False,
+    )
+    changed(ledger, "src/control.py")
+    rows = verification_freshness(replay(ledger.prefix), ledger.prefix)
+    assert [(row.state, row.basis) for row in rows] == [("unknown", "declared")]
+    assert rows[0].changes == ('"src/control.py" added, removed or modified',)
+    facts = task_fact_signals(replay(ledger.prefix), ledger.prefix)
+    assert "verification_rerun_question" in facts.codes
+    assert "verification_inputs_caller_asserted" not in facts.codes
 
 
 @pytest.mark.parametrize("path", ["src/control.py", "config.json", "data.csv"])
@@ -120,14 +182,20 @@ def test_changed_verification_input_is_stale_and_named(path: str) -> None:
     assert {"planned_verification_stale", "edited_after_last_verification"} <= set(facts.codes)
     case = case_for(ledger)
     assert case.verification_freshness is not None
-    assert case.verification_freshness[0].changes == (f"{path}: verification input changed",)
+    assert case.verification_freshness[0].changes == (
+        f'"{path}" changed: a recorded verification input',
+    )
+    assert case.verification_freshness[0].basis == "complete"
+    assert case.verification_freshness[0].label == "pytest -q"
     restored = deterministic_case_from_json(deterministic_case_to_json(case))
     assert restored == case
     questions = _verification_questions(replace(restored, verification_advisory=True))
     assert len(questions) == 1
     rendered = _freshness_candidate(questions[0].candidate, case)
-    assert path in rendered.detail
-    assert "non-blocking" in rendered.detail
+    assert f'"{path}" changed: a recorded verification input' in rendered.detail
+    assert f'verification {run} (requested command "pytest -q")' in rendered.detail
+    assert "caller-asserted complete input declaration" in rendered.detail
+    assert "does not block closure" in rendered.detail
 
 
 def test_unknown_inputs_ask_without_a_staleness_assertion() -> None:
@@ -292,7 +360,13 @@ def test_only_the_verification_whose_input_changed_is_stale() -> None:
     manifest(ledger, second, inputs=("source_b.py",))
     changed(ledger, "source_a.py")
     rows = verification_freshness(replay(ledger.prefix), ledger.prefix)
-    assert [(row.run_ref, row.state) for row in rows] == [(first, "stale")]
+    # The second run's own complete declaration says it does not read source_a.py: it stays
+    # current, and the reliance on that caller assertion is disclosed rather than hidden.
+    assert [(row.run_ref, row.state) for row in rows] == [(first, "stale"), (second, "current")]
+    assert not rows[0].caller_asserted and rows[1].caller_asserted
+    assert rows[1].changes == (
+        '"source_a.py" changed outside the caller-asserted complete input list',
+    )
 
 
 def test_a_late_outcome_correction_does_not_move_the_verification_past_an_edit() -> None:
@@ -324,3 +398,218 @@ def test_opaque_manifest_input_cannot_borrow_a_workspace_noop_proof(path: str) -
     )
     rows = verification_freshness(replay(ledger.prefix), ledger.prefix)
     assert len(rows) == 1 and rows[0].state == "unknown"
+
+
+# --- PR #1167 review: per-verification scopes, honest wording, caller assertions --------------
+
+
+def obligation_with(
+    ledger: ObservedLedger,
+    number: int,
+    *items: tuple[RequestedItemKind, str, RequestedItemRole | None],
+) -> None:
+    """Publish one obligation requesting *items* and a plan naming every obligation so far."""
+
+    identifier = obligation_id(f"obl_00000000-0000-4000-8000-{number:012d}")
+    ledger.append(
+        EventSchema("obligation_published", "1.1.0"),
+        ObligationPublishedPayload(
+            obligation_id=identifier,
+            description="Deliver",
+            evidence_expectation="Tests",
+            status=ObligationStatus.OPEN,
+            requested_items=tuple(
+                RequestedItem(kind, value, role=role) for kind, value, role in items
+            ),
+        ),
+        observed=False,
+    )
+    ledger.append(
+        EventSchema("plan_published", "1.0.0"),
+        PlanPublishedPayload(
+            number,
+            "Deliver",
+            tuple(
+                obligation_id(f"obl_00000000-0000-4000-8000-{n:012d}") for n in range(1, number + 1)
+            ),
+        ),
+        observed=False,
+    )
+
+
+_COMMAND = (RequestedItemKind.COMMAND, "pytest -q", None)
+_SRC_DIRECTORY = (RequestedItemKind.DIRECTORY, "src", RequestedItemRole.INPUT)
+
+
+@pytest.mark.parametrize("scoped", [True, False])
+def test_a_directory_input_does_not_disable_another_verifications_output_exemption(
+    scoped: bool,
+) -> None:
+    """A requested ``src/`` directory input beside a complete per-run manifest (Cursor, #1167).
+
+    The manifest-covered verification's own evidence output stays quiet whether the directory is
+    requested by that verification's obligation or by a command-less, task-level obligation.
+    """
+
+    ledger = ObservedLedger()
+    if scoped:
+        obligation_with(ledger, 1, _COMMAND, _SRC_DIRECTORY)
+    else:
+        obligation_with(ledger, 1, _COMMAND)
+        obligation_with(ledger, 2, _SRC_DIRECTORY)
+    run = producing_run(ledger, "pytest -q", "evidence.json")
+    manifest(ledger, run)
+    changed(ledger, "evidence.json")
+    assert not verification_freshness(replay(ledger.prefix), ledger.prefix)
+    facts = task_fact_signals(replay(ledger.prefix), ledger.prefix)
+    assert not {
+        "verification_rerun_question",
+        "planned_verification_stale",
+        "edited_after_last_verification",
+        "verification_inputs_caller_asserted",
+    } & set(facts.codes)
+    # A known file input on the same task still goes stale and is named.
+    changed(ledger, "src/control.py")
+    rows = verification_freshness(replay(ledger.prefix), ledger.prefix)
+    assert [row.state for row in rows] == ["stale"]
+    assert rows[0].changes == ('"src/control.py" changed: a recorded verification input',)
+
+
+def test_a_scoped_directory_input_still_asks_about_an_unnamed_change() -> None:
+    ledger = ObservedLedger()
+    obligation_with(ledger, 1, _COMMAND, _SRC_DIRECTORY)
+    run = producing_run(ledger, "pytest -q", "evidence.json")
+    manifest(ledger, run)
+    changed(ledger, "src/other.py")
+    rows = verification_freshness(replay(ledger.prefix), ledger.prefix)
+    assert [row.state for row in rows] == ["unknown"]
+    assert "a requested input directory may contain the changed path" in rows[0].changes
+
+
+def test_a_task_level_directory_input_still_bounds_an_undeclared_verification() -> None:
+    ledger = ObservedLedger()
+    obligation_with(ledger, 1, _COMMAND)
+    obligation_with(ledger, 2, _SRC_DIRECTORY)
+    producing_run(ledger, "pytest -q", "evidence.json")
+    ledger.run(
+        "python write_docs.py",
+        ResultOutcome.SUCCESS,
+        runner="other",
+        workspace_effect="changed",
+        workspace_write_scopes=("docs",),
+        workspace_changed_entries=(workspace_path_identity(INSTALLATION_KEY, "src/README.md"),),
+    )
+    rows = verification_freshness(replay(ledger.prefix), ledger.prefix)
+    assert [(row.state, row.basis) for row in rows] == [("unknown", "undeclared")]
+
+
+def test_an_unobservable_input_of_another_verification_does_not_poison_this_one() -> None:
+    ledger = ObservedLedger()
+    obligation_with(
+        ledger,
+        1,
+        _COMMAND,
+        (RequestedItemKind.COMMAND, "pytest other", None),
+    )
+    obligation_with(
+        ledger,
+        2,
+        (RequestedItemKind.COMMAND, "make lint", None),
+        (RequestedItemKind.FILE, "/outside/lint.toml", RequestedItemRole.INPUT),
+    )
+    run = producing_run(ledger, "pytest -q", "evidence.json")
+    manifest(ledger, run, complete=False)
+    changed(ledger, "evidence.json")
+    assert not verification_freshness(replay(ledger.prefix), ledger.prefix)
+
+
+def test_a_complete_declaration_with_no_inputs_never_silences_an_edit() -> None:
+    ledger = ObservedLedger()
+    ledger.plan("pytest -q")
+    run = ledger.passes("pytest -q")
+    manifest(ledger, run, inputs=())
+    changed(ledger, "src/control.py")
+    rows = verification_freshness(replay(ledger.prefix), ledger.prefix)
+    assert [(row.state, row.basis) for row in rows] == [("unknown", "declared")]
+    facts = task_fact_signals(replay(ledger.prefix), ledger.prefix)
+    assert "verification_rerun_question" in facts.codes
+    assert "verification_inputs_caller_asserted" not in facts.codes
+
+
+def test_a_complete_declaration_that_omits_an_edited_file_is_accepted_and_disclosed() -> None:
+    """ADR-042 accepts the caller's complete assertion; every surface discloses the reliance."""
+
+    from finishup.domain.receipts import receipt_document_to_json, render_receipt_human
+    from finishup.kernel.closure_readiness import derive_closure_readiness
+
+    ledger = ObservedLedger()
+    ledger.plan("pytest -q")
+    run = ledger.passes("pytest -q")
+    manifest(ledger, run, inputs=("src/control.py",))
+    changed(ledger, "src/other.py")
+    rows = verification_freshness(replay(ledger.prefix), ledger.prefix)
+    assert [(row.state, row.basis) for row in rows] == [("current", "complete")]
+    assert rows[0].caller_asserted
+    assert rows[0].changes == (
+        "1 unnamed changed path(s) outside the caller-asserted complete input list",
+    )
+    facts = task_fact_signals(replay(ledger.prefix), ledger.prefix)
+    assert "verification_inputs_caller_asserted" in facts.codes
+    assert not {
+        "verification_rerun_question",
+        "planned_verification_stale",
+        "edited_after_last_verification",
+    } & set(facts.codes)
+    assert not _verification_questions(case_for(ledger))
+    readiness = derive_closure_readiness((), facts.codes, None, semantic_review_required=False)
+    assert "verification_inputs_caller_asserted" not in readiness.agent_actionable
+    receipt = observed_receipt(ledger, extra_gaps=facts.codes)
+    rendered = [
+        json.dumps(receipt_document_to_json(receipt)),
+        render_receipt_human(receipt, markdown=True),
+        render_receipt_human(receipt, markdown=False),
+    ]
+    for text in rendered:
+        assert "verification_inputs_caller_asserted" in text
+
+
+def test_an_undeclared_change_says_so_and_names_what_the_record_names() -> None:
+    """The Cursor smoke: no declaration, an evidence write and a source edit (#1167 review).
+
+    The question never claims that inputs were declared, names the verification and its requested
+    command, names a changed path the record names, and counts keyed-only identities honestly.
+    """
+
+    ledger = ObservedLedger()
+    ledger.plan("pytest -q")
+    run = ledger.passes("pytest -q")
+    ledger.append(
+        EventSchema("evidence_recorded", "1.0.0"),
+        EvidenceRecordedPayload(
+            evidence_id("evd_00000000-0000-4000-8000-000000001168"),
+            EvidenceKind.OTHER,
+            EvidenceImmutability.METADATA_ONLY,
+            timestamp_from_string("2026-10-21T12:00:00.000Z"),
+            reference="evidence.json",
+            description="Verifier evidence",
+        ),
+        observed=False,
+    )
+    changed(ledger, "evidence.json")
+    changed(ledger, "src/control.py")
+    case = case_for(ledger)
+    assert case.verification_freshness is not None
+    (row,) = case.verification_freshness
+    assert (row.state, row.basis, row.label) == ("unknown", "undeclared", "pytest -q")
+    assert row.changes == (
+        '"evidence.json" added, removed or modified',
+        "1 changed workspace path(s) not named anywhere in the task record (only keyed"
+        " identities were observed)",
+    )
+    (question,) = _verification_questions(case)
+    rendered = _freshness_candidate(question.candidate, case).detail
+    assert "input roles are declared" not in rendered
+    assert "path unavailable" not in rendered
+    assert f'verification {run} (requested command "pytest -q")' in rendered
+    assert "no usable input declaration is recorded for it" in rendered
+    assert '"evidence.json" added, removed or modified' in rendered

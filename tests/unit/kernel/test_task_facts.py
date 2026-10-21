@@ -25,6 +25,7 @@ from finishup.domain.events import (
     SessionOpenedPayload,
 )
 from finishup.domain.values import EventId, ObligationId, action_id, actor_id, obligation_id
+from finishup.domain.workspace_effect import workspace_path_identity
 from finishup.kernel.closure_readiness import (
     GAP_CLASSIFICATION,
     GapClass,
@@ -41,6 +42,7 @@ from finishup.kernel.observed_failures import (
 from finishup.kernel.reducers import replay
 from finishup.kernel.task_facts import (
     AGENT_ACTIONABLE_TASK_FACT_GAPS,
+    EDITED_AFTER_LAST_VERIFICATION_GAP,
     INSTALL_INTO_FINISHUP_RUNTIME_GAP,
     INSTALL_INTO_PRIVATE_ENV_GAP,
     OBLIGATION_BLOCKED_GAP,
@@ -49,6 +51,7 @@ from finishup.kernel.task_facts import (
     PLANNED_VERIFICATION_FAILED_GAP,
     PLANNED_VERIFICATION_NOT_OBSERVED_GAP,
     PLANNED_VERIFICATION_OUTCOME_UNKNOWN_GAP,
+    PLANNED_VERIFICATION_STALE_GAP,
     PLANNED_VERIFICATION_UNOBSERVABLE_GAP,
     REQUESTED_OUTPUT_GIT_IGNORED_GAP,
     REQUESTED_OUTPUT_IGNORED_BY_REPOSITORY_GAP,
@@ -80,6 +83,8 @@ _ACTION_SCHEMA = EventSchema("action_recorded", "1.0.0")
 
 
 VERIFICATION_RERUN_QUESTION_GAP = "verification_rerun_question"
+# A change with unknown inputs asks; it never asserts that the verification is stale (#1143).
+_STALE_GAPS = frozenset({PLANNED_VERIFICATION_STALE_GAP, EDITED_AFTER_LAST_VERIFICATION_GAP})
 
 
 @pytest.fixture(autouse=True)
@@ -180,10 +185,39 @@ def test_planned_verification_stale_after_a_later_edit_until_rerun() -> None:
     _plan(ledger, _OBLIGATION)
     ledger.passes("pytest -q")
     ledger.edit()
+    # The edit's paths are unknown: a non-blocking question, never a staleness assertion.
     assert (VERIFICATION_RERUN_QUESTION_GAP, _OBLIGATION) in _markers(ledger)
+    assert not _codes(ledger) & _STALE_GAPS
 
     ledger.passes("pytest -q")
     assert VERIFICATION_RERUN_QUESTION_GAP not in _codes(ledger)
+
+
+def test_planned_verification_stale_after_a_known_input_change_until_rerun() -> None:
+    """A recorded input that changed keeps the planned verification stale until it reruns."""
+
+    ledger = ObservedLedger()
+    _planned(
+        ledger,
+        _command("pytest -q"),
+        RequestedItem(RequestedItemKind.FILE, "src/app.py", RequestedItemRole.INPUT),
+    )
+    _plan(ledger, _OBLIGATION)
+    ledger.passes("pytest -q")
+    ledger.run(
+        "python modify.py",
+        ResultOutcome.SUCCESS,
+        runner="other",
+        workspace_effect="changed",
+        workspace_write_scopes=("workspace",),
+        workspace_changed_entries=(workspace_path_identity(INSTALLATION_KEY, "src/app.py"),),
+    )
+    assert (PLANNED_VERIFICATION_STALE_GAP, _OBLIGATION) in _markers(ledger)
+    assert EDITED_AFTER_LAST_VERIFICATION_GAP in _codes(ledger)
+    assert VERIFICATION_RERUN_QUESTION_GAP not in _codes(ledger)
+
+    ledger.passes("pytest -q")
+    assert not _codes(ledger) & (_STALE_GAPS | {VERIFICATION_RERUN_QUESTION_GAP})
 
 
 def test_failed_edit_does_not_make_verification_stale() -> None:
@@ -1480,8 +1514,8 @@ def test_a_report_rewrite_stales_verification_only_without_trusted_byte_identity
         write_scope="workspace",
         workspace_effect=effect,
     )
-    stale = {VERIFICATION_RERUN_QUESTION_GAP, VERIFICATION_RERUN_QUESTION_GAP}
-    assert bool(_codes(ledger) & stale) is (effect != "unchanged")
+    assert (VERIFICATION_RERUN_QUESTION_GAP in _codes(ledger)) is (effect != "unchanged")
+    assert not _codes(ledger) & _STALE_GAPS
 
 
 def test_a_contradictory_later_fingerprint_retracts_the_noop_exemption() -> None:
@@ -1565,7 +1599,7 @@ def test_an_opaque_declared_input_prevents_the_noop_write_exemption(path: str) -
         workspace_effect="unchanged",
     )
     assert VERIFICATION_RERUN_QUESTION_GAP in _codes(ledger)
-    assert VERIFICATION_RERUN_QUESTION_GAP in _codes(ledger)
+    assert not _codes(ledger) & _STALE_GAPS
 
 
 @pytest.mark.parametrize(
@@ -1608,4 +1642,4 @@ def test_declared_input_normalization_checks_the_known_workspace_boundary(
         workspace_effect="unchanged",
     )
     assert (VERIFICATION_RERUN_QUESTION_GAP in _codes(ledger)) is not covered
-    assert (VERIFICATION_RERUN_QUESTION_GAP in _codes(ledger)) is not covered
+    assert not _codes(ledger) & _STALE_GAPS

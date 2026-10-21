@@ -7,6 +7,7 @@ from collections.abc import Awaitable, Callable, Iterable, Mapping
 from dataclasses import dataclass, replace
 from functools import partial
 from pathlib import Path
+from types import MappingProxyType
 from typing import TYPE_CHECKING, Any, Final, Literal, NamedTuple, Protocol, TypedDict, cast
 
 from finishup.application.closure_basis import (
@@ -186,6 +187,7 @@ from finishup.kernel.limitation import limitation_standing
 from finishup.kernel.lineage import LineageEvaluation, evaluate_recorded_lineage
 from finishup.kernel.observed_failures import (
     ObservedFailureState,
+    observed_action_runner_class,
     observed_event_ids_from_coverage,
     observed_failure_exempt,
     observed_failure_states,
@@ -3316,13 +3318,42 @@ def _with_undeclared_references(
     return tuple(recorded)
 
 
+# Finding text is bounded at 8 192 characters; leave room for the template and subjects.
+_MAX_FRESHNESS_DETAIL_CHARS: Final = 7_600
+_FRESHNESS_BASIS_TEXT: Final[Mapping[str, str]] = MappingProxyType(
+    {
+        "undeclared": (
+            "no usable input declaration is recorded for it, so FinishUP cannot tell which files"
+            " it read"
+        ),
+        "requested": "its inputs are known only from the task's requested input files",
+        "declared": "its inputs come from the caller's partial input declaration",
+        "complete": (
+            "its inputs come from the caller-asserted complete input declaration; FinishUP did"
+            " not observe which files it read"
+        ),
+    }
+)
+
+
 def _freshness_candidate(candidate: CandidateFinding, case: DeterministicCase) -> CandidateFinding:
+    """Name the affected verification, how its inputs are known, and the later changes (#1143).
+
+    Only a local ledger-stale finding about a run (the rerun question, or a known input change)
+    carries this detail. Each verification is identified by its result id and, when it matched
+    one, the requested command, so the agent knows what to rerun. Paths are named only where the
+    record names them; keyed-only identities are counted, never guessed.
+    """
+
     from finishup.domain.bounded_text import quoted_path
 
+    if candidate.kind is not FindingKind.LEDGER_STALE_OR_INCOMPLETE:
+        return candidate
     rows = [
         row
         for row in case.verification_freshness or ()
-        if (
+        if row.state != "current"
+        and (
             case.projection.results[row.run_ref].source_event_id in candidate.subject_refs
             or row.state == "stale"
             and set(candidate.coverage.known_gaps)
@@ -3331,13 +3362,20 @@ def _freshness_candidate(candidate: CandidateFinding, case: DeterministicCase) -
     ]
     if not rows:
         return candidate
-    detail = (
-        candidate.detail + " Recorded verification and later changes (input roles are declared): "
-    )
+    detail = candidate.detail + " Recorded verification and later changes:"
     for row in rows[:4]:
-        detail += (
-            f"{row.run_ref}: " + "; ".join(quoted_path(text) for text in row.changes[:4]) + ". "
+        label = "" if row.label is None else f" (requested command {quoted_path(row.label)})"
+        listed = "; ".join(row.changes[:4])
+        more = f"; {len(row.changes) - 4} more" if len(row.changes) > 4 else ""
+        sentence = (
+            f" verification {row.run_ref}{label}: {_FRESHNESS_BASIS_TEXT[row.basis]}."
+            f" Later changes: {listed}{more}."
         )
+        if len(detail) + len(sentence) > _MAX_FRESHNESS_DETAIL_CHARS:
+            break
+        detail += sentence
+    if len(rows) > 4 and len(detail) + 64 <= _MAX_FRESHNESS_DETAIL_CHARS:
+        detail += f" {len(rows) - 4} more verification(s) omitted."
     return replace(candidate, detail=detail)
 
 
@@ -4598,19 +4636,8 @@ def validate_semantic_judgment(
     observed = observed_event_ids_from_coverage(case.coverage_by_ref)
     case_gap_codes = frozenset(gap.code for gap in case.gaps)
     blocked = confirmed_blocked_obligation_ids((gap.code, gap.subject_refs) for gap in case.gaps)
+    verification_runs: frozenset[str] | None = None
     for challenge in judgment.challenges:
-        if challenge.finding_kind is FindingKind.STALE_EVIDENCE_FOR_CHANGED_STATE:
-            # #1143: reviewer freshness concerns always request a decision, never a repair gate.
-            # Preserve the reviewer's observation and provenance; only its blocking effect changes.
-            challenge = replace(
-                challenge,
-                finding_kind=FindingKind.DECISION_NEEDED,
-                summary="Is a verification rerun needed after these changes?",
-                requested_next_step="answer_question",
-            )
-        if challenge.finding_kind is FindingKind.DECISION_NEEDED:
-            # #1146: a choice can never become a repair directive, even if the model asks for act.
-            challenge = replace(challenge, requested_next_step="answer_question")
         resolution = _resolve_challenge_refs(case, deterministic, challenge)
         if resolution is None:
             rejections[SEMANTIC_REJECTED_REF_OUTSIDE_CASE] = (
@@ -4618,6 +4645,17 @@ def validate_semantic_judgment(
             )
             continue
         refs = resolution.subject_refs
+        if challenge.finding_kind is FindingKind.STALE_EVIDENCE_FOR_CHANGED_STATE:
+            if verification_runs is None:
+                verification_runs = _verification_run_events(case, agent_linked_runs)
+            if verification_runs.intersection(refs):
+                # #1143: a concern that a recorded verification run predates later changes asks
+                # for a rerun decision, never a repair gate. The reviewer's own summary stays in
+                # the detail; any other stale-evidence concern keeps its kind and text.
+                challenge = _verification_rerun_challenge(challenge)
+        if challenge.finding_kind is FindingKind.DECISION_NEEDED:
+            # #1146: a choice can never become a repair directive, even if the model asks for act.
+            challenge = replace(challenge, requested_next_step="answer_question")
         if len(refs) > _MAX_CHALLENGE_SUBJECT_REFS:
             rejections[SEMANTIC_REJECTED_SUBJECTS_OVER_LIMIT] = (
                 rejections.get(SEMANTIC_REJECTED_SUBJECTS_OVER_LIMIT, 0) + 1
@@ -4868,6 +4906,58 @@ def validate_semantic_judgment(
         fence.refs_reduced,
         advisory_notes=len(advisory),
         agent_criteria=agent_criteria,
+    )
+
+
+_VERIFICATION_RERUN_SUMMARY: Final = "Is a verification rerun needed after these changes?"
+
+
+def _verification_run_events(
+    case: DeterministicCase, agent_linked: frozenset[EventId] | None
+) -> frozenset[str]:
+    """The action and result events of observed verification runs (#1143).
+
+    A test, lint, typecheck or build run, a run the agent linked to a requested command, or a run
+    the frozen freshness rows track. A reviewer concern citing one of these is about rerunning a
+    verification; a concern citing anything else is about other evidence.
+    """
+
+    observed = observed_event_ids_from_coverage(case.coverage_by_ref)
+    tracked = {row.run_ref for row in case.verification_freshness or ()}
+    events: set[str] = set()
+    for ref, row in case.projection.results.items():
+        result = row.payload
+        if result is None or row.source_event_id not in observed:
+            continue
+        action = case.projection.actions.get(result.action_id)
+        if (
+            action is None
+            or action.payload is None
+            or action.payload.action_kind is not ActionKind.COMMAND
+        ):
+            continue
+        if (
+            ref in tracked
+            or action.source_event_id in (agent_linked or ())
+            or observed_action_runner_class(action.payload.description)
+            in {"test", "lint", "typecheck", "build"}
+        ):
+            events.update((str(row.source_event_id), str(action.source_event_id)))
+    return frozenset(events)
+
+
+def _verification_rerun_challenge(challenge: ReviewerChallenge) -> ReviewerChallenge:
+    """Route a verification staleness concern to the rerun question, keeping the reviewer's words."""
+
+    message = _bounded_review_text(
+        f"Reviewer observation: {challenge.summary} {challenge.message_to_main_agent}"
+    )
+    return replace(
+        challenge,
+        finding_kind=FindingKind.DECISION_NEEDED,
+        summary=_VERIFICATION_RERUN_SUMMARY,
+        message_to_main_agent=message,
+        requested_next_step="answer_question",
     )
 
 

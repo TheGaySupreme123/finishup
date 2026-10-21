@@ -118,6 +118,9 @@ AGENT_ACTIONABLE_TASK_FACT_GAPS: Final = frozenset(
 STANDING_TASK_FACT_GAPS: Final = frozenset(
     {
         "verification_rerun_question",
+        # Freshness relied on the caller's complete per-run input declaration (#1143): an agent
+        # assertion FinishUP cannot verify, disclosed rather than treated as observed reads.
+        "verification_inputs_caller_asserted",
         PLANNED_VERIFICATION_OUTCOME_UNKNOWN_GAP,
         PLANNED_VERIFICATION_UNOBSERVABLE_GAP,
         # A planned command matched only through the agent's own link to an observed run: an

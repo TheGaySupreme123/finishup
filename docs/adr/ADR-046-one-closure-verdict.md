@@ -489,5 +489,8 @@ route and disclosed on the AI review route. The shared readiness split follows t
 `verification_rerun_question` is a standing coverage limit (G8c), never a receipt or Stop blocker;
 its informational question can be answered with a reasoned `respond acknowledged`, retained as an
 agent assertion for that exact run/change set. It is proof-tolerated as an unknown dependency
-limit, not proof that the verification is current. ADR-042 owns the input/change and declaration
-rules. Actual failed and missing required checks keep their existing gap effects.
+limit, not proof that the verification is current. `verification_inputs_caller_asserted` (G4d) is
+a standing disclosure that freshness relied on a caller-asserted complete input declaration; it is
+never agent work, a receipt blocker or a Stop item, and it is proof-tolerated. ADR-042 owns the
+input/change and declaration rules. Actual failed and missing required checks keep their existing
+gap effects.

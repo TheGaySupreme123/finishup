@@ -431,6 +431,18 @@ _FAMILIES: Final[tuple[_Family, ...]] = (
     # admitted covers. A new code, disclosed from the start: the reviewer judged without it, and
     # only the owner's trusted-terminal ceremony admits a root, so it is never agent work, never a
     # Stop-gate item and never bounds the conclusion beyond what the review itself reports.
+    # #1143 (PR #1167 review): verification freshness held only because the caller asserted its
+    # per-run input declaration complete. An agent assertion, disclosed from the start: never
+    # agent work, never a Stop-gate item and never proof that the check read nothing else.
+    _Family(
+        rule="G4d",
+        family="disclosure",
+        readiness="S",
+        d_route="D",
+        review_route="D",
+        changed=True,
+        codes=("verification_inputs_caller_asserted",),
+    ),
     _Family(
         rule="G4c",
         family="disclosure",
@@ -888,6 +900,7 @@ PROOF_TOLERATED_GAPS: Final = frozenset(
         "unpaired_event",
         "unresolved_verification_limitation",
         "verification_input_directory_unresolved",
+        "verification_inputs_caller_asserted",
         "verification_only_as_root",
         "write_outside_workspace",
     }

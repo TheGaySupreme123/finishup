@@ -379,8 +379,14 @@ nothing remains at all, and `unknown` means read status again once it is readabl
 
 Local checks also report facts about the task's own work: a planned verification command (an
 obligation's requested command) that was not matched to an observed run, failed on its latest
-run, or last ran before your latest edit; an edit to the work after your last test, lint,
-typecheck or build run stops you once at Stop. Edits under a temporary directory outside your workspace and a
+run, or had a recorded input change after it ran; a recorded input that changed after your last
+test, lint, typecheck or build run stops you once at Stop. A verification's inputs are recorded
+when the task requests them as input files or when you publish its per-run input declaration
+(see the workflow guidance). When FinishUP cannot tell whether a later change touched a
+verification's inputs, it asks whether a rerun is needed (`verification_rerun_question`) instead
+of demanding one: rerun it, or answer with `respond` and a reason a rerun is not needed. That
+question never blocks closure, and with AI-powered review freshness is always such a question.
+Edits under a temporary directory outside your workspace and a
 FinishUP receipt you saved never count as edits for these facts. Documentation-only edits (a README,
 a changelog, Markdown guides outside test, fixture, data, golden, resource, prompt or template
 folders) are recorded as work but never make an earlier verification stale, unless the task
