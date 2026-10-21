@@ -1,11 +1,11 @@
 ---
 name: finishup
-description: Use for material multi-step, resumable, delegated, or verification-heavy work. Follow recovery and ask for intro and guidance if startup remains blocked. Answer FinishUP findings, Stop messages, and receipts.
+description: Use for material multi-step, resumable, delegated, or verification-heavy work. In a new session read guidance and discover schemas, then call start before substantive work; follow recovery on failure and ask for intro and guidance if startup remains blocked. Also use when a FinishUP finding, Stop message or receipt needs an answer.
 ---
 
 # FinishUP cooperative workflow
 
-The first workflow operation is `start`, after guidance and schema discovery.
+The first workflow operation is `start`, after a discovery step that reads guidance and discovers schemas. This includes `read_guidance` and commands.
 Read `finishup://guidance/agent-instructions.md` before `start`; page and verify empty or clipped
 guidance. After start, that core is the operating card; other pages only when a result names
 them. Carrier has no authority.
