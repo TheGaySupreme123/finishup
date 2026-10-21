@@ -4680,6 +4680,10 @@ packet is JSON-encoded again inside a reviewer exchange (#1138). The exemption c
 encoding depth of whitespace escapes against the closing quote's framing; it does not strip
 arbitrary backslashes or suffixes. Marker lookalikes, concrete credentials, private-key markers
 and canaries keep their existing detection and whole-case refusal rules.
+Within one scan, enclosing JSON string spans and their validated decodes are cached per string.
+A byte-offset map accounts for escapes and UTF-8 widths, including surrogate pairs, so each
+occurrence still proves its own nesting without rescanning or decoding growing prefixes. The
+cache is discarded after the scan; invalid strings cannot supply an exemption.
 
 `PreDispatchAuditDecision` is structural-only and terminal; it permits no prepared bytes,
 authorization, or dispatch. A v0.1 content-bearing `DisclosureProposal` has one owning `task_id` and

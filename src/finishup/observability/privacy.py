@@ -7,7 +7,7 @@ import bisect
 import json
 import re
 from collections.abc import Iterator, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import Enum
 from typing import Final
 
@@ -111,6 +111,9 @@ _UNQUOTED_VALUE_CHAR = rb"[^\s,'\";}{]"
 # (three backslashes and a quote) and an encoded backslash (two) are part of the value.
 _ESCAPED_QUOTED_VALUE = rb'\\"(?:\\\\\\"|\\\\\\\\|(?!\\")[^\r\n]){1,512}\\"'
 _JSON_STRING_TOKEN: Final = re.compile(rb'"(?:[^"\\]|\\.)*"')
+_JSON_STRING_ESCAPE: Final = re.compile(
+    rb"\\(?:u[dD][89aAbB][0-9a-fA-F]{2}\\u[dD][c-fC-F][0-9a-fA-F]{2}|u[0-9a-fA-F]{4}|.)"
+)
 # Python/JS string-literal prefixes (``b"..."``, ``r'...'``, ``f"..."``) belong to the quoted value.
 _STRING_PREFIX_RE: Final = rb"(?:[bBrRuUfF]{1,2}(?=[\"']))?"
 _STRING_PREFIX: Final = re.compile(rb"[bBrRuUfF]{1,2}(?=[\"'])")
@@ -669,12 +672,74 @@ def _assignment_separator(raw: bytes) -> re.Match[bytes] | None:
     return _ASSIGNMENT_SEPARATOR.search(raw, 0 if name is None else name.start())
 
 
+@dataclass(slots=True)
+class _JsonStringIndex:
+    """Scan-local, lazy string spans and decodes shared by all marker occurrences."""
+
+    data: bytes
+    spans: tuple[tuple[int, int], ...] | None = None
+    ends: tuple[int, ...] = ()
+    decoded: dict[int, _DecodedJsonString | None] = field(
+        default_factory=lambda: dict[int, _DecodedJsonString | None]()
+    )
+
+    def decode_at(self, offset: int) -> tuple[_JsonStringIndex, int] | None:
+        if self.spans is None:
+            self.spans = tuple(match.span() for match in _JSON_STRING_TOKEN.finditer(self.data))
+            self.ends = tuple(end for _, end in self.spans)
+        index = bisect.bisect_right(self.ends, offset)
+        if index == len(self.spans) or self.spans[index][0] >= offset:
+            return None
+        start, end = self.spans[index]
+        if index not in self.decoded:
+            self.decoded[index] = _decode_json_string(self.data[start:end])
+        decoded = self.decoded[index]
+        if decoded is None:
+            return None
+        relative = offset - start
+        escape_index = bisect.bisect_right(decoded.escape_ends, relative)
+        if escape_index < len(decoded.escape_starts) and (
+            decoded.escape_starts[escape_index] < relative
+        ):
+            return None
+        return decoded.context, relative - 1 - decoded.shrink[escape_index]
+
+
+@dataclass(frozen=True, slots=True)
+class _DecodedJsonString:
+    context: _JsonStringIndex
+    escape_starts: tuple[int, ...]
+    escape_ends: tuple[int, ...]
+    shrink: tuple[int, ...]
+
+
+def _decode_json_string(token: bytes) -> _DecodedJsonString | None:
+    try:
+        # Validate the complete string once, including UTF-8 and surrogate pairs, before any
+        # occurrence can be exempted. The escape map replaces repeated growing-prefix decodes.
+        data = json.loads(token).encode("utf-8")
+        starts: list[int] = []
+        ends: list[int] = []
+        shrink = [0]
+        for escape in _JSON_STRING_ESCAPE.finditer(token):
+            raw = escape.group()
+            size = 1
+            if raw[1:2] == b"u":
+                size = 4 if len(raw) == 12 else len(chr(int(raw[2:], 16)).encode("utf-8"))
+            starts.append(escape.start())
+            ends.append(escape.end())
+            shrink.append(shrink[-1] + len(raw) - size)
+        return _DecodedJsonString(_JsonStringIndex(data), tuple(starts), tuple(ends), tuple(shrink))
+    except (ValueError, UnicodeError):
+        return None
+
+
 def _assignment_value_is_code(
     match: re.Match[bytes],
     *,
     preceding: bytes = b"",
     following: bytes = b"",
-    encoded_data: bytes | None = None,
+    json_strings: _JsonStringIndex | None = None,
     absolute_start: int | None = None,
     python_attribute_spans: tuple[tuple[int, int], ...] = (),
 ) -> bool:
@@ -696,8 +761,8 @@ def _assignment_value_is_code(
         marker_value = value
     encoded_context = (
         None
-        if encoded_data is None or absolute_start is None
-        else (encoded_data, absolute_start + raw.index(marker_value))
+        if json_strings is None or absolute_start is None
+        else (json_strings, absolute_start + raw.index(marker_value))
     )
     if _is_replacement_marker(marker_value, following=following, encoded_context=encoded_context):
         return True
@@ -742,7 +807,7 @@ def _assignment_value_is_code(
 
 
 def _is_replacement_marker(
-    value: bytes, *, following: bytes, encoded_context: tuple[bytes, int] | None
+    value: bytes, *, following: bytes, encoded_context: tuple[_JsonStringIndex, int] | None
 ) -> bool:
     """Match only a fixed marker and its JSON framing, at the rendered encoding depth.
 
@@ -767,31 +832,17 @@ def _is_replacement_marker(
     return False
 
 
-def _marker_has_json_framing(context: tuple[bytes, int] | None, width: int) -> bool:
+def _marker_has_json_framing(context: tuple[_JsonStringIndex, int] | None, width: int) -> bool:
     """Prove the nesting, rather than mistaking a literal escaped quote for JSON framing."""
 
     if context is None:
         return False
-    data, offset = context
+    strings, offset = context
     while width > 1:
-        token = next(
-            (
-                match
-                for match in _JSON_STRING_TOKEN.finditer(data)
-                if match.start() < offset < match.end()
-            ),
-            None,
-        )
-        if token is None:
+        nested = strings.decode_at(offset)
+        if nested is None:
             return False
-        try:
-            # The marker has no escapes. Decoding its prefix maps this exact occurrence into
-            # the next string without confusing it with another marker elsewhere in the case.
-            prefix = json.loads(data[token.start() : offset] + b'"')
-            decoded = json.loads(token.group())
-            offset, data = len(prefix.encode("utf-8")), decoded.encode("utf-8")
-        except (ValueError, UnicodeError):
-            return False
+        strings, offset = nested
         width //= 2
     return True
 
@@ -897,6 +948,7 @@ def scan_for_sensitive_content(
     findings: list[ScanFinding] = []
     seen: set[tuple[str, int, int]] = set()
     python_attribute_spans = _python_attribute_assignment_spans(data)
+    json_strings = _JsonStringIndex(data)
 
     for canary in canaries:
         for chunk_start, chunk in _scan_chunks(data):
@@ -960,7 +1012,7 @@ def scan_for_sensitive_content(
                     match,
                     preceding=data[max(0, absolute_start - 1024) : absolute_start],
                     following=data[chunk_start + match.end() : chunk_start + match.end() + 1],
-                    encoded_data=data,
+                    json_strings=json_strings,
                     absolute_start=absolute_start,
                     python_attribute_spans=python_attribute_spans,
                 ) or _assignment_value_cannot_be_credential(
