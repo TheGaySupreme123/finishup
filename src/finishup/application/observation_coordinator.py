@@ -7616,8 +7616,10 @@ class ObservationCoordinator:
             findings=projected_findings,
         )
         # Later passes look up either key: the bound IDs when the builder reissues the stored
-        # snapshot, the provisional IDs when new evidence rebuilds it. Both are refreshed here
-        # and on every hit, so overflow evicts the least recently used entries, not these.
+        # snapshot, the provisional IDs when new evidence rebuilds it. A recompute refreshes
+        # both here; a hit refreshes only the key it looked up. Overflow evicts the least
+        # recently used entry, and a sibling key evicted first costs one rescan, not
+        # correctness.
         for key in ((runtime.task_id, snapshot.ranked_finding_ids), binding_key):
             self._advice_binding_cache.pop(key, None)
             self._advice_binding_cache[key] = snapshot.ranked_items

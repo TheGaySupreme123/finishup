@@ -355,9 +355,12 @@ Two more things decide what the receipt will say, and status tells you before yo
   step is `work_open_findings`, not `disclose_limitations`.
 - **A command FinishUP saw fail.** When FinishUP observes a command fail, it records a finding
   ("Unresolved failed command observed") right away. Repeated observations of that same failed
-  call keep its finding ID and original reason, so you answer it once. The receipt names the
-  original triggering events beside its current resolution; a separate failed invocation is a
-  separate concern. Rerun the same command after the fix, alone or
+  call keep its finding ID and original reason, so you answer it once. A task where an earlier
+  FinishUP version already recorded the same failure twice keeps both copies: answering the ID
+  the hook and the receipt name clears the receipt's blocker, the older copy can stay in the
+  unanswered list, and a later passing run of the same command retires both. The receipt names
+  the original triggering events beside its current resolution; a separate failed invocation is
+  a separate concern. Rerun the same command after the fix, alone or
   inside a passing `&&` chain such as `cd /app && pytest -q`, exactly as written (`FOO=1 pytest -q`,
   or `pytest -q` behind `env`, `nohup` or `time`, is a different command; a chain whose earlier
   part can end the shell or runs text FinishUP cannot read, such as `exec CMD`, `exit`, `eval`, or
