@@ -2861,14 +2861,21 @@ class CodexAppServerEvaluator:
             },
         )
         if turn_settings is not None:
+            # A continuation whose thread never reported usage has no known starting counters: the
+            # thread's cumulative total is not this turn's, so it records nothing.
+            known = held is None or turn_start_usage is not None
             record_exchange_cache(
                 component="codex_app_server",
                 request_id=case.request_id,
                 session=session,
                 exchange=exchange,
                 settings=turn_settings,
-                usage=_turn_cache_usage(
-                    turn_start_usage, token_usage, requests, first_cached, last_input
+                usage=(
+                    _turn_cache_usage(
+                        turn_start_usage, token_usage, requests, first_cached, last_input
+                    )
+                    if known
+                    else None
                 ),
                 completed=turn_completed,
                 compacted=compacted,
