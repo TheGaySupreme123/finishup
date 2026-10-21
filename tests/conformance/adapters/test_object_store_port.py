@@ -14,6 +14,7 @@ import pytest
 from cryptography.hazmat.primitives.keywrap import aes_key_unwrap, aes_key_wrap
 
 from finishup.adapters.memory.objects import MemoryObjectStore
+from finishup.adapters.objects.check_resume import open_check_resume, stage_check_resume
 from finishup.adapters.objects.encrypted_files import EncryptedFilesObjectStore
 from finishup.ports.keys import BundleKeys, WrappedDek
 from finishup.ports.objects import (
@@ -29,7 +30,9 @@ from finishup.ports.secret_memory import (
     SecretMemoryCapability,
     SecretPurpose,
 )
+from finishup.protocol.canonical import canonical_encode, strict_json_parse
 from finishup.protocol.ids import IdKind
+from finishup.protocol.models import MAX_OBJECT_PLAINTEXT_BYTES
 
 if TYPE_CHECKING:
     from finishup.ports.secret_memory import SecretHandle
@@ -384,3 +387,41 @@ def test_commitment_domain_fixture_shape() -> None:
     assert (
         OBJECT_COMMITMENT_DOMAINS[ObjectKind.CHANGE_CAPTURE] == b"yoetz/object/change_capture/v1\0"
     )
+
+
+@pytest.mark.anyio
+async def test_paged_check_resume_uses_real_encrypted_stores_and_rejects_tampering(
+    tmp_path: Path,
+) -> None:
+    now = datetime(2026, 7, 19, 12, 0, tzinfo=UTC)
+    data = canonical_encode({"case": "x" * (MAX_OBJECT_PLAINTEXT_BYTES + 1)})
+    metadata = ObjectMetadata(
+        ObjectKind.CHECK_RESUME, "application/vnd.yoetz.check-resume+json", _TASK_ID, now
+    )
+    for store in _stores(tmp_path, now):
+        root, pages = await stage_check_resume(store, data, metadata)
+        raw = await _read(root, store)
+        assert len(pages) == 2
+        assert root.plaintext_size < 2_048
+        assert await open_check_resume(store, root, raw) == data
+        for corruption in ("duplicate", "reorder", "missing", "size", "digest", "pointer"):
+            source = strict_json_parse(raw)
+            assert isinstance(source, dict)
+            pointers = source["pages"]
+            assert isinstance(pointers, list)
+            if corruption == "duplicate":
+                pointers[1] = pointers[0]
+            elif corruption == "reorder":
+                pointers.reverse()
+            elif corruption == "missing":
+                pointers.pop()
+            elif corruption == "size":
+                source["size"] = 2**40
+            elif corruption == "digest":
+                source["digest"] = "sha256:" + "0" * 64
+            else:
+                pointer = pointers[0]
+                assert isinstance(pointer, dict)
+                pointer["commitment"] = "hmac-sha256:" + "0" * 64
+            with pytest.raises(ValueError, match="check_resume_pages_invalid"):
+                await open_check_resume(store, root, canonical_encode(source))

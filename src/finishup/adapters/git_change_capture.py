@@ -50,6 +50,7 @@ from finishup.adapters.git_version import (
     git_version,
     git_version_supported,
 )
+from finishup.adapters.home_project_reads import home_private_path
 from finishup.adapters.input_summary import declared_binary_format
 from finishup.adapters.repository_identity import root_owned_checkout
 from finishup.adapters.task_input_read import (
@@ -153,8 +154,8 @@ _DIFF_SECTION: Final = b"diff --git "
 # live in ``domain.repository_excerpt`` so auto-supplied command output uses the same check.
 
 
-def _credential_name(path: bytes) -> bool:
-    return credential_named_bytes(path)
+def _credential_name(path: bytes, root: Path | None = None) -> bool:
+    return credential_named_bytes(path) or (root is not None and home_private_path(root, path))
 
 
 type _OmitReason = Literal[
@@ -790,7 +791,7 @@ def _untracked_order(
     for path in ordered[:_MAX_UNTRACKED_ORDER_STATS]:
         if _expired(deadline):
             break
-        if path.endswith(b"/") or not _safe_relative(path) or _credential_name(path):
+        if path.endswith(b"/") or not _safe_relative(path) or _credential_name(path, pinned.root):
             continue
         identity = _path_identity(pinned.descriptor, path)
         if identity is not None and identity != _BLOCKED and stat.S_ISREG(identity[0]):
@@ -944,6 +945,7 @@ class GitChangeCaptureAdapter:
         *,
         _deadline_seconds: float = _CAPTURE_DEADLINE_SECONDS,
         _max_text_bytes: int = MAX_CHECK_CHANGE_TEXT_BYTES,
+        admitted_home_project: bool = False,
     ) -> None:
         if not 0.0 < _deadline_seconds <= 120.0:
             raise ValueError("change_capture_deadline_invalid")
@@ -951,6 +953,9 @@ class GitChangeCaptureAdapter:
             raise ValueError("change_capture_limit_invalid")
         self._deadline_seconds = _deadline_seconds
         self._max_text_bytes = _max_text_bytes
+        # Only the service composition sets this: its locator is already authenticated and
+        # bound to the task's repository. Host-side selection still requires the exact opt-in.
+        self._admitted_home_project = admitted_home_project
 
     # --- public port -------------------------------------------------------------------------
 
@@ -1286,7 +1291,12 @@ class GitChangeCaptureAdapter:
             relative = _requested_relative_path(pinned.root, value)
             located.append(("inside", relative) if relative is not None else ("outside", None))
         inside = sorted({path for _, path in located if path is not None})
-        identities = {path: _path_identity(pinned.descriptor, path) for path in inside}
+        identities = {
+            path: _BLOCKED
+            if home_private_path(pinned.root, path)
+            else _path_identity(pinned.descriptor, path)
+            for path in inside
+        }
         ignored: set[bytes] = set()
         unknown: set[bytes] = set()
         sources: dict[bytes, bytes] = {}
@@ -1342,7 +1352,7 @@ class GitChangeCaptureAdapter:
             source = sources.get(path)
             if path not in holds_file:
                 holds_file[path] = (
-                    _directory_holds_file(pinned.descriptor, path)
+                    _directory_holds_file(pinned.descriptor, path, root=pinned.root)
                     if identity is not None and identity != _BLOCKED and stat.S_ISDIR(identity[0])
                     else None
                 )
@@ -1439,7 +1449,12 @@ class GitChangeCaptureAdapter:
             if budget <= 0:
                 truncated = True
                 break
-            if path.endswith(b"/") or _credential_name(path) or b"\r" in path or b"\n" in path:
+            if (
+                path.endswith(b"/")
+                or _credential_name(path, pinned.root)
+                or b"\r" in path
+                or b"\n" in path
+            ):
                 continue
             if not _safe_relative(path):
                 raise ChangeCaptureUnavailable("unsafe_root")
@@ -1565,7 +1580,7 @@ class GitChangeCaptureAdapter:
             path = os.fsencode(deliverable)
             name = path.rsplit(b"/", 1)[-1]
             suffix = os.path.splitext(name)[1]
-            if _credential_name(path) or (suffix and suffix not in _SOURCE_SUFFIXES):
+            if _credential_name(path, pinned.root) or (suffix and suffix not in _SOURCE_SUFFIXES):
                 continue
             content = _read_prefix_beneath(pinned.descriptor, path, _MAX_REFERENCE_FILE_BYTES)
             if content is None or b"\0" in content[:_BINARY_PROBE_BYTES]:
@@ -2149,7 +2164,7 @@ class GitChangeCaptureAdapter:
             seen.add(relative)
             if (
                 relative in changed
-                or _credential_name(relative)
+                or _credential_name(relative, pinned.root)
                 or any(
                     relative == root or relative.startswith(root + b"/") for root in nested_roots
                 )
@@ -2315,7 +2330,7 @@ class GitChangeCaptureAdapter:
                 and _safe_relative(path)
                 and path not in changed
                 and not _hidden(path)
-                and not _credential_name(path)
+                and not _credential_name(path, pinned.root)
                 and not any(byte in path for byte in b"\r\n")
                 and not any(
                     path == nested_root or path.startswith(nested_root + b"/")
@@ -2417,8 +2432,7 @@ class GitChangeCaptureAdapter:
 
     # --- Git access --------------------------------------------------------------------------
 
-    @staticmethod
-    def _open(workspace: str, deadline: float) -> _Workspace:
+    def _open(self, workspace: str, deadline: float) -> _Workspace:
         executable = shutil.which("git", path=os.defpath)
         if executable is None:
             raise ChangeCaptureUnavailable("git_unavailable")
@@ -2436,7 +2450,11 @@ class GitChangeCaptureAdapter:
             raise ChangeCaptureUnavailable("unsafe_root")
         try:
             root = discover_workspace_root(Path(workspace), timeout_seconds=_remaining(deadline))
-            handle = open_local_workspace(root, timeout_seconds=_remaining(deadline))
+            handle = open_local_workspace(
+                root,
+                timeout_seconds=_remaining(deadline),
+                admitted_home_project=self._admitted_home_project and root == Path(workspace),
+            )
             validated_root, descriptor = local_workspace_root(handle)
         except ValueError as exc:
             if time.monotonic() >= deadline:
@@ -2874,7 +2892,7 @@ class GitChangeCaptureAdapter:
                 False,
                 *counts.get(entry.path, ("-", "-")),
                 None,
-                "credential_name" if _credential_name(entry.path) else None,
+                "credential_name" if _credential_name(entry.path, pinned.root) else None,
             )
             if section.omitted is None and not _worktree_side_safe(entry, identities[entry.path]):
                 # A link, a special file or a second name for other bytes: Git would read what
@@ -3212,7 +3230,7 @@ class GitChangeCaptureAdapter:
                 continue
             if not _safe_relative(path):
                 raise ChangeCaptureUnavailable("unsafe_root")
-            if _credential_name(path):
+            if _credential_name(path, pinned.root):
                 sections.append(
                     _Section(
                         shown, status, True, "-", "-", None, "credential_name", path in preexisting
@@ -4600,7 +4618,9 @@ def _path_identity(root_descriptor: int, path: bytes) -> _Identity | None:
             os.close(descriptor)
 
 
-def _directory_holds_file(root_descriptor: int, path: bytes) -> bool | None:
+def _directory_holds_file(
+    root_descriptor: int, path: bytes, *, root: Path | None = None
+) -> bool | None:
     """Whether any non-directory entry lies beneath the directory ``path`` under the root (#1002).
 
     Metadata only: every directory is opened ``O_NOFOLLOW`` from its parent's descriptor and only
@@ -4611,7 +4631,7 @@ def _directory_holds_file(root_descriptor: int, path: bytes) -> bool | None:
     """
 
     directory_flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0)
-    pending: list[int] = []
+    pending: list[tuple[int, bytes]] = []
     current = root_descriptor
     try:
         for part in path.split(b"/"):
@@ -4619,14 +4639,18 @@ def _directory_holds_file(root_descriptor: int, path: bytes) -> bool | None:
             if current != root_descriptor:
                 os.close(current)
             current = opened
-        pending.append(current)
+        pending.append((current, b"" if path == _ROOT_RELATIVE else path))
         current = root_descriptor
         visited = 0
         while pending:
-            directory = pending.pop()
+            directory, relative = pending.pop()
             try:
                 with os.scandir(directory) as entries:
                     for entry in entries:
+                        name = os.fsencode(entry.name)
+                        child = relative + b"/" + name if relative else name
+                        if root is not None and home_private_path(root, child):
+                            continue
                         visited += 1
                         if visited > _MAX_DIRECTORY_WALK_ENTRIES:
                             return None
@@ -4634,9 +4658,7 @@ def _directory_holds_file(root_descriptor: int, path: bytes) -> bool | None:
                             return True
                         if len(pending) >= _MAX_DIRECTORY_WALK_OPEN:
                             return None
-                        pending.append(
-                            os.open(os.fsencode(entry.name), directory_flags, dir_fd=directory)
-                        )
+                        pending.append((os.open(name, directory_flags, dir_fd=directory), child))
             finally:
                 os.close(directory)
         return False
@@ -4645,7 +4667,7 @@ def _directory_holds_file(root_descriptor: int, path: bytes) -> bool | None:
     finally:
         if current != root_descriptor:
             os.close(current)
-        for descriptor in pending:
+        for descriptor, _relative in pending:
             os.close(descriptor)
 
 
