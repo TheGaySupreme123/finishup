@@ -200,7 +200,10 @@ class WorkspaceEffects:
 
 
 def workspace_effects(
-    records: Iterable[LedgerRecord], projection: ProjectionState
+    records: Iterable[LedgerRecord],
+    projection: ProjectionState,
+    *,
+    for_verification_freshness: bool = False,
 ) -> WorkspaceEffects:
     """Read the workspace-effect facts of the observed results in this prefix.
 
@@ -273,7 +276,7 @@ def workspace_effects(
         # (a VCS store or bookkeeping file, below a dependency environment's first level, a
         # bytecode or saved-receipt name): no comparison can vouch for it, so no command is quiet.
         quiet = set[ActionId]()
-    if quiet:
+    if quiet and not for_verification_freshness:
         verifying = requested_verification_run_events(projection, prefix)
         if verifying is None:
             # The task requests a command, but no run can be matched to it: any run may be that

@@ -257,6 +257,7 @@ _CHECKLIST_NEXT_TEXT: Final = {
         "when you know it is not met. No repair is needed."
     ),
     "request_receipt": "No open findings remain on the list; request the receipt.",
+    "follow_overall_next": "No finding work remains; follow the task's overall next action.",
     "request_ruling": (
         "You rejected finding(s) and the reviewer has not ruled yet: run check with "
         "final_review: true so the reviewer rules. Do not acknowledge a finding you dispute."

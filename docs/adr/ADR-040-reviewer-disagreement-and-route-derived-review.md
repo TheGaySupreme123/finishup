@@ -745,3 +745,13 @@ once bounding has dropped obligation rows it can still name those obligations; t
 the drop (#1108 review R3). No event, projection or schema
 changes; packets built before and after differ in item placement only (plus the omission row for a
 displaced decision), and a review recovered across the upgrade ends `coordinator_failure` (ADR-006).
+
+## Amendment (2026-10-21): account for a requested review that stopped (#1149)
+
+The existing round caps still stop an unchanged unassessable review. The check now records
+`unavailable / round_limit_unassessable`, never `not_requested / deterministic_mode`, when review
+was requested and stopped. No fresh provider attempt or provenance is asserted. The pair rides
+check-result/check-recorded 1.6.0 (the event needs no reviewer record on this branch), the status
+operation outcome, and receipt-document 1.3.0. Every human receipt format names the stop. Explicit
+local-only requests retain their local-only reason, and pre-edit deferral retains its own reason.
+A required stopped review remains `incomplete_check`; the change grants no retry or egress authority.

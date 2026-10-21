@@ -755,8 +755,12 @@ async def test_an_assessable_withdrawn_ruling_on_a_rejection_reads_rejection_acc
     # The bounded MCP text leads with the task continuation (#963); it agrees with the finding-only
     # checklist, and the to-do counts ride along only while the summary has room for them.
     summary = summary_for_check(wire)
-    assert cast(Mapping[str, JsonValue], wire["finding_checklist"])["next"] == "request_receipt"
-    assert "overall next: request_receipt" in summary
+    # The finding is settled, but this fixture has no plan. The whole-task verdict must not
+    # authorize a receipt solely because the finding list is empty (#1140).
+    assert cast(Mapping[str, JsonValue], wire["finding_checklist"])["next"] == "follow_overall_next"
+    assert "overall next: review_recorded_work" in summary
+    assert second.closure_readiness is not None
+    assert second.closure_readiness["state"] == "action_required"
     if "to-do:" in summary:
         assert "verified 0, not done 0, rejection accepted 1" in summary
     # CLI text of the same checklist wire (the rest of the check is not under test here).
@@ -1255,7 +1259,9 @@ async def test_self_verified_closes_a_repair_only_a_finishup_limit_keeps_unprove
     for fmt in ("markdown", "text"):
         rendered = await _receipt(session, final, seed + 81 + len(fmt), fmt)
         text = cast(str, rendered.human_text)
-        assert "Self-verified by the agent; FinishUP could not prove the repair" in text
+        assert (
+            "Self-verified by the agent; FinishUP could not independently prove the outcome" in text
+        )
         assert raised.finding_id in text
     assert projection_snapshot(replay(_records(session.app))) == projection_snapshot(
         _live_projection(session.app)
@@ -1473,7 +1479,7 @@ async def test_formal_crypto_repeat_over_a_reasoned_rebuttal_is_a_standing_disag
     row = next(item for item in checklist.items if item.finding_id == raised.finding_id)
     assert row.todo_state == "disputed_after_rebuttal"
     assert checklist.counts.disputed_after_rebuttal == 1
-    assert checklist.next == "request_receipt"
+    assert checklist.next == "follow_overall_next"
     wire = check_internal_json(second)
     checked = CheckSuccessModel.model_construct(
         verdict="no_issue_detected",
@@ -1837,7 +1843,9 @@ async def test_a_finding_the_reviewer_keeps_unassessable_stops_the_round_and_sta
     # The round is exhausted: later checks skip the review instead of asking again.
     for round_seed in (seed + 50, seed + 60, seed + 70):
         checked = await _default_check(session, frontier, round_seed)
-        assert checked.semantic_status is SemanticStatus.NOT_REQUESTED
+        assert checked.semantic_status is SemanticStatus.UNAVAILABLE
+        assert checked.semantic_reason is SemanticReason.ROUND_LIMIT_UNASSESSABLE
+        assert checked.semantic_provenance is None
         assert "semantic_review_skipped_insufficient_packet" in checked.coverage.known_gaps
         frontier = frontier_json(checked.result_frontier)
     assert len(reviewer.cases) == 3
@@ -1854,6 +1862,12 @@ async def test_a_finding_the_reviewer_keeps_unassessable_stops_the_round_and_sta
         if fmt != "json":
             human = cast(str, receipt.human_text)
             assert raised.finding_id in human, fmt
+            assert "round_limit_unassessable" in human, fmt
+        else:
+            assert receipt.document is not None
+            document = cast(Mapping[str, JsonValue], receipt.document)
+            assert document["semantic_status"] == "unavailable"
+            assert document["semantic_reason"] == "round_limit_unassessable"
     assert projection_snapshot(replay(_records(session.app))) == projection_snapshot(
         _live_projection(session.app)
     )
@@ -1891,8 +1905,29 @@ async def test_a_required_review_stops_at_the_round_limits_and_ends_incomplete()
     assert len(reviewer.cases) == 3
     for round_seed in (seed + 50, seed + 60, seed + 70):
         checked = await _check(session, frontier, round_seed)
-        assert checked.semantic_status is SemanticStatus.NOT_REQUESTED
+        assert checked.semantic_status is SemanticStatus.UNAVAILABLE
+        assert checked.semantic_reason is SemanticReason.ROUND_LIMIT_UNASSESSABLE
+        assert checked.semantic_provenance is None
         assert "semantic_review_skipped_insufficient_packet" in checked.coverage.known_gaps
         assert checked.verdict.value == "incomplete_check"
         frontier = frontier_json(checked.result_frontier)
     assert len(reviewer.cases) == 3
+    # The typed stop is still a durable proof limit, not a transient provider failure that
+    # demands another identical review before the agent can record its own verification.
+    settled = await session.app.respond(
+        RespondRequest.model_validate(
+            {
+                **_respond_wire(
+                    session,
+                    frontier,
+                    at,
+                    raised,
+                    seed + 90,
+                    "self_verified",
+                    "Verified the recorded repair; the review round cannot assess it.",
+                ),
+                "evidence_refs": [repair],
+            }
+        )
+    )
+    assert settled.ok

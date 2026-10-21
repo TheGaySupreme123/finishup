@@ -84,14 +84,20 @@ def document() -> dict[str, JsonValue]:
         "fixture_id": _FIXTURE_ID,
         "fixture_schema": "yoetz.fixture-case/1.0.0",
         "fixture_version": "1.0.0",
-        "input": {"vectors": list(_vectors())},
+        "input": {
+            "vectors": list(_vectors()),
+            "stopped_review": {
+                "semantic_status": "unavailable",
+                "semantic_reason": "round_limit_unassessable",
+            },
+        },
         "minimum_versions": {
             "check_recorded_schema": "1.6.0",
             "check_result_schema": "1.6.0",
             "engine": "0.1.0",
             "protocol": "0.1",
         },
-        "owns_requirements": ["ADR-006:reviewer-record"],
+        "owns_requirements": ["ADR-006:reviewer-record", "ADR-040:requested-review-stopped"],
         "purpose": (
             "Freeze the reviewer conversation record. check-recorded 1.6.0 and the check-result "
             "1.6.0 success admit it; check-recorded 1.4.0/1.5.0 and check-result 1.5.0 refuse it."

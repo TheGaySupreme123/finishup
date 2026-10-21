@@ -1112,7 +1112,11 @@ def _thawed(value: JsonValue) -> JsonValue:
 
 
 async def _operation_check_outcome(
-    app: Application, runtime: TaskRuntime, operation: object | None
+    app: Application,
+    runtime: TaskRuntime,
+    operation: object | None,
+    *,
+    route_profile: Literal["policy", "strict"] | None = None,
 ) -> dict[str, JsonValue] | None:
     """A completed check's verdict and continuation for its operation page (W6); best effort.
 
@@ -1134,7 +1138,9 @@ async def _operation_check_outcome(
         stored = await runtime.ledger.load_check_result(operation.writer_id, operation.operation_id)
         if stored is None:
             return None
-        replayed = await replayed_check_view(cast(CheckApplication, app), runtime, stored)
+        replayed = await replayed_check_view(
+            cast(CheckApplication, app), runtime, stored, route_profile=route_profile
+        )
         wire = check_internal_json(replayed)
         outcome = {name: _thawed(wire[name]) for name in _CHECK_OUTCOME_FIELDS if name in wire}
         StatusCheckOutcomeModel.model_validate(outcome)
@@ -2297,6 +2303,42 @@ async def current_closure_readiness(
     return read.frontier, read.model
 
 
+async def closure_readiness_at(
+    app: Application,
+    runtime: TaskRuntime,
+    frontier: Frontier,
+    request_id: str,
+    *,
+    route_profile: Literal["policy", "strict"] | None = None,
+    check_in_flight: bool = False,
+    loaded: LoadedClosureBasis | None = None,
+) -> StatusClosureReadinessModel:
+    """One closure verdict for check, status, receipt inspection and Stop (#1140).
+
+    A check uses its committed result frontier and already-loaded basis. Never mix the current
+    head's facts with an earlier check result or claim readiness from findings alone.
+    """
+
+    lineage_gaps, lineage_self_verified = await _lineage_readiness_gaps(
+        app, runtime, frontier, request_id
+    )
+    read = await _closure_readiness(
+        runtime,
+        frontier,
+        None,
+        request_id,
+        lineage_gaps=lineage_gaps,
+        lineage_self_verified=lineage_self_verified,
+        semantic_review_required=_semantic_review_required(app, route_profile)
+        and not _task_local_by_choice(await _task_review_mode(app, runtime, route_profile)),
+        check_in_flight=check_in_flight,
+        follow_head=False,
+        _preloaded=loaded,
+        app=app,
+    )
+    return read.model
+
+
 async def execute_status(
     app: Application,
     request: StatusRequest,
@@ -2361,7 +2403,9 @@ async def execute_status(
             semantic_withheld_items, semantic_redacted_values = await _operation_semantic_omissions(
                 runtime, operation
             )
-            check_outcome = await _operation_check_outcome(app, runtime, operation)
+            check_outcome = await _operation_check_outcome(
+                app, runtime, operation, route_profile=route_profile
+            )
             admission = (
                 await _operation_admission(
                     app, runtime, request.writer_id, request.filter.operation_request_id
