@@ -3074,7 +3074,10 @@ def render_receipt_human(document: ReceiptDocument, *, markdown: bool) -> str:
             )
         )
     advisory_count = sum(
-        1 for finding in document.findings if not FINDING_KIND_TRAITS[finding.kind][1]
+        1
+        for finding in document.findings
+        if not FINDING_KIND_TRAITS[finding.kind][1]
+        and finding.kind is not FindingKind.DECISION_NEEDED
     )
     if advisory_count:
         heading = "## Coverage limitations" if markdown else "Coverage limitations"

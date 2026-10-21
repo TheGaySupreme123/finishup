@@ -557,6 +557,10 @@ DETERMINISTIC_FINDING_TEMPLATES: Final[
             "A criterion the agent set for itself beyond the task's stated scope is not met.",
             "Fix the work, or narrow the criterion by responding acknowledged with the reason.",
         ),
+        FindingKind.DECISION_NEEDED: DeterministicFindingTemplate(
+            "The reviewer identified a choice between defensible interpretations.",
+            "You decide; record the choice and reason with respond acknowledged or rejected.",
+        ),
     }
 )
 if frozenset(DETERMINISTIC_FINDING_TEMPLATES) != frozenset(FindingKind):

@@ -4499,6 +4499,9 @@ def validate_semantic_judgment(
     case_gap_codes = frozenset(gap.code for gap in case.gaps)
     blocked = confirmed_blocked_obligation_ids((gap.code, gap.subject_refs) for gap in case.gaps)
     for challenge in judgment.challenges:
+        if challenge.finding_kind is FindingKind.DECISION_NEEDED:
+            # #1146: a choice can never become a repair directive, even if the model asks for act.
+            challenge = replace(challenge, requested_next_step="answer_question")
         resolution = _resolve_challenge_refs(case, deterministic, challenge)
         if resolution is None:
             rejections[SEMANTIC_REJECTED_REF_OUTSIDE_CASE] = (

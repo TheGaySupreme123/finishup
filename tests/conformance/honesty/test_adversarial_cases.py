@@ -763,6 +763,9 @@ def test_adv_claim_fixtures_fail_closed(fixture_loader: FixtureLoader) -> None:
         FindingKind.CODE_DEFECT,
         FindingKind.TASK_REQUIREMENT_UNMET,
         FindingKind.AGENT_CRITERION_UNMET,
+        # #1146: advisory interpretation choices are reviewer-only; lifecycle coverage lives in
+        # test_review_judgment.py and test_review_dialogue.py.
+        FindingKind.DECISION_NEEDED,
     }
     assert union == expected_generic_kinds, expected_generic_kinds - union
 

@@ -2052,6 +2052,7 @@ def _add_semantic_finding_kinds(document: dict[str, JsonValue]) -> None:
         ("code_defect", 1),
         ("task_requirement_unmet", 1),
         ("agent_criterion_unmet", 2),
+        ("decision_needed", 3),
     )
     for value, _priority in semantic_kinds:
         if value not in enum_values:
@@ -2507,6 +2508,7 @@ def _lineage_child_finding_schema() -> dict[str, JsonValue]:
         "code_defect": (1, True),
         "task_requirement_unmet": (1, True),
         "agent_criterion_unmet": (2, True),
+        "decision_needed": (3, False),
     }
     return {
         "additionalProperties": False,
@@ -2575,6 +2577,7 @@ def _lineage_child_finding_schema() -> dict[str, JsonValue]:
                     "code_defect",
                     "task_requirement_unmet",
                     "agent_criterion_unmet",
+                    "decision_needed",
                 ]
             ),
             "origin": _lineage_enum_schema(["deterministic", "semantic_model_derived"]),
@@ -3984,7 +3987,12 @@ def _check_result_v1_4_schema(entry: _RegistryEntry) -> dict[str, JsonValue]:
     projected_properties["challenge"] = {"$ref": "#/$defs/finding_challenge"}
     kind = cast(dict[str, JsonValue], projected_properties["kind"])
     values = cast(list[JsonValue], kind["enum"])
-    for value in ("agent_criterion_unmet", "code_defect", "task_requirement_unmet"):
+    for value in (
+        "agent_criterion_unmet",
+        "code_defect",
+        "decision_needed",
+        "task_requirement_unmet",
+    ):
         if value not in values:
             values.append(value)
     values.sort(key=lambda item: str(item).encode("ascii"))
@@ -4900,6 +4908,7 @@ def _status_result_v1_4_schema(entry: _RegistryEntry) -> dict[str, JsonValue]:
         "agent_criterion_unmet",
         "code_defect",
         "coordination_overlap",
+        "decision_needed",
         "task_requirement_unmet",
     ):
         if value not in finding_kind_values:

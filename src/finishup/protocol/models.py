@@ -1133,6 +1133,7 @@ type FindingKindWire = Literal[
     "code_defect",
     "task_requirement_unmet",
     "agent_criterion_unmet",
+    "decision_needed",
 ]
 
 type ProviderFindingKindWire = Literal[
@@ -1153,6 +1154,7 @@ type ProviderFindingKindWire = Literal[
     "code_defect",
     "task_requirement_unmet",
     "agent_criterion_unmet",
+    "decision_needed",
 ]
 
 type SafeDetailPrimitive = (

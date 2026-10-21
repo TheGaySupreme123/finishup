@@ -273,8 +273,9 @@ def test_decoder_reads_strict_nulls_as_defaults() -> None:
 
 def test_instruction_is_one_short_pstack_prompt_with_the_honesty_rules() -> None:
     text = REVIEWER_LOOP_INSTRUCTION
-    # M6: one instruction of about 1k tokens, not the packet-only rules with a lead patched on.
-    assert len(text.encode()) < 4500 and len(text.split()) < 750
+    # #1145/#1146 add bounded acceptance/calibration rules to the compact M6 core.
+    # This cap includes both; never replace it with the full packet-only instruction.
+    assert len(text.encode()) < 6500 and len(text.split()) < 1050
     for heading in ("## Goal", "## Done", "## Evidence", "## Clues", "## Constraints"):
         assert text.count(heading) == 1
     assert "Review only the supplied packet." not in text

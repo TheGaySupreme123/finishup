@@ -15,6 +15,8 @@ from pydantic import TypeAdapter, ValidationError
 
 from finishup.adapters.providers.openai_responses import (
     JUDGMENT_JSON_SCHEMA,
+    REVIEWER_ACCEPTANCE_INSTRUCTION,
+    REVIEWER_JUDGMENT_CALIBRATION,
     JudgmentValidationError,
     _rename_schema_defs,  # pyright: ignore[reportPrivateUsage]
     _sort_schema_lists,  # pyright: ignore[reportPrivateUsage]
@@ -122,7 +124,7 @@ def decode_reviewer_reply(parsed: JsonValue) -> ReviewerActionModel | SemanticJu
 # brevity). It replaces the packet-only review instruction for this loop; its rules are the
 # substantive ones of that instruction, each stated once, and the offline accuracy cases bind each
 # miss class to one of them.
-REVIEWER_LOOP_INSTRUCTION: Final = """You review a coding agent's work for FinishUP. Each reply is \
+_REVIEWER_LOOP_CORE: Final = """You review a coding agent's work for FinishUP. Each reply is \
 one JSON object: one read action, or your final_judgment.
 
 ## Goal
@@ -185,3 +187,16 @@ missing_for_assessment with the refs it concerns; never list what the packet or 
 - For each ref in prior_finding_refs return exactly one prior_finding_verdicts entry. Do not raise \
 an answered finding again without newer material; when you do, set restates to its ref.
 - Your judgment is advisory: FinishUP records it, and it verifies nothing by itself."""
+
+
+# #1145/#1146: the active conversation and one-shot routes share the judgment rules.
+REVIEWER_LOOP_INSTRUCTION: Final = (
+    _REVIEWER_LOOP_CORE
+    + "\n\n## Acceptance boundary\n"
+    + REVIEWER_ACCEPTANCE_INSTRUCTION
+    + "\n\n## Calibrate challenges\n"
+    + REVIEWER_JUDGMENT_CALIBRATION
+    + "\nRead task-declared inputs through owner-admitted catalog aliases and paths. "
+    "Unadmitted inputs are coverage limits: never read another root or ask the agent to copy "
+    "them into scope."
+)

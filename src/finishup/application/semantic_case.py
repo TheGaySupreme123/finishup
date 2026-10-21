@@ -65,7 +65,7 @@ from finishup.domain.events import (
     ResultOutcome,
     encode_payload,
 )
-from finishup.domain.findings import Finding, FindingKind, FindingOrigin
+from finishup.domain.findings import Finding, FindingKind, FindingOrigin, ResponseDisposition
 from finishup.domain.observation import (
     ObservationContentKind,
     ObservationContentManifest,
@@ -109,6 +109,7 @@ from finishup.domain.task_statement import (
 )
 from finishup.domain.values import (
     EventId,
+    FindingId,
     JsonObject,
     SubjectStateRelation,
     freeze_json,
@@ -376,6 +377,11 @@ REVIEW_PHASE_QUESTIONS: Final[Mapping[SemanticBudgetProfile, str]] = MappingProx
             "the packet shows. For each requirement, name the assumption, method or check its "
             "result rests on and judge that against the task: a result that holds only under the "
             "agent's own premise or validator is not support (issue #1082)."
+            " Challenge the decisive measurement or assumption at the strongest acceptance "
+            "boundary, comparing the required conditions with what was actually measured. Name "
+            "the strongest evidence gap and one cheap discriminating check; a gap alone is not "
+            "proof of failure. Treat a reasoned trade-off or conflicting task/input readings as "
+            "decision_needed, not an unmet requirement."
         ),
     }
 )
@@ -5916,6 +5922,24 @@ def _select_targeted_excerpts(
     )
 
 
+def _decision_answered(projection: ProjectionState, key: FindingId) -> bool:
+    """A readable, reasoned answer records a choice without claiming a verified repair (#1146)."""
+
+    record = projection.findings.get(key)
+    response = projection.responses.get(key)
+    return (
+        record is not None
+        and record.payload is not None
+        and record.payload.kind is FindingKind.DECISION_NEEDED
+        and response is not None
+        and not response.redacted
+        and response.payload is not None
+        and response.payload.disposition
+        in {ResponseDisposition.ACKNOWLEDGED, ResponseDisposition.REJECTED}
+        and bool(response.payload.reason and response.payload.reason.strip())
+    )
+
+
 def _prior_finding_candidates(
     projection: ProjectionState, allowed: frozenset[str]
 ) -> list[tuple[str, FindingProjectionRecord]]:
@@ -5946,6 +5970,7 @@ def _prior_finding_candidates(
             # tb4n3 RC-1 (Q4): a limitation request the agent disclosed is settled; it travels as
             # a non-rulable settled row marked already disclosed, never as an open question.
             or _limitation_disclosure(projection, key) is not None
+            or _decision_answered(projection, key)
         ):
             continue
         rows.append((ref, record))
@@ -6215,6 +6240,7 @@ def _settled_finding_candidates(
             or response.payload is None
             or (
                 response.payload.disposition.value not in AGENT_SETTLED_DISPOSITION_VALUES
+                and not _decision_answered(projection, key)
                 # Issue #1020: a standing disagreement is final too; the reviewer sees the
                 # agent's rebuttal and can name it, but never rules on it again.
                 and finding_todo_state(projection, key)

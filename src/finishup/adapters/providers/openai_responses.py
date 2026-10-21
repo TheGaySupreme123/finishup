@@ -433,6 +433,35 @@ REVIEWER_GROUNDING_RULES: Final[tuple[str, ...]] = (
 )
 
 
+REVIEWER_JUDGMENT_CALIBRATION: Final = (
+    "Before task_requirement_unmet, locate the requirement in the task text and cite it. "
+    "A reasoned trade-off or conflicting task wording and supplied inputs is decision_needed: "
+    "advisory priority 3, non-blocking, never also an unmet requirement or code_defect. "
+    "A recorded reason does not excuse a clear violation of an unambiguous requirement. "
+    "Give both interpretations with their evidence in discrepancy and alternative_interpretation, "
+    "one cheap discriminating check in message_to_main_agent, and answer_question. Say: "
+    "you decide; record your choice and reason with respond acknowledged or rejected. "
+    "For deferred loading, check whether the task forbids deferred loading before asking to remove it. "
+    "For conflicting references, compare both reference models with the available validator. "
+    "Destructive flag: start message_to_main_agent with 'Destructive change:' when a proposed "
+    "removal or replacement loses a match to task text, a supplied input, or an earlier passing "
+    "check; name that evidence and cost as a choice, not a repair. Never withdraw working code. "
+    "Before calling a performance change a regression, require repeated, comparable timings "
+    "with the same workload, window, environment and warm/cold state. A single noisy timing "
+    "or a changed measurement setup does not establish a regression."
+)
+
+REVIEWER_ACCEPTANCE_INSTRUCTION: Final = (
+    "In closing review, challenge the decisive measurement or assumption: compare task acceptance "
+    "with the actual measurement (time window, cold start versus warm state, burst load and scale, "
+    "held-out data, reference model, units and geometry, cycle length, output shape, stopping or "
+    "minimum-token semantics). Name the strongest evidence gap and one cheap discriminating check; "
+    "read available material first. Self-consistent tests do not establish their shared assumption. "
+    "A gap alone is not proof of failure: scope support to what was measured; mark an unsettled "
+    "requirement not_assessable."
+)
+
+
 def _section(heading: str, *paragraphs: str) -> str:
     return "\n".join((f"## {heading}", *paragraphs))
 
@@ -494,6 +523,7 @@ SEMANTIC_REVIEW_INSTRUCTION: Final = "\n\n".join(
             "recorded verification do not deliver. Ask what would make this result fail an "
             "independent check of the task. An aggregate pass count does not support a multi-item "
             "requirement.",
+            REVIEWER_ACCEPTANCE_INSTRUCTION,
             # tb4n3 RC-1 (#1024): the final-phase rule must not contradict the obtainable-remedy
             # rule; [FC c2]: an unbounded quantifier is a limitation, never an unmet verdict. n7 RC7
             # (#1108): not_assessable is for missing material, never because a limit was disclosed.
@@ -521,6 +551,7 @@ SEMANTIC_REVIEW_INSTRUCTION: Final = "\n\n".join(
             "never task_requirement_unmet. The agent may fix it or narrow the criterion with a "
             "recorded reason.",
         ),
+        _section("Calibrate challenges", REVIEWER_JUDGMENT_CALIBRATION),
         _section(
             "How to review",
             "Work in this order.",
@@ -530,6 +561,11 @@ SEMANTIC_REVIEW_INSTRUCTION: Final = "\n\n".join(
             "requirements.",
             "2. For each requirement, find the deliverable that meets it and the verification that "
             "shows it, and read both.",
+            "Read the task's inputs as well as the agent's tests. The read catalog offers the "
+            "workspace and task-declared input paths beneath roots the owner already admitted; "
+            "use those aliases and declared paths when they can settle the decisive assumption. "
+            "An unavailable or unadmitted input is a coverage limit, not permission to read "
+            "another root, ask the agent to copy it into scope, or change privacy authority.",
             "3. Apply each lens below that bears on the requirement. A lens that does not apply "
             "needs no comment; never invent a concern to fill one.",
             "4. When the agent's plan, or its decision to turn on AI-powered review, names "
@@ -1099,6 +1135,11 @@ FINDING_KIND_GLOSSARY: Final[dict[str, str]] = {
     "agent_criterion_unmet": (
         "a probe the agent itself chose beyond the task's stated scope fails: the agent's own "
         "criterion, which it may fix or narrow with a reason, never a task requirement"
+    ),
+    "decision_needed": (
+        "a reasoned trade-off or conflicting task/input interpretations: present both with "
+        "evidence and one discriminating check; advisory priority 3, never blocks closure; "
+        "you decide and record the choice with respond"
     ),
 }
 

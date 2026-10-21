@@ -2961,3 +2961,13 @@ same removal flow. Agents direct the owner to it and never run it; no MCP or cha
 path is added. The configured API fallback is targeted when Codex is primary. Binding and privacy
 policy stay unchanged, and status is presence-only after readiness reload. Shared-path tests do not
 claim a new native-host or platform certification.
+
+
+### Reviewer judgment calibration (#1145, #1146)
+
+This host uses the shared reviewer instruction and finding pipeline. `decision_needed` is an
+advisory priority-3 choice: keep both interpretations and the destructive cost visible, then
+record the choice and reason with `respond acknowledged` or `respond rejected`. It never counts
+as unmet work or blocks Stop/closure. Closing review challenges the decisive acceptance measurement
+and uses the existing task-declared inputs beneath owner-admitted roots; this change admits no
+new root. Details and offline checks: [reviewer instruction evaluation](reviewer-instruction-evaluation.md).

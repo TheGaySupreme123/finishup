@@ -12019,3 +12019,29 @@ as `outcome_unknown` and is never resent. For it, `operation_max_retries` is `0`
   `FinalSemanticEvaluation.reviewer` carry it in process; `FinalSemanticEvaluation`
   `reviewer_citable_refs` and `reviewer_paths` stay in process and in the encrypted
   `yoetz.semantic-response/1` object (`reviewer`, `reviewer_paths`).
+
+### Reviewer judgment choices and acceptance evidence (#1145, #1146)
+
+- `FindingKind.DECISION_NEEDED` / `decision_needed`: research-evidence, priority 3,
+  `FINDING_KIND_TRAITS == (3, False)`, available on finding/finding-recorded 1.4.0 and active
+  provider-judgment 1.2.0 on the unreleased integration branch. Earlier versions refuse it.
+  Generated status, check, receipt and child-dependency projections carry the kind. Its existing
+  challenge fields carry both interpretations, their evidence, one discriminating check and the
+  choice; `validate_semantic_judgment` forces `requested_next_step: answer_question`.
+- Decision choices are advisory: no mandatory unanswered count, receipt-blocking count or Stop
+  obligation. They remain visible and never resolve by review silence. A readable reasoned
+  `respond acknowledged` or `respond rejected` makes the prior-finding packet carry a settled,
+  non-rulable row and the answer. The response does not establish a repair. Missing, redacted and
+  unreasoned answers do not settle a choice.
+- `Destructive change:` is a prose label in the existing `message_to_main_agent` (recorded as
+  finding detail), not a structural table/log field: identify the task/input/passing-check match a
+  proposed removal or replacement would lose, and present the cost as a choice.
+- Closing review compares the decisive measurement/assumption to acceptance, names the strongest
+  evidence gap and a discriminating check, and requires repeated comparable performance timings.
+  It uses task-declared input paths from the existing owner-admitted read catalog; unavailable
+  inputs remain coverage limits. ADR-009 admission and removal fences are unchanged.
+
+  Full receipts carry the choice as an `AI-powered decision needed` advisory prose item in
+  `findings_and_dispositions`; after a readable reasoned acknowledgement/rejection, the label is
+  `AI-powered decision recorded`, with the answer labeled `Agent decision (self-reported)`.
+  The existing receipt profile, prose-leaf privacy projection and section/byte bounds apply.
