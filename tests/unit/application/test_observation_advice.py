@@ -19,6 +19,7 @@ from finishup.application.observation_advice import (
     ObservationAdviceContextBuilder,
     ObservationAdviceSemanticAddon,
     advice_delivery_identity,
+    bind_failed_command_advice,
     build_observation_advice_snapshot,
     hook_advice_context,
     minimized_semantic_evidence_packet,
@@ -953,6 +954,109 @@ def test_finding_identity_ignores_evidence_refs_that_are_a_rolling_window() -> N
     assert first.ranked_items[0].evidence_refs != later.ranked_items[0].evidence_refs
     assert first.evidence_basis_digest != later.evidence_basis_digest
     assert first.ranked_items[0].finding_id == later.ranked_items[0].finding_id
+
+
+def _failed_snapshot(identity: str) -> AdviceSnapshot:
+    snapshot = build_observation_advice_snapshot(
+        ObservationAdviceBuildInput(
+            envelopes=(
+                _envelope(
+                    identity, {"tool_name": "shell", "exit_status": 2, "correlation_id": "c"}
+                ),
+            ),
+            lifecycle=ObservationLifecycle.ACTIVE,
+            gaps=(),
+            has_real_observation=True,
+        )
+    )
+    assert snapshot is not None
+    return snapshot
+
+
+def test_failed_command_identity_uses_the_accepted_pair_instead_of_the_observer_envelope() -> None:
+    ledger = ObservedLedger()
+    failed = ledger.fail("pytest -q")
+    pair = ledger.events_of(failed)
+    schemas = {str(record.event_id): record.schema.name for record in ledger.prefix}
+    first, later = _failed_snapshot("hook:failure"), _failed_snapshot("stream:failure")
+    assert first.ranked_finding_ids != later.ranked_finding_ids  # The #1160 reproduction.
+
+    def bind(snapshot: AdviceSnapshot, *, task: str = "task-1", refs: tuple[str, ...] = pair):
+        return bind_failed_command_advice(
+            snapshot,
+            task_id=task,
+            subject_refs={item.finding_id: refs for item in snapshot.ranked_items},
+            event_schemas=schemas,
+            findings={},
+        )
+
+    bound = bind(first)
+    assert bound.ranked_finding_ids == bind(later).ranked_finding_ids
+    assert advice_delivery_identity(bound) == advice_delivery_identity(bind(later))
+    assert bound.ranked_finding_ids != bind(first, task="task-2").ranked_finding_ids
+    assert bind(first, refs=pair[:1]).ranked_finding_ids == first.ranked_finding_ids
+    # Two observer candidates in a single snapshot are also one durable concern.
+    combined = replace(
+        first,
+        ranked_items=(*first.ranked_items, *later.ranked_items),
+        ranked_finding_ids=(*first.ranked_finding_ids, *later.ranked_finding_ids),
+    )
+    assert bind(combined).ranked_finding_ids == bound.ranked_finding_ids
+    other = ledger.fail("pytest -q")
+    schemas.update({str(record.event_id): record.schema.name for record in ledger.prefix})
+    assert bind(first, refs=ledger.events_of(other)).ranked_finding_ids != bound.ranked_finding_ids
+
+
+def test_repeated_failure_keeps_legacy_ids_reason_responses_duplicate_links_and_retirement() -> (
+    None
+):
+    from finishup.domain.events import EventSchema, ResponseRecordedPayload
+    from finishup.domain.findings import ResponseDisposition
+    from finishup.kernel.projections import duplicate_link_holds
+
+    ledger = ObservedLedger()
+    failed = ledger.fail("pytest -q")
+    pair = ledger.events_of(failed)
+    original = ledger.advice_finding(pair, number=90)
+    duplicate = ledger.advice_finding(pair, number=1)  # Earliest event wins, not lowest ID.
+    ledger.respond(original, ResponseDisposition.ACKNOWLEDGED, reason="Original answer")
+    ledger.append(
+        EventSchema("response_recorded", "1.1.0"),
+        ResponseRecordedPayload(
+            duplicate,
+            ledger.frontier,
+            ResponseDisposition.DUPLICATE_OF,
+            duplicate_of_finding_id=original,
+        ),
+        observed=False,
+    )
+    snapshot = _failed_snapshot("hook:later-frontier")
+
+    def bind() -> AdviceSnapshot:
+        state = replay(ledger.prefix)
+        before = dict(state.findings)
+        bound = bind_failed_command_advice(
+            snapshot,
+            task_id="task-1",
+            subject_refs={snapshot.ranked_finding_ids[0]: pair},
+            event_schemas={str(record.event_id): record.schema.name for record in ledger.prefix},
+            findings=state.findings,
+        )
+        assert state.findings == before
+        assert bound.ranked_finding_ids == (original,)
+        assert bound.ranked_items[0].detail == state.findings[original].payload.detail  # type: ignore[union-attr]
+        assert state.responses[original].payload.reason == "Original answer"  # type: ignore[union-attr]
+        assert duplicate_link_holds(state, duplicate) == original
+        return bound
+
+    bind()
+    passing = ledger.passes("pytest -q")
+    retired = replay(ledger.prefix).findings[original]
+    assert retired.retired_by_event_id == ledger.events_of(passing)[1]
+    bind()
+    ledger.redact(ledger.events_of(passing)[1])
+    assert replay(ledger.prefix).findings[original].retired_by_event_id is None
+    bind()
 
 
 def test_delivery_identity_distinguishes_successive_failed_commands() -> None:

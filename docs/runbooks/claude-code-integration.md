@@ -1178,6 +1178,12 @@ the 8 MiB skim cap.
 A failed `Bash` call becomes an observation finding (`failed_command_unresolved`, kind
 `failed_work_omitted`) seconds after it is recorded. Decisions for Claude Code:
 
+Repeated observations that name the same accepted action/result event pair reuse the earliest
+readable finding ID and original reason (#1160, ADR-022 decision 7). The shared coordinator
+updates the advice snapshot; responses, `duplicate_of` links and retirement proofs keep their
+recorded identities. A distinct failed invocation remains distinct. This does not change the
+host outcome requirements below.
+
 - **Retire on pass: supported.** `PostToolUse` states success and `PostToolUseFailure` states
   failure (`fixtures/observations/claude-code-bash-outcomes.case.json`), so a later passing run of
   the same command, alone or as a segment of a passing `&&` chain run as is (no leading

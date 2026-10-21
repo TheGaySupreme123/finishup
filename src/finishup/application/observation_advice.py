@@ -10,7 +10,13 @@ from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from typing import Final, Protocol, cast
 
-from finishup.domain.findings import FINDING_KIND_TRAITS, FindingId, FindingKind, finding_id
+from finishup.domain.findings import (
+    FINDING_KIND_TRAITS,
+    Finding,
+    FindingId,
+    FindingKind,
+    finding_id,
+)
 from finishup.domain.observation import (
     AdviceItem,
     AdviceSemanticState,
@@ -22,6 +28,7 @@ from finishup.domain.observation import (
 )
 from finishup.domain.values import validate_sha256_digest
 from finishup.kernel.finding_resolution import retired_failed_command_finding_ids
+from finishup.kernel.finding_retirement import is_observed_failed_command_finding
 from finishup.kernel.policies.observation_advice import (
     OBSERVATION_ADVICE_POLICY_ID,
     OBSERVATION_ADVICE_POLICY_VERSION,
@@ -35,7 +42,7 @@ from finishup.kernel.policies.observation_advice import (
     evidence_basis_digest,
     observation_advice_findings,
 )
-from finishup.kernel.projections import ProjectionState
+from finishup.kernel.projections import FindingProjectionRecord, ProjectionRecord, ProjectionState
 from finishup.observability.logging import record_unexpected_exception_without_raising
 from finishup.ports.ledger import ProjectionView
 from finishup.ports.runtime import TaskRuntime
@@ -71,6 +78,7 @@ __all__ = [
     "advice_delivery_identity",
     "advice_items_for_ledger",
     "build_observation_advice_snapshot",
+    "bind_failed_command_advice",
     "hook_advice_context",
     "minimized_semantic_evidence_packet",
     "validate_semantic_evidence_packet",
@@ -511,6 +519,72 @@ def stable_advice_finding_id(rule_code: str, detail_token: str, evidence_digest:
     raw[6] = (raw[6] & 0x0F) | 0x40
     raw[8] = (raw[8] & 0x3F) | 0x80
     return finding_id(PREFIX_BY_KIND[IdKind.FINDING] + str(uuid.UUID(bytes=bytes(raw))))
+
+
+def bind_failed_command_advice(
+    snapshot: AdviceSnapshot,
+    *,
+    task_id: str,
+    subject_refs: Mapping[FindingId, tuple[str, ...]],
+    event_schemas: Mapping[str, str],
+    findings: Mapping[FindingId, ProjectionRecord[Finding]],
+) -> AdviceSnapshot:
+    """Bind failed-command advice to its accepted action/result pair (#1160).
+
+    Hook and stream envelopes can name the same ledger events. Their provisional advice IDs
+    differ, but the durable concern does not. Prefer the earliest readable observation finding
+    already naming that pair, preserving its ID and original reason across upgrades. Nothing
+    rewrites the finding, its responses, duplicate links, or replay-derived retirement proof.
+    """
+
+    def pair(refs: Sequence[str]) -> tuple[str, str] | None:
+        actions = [ref for ref in refs if event_schemas.get(ref) == "action_recorded"]
+        results = [ref for ref in refs if event_schemas.get(ref) == "result_recorded"]
+        return (actions[0], results[0]) if len(actions) == len(results) == 1 else None
+
+    originals: dict[tuple[str, str], FindingProjectionRecord] = {}
+    for record in findings.values():
+        if not isinstance(record, FindingProjectionRecord):
+            continue
+        if not is_observed_failed_command_finding(record) or record.payload is None:
+            continue
+        key = pair(record.payload.subject_refs)
+        if key is not None and (
+            key not in originals or record.source_frontier < originals[key].source_frontier
+        ):
+            originals[key] = record
+
+    items: list[AdviceItem] = []
+    seen: set[FindingId] = set()
+    for item in snapshot.ranked_items:
+        if item.rule_code == _FAILED_COMMAND_RULE:
+            key = pair(subject_refs.get(item.finding_id, ()))
+            if key is not None:
+                identity = canonical_encode(
+                    {"format": "finishup.failed-command-concern/1", "task_id": task_id, "pair": key}
+                )
+                digest = "sha256:" + hashlib.sha256(identity).hexdigest()
+                original = originals.get(key)
+                payload = None if original is None else original.payload
+                item = replace(
+                    item,
+                    finding_id=(
+                        payload.finding_id
+                        if payload is not None
+                        else stable_advice_finding_id(item.rule_code, "failed-pair", digest)
+                    ),
+                    summary=item.summary if payload is None else payload.summary,
+                    detail=item.detail if payload is None else payload.detail,
+                    condition_identity=digest,
+                )
+        if item.finding_id not in seen:
+            seen.add(item.finding_id)
+            items.append(item)
+    return replace(
+        snapshot,
+        ranked_items=tuple(items),
+        ranked_finding_ids=tuple(item.finding_id for item in items),
+    )
 
 
 def _coverage(

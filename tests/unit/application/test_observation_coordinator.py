@@ -5250,6 +5250,107 @@ def _stream_copy(envelope: ObservationEnvelope, identity: str) -> ObservationEnv
 
 
 @pytest.mark.anyio
+async def test_one_failed_pair_keeps_one_finding_across_observer_copies_and_frontiers(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """#1160: real hook/stream delivery and advice caches reuse the durable concern."""
+
+    from types import SimpleNamespace
+
+    from finishup.domain.findings import FindingKind
+
+    cell = _reattach_fixture(tmp_path, "dedupe-1160-restart")
+    failed = _envelope(
+        session=cell.session,
+        kind="PostToolUse",
+        identity="hook:1160:failed",
+        exit_status=2,
+    )
+    assert (await cell.ingest(failed)).disposition is ObservationIngestDisposition.ACCEPTED
+
+    async def advise() -> None:
+        runtime = await cell.runtime_port.route(
+            SimpleNamespace(
+                session_id=cell.mapping.finishup_session_id,
+                writer_id=observation_writer_id(cell.task_id, cell.mapping.finishup_session_id),
+            )
+        )
+        await ObservationCoordinator._run_advice(  # pyright: ignore[reportPrivateUsage]  # noqa: SLF001
+            cell.coordinator,
+            cell.workspace,
+            runtime,
+            cell.store,
+            session_commitment=cell.session,
+        )
+
+    await advise()
+    findings = [
+        row
+        for row in _schema_rows(cell, "finding_recorded")
+        if type(row.payload) is Finding and row.payload.kind is FindingKind.FAILED_WORK_OMITTED
+    ]
+    assert len(findings) == 1
+    original = findings[0]
+    assert type(original.payload) is Finding
+
+    cell.coordinator = cell.build_coordinator()
+    stream = _stream_copy(failed, "stream:1160:failed")
+    assert (await cell.ingest(stream)).disposition in {
+        ObservationIngestDisposition.ACCEPTED,
+        ObservationIngestDisposition.DUPLICATE,
+    }
+    # The copies really map to the identical pair of ledger event IDs.
+    hook_ids = {
+        item.draft.event_id
+        for item in materialize_observation_envelope(failed, task_id=cell.task_id).drafts
+    }
+    stream_ids = {
+        item.draft.event_id
+        for item in materialize_observation_envelope(stream, task_id=cell.task_id).drafts
+    }
+    assert hook_ids == stream_ids and len(hook_ids) == 2
+    await advise()
+    event_scans = 0
+    load_events = cell.ledger.load_events
+
+    def counted_events(session_id: str, *, after: int = 0, through: int | None = None):
+        nonlocal event_scans
+        event_scans += 1
+        return load_events(session_id, after=after, through=through)
+
+    monkeypatch.setattr(cell.ledger, "load_events", counted_events)
+    await advise()  # A later advice frontier must not create another challenge either.
+    assert event_scans == 0, "the hot path must not rescan the event stream"
+    assert _schema_rows(cell, "finding_recorded") == [original]
+    persisted = cell.store.load_advice_snapshot(cell.workspace)
+    delivered = cell.local.advice_snapshot_for(cell.workspace)
+    assert persisted is not None and delivered is not None
+    assert (
+        persisted.ranked_finding_ids
+        == delivered.ranked_finding_ids
+        == (original.payload.finding_id,)
+    )
+
+    # A second failed invocation of the same command is another triggering pair.
+    other = replace(
+        failed,
+        source_identity="hook:1160:other",
+        structural_payload=JsonObject(
+            {
+                "tool_name": "shell",
+                "tool_call_id": "other",
+                "correlation_id": "other",
+                "exit_status": 2,
+            }
+        ),
+    )
+    assert (await cell.ingest(other)).disposition is ObservationIngestDisposition.ACCEPTED
+    await advise()
+    assert len(_schema_rows(cell, "finding_recorded")) == 2
+
+
+@pytest.mark.anyio
 async def test_paired_pre_then_post_records_one_action_linked_to_its_result(
     tmp_path: Path,
 ) -> None:

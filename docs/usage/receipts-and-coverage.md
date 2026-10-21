@@ -354,7 +354,10 @@ Two more things decide what the receipt will say, and status tells you before yo
   narrows it; a `finishup-verification-limit` decision does not. While it is open, the check's next
   step is `work_open_findings`, not `disclose_limitations`.
 - **A command FinishUP saw fail.** When FinishUP observes a command fail, it records a finding
-  ("Unresolved failed command observed") right away. Rerun the same command after the fix, alone or
+  ("Unresolved failed command observed") right away. Repeated observations of that same failed
+  call keep its finding ID and original reason, so you answer it once. The receipt names the
+  original triggering events beside its current resolution; a separate failed invocation is a
+  separate concern. Rerun the same command after the fix, alone or
   inside a passing `&&` chain such as `cd /app && pytest -q`, exactly as written (`FOO=1 pytest -q`,
   or `pytest -q` behind `env`, `nohup` or `time`, is a different command; a chain whose earlier
   part can end the shell or runs text FinishUP cannot read, such as `exec CMD`, `exit`, `eval`, or
