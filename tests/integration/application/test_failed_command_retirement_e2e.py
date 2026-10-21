@@ -280,9 +280,11 @@ async def test_failed_command_then_pass_then_receipt_is_not_blocked(
     )
     assert snapshot is not None
     assert any(item.rule_code == "failed_command_unresolved" for item in snapshot.ranked_items)
-    await coordinator._materialize_advice_findings(
+    bound_snapshot = await coordinator._materialize_advice_findings(
         task_runtime, envelopes, snapshot, store=cast(TaskObservationPort, host.store)
     )
+    assert bound_snapshot is not None
+    snapshot = bound_snapshot
     records = await _records(session)
     findings = [
         record
@@ -390,9 +392,11 @@ async def _advice_finding(
         )
     )
     assert snapshot is not None
-    await coordinator._materialize_advice_findings(
+    bound_snapshot = await coordinator._materialize_advice_findings(
         task_runtime, envelopes, snapshot, store=cast(TaskObservationPort, host.store)
     )
+    assert bound_snapshot is not None
+    snapshot = bound_snapshot
     findings = [
         record.payload
         for record in await _records(session)
@@ -410,6 +414,35 @@ def _failed_command_items(snapshot: AdviceSnapshot) -> list[str]:
         for item in snapshot.ranked_items
         if item.rule_code == "failed_command_unresolved"
     ]
+
+
+@pytest.mark.parametrize("host_name", ["claude", "cursor", "codex"])
+async def test_failed_command_concern_keeps_its_id_and_reason_after_real_reattach(
+    tmp_path: Path, host_name: str
+) -> None:
+    """#1160: the successor start reads the original challenge and mirrors its actual ID."""
+
+    app, runtime, _ = workflow._build_app(seed_offset=1160)
+    started = await app.start(start_request(1_160_500, title="One failed-command concern"))
+    session = _Session(app, runtime, started)
+    host = _Host(tmp_path, host_name)
+    host.bash("toolu-failed", failed=True)
+    await _append_observed(session, host.new_envelopes())
+    _, first, original = await _advice_finding(session, runtime, host)
+    resumed = await app.start(
+        start_request(1_160_501, mode="attach", session_id=started.session_id)
+    )
+    assert resumed.session_id != started.session_id
+    successor = _Session(app, runtime, resumed)
+    task_runtime, later, finding = await _advice_finding(successor, runtime, host)
+    assert finding == original
+    assert (
+        _failed_command_items(first) == _failed_command_items(later) == [str(original.finding_id)]
+    )
+    await _mirror_advice(successor, task_runtime, host)
+    mirrored = host.store.advice_snapshot_for(host.workspace)
+    assert mirrored is not None
+    assert _failed_command_items(mirrored) == [str(original.finding_id)]
 
 
 @pytest.mark.parametrize("host_name", ["claude", "cursor", "codex"])

@@ -18,7 +18,10 @@ from typing import cast
 import apsw
 import pytest
 
+import finishup.adapters.memory.ledger as memory_ledger_module
+import finishup.adapters.objects.check_resume as resume_module
 import finishup.application.check as check_module
+import finishup.application.status as status_module
 import integration.service.test_semantic_non_dispatch as non_dispatch
 from builders.ledger_adapters import (
     FixedIds,
@@ -36,6 +39,7 @@ from finishup.adapters.integrations.observation_local import LocalObservationSto
 from finishup.adapters.memory.ledger import MemoryLedgerAdapter
 from finishup.adapters.providers.openai_responses_factory import OpenAIResponsesExternalFactory
 from finishup.adapters.repository_identity import resolve_repository_privacy_context
+from finishup.adapters.sqlite.repository import SqliteLedger
 from finishup.application.check import FinalSemanticEvaluation
 from finishup.application.egress import SemanticEgressSuccess
 from finishup.application.privacy_policy import (
@@ -80,7 +84,14 @@ from finishup.ports.control import (
 from finishup.ports.diagnostics import RuntimeCapability
 from finishup.ports.importer import ImporterPort
 from finishup.ports.keys import MacKeyPurpose
-from finishup.ports.ledger import CheckPolicyExecution, FrozenCase
+from finishup.ports.ledger import (
+    CheckPhase,
+    CheckPolicyExecution,
+    CheckSuspensionKind,
+    FrozenCase,
+    OperationState,
+)
+from finishup.ports.objects import ObjectKind, ObjectMetadata, ObjectRef, ObjectStorePort
 from finishup.ports.privacy import (
     EffectivePrivacyPolicy,
     HumanAuthorityCapability,
@@ -96,6 +107,7 @@ from finishup.ports.semantic import (
 )
 from finishup.ports.start_catalog import StartCatalogPort, TaskRoute
 from finishup.protocol.canonical import JsonValue, canonical_encode
+from finishup.protocol.errors import PublicErrorCode, PublicOperationError
 from finishup.protocol.ids import IdKind, new_id
 from finishup.protocol.models import (
     CheckRequest,
@@ -519,12 +531,10 @@ async def test_withheld_statement_scope_remains_explicit_and_is_not_requested() 
     assert not any(item.item_id == "task-statement" for item in candidate.items)
 
 
-@pytest.mark.anyio
-@pytest.mark.parametrize("adapter", ("memory", "sqlite"))
-async def test_durable_same_request_recovery_after_statement_event_refreshes_case(
+async def _parked_check_with_new_statement(
     adapter: str,
-) -> None:
-    """The durable check suspension refreshes after a statement-carrying session event."""
+) -> tuple[_SharedStartRuntime, _PublicCheckApp, CheckRequest, str, str]:
+    """Park one check for review input, then append the statement-carrying session event."""
 
     start_application, original_runtime, clock, catalog = start_composition()
     start_runtime = _SharedStartRuntime(clock, original_runtime.ids, adapter)
@@ -593,6 +603,22 @@ async def test_durable_same_request_recovery_after_statement_event_refreshes_cas
         ),
     )
     assert attached.task_id == created.task_id
+    return start_runtime, check_app, request, created.task_id, created.writer_id
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("adapter", ("memory", "sqlite"))
+@pytest.mark.parametrize("paged", (False, True))
+async def test_durable_same_request_recovery_after_statement_event_refreshes_case(
+    adapter: str, paged: bool, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The durable check suspension refreshes after a statement-carrying session event."""
+
+    if paged:
+        monkeypatch.setattr(resume_module, "MAX_OBJECT_PLAINTEXT_BYTES", 512)
+    start_runtime, check_app, request, task_id, writer_id = await _parked_check_with_new_statement(
+        adapter
+    )
     # Replay the identical check body after the statement-carrying session event. This storage
     # harness checks the durable refresh path; the production READY route is covered below.
     second = await check_module.execute_check_commit(check_app, request)
@@ -601,11 +627,132 @@ async def test_durable_same_request_recovery_after_statement_event_refreshes_cas
     assert check_app.provider_calls == 1
     assert getattr(second, "semantic_status") is SemanticStatus.UNAVAILABLE
 
-    ledger, _objects = start_runtime.resources[created.task_id]
-    operation = await ledger.lookup_operation(created.writer_id, request.request_id)
+    ledger, _objects = start_runtime.resources[task_id]
+    operation = await ledger.lookup_operation(writer_id, request.request_id)
     assert operation is not None
     assert operation.state.value == "complete"
     assert operation.suspension_kind is None
+    if paged:
+        assert isinstance(_objects, MemoryObjects)
+        assert any(
+            ref.metadata.media_type == resume_module.CHECK_RESUME_PAGE_MEDIA_TYPE
+            for ref in _objects.refs_for_kind(ObjectKind.CHECK_RESUME)
+        )
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("adapter", ("memory", "sqlite"))
+async def test_refresh_past_resume_capacity_stores_terminal_limit(
+    adapter: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An admitted check whose refreshed case outgrows the resume cap stores that refusal (#1159).
+
+    The parked operation already exists, so the non-retryable limit must close it: status and
+    every exact replay, including one after restart, report the same stored ``LIMIT_EXCEEDED``
+    instead of a pending review-input wait that the refusal forbids resuming.
+    """
+
+    start_runtime, check_app, request, task_id, writer_id = await _parked_check_with_new_statement(
+        adapter
+    )
+    ledger, objects = start_runtime.resources[task_id]
+    resume_roots = objects.refs_for_kind(ObjectKind.CHECK_RESUME)
+    capacity = resume_module.MAX_CHECK_RESUME_BYTES
+    monkeypatch.setattr(resume_module, "MAX_CHECK_RESUME_BYTES", 1)
+    errors: list[PublicOperationError] = []
+    for restored in (False, True):
+        if restored:
+            # The stored refusal answers the replay; nothing is rebuilt against the larger cap.
+            monkeypatch.setattr(resume_module, "MAX_CHECK_RESUME_BYTES", capacity)
+        with pytest.raises(PublicOperationError) as caught:
+            await check_module.execute_check_commit(check_app, request)
+        errors.append(caught.value)
+    if adapter == "sqlite":
+        # Recovery rebuilds the same terminal error from the durable operation row alone.
+        ledger = SqliteLedger(
+            db=start_runtime.sqlite_connections[-1],
+            task_id=task_id,
+            ownership_fence=ownership_fence(),
+            clock=start_runtime.clock,
+            ids=start_runtime.ids,
+            objects=objects,
+        )
+        start_runtime.resources[task_id] = (cast(MemoryLedgerAdapter, ledger), objects)
+        with pytest.raises(PublicOperationError) as caught:
+            await check_module.execute_check_commit(check_app, request)
+        errors.append(caught.value)
+    for error in errors:
+        assert error.code is PublicErrorCode.LIMIT_EXCEEDED
+        assert error.retryable is False
+        assert error.safe_details == errors[0].safe_details
+        assert error.safe_details["reason_code"] == "check_resume_capacity_exceeded"
+        assert error.safe_details["continuation"] == "check_capacity_handoff"
+        assert cast(int, error.safe_details["count"]) > 1
+    assert errors[0].safe_details["limit"] == 1
+    assert check_app.calls == 1
+    assert objects.refs_for_kind(ObjectKind.CHECK_RESUME) == resume_roots
+    operation = await ledger.lookup_operation(writer_id, request.request_id)
+    assert operation is not None
+    assert operation.state is OperationState.COMPLETE
+    assert operation.phase is CheckPhase.TERMINAL
+    assert operation.suspension_kind is None
+    page = status_module._operation_page_from_record(  # pyright: ignore[reportPrivateUsage]
+        request.request_id, operation
+    )
+    assert page.state == "complete" and page.continuation is None
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("adapter", ("memory", "sqlite"))
+async def test_refresh_capacity_refusal_over_moved_inputs_is_not_stored(
+    adapter: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A refresh refusal computed from inputs that moved meanwhile stays retryable (#1159).
+
+    Concurrent inventory motion lands while the refreshed case is staged. Storing a terminal
+    refusal built from the superseded inputs would close the check on stale evidence, so the
+    replay is refused as contended and the parked operation is left exactly as it was.
+    """
+
+    start_runtime, check_app, request, task_id, writer_id = await _parked_check_with_new_statement(
+        adapter
+    )
+    ledger, _objects = start_runtime.resources[task_id]
+    parked = await ledger.lookup_operation(writer_id, request.request_id)
+    assert parked is not None and parked.suspension_kind is CheckSuspensionKind.REVIEW_INPUT
+    state = ledger._state  # pyright: ignore[reportPrivateUsage]
+    original_refs = state.object_refs
+    anchor = next(iter(original_refs.values()))
+    stage = memory_ledger_module.stage_check_resume
+    moves: list[str] = []
+
+    async def moved_then_staged(
+        objects: ObjectStorePort, data: bytes, metadata: ObjectMetadata
+    ) -> tuple[ObjectRef, tuple[ObjectRef, ...]]:
+        moves.append(f"obj_moved_{len(moves)}")
+        state.object_refs = {**state.object_refs, moves[-1]: anchor}
+        return await stage(objects, data, metadata)
+
+    monkeypatch.setattr(resume_module, "MAX_CHECK_RESUME_BYTES", 1)
+    monkeypatch.setattr(memory_ledger_module, "stage_check_resume", moved_then_staged)
+    with pytest.raises(PublicOperationError) as contended:
+        await check_module.execute_check_commit(check_app, request)
+    assert contended.value.code is PublicErrorCode.OPERATION_PENDING
+    assert contended.value.retryable is True
+    assert contended.value.safe_details["reason_code"] == "check_admission_contended"
+    assert moves
+    assert await ledger.lookup_operation(writer_id, request.request_id) == parked
+
+    # With the inputs stable again, the same replay stores the terminal refusal.
+    state.object_refs = original_refs
+    monkeypatch.setattr(memory_ledger_module, "stage_check_resume", stage)
+    with pytest.raises(PublicOperationError) as limited:
+        await check_module.execute_check_commit(check_app, request)
+    assert limited.value.code is PublicErrorCode.LIMIT_EXCEEDED
+    assert limited.value.safe_details["reason_code"] == "check_resume_capacity_exceeded"
+    closed = await ledger.lookup_operation(writer_id, request.request_id)
+    assert closed is not None and closed.state is OperationState.COMPLETE
+    assert check_app.calls == 1
 
 
 @pytest.mark.anyio

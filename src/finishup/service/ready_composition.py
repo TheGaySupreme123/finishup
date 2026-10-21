@@ -4951,6 +4951,7 @@ async def _reviewer_read_roots(
     protected: tuple[str, ...],
     withheld: tuple[str, ...],
     change_capture: ChangeCapturePort | None,
+    admitted_home_project: bool = False,
 ) -> tuple[ReadRoot, ...]:
     """The ``read_file`` roots a review may name (#1118): none where repository excerpts are
     withheld; else the workspace (Git-ignored paths refused) and, per owner-admitted outside root,
@@ -4958,6 +4959,11 @@ async def _reviewer_read_roots(
     admission (``s``). Never this service's own bundle or state, by path or identity."""
 
     if DataCategory.REPOSITORY_EXCERPT.value in withheld or workspace_root is None:
+        return ()
+    # A public start's workspace_ref is a task selector, not read authority. HOME reads
+    # require the current connection's selected locator and task repository binding below;
+    # a claimed HOME in session history must never acquire the service adapter's exception.
+    if Path(workspace_root) == Path.home() and not admitted_home_project:
         return ()
     probe = getattr(change_capture, "probe_requested_paths", None)
 
@@ -5563,6 +5569,7 @@ def _privacy_gated_semantic_evaluator(
             async def read_roots_for(case: SemanticCase) -> tuple[ReadRoot, ...]:
                 if runtime is None:
                     return ()
+                source = current_check_workspace_source()
                 return await _reviewer_read_roots(
                     runtime,
                     frozen.lease.operation_id,
@@ -5575,6 +5582,12 @@ def _privacy_gated_semantic_evaluator(
                     protected=protected_directories,
                     withheld=withheld,
                     change_capture=change_capture,
+                    admitted_home_project=(
+                        source is not None
+                        and workspace_root is not None
+                        and Path(source.workspace) == Path(workspace_root)
+                        and source.repository_commitment == repository
+                    ),
                 )
 
             try:
@@ -7093,7 +7106,7 @@ async def provide_service_ready_context(
         )
 
     # One read-only Git adapter serves both the task-start base and the check-time change.
-    change_capture = GitChangeCaptureAdapter()
+    change_capture = GitChangeCaptureAdapter(admitted_home_project=True)
     if not semantic_configured:
         semantic_evaluator = _semantic_not_configured
     elif not provider_endpoint_bound:
