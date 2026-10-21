@@ -165,3 +165,10 @@ their standing permission for you to turn on AI-powered review for a task. The p
 sends only what the owner's policy allows, never-send items are always withheld, and receipts
 record what was reviewed. Your switch is a request, never a grant: the owner's policy governs and
 is enforced.
+
+A `decision_needed` finding is an advisory choice between defensible interpretations or a reasoned
+trade-off. It does not block closure. Read both interpretations, their evidence, and the proposed
+discriminating check; you decide. Record the choice and reason with `respond acknowledged` or
+`respond rejected`. That records a decision, not a verified repair. A `Destructive change:` label
+names what a proposed removal or replacement would lose; consider that cost before changing work
+that matches the task, a supplied input, or an earlier passing check.

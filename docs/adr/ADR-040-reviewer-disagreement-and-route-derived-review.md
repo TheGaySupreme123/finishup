@@ -746,6 +746,44 @@ the drop (#1108 review R3). No event, projection or schema
 changes; packets built before and after differ in item placement only (plus the omission row for a
 displaced decision), and a review recovered across the upgrade ends `coordinator_failure` (ADR-006).
 
+### Amendment 2026-10-21: interpretation choices and decisive acceptance evidence (#1145, #1146)
+
+Before declaring `task_requirement_unmet`, the reviewer locates the requirement in the task text.
+A reasoned trade-off or a conflict between that text and supplied inputs is `decision_needed`
+(priority 3, non-actionable, research-evidence), with both interpretations and their evidence,
+one cheap discriminating check, and `answer_question`: the agent decides and records its choice
+and reason through `respond` (`acknowledged` or `rejected`). An unambiguous violated requirement
+remains a requirement finding; a rationale alone does not waive it. The same choice must not also
+be raised as a defect. The check normalizes a decision's next step to `answer_question` even if
+the provider asks for `act`.
+
+A decision finding is visible in findings and receipt history, but does not enter mandatory
+unanswered counts, receipt-blocking work, or the Stop gate. A later review's silence cannot resolve
+it. A readable, reasoned acknowledgement or rejection carries it as a non-rulable settled finding
+with the choice on the next review; this records a decision, never a verified repair. A redacted
+or unreasoned answer does not settle the choice. Existing finding schema/event 1.4.0 and active
+provider-judgment 1.2.0 gain the kind on this unreleased integration branch; earlier finding and
+provider-judgment versions stay frozen. Generated status/check/receipt/child projections admit it
+with priority 3 and `actionable: false`. No field is added: the destructive flag is the explicit
+`Destructive change:` label in `message_to_main_agent`, naming what a proposed change would remove
+or replace that matches task text, a supplied input, or an earlier passing check. It presents the
+cost as a choice, never a repair directive.
+
+Closing review challenges the decisive measurement or assumption behind acceptance, comparing
+required conditions with actual measurements and naming the strongest gap and one cheap
+check. Warmed runs do not establish cold start, an arbitrary window does not establish the task's
+window, and a validator that shares an untested reference or cycle length does not establish that
+reference or length. Gaps alone are not failures. Performance regression claims require repeated,
+comparable timings with workload, window, environment and warm/cold state held comparable.
+
+Task input roots already use ADR-009's owner-admitted scope and ADR-031's task-input snapshots.
+The reviewer is instructed to use those catalog aliases and declared paths; unadmitted inputs stay
+coverage limits. This amendment grants no new read, privacy, consent or egress authority. The same
+instruction and finding behavior apply to Codex, Claude Code and Cursor, CLI/MCP checks, hook Stop
+readiness, terminal views and JSON/markdown/text receipts. Offline calibration includes the
+nextjs-performance a2 deferred-loading trade-off and atrx-vep-crispr a1/a2 conflicting reference
+models; it tests directives and deterministic handling, not whether a model will follow them.
+
 ## Amendment (2026-10-21): account for a requested review that stopped (#1149)
 
 The existing round caps still stop an unchanged unassessable review. The check now records

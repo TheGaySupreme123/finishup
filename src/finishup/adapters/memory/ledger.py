@@ -4340,6 +4340,7 @@ class MemoryLedgerAdapter:
                         FindingKind.CODE_DEFECT,
                         FindingKind.TASK_REQUIREMENT_UNMET,
                         FindingKind.AGENT_CRITERION_UNMET,
+                        FindingKind.DECISION_NEEDED,
                     }
                     or (payload.challenge is not None and payload.challenge.snippet is not None)
                 )

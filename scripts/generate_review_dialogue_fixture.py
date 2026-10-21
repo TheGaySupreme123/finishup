@@ -286,6 +286,30 @@ def document(root: Path) -> dict[str, Any]:
             },
         },
     ]
+    # #1146: pin the new kind on finding/event 1.4.0 without changing the historical vectors.
+    decision = _finding(
+        root,
+        "fnd_97289e6b-0000-4000-8000-000000000003",
+        "Decision needed: deferred loading versus immediate content.",
+        "You decide; record your choice and reason with respond acknowledged or rejected.",
+        [_OBLIGATION],
+    )
+    decision.update(
+        kind="decision_needed",
+        priority=3,
+        policy_id="research-evidence",
+        challenge={
+            "discrepancy": "Immediate content avoids a delay after the initial render.",
+            "alternative_interpretation": "Deferred loading improves the measured initial render.",
+            "requested_next_step": "answer_question",
+            "uncertainty": "Does the task forbid deferred loading?",
+        },
+    )
+    decision_bytes = canonical_encode(
+        encode_payload(
+            decode_payload(EventSchema("finding_recorded", "1.4.0"), freeze_json(decision))
+        )
+    )
     return {
         "fixture_schema": "yoetz.fixture-case/1.0.0",
         "fixture_version": "1.0.0",
@@ -304,7 +328,16 @@ def document(root: Path) -> dict[str, Any]:
             "external_io": "forbidden",
             "randomness": "forbidden",
         },
-        "input": {"vectors": vectors, "operations": operations},
+        "input": {
+            "vectors": vectors,
+            "operations": operations,
+            "decision_needed": {
+                "payload": decision,
+                "canonical_hex": decision_bytes.hex(),
+                "digest": canonical_digest(decision),
+                "schema_version": "1.4.0",
+            },
+        },
         "expected": {"legacy_challenge": None},
     }
 

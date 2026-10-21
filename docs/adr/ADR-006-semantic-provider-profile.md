@@ -2829,6 +2829,21 @@ not account entitlement or live interoperability. The Anthropic compatible adapt
 Haiku and Fable suggestions on review and probe requests. Its prompt-only output enforcement and
 local judgment validation remain unchanged. No live provider call is part of this change.
 
+## Amendment: reviewer judgment calibration (2026-10-21, issues #1145, #1146)
+
+The active reviewer loop and the packet-only provider instruction now share bounded calibration
+and acceptance paragraphs (`REVIEWER_JUDGMENT_CALIBRATION`, `REVIEWER_ACCEPTANCE_INSTRUCTION`).
+They distinguish a `decision_needed` choice from a clear unmet requirement, flag destructive costs,
+require repeated comparable timings for regression claims, and test the decisive acceptance
+measurement. The compact core asks for a choice, never a repair, on `decision_needed`.
+Other challenges name the repair or exact missing artifact. The loop remains one compact
+instruction: 6,496 UTF-8 bytes / 1,034 words,
+compared with the earlier 4,371 bytes / 736 words, capped by tests at 6,500 UTF-8 bytes
+and 1,050 words. This explicit increase carries the requested judgment rules on the actual
+conversation path; it does not replace the compact core with the full packet-only prompt.
+The phase question repeats only the closing acceptance purpose. Wire and finding semantics are
+specified in [ADR-040's judgment amendment](ADR-040-reviewer-disagreement-and-route-derived-review.md).
+
 ## Amendment — 2026-10-21: finding delivery and frozen review context (#1139, #1126, #1148)
 
 **Read the full finding before answering.** Treat `review_delivery` as a bounded advisory preview.

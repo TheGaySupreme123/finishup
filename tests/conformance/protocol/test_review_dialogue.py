@@ -9,7 +9,7 @@ from typing import Any
 import pytest
 
 from finishup.domain.events import CheckRecordedPayload, EventSchema, decode_payload, encode_payload
-from finishup.domain.findings import Finding, FindingChallenge, finding_to_json
+from finishup.domain.findings import Finding, FindingChallenge, FindingKind, finding_to_json
 from finishup.domain.values import freeze_json
 from finishup.protocol.canonical import canonical_digest, canonical_encode
 from finishup.protocol.errors import ProtocolValueError
@@ -34,6 +34,27 @@ def _findings() -> list[dict[str, Any]]:
 
 def _checks() -> list[dict[str, Any]]:
     return [vector for vector in _vectors() if vector["family"] == "check_recorded"]
+
+
+def test_decision_needed_golden_vector_is_additive_and_keeps_its_priority() -> None:
+    path = (
+        Path(__file__).resolve().parents[3] / "fixtures/canonical/review-dialogue-1.3.0.case.json"
+    )
+    vector = json.loads(path.read_bytes())["input"]["decision_needed"]
+    wire = vector["payload"]
+    validate_schema_instance("finding-recorded", "1.4.0", wire)
+    decoded = decode_payload(EventSchema("finding_recorded", "1.4.0"), freeze_json(wire))
+    assert isinstance(decoded, Finding)
+    assert decoded.kind is FindingKind.DECISION_NEEDED
+    assert decoded.priority == 3
+    assert canonical_encode(encode_payload(decoded)).hex() == vector["canonical_hex"]
+    assert canonical_digest(encode_payload(decoded)) == vector["digest"]
+    for earlier in ("1.0.0", "1.1.0", "1.2.0", "1.3.0"):
+        _schema_rejects(earlier, wire)
+        with pytest.raises(ProtocolValueError):
+            decode_payload(EventSchema("finding_recorded", earlier), freeze_json(wire))
+    with pytest.raises(SchemaInstanceInvalid):
+        validate_schema_instance("finding-recorded", "1.4.0", {**wire, "priority": 1})
 
 
 def test_golden_checks_round_trip_and_rulings_need_their_version() -> None:
