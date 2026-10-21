@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import contextlib
+import os
 from pathlib import Path
 
 import pytest
@@ -19,6 +21,7 @@ from finishup.ports.change_capture import ChangeCaptureUnavailable, CheckWorkspa
 from finishup.ports.subject_state import (
     SubjectStateCaptureCommand,
     SubjectStateFormat,
+    SubjectStateLimitation,
     SubjectStateStatus,
 )
 from unit.adapters.test_requested_path_probe import (
@@ -53,6 +56,39 @@ _PRIVATE = (
     "nested/id_ed25519",
     ".env.private",
     "nested/service.pem",
+    # Cursor's review of #1166: credential/host-state names a fixed name list missed.
+    ".cargo/credentials.toml",
+    ".vault-token",
+    "credentials.toml",
+    "nested/credentials.toml",
+    ".boto",
+    ".gcloud/adc.json",
+    ".config/gcloud/application_default_credentials.json",
+    ".mozilla/firefox/profile/logins.json",
+    "backup/.ssh/config",
+    "deep/project/.aws/credentials",
+    "project/.env",
+    ".docker/config.json",
+    ".kube/config",
+    ".npmrc",
+    ".pypirc",
+    ".netrc",
+    ".git-credentials",
+    ".gnupg/pubring.kbx",
+    ".password-store/site.gpg",
+    ".config/gh/hosts.yml",
+    "Library/Keychains/login.keychain-db",
+    "snap/app/common/config.json",
+)
+# Cursor's exact reproduction paths (#1166): created after the task base, so part of the change.
+_CREATED_AFTER_BASE = (
+    ".cargo/credentials.toml",
+    ".vault-token",
+    "credentials.toml",
+    ".boto",
+    ".gcloud/adc.json",
+    ".mozilla/logins.json",
+    "backup/.ssh/config",
 )
 
 
@@ -87,6 +123,18 @@ def test_admitted_service_locator_works_without_the_host_process_context(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     root = _home(tmp_path, monkeypatch)
+    (root / "notes.txt").write_text("task input notes\n")
+    _git(root, "add", "--", "notes.txt")
+    _git(
+        root,
+        "-c",
+        "user.name=Test",
+        "-c",
+        "user.email=test@example.invalid",
+        "commit",
+        "-qm",
+        "notes",
+    )
     adapter = GitChangeCaptureAdapter(admitted_home_project=True)
     base = adapter.read_task_base(str(root))
     (root / "kept.txt").write_text("repaired answer\n")
@@ -103,14 +151,15 @@ def test_admitted_service_locator_works_without_the_host_process_context(
         "-qm",
         "repair",
     )
-    change = adapter.capture(str(root), base, input_paths=(".gitignore",))
+    change = adapter.capture(str(root), base, input_paths=("notes.txt", ".gitignore"))
     assert b"repaired answer" in change.text and b"new answer" in change.text
     assert {entry.path for entry in adapter.capture_metadata(str(root), base).entries} == {
         "kept.txt",
         "gone.txt",
         "new.txt",
     }
-    assert any(item.path == ".gitignore" for item in change.inputs)
+    # An ordinary input is read; a dot-named one in HOME stays out (fail-closed dot rule).
+    assert {item.path for item in change.inputs} == {"notes.txt"}
     (root / "subdir").mkdir()
     # A subdirectory without its own repository may not silently opt its HOME ancestor in.
     with pytest.raises(ChangeCaptureUnavailable, match="unsafe_root"):
@@ -194,7 +243,99 @@ def test_home_state_never_enters_change_inputs_counts_outputs_or_structural_capt
     listing = list_beneath(str(root), "", excluded=(), expired=lambda: False)
     assert listing is not None
     names = {name for name, _directory in listing[0]}
-    assert not names.intersection({"Library", "AppData", "auth.json", "credentials.json"})
+    assert not names.intersection(
+        {"Library", "AppData", "snap", "auth.json", "credentials.json", "credentials.toml"}
+    )
+
+
+def test_credentials_created_after_the_task_base_stay_out_of_change_and_direct_reads(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = _home(tmp_path, monkeypatch)
+    adapter = GitChangeCaptureAdapter(admitted_home_project=True)
+    base = adapter.read_task_base(str(root))
+    (root / "kept-new.txt").write_text("ordinary new answer\n")
+    for relative in _CREATED_AFTER_BASE:
+        path = root / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(f"credential canary {relative}\n")
+    change = adapter.capture(str(root), base, input_paths=_CREATED_AFTER_BASE)
+    # The positive control proves the capture ran and shows ordinary new files.
+    assert b"ordinary new answer" in change.text
+    assert b"credential canary" not in change.text and not change.inputs
+    shown = {entry.path for entry in adapter.capture_metadata(str(root), base).entries}
+    assert shown == {"kept-new.txt"}
+    counts = adapter.count_change_lines(str(root), base.commit, _CREATED_AFTER_BASE)
+    assert {count.path for count in counts.changed} == {"kept-new.txt"}
+    assert all(
+        probe.exists is None
+        for probe in adapter.probe_requested_paths(str(root), _CREATED_AFTER_BASE)
+    )
+    assert read_text_beneath(str(root), "kept-new.txt", excluded=(), expired=lambda: False)
+    assert all(
+        read_text_beneath(str(root), relative, excluded=(), expired=lambda: False) is None
+        for relative in _CREATED_AFTER_BASE
+    )
+
+
+def _writable_link(link: Path, target: Path) -> None:
+    link.symlink_to(target)
+    # Linux always reports a symlink as 0777; give macOS the same mode where it is settable.
+    with contextlib.suppress(NotImplementedError, OSError):
+        os.chmod(link, 0o777, follow_symlinks=False)
+
+
+@pytest.mark.parametrize("home", (True, False))
+def test_a_link_outside_excluded_paths_is_classified_like_any_other_root(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, home: bool
+) -> None:
+    outside = tmp_path / "outside.txt"
+    outside.write_text("outside link canary\n")
+    if home:
+        root = _home(tmp_path, monkeypatch)
+    else:
+        root = _repository(tmp_path).resolve()
+        other = tmp_path / "different-home"
+        other.mkdir(mode=0o700)
+        monkeypatch.setenv("HOME", str(other))
+    adapter = GitChangeCaptureAdapter(admitted_home_project=home)
+    base = adapter.read_task_base(str(root))
+    handle = open_local_workspace(root, admitted_home_project=home)
+    command = SubjectStateCaptureCommand(handle, SubjectStateFormat.GIT_STRUCTURAL_V1)
+    if home:
+        # Dot-named links (dotfile managers) are excluded host state in HOME.
+        _writable_link(root / ".bashrc", outside)
+        assert GitSubjectStateAdapter().capture(command).status is SubjectStateStatus.CAPTURED
+    _writable_link(root / "bin", outside)
+    # A link's own mode bits are no writability signal: every root reports the same
+    # unsupported link rather than an unsafe root, and the link is never followed.
+    result = GitSubjectStateAdapter().capture(command)
+    assert result.status is SubjectStateStatus.UNSUPPORTED
+    assert result.limitations == (SubjectStateLimitation.SYMLINK_UNSUPPORTED,)
+    assert result.subject_state is None
+    change = adapter.capture(str(root), base)
+    assert b"outside link canary" not in change.text
+
+
+@pytest.mark.parametrize("home", (True, False))
+def test_a_nested_repository_is_refused_in_home_like_any_other_root(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, home: bool
+) -> None:
+    if home:
+        root = _home(tmp_path, monkeypatch)
+    else:
+        root = _repository(tmp_path).resolve()
+        other = tmp_path / "different-home"
+        other.mkdir(mode=0o700)
+        monkeypatch.setenv("HOME", str(other))
+    (root / "code/proj").mkdir(parents=True)
+    _git(root / "code/proj", "init", "--quiet")
+    handle = open_local_workspace(root, admitted_home_project=home)
+    command = SubjectStateCaptureCommand(handle, SubjectStateFormat.GIT_STRUCTURAL_V1)
+    # The dot rule does not make a nested repository acceptable: HOME refuses it as any root does.
+    result = GitSubjectStateAdapter().capture(command)
+    assert result.subject_state is None
+    assert result.limitations == (SubjectStateLimitation.UNSAFE_ROOT,)
 
 
 def test_filesystem_root_is_refused_even_when_home_and_admitted(
@@ -205,19 +346,28 @@ def test_filesystem_root_is_refused_even_when_home_and_admitted(
         open_local_workspace(Path("/"), admitted_home_project=True)
 
 
-def test_home_public_paths_keep_normal_hidden_project_changes_and_link_refusal(
+def test_home_dot_paths_stay_out_at_any_depth_and_links_are_never_followed(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     root = _home(tmp_path, monkeypatch)
     adapter = GitChangeCaptureAdapter(admitted_home_project=True)
     base = adapter.read_task_base(str(root))
+    (root / "notes.txt").write_text("ordinary project notes\n")
+    # In HOME every dot-named file or directory is excluded, matching the reviewer's direct-read
+    # selector: project dot files such as workflows or `.cursorignore` are withheld too.
     (root / ".github/workflows").mkdir(parents=True)
     (root / ".github/workflows/check.yml").write_text("name: project check\n")
+    (root / ".cursorignore").write_text("cursor ignore canary\n")
+    (root / "proj/.settings").mkdir(parents=True)
+    (root / "proj/.settings/token.txt").write_text("nested dot canary\n")
     (root / ".codex").mkdir()
     (root / ".codex/private.txt").write_text("private link canary\n")
     (root / "link.txt").symlink_to(root / ".codex/private.txt")
     change = adapter.capture(str(root), base)
-    assert b"project check" in change.text and b"private link canary" not in change.text
+    assert b"ordinary project notes" in change.text
+    for canary in (b"project check", b"cursor ignore canary", b"nested dot canary"):
+        assert canary not in change.text
+    assert b"private link canary" not in change.text
     (probe,) = adapter.probe_requested_paths(str(root), ("link.txt",))
     # lstat may report the link's own existence, but supplies no target size or content.
     assert probe.exists is True and probe.size_bytes is None

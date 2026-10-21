@@ -41,8 +41,10 @@ content-returning read needed its own decision. This is that decision, for exact
 **HOME projects (#1161, 2026-10-21).** The explicit-home selection in ADR-012 applies to this
 capture and its requested-output/ignore probes as well as setup. The service admits only its
 authenticated selected HOME locator, with all existing root/Git safety checks and the shared
-home-state exclusions described there. Those exclusions apply to tracked and untracked paths
-before content reads, and do not change any disclosure or network authority. Filesystem root
+home-state exclusions described there: every dot-named path at any depth, named host trees,
+local authentication files and the credential names below, at any depth. Those exclusions apply
+to tracked and untracked paths before content reads, and do not change any disclosure or network
+authority. See ADR-012 for the service-side consent boundary (#1181). Filesystem root
 remains refused. The same seam supplies CLI, MCP, hook-triggered checks, TUI and receipts.
 
 1. **One object per check, captured by the service.** When a check's AI-powered review recipe
@@ -141,10 +143,10 @@ remains refused. The same seam supplies CLI, MCP, hook-triggered checks, TUI and
      is taken again, at most three times in all; a tree that never holds still is
      `changed_during_capture`.
    - **Credential names.** Files whose names follow common credential conventions (`.env`,
-     `.env.*`, `.netrc`, `.npmrc`, `id_rsa`, `*.pem`, `*.key`, `*.tfvars` and similar), tracked or
-     untracked, are listed by name only and their content is never shown. That list is a name
-     heuristic, not a detector: it catches common conventions, and every shown line still passes
-     redaction and the never-send scan.
+     `.env.*`, `.netrc`, `.npmrc`, `credentials.toml`, `id_rsa`, `*.pem`, `*.key`, `*.tfvars`
+     and similar), tracked or untracked, are listed by name only and their content is never
+     shown. That list is a name heuristic, not a detector: it catches common conventions, and
+     every shown line still passes redaction and the never-send scan.
    - **Size and time.** The stored text is at most 256 KiB and leaves an oversized file out whole
      rather than cutting it mid-hunk; the packet then splits that text on line boundaries. An
      untracked listing over 8 MiB keeps the names that fit and says the untracked count is a lower

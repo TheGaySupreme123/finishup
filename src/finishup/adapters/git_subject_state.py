@@ -792,7 +792,9 @@ class GitSubjectStateAdapter:
             for entry in ordered:
                 name_bytes = os.fsencode(entry.name)
                 relative = name_bytes if not relative_dir else relative_dir + b"/" + name_bytes
-                if home_private_path(workspace.root, relative):
+                # HOME exclusions never skip a `.git`: a nested repository stays refused below,
+                # exactly as in any other root.
+                if entry.name != ".git" and home_private_path(workspace.root, relative):
                     continue
                 entries_seen += 1
                 path_bytes_seen += len(os.fsencode(entry.name))
@@ -813,12 +815,17 @@ class GitSubjectStateAdapter:
                     facts = entry.stat(follow_symlinks=False)
                 except OSError as exc:
                     raise _CaptureFailure(SubjectStateLimitation.UNSAFE_ROOT) from exc
+                if stat.S_ISLNK(facts.st_mode):
+                    # Never followed. A link's own mode bits are no writability signal (Linux
+                    # always reports 0777), so every root names it unsupported, not unsafe.
+                    raise _CaptureFailure(
+                        SubjectStateLimitation.SYMLINK_UNSUPPORTED,
+                        SubjectStateStatus.UNSUPPORTED,
+                    )
                 expected_uid = os.geteuid() if hasattr(os, "geteuid") else os.getuid()
                 if facts.st_uid != expected_uid or writable_by_others(facts):
                     raise _CaptureFailure(SubjectStateLimitation.UNSAFE_ROOT)
-                if stat.S_ISLNK(facts.st_mode) or not (
-                    stat.S_ISREG(facts.st_mode) or stat.S_ISDIR(facts.st_mode)
-                ):
+                if not (stat.S_ISREG(facts.st_mode) or stat.S_ISDIR(facts.st_mode)):
                     raise _CaptureFailure(
                         SubjectStateLimitation.SYMLINK_UNSUPPORTED,
                         SubjectStateStatus.UNSUPPORTED,
@@ -831,8 +838,6 @@ class GitSubjectStateAdapter:
                         # never opened directly; only the hardened git subprocess touches
                         # the object store, so its internals need no per-file walk.
                         continue
-                    name_bytes = os.fsencode(entry.name)
-                    relative = name_bytes if not relative_dir else relative_dir + b"/" + name_bytes
                     if relative in ignored_prefixes or relative + b"/" in ignored_prefixes:
                         continue  # gitignore-excluded subtree: capture never opens files inside it
                     pending.append((Path(entry.path), relative))

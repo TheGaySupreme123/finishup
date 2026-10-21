@@ -23,6 +23,7 @@ _CREDENTIAL_NAMES: Final = frozenset(
         b".pypirc",
         b"credentials",
         b"credentials.json",
+        b"credentials.toml",
         b"id_dsa",
         b"id_ecdsa",
         b"id_ed25519",

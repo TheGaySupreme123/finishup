@@ -3396,11 +3396,17 @@ authenticated HOME locator across the host/service process boundary (#1161). The
 change capture cannot use the service option to discover HOME above another selected directory.
 HOME reviewer roots additionally require a matching `CheckWorkspaceSource` workspace and task
 repository commitment; a session's public workspace selector alone cannot grant the exception.
-`adapters/home_project_reads.py` shares case-insensitive home-state exclusions across Git
-pathspec selection, structural tree walks, direct reads and requested-output probes (ADR-012).
+The handshake does not carry the launcher's opt-in, so the service admits HOME for any
+authenticated same-user locator; binding it to a recorded opt-in is design-gated #1181.
+`adapters/home_project_reads.py` shares one home-state exclusion across Git pathspec selection,
+structural tree walks, direct reads, listings and requested-output probes (ADR-012): every path
+with a dot-named component at any depth, the top-level `Library`, `AppData` and `snap` trees
+(case-insensitive), local authentication files and the ADR-031 credential names at any depth.
 Tracked host state is excluded too; excluded outputs have unknown existence/ignore facts.
-Reviewer root aliases, relative-only selectors, hidden-component refusals, Git ignores,
-observation consent and outbound admission retain their existing contracts. No wire field changes.
+Structural capture reports a link outside the exclusions as `symlink_unsupported` in every root,
+never following it. Reviewer root aliases, relative-only selectors, hidden-component refusals,
+Git ignores, observation consent and outbound admission retain their existing contracts. No wire
+field changes.
 
 Cursor shared-hook refreshes preserve that choice only with recorded HOME membership
 and a still-installed exact opted-in HOME project MCP entry; disclosure `shared_home_project`

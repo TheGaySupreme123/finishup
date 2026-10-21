@@ -1,7 +1,14 @@
 """Keep host state out of an explicitly selected HOME workspace (#1161).
 
 These are read exclusions, never observation or disclosure authority. Ordinary project
-roots retain their existing selection rules. Git pathspecs and direct reads share this list.
+roots retain their existing selection rules. Git pathspecs and direct reads share this rule.
+
+In a home folder, dot-named files and directories are overwhelmingly host, tool and credential
+state (``.ssh``, ``.aws``, ``.config``, ``.cargo/credentials.toml``, ``.vault-token``, ``.boto``,
+a nested ``backup/.ssh`` and so on), and no fixed name list can enumerate them. So every path
+with a dot-named component at any depth is excluded, the rule the reviewer's direct-read
+selector already applies in every root. Named non-dot host trees and credential file names
+complete the exclusion; all of it applies to tracked and untracked paths alike.
 """
 
 from __future__ import annotations
@@ -12,33 +19,12 @@ from typing import Final
 
 from finishup.domain.repository_excerpt import credential_name_patterns, credential_named_bytes
 
-_PRIVATE_TREES: Final = (
-    ".git",
-    ".codex",
-    ".claude",
-    ".cursor",
-    ".ssh",
-    ".aws",
-    ".azure",
-    ".gnupg",
-    ".kube",
-    ".docker",
-    ".config",
-    ".local",
-    ".cache",
-    ".npm",
-    ".t3",
-    ".password-store",
-    ".agents/plugins/finishup",
-    ".agents/skills/finishup",
-    ".agents/plugins/yoetz",
-    ".agents/skills/yoetz",
-    "Library",
-    "AppData",
-)
+# Top-level non-dot trees that hold host or application state (macOS, Windows, Linux snaps).
+_PRIVATE_TREES: Final = ("Library", "AppData", "snap")
+# Local authentication files at any depth, beyond the ADR-031 credential-name heuristic.
 _PRIVATE_FILES: Final = ("auth.json", "auth.toml", "oauth.json", "tokens.json")
-_PRIVATE_HOME_PREFIXES: Final = (".codex", ".claude", ".cursor", ".finishup", ".yoetz", ".yz-")
-_PRIVATE_HOME_FILES: Final = (".gitconfig", ".bash_history", ".zsh_history", ".python_history")
+_FOLDED_TREES: Final = tuple(tree.casefold() for tree in _PRIVATE_TREES)
+_FOLDED_FILES: Final = frozenset(name.casefold() for name in _PRIVATE_FILES)
 
 
 def home_private_path(root: Path, relative: bytes) -> bool:
@@ -46,16 +32,12 @@ def home_private_path(root: Path, relative: bytes) -> bool:
 
     if root != Path.home():
         return False
-    path = relative.decode("utf-8", errors="surrogateescape").casefold().rstrip("/")
+    parts = relative.decode("utf-8", errors="surrogateescape").casefold().strip("/").split("/")
     return (
         credential_named_bytes(relative)
-        or any(
-            path == tree.casefold() or path.startswith(tree.casefold() + "/")
-            for tree in _PRIVATE_TREES
-        )
-        or path.rsplit("/", 1)[-1] in _PRIVATE_FILES
-        or path.split("/", 1)[0].startswith(_PRIVATE_HOME_PREFIXES)
-        or path in _PRIVATE_HOME_FILES
+        or any(part.startswith(".") for part in parts)
+        or parts[0] in _FOLDED_TREES
+        or parts[-1] in _FOLDED_FILES
     )
 
 
@@ -65,10 +47,10 @@ def home_private_pathspecs(root: Path) -> tuple[str, ...]:
     if root != Path.home():
         return ()
     return (
+        # A dot-named entry at any depth, and everything beneath a dot-named directory.
+        ":(top,exclude,glob)**/.*",
+        ":(top,exclude,glob)**/.*/**",
         *(f":(top,exclude,icase,literal){tree}" for tree in _PRIVATE_TREES),
-        *(f":(top,exclude,icase,literal){name}" for name in _PRIVATE_HOME_FILES),
-        *(f":(top,exclude,glob,icase){prefix}*" for prefix in _PRIVATE_HOME_PREFIXES),
-        *(f":(top,exclude,glob,icase){prefix}*/**" for prefix in _PRIVATE_HOME_PREFIXES),
         *(f":(top,exclude,glob,icase)**/{name}" for name in _PRIVATE_FILES),
         *(f":(top,exclude,glob,icase)**/{name}" for name in credential_name_patterns()),
     )

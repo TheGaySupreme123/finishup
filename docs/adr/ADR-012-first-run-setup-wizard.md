@@ -902,15 +902,41 @@ directory, link, Git metadata, task-route and consent fences remain in force.
 Reviewer roots also require the current connection's HOME locator and repository commitment
 to match the task route; a HOME path claimed in task history alone supplies no read authority.
 
-HOME selection does not turn personal host state into project evidence. A shared lexical,
-case-insensitive read exclusion removes host/config/cache/credential trees (including `.codex`,
-`.claude`, `.cursor`, their testing variants, `.ssh`, `.config`, `.local`, `.cache`, `.t3`,
-`Library` and `AppData`), FinishUP-owned `.agents/plugins/{finishup,yoetz}` and
-`.agents/skills/{finishup,yoetz}`, local authentication files, and the existing ADR-031
-credential-name patterns. Git excludes these paths before producing tracked patches, counts,
-untracked inventories or structural hashes; direct task-input/reviewer reads and output probes
-apply the same exclusions. Excluded outputs remain unverified. Ordinary project content retains
-the normal Git ignore, descriptor-safe read, budget and redaction rules. Reviewer selectors
-remain relative to their issued root alias and continue refusing hidden components and absolute
-paths. Observation grants, review recipes, privacy minimization, never-send scanning and egress
-admission are unchanged for Codex, Claude Code and Cursor.
+Consent boundary: the launcher's opt-in is not carried across the control handshake, so the
+service admits HOME for any authenticated same-user handshake that names it. Honest hosts cannot
+select HOME without the opt-in, but a same-user client that skips the launcher gate gets HOME
+change capture and output probes, and reviewer reads when its source and repository commitment
+match. The source/commitment match proves the binding, not the opt-in. Binding the admission to
+an opt-in recorded with the locator needs a handshake field and stored-locator state, and is
+tracked as design-gated follow-up #1181.
+
+HOME selection does not turn personal host state into project evidence. In a home folder,
+dot-named files and directories are overwhelmingly host, tool and credential state, and no fixed
+name list can enumerate them (#1166 review: `.cargo/credentials.toml`, `.vault-token`, `.boto`,
+`.gcloud/`, `.mozilla/` and a nested `backup/.ssh/` all escaped one). So a shared lexical read
+exclusion removes every path with a dot-named component at any depth: the rule the reviewer's
+direct-read selector already applies in every root. That covers `.git`, `.codex`, `.claude`,
+`.cursor` and their testing variants, `.ssh`, `.aws`, `.gnupg`, `.docker`, `.kube`, `.config`,
+`.local`, `.cache`, `.t3`, `.agents`, dot-file credentials such as `.npmrc`, `.pypirc`,
+`.netrc`, `.git-credentials`, `.vault-token` and `.boto`, and nested dot directories such as
+`backup/.ssh/`. It also removes, case-insensitively, the top-level non-dot host trees `Library`,
+`AppData` and `snap`, local authentication files (`auth.json`, `auth.toml`, `oauth.json`,
+`tokens.json`) at any depth, and the ADR-031 credential-name patterns (which now include
+`credentials.toml`) at any depth. This is deliberately fail-closed: project dot files in a
+HOME project (`.gitignore` content, `.github/`, `.cursorignore`) are withheld from the change and
+task inputs too, and a requested output under a dot-named path stays unverified. Git applies
+the same rule as exclude pathspecs before producing tracked patches, counts, untracked
+inventories or structural hashes; direct task-input/reviewer reads, directory listings and
+output probes apply it lexically, including to not-yet-created paths. Git still honors a HOME
+`.gitignore` when deciding what is ignored; its content is not shown. Ordinary project content
+retains the normal Git ignore, descriptor-safe read, budget and redaction rules. Reviewer selectors remain
+relative to their issued root alias and continue refusing hidden components and absolute paths.
+
+Structural capture walks a HOME project as it walks any root. Excluded paths are skipped, so a
+dot-file symlink (as dotfile managers create) does not affect it, but a nested repository is
+still refused. A symlink outside the exclusions is never followed and reports
+`symlink_unsupported`, as it does in every root. Its own mode bits are no writability signal
+(Linux reports 0777), so it is classified before the owner/writability check rather than
+reported as `unsafe_root`. Check-time change capture is unaffected by such a link and never
+reads its target. Observation grants, review recipes, privacy minimization, never-send scanning
+and egress admission are unchanged for Codex, Claude Code and Cursor.

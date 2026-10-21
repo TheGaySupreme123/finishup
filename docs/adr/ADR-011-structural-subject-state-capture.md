@@ -28,10 +28,19 @@ say whether two material actions referred to the same repository state.
 **Explicit HOME roots (#1161, 2026-10-21).** ADR-012's exact-home opt-in applies to the local
 workspace handle. A service may pass `admitted_home_project` only for its authenticated selected
 locator or an observation-granted stored locator. Filesystem root remains refused. The shared
-HOME exclusions apply before structural hashes and tree walks, so credentials, host state and
-FinishUP-owned installed trees do not become project state or consume its read bounds. This
-changes selection only for an admitted HOME project; the digest format and provenance stay the
-same. ADR-012 records the exclusions and host/consent boundaries.
+HOME exclusions (every dot-named path at any depth, plus named host trees and credential
+names) apply before structural hashes and tree walks, so credentials, host state and
+FinishUP-owned installed trees do not become project state or consume its read bounds. A nested
+repository is still refused. This changes selection only for an admitted HOME project; the
+digest format and provenance stay the same. ADR-012 records the exclusions and host/consent
+boundaries.
+
+**Links are classified before writability, in every root (#1166, 2026-10-22).** The tree walk
+never follows a link. A link outside the selected paths reports `symlink_unsupported`
+(`unsupported`) before the owner/writability check, because a link's own mode bits are no
+writability signal: Linux always reports 0777, so an untracked link used to surface as
+`unsafe_root` there and as `symlink_unsupported` on macOS. Real files and directories keep
+the owner and writability fence.
 
 1. **`SubjectStateCapturePort` owns structural capture.** The port accepts one explicit trusted
    local workspace handle plus closed capture options and returns a `SubjectStateRef` or a bounded

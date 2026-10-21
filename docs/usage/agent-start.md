@@ -209,7 +209,11 @@ workspace (for example, a container working in `/root`), preview with
 The same flag works for Claude Code, Cursor, and multiple selected agents. Keep it in the
 preview's exact approval command; `--accept` alone never opts in. The filesystem root and
 symlinked or unsafe folders stay refused. This choice connects the folder; observation and
-AI-powered review still need their separate permissions. To reverse it, use
+AI-powered review still need their separate permissions. In a home-folder project, FinishUP
+leaves hidden files and folders (any name starting with a dot, such as `.ssh`, `.config` or
+`.github`, at any depth), the `Library`, `AppData` and `snap` folders, and credential files such
+as `credentials.toml` or `auth.json` out of review: they are never shown in the change, read
+for the reviewer or sent, and a requested output there stays unverified. To reverse it, use
 `finishup setup disconnect --host codex --project "$HOME" --non-interactive --json` and approve
 its exact preview. Disconnect needs no home-folder opt-in and preserves FinishUP data.
 
