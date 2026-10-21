@@ -7,8 +7,9 @@ In a home folder, dot-named files and directories are overwhelmingly host, tool 
 state (``.ssh``, ``.aws``, ``.config``, ``.cargo/credentials.toml``, ``.vault-token``, ``.boto``,
 a nested ``backup/.ssh`` and so on), and no fixed name list can enumerate them. So every path
 with a dot-named component at any depth is excluded, the rule the reviewer's direct-read
-selector already applies in every root. Named non-dot host trees and credential file names
-complete the exclusion; all of it applies to tracked and untracked paths alike.
+selector already applies in every root. Named non-dot host trees (including a copied
+``backup/Library``) and credential file names complete the exclusion; all of it applies to
+tracked and untracked paths alike.
 """
 
 from __future__ import annotations
@@ -21,8 +22,19 @@ from finishup.domain.repository_excerpt import credential_name_patterns, credent
 
 # Top-level non-dot trees that hold host or application state (macOS, Windows, Linux snaps).
 _PRIVATE_TREES: Final = ("Library", "AppData", "snap")
+# Their exact profile names also mark a copy at any depth (`backup/Library/Keychains`). Matching
+# is case-sensitive below the top level so project folders such as `src/library` or snapcraft's
+# `snap/` stay reviewable.
+_COPIED_TREES: Final = ("Library", "AppData")
 # Local authentication files at any depth, beyond the ADR-031 credential-name heuristic.
-_PRIVATE_FILES: Final = ("auth.json", "auth.toml", "oauth.json", "tokens.json")
+_PRIVATE_FILES: Final = (
+    "auth.json",
+    "auth.toml",
+    "kubeconfig",
+    "oauth.json",
+    "token.json",
+    "tokens.json",
+)
 _FOLDED_TREES: Final = tuple(tree.casefold() for tree in _PRIVATE_TREES)
 _FOLDED_FILES: Final = frozenset(name.casefold() for name in _PRIVATE_FILES)
 
@@ -32,11 +44,13 @@ def home_private_path(root: Path, relative: bytes) -> bool:
 
     if root != Path.home():
         return False
-    parts = relative.decode("utf-8", errors="surrogateescape").casefold().strip("/").split("/")
+    exact = relative.decode("utf-8", errors="surrogateescape").strip("/").split("/")
+    parts = [part.casefold() for part in exact]
     return (
         credential_named_bytes(relative)
         or any(part.startswith(".") for part in parts)
         or parts[0] in _FOLDED_TREES
+        or any(part in _COPIED_TREES for part in exact)
         or parts[-1] in _FOLDED_FILES
     )
 
@@ -51,6 +65,9 @@ def home_private_pathspecs(root: Path) -> tuple[str, ...]:
         ":(top,exclude,glob)**/.*",
         ":(top,exclude,glob)**/.*/**",
         *(f":(top,exclude,icase,literal){tree}" for tree in _PRIVATE_TREES),
+        # A copied profile tree at any depth (exact case), and everything beneath it.
+        *(f":(top,exclude,glob)**/{tree}" for tree in _COPIED_TREES),
+        *(f":(top,exclude,glob)**/{tree}/**" for tree in _COPIED_TREES),
         *(f":(top,exclude,glob,icase)**/{name}" for name in _PRIVATE_FILES),
         *(f":(top,exclude,glob,icase)**/{name}" for name in credential_name_patterns()),
     )

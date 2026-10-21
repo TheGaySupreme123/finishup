@@ -3441,7 +3441,9 @@ authenticated same-user locator; binding it to a recorded opt-in is design-gated
 `adapters/home_project_reads.py` shares one home-state exclusion across Git pathspec selection,
 structural tree walks, direct reads, listings and requested-output probes (ADR-012): every path
 with a dot-named component at any depth, the top-level `Library`, `AppData` and `snap` trees
-(case-insensitive), local authentication files and the ADR-031 credential names at any depth.
+(case-insensitive), copies named exactly `Library` or `AppData` at any depth, local
+authentication files (including `token.json` and `kubeconfig`) and the ADR-031 credential names
+at any depth.
 Tracked host state is excluded too; excluded outputs have unknown existence/ignore facts.
 Structural capture reports a link outside the exclusions as `symlink_unsupported` in every root,
 never following it. Reviewer root aliases, relative-only selectors, hidden-component refusals,

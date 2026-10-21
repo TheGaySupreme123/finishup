@@ -3720,8 +3720,9 @@ applies on macOS, Linux and Windows through WSL 2.
   remain refused. Every dot-named file or directory at any depth (`.codex/`, `.claude/`,
   `.cursor/`, `.ssh/`, `.config/`, `.cargo/`, `.vault-token`, a nested `backup/.ssh/` and
   also project dot files such as `.github/` or `.cursorignore`), the top-level `Library`,
-  `AppData` and `snap` trees, and credential/auth file names such as `credentials.toml` or
-  `auth.json` at any depth stay excluded, including tracked files. Excluded outputs remain
+  `AppData` and `snap` trees, copies named exactly `Library` or `AppData` at any depth (such as
+  `backup/Library/`), and credential/auth file names such as `credentials.toml`, `auth.json`,
+  `token.json` or `kubeconfig` at any depth stay excluded, including tracked files. Excluded outputs remain
   unverified. Structural capture reports a symlink outside those exclusions as
   `symlink_unsupported`, as in any project, and never follows it. This adds no observation
   grant or disclosure authority. The service admits HOME for any authenticated same-user

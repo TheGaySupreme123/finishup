@@ -920,9 +920,12 @@ direct-read selector already applies in every root. That covers `.git`, `.codex`
 `.local`, `.cache`, `.t3`, `.agents`, dot-file credentials such as `.npmrc`, `.pypirc`,
 `.netrc`, `.git-credentials`, `.vault-token` and `.boto`, and nested dot directories such as
 `backup/.ssh/`. It also removes, case-insensitively, the top-level non-dot host trees `Library`,
-`AppData` and `snap`, local authentication files (`auth.json`, `auth.toml`, `oauth.json`,
-`tokens.json`) at any depth, and the ADR-031 credential-name patterns (which now include
-`credentials.toml`) at any depth. This is deliberately fail-closed: project dot files in a
+`AppData` and `snap`; a copied profile tree named exactly `Library` or `AppData` at any depth
+(`backup/Library/Keychains/`, from the #1166 re-review); local authentication files
+(`auth.json`, `auth.toml`, `kubeconfig`, `oauth.json`, `token.json`, `tokens.json`) at any
+depth; and the ADR-031 credential-name patterns (which now include `credentials.toml`) at any
+depth. Below the top level the tree names match case-sensitively and `snap` is not matched, so
+project folders such as `src/library/` or snapcraft's `snap/` stay reviewable. This is deliberately fail-closed: project dot files in a
 HOME project (`.gitignore` content, `.github/`, `.cursorignore`) are withheld from the change and
 task inputs too, and a requested output under a dot-named path stays unverified. Git applies
 the same rule as exclude pathspecs before producing tracked patches, counts, untracked

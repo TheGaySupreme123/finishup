@@ -79,6 +79,14 @@ _PRIVATE = (
     ".config/gh/hosts.yml",
     "Library/Keychains/login.keychain-db",
     "snap/app/common/config.json",
+    # Cursor's re-review of #1166: copied profile trees below the top level, and token/kubeconfig
+    # files outside a dot directory.
+    "backup/Library/Keychains/login.keychain-db",
+    "old/AppData/Roaming/app/Login Data",
+    "token.json",
+    "nested/token.json",
+    "kubeconfig",
+    "clusters/kubeconfig",
 )
 # Cursor's exact reproduction paths (#1166): created after the task base, so part of the change.
 _CREATED_AFTER_BASE = (
@@ -89,6 +97,9 @@ _CREATED_AFTER_BASE = (
     ".gcloud/adc.json",
     ".mozilla/logins.json",
     "backup/.ssh/config",
+    "backup/Library/Keychains/login.keychain-db",
+    "token.json",
+    "kubeconfig",
 )
 
 
@@ -254,7 +265,13 @@ def test_credentials_created_after_the_task_base_stay_out_of_change_and_direct_r
     root = _home(tmp_path, monkeypatch)
     adapter = GitChangeCaptureAdapter(admitted_home_project=True)
     base = adapter.read_task_base(str(root))
-    (root / "kept-new.txt").write_text("ordinary new answer\n")
+    # Positive controls: ordinary new files, including project folders whose names differ only in
+    # case from a profile tree, or a snapcraft `snap/` below the top level, stay reviewable.
+    ordinary = ("kept-new.txt", "src/library/kept.py", "pkg/snap/snapcraft.yaml")
+    for relative in ordinary:
+        path = root / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("ordinary new answer\n")
     for relative in _CREATED_AFTER_BASE:
         path = root / relative
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -264,14 +281,17 @@ def test_credentials_created_after_the_task_base_stay_out_of_change_and_direct_r
     assert b"ordinary new answer" in change.text
     assert b"credential canary" not in change.text and not change.inputs
     shown = {entry.path for entry in adapter.capture_metadata(str(root), base).entries}
-    assert shown == {"kept-new.txt"}
-    counts = adapter.count_change_lines(str(root), base.commit, _CREATED_AFTER_BASE)
-    assert {count.path for count in counts.changed} == {"kept-new.txt"}
+    assert shown == set(ordinary)
+    counts = adapter.count_change_lines(str(root), base.commit, (*ordinary, *_CREATED_AFTER_BASE))
+    assert {count.path for count in counts.changed} == set(ordinary)
     assert all(
         probe.exists is None
         for probe in adapter.probe_requested_paths(str(root), _CREATED_AFTER_BASE)
     )
-    assert read_text_beneath(str(root), "kept-new.txt", excluded=(), expired=lambda: False)
+    assert all(
+        read_text_beneath(str(root), relative, excluded=(), expired=lambda: False)
+        for relative in ordinary
+    )
     assert all(
         read_text_beneath(str(root), relative, excluded=(), expired=lambda: False) is None
         for relative in _CREATED_AFTER_BASE
