@@ -36,7 +36,8 @@ anything was sent (``resume_reserved``). A failed turn is never retried.
 The reply schema is chosen once, at the first turn, and kept for the whole review (#1172): the
 provider caches the schema with the conversation, so switching it after the last read would make
 the provider read the whole conversation again. When reads end, the loop appends ``FINAL_TURN`` as
-its own user message instead; a read after that still ends the review ``read_limit``.
+its own user message instead; a read after that still ends the review ``read_limit``. Only when the
+next exchange has no room left for that notice does it narrow the schema, as before.
 """
 
 from __future__ import annotations
@@ -130,10 +131,10 @@ class ReviewerLoop:
         self.resume_reserved = resume_reserved
         self.messages: list[Turn] = []
         self.n_calls = 0
-        # The review's one reply schema, whether it offers reads, and whether ``FINAL_TURN`` was
-        # appended (after which no read is offered again).
+        # The review's one reply schema, whether it offers reads, and whether reads have ended
+        # (after which none is offered again).
         self.schema: dict[str, JsonValue] | None = None
-        self.offers_reads = self.final_noticed = False
+        self.offers_reads = self.reads_ended = False
 
     async def run(self) -> ReviewOutcome:
         """Query the model and run its one read until the final judgment or an exit."""
@@ -154,7 +155,7 @@ class ReviewerLoop:
                 if not await self.history_admissible(frozenset(self.broker.history_roots)):
                     return self.exit("authorization_changed")
                 reads = (
-                    not self.final_noticed
+                    not self.reads_ended
                     and self.broker.reads_allowed()
                     and self.remaining() > self.reserve
                 )
@@ -167,11 +168,17 @@ class ReviewerLoop:
                     # conversation, so it never changes after the first turn (#1172).
                     self.schema = reviewer_reply_schema(reads_allowed=reads, strict=True)
                     self.offers_reads = reads
-                if self.offers_reads and not reads and not self.final_noticed:
-                    # Reads ended under a schema that still offers them: say so, appended as its
-                    # own message, so everything sent before stays byte-identical.
-                    self.messages.append(Turn("user", FINAL_TURN))
-                    self.final_noticed = True
+                if not reads and not self.reads_ended:
+                    self.reads_ended = True
+                    if self.offers_reads and self.broker.notice_fits():
+                        # Reads ended under a schema that still offers them: say so, appended as
+                        # its own message, so everything sent before stays byte-identical.
+                        self.messages.append(Turn("user", FINAL_TURN))
+                    elif self.offers_reads:
+                        # No room left for the notice (a first exchange admitted inside the frame
+                        # the notices need): narrow the schema instead, as before #1172, at the
+                        # cost of this turn's cache reuse, never of the review.
+                        self.schema = reviewer_reply_schema(reads_allowed=False, strict=True)
                 schema = self.schema
                 invalid: ReviewerReplyInvalid | None = None
                 try:

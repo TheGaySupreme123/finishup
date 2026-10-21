@@ -536,6 +536,68 @@ async def test_the_notice_is_sent_once_and_stays_before_the_format_repair() -> N
 
 
 @pytest.mark.anyio
+async def test_the_notice_follows_a_repair_when_reads_end_after_it() -> None:
+    loop, _broker, model, _ = _setup(_LEDGER_READ, {"reply": {}}, _FINAL)
+
+    def no_time_left_after_the_repair() -> None:
+        if len(model.calls) == 2:
+            loop.reserve = 10_000.0  # the final reserve now covers the whole deadline
+
+    model.after = no_time_left_after_the_repair
+    outcome = await loop.run()
+    assert (outcome.status, outcome.model_turns) == ("final", 3)
+    *_, repair, notice = model.calls[-1][0]
+    assert repair.content.startswith("format_error: action_invalid.")
+    assert notice == Turn("user", FINAL_TURN)
+    assert len({id(schema) for _history, schema in model.calls}) == 1
+
+
+@pytest.mark.anyio
+async def test_the_notice_follows_when_the_read_room_runs_out() -> None:
+    loop, broker, model, _ = _setup(_LEDGER_READ, _FINAL)
+
+    def little_room_after_the_first_turn() -> None:
+        broker._exchange_room = lambda: 1_500  # pyright: ignore[reportPrivateUsage]
+
+    model.after = little_room_after_the_first_turn
+    outcome = await loop.run()
+    assert outcome.status == "final"
+    assert model.calls[-1][0][-1] == Turn("user", FINAL_TURN)
+    assert len({id(schema) for _history, schema in model.calls}) == 1
+
+
+@pytest.mark.anyio
+async def test_a_notice_without_room_narrows_the_schema_instead() -> None:
+    """A first exchange admitted inside the notices' frame leaves no room for one: the loop falls
+    back to the final-only schema, as before #1172, rather than outgrow the cap."""
+
+    loop, broker, model, _ = _setup({"reply": {}}, _FINAL)
+
+    def no_room_after_the_first_turn() -> None:
+        broker._exchange_room = lambda: -1  # pyright: ignore[reportPrivateUsage]
+
+    model.after = no_room_after_the_first_turn
+    outcome = await loop.run()
+    assert outcome.status == "final"
+    turn_schema = reviewer_reply_schema(reads_allowed=True, strict=True)
+    final_only = reviewer_reply_schema(reads_allowed=False, strict=True)
+    assert [schema for _history, schema in model.calls] == [turn_schema, final_only]
+    assert FINAL_TURN not in [turn.content for turn in outcome.history]
+
+
+@pytest.mark.anyio
+async def test_a_review_with_no_read_allowance_keeps_the_final_only_schema() -> None:
+    loop, broker, model, _ = _setup(_FINAL)
+    broker._max_reads = 0  # pyright: ignore[reportPrivateUsage]  # an ask-every-time review
+    outcome = await loop.run()
+    assert outcome.status == "final"
+    assert [schema for _history, schema in model.calls] == [
+        reviewer_reply_schema(reads_allowed=False, strict=True)
+    ]
+    assert FINAL_TURN not in [turn.content for turn in outcome.history]
+
+
+@pytest.mark.anyio
 async def test_a_review_that_offers_no_read_keeps_the_final_only_schema() -> None:
     """A first turn without reads (an ask-every-time policy, or no time for one) keeps the narrow
     schema it always had, for the repair too, and needs no notice: its approval resumes by the

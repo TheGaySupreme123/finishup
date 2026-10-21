@@ -2565,6 +2565,8 @@ class CodexAppServerEvaluator:
                     or session.deadline != deadline
                     or held is not held_any
                     or not sent
+                    # At most a read result or repair notice, then the no-reads-left notice.
+                    or (held is not None and len(sent) > 2)
                     or any(role != "user" for role, _ in sent)
                     or (held is not None and held.profile != self.profile)
                     or (held is not None and prefix is None)
