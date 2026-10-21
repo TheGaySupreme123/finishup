@@ -179,9 +179,12 @@ def test_receipt_document_is_frozen_and_exactly_shaped() -> None:
         "sections",
         "children",
         "semantic_provenance",
+        "semantic_status",
+        "semantic_reason",
         "acknowledged_not_done_finding_ids",
         "rejection_accepted_finding_ids",
         "self_verified_finding_ids",
+        "disproved_self_verified_finding_ids",
         "disputed_after_rebuttal_finding_ids",
         "duplicate_finding_links",
         "semantic_withheld_items",
@@ -311,15 +314,47 @@ def test_self_verified_ids_get_their_own_section_and_never_read_clean() -> None:
     assert receipt_document_from_json(encoded) == document
     for markdown in (True, False):
         rendered = render_receipt_human(document, markdown=markdown)
-        assert "Self-verified by the agent; FinishUP could not prove the repair" in rendered
+        assert (
+            "Self-verified by the agent; FinishUP could not independently prove the outcome"
+            in rendered
+        )
         assert f"- {finding}" in rendered
     assert finding not in {item.finding_id for item in unresolved_findings_for_render(document)}
+
+    wire["disproved_self_verified_finding_ids"] = [finding]
+    disproved = receipt_document_from_json(wire)
+    assert receipt_document_from_json(receipt_document_to_json(disproved)) == disproved
+    for markdown in (True, False):
+        text = render_receipt_human(disproved, markdown=markdown)
+        assert "Concerns the agent reports disproved" in text
+        assert "reports that they do not hold" in text
+        assert "The agent repaired these" not in text
 
     clean = _terminal_artifact("no_unresolved_deterministic_findings")
     clean["self_verified_finding_ids"] = [finding]
     with pytest.raises(ProtocolValueError) as exc_info:
         receipt_document_from_json(clean)
     _assert_reason(exc_info, "invalid_receipt_conclusion")
+
+
+def test_stopped_review_receipt_preserves_the_requested_review_outcome() -> None:
+    wire = _terminal_artifact("insufficient_coverage")
+    wire["semantic_status"] = "unavailable"
+    wire["semantic_reason"] = "round_limit_unassessable"
+    wire.pop("semantic_provenance", None)
+    document = receipt_document_from_json(wire)
+    assert receipt_document_to_json(document)["semantic_reason"] == "round_limit_unassessable"
+    for markdown in (True, False):
+        text = render_receipt_human(document, markdown=markdown)
+        assert "unavailable / round_limit_unassessable" in text
+        assert "Requested review stopped" in text
+    assert "round_limit_unassessable" in render_receipt_compact(document)
+    for mutation in (
+        {"semantic_status": "not_requested"},
+        {"semantic_reason": "deterministic_mode"},
+    ):
+        with pytest.raises(ProtocolValueError):
+            receipt_document_from_json({**wire, **mutation})
 
 
 def test_disputed_after_rebuttal_ids_get_their_own_section_and_never_read_clean() -> None:

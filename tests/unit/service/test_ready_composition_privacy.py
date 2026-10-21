@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
-from finishup.application.egress import SemanticEgressProviderOutcome
+from finishup.application.egress import SemanticEgressBlocked, SemanticEgressProviderOutcome
 from finishup.domain.findings import SamplingParams, SemanticDispatchKind, SemanticFailureClass
+from finishup.domain.privacy import PrivacyOutcome, PrivacyReason
 from finishup.ports.semantic import ProviderAttemptProvenance, SemanticResultUnavailable
 from finishup.protocol.models import SemanticReason, SemanticStatus
 from finishup.service.ready_composition import (  # pyright: ignore[reportPrivateUsage]
@@ -46,3 +47,16 @@ def test_typed_rendered_body_privacy_refusal_maps_to_privacy_recovery() -> None:
     assert mapped.status is SemanticStatus.BLOCKED_FORBIDDEN_DATA
     assert mapped.reason is SemanticReason.NEVER_SEND_DETECTED
     assert mapped.provenance is None
+
+
+def test_an_unrecognized_policy_refusal_is_not_presented_as_network_denial() -> None:
+    result = SemanticEgressBlocked(
+        request_id="req_00000000-0000-4000-8000-000000000001",
+        outcome=PrivacyOutcome.BLOCKED_BY_POLICY,
+        reason=PrivacyReason.INSUFFICIENT_APPROVED_CONTEXT,
+    )
+    mapped = _map_egress_to_final(result, attempt_id="sma_00000000-0000-4000-8000-000000000001")
+    assert (mapped.status, mapped.reason) == (
+        SemanticStatus.FAILED,
+        SemanticReason.COORDINATOR_FAILURE,
+    )

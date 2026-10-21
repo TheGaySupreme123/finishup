@@ -359,3 +359,14 @@ excerpts. Until the packet keeps bounded finding substance ahead of them, a foll
 still rule such a finding `unassessable`, now knowing its text was cut; this amendment makes the
 self-verification exit reachable for the agent, which does hold the finding's substance (status
 `findings` shows it).
+
+## Amendment (2026-10-21): self-verification does not imply a repair (#1144)
+
+The terminal response can also record verification disproving a concern without editing the
+implementation. Where the standing position is a reasoned rejection, status explanations say
+the agent checked the concern and reports it does not hold. Other self-verification explanations
+state only the recorded verification and do not infer a repair. The receipt's optional
+`disproved_self_verified_finding_ids` is a subset of its self-verified IDs and human receipts
+identify those concerns separately. The state stays final, disclosed and independently unresolved;
+its receipt cannot read clean. Historical self-verifications without a retained rejection keep
+neutral wording, because their rationale alone does not prove which outcome occurred.

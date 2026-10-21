@@ -87,6 +87,12 @@ _FIELD_ORDER: Final = (
     "semantic_disclosure_limit_bytes",
     "semantic_disclosure_attempted_tokens",
     "semantic_disclosure_limit_tokens",
+    "semantic_excerpt_attempted_bytes",
+    "semantic_excerpt_limit_bytes",
+    "semantic_excerpt_attempted_excerpts",
+    "semantic_excerpt_limit_excerpts",
+    "semantic_excerpt_total_attempted_bytes",
+    "semantic_excerpt_total_limit_bytes",
     "semantic_check_change_parts_selected",
     "semantic_edit_evidence_in_case",
     # Issue #1102: task-input pilot counters (integers only, never a path).
@@ -101,6 +107,15 @@ _FIELD_ORDER: Final = (
     # vanished from the durable ring an operator actually reads.
     "duration_ms",
     "operation_count",
+    "codex_event_control_count",
+    "codex_event_wire_bytes",
+    "codex_event_control_bytes",
+    "codex_event_telemetry_count",
+    "codex_event_telemetry_bytes",
+    "codex_event_delta_count",
+    "codex_event_delta_bytes",
+    "codex_event_intermediate_count",
+    "codex_event_intermediate_bytes",
     # Closed control-plane identity of an abandoned response write (tb4n2 NEW-8).
     "control_method",
     "client_kind",

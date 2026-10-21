@@ -363,6 +363,11 @@ async def test_bandit_b_reads_ready_with_limitations_and_keeps_its_verdict(
     readiness = status.closure_readiness
     assert readiness.agent_actionable is not None and readiness.standing_limitations is not None
     assert readiness.state == "ready_with_limitations"
+    assert checked.closure_readiness is not None
+    assert checked.closure_readiness["state"] == readiness.state
+    assert checked.closure_readiness["agent_actionable"] == readiness.agent_actionable
+    assert checked.overall_next is not None
+    assert checked.overall_next.status == readiness.state
     assert readiness.agent_actionable == ()
     assert _CODEX_STANDING <= set(readiness.standing_limitations)
     assert readiness.acknowledged_not_done == ()

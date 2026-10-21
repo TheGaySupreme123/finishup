@@ -388,3 +388,22 @@ that arrive in a duplicate-delivery annotation. Existing `edited_after_last_veri
 `planned_verification_stale` gaps carry the result through Stop, status, CLI and MCP, and receipt
 JSON, markdown and text. The remedy is to rerun the affected tests or other requested verification
 after the change; another FinishUP check alone does not refresh verification.
+
+## Amendment (2026-10-21): byte-identical shell rewrites preserve freshness (#1143 mitigation)
+
+A trusted complete before/after workspace comparison can prove that an in-workspace shell write
+left the compared bytes unchanged. Such a write no longer advances task-fact verification
+freshness. Freeze its action ID with the deterministic case so work-integrity makes the same
+decision after recovery. A conflicting later delivery retracts the exemption; unknown or
+unavailable comparisons, outside writes, and declared deliveries outside the fingerprint's
+coverage remain conservative. Command outcomes and whether the command was requested are
+independent facts: a failed command does not become successful.
+
+Declared input paths are normalized lexically, including parent segments and slash variants,
+before their workspace boundary is checked. An input such as `subdir/../../input.json` is outside
+that comparison and cannot inherit its unchanged proof.
+
+This is a minimal plaster. Newly written evidence or report bytes still advance freshness.
+Exempting those safely needs a versioned dependency manifest connecting each verification to its
+inputs and generated artifact roles. Existing write classes cannot establish that an arbitrary
+report is not a later verification input. That broader decision remains open on #1143.

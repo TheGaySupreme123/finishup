@@ -783,3 +783,13 @@ instruction and finding behavior apply to Codex, Claude Code and Cursor, CLI/MCP
 readiness, terminal views and JSON/markdown/text receipts. Offline calibration includes the
 nextjs-performance a2 deferred-loading trade-off and atrx-vep-crispr a1/a2 conflicting reference
 models; it tests directives and deterministic handling, not whether a model will follow them.
+
+## Amendment (2026-10-21): account for a requested review that stopped (#1149)
+
+The existing round caps still stop an unchanged unassessable review. The check now records
+`unavailable / round_limit_unassessable`, never `not_requested / deterministic_mode`, when review
+was requested and stopped. No fresh provider attempt or provenance is asserted. The pair rides
+check-result/check-recorded 1.6.0 (the event needs no reviewer record on this branch), the status
+operation outcome, and receipt-document 1.3.0. Every human receipt format names the stop. Explicit
+local-only requests retain their local-only reason, and pre-edit deferral retains its own reason.
+A required stopped review remains `incomplete_check`; the change grants no retry or egress authority.

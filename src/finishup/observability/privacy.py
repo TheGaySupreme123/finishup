@@ -4,9 +4,10 @@ from __future__ import annotations
 
 import ast
 import bisect
+import json
 import re
 from collections.abc import Iterator, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import Enum
 from typing import Final
 
@@ -109,7 +110,10 @@ _UNQUOTED_VALUE_CHAR = rb"[^\s,'\";}{]"
 # A quoted value inside an encoded JSON string: ``\"...\"``. Inside it an encoded escaped quote
 # (three backslashes and a quote) and an encoded backslash (two) are part of the value.
 _ESCAPED_QUOTED_VALUE = rb'\\"(?:\\\\\\"|\\\\\\\\|(?!\\")[^\r\n]){1,512}\\"'
-_TRAILING_ENCODED_SPACE: Final = re.compile(rb"(?:\\[nrt])+$")
+_JSON_STRING_TOKEN: Final = re.compile(rb'"(?:[^"\\]|\\.)*"')
+_JSON_STRING_ESCAPE: Final = re.compile(
+    rb"\\(?:u[dD][89aAbB][0-9a-fA-F]{2}\\u[dD][c-fC-F][0-9a-fA-F]{2}|u[0-9a-fA-F]{4}|.)"
+)
 # Python/JS string-literal prefixes (``b"..."``, ``r'...'``, ``f"..."``) belong to the quoted value.
 _STRING_PREFIX_RE: Final = rb"(?:[bBrRuUfF]{1,2}(?=[\"']))?"
 _STRING_PREFIX: Final = re.compile(rb"[bBrRuUfF]{1,2}(?=[\"'])")
@@ -243,6 +247,15 @@ _ENCODED_ESCAPE: Final = re.compile(rb"\\")
 
 _LOG_FIELDS: Final = frozenset(
     {
+        "codex_event_wire_bytes",
+        "codex_event_control_count",
+        "codex_event_control_bytes",
+        "codex_event_telemetry_count",
+        "codex_event_telemetry_bytes",
+        "codex_event_delta_count",
+        "codex_event_delta_bytes",
+        "codex_event_intermediate_count",
+        "codex_event_intermediate_bytes",
         "timestamp",
         "level",
         "component",
@@ -303,6 +316,12 @@ _LOG_FIELDS: Final = frozenset(
         "semantic_disclosure_limit_bytes",
         "semantic_disclosure_attempted_tokens",
         "semantic_disclosure_limit_tokens",
+        "semantic_excerpt_attempted_bytes",
+        "semantic_excerpt_limit_bytes",
+        "semantic_excerpt_attempted_excerpts",
+        "semantic_excerpt_limit_excerpts",
+        "semantic_excerpt_total_attempted_bytes",
+        "semantic_excerpt_total_limit_bytes",
         "semantic_check_change_parts_selected",
         "semantic_edit_evidence_in_case",
         # Issue #1102: task-input pilot counters (integers only, never a path).
@@ -403,6 +422,15 @@ _VERSION_FIELDS: Final = frozenset(
 )
 _INTEGER_FIELDS: Final = frozenset(
     {
+        "codex_event_wire_bytes",
+        "codex_event_control_count",
+        "codex_event_control_bytes",
+        "codex_event_telemetry_count",
+        "codex_event_telemetry_bytes",
+        "codex_event_delta_count",
+        "codex_event_delta_bytes",
+        "codex_event_intermediate_count",
+        "codex_event_intermediate_bytes",
         "duration_ms",
         "operation_count",
         "duration_bucket_ms",
@@ -448,6 +476,12 @@ _INTEGER_FIELDS: Final = frozenset(
         "semantic_disclosure_limit_bytes",
         "semantic_disclosure_attempted_tokens",
         "semantic_disclosure_limit_tokens",
+        "semantic_excerpt_attempted_bytes",
+        "semantic_excerpt_limit_bytes",
+        "semantic_excerpt_attempted_excerpts",
+        "semantic_excerpt_limit_excerpts",
+        "semantic_excerpt_total_attempted_bytes",
+        "semantic_excerpt_total_limit_bytes",
         "semantic_check_change_parts_selected",
         "semantic_edit_evidence_in_case",
         # Issue #1102: task-input pilot counters (integers only, never a path).
@@ -656,10 +690,74 @@ def _assignment_separator(raw: bytes) -> re.Match[bytes] | None:
     return _ASSIGNMENT_SEPARATOR.search(raw, 0 if name is None else name.start())
 
 
+@dataclass(slots=True)
+class _JsonStringIndex:
+    """Scan-local, lazy string spans and decodes shared by all marker occurrences."""
+
+    data: bytes
+    spans: tuple[tuple[int, int], ...] | None = None
+    ends: tuple[int, ...] = ()
+    decoded: dict[int, _DecodedJsonString | None] = field(
+        default_factory=lambda: dict[int, _DecodedJsonString | None]()
+    )
+
+    def decode_at(self, offset: int) -> tuple[_JsonStringIndex, int] | None:
+        if self.spans is None:
+            self.spans = tuple(match.span() for match in _JSON_STRING_TOKEN.finditer(self.data))
+            self.ends = tuple(end for _, end in self.spans)
+        index = bisect.bisect_right(self.ends, offset)
+        if index == len(self.spans) or self.spans[index][0] >= offset:
+            return None
+        start, end = self.spans[index]
+        if index not in self.decoded:
+            self.decoded[index] = _decode_json_string(self.data[start:end])
+        decoded = self.decoded[index]
+        if decoded is None:
+            return None
+        relative = offset - start
+        escape_index = bisect.bisect_right(decoded.escape_ends, relative)
+        if escape_index < len(decoded.escape_starts) and (
+            decoded.escape_starts[escape_index] < relative
+        ):
+            return None
+        return decoded.context, relative - 1 - decoded.shrink[escape_index]
+
+
+@dataclass(frozen=True, slots=True)
+class _DecodedJsonString:
+    context: _JsonStringIndex
+    escape_starts: tuple[int, ...]
+    escape_ends: tuple[int, ...]
+    shrink: tuple[int, ...]
+
+
+def _decode_json_string(token: bytes) -> _DecodedJsonString | None:
+    try:
+        # Validate the complete string once, including UTF-8 and surrogate pairs, before any
+        # occurrence can be exempted. The escape map replaces repeated growing-prefix decodes.
+        data = json.loads(token).encode("utf-8")
+        starts: list[int] = []
+        ends: list[int] = []
+        shrink = [0]
+        for escape in _JSON_STRING_ESCAPE.finditer(token):
+            raw = escape.group()
+            size = 1
+            if raw[1:2] == b"u":
+                size = 4 if len(raw) == 12 else len(chr(int(raw[2:], 16)).encode("utf-8"))
+            starts.append(escape.start())
+            ends.append(escape.end())
+            shrink.append(shrink[-1] + len(raw) - size)
+        return _DecodedJsonString(_JsonStringIndex(data), tuple(starts), tuple(ends), tuple(shrink))
+    except (ValueError, UnicodeError):
+        return None
+
+
 def _assignment_value_is_code(
     match: re.Match[bytes],
     *,
     preceding: bytes = b"",
+    following: bytes = b"",
+    json_strings: _JsonStringIndex | None = None,
     absolute_start: int | None = None,
     python_attribute_spans: tuple[tuple[int, int], ...] = (),
 ) -> bool:
@@ -679,7 +777,12 @@ def _assignment_value_is_code(
         marker_value = value[1:-1] if value.endswith(value[:1]) else value[1:]
     else:
         marker_value = value
-    if _TRAILING_ENCODED_SPACE.sub(b"", marker_value) in _EXEMPT_REPLACEMENT_MARKERS:
+    encoded_context = (
+        None
+        if json_strings is None or absolute_start is None
+        else (json_strings, absolute_start + raw.index(marker_value))
+    )
+    if _is_replacement_marker(marker_value, following=following, encoded_context=encoded_context):
         return True
     # Quoted values are literals even when their text resembles source code. Keep them in the
     # heuristic class so a value such as ``TOKEN='nextToken(parser)'`` is still withheld.
@@ -719,6 +822,47 @@ def _assignment_value_is_code(
             or (separator.group(0).startswith(b":") and lhs_name == b"token")
         )
     return False
+
+
+def _is_replacement_marker(
+    value: bytes, *, following: bytes, encoded_context: tuple[_JsonStringIndex, int] | None
+) -> bool:
+    """Match only a fixed marker and its JSON framing, at the rendered encoding depth.
+
+    At each encoding a newline's backslashes double, while the closing quote has one fewer
+    backslash. Checking both counts keeps a literal backslash suffix (possibly secret content)
+    distinct from encoded whitespace. The assignment match is already bounded to 512 bytes.
+    """
+
+    closing_slashes = len(value) - len(value.rstrip(b"\\"))
+    width = closing_slashes + 1
+    if closing_slashes and (following[:1] != b'"' or width & (width - 1)):
+        return False
+    for marker in _EXEMPT_REPLACEMENT_MARKERS:
+        if not value.startswith(marker):
+            continue
+        suffix = value[len(marker) : len(value) - closing_slashes if closing_slashes else None]
+        encoded_space = b"\\" * width
+        while suffix.startswith(encoded_space) and suffix[width : width + 1] in (b"n", b"r", b"t"):
+            suffix = suffix[width + 1 :]
+        if not suffix and (not closing_slashes or _marker_has_json_framing(encoded_context, width)):
+            return True
+    return False
+
+
+def _marker_has_json_framing(context: tuple[_JsonStringIndex, int] | None, width: int) -> bool:
+    """Prove the nesting, rather than mistaking a literal escaped quote for JSON framing."""
+
+    if context is None:
+        return False
+    strings, offset = context
+    while width > 1:
+        nested = strings.decode_at(offset)
+        if nested is None:
+            return False
+        strings, offset = nested
+        width //= 2
+    return True
 
 
 def _assignment_value_cannot_be_credential(match: re.Match[bytes], *, token_family: bool) -> bool:
@@ -822,6 +966,7 @@ def scan_for_sensitive_content(
     findings: list[ScanFinding] = []
     seen: set[tuple[str, int, int]] = set()
     python_attribute_spans = _python_attribute_assignment_spans(data)
+    json_strings = _JsonStringIndex(data)
 
     for canary in canaries:
         for chunk_start, chunk in _scan_chunks(data):
@@ -884,6 +1029,8 @@ def scan_for_sensitive_content(
                 if _assignment_value_is_code(
                     match,
                     preceding=data[max(0, absolute_start - 1024) : absolute_start],
+                    following=data[chunk_start + match.end() : chunk_start + match.end() + 1],
+                    json_strings=json_strings,
                     absolute_start=absolute_start,
                     python_attribute_spans=python_attribute_spans,
                 ) or _assignment_value_cannot_be_credential(

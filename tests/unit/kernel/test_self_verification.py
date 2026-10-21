@@ -51,7 +51,7 @@ from finishup.kernel.finding_todo import (
     finding_todo_state,
     todo_counts,
 )
-from finishup.kernel.projections import ProjectionState, empty_projection_state
+from finishup.kernel.projections import ProjectionState, StandingPosition, empty_projection_state
 from finishup.kernel.self_verification import (
     FINDING_NOT_PROOF_LIMITED,
     FINDING_NOT_RECHECKED,
@@ -323,6 +323,17 @@ def test_self_verified_is_terminal_disclosed_and_not_agent_work() -> None:
     assert (counts.self_verified, counts.open) == (1, 0)
     explanation = finding_resolution_explanation(state, fnd(1), ())
     assert explanation.startswith("Self-verified by the agent")
+    assert "cannot read clean" in explanation
+    assert "agent repaired this" not in explanation
+
+
+def test_self_verified_rebuttal_describes_a_disproved_concern_without_claiming_a_repair() -> None:
+    state = _state(_finding(), response=ResponseDisposition.SELF_VERIFIED)
+    row = replace(state.findings[fnd(1)], standing_position=StandingPosition("rejected", 8))
+    state = replace(state, findings={fnd(1): row})
+    explanation = finding_resolution_explanation(state, fnd(1), ())
+    assert "reports that it does not hold" in explanation
+    assert "agent repaired this" not in explanation
     assert "cannot read clean" in explanation
 
 

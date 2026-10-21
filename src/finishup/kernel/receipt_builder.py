@@ -2491,7 +2491,7 @@ def _sections(
         )
         if check_sentence:
             gap_body = f"{check_sentence} Coverage is limited by: {', '.join(gap_codes)}."
-        elif not_requested and SEMANTIC_REVIEW_SKIPPED_INSUFFICIENT_PACKET_GAP in gap_codes:
+        elif SEMANTIC_REVIEW_SKIPPED_INSUFFICIENT_PACKET_GAP in gap_codes:
             gap_body = (
                 "AI-powered review was skipped: the reviewer twice in a row, or four times since "
                 "the last assessed review, could not assess the review packet or a finding the "
@@ -3182,9 +3182,30 @@ def build_receipt(
             if context.applicable_check is None
             else context.applicable_check.semantic_provenance
         ),
+        semantic_status=(
+            SemanticStatus.UNAVAILABLE
+            if terminal_sections
+            and context.applicable_check is not None
+            and context.applicable_check.semantic_reason is SemanticReason.ROUND_LIMIT_UNASSESSABLE
+            else None
+        ),
+        semantic_reason=(
+            SemanticReason.ROUND_LIMIT_UNASSESSABLE
+            if terminal_sections
+            and context.applicable_check is not None
+            and context.applicable_check.semantic_reason is SemanticReason.ROUND_LIMIT_UNASSESSABLE
+            else None
+        ),
         acknowledged_not_done_finding_ids=acknowledged_not_done_ids,
         rejection_accepted_finding_ids=rejection_accepted_ids,
         self_verified_finding_ids=self_verified_ids,
+        disproved_self_verified_finding_ids=tuple(
+            finding
+            for finding in self_verified_ids
+            if (row := context.projection.findings.get(finding)) is not None
+            and row.standing_position is not None
+            and row.standing_position.kind == "rejected"
+        ),
         disputed_after_rebuttal_finding_ids=disputed_ids,
         duplicate_finding_links=duplicate_links,
         # Issue #984 (D7a): the acknowledged findings whose premise the reviewer disputes.

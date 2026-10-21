@@ -1706,8 +1706,14 @@ def _finding_resolution_explanation(
             "The item is final, is not reviewed again, and keeps the receipt from reading clean."
         )
     if disposition is ResponseDisposition.SELF_VERIFIED:
+        position = finding_record.standing_position
+        verification = (
+            "the agent checked the concern and reports that it does not hold"
+            if position is not None and position.kind == "rejected"
+            else "the agent recorded its own verification of the concern"
+        )
         return (
-            "Self-verified by the agent: the agent repaired this and verified the repair itself, "
+            f"Self-verified by the agent: {verification}, "
             "citing its own recorded evidence, because FinishUP could not prove it (a FinishUP limit). "
             "The item is final, is not reviewed again and is not agent work; the receipt "
             "discloses it and cannot read clean."

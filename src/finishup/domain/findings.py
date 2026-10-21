@@ -245,7 +245,7 @@ RESPONSE_V1_1_DISPOSITIONS: Final = TERMINAL_RESPONSE_DISPOSITIONS | frozenset(
 # The one sentence every agent-facing text reuses when it tells the agent what to do with a
 # finding FinishUP cannot prove repaired (issue #984, COORD contract wording; tests pin it).
 SELF_VERIFIED_GUIDANCE: Final = (
-    "If you repaired this and FinishUP cannot prove it (a FinishUP limit), verify it yourself, record "
+    "If you repaired or disproved this and FinishUP cannot prove it (a FinishUP limit), verify it yourself, record "
     "that evidence, and respond `self_verified` with how you verified it and the evidence ids. "
     "Do not reshape your work for FinishUP, and a FinishUP limit is never a `finishup-blocker`."
 )
