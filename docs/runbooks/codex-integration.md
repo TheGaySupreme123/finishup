@@ -817,6 +817,15 @@ lives in `mcp status` and `provider status`. An accepted install that had nothin
 (`action: noop`) still refreshes the record, so a deliberate re-registration of the route the
 host already serves never leaves an earlier entry behind to report as drift.
 
+For an explicitly allowed home-folder project (#1154), the record accepts and binds the full
+`--home-project <absolute-home>` argv through the same closed command classifier as the MCP
+adapter. Both policy and strict routes keep their applied profile; an accepted no-op refreshes
+it and verified removal clears it as usual. `configured_profile` is FinishUP's registration-time
+configuration fallback, including a bound Codex subscription runtime when review is enabled;
+it does not read another Codex configuration or override an existing registration. The
+`external` ownership label describes the effective Codex registration rather than a portable
+plugin-managed route; it alone is not evidence of a duplicate or foreign route.
+
 The MCP bridge (`finishup mcp serve --host codex`) is the sole emitter of the closed `registration_drift`
 hook diagnostic: at startup it compares its own serving argv against the applied record and
 records the mismatch under the `mcp_serve` event. The hook paths deliberately emit nothing.

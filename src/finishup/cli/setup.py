@@ -1418,7 +1418,13 @@ def _configured_mcp_route_profile() -> Literal["policy", "strict"]:
         return "strict"
     if config.verification.semantic == "disabled":
         return "strict"
-    return "strict" if config.provider is None and config.local_model is None else "policy"
+    return (
+        "strict"
+        if config.provider is None
+        and config.external_runtime is None
+        and config.local_model is None
+        else "policy"
+    )
 
 
 def configured_mcp_route_profile() -> Literal["policy", "strict"]:
