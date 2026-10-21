@@ -78,6 +78,7 @@ from finishup.protocol.models import (
     FrontierModel,
     PublishWorkRequest,
     PublishWorkRequestModel,
+    StatusCoveragePageModel,
     StatusOperationPageModel,
     StatusRequest,
 )
@@ -448,6 +449,29 @@ async def test_status_view_operation_returns_stored_publish_work_detail() -> Non
     assert tuple(item.event_id for item in page.accepted_events) == tuple(
         item.event_id for item in first.accepted_events
     )
+
+
+async def test_status_coverage_is_an_advisory_read_at_the_requested_frontier() -> None:
+    app, _objects, seed, ledger = _publish_composition()
+    await ledger.append_batch(seed)
+    operation_request = _status_operation_request(
+        session_id=seed.session_id,
+        writer_id=seed.writer_id,
+        operation_request_id="req_00000000-0000-4000-8000-000000000599",
+        request_tail=1170,
+    )
+    before = await execute_status(cast(StatusApplication, app), operation_request)
+    body = operation_request.model_dump(mode="json", exclude_none=True)
+    body["view"] = "coverage"
+    body.pop("filter")
+    request = StatusRequest.model_validate(body)
+    status = await execute_status(cast(StatusApplication, app), request)
+    assert isinstance(status.page, StatusCoveragePageModel)
+    assert status.page.verification_coverage.label == "agent-declared"
+    assert status.page.verification_coverage.advisory is True
+    assert status.head_frontier == before.head_frontier
+    assert status.result_frontier == before.result_frontier
+    assert status.closure_readiness == before.closure_readiness
 
 
 async def test_status_view_operation_absent_for_unknown_request_id() -> None:

@@ -1173,7 +1173,9 @@ Key payload fields (minimum; full shapes in `src/finishup/domain/events.py`):
 - `action_recorded`: `action_id`, `action_kind` (`command`|`edit`|`research`|`review`|`other`),
   `description`, optional `command`, `subject_state` (see SubjectStateRef below).
 - `result_recorded`: `result_id`, `action_id`, `outcome` (`success`|`failure`|`partial`|
-  `unknown`), optional `exit_status`, `subject_state`, `evidence_refs`.
+  `unknown`), optional `exit_status`, `subject_state`, `evidence_refs`. Optional test manifests
+  use additive `result_recorded/1.1.0` (issue #1170; see Test records and declared coverage below);
+  released `1.0.0` remains byte-identical and does not admit `verification`.
 - `evidence_recorded`: `evidence_id`, `strength` (mirrors `EvidenceImmutability`), `reference`
   (mutable ref) and/or `captured_object_id` + `content_digest`, `observed_at`, `evidence_kind`.
   New digest-bearing records require `digest_binding` with closed `subject`,
@@ -12175,3 +12177,69 @@ work-integrity. Contradictory or unavailable observations, outside writes, and d
 fingerprint cannot compare retain conservative freshness. This is the bounded #1143 mitigation;
 new report files and changed report bytes still invalidate freshness. General per-command
 verification dependencies and generated-artifact roles remain an open design requirement.
+
+### Test records and declared coverage (issue #1170)
+
+`domain.events.ResultVerification` is the optional `verification` member of
+`result_recorded/1.1.0`: `criterion_quote` (nonblank, at most 240 characters), `data_source`
+(`task_public|own_generated|independent|held_out|stated_environment|unknown`), and integer
+`cases`/`failing` (0..2^53-1, `failing <= cases`). Optional `worst` is nonblank text of at most
+64 characters; optional `tuned_on_these_cases` is a boolean. Optional `test_file`, `results_file`
+(nonblank paths of at most 1,024 characters) and `report_digest` (`sha256:` digest) travel together.
+The publication validator checks the quote against the current recorded task statement, including
+an earlier statement revision in the same atomic batch. Omitted frontiers acquire the admission
+frontier; explicit null remains forbidden for results. Replay of a committed operation precedes
+new admission validation. A later amended task does not inherit an obsolete quote's coverage.
+
+`finishup record-test --input <publish-request.json> --test-file <relative-script>
+--results-file <relative-report>` augments exactly one result draft, then uses ordinary
+`publish_work`. `cli.test_record.prepare_test_record` reads existing files; it runs no command.
+The strict UTF-8 JSON report contains integer `cases`, integer `failing`, optional string `worst`,
+and optional `failing_cases` (up to 64 distinct nonblank examples). Report bytes are limited to
+4,096; script bytes to 65,536; the source excerpt to 2,048; the combined result summary to
+8,192. The workspace-relative files must be regular single-link files beneath a symlink-free
+workspace; traversal, credential-named paths, special files and changed reads are refused.
+The summary retains the complete report, bounded source, both digests and explicit caller-asserted
+provenance. The manifest binds report bytes, without asserting that the script produced them.
+MCP accepts the same complete result payload; registering a filename authorizes no service file
+read. Unknown writes recover through `status view=operation`; re-reading changed files is not a
+replay of the original publication.
+
+`kernel.verification_capture` recovers missing captured command context only from a readable
+effective planned command or manifest-bearing command action whose whole installation-keyed
+commitment matches the authenticated hook output. Existing capture consent, source/session fences,
+content gaps, secret/path checks and disclosure policy still apply. This serves Codex, Claude Code
+and Cursor through the shared resolver; it does not widen global runner names or Stop rules.
+Native observed output and agent-declared file ingestion remain distinct evidence sources.
+
+`kernel.verification_coverage.build_verification_coverage(projection, records=(), *,
+task_statement=None, unchanged_action_ids=None, workspace_verification_edit_frontier=0)` is a
+pure, bounded advisory projection. Its candidate flags are `no_test`,
+`failing_cases`, `own_or_tuned_only`, `public_only`, `stale`, `repeated_run` and `redundant_tests`.
+It prefers a current independent witness without awarding volume, retains failures from unrelated
+checks, and exposes repeated unchanged work and registered checks on the same condition.
+Sentence matching only proposes stated criteria; it cannot establish test quality or completeness.
+Freshness reuses the shared service-proven unchanged-write exemption and workspace edit frontier;
+frozen packets pass both facts, while status/receipts derive them from authenticated records.
+Every surface labels this **agent-declared** and advisory, with no green `covered` state and no
+effect on findings, closure readiness or AI-review requirements.
+
+The current unreleased `status-request/1.2.0` / `status-result/1.4.0` admit `view=coverage`;
+receipt-document/result `1.3.0` optionally carry `verification_coverage`. CLI status, TUI `/coverage`
+and receipt JSON/markdown/text share the projection. Wire quote leaves are separated into
+`task_criterion_quote` (`task_description`) and `obligation_criterion_quote` (`obligation_text`);
+`worst` uses command metadata. Human receipt prose carries ordinal/source/refs/counts so the
+legacy `human_text` category cannot export task text indirectly. JSON preserves categorized text
+only when the selected receipt profile and disclosure policy admit it.
+
+The review packet leads with an internal `verification_coverage` section, referenced by optional
+`review_packet.verification_coverage_item_ids` (at most one). Its structural item contains closed
+flags, counts, result/action refs, and character spans pointing to separately authorized task or
+obligation text; it contains no criterion quote or worst-value prose. It uses the existing
+bounded-structural-metadata category under the existing selection and whole-packet byte limits;
+the reserved diff and decisive-verification excerpt budgets retain their original floors.
+The owning outbound-case generator includes the new section and optional member.
+Manifest-bearing result excerpts remain evidence excerpts and omit the task quote.
+When AI review already runs, the optional quality question challenges metric mismatch, circular
+data, tuning, hard-coded expectations and redundancy. A useful single suggested check begins the
+review summary as `Discriminating check: ...`; it never requires another unchanged run.

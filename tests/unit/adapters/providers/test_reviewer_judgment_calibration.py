@@ -53,6 +53,15 @@ def test_input_root_instruction_preserves_owner_admission() -> None:
     assert "ask the agent to copy it into scope" in _TEXT
 
 
+def test_test_quality_advice_preserves_optional_discriminating_checks() -> None:
+    assert "first line of review_summary with 'Discriminating check: <one concrete check>'" in _TEXT
+    assert "Do not invent a test when no useful discriminator exists" in _TEXT
+    assert "an agent-declared manifest is not independent proof" in _TEXT
+    assert "expected value copied from the answer" in _TEXT
+    assert REVIEWER_ACCEPTANCE_INSTRUCTION in REVIEWER_LOOP_INSTRUCTION
+    assert CHAT_COMPLETIONS_INSTRUCTION.startswith(SEMANTIC_REVIEW_INSTRUCTION)
+
+
 def test_active_challenge_rule_does_not_turn_an_advisory_choice_into_a_repair() -> None:
     """#1151 review: the compact core must agree with the appended calibration rules."""
 

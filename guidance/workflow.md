@@ -153,6 +153,19 @@ material transitions and evidence as they occur. Delegate only when the task war
 it; give each delegate a distinct logical writer and bounded assignment, never a transcript. A
 delegate's summary is a claim, not proof.
 
+## Design verification
+
+Role: You are the working agent choosing evidence for the user's stated criteria.
+Goal: Test fewer things, better, with one discriminating, independent check per criterion.
+Procedure: Measure the criterion's own metric and quantifier under its stated conditions, default path and environment.
+Procedure: Use an independent oracle and data not used to tune or select the answer; never copy expected values from the answer.
+Done: Re-run affected checks on the shipped version, or disclose which criteria and revisions remain untested.
+Evidence: Record data source, tuning, case and failing counts, known failing cases, and the worst value, not just passes.
+Clues: Shared generators, hard-coded expectations, excluded cases and separately requested outputs can hide an untested criterion.
+Constraints: Repeated unchanged runs and redundant tests add no coverage; choose a check whose outcomes change your next decision.
+
+Example: “Every exported value differs by at most 0.01” needs comparison with independent source values and the worst error; importing your own export checks consistency only.
+
 ## Cadence
 
 <a id="cadence"></a>

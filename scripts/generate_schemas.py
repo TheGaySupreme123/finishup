@@ -4731,6 +4731,121 @@ def _add_review_input_continuation(definitions: dict[str, JsonValue]) -> None:
     )
 
 
+def _verification_coverage_schema() -> dict[str, JsonValue]:
+    """The same bounded advisory member on status and local receipts (#1170)."""
+
+    def text(category: str, limit: int) -> dict[str, JsonValue]:
+        return {
+            "oneOf": [
+                {"type": "string", "minLength": 1, "maxLength": limit},
+                {
+                    "allOf": [
+                        {
+                            "$ref": SCHEMA_NAMESPACE
+                            + "common/operation-result-1.0.0.schema.json#/$defs/omitted_content"
+                        },
+                        {"properties": {"category": {"const": category}}, "required": ["category"]},
+                    ]
+                },
+            ]
+        }
+
+    count: dict[str, JsonValue] = {"type": "integer", "minimum": 0, "maximum": 2**53 - 1}
+    witness: dict[str, JsonValue] = {
+        "type": "object",
+        "additionalProperties": False,
+        "properties": {
+            "result_id": {
+                "type": "string",
+                "pattern": r"^res_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+            },
+            "action_id": {
+                "type": "string",
+                "pattern": r"^act_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+            },
+            "data_source": {
+                "enum": [
+                    "task_public",
+                    "own_generated",
+                    "independent",
+                    "held_out",
+                    "stated_environment",
+                    "unknown",
+                ]
+            },
+            "cases": count,
+            "failing": count,
+            "stale": {"type": "boolean"},
+            "tuned_on_these_cases": {"type": "boolean"},
+            "worst": text("command_metadata", 64),
+        },
+        "required": ["result_id", "action_id", "data_source", "cases", "failing", "stale"],
+    }
+    criterion: dict[str, JsonValue] = {
+        "type": "object",
+        "additionalProperties": False,
+        "properties": {
+            "task_criterion_quote": text("task_description", 240),
+            "obligation_criterion_quote": text("obligation_text", 240),
+            "source": {"enum": ["task_statement", "obligation", "manifest_quote"]},
+            "flags": {
+                "type": "array",
+                "maxItems": 7,
+                "uniqueItems": True,
+                "items": {
+                    "enum": [
+                        "no_test",
+                        "failing_cases",
+                        "own_or_tuned_only",
+                        "public_only",
+                        "stale",
+                        "repeated_run",
+                        "redundant_tests",
+                    ]
+                },
+            },
+            "witnesses": {"type": "array", "maxItems": 3, "items": witness},
+            "unresolved_failing_runs": count,
+            "repeated_runs": count,
+            "redundant_tests": count,
+            "omitted_witnesses": count,
+        },
+        "required": [
+            "source",
+            "flags",
+            "witnesses",
+            "unresolved_failing_runs",
+            "repeated_runs",
+            "redundant_tests",
+            "omitted_witnesses",
+        ],
+        "allOf": [
+            {
+                "if": {"properties": {"source": {"const": "obligation"}}, "required": ["source"]},
+                "then": {
+                    "required": ["obligation_criterion_quote"],
+                    "not": {"required": ["task_criterion_quote"]},
+                },
+                "else": {
+                    "required": ["task_criterion_quote"],
+                    "not": {"required": ["obligation_criterion_quote"]},
+                },
+            }
+        ],
+    }
+    return {
+        "type": "object",
+        "additionalProperties": False,
+        "properties": {
+            "label": {"const": "agent-declared"},
+            "advisory": {"const": True},
+            "criteria": {"type": "array", "maxItems": 24, "items": criterion},
+            "omitted_criteria": count,
+        },
+        "required": ["label", "advisory", "criteria", "omitted_criteria"],
+    }
+
+
 def _status_request_v1_2_schema(entry: _RegistryEntry) -> dict[str, JsonValue]:
     """Add project, task, and host-correlation selectors to the status request."""
 
@@ -4764,7 +4879,7 @@ def _status_request_v1_2_schema(entry: _RegistryEntry) -> dict[str, JsonValue]:
     )
     view = cast(dict[str, JsonValue], properties["view"])
     values = cast(list[JsonValue], view["enum"])
-    for value in ("lineage", "project"):
+    for value in ("lineage", "project", "coverage"):
         if value not in values:
             values.append(value)
     findings_filter = cast(dict[str, JsonValue], definitions["findings_filter"])
@@ -4781,7 +4896,7 @@ def _status_request_v1_2_schema(entry: _RegistryEntry) -> dict[str, JsonValue]:
     rules.append(
         {
             "if": {
-                "properties": {"view": {"enum": ["lineage", "project"]}},
+                "properties": {"view": {"enum": ["lineage", "project", "coverage"]}},
                 "required": ["view"],
             },
             "then": {"not": {"required": ["filter"]}},
@@ -5486,7 +5601,24 @@ def _status_result_v1_4_schema(entry: _RegistryEntry) -> dict[str, JsonValue]:
     page = cast(dict[str, JsonValue], properties["page"])
     page_values = cast(list[JsonValue], page["anyOf"])
     page_values.extend([{"$ref": "#/$defs/lineage_page"}, {"$ref": "#/$defs/project_page"}])
+    view_values.append("coverage")
+    definitions["coverage_page"] = {
+        "type": "object",
+        "additionalProperties": False,
+        "properties": {
+            "verification_coverage": _verification_coverage_schema(),
+            "next_cursor": {"type": "null"},
+        },
+        "required": ["verification_coverage", "next_cursor"],
+    }
+    page_values.append({"$ref": "#/$defs/coverage_page"})
     rules = cast(list[JsonValue], success.setdefault("allOf", []))
+    rules.append(
+        {
+            "if": {"properties": {"view": {"const": "coverage"}}, "required": ["view"]},
+            "then": {"properties": {"page": {"$ref": "#/$defs/coverage_page"}}},
+        }
+    )
     rules.extend(
         [
             {
@@ -6559,6 +6691,7 @@ def _receipt_document_v1_3_schema(entry: _RegistryEntry) -> dict[str, JsonValue]
     )
     definitions = cast(dict[str, JsonValue], document["$defs"])
     receipt_properties = cast(dict[str, JsonValue], document["properties"])
+    receipt_properties["verification_coverage"] = _verification_coverage_schema()
     receipt_properties["semantic_status"] = {"const": "unavailable"}
     receipt_properties["semantic_reason"] = {"const": "round_limit_unassessable"}
     receipt_properties["disproved_self_verified_finding_ids"] = {
@@ -6866,6 +6999,52 @@ def _publish_work_request_v1_2_schema(entry: _RegistryEntry) -> dict[str, JsonVa
     return document
 
 
+def _result_recorded_v1_1_schema(entry: _RegistryEntry) -> dict[str, JsonValue]:
+    """Add an optional agent-declared verification manifest without moving the released shape."""
+
+    document = _load_versioned_template(entry, "events/result-recorded-1.0.0.schema.json")
+    properties = cast(dict[str, JsonValue], document["properties"])
+    properties["verification"] = {
+        "type": "object",
+        "additionalProperties": False,
+        "required": ["criterion_quote", "data_source", "cases", "failing"],
+        "properties": {
+            "criterion_quote": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 240,
+                "pattern": r"\S",
+            },
+            "data_source": {
+                "type": "string",
+                "enum": [
+                    "task_public",
+                    "own_generated",
+                    "independent",
+                    "held_out",
+                    "stated_environment",
+                    "unknown",
+                ],
+            },
+            "cases": {"type": "integer", "minimum": 0, "maximum": 9007199254740991},
+            "failing": {"type": "integer", "minimum": 0, "maximum": 9007199254740991},
+            "worst": {"type": "string", "minLength": 1, "maxLength": 64, "pattern": r"\S"},
+            "tuned_on_these_cases": {"type": "boolean"},
+            "test_file": {"type": "string", "minLength": 1, "maxLength": 1024, "pattern": r"\S"},
+            "results_file": {"type": "string", "minLength": 1, "maxLength": 1024, "pattern": r"\S"},
+            "report_digest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+        },
+        "dependentRequired": {
+            "test_file": ["results_file", "report_digest"],
+            "results_file": ["test_file", "report_digest"],
+            "report_digest": ["test_file", "results_file"],
+        },
+        "description": "Optional agent-declared test scope. The service checks the exact task quote and failing <= cases; this is advisory evidence, never proof of coverage.",
+    }
+    document["title"] = f"Yoetz result recorded {entry.schema_version}"
+    return document
+
+
 def _decision_recorded_v1_1_schema(entry: _RegistryEntry) -> dict[str, JsonValue]:
     """Add the required ``review_mode`` switch to the released decision shape (ADR-049).
 
@@ -7030,6 +7209,7 @@ def _event_draft_v1_2_schema(entry: _RegistryEntry) -> dict[str, JsonValue]:
     add_branch("finding_recorded", "1.2.0")
     add_branch("finding_recorded", "1.3.0")
     add_branch("response_recorded", "1.1.0")
+    add_branch("result_recorded", "1.1.0")
     for family, version in _TASK_STATEMENT_EVENT_PAIRS:
         add_branch(family, version)
     for family, version in _OBLIGATION_EVENT_PAIRS:
@@ -7135,7 +7315,11 @@ def _opaque_unknown_event_v1_2_schema(entry: _RegistryEntry) -> dict[str, JsonVa
             "type": "object",
         }
     )
-    for family, version in (*_TASK_STATEMENT_EVENT_PAIRS, *_OBLIGATION_EVENT_PAIRS):
+    for family, version in (
+        *_TASK_STATEMENT_EVENT_PAIRS,
+        *_OBLIGATION_EVENT_PAIRS,
+        ("result_recorded", "1.1.0"),
+    ):
         values.append(
             {
                 "additionalProperties": False,
@@ -7329,6 +7513,15 @@ def _outbound_case_v1_2_schema(entry: _RegistryEntry) -> dict[str, JsonValue]:
     if "prior_finding" not in sections:
         sections.append("prior_finding")
         sections.sort(key=lambda value: str(value).encode("ascii"))
+    if "verification_coverage" not in sections:
+        sections.append("verification_coverage")
+        sections.sort(key=lambda value: str(value).encode("ascii"))
+    packet_properties["verification_coverage_item_ids"] = {
+        "items": {"$ref": "#/$defs/item_id"},
+        "maxItems": 1,
+        "type": "array",
+        "uniqueItems": True,
+    }
     packet_properties["prior_finding_item_ids"] = {
         "items": {"$ref": "#/$defs/item_id"},
         "maxItems": MAX_PRIOR_FINDING_ITEMS,
@@ -11086,6 +11279,18 @@ _REGISTRY: Final[tuple[_RegistryEntry, ...]] = (
         ),
     ),
     _RegistryEntry(
+        "events/result-recorded-1.1.0.schema.json",
+        "result-recorded",
+        "1.1.0",
+        "event",
+        "event-payload",
+        lambda: (
+            __import__(
+                "finishup.domain.events", fromlist=["ResultRecordedPayload"]
+            ).ResultRecordedPayload
+        ),
+    ),
+    _RegistryEntry(
         "events/session-opened-1.0.0.schema.json",
         "session-opened",
         "1.0.0",
@@ -12762,6 +12967,7 @@ def build_schema_documents(
             "config/yoetz-config-1.2.0.schema.json",
             "events/check-recorded-1.0.0.schema.json",
             "events/finding-recorded-1.0.0.schema.json",
+            "events/result-recorded-1.0.0.schema.json",
             "findings/finding-1.0.0.schema.json",
             "findings/provider-judgment-1.0.0.schema.json",
             "findings/semantic-provenance-1.0.0.schema.json",
@@ -12777,6 +12983,8 @@ def build_schema_documents(
             "events/plan-revised-1.0.0.schema.json",
         }:
             normalized = _plan_payload_schema(entry)
+        elif entry.relative_path == "events/result-recorded-1.1.0.schema.json":
+            normalized = _result_recorded_v1_1_schema(entry)
         elif entry.relative_path == "events/event-draft-1.0.0.schema.json":
             normalized = _frozen_schema(entry)
         elif entry.relative_path == "events/event-draft-1.1.0.schema.json":

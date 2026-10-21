@@ -22,8 +22,10 @@ from finishup.protocol.models import (
     StatusResultModel,
     StatusSuccessModel,
 )
+from finishup.tui.app import FinishUpTui
 from finishup.tui.models import CheckMode
 from finishup.tui.runtime import FinishUpRuntime, RuntimeError_
+from fixture_loader import load_fixture_json
 
 pytestmark = pytest.mark.anyio
 _SESSION = "ses_52000000-0000-4000-8000-000000000001"
@@ -209,6 +211,49 @@ async def test_exact_selector_and_returned_frontier_reach_check_and_receipt(
     assert isinstance(receipt, ReceiptRequestModel)
     assert receipt.task_id == _TASK
     assert receipt.redaction_profile.value == "default_local_export"
+
+
+async def test_coverage_slash_command_dispatches_to_the_task_coverage_view(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    tui = FinishUpTui(cwd=tmp_path)
+    requested: list[str] = []
+
+    async def task_view(view: str) -> None:
+        requested.append(view)
+
+    monkeypatch.setattr(tui, "_command_task_view", task_view)
+    await tui._dispatch("coverage")  # pyright: ignore[reportPrivateUsage]
+    assert requested == ["coverage"]
+
+
+async def test_coverage_view_uses_the_service_witnesses_and_shared_renderer(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fixture = cast(
+        dict[str, Any], load_fixture_json("canonical/verification-coverage-1.4.0.case.json")
+    )
+    wire = _lineage_status_wire()
+    wire["view"] = "coverage"
+    wire["page"] = fixture["input"]["status_result"]["page"]
+    result = StatusResultModel.model_validate(wire)
+    client = _Client(result)
+
+    @asynccontextmanager
+    async def connect(_runtime: FinishUpRuntime) -> AsyncGenerator[_Client]:
+        yield client
+
+    monkeypatch.setattr(FinishUpRuntime, "_client", connect)
+    runtime = FinishUpRuntime(cwd=tmp_path)
+    await runtime.open_task(_SESSION)
+    rendered = await runtime.task_status(_SESSION, "coverage")
+    assert isinstance(result.root, StatusSuccessModel)
+    assert rendered.lines == tuple(render_human_status(result.root).splitlines())
+    assert any("6/100 failing" in line for line in rendered.lines)
+    request = client.requests[-1]
+    assert isinstance(request, StatusRequestModel) and request.view == "coverage"
 
 
 async def test_lineage_view_reuses_cli_renderer_and_preserves_child_facts(

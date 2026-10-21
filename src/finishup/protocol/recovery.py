@@ -958,6 +958,7 @@ REASON_CODE_DIRECTIVE_EXEMPTIONS: Final[frozenset[str]] = frozenset(
         "ref_mirror_mismatch",
         # Issue #977: the message names the requested item and the exact repair.
         "requested_command_placeholder",
+        "verification_criterion_not_in_task",
         "response_fields_invalid",
         "runtime_attempt_evidence_json_shape_invalid",
         "semantic_provenance_json_shape_invalid",

@@ -244,6 +244,9 @@ __all__ = [
     "ResponseRecordedPayload",
     "ResultOutcome",
     "ResultRecordedPayload",
+    "ResultVerification",
+    "VerificationDataSource",
+    "RESULT_VERIFICATION_SCHEMA_VERSION",
     "RuntimeProfile",
     "RESPONSE_EVENT_SCHEMA_VERSION",
     "OBLIGATION_BASE_SCHEMA_VERSION",
@@ -278,6 +281,7 @@ __all__ = [
 OBSERVATION_COORDINATOR_ACTOR_ID: Final = "yoetz:observation-coordinator"
 
 SCHEMA_VERSION: Final = "1.0.0"
+RESULT_VERIFICATION_SCHEMA_VERSION: Final = "1.1.0"
 EVIDENCE_SCHEMA_VERSION: Final = "1.2.0"
 EVIDENCE_TYPED_SCHEMA_VERSION: Final = "1.1.0"
 EVIDENCE_SCHEMA_VERSIONS: Final = (
@@ -980,6 +984,7 @@ def _locator_key_kind(schema: EventSchema) -> str:
             EventSchema("plan_revised", TASK_STATEMENT_PLAN_SCHEMA_VERSION),
         }
         or (schema.name == "evidence_recorded" and schema.version in EVIDENCE_SCHEMA_VERSIONS)
+        or schema == EventSchema("result_recorded", RESULT_VERIFICATION_SCHEMA_VERSION)
         or (
             schema.name in {"check_recorded", "finding_recorded"}
             and (
@@ -2298,6 +2303,58 @@ class ActionRecordedPayload:
         )
 
 
+class VerificationDataSource(str, Enum):  # noqa: UP042 - exact wire enum base
+    TASK_PUBLIC = "task_public"
+    OWN_GENERATED = "own_generated"
+    INDEPENDENT = "independent"
+    HELD_OUT = "held_out"
+    STATED_ENVIRONMENT = "stated_environment"
+    UNKNOWN = "unknown"
+
+
+@dataclass(frozen=True, slots=True)
+class ResultVerification:
+    """Agent-declared test scope and counts, never an independent verification claim."""
+
+    criterion_quote: str
+    data_source: VerificationDataSource
+    cases: int
+    failing: int
+    worst: str | None = None
+    tuned_on_these_cases: bool | None = None
+    test_file: str | None = None
+    results_file: str | None = None
+    report_digest: str | None = None
+
+    def __post_init__(self) -> None:
+        _bounded_text(self.criterion_quote, 240, minimum=1)
+        for name, maximum in (
+            ("criterion_quote", 240),
+            ("worst", 64),
+            ("test_file", 1024),
+            ("results_file", 1024),
+        ):
+            value = getattr(self, name)
+            if value is not None and (
+                type(value) is not str or not value.strip() or len(value) > maximum
+            ):
+                raise ProtocolValueError("invalid_event_value_type")
+            if value is not None:
+                _bounded_text(value, maximum, minimum=1)
+        object.__setattr__(
+            self, "data_source", _exact_enum(self.data_source, VerificationDataSource)
+        )
+        object.__setattr__(self, "cases", _bounded_integer(self.cases, 0, _MAX_SAFE_INTEGER))
+        object.__setattr__(self, "failing", _bounded_integer(self.failing, 0, self.cases))
+        if self.tuned_on_these_cases is not None and type(self.tuned_on_these_cases) is not bool:
+            raise ProtocolValueError("invalid_event_value_type")
+        registration = (self.test_file, self.results_file, self.report_digest)
+        if any(value is not None for value in registration):
+            if any(value is None for value in registration):
+                raise ProtocolValueError("invalid_event_value_type")
+            validate_sha256_digest(cast(str, self.report_digest))
+
+
 @dataclass(frozen=True, slots=True)
 class ResultRecordedPayload:
     result_id: ResultId
@@ -2307,6 +2364,7 @@ class ResultRecordedPayload:
     summary: str | None = None
     subject_state: SubjectStateRef | None = None
     evidence_refs: tuple[EvidenceId, ...] = ()
+    verification: ResultVerification | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "result_id", result_id(self.result_id))
@@ -2327,6 +2385,8 @@ class ResultRecordedPayload:
             "evidence_refs",
             _id_tuple(self.evidence_refs, evidence_id, field="evidence_refs"),
         )
+        if self.verification is not None and type(self.verification) is not ResultVerification:
+            raise ProtocolValueError("invalid_event_value_type")
 
 
 @dataclass(frozen=True, slots=True)
@@ -3665,6 +3725,7 @@ PAYLOAD_TYPES: Final[Mapping[EventSchema, type[EventPayload]]] = MappingProxyTyp
         ): DecisionRecordedPayload,
         EventSchema("action_recorded", SCHEMA_VERSION): ActionRecordedPayload,
         EventSchema("result_recorded", SCHEMA_VERSION): ResultRecordedPayload,
+        EventSchema("result_recorded", RESULT_VERIFICATION_SCHEMA_VERSION): ResultRecordedPayload,
         **{
             EventSchema("evidence_recorded", version): EvidenceRecordedPayload
             for version in EVIDENCE_SCHEMA_VERSIONS
@@ -4681,6 +4742,8 @@ def decode_payload(schema: EventSchema, payload: JsonValue) -> EventPayload:
         optional = optional - {"reviewer"}
     if schema.name == "evidence_recorded" and schema.version != SCHEMA_VERSION:
         optional = frozenset({*optional, "digest_binding"})
+    if schema == EventSchema("result_recorded", RESULT_VERIFICATION_SCHEMA_VERSION):
+        optional = frozenset({*optional, "verification"})
     if schema == EventSchema("claim_recorded", CLAIM_SCHEMA_VERSION):
         required = frozenset({*required, "limitation_refs", "supersedes_claim_refs"})
     if schema == EventSchema("decision_recorded", DECISION_REVIEW_MODE_SCHEMA_VERSION):
@@ -4857,6 +4920,29 @@ def decode_payload(schema: EventSchema, payload: JsonValue) -> EventPayload:
     if schema.name == "result_recorded":
         state = _optional(source, "subject_state")
         evidence = _optional(source, "evidence_refs")
+        raw_verification = _optional(source, "verification")
+        verification = None
+        if raw_verification is not None:
+            manifest = _closed_object(
+                raw_verification,
+                required=frozenset({"criterion_quote", "data_source", "cases", "failing"}),
+                optional=frozenset(
+                    {"worst", "tuned_on_these_cases", "test_file", "results_file", "report_digest"}
+                ),
+            )
+            verification = ResultVerification(
+                criterion_quote=cast(str, _field(manifest, "criterion_quote")),
+                data_source=_enum_from_json(
+                    _field(manifest, "data_source"), VerificationDataSource
+                ),
+                cases=cast(int, _field(manifest, "cases")),
+                failing=cast(int, _field(manifest, "failing")),
+                worst=cast(str | None, _optional(manifest, "worst")),
+                tuned_on_these_cases=cast(bool | None, _optional(manifest, "tuned_on_these_cases")),
+                test_file=cast(str | None, _optional(manifest, "test_file")),
+                results_file=cast(str | None, _optional(manifest, "results_file")),
+                report_digest=cast(str | None, _optional(manifest, "report_digest")),
+            )
         return ResultRecordedPayload(
             result_id=result_id(_field(source, "result_id")),
             action_id=action_id(_field(source, "action_id")),
@@ -4867,6 +4953,7 @@ def decode_payload(schema: EventSchema, payload: JsonValue) -> EventPayload:
             evidence_refs=(
                 () if evidence is None else cast(tuple[EvidenceId, ...], tuple(_array(evidence)))
             ),
+            verification=verification,
         )
     if schema.name == "evidence_recorded":
         state = _optional(source, "subject_state")
@@ -5455,6 +5542,23 @@ def encode_payload(payload: EventPayload) -> JsonValue:
             None if value.subject_state is None else _encode_subject_state(value.subject_state),
         )
         _optional_tuple(result, "evidence_refs", cast(tuple[object, ...], value.evidence_refs))
+        if value.verification is not None:
+            manifest = value.verification
+            verification_json: dict[str, object] = {
+                "criterion_quote": manifest.criterion_quote,
+                "data_source": manifest.data_source.value,
+                "cases": manifest.cases,
+                "failing": manifest.failing,
+            }
+            for name in (
+                "worst",
+                "tuned_on_these_cases",
+                "test_file",
+                "results_file",
+                "report_digest",
+            ):
+                _optional_value(verification_json, name, getattr(manifest, name))
+            result["verification"] = verification_json
         return _json_object(result)
     if payload_type is EvidenceRecordedPayload:
         value = cast(EvidenceRecordedPayload, payload)
@@ -5680,6 +5784,12 @@ def _validate_event_schema_payload(
     schema: EventSchema,
     payload: EventPayload | None,
 ) -> None:
+    if (
+        type(payload) is ResultRecordedPayload
+        and payload.verification is not None
+        and schema.version != RESULT_VERIFICATION_SCHEMA_VERSION
+    ):
+        raise ProtocolValueError("invalid_event_schema")
     if type(payload) is DecisionRecordedPayload:
         # ADR-049: the review-mode switch is 1.1.0-only; 1.0.0 is released and frozen.
         if (payload.review_mode is not None) != (

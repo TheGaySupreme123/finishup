@@ -97,7 +97,7 @@ def test_over_budget_bridge_starts_with_minimal_schema_and_diagnostic(
 def _assert_hint_accepts_catalog_shape(
     hint: dict[str, Any], source: Mapping[str, Any], definitions: Mapping[str, Any]
 ) -> None:
-    assert set(hint) <= {"type", "enum", "items"}
+    assert set(hint) <= {"type", "enum", "items", "properties", "required"}
     while "$ref" in source:
         source = definitions[source["$ref"].removeprefix("#/$defs/")]
     if "type" in hint:
@@ -107,6 +107,10 @@ def _assert_hint_accepts_catalog_shape(
         assert set(source["enum"]) <= set(hint["enum"])
     if "items" in hint:
         _assert_hint_accepts_catalog_shape(hint["items"], source["items"], definitions)
+    if "required" in hint:
+        assert set(hint["required"]) <= set(source.get("required", ()))
+    for name, nested in hint.get("properties", {}).items():
+        _assert_hint_accepts_catalog_shape(nested, source["properties"][name], definitions)
 
 
 def test_payload_hints_accept_every_ordinary_family_and_version() -> None:

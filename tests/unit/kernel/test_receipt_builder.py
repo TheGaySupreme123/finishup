@@ -11,6 +11,8 @@ import pytest
 
 from finishup.domain.check_totals import CHECK_TOTAL_KEYS, render_check_totals
 from finishup.domain.events import (
+    ActionKind,
+    ActionRecordedPayload,
     CheckMode,
     CheckRecordedPayload,
     LedgerRecord,
@@ -21,6 +23,10 @@ from finishup.domain.events import (
     PlanPublishedPayload,
     PolicyVersion,
     ResponseRecordedPayload,
+    ResultOutcome,
+    ResultRecordedPayload,
+    ResultVerification,
+    VerificationDataSource,
     encode_payload,
 )
 from finishup.domain.findings import (
@@ -64,6 +70,7 @@ from finishup.domain.values import (
     FindingId,
     Frontier,
     JsonObject,
+    action_id,
     event_id,
     finding_id,
     freeze_json,
@@ -361,6 +368,86 @@ def _build(
         profile,
         include,
     )
+
+
+@pytest.mark.parametrize("profile", tuple(ReceiptRedactionProfile))
+def test_agent_declared_coverage_receipt_preserves_failure_without_closure_effect_or_export_leak(
+    profile: ReceiptRedactionProfile,
+) -> None:
+    quote = "Every measured case must satisfy the threshold"
+    obligation = ObligationPublishedPayload(
+        obligation_id("obl_00000000-0000-4000-8000-000000000001"),
+        "Deliver the result",
+        "Discriminating check",
+        ObligationStatus.OPEN,
+    )
+    context = _context(
+        check=_check(CheckVerdict.NO_ISSUE_DETECTED, _coverage()),
+        plan=PlanPublishedPayload(
+            1, "Deliver work", (obligation.obligation_id,), task_statement=quote
+        ),
+        obligation=obligation,
+    )
+    action = ActionRecordedPayload(
+        action_id("act_00000000-0000-4000-8000-000000001170"),
+        ActionKind.COMMAND,
+        "Run an independent check",
+        command="python oracle.py",
+    )
+    result = ResultRecordedPayload(
+        result_id("res_00000000-0000-4000-8000-000000001170"),
+        action.action_id,
+        ResultOutcome.FAILURE,
+        verification=ResultVerification(
+            quote, VerificationDataSource.INDEPENDENT, 100, 6, "105.61 mm", False
+        ),
+    )
+    projection = replace(
+        context.projection,
+        actions={
+            action.action_id: ProjectionRecord(
+                action, canonical_digest(encode_payload(action)), False, _SOURCE_EVENT_ID, 1
+            )
+        },
+        results={
+            result.result_id: ProjectionRecord(
+                result, canonical_digest(encode_payload(result)), False, _CHECK_EVENT_ID, 2
+            )
+        },
+    )
+    versions = replace(
+        _versions(), schema_versions=(SchemaVersionEntry("receipts/receipt-document", "1.3.0"),)
+    )
+
+    def build(current: ReceiptBuildContext) -> ReceiptDocument:
+        return build_receipt(
+            current,
+            receipt_id("rcp_00000000-0000-4000-8000-000000000001"),
+            task_id("tsk_00000000-0000-4000-8000-000000000001"),
+            session_id("ses_00000000-0000-4000-8000-000000000001"),
+            timestamp_from_string("2026-07-19T00:00:00.000Z"),
+            versions,
+            profile,
+            ReceiptInclude.FULL,
+        )
+
+    document = build(replace(context, projection=projection))
+    assert document.conclusion is build(context).conclusion
+    assert document.verification_coverage is not None
+    assert document.verification_coverage.criteria[0].unresolved_failing_runs == 1
+    wire = receipt_document_to_json(document)
+    assert receipt_document_from_json(wire) == document
+    for markdown in (True, False):
+        text = render_receipt_human(document, markdown=markdown)
+        assert "Verification coverage (agent-declared)" in text
+        assert "6/100 failing" in text
+        # A human_text leaf has the legacy single summary category. Raw task/evidence
+        # values remain separately classified in JSON, never copied into that leaf.
+        assert quote not in text and "105.61 mm" not in text
+    if profile is ReceiptRedactionProfile.FULL_LOCAL:
+        assert quote in str(wire) and "105.61 mm" in str(wire)
+    else:
+        assert quote not in str(wire) and "105.61 mm" not in str(wire)
 
 
 def test_frontier_mismatch_is_rejected() -> None:

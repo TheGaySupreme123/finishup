@@ -180,6 +180,12 @@ _IGNORED_SOURCE_NAMES: Final = frozenset({".DS_Store", "__pycache__"})
 # is deliberately listed here; nothing is discovered by scanning the repository.
 _INVENTORY_ENTRIES: Final[tuple[tuple[str, str, str, bool], ...]] = (
     (
+        "fixtures/canonical/verification-coverage-1.4.0.case.json",
+        "canonical_vector",
+        "application/json",
+        True,
+    ),
+    (
         "schemas/privacy/review-packet-row-2.0.0.schema.json",
         "json_schema",
         "application/schema+json",
@@ -418,6 +424,12 @@ _INVENTORY_ENTRIES: Final[tuple[tuple[str, str, str, bool], ...]] = (
     ),
     (
         "fixtures/canonical/claim-correction-1.1.0.case.json",
+        "canonical_vector",
+        "application/json",
+        True,
+    ),
+    (
+        "fixtures/canonical/result-verification-1.1.0.case.json",
         "canonical_vector",
         "application/json",
         True,
@@ -955,6 +967,12 @@ _INVENTORY_ENTRIES: Final[tuple[tuple[str, str, str, bool], ...]] = (
     ),
     (
         "schemas/events/result-recorded-1.0.0.schema.json",
+        "json_schema",
+        "application/schema+json",
+        True,
+    ),
+    (
+        "schemas/events/result-recorded-1.1.0.schema.json",
         "json_schema",
         "application/schema+json",
         True,

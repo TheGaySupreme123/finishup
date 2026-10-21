@@ -45,6 +45,18 @@ __all__ = [
 # present and valid, or that a whole payload is wrong when one key inside it is.
 _SAFE_LOCATION_SEGMENTS: Final = frozenset(
     {
+        # Optional result-recorded 1.1.0 test manifest (#1170). Only schema names are safe;
+        # the quoted task text, report values and file labels never enter error locations.
+        "verification",
+        "criterion_quote",
+        "data_source",
+        "cases",
+        "failing",
+        "worst",
+        "tuned_on_these_cases",
+        "test_file",
+        "results_file",
+        "report_digest",
         # obligation_published 1.1.0 (#1002).
         "acknowledged_not_done_reason",
         "context_digest",
@@ -732,6 +744,24 @@ def safe_validation_locations(exc: object) -> tuple[dict[str, str], ...]:
             if condition is not None:
                 entry["condition_field"] = condition[0]
                 entry["condition_value"] = condition[1]
+        if (
+            reason == "invalid_type_or_value"
+            and entry.get("family") == "result_recorded"
+            and entry.get("family_version") == "1.1.0"
+            and pointer.endswith("/payload/verification")
+        ):
+            # The JSON-schema validator reports a missing manifest member at its parent object.
+            # It already carries only schema-required names; the allowlist above gates them a
+            # second time before they become pointers. Never parse the exception's prose/input.
+            missing = _missing_fields_from_validation_item(source)
+            if missing:
+                for name in missing:
+                    projected.append({**entry, "field": f"{pointer}/{name}", "reason": "missing"})
+                    if len(projected) == _MAX_VALIDATION_LOCATIONS:
+                        break
+                if len(projected) == _MAX_VALIDATION_LOCATIONS:
+                    break
+                continue
         projected.append(entry)
         if len(projected) == _MAX_VALIDATION_LOCATIONS:
             break

@@ -56,6 +56,7 @@ from finishup.protocol.models import (
     StatusCheckAdmissionModel,
     StatusClosureReadinessModel,
     StatusCompactPageModel,
+    StatusCoveragePageModel,
     StatusEvidencePageModel,
     StatusFindingsPageModel,
     StatusLineagePageModel,
@@ -830,7 +831,16 @@ def render_human_status(result: StatusSuccessModel) -> str:
         *_credential_heuristic_lines(result),
         *_status_review_mode_lines(result),
     ]
-    if isinstance(result.page, StatusCompactPageModel):
+    if isinstance(result.page, StatusCoveragePageModel):
+        from finishup.domain.verification_coverage import verification_coverage_wire_lines
+
+        lines.append("Verification coverage (agent-declared)")
+        lines.extend(
+            verification_coverage_wire_lines(
+                result.page.verification_coverage.model_dump(mode="json", exclude_none=True)
+            )
+        )
+    elif isinstance(result.page, StatusCompactPageModel):
         for item in result.page.items:
             latest_check = item.latest_check
             if latest_check is not None:
@@ -1105,6 +1115,12 @@ def render_human_receipt(result: ReceiptSuccessModel) -> str:
         # section; markdown and text already carry that section in ``human_text``.
         lines.extend(_receipt_review_mode_lines(document))
     if isinstance(document, Mapping):
+        declared = document.get("verification_coverage")
+        if isinstance(declared, Mapping):
+            from finishup.domain.verification_coverage import verification_coverage_wire_lines
+
+            lines.append("Verification coverage (agent-declared)")
+            lines.extend(verification_coverage_wire_lines(cast(Mapping[str, object], declared)))
         historical = historical_gaps_from_wire(document)
         if historical:
             lines.append(

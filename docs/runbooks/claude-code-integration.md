@@ -2945,3 +2945,19 @@ incomplete. Receipt JSON/markdown/text distinguish an agent-disproved concern fr
 repair. Trusted byte-identical in-workspace shell rewrites preserve verification freshness;
 changed reports remain conservative pending #1143's dependency/role manifest. These decisions
 are shared across macOS, Linux and Windows through WSL 2; no native Windows support is implied.
+
+## Test manifests and verification quality (issue #1170)
+
+Host decision: supported through shared MCP `publish_work` and CLI `publish-work`, with the
+local `finishup record-test` helper for an already-run script and its small JSON results file.
+The optional result manifest quotes a recorded criterion and declares data source, counts,
+failures, optional worst value and tuning. The helper reads files; it does not execute tests.
+Parsed counts and coverage remain agent-declared; a digest never proves execution or correctness.
+The shared guidance asks for one discriminating independent check per criterion, visible failures
+and a rerun of the shipped revision. Repeated unchanged runs and redundant tests add no coverage.
+Coverage advice is non-blocking and does not activate AI review. When AI review is already in use,
+the reviewer scrutinizes circular tests and places a useful discriminating check first in its summary.
+See [the result recipe](../../guidance/request-templates.md#publish-work-result).
+
+This shared transport decision applies on macOS, Linux and Windows through WSL 2. Native host and
+platform execution is not established by the shared contract tests; issue #1170 owns that follow-up.

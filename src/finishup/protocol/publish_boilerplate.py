@@ -117,6 +117,7 @@ PAYLOAD_SET_FIELDS: Final[Mapping[tuple[str, str], frozenset[str]]] = MappingPro
         ("plan_published", "1.0.0"): frozenset({"obligation_refs"}),
         ("plan_published", "1.1.0"): frozenset({"obligation_refs"}),
         ("result_recorded", "1.0.0"): frozenset({"evidence_refs"}),
+        ("result_recorded", "1.1.0"): frozenset({"evidence_refs"}),
     }
 )
 # Payload reference sets whose omission has exactly one admissible meaning, the empty set (n7

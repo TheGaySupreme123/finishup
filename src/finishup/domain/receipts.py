@@ -49,6 +49,12 @@ from finishup.domain.values import (
     timestamp_from_string,
     validate_sha256_digest,
 )
+from finishup.domain.verification_coverage import (
+    VerificationCoverage,
+    verification_coverage_from_json,
+    verification_coverage_lines,
+    verification_coverage_to_json,
+)
 from finishup.protocol.canonical import JsonValue as CanonicalJsonValue
 from finishup.protocol.coverage import (
     Coverage,
@@ -1597,9 +1603,16 @@ class ReceiptDocument:
     # limits"), and every rule behind the conclusion. Absent (empty / None) keeps earlier bytes.
     limitation_disclosed_finding_ids: tuple[FindingId, ...] = ()
     conclusion_basis: ReceiptConclusionBasis | None = None
+    # Optional agent declarations; never affect conclusion, gap accounting or closure.
+    verification_coverage: VerificationCoverage | None = None
 
     def __post_init__(self) -> None:
         invalid = "invalid_receipt_document"
+        if self.verification_coverage is not None and (
+            type(self.verification_coverage) is not VerificationCoverage
+            or _receipt_document_artifact_version(self.versions) != "1.3.0"
+        ):
+            raise ProtocolValueError(invalid)
         try:
             validate_semantic_redacted_values(self.semantic_redacted_values)
         except ValueError as exc:
@@ -2189,6 +2202,7 @@ def receipt_document_from_json(value: object) -> ReceiptDocument:
                 "semantic_reason",
                 "limitation_disclosed_finding_ids",
                 "conclusion_basis",
+                "verification_coverage",
             }
         ),
         invalid,
@@ -2344,6 +2358,11 @@ def receipt_document_from_json(value: object) -> ReceiptDocument:
         conclusion_basis=(
             _conclusion_basis_from_json(source["conclusion_basis"])
             if "conclusion_basis" in source
+            else None
+        ),
+        verification_coverage=(
+            verification_coverage_from_json(source["verification_coverage"])
+            if "verification_coverage" in source
             else None
         ),
     )
@@ -2591,6 +2610,10 @@ def receipt_document_to_json(document: ReceiptDocument) -> dict[str, object]:
     # documents therefore retain their exact pre-extension bytes.
     if document.semantic_provenance is not None:
         result["semantic_provenance"] = semantic_provenance_to_json(document.semantic_provenance)
+    if document.verification_coverage is not None:
+        result["verification_coverage"] = verification_coverage_to_json(
+            document.verification_coverage
+        )
     return result
 
 
@@ -2898,6 +2921,20 @@ def render_receipt_human(document: ReceiptDocument, *, markdown: bool) -> str:
         if section.coverage_note is not None:
             section_parts.append(section.coverage_note)
         parts.append("\n".join(section_parts))
+    if document.verification_coverage is not None:
+        title = "Verification coverage (agent-declared)"
+        parts.append(
+            "\n".join(
+                (
+                    "## " + title if markdown else title,
+                    # human_text has the legacy single finding_summary category. Never fold
+                    # separately classified task, obligation or metric text into that leaf.
+                    *verification_coverage_lines(
+                        document.verification_coverage, include_content=False
+                    ),
+                )
+            )
+        )
     historical = historical_receipt_gaps(document)
     history_block: str | None = None
     if historical:

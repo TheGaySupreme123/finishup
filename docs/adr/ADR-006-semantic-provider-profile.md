@@ -2907,3 +2907,46 @@ Maintainer acknowledgement: the explicit scoped implementation request and owner
 #1139/#1126 authorize these delivery, packing and label changes.
 They do not change reviewer judgment, disclosure authority, or the design-gated #905 todo-list
 convergence.
+
+## Amendment: agent-declared test coverage and discriminating checks (2026-10-21, issue #1170)
+
+Maintainer acknowledgement: the explicit scoped request recorded on #1170 authorizes the additive
+result manifest, local report ingestion and advisory coverage projection. It grants no new
+network, credential, runtime or disclosure authority.
+
+The working-agent guidance uses a short role, goal, procedure, done, evidence, clues and constraints
+sequence. Its goal is fewer, better tests: one discriminating independent check per stated
+criterion, measuring that criterion's own metric, quantifier, conditions and environment. Known
+failures and the worst value remain visible. Evidence must refer to the shipped revision, with
+unreplayed changes disclosed. Redundant tests and unchanged reruns do not broaden coverage.
+
+`result_recorded/1.1.0` may carry an optional `verification` manifest. It quotes recorded task
+statement text verbatim and declares data source, case and failing counts, optional worst value
+and whether the agent tuned on those cases. Exact quote matching binds the declaration to recorded
+text; it does not establish that the test measures the criterion. Older results remain valid.
+The local `record-test` CLI reads a test file and small JSON report immediately, binds their
+references and report digest, and publishes bounded prose through the existing publication path.
+It never executes the test. Direct MCP and CLI publication can carry the complete manifest.
+Parsed counts, data-source labels and coverage remain **agent-declared**. A digest is byte identity,
+not proof of execution, independence or correctness.
+
+The deterministic coverage projection reports absent, failing, own-generated or tuned-only,
+stale, repeated and redundant witnesses within its recorded scope. It is advisory and
+non-blocking, never a green “covered” or correctness verdict. Quotes, file names, case names and
+worst values remain user content under the existing privacy and prose-rendering boundaries.
+The leading packet view uses structural source references and character spans, with criterion
+text remaining in its separately authorized task/obligation items. Human receipts show ordinal
+rows and structural facts; categorized JSON/status retain the criterion text and worst values.
+Unmanifested and unassessable criteria remain explicit limits rather than invented failures.
+
+Test-quality scrutiny uses AI review only when that review is already in use. The reviewer asks
+whether the witness measures the quoted criterion and whether its source or expected values are
+circular. When a useful independent discriminator exists, the first summary line begins
+`Discriminating check: <one concrete check>`, so the practical suggestion survives a bounded
+preview. When none exists, the reviewer does not invent a pointless test. A missing witness alone
+is not a demonstrated defect, and the instruction does not require extra tests or review rounds.
+
+Codex, Claude Code and Cursor share these publication and advisory semantics through MCP and CLI.
+The host runbooks record the same support decision and distinguish shared contract coverage from
+native host and platform execution. Coverage declarations change neither host-observed provenance
+nor the existing consent, packet-admission, receipt and closure boundaries.

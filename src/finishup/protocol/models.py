@@ -2050,6 +2050,7 @@ class StatusRequestModel(PublicRequestModel):
         "advice",
         "assignment",
         "candidate_findings",
+        "coverage",
         "compact",
         "evidence",
         "findings",
@@ -2957,6 +2958,7 @@ _PUBLISH_SUMMARY_CATEGORY: Final[Mapping[tuple[str, str], DataCategory]] = Mappi
         ("decision_recorded", "1.0.0"): DataCategory.DECISION_EXCERPT,
         ("action_recorded", "1.0.0"): DataCategory.COMMAND_METADATA,
         ("result_recorded", "1.0.0"): DataCategory.COMMAND_METADATA,
+        ("result_recorded", "1.1.0"): DataCategory.COMMAND_METADATA,
         ("evidence_recorded", "1.0.0"): DataCategory.EVIDENCE_EXCERPT,
         ("claim_recorded", "1.0.0"): DataCategory.FINDING_SUMMARY,
         ("response_recorded", "1.0.0"): DataCategory.FINDING_SUMMARY,
@@ -6174,6 +6176,70 @@ class StatusResultsPageModel(_ClosedModel):
         return self
 
 
+class StatusVerificationWitnessModel(_ClosedModel):
+    optional_non_null_fields = frozenset({"worst", "tuned_on_these_cases"})
+
+    result_id: ResultIdWire
+    action_id: ActionIdWire
+    data_source: Literal[
+        "task_public", "own_generated", "independent", "held_out", "stated_environment", "unknown"
+    ]
+    cases: Annotated[int, Field(strict=True, ge=0, le=2**53 - 1)]
+    failing: Annotated[int, Field(strict=True, ge=0, le=2**53 - 1)]
+    stale: bool
+    tuned_on_these_cases: bool | None = None
+    worst: Annotated[str, Field(min_length=1, max_length=64)] | OmittedContentModel | None = None
+
+
+class StatusVerificationCriterionModel(_ClosedModel):
+    optional_non_null_fields = frozenset({"task_criterion_quote", "obligation_criterion_quote"})
+
+    task_criterion_quote: (
+        Annotated[str, Field(min_length=1, max_length=240)] | OmittedContentModel | None
+    ) = None
+    obligation_criterion_quote: (
+        Annotated[str, Field(min_length=1, max_length=240)] | OmittedContentModel | None
+    ) = None
+    source: Literal["task_statement", "obligation", "manifest_quote"]
+    flags: tuple[
+        Literal[
+            "no_test",
+            "failing_cases",
+            "own_or_tuned_only",
+            "public_only",
+            "stale",
+            "repeated_run",
+            "redundant_tests",
+        ],
+        ...,
+    ]
+    witnesses: Annotated[tuple[StatusVerificationWitnessModel, ...], Field(max_length=3)]
+    unresolved_failing_runs: Annotated[int, Field(strict=True, ge=0, le=2**53 - 1)]
+    repeated_runs: Annotated[int, Field(strict=True, ge=0, le=2**53 - 1)]
+    redundant_tests: Annotated[int, Field(strict=True, ge=0, le=2**53 - 1)]
+    omitted_witnesses: Annotated[int, Field(strict=True, ge=0, le=2**53 - 1)]
+
+    @model_validator(mode="after")
+    def _validate_quote_source(self) -> StatusVerificationCriterionModel:
+        if (self.obligation_criterion_quote is not None) != (self.source == "obligation") or (
+            self.task_criterion_quote is not None
+        ) != (self.source != "obligation"):
+            raise ValueError("verification_criterion_quote_source")
+        return self
+
+
+class StatusVerificationCoverageModel(_ClosedModel):
+    label: Literal["agent-declared"]
+    advisory: Literal[True]
+    criteria: Annotated[tuple[StatusVerificationCriterionModel, ...], Field(max_length=24)]
+    omitted_criteria: Annotated[int, Field(strict=True, ge=0, le=2**53 - 1)]
+
+
+class StatusCoveragePageModel(_ClosedModel):
+    verification_coverage: StatusVerificationCoverageModel
+    next_cursor: None = None
+
+
 class StatusObligationsPageModel(_ClosedModel):
     items: tuple[StatusObligationItemModel, ...]
     next_cursor: CursorWire | None
@@ -6697,6 +6763,7 @@ type StatusPage = (
     | StatusAssignmentPageModel
     | StatusCandidateFindingsPageModel
     | StatusCompactPageModel
+    | StatusCoveragePageModel
     | StatusEvidencePageModel
     | StatusFindingsPageModel
     | StatusHistoryPageModel
@@ -6714,6 +6781,7 @@ _STATUS_PAGE_BY_VIEW: Final[Mapping[str, type[_ClosedModel]]] = MappingProxyType
         "assignment": StatusAssignmentPageModel,
         "candidate_findings": StatusCandidateFindingsPageModel,
         "compact": StatusCompactPageModel,
+        "coverage": StatusCoveragePageModel,
         "evidence": StatusEvidencePageModel,
         "findings": StatusFindingsPageModel,
         "history": StatusHistoryPageModel,
@@ -6740,6 +6808,7 @@ class StatusSuccessModel(_ClosedModel):
         "assignment",
         "candidate_findings",
         "compact",
+        "coverage",
         "evidence",
         "findings",
         "history",
@@ -6862,6 +6931,7 @@ class StatusBriefSuccessModel(_ClosedModel):
         "assignment",
         "candidate_findings",
         "compact",
+        "coverage",
         "evidence",
         "findings",
         "history",
@@ -7966,6 +8036,34 @@ _STATUS_ASSIGNMENT_STRUCTURAL_POINTERS: Final = ("/page/next_cursor",) + _prefix
     ("actor_id", "assignment_event_id", "obligation_ids/*", "resolved", "scope_refs/*"),
 )
 
+_VERIFICATION_COVERAGE_STRUCTURAL_LEAVES: Final = (
+    "label",
+    "advisory",
+    "omitted_criteria",
+    "criteria/*/source",
+    "criteria/*/flags/*",
+    "criteria/*/unresolved_failing_runs",
+    "criteria/*/repeated_runs",
+    "criteria/*/redundant_tests",
+    "criteria/*/omitted_witnesses",
+    "criteria/*/witnesses/*/result_id",
+    "criteria/*/witnesses/*/action_id",
+    "criteria/*/witnesses/*/data_source",
+    "criteria/*/witnesses/*/cases",
+    "criteria/*/witnesses/*/failing",
+    "criteria/*/witnesses/*/stale",
+    "criteria/*/witnesses/*/tuned_on_these_cases",
+    "criteria/*/task_criterion_quote/category",
+    "criteria/*/task_criterion_quote/omitted",
+    "criteria/*/task_criterion_quote/reason",
+    "criteria/*/obligation_criterion_quote/category",
+    "criteria/*/obligation_criterion_quote/omitted",
+    "criteria/*/obligation_criterion_quote/reason",
+    "criteria/*/witnesses/*/worst/category",
+    "criteria/*/witnesses/*/worst/omitted",
+    "criteria/*/witnesses/*/worst/reason",
+)
+
 _STATUS_CANDIDATE_FINDINGS_STRUCTURAL_POINTERS: Final = (
     ("/page/next_cursor",)
     + _prefix_leaf_patterns(
@@ -8528,6 +8626,21 @@ _RESPOND_CONTENT_RULES: Final[tuple[tuple[str, DataCategory], ...]] = (
     ("/response/reason", DataCategory.FINDING_SUMMARY),
 )
 _STATUS_CONTENT_RULES: Final[tuple[tuple[str, str, DataCategory], ...]] = (
+    (
+        "coverage",
+        "/page/verification_coverage/criteria/*/task_criterion_quote",
+        DataCategory.TASK_DESCRIPTION,
+    ),
+    (
+        "coverage",
+        "/page/verification_coverage/criteria/*/obligation_criterion_quote",
+        DataCategory.OBLIGATION_TEXT,
+    ),
+    (
+        "coverage",
+        "/page/verification_coverage/criteria/*/witnesses/*/worst",
+        DataCategory.COMMAND_METADATA,
+    ),
     ("findings", "/page/review_delivery", DataCategory.FINDING_SUMMARY),
     ("candidate_findings", "/page/items/*/detail", DataCategory.FINDING_SUMMARY),
     ("candidate_findings", "/page/items/*/summary", DataCategory.FINDING_SUMMARY),
@@ -8597,6 +8710,15 @@ _STATUS_COMMON_CONTENT_RULES: Final[tuple[tuple[str, DataCategory], ...]] = (
     ),
 )
 _RECEIPT_CONTENT_RULES: Final[tuple[tuple[str, DataCategory], ...]] = (
+    (
+        "/document/verification_coverage/criteria/*/task_criterion_quote",
+        DataCategory.TASK_DESCRIPTION,
+    ),
+    (
+        "/document/verification_coverage/criteria/*/obligation_criterion_quote",
+        DataCategory.OBLIGATION_TEXT,
+    ),
+    ("/document/verification_coverage/criteria/*/witnesses/*/worst", DataCategory.COMMAND_METADATA),
     ("/document/gaps/*/detail", DataCategory.FINDING_SUMMARY),
     ("/document/findings/*/detail", DataCategory.FINDING_SUMMARY),
     ("/document/findings/*/summary", DataCategory.FINDING_SUMMARY),
@@ -8658,6 +8780,14 @@ def _build_result_leaf_rules() -> tuple[_ResultLeafRule, ...]:
         status_view="candidate_findings",
     )
     add_structural("status", _STATUS_COMPACT_STRUCTURAL_POINTERS, status_view="compact")
+    add_structural(
+        "status",
+        ("/page/next_cursor",)
+        + _prefix_leaf_patterns(
+            "/page/verification_coverage", _VERIFICATION_COVERAGE_STRUCTURAL_LEAVES
+        ),
+        status_view="coverage",
+    )
     add_structural("status", _STATUS_EVIDENCE_STRUCTURAL_POINTERS, status_view="evidence")
     add_structural("status", _STATUS_FINDINGS_STRUCTURAL_POINTERS, status_view="findings")
     add_structural("status", _STATUS_HISTORY_STRUCTURAL_POINTERS, status_view="history")
@@ -8676,6 +8806,12 @@ def _build_result_leaf_rules() -> tuple[_ResultLeafRule, ...]:
     add_structural("status", _STATUS_PROJECT_STRUCTURAL_POINTERS, status_view="project")
     add_structural("status", _STATUS_VERSIONS_STRUCTURAL_POINTERS, status_view="versions")
     add_structural("receipt", _RECEIPT_STRUCTURAL_POINTERS)
+    add_structural(
+        "receipt",
+        _prefix_leaf_patterns(
+            "/document/verification_coverage", _VERIFICATION_COVERAGE_STRUCTURAL_LEAVES
+        ),
+    )
     # #1140: check embeds the same readiness model, under the same privacy categories. In
     # particular its undeclared repository paths are content, never structural metadata.
     add_structural(
@@ -8772,7 +8908,7 @@ def _build_result_leaf_rules() -> tuple[_ResultLeafRule, ...]:
         ):
             raise RuntimeError("invalid_result_leaf_classification")
     if (
-        len(result) != 1772
+        len(result) != 1830
     ):  # ... #1017 +3, #1027 +5, tb4n3 LO +9, W2-A +46, LF +34 (fact_lineage), W2-B +2,
         # tb4n4 #1044 +7 (closure_readiness.undeclared_references), #1048 +38 (inspection),
         # #1047 +2 (follow_up_round), tb4n5 +3 (publish action_notices),

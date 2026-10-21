@@ -177,6 +177,8 @@ def _check(repo_root: Path) -> bool:
         and _run(repo_root, "generate_task_statement_fixture.py", "--check")
         and _run(repo_root, "generate_publish_action_notices_fixture.py", "--check")
         and _run(repo_root, "generate_publish_server_filled_fixture.py", "--check")
+        and _run(repo_root, "generate_result_verification_fixture.py", "--check")
+        and _run(repo_root, "generate_verification_coverage_fixture.py", "--check")
         and _run(repo_root, "generate_review_result_delivery_fixture.py", "--check")
         and _run(repo_root, "generate_schemas.py", "--check")
         and _run(repo_root, "verify_resource_manifest.py", "--check")
@@ -205,7 +207,11 @@ def _write_pass(repo_root: Path) -> bool:
             "privacy/review-packet-row-2.0.0.schema.json",
             "--only",
             "integrations/host-connection-batch-1.0.0.schema.json",
+            "--only",
+            "events/result-recorded-1.1.0.schema.json",
         ),
+        ("generate_result_verification_fixture.py", "--write"),
+        ("generate_verification_coverage_fixture.py", "--write"),
         ("verify_resource_manifest.py", "--sync"),
         ("generate_advice_egress_fixture.py", "--write"),
         ("generate_project_policy_fixture.py", "--write"),

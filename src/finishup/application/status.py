@@ -83,6 +83,10 @@ from finishup.kernel.review_mode import (
     conversation_review_mode_from_switches,
     review_mode_switches,
 )
+from finishup.kernel.verification_coverage import (
+    build_verification_coverage,
+    verification_coverage_to_json,
+)
 from finishup.observability.logging import record_unexpected_exception_without_raising
 from finishup.ports.diagnostics import RuntimeCapability
 from finishup.ports.host_lineage import HostLineageRegistryPort
@@ -149,6 +153,7 @@ from finishup.protocol.models import (
     StatusClosureReadinessModel,
     StatusCompactItemModel,
     StatusCompactPageModel,
+    StatusCoveragePageModel,
     StatusEvidenceFilterModel,
     StatusEvidencePageModel,
     StatusFilter,
@@ -2670,6 +2675,35 @@ async def execute_status(
                 else full_page.gaps
             )
             gaps = tuple(sorted(set(compact_page.gaps) | set(view_gaps)))
+        elif request.view == "coverage":
+            if position is not None or request.cursor is not None:
+                raise _error(PublicErrorCode.INVALID_REQUEST, _STATUS_CURSOR_INVALID)
+            records = tuple(
+                [
+                    record
+                    async for record in runtime.ledger.load_events(
+                        runtime.session_id, through=frontier.sequence
+                    )
+                ]
+            )
+            projection = await projection_for_records(
+                runtime.ledger, runtime.session_id, frontier, records
+            )
+            if Frontier(projection.frontier, projection.head_digest) != frontier:
+                raise StatusFault(StatusFaultStage.REPLAY, "The status frontier is inconsistent.")
+            declared = await asyncio.to_thread(build_verification_coverage, projection, records)
+            page = StatusCoveragePageModel.model_validate(
+                {
+                    "verification_coverage": verification_coverage_to_json(declared),
+                    "next_cursor": None,
+                }
+            )
+            compact_page = await runtime.ledger.query_projection(
+                ProjectionQuery(runtime.session_id, "compact", None, frontier, 1, None, None)
+            )
+            coverage, gaps = compact_page.coverage, compact_page.gaps
+            effective, lag = frontier, head.sequence - frontier.sequence
+            projection_version, rebuild_state = runtime.projection_version, "current"
         elif request.view == "candidate_findings":
             if position is not None and type(position) is not int:
                 raise _error(PublicErrorCode.INVALID_REQUEST, _STATUS_CURSOR_INVALID)

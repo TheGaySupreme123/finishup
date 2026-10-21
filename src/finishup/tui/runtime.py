@@ -2421,7 +2421,7 @@ class FinishUpRuntime:
     async def task_status(
         self,
         title: str,
-        view: Literal["lineage", "project", "findings"],
+        view: Literal["lineage", "project", "findings", "coverage"],
         *,
         cursor: str | None = None,
     ) -> TaskStatusPage:
