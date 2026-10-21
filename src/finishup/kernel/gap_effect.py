@@ -203,7 +203,6 @@ _FAMILIES: Final[tuple[_Family, ...]] = (
             "completion_scope_undeclared",
             "declared_output_emptied",
             "declared_output_removed",
-            "edited_after_last_verification",
             "instruction_requirement_unmapped",
             "lineage_child_actionable_finding",
             "lineage_child_check_stale",
@@ -218,7 +217,6 @@ _FAMILIES: Final[tuple[_Family, ...]] = (
             "obligation_blocker_unconfirmed",
             "planned_verification_failed",
             "planned_verification_not_observed",
-            "planned_verification_stale",
             "preexisting_test_edit_unjustified",
             "requested_output_git_ignored",
             "task_statement_not_supplied",
@@ -232,6 +230,15 @@ _FAMILIES: Final[tuple[_Family, ...]] = (
         review_route="A",
         changed=False,
         codes=("semantic_missing_agent_suppliable",),
+    ),
+    _Family(
+        rule="G0f",
+        family="agent_actionable",
+        readiness="A",
+        d_route="A",
+        review_route="D",
+        changed=True,
+        codes=("edited_after_last_verification", "planned_verification_stale"),
     ),
     # tb4n4 (issue #1044): a delivered file that loads a file the change created and nothing
     # declares fails where the grader receives only the declared files (interleaved-vigenere S).
@@ -609,6 +616,7 @@ _FAMILIES: Final[tuple[_Family, ...]] = (
             "policy_untrusted",
             "selection_route_changed",
             "verification_stale",
+            "verification_rerun_question",
         ),
     ),
     _Family(
@@ -784,6 +792,7 @@ if [
 # is no third table to drift.
 PROOF_TOLERATED_GAPS: Final = frozenset(
     {
+        "verification_rerun_question",
         "capture_handoff_retired",
         "captured_object_unavailable",
         "check_time_change_base_unavailable",

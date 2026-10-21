@@ -2710,24 +2710,13 @@ async def _load_deterministic_result(
                 basis.coverage_gaps,
                 basis.observed_facts,
             )
-            if (finding.summary, finding.detail) != rendered_text:
+            template_candidate = replace(
+                candidate, summary=rendered_text[0], detail=rendered_text[1]
+            )
+            expected = _freshness_candidate(template_candidate, frozen.case)
+            if (finding.summary, finding.detail) != (expected.summary, expected.detail):
                 checkpoint_superseded = True
-                # Validate the local assessment against the current rendering while
-                # preserving the stored finding's structural fields for Finding validation.
-                candidate = CandidateFinding(
-                    finding.kind,
-                    finding.origin,
-                    finding.priority,
-                    rendered_text[0],
-                    rendered_text[1],
-                    finding.subject_refs,
-                    finding.policy_id,
-                    finding.policy_version,
-                    finding.subject_frontier,
-                    finding.coverage,
-                    finding.provenance,
-                )
-            DeterministicAssessment(candidate, basis)
+            DeterministicAssessment(template_candidate, basis)
             findings.append(finding)
         if len({item.finding_id for item in findings}) != len(findings):
             raise ValueError("deterministic_result_finding_invalid")
@@ -3117,7 +3106,13 @@ async def _read_declared_outputs(
     outputs = await _requested_output_inputs(
         frozen.case, capture, source, port, request.request_id, deliverable_history(records)
     )
-    return outputs.evaluator, outputs.gaps, outputs.absent, outputs.states, outputs.files, records
+
+    def evaluate(case: DeterministicCase) -> tuple[DeterministicAssessment, ...]:
+        return outputs.evaluator(
+            replace(case, verification_advisory=request.mode != "deterministic_only")
+        )
+
+    return evaluate, outputs.gaps, outputs.absent, outputs.states, outputs.files, records
 
 
 async def _frozen_prefix_records(
@@ -3321,17 +3316,52 @@ def _with_undeclared_references(
     return tuple(recorded)
 
 
+def _freshness_candidate(candidate: CandidateFinding, case: DeterministicCase) -> CandidateFinding:
+    from finishup.domain.bounded_text import quoted_path
+
+    rows = [
+        row
+        for row in case.verification_freshness or ()
+        if (
+            case.projection.results[row.run_ref].source_event_id in candidate.subject_refs
+            or row.state == "stale"
+            and set(candidate.coverage.known_gaps)
+            & {"planned_verification_stale", "edited_after_last_verification"}
+        )
+    ]
+    if not rows:
+        return candidate
+    detail = (
+        candidate.detail + " Recorded verification and later changes (input roles are declared): "
+    )
+    for row in rows[:4]:
+        detail += (
+            f"{row.run_ref}: " + "; ".join(quoted_path(text) for text in row.changes[:4]) + ". "
+        )
+    return replace(candidate, detail=detail)
+
+
+def _freshness_candidates(
+    assessments: tuple[DeterministicAssessment, ...],
+    case: DeterministicCase,
+) -> tuple[CandidateFinding, ...]:
+    return tuple(_freshness_candidate(item.candidate, case) for item in assessments)
+
+
 def run_deterministic_policies(
     case: DeterministicCase,
     scope: CheckScope,
     packs: tuple[str, ...],
     *,
     evaluators: dict[str, _PolicyEvaluator] | None = None,
+    verification_advisory: bool = False,
 ) -> tuple[tuple[DeterministicAssessment, ...], tuple[CheckPolicyExecution, ...]]:
     """Run the selected built-ins with application-owned scope and execution accounting."""
 
     if type(case) is not DeterministicCase or type(scope) is not CheckScope:
         raise _invalid()
+    if verification_advisory:
+        case = replace(case, verification_advisory=True)
     registered: dict[str, _PolicyEvaluator] = {
         _RESEARCH_PACK: research_evidence_findings,
         _WORK_PACK: work_integrity_findings,
@@ -4569,6 +4599,15 @@ def validate_semantic_judgment(
     case_gap_codes = frozenset(gap.code for gap in case.gaps)
     blocked = confirmed_blocked_obligation_ids((gap.code, gap.subject_refs) for gap in case.gaps)
     for challenge in judgment.challenges:
+        if challenge.finding_kind is FindingKind.STALE_EVIDENCE_FOR_CHANGED_STATE:
+            # #1143: reviewer freshness concerns always request a decision, never a repair gate.
+            # Preserve the reviewer's observation and provenance; only its blocking effect changes.
+            challenge = replace(
+                challenge,
+                finding_kind=FindingKind.DECISION_NEEDED,
+                summary="Is a verification rerun needed after these changes?",
+                requested_next_step="answer_question",
+            )
         if challenge.finding_kind is FindingKind.DECISION_NEEDED:
             # #1146: a choice can never become a repair directive, even if the model asks for act.
             challenge = replace(challenge, requested_next_step="answer_question")
@@ -6164,7 +6203,10 @@ async def execute_check_commit(
         )
         if frozen.lease.phase is CheckPhase.RESERVED:
             assessments, executions = run_deterministic_policies(
-                frozen.case, scope, packs, evaluators={_WORK_PACK: work_evaluator}
+                frozen.case,
+                scope,
+                packs,
+                evaluators={_WORK_PACK: work_evaluator},
             )
             assessments = assessments + await _coordination_assessments_for_frozen_case(
                 app,
@@ -6182,7 +6224,7 @@ async def execute_check_commit(
             )
             deterministic = allocate_findings(
                 app.ids,
-                tuple(item.candidate for item in assessments),
+                _freshness_candidates(assessments, frozen.case),
                 prior_finding_ids(frozen.case.projection),
             )
             frozen = await _publish_deterministic_result(
@@ -6217,7 +6259,10 @@ async def execute_check_commit(
                     counts={"superseded_checkpoints": 1},
                 )
                 assessments, executions = run_deterministic_policies(
-                    frozen.case, scope, packs, evaluators={_WORK_PACK: work_evaluator}
+                    frozen.case,
+                    scope,
+                    packs,
+                    evaluators={_WORK_PACK: work_evaluator},
                 )
                 assessments = assessments + await _coordination_assessments_for_frozen_case(
                     app,
@@ -6235,7 +6280,7 @@ async def execute_check_commit(
                 )
                 deterministic = allocate_findings(
                     app.ids,
-                    tuple(item.candidate for item in assessments),
+                    _freshness_candidates(assessments, frozen.case),
                     prior_finding_ids(frozen.case.projection),
                 )
             else:

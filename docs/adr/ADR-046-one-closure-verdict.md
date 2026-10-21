@@ -480,3 +480,14 @@ limitations on the same readiness. Every surface prints it once, as closure guid
 (`protocol.readiness_text.acceptance_risk_note`), never in the re-check sentence. The verdict's
 acknowledgement re-check also skips an honest downgrade (an effective `acknowledged_not_done`
 right after `resolved`), derived from the ledger.
+
+
+### Verification freshness (#1143, 2026-10-21)
+
+`planned_verification_stale` and `edited_after_last_verification` use G0f: actionable on the local
+route and disclosed on the AI review route. The shared readiness split follows the same route.
+`verification_rerun_question` is a standing coverage limit (G8c), never a receipt or Stop blocker;
+its informational question can be answered with a reasoned `respond acknowledged`, retained as an
+agent assertion for that exact run/change set. It is proof-tolerated as an unknown dependency
+limit, not proof that the verification is current. ADR-042 owns the input/change and declaration
+rules. Actual failed and missing required checks keep their existing gap effects.

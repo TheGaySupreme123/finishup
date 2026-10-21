@@ -470,3 +470,25 @@ def test_a_run_the_agent_linked_to_the_declared_verification_is_never_its_own_pr
     assert [c.kind for c in _review(case, probe, phase="final", linked=None).candidates] == [
         FindingKind.TASK_REQUIREMENT_UNMET
     ]
+
+
+def test_ai_staleness_is_a_non_blocking_rerun_question() -> None:
+    ledger = ObservedLedger()
+    ledger.plan("pytest -q")
+    result = ledger.passes("pytest -q")
+    run_event, _ = ledger.events_of(result)
+    ledger.edit()
+    case = _case(ledger)
+    challenge = _challenge(
+        FindingKind.STALE_EVIDENCE_FOR_CHANGED_STATE,
+        str(run_event),
+        summary="Verification predates an edit",
+    )
+    judgment = SemanticJudgment("challenges_returned", (challenge,))
+    review = validate_semantic_judgment(
+        case, (), judgment, _provenance(), expected_frontier=case.frontier, review_phase="final"
+    )
+    assert len(review.candidates) == 1
+    assert review.candidates[0].kind is FindingKind.DECISION_NEEDED
+    assert review.candidates[0].challenge is not None
+    assert review.candidates[0].challenge.requested_next_step == "answer_question"

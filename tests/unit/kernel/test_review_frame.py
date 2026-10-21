@@ -389,11 +389,11 @@ def test_an_edit_among_the_cited_work_keeps_the_task_requirement() -> None:
     assert not agent_probe_only(
         state, kind, (stress_event, edited), observed=observed, case_gap_codes=gaps
     )
-    # A later edit makes the declared verification stale, so it no longer holds on the record.
+    # A later edit with unknown dependencies questions whether the verification still holds.
     ledger.edit()
     later_state, later_observed = _state(ledger)
     later_gaps = _case_gaps(ledger)
-    assert "planned_verification_stale" in later_gaps
+    assert "verification_rerun_question" in later_gaps
     assert not agent_probe_only(
         later_state, kind, (stress_event,), observed=later_observed, case_gap_codes=later_gaps
     )

@@ -1288,6 +1288,13 @@ def derive_closure_readiness(
         semantic_review_current=facts is not None and facts.semantic_review_current,
     )
     split_actionable = split.agent_actionable
+    if semantic_review_required or facts is not None and facts.semantic_review_used:
+        freshness_codes = {"planned_verification_stale", "edited_after_last_verification"}
+        if freshness_codes & set(split_actionable):
+            split_actionable = tuple(
+                code for code in split_actionable if code not in freshness_codes
+            )
+            standing.add("verification_rerun_question")
     if blocked_confirmed_only and COMPLETION_PLAN_NOT_CLAIMED_GAP in split_actionable:
         # Issue #985 (C9): every open obligation is confirmed blocked, so no completion claim can
         # cover the plan; the unclaimed plan is disclosed beside the blocker, not listed as work.

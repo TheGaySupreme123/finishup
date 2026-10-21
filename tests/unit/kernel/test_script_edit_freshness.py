@@ -14,6 +14,8 @@ from finishup.kernel.policies.work_integrity import _uncorroborated_completion_f
 from finishup.kernel.reducers import replay
 from finishup.kernel.task_facts import register_command_identity_key, task_fact_signals
 
+VERIFICATION_RERUN_QUESTION_GAP = "verification_rerun_question"
+
 
 @pytest.fixture(autouse=True)
 def installation_key() -> Iterator[None]:
@@ -43,9 +45,9 @@ def test_indirect_changed_workspace_cannot_keep_prior_test_fresh() -> None:
     state = replay(ledger.prefix)
     facts = task_fact_signals(state, ledger.prefix)
     case = build_deterministic_case(state, ledger.prefix, CaseAvailabilityFacts())
-    assert "edited_after_last_verification" in facts.codes
-    assert "planned_verification_stale" in facts.codes
-    assert len(_uncorroborated_completion_findings(case)) == 1
+    assert "verification_rerun_question" in facts.codes
+    assert "verification_rerun_question" in facts.codes
+    assert not _uncorroborated_completion_findings(case)
 
 
 @pytest.mark.parametrize(
@@ -98,16 +100,16 @@ def test_actual_workspace_classes_control_both_freshness_consumers(
     )
     state = replay(ledger.prefix)
     facts = task_fact_signals(state, ledger.prefix)
-    assert ("edited_after_last_verification" in facts.codes) is stale
-    assert ("planned_verification_stale" in facts.codes) is stale
+    assert ("verification_rerun_question" in facts.codes) is stale
+    assert ("verification_rerun_question" in facts.codes) is stale
     case = build_deterministic_case(state, ledger.prefix, CaseAvailabilityFacts())
-    assert bool(_uncorroborated_completion_findings(case)) is stale
+    assert not _uncorroborated_completion_findings(case)
     restored = deterministic_case_from_json(deterministic_case_to_json(case))
     assert restored == case
-    assert bool(_uncorroborated_completion_findings(restored)) is stale
+    assert not _uncorroborated_completion_findings(restored)
     ledger.passes("python -m unittest -q")
     assert (
-        "edited_after_last_verification"
+        "verification_rerun_question"
         not in task_fact_signals(replay(ledger.prefix), ledger.prefix).codes
     )
 
@@ -126,7 +128,7 @@ def test_only_service_observation_can_stale_verification(observed: bool) -> None
         workspace_write_scopes=("workspace",),
     )
     facts = task_fact_signals(replay(ledger.prefix), ledger.prefix)
-    assert ("edited_after_last_verification" in facts.codes) is observed
+    assert ("verification_rerun_question" in facts.codes) is observed
 
 
 def test_code_change_wins_over_later_exempt_duplicate() -> None:
@@ -142,7 +144,7 @@ def test_code_change_wins_over_later_exempt_duplicate() -> None:
     )
     ledger.annotate_workspace_effect(result, "changed", scopes=("docs",))
     assert (
-        "edited_after_last_verification"
+        "verification_rerun_question"
         in task_fact_signals(replay(ledger.prefix), ledger.prefix).codes
     )
 
@@ -205,6 +207,6 @@ def test_declared_output_precedence_applies_to_actual_changed_classes(
         workspace_write_scopes=(scope,),
     )
     assert (
-        "edited_after_last_verification"
+        "verification_rerun_question"
         in task_fact_signals(replay(ledger.prefix), ledger.prefix).codes
-    ) is output
+    ) is True

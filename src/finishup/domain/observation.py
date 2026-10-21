@@ -323,6 +323,7 @@ _STRUCTURAL_KEYS: Final = frozenset(
         # Whether a before/after fingerprint of the workspace saw this call change it (PR #1080).
         "workspace_effect",
         "workspace_write_scopes",
+        "workspace_changed_entries",
         # Digest-only facts for image tool results the hook saw (P3-2, issue #1013).
         "observed_images",
         # Keyed commitments to the simple commands of a compound or wrapped command, and what the
@@ -978,6 +979,11 @@ def _structural_payload(value: object) -> JsonObject:
             from finishup.domain.workspace_effect import workspace_write_scopes
 
             if workspace_write_scopes(item) is None:
+                raise _invalid("invalid_event_value_type")
+        if key == "workspace_changed_entries":
+            from finishup.domain.workspace_effect import workspace_changed_entries
+
+            if workspace_changed_entries(item) is None:
                 raise _invalid("invalid_event_value_type")
         if key == "protection_reference":
             validate_observation_protection_reference(item)

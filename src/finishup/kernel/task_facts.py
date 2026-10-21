@@ -186,6 +186,7 @@ from finishup.domain.write_scope import (
 )
 from finishup.kernel.command_attempts import attempted_items_for_obligation
 from finishup.kernel.fact_lineage import (
+    MAX_LINEAGE_SOURCES,
     RULE_COMMAND_MATCH,
     RULE_COMMAND_UNMATCHED,
     RULE_EDIT_AFTER_RUN,
@@ -352,6 +353,13 @@ def register_command_identity_key(key_material: bytes | None) -> None:
 
 def command_identity_key_registered() -> bool:
     return _COMMAND_IDENTITY_KEY[0] is not None
+
+
+def verification_path_identity(relative: str) -> str | None:
+    from finishup.domain.workspace_effect import workspace_path_identity
+
+    key = _COMMAND_IDENTITY_KEY[0]
+    return None if key is None else workspace_path_identity(key, relative)
 
 
 def command_identity_key_generation() -> int:
@@ -1900,6 +1908,24 @@ def task_fact_signals(
     state = _observed_state(
         projection, observed, cooperative_event_ids_from_records(prefix), prefix
     )
+    from finishup.kernel.verification_freshness import (
+        RERUN_QUESTION,
+        VerificationFreshness,
+        verification_freshness,
+    )
+
+    freshness = verification_freshness(projection, prefix)
+    event_positions = {record.event_id: record.ledger.ingestion_sequence for record in prefix}
+    by_event: dict[EventId | None, VerificationFreshness] = {}
+    for fact in freshness:
+        result = projection.results.get(fact.run_ref)
+        action = (
+            None
+            if result is None or result.payload is None
+            else projection.actions.get(result.payload.action_id)
+        )
+        if action is not None:
+            by_event[action.source_event_id] = fact
     batches = decision_batches(prefix)
     blocked = blocked_obligations(projection, batches)
     acknowledged = acknowledged_obligation_ids(projection)
@@ -2000,7 +2026,10 @@ def task_fact_signals(
                     )
                 elif outcome is ResultOutcome.UNKNOWN:
                     markers.add((PLANNED_VERIFICATION_OUTCOME_UNKNOWN_GAP, obligation))
-                if state.latest_edit is not None and state.latest_edit > latest.position:
+                delta = by_event.get(latest.action_event)
+                if delta is not None and delta.state == "unknown":
+                    markers.add((RERUN_QUESTION, obligation))
+                if delta is not None and delta.state == "stale":
                     markers.add((PLANNED_VERIFICATION_STALE_GAP, obligation))
                     lineage.append(
                         FactLineage(
@@ -2010,20 +2039,19 @@ def task_fact_signals(
                             obligation_id=obligation,
                             item_index=index,
                             frontier=latest.position,
-                            prior_frontier=state.latest_edit,
+                            prior_frontier=max(
+                                (event_positions.get(ref, 0) for ref in delta.change_refs),
+                                default=projection.frontier,
+                            ),
                             proof="observed_run",
                             source_event_ids=tuple(
                                 sorted(
                                     {
                                         *sources,
-                                        *(
-                                            (state.latest_edit_event,)
-                                            if state.latest_edit_event is not None
-                                            else ()
-                                        ),
+                                        *delta.change_refs,
                                     },
                                     key=str.encode,
-                                )
+                                )[:MAX_LINEAGE_SOURCES]
                             ),
                         )
                     )
@@ -2043,8 +2071,8 @@ def task_fact_signals(
     )
     if (
         verification_runs
-        and state.latest_edit is not None
-        and state.latest_edit > verification_runs[-1].position
+        and (delta := by_event.get(verification_runs[-1].action_event)) is not None
+        and delta.state == "stale"
     ):
         markers.add((EDITED_AFTER_LAST_VERIFICATION_GAP, None))
         last_run = verification_runs[-1]
@@ -2053,7 +2081,10 @@ def task_fact_signals(
                 code=EDITED_AFTER_LAST_VERIFICATION_GAP,
                 rule=RULE_EDIT_AFTER_RUN,
                 state="edited_after",
-                frontier=state.latest_edit,
+                frontier=max(
+                    (event_positions.get(ref, 0) for ref in delta.change_refs),
+                    default=projection.frontier,
+                ),
                 prior_frontier=last_run.position,
                 proof="observed_run",
                 source_event_ids=tuple(
@@ -2064,17 +2095,18 @@ def task_fact_signals(
                                 if last_run.action_event is not None
                                 else ()
                             ),
-                            *(
-                                (state.latest_edit_event,)
-                                if state.latest_edit_event is not None
-                                else ()
-                            ),
+                            *delta.change_refs,
                         },
                         key=str.encode,
-                    )
+                    )[:MAX_LINEAGE_SOURCES]
                 ),
             )
         )
+
+    if verification_runs:
+        delta = by_event.get(verification_runs[-1].action_event)
+        if delta is not None and delta.state == "unknown":
+            markers.add((RERUN_QUESTION, None))
 
     # Runtime facts.
     # Frozen legacy identifier (ADR-048): recorded wire token value.

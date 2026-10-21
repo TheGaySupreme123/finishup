@@ -81,6 +81,8 @@ _READINESS_ONLY = frozenset(
 )
 _CHANGED = frozenset(
     {
+        "planned_verification_stale",
+        "edited_after_last_verification",
         "semantic_review_not_requested",
         "check_current_as_of_earlier_frontier",
         "compound_outcome_unavailable",
@@ -148,7 +150,7 @@ def test_the_classification_is_a_view_of_the_table_with_the_same_readiness_group
     # + the #1079 unresolved verification limit + 3 readiness-only finding tokens + the #1102
     # task_input_outside_not_admitted disclosure + the #1118 task_input_baseline_unavailable one.
     # + the #1118 unit 4 verification_input_directory_unresolved one.
-    assert len(GAP_EFFECT_TABLE) == 225
+    assert len(GAP_EFFECT_TABLE) == 226
     for code, group in GAP_CLASSIFICATION.items():
         assert GAP_EFFECT_TABLE[code].readiness is group, code
     assert {row.why for row in GAP_EFFECT_TABLE.values()} <= set(GAP_EFFECT_WHY)
@@ -158,7 +160,7 @@ def test_exactly_the_documented_rows_are_marked_changed() -> None:
     changed = {code for code, row in GAP_EFFECT_TABLE.items() if row.changed}
     assert changed == _CHANGED
     # +1: the #1118 unit 4 verification_input_directory_unresolved disclosure.
-    assert len(changed) == 44
+    assert len(changed) == 46
 
 
 @pytest.mark.parametrize("route_requires_review", [False, True])
@@ -181,7 +183,15 @@ def test_proof_tolerance_is_one_set_not_a_third_table() -> None:
 def test_actionable_rows_are_exactly_the_agent_actionable_group() -> None:
     for code, row in GAP_EFFECT_TABLE.items():
         if row.readiness is GapClass.AGENT_ACTIONABLE:
-            assert gap_effect(code).kind is GapEffectKind.ACTIONABLE, code
+            assert (
+                gap_effect(code, GapContext(route_requires_review=False)).kind
+                is GapEffectKind.ACTIONABLE
+            ), code
+            if code in {"planned_verification_stale", "edited_after_last_verification"}:
+                assert (
+                    gap_effect(code, GapContext(route_requires_review=True)).kind
+                    is GapEffectKind.DISCLOSED
+                )
         elif row.readiness is GapClass.STANDING_LIMITATION:
             assert gap_effect(code).kind is not GapEffectKind.ACTIONABLE, code
 

@@ -268,22 +268,33 @@ Closure is a checklist. `closure_readiness.state` names the next move:
 - `ready`: nothing further to do and nothing to disclose; request the receipt.
 - `unknown`: read `status` again once the projection is readable.
 
-After a script or tool changes source, rerun the affected tests and any requested verification.
-FinishUP uses observed workspace changes even when the command itself names no file write.
-Documentation and conventional notes, scratch, logs, caches and build output leave verification
-current only when their classes are exempt and the task's declared outputs do not override that
-exemption. If FinishUP cannot classify or verify the workspace effect, it treats earlier
-verification as stale. For `edited_after_last_verification` or `planned_verification_stale`, rerun
-the tests or requested command after the change, then check again; a FinishUP check alone does not
-rerun them.
+A verification becomes stale only when a recorded input changes. Evidence/report/log outputs,
+byte-identical writes and unrelated changes do not demand a rerun. A stale finding names the
+verification and changed input. If its dependencies or the later changes are unknown,
+`verification_rerun_question` asks for a decision without blocking closure: inspect the recorded
+verification and subsequent paths/change summaries, then rerun or `respond` with `acknowledged`
+and a reasoned explanation that a rerun is not needed. A later change asks again. A FinishUP check
+records the decision; it does not run tests for you.
+
+To declare a verification's exact file inputs and evidence outputs, publish an ordinary evidence
+row with reference `finishup-verification-inputs/v1:<observed res_ id>` and a JSON description:
+`{"inputs":["source.py","config.json"],"outputs":["evidence.json"],"complete":true}`.
+Use `complete:false` when this is only a partial input list. The declaration is your assertion;
+FinishUP does not observe arbitrary file reads inside a shell command. Inputs take precedence over
+outputs; directories, outside-workspace inputs and unavailable comparisons remain unknown. Each
+new observed run needs its own declaration.
+
+For AI-powered review, freshness is always advisory: consider the verification together with what
+changed after it and answer the non-blocking rerun question. Actual failed checks and missing
+required verification still require their existing action.
 
 If you stop while `agent_actionable` still names open obligations, an unrepaired
 finding, a finding you rejected that still awaits the reviewer's ruling
 (`finding_rejection_awaiting_ruling`: run `check` with `final_review: true` so the reviewer rules;
-do not acknowledge a finding you dispute), a planned verification that was not observed, failed, or ran before your last edit, an
-edit to the work after your last test, lint, typecheck or build run (`edited_after_last_verification`;
+do not acknowledge a finding you dispute), a planned verification that was not observed or failed, or a known input change
+after a local-only verification (`edited_after_last_verification`;
 exempt scratch and FinishUP receipt files do not count, and documentation such as a README
-or changelog does not stale verification unless the task's declared outputs override the exemption; run each verification in the
+or changelog does not stale verification unless it is a recorded input; run each verification in the
 foreground, in one tool call: a job you start in the background (`&`, `nohup`, or your host's
 run-in-background option) and poll from a later call is recorded when it starts, not when it
 finishes), a git-ignored requested output, or a declared deliverable you deleted or renamed away

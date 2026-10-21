@@ -3023,3 +3023,18 @@ incomplete. Receipt JSON/markdown/text distinguish an agent-disproved concern fr
 repair. Trusted byte-identical in-workspace shell rewrites preserve verification freshness;
 changed reports remain conservative pending #1143's dependency/role manifest. These decisions
 are shared across macOS, Linux and Windows through WSL 2; no native Windows support is implied.
+
+
+### Verification freshness decisions (#1143)
+
+All hosts use ADR-042's per-verification input rule. A trusted workspace comparison retains
+bounded keyed changed-entry identities; only a known input change establishes staleness. Evidence
+outputs, byte-identical writes and disjoint known-input changes do not demand a rerun. Hook or
+session-stream copies without that comparison, and arbitrary reads inside shell commands, cannot
+prove the dependency set: the shared non-blocking question asks the agent to rerun or `respond
+acknowledged` with a reasoned no-rerun explanation. Per-run declarations and their caller-asserted
+limits are described in the shipped workflow guidance. AI review always asks instead of blocking
+on freshness. CLI, MCP, Stop, TUI and receipts share the facts and named change details. No host
+currently supplies a complete process read trace; older/post-only records therefore use the
+unknown-input question. Future process-read capture is outside #1143 and requires its own owning
+issue and authority review; no host silently claims that capability here.

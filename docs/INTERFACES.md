@@ -12175,3 +12175,44 @@ work-integrity. Contradictory or unavailable observations, outside writes, and d
 fingerprint cannot compare retain conservative freshness. This is the bounded #1143 mitigation;
 new report files and changed report bytes still invalidate freshness. General per-command
 verification dependencies and generated-artifact roles remain an open design requirement.
+
+
+### Intelligent verification freshness (#1143, ADR-042)
+
+`kernel.verification_freshness.VerificationFreshness(run_ref, state, changes, change_refs)` is a
+prefix-derived, frozen per-run fact (`current|stale|unknown`). `verification_freshness(projection,
+records)` combines service-stamped workspace comparisons with requested input files and the
+versioned, caller-asserted evidence convention
+`reference=finishup-verification-inputs/v1:<res_ id>`,
+`description={"inputs":["source.py","config.json"],"outputs":["evidence.json"],"complete":true}`.
+Only exact file inputs are declared; arbitrary shell process reads are not observed by any host.
+An input takes precedence over an evidence output. Unknown coverage asks, never demands a rerun.
+
+`domain.workspace_effect.workspace_path_identity(key, relative)` reuses the fingerprint's keyed
+path identity. `WorkspaceEffectReading.changed_entries` and the optional active-control structural
+`workspace_changed_entries` carry a complete sorted set of at most 128 32-hex identities; omission
+means unknown (root replacement, overflow, unavailable or legacy comparison). Result/annotation
+suffixes preserve it alongside effect and write classes. Raw paths stay in admitted encrypted
+payloads. Old control schemas stay frozen; the unreleased active 2.9.0 envelope admits the field.
+
+`DeterministicCase.verification_freshness` is absent on old frozen cases, which retain their legacy
+replay semantics. New cases persist the derived rows. `verification_advisory` is a per-evaluation
+AI-route flag. Known input changes produce `planned_verification_stale` /
+`edited_after_last_verification` only on the affected runs. Unknown relationships use the standing
+`verification_rerun_question` code and a non-blocking `ledger_stale_or_incomplete` question whose
+subjects bind the observed run event and subsequent change events. `respond acknowledged` with a
+nonempty reason records a no-rerun decision for that exact set; it does not rewrite the evidence or
+prove freshness. A later qualifying check observes the answer. AI-route freshness is disclosed,
+never Stop or receipt blocking; failures and missing checks retain their existing rules.
+
+CLI/MCP check/status and TUI consume shared task-fact sentences; encrypted finding details name
+known paths and short change summaries, with unavailable paths explicit. The semantic packet
+includes those local questions through its existing selected/scanned finding content, alongside
+verification evidence and diffs. Receipt JSON, markdown and text retain the same question, response
+and coverage limitations. There is no new permission, provider, capture or execution authority.
+
+The semantic fence also routes a reviewer's `stale_evidence_for_changed_state` concern to
+`decision_needed` / `answer_question`, preserving its observation and provenance while preventing
+a freshness repair gate. Durable local-result checkpoint validation reproduces named freshness
+details from the frozen case before comparing text; restart does not lose the question or trigger
+an unchanged recomputation solely because the finding names paths.

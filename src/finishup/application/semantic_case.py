@@ -387,6 +387,11 @@ REVIEW_PHASE_QUESTIONS: Final[Mapping[SemanticBudgetProfile, str]] = MappingProx
     }
 )
 _REVIEW_QUESTIONS: Final = (
+    "Verification freshness is advisory. Consider each recorded verification together with the "
+    "subsequent changed paths and change summaries. Do not block or demand a rerun merely because "
+    "it predates a write. Ask the agent whether a rerun is needed; it may rerun or record a "
+    "reasoned not-needed answer via respond. Unknown dependencies call for a question, not a "
+    "staleness assertion. An actual failed verification or missing required check is separate.",
     "What did you verify against the task and the change, how (the code path, output or recorded "
     "check you read), and with what result? What could you not check?",
     "Which distinct material problems, if any, does the readable material show, and which "

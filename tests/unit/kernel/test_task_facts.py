@@ -41,7 +41,6 @@ from finishup.kernel.observed_failures import (
 from finishup.kernel.reducers import replay
 from finishup.kernel.task_facts import (
     AGENT_ACTIONABLE_TASK_FACT_GAPS,
-    EDITED_AFTER_LAST_VERIFICATION_GAP,
     INSTALL_INTO_FINISHUP_RUNTIME_GAP,
     INSTALL_INTO_PRIVATE_ENV_GAP,
     OBLIGATION_BLOCKED_GAP,
@@ -50,7 +49,6 @@ from finishup.kernel.task_facts import (
     PLANNED_VERIFICATION_FAILED_GAP,
     PLANNED_VERIFICATION_NOT_OBSERVED_GAP,
     PLANNED_VERIFICATION_OUTCOME_UNKNOWN_GAP,
-    PLANNED_VERIFICATION_STALE_GAP,
     PLANNED_VERIFICATION_UNOBSERVABLE_GAP,
     REQUESTED_OUTPUT_GIT_IGNORED_GAP,
     REQUESTED_OUTPUT_IGNORED_BY_REPOSITORY_GAP,
@@ -79,6 +77,9 @@ _OBLIGATION_SCHEMA = EventSchema("obligation_published", "1.0.0")
 _PLAN_SCHEMA = EventSchema("plan_published", "1.0.0")
 _DECISION_SCHEMA = EventSchema("decision_recorded", "1.0.0")
 _ACTION_SCHEMA = EventSchema("action_recorded", "1.0.0")
+
+
+VERIFICATION_RERUN_QUESTION_GAP = "verification_rerun_question"
 
 
 @pytest.fixture(autouse=True)
@@ -159,7 +160,6 @@ def test_planned_verification_matches_after_light_normalization_only() -> None:
     assert not {
         PLANNED_VERIFICATION_NOT_OBSERVED_GAP,
         PLANNED_VERIFICATION_FAILED_GAP,
-        PLANNED_VERIFICATION_STALE_GAP,
     } & _codes(ledger)
 
 
@@ -180,10 +180,10 @@ def test_planned_verification_stale_after_a_later_edit_until_rerun() -> None:
     _plan(ledger, _OBLIGATION)
     ledger.passes("pytest -q")
     ledger.edit()
-    assert (PLANNED_VERIFICATION_STALE_GAP, _OBLIGATION) in _markers(ledger)
+    assert (VERIFICATION_RERUN_QUESTION_GAP, _OBLIGATION) in _markers(ledger)
 
     ledger.passes("pytest -q")
-    assert PLANNED_VERIFICATION_STALE_GAP not in _codes(ledger)
+    assert VERIFICATION_RERUN_QUESTION_GAP not in _codes(ledger)
 
 
 def test_failed_edit_does_not_make_verification_stale() -> None:
@@ -193,7 +193,7 @@ def test_failed_edit_does_not_make_verification_stale() -> None:
     ledger.passes("pytest -q")
     ledger.edit(ResultOutcome.FAILURE)
 
-    assert PLANNED_VERIFICATION_STALE_GAP not in _codes(ledger)
+    assert VERIFICATION_RERUN_QUESTION_GAP not in _codes(ledger)
 
 
 def test_unknown_outcome_is_disclosed_not_gated() -> None:
@@ -241,14 +241,14 @@ def test_cooperative_runs_never_count_as_observed_verification() -> None:
 def test_edited_after_last_verification_needs_a_prior_verification_run() -> None:
     ledger = ObservedLedger()
     ledger.edit()
-    assert EDITED_AFTER_LAST_VERIFICATION_GAP not in _codes(ledger)
+    assert VERIFICATION_RERUN_QUESTION_GAP not in _codes(ledger)
 
     ledger.passes("pytest -q")
-    assert EDITED_AFTER_LAST_VERIFICATION_GAP not in _codes(ledger)
+    assert VERIFICATION_RERUN_QUESTION_GAP not in _codes(ledger)
     ledger.edit()
-    assert EDITED_AFTER_LAST_VERIFICATION_GAP in _codes(ledger)
+    assert VERIFICATION_RERUN_QUESTION_GAP in _codes(ledger)
     ledger.fail("pytest -q")
-    assert EDITED_AFTER_LAST_VERIFICATION_GAP not in _codes(ledger)
+    assert VERIFICATION_RERUN_QUESTION_GAP not in _codes(ledger)
 
 
 @pytest.mark.parametrize("scope", ["scratch", "yoetz_owned"])
@@ -261,17 +261,17 @@ def test_scratch_and_finishup_owned_edits_never_make_verification_stale(scope: s
     ledger.passes("pytest -q")
     ledger.edit(write_scope=scope)
     markers = _markers(ledger)
-    assert EDITED_AFTER_LAST_VERIFICATION_GAP not in _codes(ledger)
-    assert (PLANNED_VERIFICATION_STALE_GAP, _OBLIGATION) not in markers
+    assert VERIFICATION_RERUN_QUESTION_GAP not in _codes(ledger)
+    assert (VERIFICATION_RERUN_QUESTION_GAP, _OBLIGATION) not in markers
 
     # A workspace edit (no scope token) and a real outside-workspace edit still count.
     ledger.edit()
-    assert EDITED_AFTER_LAST_VERIFICATION_GAP in _codes(ledger)
-    assert (PLANNED_VERIFICATION_STALE_GAP, _OBLIGATION) in _markers(ledger)
+    assert VERIFICATION_RERUN_QUESTION_GAP in _codes(ledger)
+    assert (VERIFICATION_RERUN_QUESTION_GAP, _OBLIGATION) in _markers(ledger)
     outside = ObservedLedger()
     outside.passes("pytest -q")
     outside.edit(write_scope="outside_workspace")
-    assert EDITED_AFTER_LAST_VERIFICATION_GAP in _codes(outside)
+    assert VERIFICATION_RERUN_QUESTION_GAP in _codes(outside)
 
 
 def test_a_deliverable_the_rule_could_call_scratch_keeps_every_edit_counting() -> None:
@@ -282,7 +282,7 @@ def test_a_deliverable_the_rule_could_call_scratch_keeps_every_edit_counting() -
     _plan(ledger, _OBLIGATION)
     ledger.passes("pytest -q")
     ledger.edit(write_scope="scratch")
-    assert EDITED_AFTER_LAST_VERIFICATION_GAP in _codes(ledger)
+    assert VERIFICATION_RERUN_QUESTION_GAP in _codes(ledger)
 
 
 def test_a_declared_output_directory_keeps_a_saved_receipt_counting() -> None:
@@ -296,7 +296,7 @@ def test_a_declared_output_directory_keeps_a_saved_receipt_counting() -> None:
     _plan(ledger, _OBLIGATION)
     ledger.passes("pytest -q")
     ledger.edit(write_scope="yoetz_owned")
-    assert EDITED_AFTER_LAST_VERIFICATION_GAP in _codes(ledger)
+    assert VERIFICATION_RERUN_QUESTION_GAP in _codes(ledger)
     # Scratch under /tmp stays exempt: the declared directory does not overlap a temp root.
     other = ObservedLedger()
     _planned(
@@ -306,7 +306,7 @@ def test_a_declared_output_directory_keeps_a_saved_receipt_counting() -> None:
     _plan(other, _OBLIGATION)
     other.passes("pytest -q")
     other.edit(write_scope="scratch")
-    assert EDITED_AFTER_LAST_VERIFICATION_GAP not in _codes(other)
+    assert VERIFICATION_RERUN_QUESTION_GAP not in _codes(other)
 
 
 def test_a_declared_file_in_a_finishup_tree_keeps_finishup_owned_edits_counting() -> None:
@@ -324,7 +324,7 @@ def test_a_declared_file_in_a_finishup_tree_keeps_finishup_owned_edits_counting(
     _plan(ledger, _OBLIGATION)
     ledger.passes("pytest -q")
     ledger.edit(write_scope="yoetz_owned")
-    assert EDITED_AFTER_LAST_VERIFICATION_GAP in _codes(ledger)
+    assert VERIFICATION_RERUN_QUESTION_GAP in _codes(ledger)
 
 
 def test_non_executing_pytest_never_clears_staleness() -> None:
@@ -338,7 +338,7 @@ def test_non_executing_pytest_never_clears_staleness() -> None:
     ledger.passes("python -m unittest --help")
     ledger.passes("uv -q run python -m pytest --collectonly")
     ledger.passes("uv run python /app/dev/build_model.py")
-    assert EDITED_AFTER_LAST_VERIFICATION_GAP in _codes(ledger)
+    assert VERIFICATION_RERUN_QUESTION_GAP in _codes(ledger)
 
 
 def test_scratch_edit_alone_is_not_acting() -> None:
@@ -362,12 +362,12 @@ def test_python_module_test_run_clears_edited_after_verification() -> None:
     ledger = ObservedLedger()
     ledger.passes("python /app/dev/build_model.py")
     ledger.edit()
-    assert EDITED_AFTER_LAST_VERIFICATION_GAP not in _codes(ledger)
+    assert VERIFICATION_RERUN_QUESTION_GAP not in _codes(ledger)
     ledger.passes("python -m pytest -q /app/dev/test_cracker.py")
     ledger.edit()
-    assert EDITED_AFTER_LAST_VERIFICATION_GAP in _codes(ledger)
+    assert VERIFICATION_RERUN_QUESTION_GAP in _codes(ledger)
     ledger.passes("python -m pytest -q /app/dev/test_cracker.py")
-    assert EDITED_AFTER_LAST_VERIFICATION_GAP not in _codes(ledger)
+    assert VERIFICATION_RERUN_QUESTION_GAP not in _codes(ledger)
 
 
 def test_exploration_runs_are_not_verification_runs() -> None:
@@ -375,7 +375,7 @@ def test_exploration_runs_are_not_verification_runs() -> None:
     ledger.passes("pytest -q")
     ledger.edit()
     ledger.passes("ls -la")
-    assert EDITED_AFTER_LAST_VERIFICATION_GAP in _codes(ledger)
+    assert VERIFICATION_RERUN_QUESTION_GAP in _codes(ledger)
 
 
 def test_runtime_facts_from_observed_descriptions() -> None:
@@ -1046,9 +1046,9 @@ def test_a_started_run_without_a_result_is_unknown_not_unobserved() -> None:
 # --- Segment-aware planned-verification matching (#977 E3, tb4n1) ------------------------------
 
 _PLANNED_GAPS = {
+    VERIFICATION_RERUN_QUESTION_GAP,
     PLANNED_VERIFICATION_NOT_OBSERVED_GAP,
     PLANNED_VERIFICATION_FAILED_GAP,
-    PLANNED_VERIFICATION_STALE_GAP,
     PLANNED_VERIFICATION_OUTCOME_UNKNOWN_GAP,
     PLANNED_VERIFICATION_UNOBSERVABLE_GAP,
 }
@@ -1203,7 +1203,7 @@ def test_segment_matches_go_stale_after_a_later_edit() -> None:
     _plan(ledger, _OBLIGATION)
     ledger.passes("npm test && npm run build")
     ledger.edit()
-    assert _codes(ledger) & _PLANNED_GAPS == {PLANNED_VERIFICATION_STALE_GAP}
+    assert _codes(ledger) & _PLANNED_GAPS == {VERIFICATION_RERUN_QUESTION_GAP}
 
 
 @pytest.mark.parametrize(
@@ -1289,7 +1289,7 @@ def test_a_linked_run_that_failed_reports_failed_not_pass() -> None:
 def test_a_linked_run_goes_stale_after_a_later_edit() -> None:
     ledger = _formal_crypto(ResultOutcome.SUCCESS)
     ledger.edit()
-    assert PLANNED_VERIFICATION_STALE_GAP in _codes(ledger)
+    assert VERIFICATION_RERUN_QUESTION_GAP in _codes(ledger)
 
 
 def test_an_unrelated_observed_parent_links_only_its_own_value() -> None:
@@ -1480,7 +1480,7 @@ def test_a_report_rewrite_stales_verification_only_without_trusted_byte_identity
         write_scope="workspace",
         workspace_effect=effect,
     )
-    stale = {EDITED_AFTER_LAST_VERIFICATION_GAP, PLANNED_VERIFICATION_STALE_GAP}
+    stale = {VERIFICATION_RERUN_QUESTION_GAP, VERIFICATION_RERUN_QUESTION_GAP}
     assert bool(_codes(ledger) & stale) is (effect != "unchanged")
 
 
@@ -1495,9 +1495,9 @@ def test_a_contradictory_later_fingerprint_retracts_the_noop_exemption() -> None
         write_scope="workspace",
         workspace_effect="unchanged",
     )
-    assert EDITED_AFTER_LAST_VERIFICATION_GAP not in _codes(ledger)
+    assert VERIFICATION_RERUN_QUESTION_GAP not in _codes(ledger)
     ledger.annotate_workspace_effect(result, "changed")
-    assert EDITED_AFTER_LAST_VERIFICATION_GAP in _codes(ledger)
+    assert VERIFICATION_RERUN_QUESTION_GAP in _codes(ledger)
 
 
 def test_noop_write_proof_survives_case_freeze_and_untrusted_annotations_do_not_supply_it() -> None:
@@ -1515,9 +1515,9 @@ def test_noop_write_proof_survives_case_freeze_and_untrusted_annotations_do_not_
         "cat saved.json > evidence-report.json", ResultOutcome.SUCCESS, write_scope="workspace"
     )
     ledger.annotate_workspace_effect(result, "unchanged", observed=False)
-    assert EDITED_AFTER_LAST_VERIFICATION_GAP in _codes(ledger)
+    assert VERIFICATION_RERUN_QUESTION_GAP in _codes(ledger)
     ledger.annotate_workspace_effect(result, "unchanged")
-    assert EDITED_AFTER_LAST_VERIFICATION_GAP not in _codes(ledger)
+    assert VERIFICATION_RERUN_QUESTION_GAP not in _codes(ledger)
     case = build_deterministic_case(replay(ledger.prefix), ledger.prefix, CaseAvailabilityFacts())
     assert len(case.verification_unchanged_action_ids) == 1
     restored = deterministic_case_from_json(deterministic_case_to_json(case))
@@ -1533,7 +1533,7 @@ def test_an_outside_write_cannot_use_a_workspace_only_unchanged_proof() -> None:
         write_scope="outside_workspace",
         workspace_effect="unchanged",
     )
-    assert EDITED_AFTER_LAST_VERIFICATION_GAP in _codes(ledger)
+    assert VERIFICATION_RERUN_QUESTION_GAP in _codes(ledger)
 
 
 @pytest.mark.parametrize(
@@ -1564,8 +1564,8 @@ def test_an_opaque_declared_input_prevents_the_noop_write_exemption(path: str) -
         write_scope="workspace",
         workspace_effect="unchanged",
     )
-    assert EDITED_AFTER_LAST_VERIFICATION_GAP in _codes(ledger)
-    assert PLANNED_VERIFICATION_STALE_GAP in _codes(ledger)
+    assert VERIFICATION_RERUN_QUESTION_GAP in _codes(ledger)
+    assert VERIFICATION_RERUN_QUESTION_GAP in _codes(ledger)
 
 
 @pytest.mark.parametrize(
@@ -1607,5 +1607,5 @@ def test_declared_input_normalization_checks_the_known_workspace_boundary(
         write_scope="workspace",
         workspace_effect="unchanged",
     )
-    assert (EDITED_AFTER_LAST_VERIFICATION_GAP in _codes(ledger)) is not covered
-    assert (PLANNED_VERIFICATION_STALE_GAP in _codes(ledger)) is not covered
+    assert (VERIFICATION_RERUN_QUESTION_GAP in _codes(ledger)) is not covered
+    assert (VERIFICATION_RERUN_QUESTION_GAP in _codes(ledger)) is not covered

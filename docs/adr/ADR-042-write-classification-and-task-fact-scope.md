@@ -407,3 +407,51 @@ This is a minimal plaster. Newly written evidence or report bytes still advance 
 Exempting those safely needs a versioned dependency manifest connecting each verification to its
 inputs and generated artifact roles. Existing write classes cannot establish that an arbitrary
 report is not a later verification input. That broader decision remains open on #1143.
+
+
+## Amendment (2026-10-21): verification input freshness and advisory questions (#1143)
+
+This supersedes the task-wide edit frontier and the earlier mitigation's open decision above.
+Only an observed change to a recorded verification input establishes deterministic staleness.
+Evidence/report/log outputs, byte-identical writes and changes outside the check's known input
+set do not demand a rerun. A stale fact names the affected verification and changed input;
+unknown dependencies ask whether a rerun is needed, without asserting staleness or blocking Stop.
+
+Command commitments identify the actual observed run, including the existing segment/agent-link
+matching. A file requested with role `input` is a known task input. Per-run declarations use an
+ordinary `evidence_recorded` row with reference
+`finishup-verification-inputs/v1:<observed res_ id>` and a JSON description containing exactly
+`inputs` (exact file paths), `outputs` (evidence/report/log files written by that check), and
+`complete` (boolean). The declaration is the agent's assertion, not an observed process read
+trace. Inputs win when a path is also an output. A complete declaration permits disjoint-change
+comparison; an incomplete declaration can still name a changed input or an evidence-only output.
+Malformed, conflicting, redacted and out-of-workspace declarations cannot establish completeness.
+Directories and inputs outside the fingerprint's coverage remain unknown and require a question.
+A rerun is a new `res_` identity and needs its own declaration.
+
+The native before/after comparison now supplies at most 128 sorted, unique, domain-separated,
+installation-keyed path identities for changed entries (including removals). It reuses the
+fingerprint's existing path domain and key; raw paths and command text never enter structural
+storage. Root replacement, overflow, unavailable comparison or an old host record supplies no
+complete changed-entry set. A late observation annotation stays attached to its original call's
+result frontier; a contradictory delivery cannot grant an unrelated-write exemption. Known
+input names come only from admitted task/declaration payloads. Unnamed paths are explicitly
+unavailable, rather than reconstructed by reading the filesystem at replay time.
+
+Host tool reads do not prove which files a shell process opened: Codex, Claude Code and Cursor
+currently supply no complete per-process read trace. A command's name, extension, successful exit,
+or an earlier agent read therefore never establishes a complete dependency set. Existing lexical
+notes/docs/scratch exemptions remain available when there is no contradictory known input; when
+the dependency or change coverage is uncertain, ask instead of demanding a rerun. This is the
+bounded fallback, not a claim to infer arbitrary dependencies. Capturing process reads is outside
+this change and grants no new capture, disclosure or network authority.
+
+AI-powered review treats freshness as advisory even when an input change is known. The packet
+carries the recorded verification with subsequent paths and short change summaries in a
+non-blocking local question. The reviewer asks the agent to decide: rerun, or `respond` with
+`acknowledged` and a reasoned explanation that rerunning is not needed. The answer is retained as
+an agent assertion and suppresses only that question's exact run/change set; a new change asks
+again. Rerunning supersedes the old question. Actual failures and missing required checks retain
+their existing behavior. Receipt gap effects disclose AI-route freshness without making it a
+blocker; unknown coverage remains an honest limitation. CLI, MCP, hooks, TUI, and receipt JSON,
+markdown and text consume these shared facts and finding details; no surface runs tests itself.

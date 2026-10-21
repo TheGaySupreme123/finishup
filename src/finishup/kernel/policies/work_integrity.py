@@ -23,6 +23,7 @@ from finishup.domain.findings import FindingKind, FindingOrigin
 from finishup.domain.observation_selection import command_runner_class
 from finishup.domain.receipts import UNRESOLVED_VERIFICATION_GAP
 from finishup.domain.values import (
+    ActionId,
     EventId,
     EvidenceId,
     ObligationId,
@@ -56,6 +57,7 @@ from finishup.kernel.deterministic_checks import (
 )
 from finishup.kernel.observed_failures import (
     ObservedFailureState,
+    command_identity,
     observed_action_runner_class,
     observed_edit_counts,
     observed_event_ids_from_coverage,
@@ -80,6 +82,7 @@ from finishup.kernel.task_facts import (
     stale_exempt_write_tokens,
     superseded_unnamed_outputs,
 )
+from finishup.kernel.verification_freshness import VerificationFreshness
 from finishup.protocol.policy_packs import WORK_INTEGRITY_POLICY_ID, WORK_INTEGRITY_POLICY_VERSION
 
 __all__ = [
@@ -120,6 +123,7 @@ WORK_INTEGRITY_FACT_CODES: Final = frozenset(
         "unknown_event_present",
         "redaction_gap_present",
         "freshness_gap_present",
+        "verification_freshness_question",
         "finding_response_present",
         "response_basis_insufficient",
         "response_state_stale",
@@ -670,6 +674,22 @@ def _uncorroborated_completion_findings(case: DeterministicCase) -> list[Determi
         return []
     observed = observed_event_ids_from_coverage(case.coverage_by_ref)
     after = latest_edit or 0
+    # New cases compare the cited run's inputs, not a task-wide edit frontier. Old frozen cases
+    # retain their original conservative behavior on replay.
+    freshness: dict[str, VerificationFreshness] | None = (
+        None
+        if case.verification_freshness is None
+        else {row.run_ref: row for row in case.verification_freshness}
+    )
+    if case.verification_advisory:
+        after = 0
+    if freshness is not None:
+        for row in case.verification_freshness or ():
+            result = case.projection.results[row.run_ref].payload
+            if result is not None:
+                for evidence in result.evidence_refs:
+                    freshness[str(evidence)] = row
+        after = 0
     output: list[DeterministicAssessment] = []
     for claim_id, record in effective_claim_items(case.projection):
         claim = record.payload
@@ -682,10 +702,26 @@ def _uncorroborated_completion_findings(case: DeterministicCase) -> list[Determi
             obligation = case.projection.obligations.get(obligation_ref)
             if obligation is not None and obligation.payload is not None:
                 chain.update(obligation.payload.resolution_evidence_refs)
-        if any(runs.get(ref, -1) > after for ref in chain):
+        if any(
+            runs.get(ref, -1) > after
+            and (
+                freshness is None
+                or case.verification_advisory
+                or ref not in freshness
+                or freshness[ref].state != "stale"
+            )
+            for ref in chain
+        ):
             continue
         if any(
-            _self_published_verification_after(case, claim, ref, after, observed) for ref in chain
+            _self_published_verification_after(case, claim, ref, after, observed)
+            and (
+                freshness is None
+                or case.verification_advisory
+                or ref not in freshness
+                or freshness[ref].state != "stale"
+            )
+            for ref in chain
         ):
             continue
         output.append(
@@ -966,6 +1002,11 @@ def _ledger_finding(case: DeterministicCase) -> list[DeterministicAssessment]:
             # with a count, but no agent action can change it, so it never becomes a finding
             # subject whose growth would mint a new issue on every publication (issue #912).
             continue
+        if case.verification_advisory and gap.code in {
+            "planned_verification_stale",
+            "edited_after_last_verification",
+        }:
+            continue
         if gap.code in STANDING_TASK_FACT_GAPS:
             # A standing task fact (#977): an obligation a recorded blocker names, or a planned
             # verification whose outcome is unknown or unobservable. It is a disclosure classified
@@ -1020,6 +1061,86 @@ def _ledger_finding(case: DeterministicCase) -> list[DeterministicAssessment]:
             source_availability=availability,
         )
     ]
+
+
+def _verification_questions(case: DeterministicCase) -> list[DeterministicAssessment]:
+    if case.verification_freshness is None:
+        return []
+    questions: list[DeterministicAssessment] = []
+    latest_by_identity: dict[str, int] = {}
+    first_positions: dict[ActionId, int] = {}
+    for result in sorted(case.projection.results.values(), key=lambda row: row.source_frontier):
+        if result.payload is not None:
+            first_positions.setdefault(result.payload.action_id, result.source_frontier)
+    for result in case.projection.results.values():
+        action = (
+            None
+            if result.payload is None
+            else case.projection.actions.get(result.payload.action_id)
+        )
+        if (
+            result.payload is not None
+            and action is not None
+            and action.payload is not None
+            and action.payload.command is not None
+        ):
+            identity = command_identity(action.payload.command)
+            if identity is not None:
+                latest_by_identity[identity] = max(
+                    latest_by_identity.get(identity, 0), first_positions[result.payload.action_id]
+                )
+    for row in case.verification_freshness:
+        result = case.projection.results.get(row.run_ref)
+        action = (
+            None
+            if result is None or result.payload is None
+            else case.projection.actions.get(result.payload.action_id)
+        )
+        if (
+            result is not None
+            and result.payload is not None
+            and action is not None
+            and action.payload is not None
+        ):
+            identity = command_identity(action.payload.command)
+            if identity is not None and first_positions[
+                result.payload.action_id
+            ] < latest_by_identity.get(identity, 0):
+                continue
+        if row.state == "current" or (row.state == "stale" and not case.verification_advisory):
+            continue
+        if result is None:
+            continue
+        refs = _refs((result.source_event_id, *row.change_refs))
+        answered = False
+        for key, finding in case.projection.findings.items():
+            if finding.payload is None or finding.payload.subject_refs != refs:
+                continue
+            response = case.projection.responses.get(key)
+            if (
+                response is not None
+                and response.payload is not None
+                and (
+                    response.payload.disposition.value == "acknowledged"
+                    and response.payload.reason
+                    and response.payload.reason.strip()
+                    and response.source_frontier > finding.source_frontier
+                    and response.payload.finding_frontier.sequence
+                    >= finding.payload.subject_frontier.sequence
+                )
+            ):
+                answered = True
+        if not answered:
+            questions.append(
+                build_policy_assessment(
+                    case,
+                    WORK_INTEGRITY_POLICY_PACK,
+                    FindingKind.LEDGER_STALE_OR_INCOMPLETE,
+                    refs,
+                    (_fact("verification_freshness_question", *refs),),
+                )
+            )
+    return questions
 
 
 def _response_findings(case: DeterministicCase) -> list[DeterministicAssessment]:
@@ -1105,7 +1226,7 @@ def work_integrity_findings(
         _unresolved_action_findings(case),
         _stale_evidence_findings(case),
         _contradiction_findings(case),
-        _ledger_finding(case),
+        _ledger_finding(case) + _verification_questions(case),
         _response_findings(case),
     )
     if len(by_rule) != len(_RULE_ORDER):

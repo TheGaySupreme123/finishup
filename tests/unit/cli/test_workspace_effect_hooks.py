@@ -1111,7 +1111,8 @@ def test_indirect_script_effect_reaches_freshness_stop_and_receipts(
         for item in batch.drafts:
             ledger.append(item.draft.schema, cast(EventPayload, item.draft.payload), observed=True)
         facts = task_fact_signals(replay(ledger.prefix), ledger.prefix)
-        assert ("edited_after_last_verification" in facts.codes) is stale
+        assert ("verification_rerun_question" in facts.codes) is stale
+        assert "workspace_changed_entries" in envelope.structural_payload
         gate = closure_gate_from_readiness(
             SimpleNamespace(
                 state="action_required",
@@ -1123,9 +1124,7 @@ def test_indirect_script_effect_reaches_freshness_stop_and_receipts(
             frontier_digest="sha256:" + "a" * 64,
             observation_pending=False,
         )
-        assert (gate is not None) is stale
-        if gate:
-            assert "Run each planned verification after your last edit" in gate.text
+        assert gate is None
         receipt = observed_receipt(ledger, extra_gaps=facts.codes)
         rendered = [
             json.dumps(receipt_document_to_json(receipt)),
@@ -1133,6 +1132,6 @@ def test_indirect_script_effect_reaches_freshness_stop_and_receipts(
             render_receipt_human(receipt, markdown=False),
         ]
         for text in rendered:
-            assert ("edited_after_last_verification" in text) is stale
+            assert ("verification_rerun_question" in text) is stale
     finally:
         register_command_identity_key(None)
