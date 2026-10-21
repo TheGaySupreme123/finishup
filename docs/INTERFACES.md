@@ -1320,6 +1320,20 @@ compares is folded with it). The same command wins when one run is both.
 `finding_resolution.retired_failed_command_finding_ids(state)` names the retired, resolved
 observed failed-command findings; the status advice view drops their `failed_command_unresolved`
 items.
+`application.observation_advice.bind_failed_command_advice` binds advice to one accepted
+action/result event pair before the coordinator writes a finding or publishes its snapshot
+(#1160, ADR-022 decision 7). Fresh IDs are task-scoped over that pair; an existing readable
+observation-authored finding supplies its recorded ID and original reason instead. Only rows
+`kernel.finding_resolution.current_finding_records` selects (the newest per `issue_key`, the
+selection `current_receipt_findings` uses) are eligible, so advice and the receipt name the same
+ID; among eligible rows for one pair the earliest recorded wins. The coordinator's in-process
+binding cache reuses an ID only while that row stays current and readable, ignores advice-only
+rows, recomputes on any mismatch, and evicts the least recently used entry.
+Repeated envelopes update snapshot context and do not append another finding. Missing or
+ambiguous pairs do not coalesce; command commitments alone are not finding identities. Original
+findings, responses, historical duplicate IDs and retirement facts remain intact. JSON, markdown
+and text receipt sections name the original trigger and first-recorded frontier beside the
+resolution explanation, using existing fields.
 `FindingProjectionRecord` gains `observed_failed_command`, `failed_run_result_id`,
 `retired_by_event_id`, `retired_frontier` (set together with the event id) and
 `retired_by_planned_verification` (only with a retirement), each emitted into
@@ -2390,6 +2404,32 @@ oracle state, while a successful copy-on-write commit adopts the clone into the 
 so an in-flight oracle's final revalidation observes every durable concurrent append.
 `awaiting_human` and retryable ownership conflicts remain pending and never use this terminalization
 path.
+
+`adapters/objects/check_resume.py` owns the internal paged checkpoint codec (#1159). Inline
+`CHECK_RESUME` objects retain their existing bytes. Above 4 MiB, the root retains media type
+`application/vnd.yoetz.check-resume+json` and carries the exact manifest fields `schema`
+(`yoetz.check-resume-pages/1`), `size`, `digest` (SHA-256 of reconstructed bytes), and `pages`.
+Each ordered page descriptor is exactly `{object_id, envelope_digest, commitment, size}`.
+Pages use kind `CHECK_RESUME`, media type `application/vnd.yoetz.check-resume-page`, and the
+root's task and creation time. Every non-final page is exactly 4 MiB; the final page is nonempty.
+At most 64 unique pages reconstruct at most 256 MiB; nested manifests are forbidden. Manifest
+shape and total size are checked before page reads; each descriptor, authenticated content,
+aggregate digest and original frozen-case binding is verified before use. Page inventory and
+operation admission commit atomically, including input-refresh and lifecycle-motion paths.
+No history, projection, availability or integrity evidence is discarded to fit the object port.
+
+The shared error reasons `check_resume_capacity_exceeded` and `check_result_capacity_exceeded`
+use `LIMIT_EXCEEDED`, `retryable=false`, structural byte `count`/`limit`, and continuation
+`check_capacity_handoff`. The latter limit remains 4 MiB for the local deterministic-result
+checkpoint. A pre-admission resume overflow records no operation. A post-admission result
+overflow terminalizes that exact operation with the stored typed error. So does a resume
+overflow while the parked review-input case of an admitted check is rebuilt, but only when the
+overflow was computed from the operation's current inputs; otherwise the refusal is the retryable
+`check_admission_contended`. CLI, MCP (Codex, Claude Code and Cursor), hooks and TUI share this
+error/continuation contract. No check verdict or reviewer result is fabricated; a receipt retains
+the missing-check coverage. An explicitly scoped follow-up may continue work but cannot close the
+original task by substitution.
+
 `ports/ledger.py` owns the shared closed enums: `OperationKind` is
 `start|publish_work|check|respond|receipt`; `OperationState` is `pending|complete|quarantined`;
 `CheckPhase` is `reserved|local_ready|semantic_wait|ready_to_finalize|terminal`;
