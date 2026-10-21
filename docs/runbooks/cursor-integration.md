@@ -2712,6 +2712,20 @@ item below applies on macOS, Linux and Windows through WSL 2.
   shared hooks even when other projects keep using the plugin; unreadable HOME permission
   evidence stops a later connect with `connection_home_project_permission_unknown`.
   JSON previews and results report `status.home_project_allowed` (inside each batch member).
+  After that opt-in, ordinary HOME project files support reviewer reads, check-time changes
+  and requested-output verification through the same service path as other projects (#1161).
+  Reviewer paths are relative to the issued root alias; absolute paths and hidden components
+  remain refused. Every dot-named file or directory at any depth (`.codex/`, `.claude/`,
+  `.cursor/`, `.ssh/`, `.config/`, `.cargo/`, `.vault-token`, a nested `backup/.ssh/` and
+  also project dot files such as `.github/` or `.cursorignore`), the top-level `Library`,
+  `AppData` and `snap` trees, copies named exactly `Library` or `AppData` at any depth (such as
+  `backup/Library/`), and credential/auth file names such as `credentials.toml`, `auth.json`,
+  `token.json` or `kubeconfig` at any depth stay excluded, including tracked files. Excluded outputs remain
+  unverified. Structural capture reports a symlink outside those exclusions as
+  `symlink_unsupported`, as in any project, and never follows it. This adds no observation
+  grant or disclosure authority. The service admits HOME for any authenticated same-user
+  connection naming it, because the launcher's opt-in is not carried across the handshake;
+  binding it to a recorded opt-in is tracked in #1181. See [ADR-012](../adr/ADR-012-first-run-setup-wizard.md#home-review-and-observation-parity-1161).
   `setup disconnect --host cursor-cli --project "$HOME" --non-interactive --json` previews
   removal without a new home opt-in; approve that exact preview. Observation and disclosure
   remain separate. Adapter tests cover the locator/renderer decisions; no additional native
