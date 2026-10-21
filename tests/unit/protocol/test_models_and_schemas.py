@@ -405,7 +405,7 @@ _RESULT_SUPPORT_MODEL_SPECS: tuple[tuple[str, str, str], ...] = (
     ),
     (
         "CheckProjectedFindingModel",
-        "operations/check-result-1.4.0.schema.json",
+        "operations/check-result-1.6.0.schema.json",
         "projected_finding",
     ),
     ("CheckVersionSliceModel", "operations/check-result-1.0.0.schema.json", "version_slice"),

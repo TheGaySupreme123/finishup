@@ -20,6 +20,7 @@ from pydantic import ValidationError
 from tests.unit.kernel import test_receipt_builder as receipt_test
 from tests.unit.protocol.test_models_and_schemas import (
     _check_result_wire,  # pyright: ignore[reportPrivateUsage]
+    _semantic_provenance_wire,  # pyright: ignore[reportPrivateUsage]
 )
 
 from finishup.domain.events import (
@@ -35,7 +36,7 @@ from finishup.domain.values import JsonObject, freeze_json
 from finishup.domain.values import JsonValue as DomainJsonValue
 from finishup.protocol.canonical import canonical_digest, canonical_encode
 from finishup.protocol.errors import ProtocolValueError
-from finishup.protocol.models import CheckResult
+from finishup.protocol.models import CheckResult, ChildFindingSnapshotModel
 from finishup.protocol.schemas import SchemaInstanceInvalid, validate_schema_instance
 from unit.application import test_undeclared_names_never_egress as named_checks
 
@@ -48,6 +49,9 @@ _FROZEN = {
     ),
     "schemas/events/check-recorded-1.5.0.schema.json": (
         "6aa755d7038c695fa4929f26ef2386f95a7a325bedca367650a965e4d5ffcd4b"
+    ),
+    "schemas/operations/check-result-1.4.0.schema.json": (
+        "9fcd3c474fdcb5caf2d5e8e6e814ec3bc3152b173f9a4fb65d633ccc46b62e17"
     ),
     "schemas/operations/check-result-1.5.0.schema.json": (
         "d03e8a3fd92b1f239a0aae66f691f65b863efda492016a518187b2144a09fd6c"
@@ -102,6 +106,40 @@ def test_earlier_check_schemas_are_byte_identical_to_before_the_reviewer(path: s
     assert hashlib.sha256((_ROOT / path).read_bytes()).hexdigest() == _FROZEN[path]
     document = json.loads((_ROOT / path).read_text(encoding="utf-8"))
     assert "reviewer_record" not in document.get("$defs", {})
+
+
+@pytest.mark.parametrize("version", ("1.4.0", "1.5.0", "1.6.0"))
+def test_decision_findings_start_at_check_result_1_6(version: str) -> None:
+    instance = _check_result_wire()
+    finding = cast(list[dict[str, Any]], instance["findings"])[0]
+    finding.update(
+        kind="decision_needed",
+        origin="semantic_model_derived",
+        priority=3,
+        provenance=_semantic_provenance_wire(),
+    )
+    if version == "1.6.0":
+        validate_schema_instance("check-result", version, instance)
+        CheckResult.model_validate(instance)
+    else:
+        with pytest.raises(SchemaInstanceInvalid):
+            validate_schema_instance("check-result", version, instance)
+
+
+def test_child_snapshot_preserves_a_non_actionable_decision() -> None:
+    body = {
+        "finding_id": "fnd_10000000-0000-4000-8000-000000000001",
+        "kind": "decision_needed",
+        "origin": "semantic_model_derived",
+        "priority": 3,
+        "actionable": False,
+        "resolved": False,
+    }
+    snapshot = ChildFindingSnapshotModel.model_validate(body)
+    assert snapshot.kind == "decision_needed" and not snapshot.actionable
+    for invalid in ({"priority": 2}, {"actionable": True}):
+        with pytest.raises(ValidationError):
+            ChildFindingSnapshotModel.model_validate({**body, **invalid})
 
 
 @pytest.mark.parametrize("vector", _vectors(), ids=lambda vector: str(vector["vector_id"]))

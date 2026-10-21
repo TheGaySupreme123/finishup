@@ -51,7 +51,7 @@ from finishup.ports.semantic import (
     encode_reviewer_exchange,
     reviewer_exchange_tokens,
 )
-from finishup.protocol.canonical import JsonValue
+from finishup.protocol.canonical import JsonValue, canonical_digest, canonical_encode
 from finishup.protocol.models import SemanticReason, SemanticStatus
 from finishup.service.semantic_ceiling import REVIEWER_FRAME_BYTES, reviewer_exchange_budget
 from integration.service.test_reviewer_conversation_composition import (
@@ -353,6 +353,45 @@ def _file_read(path: str, write: Callable[[], None]) -> Callable[..., object]:
     return reply
 
 
+def _legacy_read_exchange(
+    first: tuple[tuple[str, str], ...],
+    second: tuple[tuple[str, str], ...],
+    source: str,
+) -> bytes:
+    """Reproduce the old raw-byte fitter, proving the fixture still exposes its overflow.
+
+    Both fixtures are ASCII. Measure the actual escaped action, result and history so changes
+    to reviewer wording cannot silently turn this into a non-boundary read.
+    """
+
+    total = max(0, (_CEILING - len(_encoded(first)) - 2048) * 4 // 5)
+    room = min(8192, total)
+    body = json.loads(second[-1][1])
+    head = min(6144, room, len(source))
+    while head:
+        text = source[:head]
+        data = body["data"]
+        data["text"] = text
+        data["provenance"]["span"]["end_exclusive"] = head
+        data["provenance"]["line_span"]["end_inclusive"] = (
+            1 + text.count("\n") - text.endswith("\n")
+        )
+        body["result_digest"] = canonical_digest(data)
+        encoded, size = b"", 0
+        for _ in range(8):
+            body["result_utf8_bytes"] = size
+            body["bytes_remaining"] = max(0, total - size)
+            encoded = canonical_encode(body)
+            if len(encoded) == size:
+                break
+            size = len(encoded)
+        over = len(encoded) - room
+        if over <= 0:
+            return _encoded((*second[:-1], ("user", encoded.decode())))
+        head = max(0, head - over - 8)
+    raise AssertionError("fixture does not retain a legacy read")
+
+
 @pytest.mark.anyio
 async def test_every_later_exchange_fits_the_cap_beside_a_long_read_action(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -368,18 +407,20 @@ async def test_every_later_exchange_fits_the_cap_beside_a_long_read_action(
     parts = ("\x01" * 250, "\x02" * 250)
     path = "/".join((*parts, "rows.py"))
 
+    line = '{"id": %d, "m": "\\"a\\" b", "p": "C:\\\\x"}\n'
+    source = "".join(line % n for n in range(300))
+
     def write() -> None:
         folder = tmp_path / "work" / parts[0] / parts[1]
         folder.mkdir(parents=True)
-        line = '{"id": %d, "m": "\\"a\\" b", "p": "C:\\\\x"}\n'
-        (folder / "rows.py").write_text("".join(line % n for n in range(300)))
+        (folder / "rows.py").write_text(source)
 
     result, gateway, _runtime = await _run(
         tmp_path, monkeypatch, _file_read(path, write), _FINAL, policy=_expanded_policy()
     )
     assert result.status is SemanticStatus.SUCCEEDED, (result.status, result.reason)
     first, second = (history for _media, history in gateway.exchanges)
-    assert len(_encoded(first)) > _CEILING - REVIEWER_FRAME_BYTES - 2048  # little room is left
+    assert len(_legacy_read_exchange(first, second, source)) > UNSIZED_EXCHANGE_BYTES
     assert len(_encoded(second)) <= UNSIZED_EXCHANGE_BYTES
     # The result was fitted to that room, not dropped: it still carries the file's head.
     observation = json.loads(second[-1][1])
@@ -419,19 +460,20 @@ async def test_a_backslash_read_after_a_full_first_exchange_fits_the_cap(
 
     _composed(monkeypatch, diff=_code_diff(8, 203), outputs=0)
 
-    def write() -> None:
-        (tmp_path / "work" / "calc.py").write_text(("\\" * 100 + "\n") * 150)
+    source = ("\\" * 100 + "\n") * 150
 
     def read(_case: object, provenance: Any) -> object:  # noqa: ANN401
-        write()
-        return SemanticResultReply(_read_file("calc.py"), provenance)
+        (tmp_path / "work" / "calc.py").write_text(source)
+        action = _read_file("calc.py")
+        cast(dict[str, dict[str, JsonValue]], action["reply"])["args"]["line_count"] = 32
+        return SemanticResultReply(action, provenance)
 
     result, gateway, _runtime = await _run(
         tmp_path, monkeypatch, read, _FINAL, policy=_expanded_policy()
     )
     assert result.status is SemanticStatus.SUCCEEDED, (result.status, result.reason)
     first, second = (history for _media, history in gateway.exchanges)
-    assert len(_encoded(first)) == 253_597  # the verifier's first exchange, exactly
+    assert len(_legacy_read_exchange(first, second, source[: 32 * 101])) > UNSIZED_EXCHANGE_BYTES
     assert len(_encoded(second)) <= UNSIZED_EXCHANGE_BYTES
     assert json.loads(second[-1][1])["data"] is not None  # fitted, not dropped
 

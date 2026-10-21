@@ -333,3 +333,17 @@ def test_brief_status_text_keeps_the_stop_and_receipt_instruction() -> None:
     assert "Closure: ready_with_limitations. Nothing further to do. Request the receipt." in text
     # No count is invented for the omitted standing limitations or acknowledged items.
     assert "standing limitation(s)" not in text
+
+
+def test_reviewer_output_preserves_the_decision_kind() -> None:
+    rendered = render_check_reviewer_output(
+        {
+            "findings": [
+                {
+                    "kind": "decision_needed",
+                    "challenge": {"discrepancy": "Choose between the two supported routes."},
+                }
+            ]
+        }
+    )
+    assert "decision_needed: Choose between the two supported routes." in rendered

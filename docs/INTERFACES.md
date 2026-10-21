@@ -12080,7 +12080,9 @@ as `outcome_unknown` and is never resent. For it, `operation_max_retries` is `0`
 
 - `FindingKind.DECISION_NEEDED` / `decision_needed`: research-evidence, priority 3,
   `FINDING_KIND_TRAITS == (3, False)`, available on finding/finding-recorded 1.4.0 and active
-  provider-judgment 1.2.0 on the unreleased integration branch. Earlier versions refuse it.
+  provider-judgment 1.2.0 on the unreleased integration branch. Check-result projections admit
+  it from 1.6.0; historical check-result 1.4.0/1.5.0 bytes stay frozen and refuse it.
+  Earlier finding and provider-judgment versions refuse it.
   Generated status, check, receipt and child-dependency projections carry the kind. Its existing
   challenge fields carry both interpretations, their evidence, one discriminating check and the
   choice; `validate_semantic_judgment` forces `requested_next_step: answer_question`.

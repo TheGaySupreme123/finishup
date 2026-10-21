@@ -3991,7 +3991,6 @@ def _check_result_v1_4_schema(entry: _RegistryEntry) -> dict[str, JsonValue]:
     for value in (
         "agent_criterion_unmet",
         "code_defect",
-        "decision_needed",
         "task_requirement_unmet",
     ):
         if value not in values:
@@ -4029,6 +4028,13 @@ def _check_result_v1_6_schema(entry: _RegistryEntry) -> dict[str, JsonValue]:
     _admit_stopped_review(document)
     _add_check_reviewer(document)
     definitions = cast(dict[str, JsonValue], document["$defs"])
+    # Decision findings belong to the current contract; historical 1.4/1.5 bytes stay frozen.
+    projected = cast(dict[str, JsonValue], definitions["projected_finding"])
+    projected_properties = cast(dict[str, JsonValue], projected["properties"])
+    kind = cast(dict[str, JsonValue], projected_properties["kind"])
+    kinds = cast(list[JsonValue], kind["enum"])
+    kinds.append("decision_needed")
+    kinds.sort(key=lambda item: str(item).encode("ascii"))
     checklist = cast(dict[str, JsonValue], definitions["finding_checklist"])
     checklist_properties = cast(dict[str, JsonValue], checklist["properties"])
     cast(list[JsonValue], cast(dict[str, JsonValue], checklist_properties["next"])["enum"]).append(
