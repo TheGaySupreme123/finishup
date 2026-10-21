@@ -1,5 +1,12 @@
 # Claude Code native integration
 
+Reviewer robustness (#1134–#1137, #1141) applies to Claude Code through the shared service:
+oversized native reads are withheld, sampled listings disclose inspection exhaustion, and read
+capacity is distinct from invalid replies. Codex session cleanup and notification bounds also
+apply when the configured review provider is Codex; they do not depend on the agent host. This is
+shared behavior on macOS, Linux and WSL 2, without claiming new native acceptance. See
+[the reviewer contract](../INTERFACES.md#reviewer-loop-issue-1118-unit-2).
+
 MCP input advertisements use the same compact schema as Codex and Cursor, targeting 4,800 bytes
 per tool. Required fields, enums and event envelopes remain inline; payload variants, conditional
 field rules and full examples are available through `read_guidance` at

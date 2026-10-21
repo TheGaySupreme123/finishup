@@ -4675,6 +4675,16 @@ such as `p<ss>w0rd|x` or `Summer2024...`. A marker followed by more bytes
 Capture-time redaction covers only high-confidence findings; heuristic-only matches are redacted
 at egress.
 
+The exact `[REDACTED]` and `[withheld-by-yoetz:possible-credential]` values remain exempt when a
+packet is JSON-encoded again inside a reviewer exchange (#1138). The exemption checks the
+encoding depth of whitespace escapes against the closing quote's framing; it does not strip
+arbitrary backslashes or suffixes. Marker lookalikes, concrete credentials, private-key markers
+and canaries keep their existing detection and whole-case refusal rules.
+Within one scan, enclosing JSON string spans and their validated decodes are cached per string.
+A byte-offset map accounts for escapes and UTF-8 widths, including surrogate pairs, so each
+occurrence still proves its own nesting without rescanning or decoding growing prefixes. The
+cache is discarded after the scan; invalid strings cannot supply an exemption.
+
 `PreDispatchAuditDecision` is structural-only and terminal; it permits no prepared bytes,
 authorization, or dispatch. A v0.1 content-bearing `DisclosureProposal` has one owning `task_id` and
 is encrypted as `ObjectKind.privacy_audit` in that task bundle; the privacy catalog stores its
@@ -10052,10 +10062,10 @@ follow-up loop is deleted.
 - Controller: `application.reviewer_loop.ReviewerLoop(model, broker, *, instruction, packet,
   deadline, history_admissible, final_reserve_seconds=30.0, clock=time.monotonic,
   resume_reserved=False).run() -> ReviewOutcome(status,
-  judgment, reason, history, model_turns, citable_refs, text_by_ref)`; the last two are the
-  citation union for `validate_semantic_judgment`. `ReviewerModel.complete(history, schema, *,
+  judgment, reason, history, model_turns, citable_refs, text_by_ref, capacity)`; the citation fields
+  hold the union for `validate_semantic_judgment`. `ReviewerModel.complete(history, schema, *,
   deadline) -> JsonValue` is the only model interface; a facade raises `ReviewerModelError(code)`.
-  Incomplete reasons: `format_invalid`, `read_limit`, `deadline`, `turn_limit`,
+  Incomplete reasons: `format_invalid`, `read_limit`, `case_capacity_exceeded`, `deadline`, `turn_limit`,
   `authorization_changed`, `interrupted`, `uncaptured_step`, `step_refused`, or the facade's code.
   The one repair covers `ReviewerReplyInvalid` from `complete` and from decoding alike; the turn is
   captured either way. With `resume_reserved`, a store whose `usage()` is exactly `(1, 1)` runs turn
@@ -10072,8 +10082,11 @@ follow-up loop is deleted.
   `(category, bytes, input_root)` tuples. `history_roots` lists every outside root the conversation
   holds bytes from. With `exchange_room` (#1118), `reads_allowed()` also needs `MIN_ROOM +
   READ_ACTION_ROOM` (2 KiB) of it; `execute` subtracts the `reply` turn's bytes and raises
-  `ReadExchangeFull` before reserving when less than `MIN_ROOM` is left (the loop ends
-  `read_limit`), and a result over its room keeps the longest head that fits, measured.
+  `ReadExchangeFull(required, available)` before reserving when less than `MIN_ROOM` is left.
+  The loop ends `case_capacity_exceeded`, carrying those minimum required and available exchange
+  bytes through `SemanticEgressBlocked.capacity` to the existing capacity outcome. It never
+  becomes `response_schema_invalid`; a read after the count cap still ends `read_limit`.
+  A result over its room keeps the longest head that fits, measured.
 - Steps: `ports.semantic.ReviewStepStore.reserve(kind, ordinal, selector)`, `capture(kind, ordinal,
   result)`, `usage() -> (steps, uncaptured)`; `ReviewStepRefused` on a repeated step or a lost lease.
   `SqliteLedger.review_steps(handle)` is the durable store (`semantic_review_steps`, ADR-003).
@@ -10082,7 +10095,13 @@ follow-up loop is deleted.
   roots, retained=())`.
   Reads: `task_input_read.read_text_beneath`, `list_beneath` (both take `expired` and raise
   `ReadDeadline`) and `clear_cut`; the broker raises `ReadDeadline` too when a read completes past
-  its local stop.
+  its local stop. `read_text_beneath` returns `(bytes, source_size)`; a native file over 1 MiB
+  returns no bytes, and the broker emits `partial` / `native_read_limit`, `truncated=true`, only
+  `data.source_bytes`, and no citations. `list_beneath` returns `(entries, truncated)` after at
+  most 128 native-entry inspections plus one uninspected lookahead. Hidden/refused entries spend
+  the inspection budget. An exhausted sample emits `partial` / `inspection_limit`, even with no
+  visible children. Cursors page the sampled entries only; the final sample page has no cursor
+  beyond it and still names the inspection limit. Neither result claims source completeness.
 
 ### Review dialogue record (issue #905)
 
@@ -10864,12 +10883,21 @@ plan. Names and contracts:
 - Resume (`PrivacyCoordinator._resume_admitted`) denies a stored `semantic-review` proposal,
   external or local-model, outside the current policy's excerpt limits or LLM `max_bytes` /
   `max_tokens` with `blocked_by_policy` / `policy_denied` before dispatch.
-- Capacity refusals (#1118): `SemanticEgressBlocked.capacity` is `(attempted, limit)` bytes on the
-  two size refusals (channel `max_bytes`; reviewer exchange over `MAX_MINIMIZED_DISCLOSURE_BYTES`),
-  only with `blocked_by_policy`, and only when `attempted > limit`. `_map_egress_to_final` maps it
+- Capacity refusals (#1118, #1142): `SemanticEgressBlocked.capacity` is `(attempted, limit)`,
+  only with `blocked_by_policy`, and only when `attempted > limit`. `capacity_scope` is
+  `disclosure`, `excerpt` or `excerpt_total`; `capacity_unit` is `bytes`, `tokens` or `excerpts`.
+  Channel byte/token limits and reviewer exchange limits count the whole disclosure. Excerpt
+  count, per-excerpt bytes and total excerpt bytes count the packet's post-replacement
+  `content_bytes`, after privacy minimization, including marker growth. Initial admission and
+  proposal resume both preserve the exceeded bound without trimming or dispatching the packet.
+  `_map_egress_to_final` maps it
   to `failed/case_capacity_exceeded` and records `semantic_composition/
-  semantic_disclosure_capacity_exceeded` with `semantic_disclosure_attempted_bytes` and
-  `semantic_disclosure_limit_bytes` (integers, never content).
+  semantic_disclosure_capacity_exceeded` with `semantic_<scope>_attempted_<unit>` and
+  `semantic_<scope>_limit_<unit>` (integers, never content). Unrecognized policy reasons map to
+  `failed/coordinator_failure`, rather than claiming a network denial. The existing privacy
+  receipt remains `blocked_by_policy/policy_denied` with zero final bytes; #1129 owns its new
+  schema reason. Check/job status and work-receipt gaps use the existing capacity vocabulary
+  across CLI, MCP, hooks and TUI for Codex, Claude Code and Cursor.
 - TUI: `PrivacyPosture.recipe_outdated` is true when the approved selection is an earlier version
   of its recipe. The privacy screen then offers the newer recipe instead of saying "already on the
   recommended privacy policy".
@@ -11874,6 +11902,20 @@ cleaning up. A completed Codex turn reports `runtime_evidence.process_cleanup = 
 `ReviewerSession.aclose()` returns the closing cleanup outcome. The service replaces `retained` in
 the final exchange's evidence with that outcome before anything is persisted, so
 `runtime-attempt-evidence` 1.1.0 is unchanged and `retained` never reaches a stored record.
+If closing the held session reports `failed`, the final judgment is withheld: the result is
+`unavailable`, failure class `transport`, runtime stage and reviewer ending `cleanup_unconfirmed`.
+An acknowledged Codex turn maps to `outcome_unknown`, preserving the existing no-retry rule.
+
+Active Codex turns account for notifications by four closed families (`control`, `telemetry`,
+`delta`, `intermediate`). Each notification spends the largest of its re-encoded JSON byte size,
+newly received wire bytes, and 256 work units, with a 32 MiB total work bound and the shared deadline
+checked per event. Buffered events spend their re-encoded size as well, conservatively.
+Discarded telemetry and streamed deltas no longer exhaust a 4,096-event allowance. The existing
+`event_limit` stage names work exhaustion; an acknowledged turn without a completed answer remains
+`outcome_unknown`. `turn_notifications` owner diagnostics carry only `codex_event_<family>_count`,
+`codex_event_<family>_bytes` (re-encoded JSON), `codex_event_wire_bytes` (active-turn traffic including
+the turn acknowledgement), and attempt `duration_ms` including cleanup. Per-message,
+request-queue and pre-disclosure bounds and all event/tool allowlists still apply.
 
 `complete(history, schema, deadline=)` returns the reply object. It raises the decoder's
 `ReviewerReplyInvalid("output_not_json")` only for a completed answer that is not one JSON object

@@ -1,5 +1,13 @@
 # Codex integration runbook
 
+Reviewer robustness (#1134–#1137, #1141) is shared service behavior on macOS, Linux and WSL 2:
+native reads over 1 MiB are withheld with an explicit limit, sampled directory listings disclose
+inspection exhaustion, and read capacity is reported separately from invalid replies. The Codex
+reviewer route also withholds judgments after unconfirmed session cleanup and bounds active
+notifications by bytes/work. These evaluator rules apply whichever host requested the review;
+native acceptance on each host/OS remains a separate claim. See
+[the reviewer contract](../INTERFACES.md#reviewer-loop-issue-1118-unit-2).
+
 For setup prerequisites, use `finishup setup status --next --host codex` with the same
 executable, configuration root and project. `--operation connection` inspects installation without
 provider sign-in; `local` and `review` inspect their respective vault/privacy prerequisites.

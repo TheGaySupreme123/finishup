@@ -3237,9 +3237,10 @@ def _map_blocked(outcome: PrivacyOutcome, reason: object) -> FinalSemanticEvalua
                 SemanticStatus.BLOCKED_BY_POLICY,
                 SemanticReason.CONTENT_CATEGORY_NOT_AUTHORIZED,
             )
-        return FinalSemanticEvaluation(
-            SemanticStatus.BLOCKED_BY_POLICY, SemanticReason.NETWORK_EGRESS_DENIED
-        )
+        if reason_name == "POLICY_DENIED":
+            return FinalSemanticEvaluation(
+                SemanticStatus.BLOCKED_BY_POLICY, SemanticReason.NETWORK_EGRESS_DENIED
+            )
     return FinalSemanticEvaluation(SemanticStatus.FAILED, SemanticReason.COORDINATOR_FAILURE)
 
 
@@ -3569,14 +3570,15 @@ def _map_egress_to_final(
             # the receipt keeps ``blocked_by_policy`` / ``policy_denied``, and the check reports
             # the case's capacity with the bounded sizes, never content.
             attempted, limit = result.capacity
+            counter_scope = result.capacity_scope
             record_bounded_counts_without_raising(
                 component="semantic_composition",
                 operation="semantic_disclosure_capacity_exceeded",
                 outcome=SemanticReason.CASE_CAPACITY_EXCEEDED.value,
                 # A route sized to its model's context may refuse on estimated tokens instead.
                 counts={
-                    f"semantic_disclosure_attempted_{result.capacity_unit}": attempted,
-                    f"semantic_disclosure_limit_{result.capacity_unit}": limit,
+                    f"semantic_{counter_scope}_attempted_{result.capacity_unit}": attempted,
+                    f"semantic_{counter_scope}_limit_{result.capacity_unit}": limit,
                 },
                 request_id=result.request_id,
             )
