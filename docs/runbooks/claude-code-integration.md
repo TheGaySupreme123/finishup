@@ -2891,9 +2891,22 @@ claim a new native-host or platform certification.
 
 ### Review context and delivery (#1139, #1126, #1148)
 
-The shared reviewer broker and packet builder retain bounded prior finding/rebuttal context ahead
-of bulk excerpts. An unmatched frozen ledger read is `not_in_frozen_case`, with a continuation
-asking for the missing input in a later check; it never proves the item was unrecorded.
-The MCP text advisory keeps bounded summary, action, alternative and uncertainty together ahead
-of evidence and provenance. The complete structured record remains available. This is offline
-contract coverage; native Claude delivery has not been re-dogfooded here (#1139 validation gap).
+Read the full finding before choosing a response.
+Treat `review_delivery` as a bounded advisory preview.
+When it reports truncation, follow its `status view=findings` continuation with `detail=full`,
+`limit=1` and the returned cursor.
+Stop when the finding you will answer includes its action, alternative interpretation and
+uncertainty, or labels them withheld.
+For example, a long check can keep an instruction while its alternative falls outside the preview.
+
+Treat `not_in_frozen_case` as unavailable in this frozen check.
+Do not infer that the item was never recorded.
+Follow the missing-input continuation so a later check can freeze the requested item.
+For example, an unknown ref can be outside this case.
+
+The shared packet builder retains bounded prior dialogue ahead of ordinary bulk.
+The task, diff floor and latest verification remain protected when whole prior dialogues yield.
+The MCP text advisory keeps bounded summary, action, alternative and uncertainty ahead of evidence.
+The complete structured record remains available.
+Offline contract tests cover this path. Native Claude delivery has not been re-dogfooded here.
+Issue #1139 owns that validation gap.

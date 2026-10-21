@@ -49,6 +49,7 @@ from finishup.domain.events import (
     ResponseRecordedPayload,
     ResultOutcome,
     ResultRecordedPayload,
+    encode_payload,
 )
 from finishup.domain.findings import (
     Finding,
@@ -70,7 +71,7 @@ from finishup.kernel.projections import (
     ProjectionRecord,
 )
 from finishup.ports.semantic import ReviewInputSection, SemanticCase
-from finishup.protocol.canonical import JsonValue, strict_json_parse
+from finishup.protocol.canonical import JsonValue, canonical_digest, strict_json_parse
 from finishup.protocol.coverage import EvidenceImmutability
 from finishup.protocol.models import DataCategory, SemanticReason, SemanticStatus
 
@@ -590,6 +591,95 @@ def test_bounded_case_envelope_keeps_prior_findings_ahead_of_bulk(
     assert SEMANTIC_PRIOR_FINDINGS_OVER_LIMIT_GAP not in cast(
         list[JsonValue], coverage["known_gaps"]
     )
+
+
+def test_case_bound_omits_whole_dialogues_beside_fixed_decisions_and_primary_material() -> None:
+    """#1152 R1: a rich recheck reaches ceiling planning rather than failing construction."""
+
+    from unit.application.test_semantic_case_check_change import (
+        _change,  # pyright: ignore[reportPrivateUsage]
+        _cracker_change,  # pyright: ignore[reportPrivateUsage]
+        _ledger_build,  # pyright: ignore[reportPrivateUsage]
+    )
+
+    rich = replace(
+        _CHALLENGE,
+        discrepancy="Discrepancy " * 300,
+        alternative_interpretation="Alternative " * 300,
+        uncertainty="Uncertainty " * 300,
+    )
+    findings = {
+        fnd(number): finding_record(_semantic(number, challenge=rich), 80 + number)
+        for number in range(1, 17)
+    }
+    _, ledger = _ledger_build(_change(_cracker_change()), ceiling=None, findings=findings)
+    decisions: dict[EventId, DecisionProjectionRecord] = {}
+    for number in range(16):
+        decision = limit_decision(80 + number, obl(1))
+        assert decision.payload is not None
+        payload = replace(
+            decision.payload, statement="Decision " * 440, rationale="Rationale " * 400
+        )
+        decisions[evt(80 + number)] = replace(
+            decision, payload=payload, payload_digest=canonical_digest(encode_payload(payload))
+        )
+    from unit.application.test_semantic_case_packet_completeness import (
+        _react_case,  # pyright: ignore[reportPrivateUsage]
+    )
+
+    statement = _react_case().task_statement
+    assert statement is not None
+    frozen = replace(
+        ledger.case,
+        task_statement=replace(statement, text="Task requirement. " * 800),
+        projection=replace(ledger.case.projection, decisions=MappingProxyType(decisions)),
+        allowed_ids=ledger.case.allowed_ids | frozenset(decisions),
+        coverage_by_ref={
+            **ledger.case.coverage_by_ref,
+            **dict.fromkeys(decisions, BASE_COVERAGE),
+        },
+    )
+    from unit.application.test_semantic_case_envelope import (
+        _findings_for,  # pyright: ignore[reportPrivateUsage]
+    )
+
+    local_findings = tuple(
+        replace(finding, summary="Local summary " * 280, detail="Local detail " * 300)
+        for finding in _findings_for(frozen)[:8]
+    )
+    assert len(local_findings) == 2
+    built = build_semantic_case(
+        case_id="cas_10000000-0000-4000-8000-000000000001",
+        frozen_case=frozen,
+        dependency_digest=_DIGEST,
+        findings=local_findings,
+        review_context_profile=ReviewContextProfile.EXPANDED,
+        review_selection=ReviewSelectionPolicy.for_profile(ReviewContextProfile.EXPANDED),
+        policy_id="pvy_10000000-0000-4000-8000-000000000001",
+        policy_version="1",
+        captured_content=ledger.captured,
+        captured_content_scope=ledger.scope,
+        check_time_change=_change(_cracker_change()),
+    )
+    assert len(built.packet.decision_item_ids) == 16
+    assert built.packet.task_statement_item_ids
+    assert sum(item.content_bytes for item in built.items) <= 262_144
+    assert 0 < len(built.packet.prior_finding_refs) < 8
+    assert semantic_case_module.check_time_change_bytes_carried(built) >= 64_000
+    carried = {item.source_ref for item in built.items if item.section == "excerpt"}
+    assert {str(refs[-1]) for refs in ledger.verification.values()} <= carried
+    missing = set(map(str, findings)) - set(built.packet.prior_finding_refs)
+    # The packet omission list is capped. The prior-context manifest still names every lost
+    # finding, and total accounting includes omissions beyond the listed rows.
+    manifest = built.packet.input_manifest
+    assert manifest is not None and manifest.omitted_item_total is not None
+    assert manifest.omitted_item_total > len(built.packet.omissions)
+    assert not any(
+        item.section == "prior_finding" and item.source_ref in missing for item in built.items
+    )
+    assert SEMANTIC_PRIOR_FINDINGS_OVER_LIMIT_GAP in built.packet.coverage.known_gaps
+    assert manifest.prior_finding_context.status == "partial"
+    assert missing <= set(manifest.prior_finding_context.omitted_refs)
 
 
 def test_the_packet_view_reports_prior_rows_bounding_removed(

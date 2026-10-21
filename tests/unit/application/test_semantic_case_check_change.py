@@ -510,8 +510,8 @@ def test_parts_carried_are_counted_from_the_bounded_envelope(
     assert check_time_change_parts_carried(semantic, withheld_categories=("claim_text",)) == 7
 
     # Primary material leads the case (n7 RC7, #1108), so bounding drops the timeline and the
-    # agent's account before any change part: the cap is small enough to reach the parts.
-    monkeypatch.setattr(semantic_case_module, "MAX_EGRESS_ENVELOPE_BYTES", 6_000)
+    # agent's account before any change part: the cap reaches excess parts but holds the floor.
+    monkeypatch.setattr(semantic_case_module, "MAX_EGRESS_ENVELOPE_BYTES", 7_000)
     carried = check_time_change_parts_carried(semantic)
     assert 0 < carried < admitted
     envelope = strict_json_parse(semantic_case_module.bounded_case_envelope(semantic))
@@ -678,10 +678,10 @@ def test_shown_file_views_come_from_exactly_the_carried_envelope_bytes(
     )
     change = _change(text)
     semantic = _build(_case_with_material(), change=change)
-    # The agent's rows and the timeline yield first (#1108), so this cap reaches the change parts.
-    monkeypatch.setattr(semantic_case_module, "MAX_EGRESS_ENVELOPE_BYTES", 6_000)
+    # The agent's rows and the timeline yield first; the reserved change floor still fits.
+    monkeypatch.setattr(semantic_case_module, "MAX_EGRESS_ENVELOPE_BYTES", 7_000)
     carried = check_time_change_parts_carried(semantic)
-    assert 0 < carried < len(_change_items(semantic))
+    assert 0 < carried <= len(_change_items(semantic))
     envelope = strict_json_parse(semantic_case_module.bounded_case_envelope(semantic))
     assert isinstance(envelope, dict)
     catalog = {
@@ -953,6 +953,59 @@ def test_channel_planning_keeps_the_dispute_change_and_latest_verification() -> 
     )
     carried = {i.source_ref for i in planned.items if i.section == "excerpt"}
     assert {str(refs[-1]) for refs in ledger.verification.values()} <= carried
+
+
+def test_envelope_pressure_keeps_the_task_diff_floor_and_latest_verification(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """#1152 R2: omit whole old dialogues before dropping the primary adjudication material."""
+
+    from finishup.application import semantic_case as composer
+    from finishup.domain.receipts import SEMANTIC_PRIOR_FINDINGS_OVER_LIMIT_GAP
+    from unit.application.test_semantic_case_packet_completeness import (
+        _react_case,  # pyright: ignore[reportPrivateUsage]
+    )
+
+    change = _change(_cracker_change())
+    initial, ledger = _ledger_build(change, ceiling=None, findings=_open_prior_findings())
+    frozen = replace(ledger.case, task_statement=_react_case().task_statement)
+    case = _build(
+        frozen,
+        change=change,
+        selection=initial.review_selection,
+        captured=ledger.captured,
+        scope=ledger.scope,
+    )
+    monkeypatch.setattr(composer, "MAX_EGRESS_ENVELOPE_BYTES", 40_000)
+    envelope = strict_json_parse(composer.bounded_case_envelope(case))
+    assert isinstance(envelope, dict)
+    catalog = {
+        cast(dict[str, object], row)["item_id"]
+        for row in cast(list[object], envelope["item_catalog"])
+    }
+    assert set(case.packet.task_statement_item_ids) <= catalog
+    assert composer.check_time_change_bytes_carried(case) >= 64_000
+    carried = {item.source_ref for item in case.items if item.item_id in catalog}
+    assert {str(refs[-1]) for refs in ledger.verification.values()} <= carried
+    packet = cast(dict[str, Any], envelope["review_packet"])
+    prior_refs = set(packet["prior_finding_refs"])
+    assert 0 < len(prior_refs) < len(case.packet.prior_finding_refs)
+    assert SEMANTIC_PRIOR_FINDINGS_OVER_LIMIT_GAP in packet["coverage"]["known_gaps"]
+    for item in case.items:
+        if item.section == "prior_finding":
+            assert (item.item_id in catalog) == (item.source_ref in prior_refs)
+    prepared = strict_json_parse(
+        semantic_case_to_prepared_payload(case, {item.item_id for item in case.items})
+    )
+    assert isinstance(prepared, dict)
+    provider_packet = cast(dict[str, Any], prepared["review_packet"])
+    context = provider_packet["provider_input_manifest"]["prior_finding_context"]
+    assert context["status"] == "partial"
+    assert set(case.packet.prior_finding_refs) - prior_refs <= set(context["omitted_refs"])
+
+    monkeypatch.setattr(composer, "MAX_EGRESS_ENVELOPE_BYTES", 20_000)
+    with pytest.raises(composer.SemanticCaseTooLarge, match="semantic_case_envelope_too_large"):
+        composer.bounded_case_envelope(case)
 
 
 @pytest.mark.parametrize("limit", (200_000, 170_000, 162_000))

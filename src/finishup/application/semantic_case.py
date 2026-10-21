@@ -2954,6 +2954,46 @@ def prior_context_selections(
     return tuple(replace(selection, max_excerpts=n) for n in counts if n < selection.max_excerpts)
 
 
+def _primary_excerpt_item_ids(
+    items: Sequence[SemanticCaseItem], targeted: Sequence[TargetedExcerptRef]
+) -> set[str]:
+    """The reserved task input and newest verification, shared by both capacity fitters."""
+
+    by_id = {item.item_id: item for item in items}
+    verification_id = next(
+        (
+            ref.excerpt_item_id
+            for ref in targeted
+            if not by_id[ref.excerpt_item_id].superseded_by
+            and by_id[ref.excerpt_item_id].content.startswith(
+                b"[FinishUP: observed output captured by a host hook"
+            )
+        ),
+        "",
+    ) or next(
+        (
+            ref.excerpt_item_id
+            for ref in targeted
+            if ref.source_kind in {"test", "command"}
+            and not ref.excerpt_item_id.startswith(("excerpt-cmd-", "excerpt-fail-"))
+            and not by_id[ref.excerpt_item_id].superseded_by
+        ),
+        "",
+    )
+    return {
+        next(
+            (
+                ref.excerpt_item_id
+                for ref in targeted
+                if ref.excerpt_item_id.startswith(TASK_INPUT_ITEM_PREFIX)
+            ),
+            "",
+        ),
+        verification_id,
+        *(item.item_id for item in items if item.latest_for == "command"),
+    }
+
+
 def _fit_excerpts_within_case_bound(
     items: Sequence[SemanticCaseItem],
     targeted: list[TargetedExcerptRef],
@@ -3015,37 +3055,7 @@ def _fit_excerpts_within_case_bound(
         capture_gaps.add("content_unselected")
     selected = len(targeted)
     dropped_refs: set[str] = set()
-    verification_id = next(
-        (
-            ref.excerpt_item_id
-            for ref in targeted
-            if not by_id[ref.excerpt_item_id].superseded_by
-            and by_id[ref.excerpt_item_id].content.startswith(
-                b"[FinishUP: observed output captured by a host hook"
-            )
-        ),
-        "",
-    ) or next(
-        (
-            ref.excerpt_item_id
-            for ref in targeted
-            if ref.source_kind in {"test", "command"}
-            and not ref.excerpt_item_id.startswith(("excerpt-cmd-", "excerpt-fail-"))
-            and not by_id[ref.excerpt_item_id].superseded_by
-        ),
-        "",
-    )
-    primary_ids = {
-        next(
-            (
-                ref.excerpt_item_id
-                for ref in targeted
-                if ref.excerpt_item_id.startswith(TASK_INPUT_ITEM_PREFIX)
-            ),
-            "",
-        ),
-        verification_id,
-    }
+    primary_ids = _primary_excerpt_item_ids(items, targeted)
     diff_bytes = sum(
         ref.content_bytes
         for ref in targeted
@@ -3079,6 +3089,51 @@ def _fit_excerpts_within_case_bound(
         # Later parts of a split excerpt were cut while its earlier parts stay.
         capture_gaps.add("truncated_payload")
     return selected - len(targeted)
+
+
+def _fit_prior_findings_within_case_bound(
+    items: Sequence[SemanticCaseItem],
+    targeted: Sequence[TargetedExcerptRef],
+    fixed_item_ids: set[str],
+    prior_items: list[SemanticCaseItem],
+    omissions: list[ReviewOmission],
+) -> bool:
+    """Let whole earlier dialogues yield after bulk, never the protected primary material."""
+
+    kept = fixed_item_ids | {ref.excerpt_item_id for ref in targeted}
+    case_bytes = sum(item.content_bytes for item in items if item.item_id in kept)
+    case_items = len(kept)
+    groups: dict[tuple[bool, str], list[SemanticCaseItem]] = {}
+    for item in prior_items:
+        key = (item.item_id.startswith(SETTLED_FINDING_ITEM_PREFIX), item.source_ref)
+        groups.setdefault(key, []).append(item)
+    # Settled context leaves first. Within either class the oldest dialogue leaves first,
+    # matching envelope bounding and retaining the newest question for the next reviewer.
+    ordered = sorted(
+        groups.items(),
+        key=lambda pair: (not pair[0][0], min(item.occurred_order for item in pair[1]), pair[0][1]),
+    )
+    truncated = False
+    for (settled, source), rows in ordered:
+        if case_bytes <= MAX_SEMANTIC_CASE_BYTES and case_items <= MAX_SEMANTIC_CASE_ITEMS:
+            break
+        removed = {item.item_id for item in rows}
+        fixed_item_ids.difference_update(removed)
+        prior_items[:] = [item for item in prior_items if item.item_id not in removed]
+        case_bytes -= sum(item.content_bytes for item in rows)
+        case_items -= len(rows)
+        omissions.append(
+            _omit(
+                source,
+                DataCategory.FINDING_SUMMARY
+                if any(item.category is DataCategory.FINDING_SUMMARY for item in rows)
+                else DataCategory.BOUNDED_STRUCTURAL_METADATA,
+                "finding",
+                "not_selected",
+            )
+        )
+        truncated |= not settled
+    return truncated
 
 
 def _captured_content_groups(
@@ -8127,6 +8182,9 @@ def _build_semantic_case_once(
         diff_floor=min(selection.max_total_excerpt_bytes, MAX_SEMANTIC_CASE_BYTES) // 2,
         fixed_item_ids=fixed_item_ids,
     )
+    prior_findings_truncated |= _fit_prior_findings_within_case_bound(
+        items, targeted, fixed_item_ids, prior_items, prior_omissions
+    )
 
     if check_change_admitted:
         # The case-bound cut drops the lowest-ranked excerpts, which can include check-time change
@@ -10106,6 +10164,15 @@ def _provider_bound_input_manifest(
             for row in section_omissions
             if type(row.get("subject_ref")) is str
         ]
+        prior_dialogue_cut_refs = (
+            original_refs - set(section_refs) - set(prior_omitted) - set(section_omitted_refs)
+            if name == "prior_finding_context"
+            else set[str]()
+        )
+        if prior_dialogue_cut_refs:
+            # Envelope bounding can remove whole dialogues after dropping the omission list.
+            # Derive their absence from this frozen section and the exact carried rows.
+            section_omitted_refs.extend(prior_dialogue_cut_refs)
         section["omitted_refs"] = cast(
             JsonValue,
             sorted(set([*prior_omitted, *section_omitted_refs]), key=str.encode)[:16],
@@ -10120,6 +10187,8 @@ def _provider_bound_input_manifest(
             else []
         )
         omission_reasons: set[str] = set(prior_reasons)
+        if prior_dialogue_cut_refs:
+            omission_reasons.add("not_selected")
         if any(item_id in redacted_item_ids for item_id in item_ids):
             omission_reasons.add("redacted_never_send")
         # Packet omission rows name a heuristic withholding ``never_send_heuristic``; the section
@@ -10777,7 +10846,25 @@ def _catalog_item_ids(envelope: Mapping[str, JsonValue]) -> frozenset[str]:
     return frozenset(ids)
 
 
-def _drop_catalog_row(envelope: dict[str, JsonValue]) -> bool:
+def _protected_catalog_item_ids(case: SemanticCase) -> frozenset[str]:
+    """Keep the task, the admitted diff floor and the reserved verification through bounding."""
+
+    protected = set(case.packet.task_statement_item_ids)
+    protected.update(_primary_excerpt_item_ids(case.items, case.packet.targeted_excerpts))
+    floor = final_diff_floor(case, case.review_selection, MAX_SEMANTIC_CASE_BYTES)
+    carried = 0
+    for item in case.items:
+        if carried >= floor:
+            break
+        if item.item_id.startswith(CHECK_TIME_CHANGE_ITEM_PREFIX):
+            protected.add(item.item_id)
+            carried += _check_time_change_part_chunk_bytes(item.content)
+    return frozenset(protected)
+
+
+def _drop_catalog_row(
+    envelope: dict[str, JsonValue], protected_item_ids: frozenset[str] = frozenset()
+) -> bool:
     """Remove the lowest-priority catalog row and every reference that would dangle.
 
     Catalog order is the case's own section/occurrence order, so the tail is the least
@@ -10792,7 +10879,12 @@ def _drop_catalog_row(envelope: dict[str, JsonValue]) -> bool:
     if not rows:
         return False
     # Prior dialogue leaves as a whole finding only after ordinary catalog rows (#1126).
-    candidates = [i for i, row in enumerate(rows) if row.get("section") != "prior_finding"]
+    candidates = [
+        i
+        for i, row in enumerate(rows)
+        if row.get("section") not in {"prior_finding", "task_statement"}
+        and row.get("item_id") not in protected_item_ids
+    ]
     if not candidates:
         return False
     index = candidates[-1]
@@ -10801,6 +10893,8 @@ def _drop_catalog_row(envelope: dict[str, JsonValue]) -> bool:
         and rows[index].get("item_id") == AGENT_DISCLOSURES_ITEM_ID
         and any(row.get("section") == "obligation" for row in rows)
     ):
+        if len(candidates) == 1:
+            return False
         index = candidates[-2]
     dropped = rows.pop(index)
     envelope["item_catalog"] = cast(JsonValue, rows)
@@ -11058,14 +11152,15 @@ def bounded_case_envelope(case: SemanticCase) -> bytes:
         fitted = _fit_packet_section(envelope, reductions, key, accounting_key)
         if fitted is not None:
             return fitted
-    while _drop_catalog_row(envelope):
+    protected_item_ids = _protected_catalog_item_ids(case)
+    while _drop_catalog_row(envelope, protected_item_ids):
         reductions["catalog_dropped_count"] += 1
         _set_selection_accounting(envelope, reductions)
         encoded = canonical_encode(cast(JsonValue, envelope))
         if len(encoded) <= MAX_EGRESS_ENVELOPE_BYTES:
             return encoded
-    # Only an impossible fixed envelope may discard the bounded dialogue, whole findings at
-    # a time with explicit accounting. Ordinary excerpt/catalog bulk has already yielded.
+    # Whole prior dialogues yield after ordinary bulk and before the task and reserved work
+    # content. If that protected core cannot fit, refuse rather than dispatch an old dispute alone.
     reductions["catalog_dropped_count"] += _drop_prior_finding_rows(envelope)
     _set_selection_accounting(envelope, reductions)
     encoded = canonical_encode(cast(JsonValue, envelope))

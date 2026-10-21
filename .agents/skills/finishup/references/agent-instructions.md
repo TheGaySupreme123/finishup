@@ -36,7 +36,9 @@ Lead final prose with the receipt's scope and limits; never headline "no finding
 
 # Review dialogue
 
-Before the receipt, run the closing `check` with `final_review: true`. Answer each open AI-powered finding with `respond` and a reason; `review.md` maps each case.
+For `review_delivery` truncation or `not_in_frozen_case`, read `review.md`.
+
+Before the receipt, run the closing `check` with `final_review: true`. Answer each open AI-powered finding with `respond` and a reason.
 
 # Multi-agent work
 
@@ -44,4 +46,4 @@ Before delegating, read the multi-agent sections of `finishup://guidance/workflo
 
 # Read more
 
-This card is `finishup://guidance/agent-instructions.md`; on demand only: resume/recovery/delegation/capacity `finishup://guidance/workflow.md`; event shapes, corrections `finishup://guidance/publication-policy.md`; check/receipt `finishup://guidance/coverage-and-receipts.md`; publish `finishup://guidance/request-templates.md#publish-shapes`; setup: same page.
+On demand: resume/recovery/delegation/capacity `finishup://guidance/workflow.md`; event shapes, corrections `finishup://guidance/publication-policy.md`; check/receipt `finishup://guidance/coverage-and-receipts.md`; publish `finishup://guidance/request-templates.md#publish-shapes`; setup: same page.

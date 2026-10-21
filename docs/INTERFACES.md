@@ -10141,8 +10141,9 @@ The review packet (`outbound-case` `1.2.0`) adds the `prior_finding` section,
 once, newest first, at most 16, listed only while its structural row is carried). It carries the newest readable, unresolved AI-powered
 findings (at most 16, 96 KiB of item content (issue #976; 8 and 48 KiB before), reserved ahead of ordinary narrative and bulk excerpts;
 outside the timeline's 64 rows, so hook rows never crowd it out). Envelope bounding removes ordinary
-catalog bulk before whole prior findings; removed prior rows count in `catalog_dropped_count` and add
-`semantic_prior_findings_over_limit`. Each carried finding has one
+catalog bulk before whole prior findings. The task statement, admitted diff floor and reserved
+latest verification survive this fallback. Removed prior rows count in `catalog_dropped_count` and
+add `semantic_prior_findings_over_limit`. Each carried finding has one
 `yoetz.prior-finding/1` structural row per finding (kind, ids, recorded sequence, requested next
 step, `relates_to`, the latest response disposition, cited refs and recorded sequence, and the
 readable evidence/results recorded after the finding) plus, where the profile already sends
@@ -12022,26 +12023,28 @@ as `outcome_unknown` and is never resent. For it, `operation_max_retries` is `0`
 ### Bounded advisory delivery and frozen ledger misses (#1139, #1126, #1148)
 
 ADR-006's 2026-10-21 amendment owns this behavior. MCP Codex check results may carry
-`review_delivery` (check-result 1.6.0, optional finding-summary text or an omission), inserted first;
-findings status pages may carry the same optional member before `items` (status-result 1.4.0).
+`review_delivery` (check-result 1.6.0, optional finding-summary text or an omission), inserted first.
+Findings status pages may carry the same optional member before `items` (status-result 1.4.0).
 The bridge derives it after privacy projection. It carries at most three complete bounded groups:
 summary → requested action → alternative interpretation → uncertainty. The review-summary budget
-is 420 JSON-encoded bytes and each challenge field's is 180, including escaping; labels, ids and
+is 420 JSON-encoded bytes and each challenge field's is 180, including escaping. Labels, ids and
 an explicit truncated-preview continuation remain within 3,600 encoded bytes. Full findings,
 review summary, evidence and provenance are retained. Generic and Claude text lead with this
-advisory before evidence; Cursor's canonical full-copy contract is unchanged. CLI, TUI, hooks and
-receipts keep their existing full-field and privacy contracts; they do not receive a new judgment.
+advisory before evidence. Cursor's canonical full-copy contract is unchanged. CLI, TUI, hooks and
+receipts keep their existing full-field and privacy contracts. They do not receive a new judgment.
 Native-host delivery is not established by the offline clipping simulation.
 
 Prior dialogue is reserved before aggregate case fitting, and channel fallback preserves the
 recipe's permitted finding prose. In a narrowed recipe, labelled fields can share one or more
-`prior-finding-context-N-<ref>` prose items (each at most 16 KiB); the structural `text_item_ids`
+`prior-finding-context-N-<ref>` prose items (each at most 16 KiB). The structural `text_item_ids`
 map still names where each field is carried. The existing per-field text bounds remain. Before
 shrinking excerpt bytes, both planners try at most three smaller excerpt counts to bound catalog
 overhead while checking the exact payload and original diff floor. Count probes add to the
 reported planning rounds without consuming the existing byte-planning round allowance. The
-original section bounds, primary diff floor and latest verification reserve remain. Capacity cannot silently turn a recorded rebuttal into an empty
-structural question; a section that exceeds its own bounds is still partial with omissions.
+original section bounds, task statement, primary diff floor and latest verification reserve remain.
+After ordinary bulk yields, whole prior finding groups can leave the aggregate case or catalog
+with omissions and partial prior-context accounting. The protected primary core refuses if it
+cannot fit. Capacity cannot silently turn a recorded rebuttal into an empty structural question.
 
 `ReviewerBroker._ledger` reports an unmatched frozen selector as `not_in_frozen_case`, not
 `not_recorded`. Its fixed `continuation` explains that frozen absence does not prove non-recording
