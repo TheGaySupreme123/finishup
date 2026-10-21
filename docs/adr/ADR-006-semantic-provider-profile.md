@@ -2987,3 +2987,43 @@ materially, the follow-up is to treat such a read as the review's one format rep
 three-read review moves from about 50% to about 74% of its input cached. No turn, request or wait is
 added; the notice is about 25 tokens. No wire schema, decoder, privacy rule or egress changes:
 every exchange is still admitted whole.
+
+## Amendment — 2026-10-21: packet order and cross-review reuse stay as they are (#1172 phase 2)
+
+Status: proposed for maintainer acceptance. No behavior changes.
+
+**Packet order is unchanged.** Within a review the packet is sent once, and every later turn reuses
+it whole as part of the cached prefix, so its internal order cannot change caching inside a review.
+It would matter only if a later review's request could reuse an earlier review's prefix, and today
+none can. Codex sends a per-conversation prompt-cache key (the thread id), and every review opens a
+fresh ephemeral thread. The packet (`yoetz.review-packet-case/2`) is a canonical document that the
+prepared-payload path and the privacy enforcer must render identically, and fixtures pin it. Its
+items follow review priority (task statement, change, primary material), not ledger age, so two
+reviews of one task share at most a short head. Reordering it would change every route's disclosed
+bytes, background advice included, for no measured gain.
+
+**Cross-review reuse is not adopted now.** None of the three ways is small or safe yet:
+
+- *Continue one Codex thread across a task's reviews.* The cache key stays the same, but the next
+  review's first exchange carries the earlier review's whole conversation plus a new packet. On the
+  sized route two typical first exchanges already exceed the 169,144-token exchange budget, so the
+  thread would need compaction (refused here: it replaces history FinishUP inspected) or a smaller
+  packet. The model would also review with its earlier conversation in context, which changes what
+  an independent review is.
+- *Fork from a warmed base thread* (`thread/fork`, holding the instruction and a stable packet
+  head). A fork is a new thread with its own id and so its own cache key. That it reuses the parent's
+  cache is unproven, and warming the base is itself a cold request.
+- *Resume a persisted thread in a later process* (`thread/resume`). Thread state at rest is a
+  retention change under ADR-009 and the vault, while reviewer threads are ephemeral by design.
+
+All three keep a runtime process or thread alive beyond one review. That brings lifecycle work
+(service restart, upgrade, crash recovery, cleanup) and concurrency between tasks: the larger
+refactor #1172 rules out.
+
+**When to revisit.** Revisit once the per-exchange records (#1172 phase 1) show that `first_turn`
+input is still the largest uncached share and that consecutive packets of one task share long
+prefixes. Any reuse must key on the whole review identity and open a fresh thread whenever any part
+changes: the task, writer authority, consent and repository grant, the effective privacy policy
+digest and generation, the provider binding (endpoint, model, effort, reply schema), the runtime
+version and isolated configuration, and the review's input roots and read catalog. Reuse never
+crosses tasks.
