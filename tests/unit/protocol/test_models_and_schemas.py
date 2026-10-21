@@ -353,6 +353,13 @@ _EXPECTED_RESULT_PATTERN_COUNTS: dict[tuple[str, str | None], int] = {
     ("status", "versions"): 13,
 }
 
+# #1162: the history row's ``advisory_provenance`` is typed ``JsonValue`` in the model (like every
+# semantic provenance) but, unlike the nullable finding ``provenance``, the schema types it as a
+# non-null object. Its container rule exists for the model-derived leaf coverage only.
+_MODEL_OPAQUE_OBJECT_CONTAINERS: frozenset[tuple[str, str | None, tuple[str, ...]]] = frozenset(
+    {("status", "history", ("page", "items", "*", "advisory_provenance"))}
+)
+
 _RESULT_SUPPORT_MODEL_SPECS: tuple[tuple[str, str, str], ...] = (
     ("StartSuccessModel", "operations/start-result-1.1.0.schema.json", "success"),
     ("StartCompactViewModel", "operations/start-result-1.0.0.schema.json", "compact_view"),
@@ -2622,7 +2629,7 @@ def test_result_leaf_registry_has_exhaustive_schema_parity() -> None:
     assert type(rules) is tuple
     assert (
         len(rules)
-        == 1867  # #1162 +95 advisory history and readiness leaves; #1140/#1144/#1149 +86 readiness and receipt; #1139 +8 check/status review_delivery; #1118 +18 check reviewer, +1 check_recorded 1.6.0; n6 item 4: check_recorded 1.5.0; #1079 +2 admissible_verification;
+        == 1868  # #1162 +95 advisory history and readiness leaves, +1 model-opaque advisory_provenance container; #1140/#1144/#1149 +86 readiness and receipt; #1139 +8 check/status review_delivery; #1118 +18 check reviewer, +1 check_recorded 1.6.0; n6 item 4: check_recorded 1.5.0; #1079 +2 admissible_verification;
         # W6 #1107 +16 (check agent_next, status operation check_outcome);
         # +1 closing_material_frontier; #1084 +10 server_filled and brief status,
         # +1 history occurred_at_source (review R7), -2 replay_notice retired (round 2),
@@ -2639,11 +2646,16 @@ def test_result_leaf_registry_has_exhaustive_schema_parity() -> None:
 
     registry_patterns = {(rule.method, rule.status_view, rule.segments) for rule in rules}
     assert (
-        len(registry_patterns) == 1838
-    )  # #1140/#1144/#1149 +86 readiness/receipt; #1139 +8 delivery; #1118 +18 check reviewer, W6 #1107 +16, #1084 review R7 +1, #1027 +5, LO +9, W2-A +46, LF +34, W2-B +2, #1044 +7,
+        len(registry_patterns) == 1839
+    )  # #1162 +1 model-opaque container; #1140/#1144/#1149 +86 readiness/receipt; #1139 +8 delivery; #1118 +18 check reviewer, W6 #1107 +16, #1084 review R7 +1, #1027 +5, LO +9, W2-A +46, LF +34, W2-B +2, #1044 +7,
     # #1048 +38, #1047 +2, tb4n5 +3, ADR-049 +12 review_mode, #1079 +2 admissible_verification,
     # W5/D1 +2 closure_readiness.acceptance_risk
-    assert registry_patterns == derived_patterns
+    # Every schema leaf has a rule, and the registry adds only the named containers of fields the
+    # models type as opaque JSON while the schema types them as a non-null object: the model-derived
+    # coverage test (test_result_leaf_coverage.py) needs a rule for such a container, the schema
+    # never emits it as a leaf.
+    assert derived_patterns <= registry_patterns
+    assert registry_patterns - derived_patterns == _MODEL_OPAQUE_OBJECT_CONTAINERS
 
     content_rules = _expected_nonpublish_content_rules(models)
     assert set(content_rules) <= derived_patterns

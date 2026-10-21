@@ -2944,12 +2944,14 @@ now admits exactly one of `review_mode` or `advisory_response`; the latter canno
 mode, affect obligations or supersede a decision. Recording it does not stale a check or require
 another check. Released 1.0.0 decisions and earlier check readers remain closed and unchanged.
 
-Both wire changes are in place, under the repository's rule for wire versions: an unreleased
-version on an integration line may be amended in place until it ships in a release; a released
-version is never amended. check-recorded 1.6.0 is on no release tag and on neither `main` nor
-`0.3` (it was introduced on this integration line by #1118), and decision-recorded 1.1.0 and
-receipt-document/receipt-result 1.3.0 are on no release tag, so only builds of the unreleased line
-read them.
+Both wire changes are in place, under the repository's rule for wire versions: a version on no
+release tag may be amended in place until it ships in a release; a released version is never
+amended. check-recorded 1.6.0 is on no release tag and on neither `main` nor `0.3` (#1118
+introduced it on this integration line). decision-recorded 1.1.0 and respond-request/result 1.1.0
+(also on the `0.3` branch) and receipt-document/receipt-result 1.3.0 and status-result 1.4.0 (also
+on `main` and `0.3`) are on no release tag either, but those branches carry their earlier shape: a release cut from one of them
+before this line merges into it would freeze that shape, and these additions would then need new
+versions.
 
 The existing frontier-bound `status view=history` with `filter.schema_name=check_recorded`
 retrieves original notes, provenance, and the latest response at that frontier. Its existing
