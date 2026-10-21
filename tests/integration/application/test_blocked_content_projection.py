@@ -318,7 +318,8 @@ async def _project(
     context = ClientProjectionContext(
         ControlClientKind.MCP_BRIDGE, ProjectionRenderMode.MACHINE_READABLE, False
     )
-    projected = await app.project_result_for_client(context, binding, internal)
+    # The complete projection; #1139 result-delivery paging has its own tests.
+    projected = await app.project_result_for_client(context, binding, internal, _paginate=False)
     return public_model_to_wire(projected)
 
 

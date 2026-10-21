@@ -2364,6 +2364,7 @@ async def test_ready_factory_completes_and_projects_deterministic_check(tmp_path
                 ),
             ),
             checked,
+            _paginate=False,  # The complete projection; #1139 result-delivery paging has its own tests.
         )
         assert isinstance(projected, CheckResult)
         validated = CheckResult.model_validate(

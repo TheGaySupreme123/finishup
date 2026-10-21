@@ -197,6 +197,7 @@ async def _project(
         ),
         await _binding(app, request_body, internal, seed),
         internal,
+        _paginate=False,  # The complete projection; #1139 result-delivery paging has its own tests.
     )
     return public_model_to_wire(projected)
 
