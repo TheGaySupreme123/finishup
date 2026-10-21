@@ -283,6 +283,39 @@ async def test_a_turn_after_unreported_usage_records_no_cumulative_counts(
     assert records == []
 
 
+async def test_a_turn_after_a_middle_turn_without_usage_records_no_counts(
+    monkeypatch: pytest.MonkeyPatch, records: list[dict[str, object]]
+) -> None:
+    # Turn 2's request is in the thread's total but never reported, so turn 3's start is unknown.
+    runtime = _UsageRuntime(
+        [_ACTION, _ACTION, _FINAL], [[(90_000, 0, 50)], [], [(95_000, 92_032, 50)]]
+    )
+    session = ReviewerSession("review-a", _DEADLINE)
+    await _exchange(monkeypatch, runtime, session, _FIRST, _REQUESTS[0])
+    await _exchange(monkeypatch, runtime, session, _SECOND, _REQUESTS[1])
+    runtime.total = (182_000, 89_984, 100)
+    result = await _exchange(monkeypatch, runtime, session, _THIRD, _REQUESTS[2])
+    assert type(result) is SemanticResultReply
+    await session.aclose()
+    # Only the first turn has known counts; nothing claims the thread's total as turn 3's.
+    assert [cast(dict[str, object], r["counts"])["reviewer_exchange_index"] for r in records] == [1]
+
+
+async def test_a_compaction_before_any_usage_is_still_labelled(
+    monkeypatch: pytest.MonkeyPatch, records: list[dict[str, object]]
+) -> None:
+    runtime = _UsageRuntime([_ACTION, _FINAL], [[(90_000, 0, 50)], []])
+    session = ReviewerSession("review-a", _DEADLINE)
+    await _exchange(monkeypatch, runtime, session, _FIRST, _REQUESTS[0])
+    runtime.tail = [{"method": "thread/compacted", "params": {}}]
+    result = await _exchange(monkeypatch, runtime, session, _SECOND, _REQUESTS[1])
+    assert type(result) is not SemanticResultReply  # the reviewer still refuses compaction
+    await session.aclose()
+    assert [(r["outcome"], r["counts"]) for r in records][1:] == [
+        ("incomplete", {"reviewer_exchange_index": 2, "reviewer_cache_miss": "compaction"})
+    ]
+
+
 async def test_telemetry_that_fails_never_changes_the_exchange(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

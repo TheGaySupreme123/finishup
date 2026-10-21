@@ -101,7 +101,8 @@ def exchange_cache_counts(
     one, so every exchange of a review shares it (the attempt's ``provider_request_id``).
     ``settings`` digests what the route sends beside the messages (reply schema, model, effort,
     output limit). ``roles`` are the exchange history's message roles, empty for a one-shot case.
-    The counts are ``None`` when the provider reported no usage for the exchange.
+    The counts are ``None`` when the provider reported no usage for the exchange, except that a
+    compaction is still recorded, by its index and label alone.
     """
 
     opened = state.exchanges == 0
@@ -119,6 +120,12 @@ def exchange_cache_counts(
     state.prefix_tokens = None if usage is None else usage.last_input_tokens
     review_request = state.request_id or request_id
     if usage is None:
+        # A compaction is labelled even when the turn reported no usage (it can come first).
+        if compacted:
+            return review_request, {
+                "reviewer_exchange_index": index,
+                "reviewer_cache_miss": "compaction",
+            }
         return review_request, None
     counts: dict[str, object] = {
         "reviewer_exchange_index": index,
