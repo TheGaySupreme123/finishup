@@ -39,6 +39,7 @@ from finishup.domain.events import (
     EvidenceDigestSubject,
     EvidenceRecordedPayload,
     MissingForAssessmentItem,
+    ObligationPublishedPayload,
     PlanPublishedPayload,
     PlanRevisedPayload,
     ResponseRecordedPayload,
@@ -1628,6 +1629,9 @@ def review_missing_for_assessment(
         captured_edit_paths or {},
         binary_paths,
         text_paths,
+        frozenset()
+        if case.task_statement is None
+        else frozenset(str(ref) for ref in case.task_statement.equivalent_event_ids),
     )
     gaps: set[str] = set()
     kept: dict[tuple[str, tuple[str, ...]], str] = {}
@@ -1764,6 +1768,86 @@ class _TargetFiles:
     # Workspace-relative paths the same change lists as text (ADR-045): Git's NUL sniff found no
     # NUL byte, so their suffix says nothing (a ``.step`` file is ASCII).
     text: frozenset[str] = frozenset()
+    task_statement_refs: frozenset[str] = frozenset()
+
+    def structurally_unavailable(self, kind: str, target: str) -> bool:
+        """A retained id is not necessarily a target of the requested type (#1140).
+
+        No content is read or copied across the workspace authority boundary. Unknown event
+        types and retained-only rows cannot be repaired by republishing them as another kind.
+        """
+
+        projection = self.links.projection
+        if (
+            kind in {"task_statement", "plan_or_claim_text", "other"}
+            and target in self.task_statement_refs
+        ):
+            return False
+        families = {
+            "command_identity": (projection.actions, projection.results, projection.evidence),
+            "verification_output": (
+                projection.actions,
+                projection.results,
+                projection.evidence,
+                projection.claims,
+                projection.obligations,
+            ),
+            "current_diff_for_path": (
+                projection.actions,
+                projection.results,
+                projection.evidence,
+                projection.claims,
+                projection.obligations,
+                projection.plans,
+            ),
+            "plan_or_claim_text": (projection.plans, projection.claims, projection.obligations),
+            "task_statement": (projection.plans,),
+            "prior_finding_context": (projection.findings, projection.responses),
+            "other": (
+                projection.actions,
+                projection.results,
+                projection.evidence,
+                projection.claims,
+                projection.obligations,
+                projection.plans,
+                projection.findings,
+            ),
+        }
+        rows = [
+            row
+            for family in families[kind]
+            for key, row in family.items()
+            if target in {str(key), str(row.source_event_id)}
+        ]
+        if not rows or all(row.payload is None or getattr(row, "redacted", False) for row in rows):
+            return True
+        if any(
+            isinstance(row.payload, EvidenceRecordedPayload)
+            and row.payload.digest_binding is not None
+            and row.payload.digest_binding.content_availability
+            in {EvidenceContentAvailability.DIGEST_ONLY, EvidenceContentAvailability.WITHHELD}
+            for row in rows
+        ):
+            return True
+        if kind == "command_identity" and all(
+            isinstance(row.payload, ActionRecordedPayload)
+            and row.payload.action_kind is not ActionKind.COMMAND
+            for row in rows
+        ):
+            return True
+        # Outside inputs need owner-root authority. With no admitted root in this classification
+        # context, fail closed as a limit rather than tell an agent to move/copy private input.
+        names = set(self._evidence_names(target))
+        for row in rows:
+            payload = row.payload
+            if isinstance(payload, ObligationPublishedPayload):
+                names.update(
+                    item.value for item in payload.requested_items if item_role(item) == "input"
+                )
+        return bool(self.links.roots) and any(
+            os.path.isabs(name) and _inside(os.path.normpath(name), self.links.roots) is None
+            for name in names
+        )
 
     def _relative(self, name: str) -> str | None:
         path = _normal_path(name, self.links.roots, known_path=True)
@@ -2140,6 +2224,8 @@ def _finishup_limit(
         or (kind == "other" and _only_unsupported_outputs(refs, paths_of))
     ):
         return FINISHUP_LIMIT_UNSUPPORTED_DATA_TYPE
+    if any(paths_of.structurally_unavailable(kind, ref) for ref in refs):
+        return STRUCTURALLY_UNAVAILABLE
     if set(refs) & packet_limited_refs:
         return FINISHUP_LIMIT_PACKET_ROOM
     if kind == "current_diff_for_path" and change_clipped:

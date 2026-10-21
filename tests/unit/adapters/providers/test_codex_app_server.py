@@ -2261,15 +2261,18 @@ async def test_model_reroute_ends_the_turn_as_refused_with_its_stage(
     assert "other-canary" not in repr(result)
 
 
-async def test_delta_storm_is_bounded_by_the_event_limit_stage(
+@pytest.mark.parametrize("large", [False, True], ids=["work", "bytes"])
+async def test_delta_storm_is_bounded_by_bytes_and_work(
     monkeypatch: pytest.MonkeyPatch,
+    large: bool,
 ) -> None:
     runtime = _Runtime(_profile())
-    delta: dict[str, object] = {"method": "item/agentMessage/delta", "params": {"delta": "x"}}
-    runtime.events[0:0] = [
-        delta
-        for _ in range(module._MAX_EVENT_COUNT)  # pyright: ignore[reportPrivateUsage]
-    ]
+    monkeypatch.setattr(module, "_MAX_TURN_EVENT_WORK", 4096)
+    delta: dict[str, object] = {
+        "method": "item/agentMessage/delta",
+        "params": {"delta": "x" * (5000 if large else 1)},
+    }
+    runtime.events[0:0] = [delta] * (1 if large else 17)
 
     result = await _evaluate(monkeypatch, runtime)
 
@@ -2288,6 +2291,23 @@ async def test_large_streamed_judgment_fits_the_event_budget(
     result = await _evaluate(monkeypatch, runtime)
 
     assert type(result) is SemanticResultSuccess
+
+
+async def test_wire_bytes_bound_notifications_with_large_discarded_whitespace(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class WireHeavyRuntime(_Runtime):
+        received_bytes = 0
+
+        async def read(self, timeout: float) -> dict[str, object]:
+            self.received_bytes += 8192  # same small decoded object, padded JSONL on the wire
+            return await super().read(timeout)
+
+    monkeypatch.setattr(module, "_MAX_TURN_EVENT_WORK", 4096)
+    result = await _evaluate(monkeypatch, WireHeavyRuntime(_profile()))
+    assert type(result) is SemanticResultUnavailable
+    assert result.provenance.runtime_evidence is not None
+    assert result.provenance.runtime_evidence.failure_stage == "event_limit"
 
 
 @pytest.mark.parametrize("buffered_count", [1, 4094, 4096])
@@ -2314,15 +2334,47 @@ async def test_buffered_notifications_drain_before_live_events_with_the_same_lim
 
     runtime = BufferedRuntime(_profile())
     result = await _evaluate(monkeypatch, runtime)
-    if buffered_count == 4096:
-        assert type(result) is SemanticResultUnavailable
-        assert result.provenance.runtime_evidence is not None
-        assert result.provenance.runtime_evidence.failure_stage == "event_limit"
-        assert runtime.reads == 0
-    else:
-        assert type(result) is SemanticResultSuccess
-        assert runtime.reads == 2
+    assert type(result) is SemanticResultSuccess
+    assert runtime.reads == 2
     assert not runtime.pending_notifications
+
+
+@pytest.mark.parametrize("family", ["usage", "rate_limits", "delta", "intermediate"])
+async def test_discarded_notifications_can_exceed_the_old_limit_with_content_free_counts(
+    monkeypatch: pytest.MonkeyPatch, family: str
+) -> None:
+    runtime = _Runtime(_profile())
+    notices: dict[str, dict[str, object]] = {
+        "usage": _token_usage_notice(),
+        "rate_limits": {"method": "account/rateLimits/updated", "params": {}},
+        "delta": {"method": "item/agentMessage/delta", "params": {"delta": "PRIVATE_DELTA_CANARY"}},
+        "intermediate": {
+            "method": "item/completed",
+            "params": {
+                "item": {
+                    "type": "agentMessage",
+                    "phase": "commentary",
+                    "text": "PRIVATE_INTERIM_CANARY",
+                }
+            },
+        },
+    }
+    runtime.events[0:0] = [notices[family]] * 5000
+    records: list[dict[str, object]] = []
+
+    def record(**kwargs: object) -> str:
+        records.append(kwargs)
+        return "err_00000000-0000-4000-8000-000000000001"
+
+    monkeypatch.setattr(module, "record_bounded_counts_without_raising", record)
+    result = await _evaluate(monkeypatch, runtime)
+    assert type(result) is SemanticResultSuccess
+    (event,) = records
+    counts = cast(dict[str, int], event["counts"])
+    selected = "telemetry" if family in {"usage", "rate_limits"} else family
+    assert counts[f"codex_event_{selected}_count"] == 5000
+    assert counts[f"codex_event_{selected}_bytes"] > 0 and counts["duration_ms"] >= 0
+    assert "PRIVATE_" not in repr(records)
 
 
 async def test_tool_event_and_unconfirmed_cleanup_name_their_stages(

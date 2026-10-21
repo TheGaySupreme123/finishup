@@ -376,3 +376,55 @@ async def test_a_local_task_is_not_asked_for_a_review_it_will_never_run(tmp_path
         actionable = cast(list[str], readiness.get("agent_actionable") or [])
         assert "semantic_review_not_requested" not in actionable
         assert "closing_review_required" not in actionable
+
+
+@pytest.mark.parametrize("initial", [ReviewMode.LOCAL, ReviewMode.AI_POWERED])
+async def test_recovered_check_readiness_keeps_its_original_review_switches(
+    tmp_path: Path, initial: ReviewMode
+) -> None:
+    """A later switch changes the next check, never an earlier result's continuation (#1153)."""
+
+    workspace = _workspace(tmp_path / "workspace")
+    async with multi_agent_service(tmp_path / "state") as service:
+        _hybrid(service)
+        task = await _start(service, workspace, "Recovered check")
+        await task.switch(initial)
+        check_ids = task._ids()  # pyright: ignore[reportPrivateUsage]
+        request = CheckRequest.model_validate(
+            {**check_ids, "expected_frontier": await task.frontier(), "max_findings": "5"}
+        )
+        original = await service.app.check(request, repository_privacy_context=_REPOSITORY)
+        assert isinstance(original, CheckCommitResult)
+        assert original.closure_readiness is not None
+        assert original.overall_next is not None
+
+        operation_ids = task._ids()  # pyright: ignore[reportPrivateUsage]
+        operation_request = StatusRequest.model_validate(
+            {
+                **operation_ids,
+                "view": "operation",
+                "filter": {"operation_request_id": request.request_id},
+                "limit": "1",
+            }
+        )
+        original_operation = await service.app.status(
+            operation_request, repository_privacy_context=_REPOSITORY
+        )
+        await task.switch(
+            ReviewMode.AI_POWERED if initial is ReviewMode.LOCAL else ReviewMode.LOCAL
+        )
+        recovered = await service.app.check(request, repository_privacy_context=_REPOSITORY)
+        assert isinstance(recovered, CheckCommitResult)
+        assert recovered.outcome == "replayed"
+        assert recovered.result_frontier == original.result_frontier
+        assert recovered.closure_readiness == original.closure_readiness
+        assert recovered.overall_next == original.overall_next
+
+        recovered_operation = await service.app.status(
+            operation_request, repository_privacy_context=_REPOSITORY
+        )
+        original_page = original_operation.as_json()["page"]
+        recovered_page = recovered_operation.as_json()["page"]
+        assert isinstance(original_page, Mapping)
+        assert isinstance(recovered_page, Mapping)
+        assert recovered_page["check_outcome"] == original_page["check_outcome"]

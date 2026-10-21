@@ -331,6 +331,10 @@ def _evaluate(
             check.semantic_status is SemanticStatus.FAILED
             and check.semantic_reason is SemanticReason.CASE_CAPACITY_EXCEEDED
         )
+        or (
+            check.semantic_status is SemanticStatus.UNAVAILABLE
+            and check.semantic_reason is SemanticReason.ROUND_LIMIT_UNASSESSABLE
+        )
     )
     blocking = disqualifying_reasons(
         _attempt_reasons(state, finding_id, records, reasons),

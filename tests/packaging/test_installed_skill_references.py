@@ -137,6 +137,42 @@ def test_installed_guidance_links_and_explicit_anchors_resolve(host: str, tmp_pa
     documents = {
         name: data.decode("utf-8") for name, data in members.items() if name.endswith(".md")
     }
+    # #1147 / #1132: every host routes to one procedure, including Cursor's portable format.
+    # Pin the installed owner as well as its entrypoint so either side's drift is visible.
+    skills = [
+        (name, " ".join(text.split()))
+        for name, text in documents.items()
+        if name == "SKILL.md" or name.endswith("/SKILL.md")
+    ]
+    assert skills, f"{host}: missing installed skill"
+    for name, skill in skills:
+        assert "Follow [review.md](references/review.md)" in skill
+        root = Path(name).parent / "references"
+        review = " ".join(documents[str(root / "review.md")].split())
+        card = " ".join(documents[str(root / "agent-instructions.md")].split())
+        for surface in (skill, card, review):
+            assert "A finding is evidence, not an order." in surface
+        assert "follow [the finding procedure](review.md)" in card
+        for directive in (
+            "1. Re-read the task and supplied inputs.",
+            "2. Read both interpretations and their evidence.",
+            "3. Run its discriminating check if available.",
+            "4. If ambiguity remains, keep the version matching the literal task and supplied inputs.",
+            "5. For a dispute, `respond` `rejected` with reasons and evidence.",
+            "6. Run `check` with `final_review: true`.",
+        ):
+            assert directive in review
+        for required in (
+            "including a decision-needed finding",
+            "Deliver before optional refinement for a deadline, performance measurement,",
+            "Send the specified signal as soon as its prerequisites pass.",
+            "Review changed behavior, outputs or acceptance evidence at",
+            "**Done.** Stop when outcomes",
+            "A signal does not prove completion or verification.",
+            "Use only stated timing.",
+            "a finding prefers a reference the task did not supply",
+        ):
+            assert required in review
     for name, text in documents.items():
         for target in _MARKDOWN_LINK.findall(text):
             if target.startswith(("http://", "https://", "finishup://", "mailto:")):
@@ -192,8 +228,9 @@ def test_the_skill_does_not_promise_that_responding_clears_a_finding() -> None:
     """Receipts keep every actionable finding unresolved, whatever disposition is recorded."""
 
     text = _skill_text()
-    assert "unresolved_findings_remain" in text
     assert "A `respond` does not clear a finding" in text
+    review = read_resource("finishup://guidance/review.md").decode("utf-8")
+    assert "unresolved_findings_remain" in review
 
 
 def test_start_is_authorable_from_guidance_without_reading_product_source() -> None:

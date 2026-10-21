@@ -1,5 +1,12 @@
 # Cursor local integration runbook
 
+Reviewer robustness (#1134–#1137, #1141) applies to Cursor IDE and CLI through the shared service:
+oversized native reads are withheld, sampled listings disclose inspection exhaustion, and read
+capacity is distinct from invalid replies. Codex session cleanup and notification bounds also
+apply when the configured review provider is Codex; they do not depend on the agent host. This is
+shared behavior on macOS, Linux and WSL 2, without claiming new native acceptance. See
+[the reviewer contract](../INTERFACES.md#reviewer-loop-issue-1118-unit-2).
+
 MCP input advertisements use the shared compact authoring schema, targeting 4,800 bytes per tool.
 Required fields, enums and event envelopes remain inline; read `read_guidance` at
 `finishup://guidance/request-templates.md` for payload variants, conditional rules and complete
@@ -2975,3 +2982,44 @@ same removal flow. Agents direct the owner to it and never run it; no MCP or cha
 path is added. The configured API fallback is targeted when Codex is primary. Binding and privacy
 policy stay unchanged, and status is presence-only after readiness reload. Shared-path tests do not
 claim a new native-host or platform certification.
+
+
+### Reviewer judgment calibration (#1145, #1146)
+
+This host uses the shared reviewer instruction and finding pipeline. `decision_needed` is an
+advisory priority-3 choice: keep both interpretations and the destructive cost visible, then
+record the choice and reason with `respond acknowledged` or `respond rejected`. It never counts
+as unmet work or blocks Stop/closure. Closing review challenges the decisive acceptance measurement
+and uses the existing task-declared inputs beneath owner-admitted roots; this change admits no
+new root. Details and offline checks: [reviewer instruction evaluation](reviewer-instruction-evaluation.md).
+
+### Review context and delivery (#1139, #1126, #1148)
+
+Read the full finding before choosing a response.
+Treat `review_delivery` as a bounded advisory preview.
+When it reports truncation, follow its `status view=findings` continuation with `detail=full`,
+`limit=1` and the returned cursor.
+Stop when the finding you will answer includes its action, alternative interpretation and
+uncertainty, or labels them withheld.
+For example, a long check can keep an instruction while its alternative falls outside the preview.
+
+Treat `not_in_frozen_case` as unavailable in this frozen check.
+Do not infer that the item was never recorded.
+Follow the missing-input continuation so a later check can freeze the requested item.
+For example, an unknown ref can be outside this case.
+
+The shared packet builder retains bounded prior dialogue ahead of ordinary bulk.
+The task, diff floor and latest verification remain protected when whole prior dialogues yield.
+Cursor keeps the canonical full JSON copy in the MCP text channel.
+The Codex compact structured lead leaves that contract unchanged.
+Offline contract tests cover the shared packet and read paths.
+Native Cursor delivery has not been re-dogfooded here. Issue #1139 owns that validation gap.
+
+**Closure honesty (#1140, #1143, #1144, #1149). Host decision: supported through shared service
+results.** Check carries the same readiness verdict that status and Stop consume, with finding
+work, missing assessment input and standing limits distinguished. A stopped requested review is
+`unavailable / round_limit_unassessable`, with no new attempt, and required review remains
+incomplete. Receipt JSON/markdown/text distinguish an agent-disproved concern from an asserted
+repair. Trusted byte-identical in-workspace shell rewrites preserve verification freshness;
+changed reports remain conservative pending #1143's dependency/role manifest. These decisions
+are shared across macOS, Linux and Windows through WSL 2; no native Windows support is implied.

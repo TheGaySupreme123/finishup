@@ -94,3 +94,25 @@ them, replay frozen packets through a provisioned test instance (ADR-028,
    the reviewer settings with the result.
 
 Dispose of the test instance afterwards.
+
+## Trade-off calibration and acceptance evidence (#1145, #1146)
+
+Run the following alongside the offline checks above:
+
+```text
+uv run pytest tests/unit/adapters/providers/test_reviewer_judgment_calibration.py \
+  tests/unit/application/test_review_judgment.py -q
+```
+The synthetic calibration cases cover nextjs-performance a2 (deferred loading versus initial
+rendering), atrx-vep-crispr a1/a2 (task wording versus supplied reference), destructive reference
+replacement, and a noisy single timing. They also cover the missed acceptance boundaries in biped,
+ctr, freecad, pretrain, batched evaluation and payments. The expected response to ambiguity is
+`decision_needed`, both interpretations with evidence, one cheap discriminating check, and a
+choice recorded with `respond`; clear contradictory evidence against an unambiguous task still
+supports a requirement finding. These checks make no provider call and cannot prove improved model
+judgment. A live replay remains a separate, explicitly authorized evaluation.
+
+Input-root behavior is shared by Codex, Claude Code and Cursor: the existing owner-admitted catalog
+supplies current declared inputs and any retained snapshot. Verify declared-path boundaries and
+root-removal fences with `tests/unit/application/test_reviewer_loop.py` and
+`tests/unit/application/test_input_snapshot.py`. No root is admitted by reviewer instructions.

@@ -2052,6 +2052,7 @@ def _add_semantic_finding_kinds(document: dict[str, JsonValue]) -> None:
         ("code_defect", 1),
         ("task_requirement_unmet", 1),
         ("agent_criterion_unmet", 2),
+        ("decision_needed", 3),
     )
     for value, _priority in semantic_kinds:
         if value not in enum_values:
@@ -2409,6 +2410,7 @@ def _check_recorded_v1_6_schema(entry: _RegistryEntry) -> dict[str, JsonValue]:
     """
 
     document = _check_recorded_v1_5_schema(entry)
+    _admit_stopped_review(document)
     definitions = cast(dict[str, JsonValue], document["$defs"])
     _add_reviewer_definitions(definitions)
     cast(dict[str, JsonValue], document["properties"])["reviewer"] = {
@@ -2507,6 +2509,7 @@ def _lineage_child_finding_schema() -> dict[str, JsonValue]:
         "code_defect": (1, True),
         "task_requirement_unmet": (1, True),
         "agent_criterion_unmet": (2, True),
+        "decision_needed": (3, False),
     }
     return {
         "additionalProperties": False,
@@ -2575,6 +2578,7 @@ def _lineage_child_finding_schema() -> dict[str, JsonValue]:
                     "code_defect",
                     "task_requirement_unmet",
                     "agent_criterion_unmet",
+                    "decision_needed",
                 ]
             ),
             "origin": _lineage_enum_schema(["deterministic", "semantic_model_derived"]),
@@ -3984,7 +3988,12 @@ def _check_result_v1_4_schema(entry: _RegistryEntry) -> dict[str, JsonValue]:
     projected_properties["challenge"] = {"$ref": "#/$defs/finding_challenge"}
     kind = cast(dict[str, JsonValue], projected_properties["kind"])
     values = cast(list[JsonValue], kind["enum"])
-    for value in ("agent_criterion_unmet", "code_defect", "task_requirement_unmet"):
+    for value in (
+        "agent_criterion_unmet",
+        "code_defect",
+        "decision_needed",
+        "task_requirement_unmet",
+    ):
         if value not in values:
             values.append(value)
     values.sort(key=lambda item: str(item).encode("ascii"))
@@ -4017,10 +4026,87 @@ def _check_result_v1_6_schema(entry: _RegistryEntry) -> dict[str, JsonValue]:
     """#1118: check-result 1.6.0 is 1.5.0 plus the optional reviewer record on a success."""
 
     document = _check_result_v1_5_schema(entry)
+    _admit_stopped_review(document)
     _add_check_reviewer(document)
+    definitions = cast(dict[str, JsonValue], document["$defs"])
+    checklist = cast(dict[str, JsonValue], definitions["finding_checklist"])
+    checklist_properties = cast(dict[str, JsonValue], checklist["properties"])
+    cast(list[JsonValue], cast(dict[str, JsonValue], checklist_properties["next"])["enum"]).append(
+        "follow_overall_next"
+    )
+    success = cast(dict[str, JsonValue], definitions["success"])
+    cast(dict[str, JsonValue], success["properties"])["closure_readiness"] = {
+        "$ref": SCHEMA_NAMESPACE
+        + "operations/status-result-1.4.0.schema.json#/$defs/closure_readiness"
+    }
+    cast(dict[str, JsonValue], success["properties"])["review_delivery"] = {
+        "oneOf": [
+            {"type": "string", "minLength": 1, "maxLength": 4096},
+            {"$ref": "#/$defs/finding_omission"},
+        ]
+    }
     document["$id"] = SCHEMA_NAMESPACE + entry.relative_path
     document["title"] = f"FinishUP check result {entry.schema_version}"
     return document
+
+
+def _admit_stopped_review(document: dict[str, JsonValue]) -> None:
+    """A requested review stopped before dispatch; no new provider provenance (#1149)."""
+
+    definitions = cast(dict[str, JsonValue], document["$defs"])
+    binding = cast(dict[str, JsonValue], definitions["semantic_binding"])
+    branches = cast(list[JsonValue], binding["oneOf"])
+    template = next(
+        item
+        for item in branches
+        if isinstance(item, dict)
+        and cast(
+            dict[str, JsonValue], cast(dict[str, JsonValue], item["properties"])["semantic_reason"]
+        ).get("const")
+        == "deterministic_mode"
+    )
+    clone = copy.deepcopy(template)
+    properties = cast(dict[str, JsonValue], clone["properties"])
+    cast(dict[str, JsonValue], properties["semantic_status"])["const"] = "unavailable"
+    cast(dict[str, JsonValue], properties["semantic_reason"])["const"] = "round_limit_unassessable"
+    branches.append(clone)
+    holder = (
+        cast(dict[str, JsonValue], document["properties"])
+        if "success" not in definitions
+        else cast(
+            dict[str, JsonValue], cast(dict[str, JsonValue], definitions["success"])["properties"]
+        )
+    )
+    reasons = cast(list[JsonValue], cast(dict[str, JsonValue], holder["semantic_reason"])["enum"])
+    reasons.append("round_limit_unassessable")
+    reasons.sort(key=lambda item: str(item).encode("ascii"))
+    if "success" not in definitions:
+        # Historical recorded-review templates require a completed semantic conclusion. A
+        # stopped 1.6.0 check has none; relax only this pair, keeping completed reviews exact.
+        holder["semantic_status"] = {"enum": ["succeeded", "unavailable"], "type": "string"}
+        cast(list[JsonValue], document["required"]).remove("semantic_conclusion")
+        cast(list[JsonValue], document["allOf"]).append(
+            {
+                "oneOf": [
+                    {
+                        "properties": {"semantic_status": {"const": "succeeded"}},
+                        "required": ["semantic_conclusion"],
+                    },
+                    {
+                        "properties": {
+                            "semantic_status": {"const": "unavailable"},
+                            "semantic_reason": {"const": "round_limit_unassessable"},
+                        },
+                        "not": {
+                            "anyOf": [
+                                {"required": ["semantic_conclusion"]},
+                                {"required": ["reviewer"]},
+                            ]
+                        },
+                    },
+                ]
+            }
+        )
 
 
 # W6 (ADR-043 amendment): the service-composed lead of a check result, one printable ASCII line.
@@ -4138,9 +4224,9 @@ def _add_status_check_outcome(definitions: dict[str, JsonValue]) -> None:
     entry = next(
         item
         for item in _REGISTRY
-        if item.relative_path == "operations/check-result-1.5.0.schema.json"
+        if item.relative_path == "operations/check-result-1.6.0.schema.json"
     )
-    check_definitions = cast(dict[str, JsonValue], _check_result_v1_5_schema(entry)["$defs"])
+    check_definitions = cast(dict[str, JsonValue], _check_result_v1_6_schema(entry)["$defs"])
     check_success = cast(dict[str, JsonValue], check_definitions["success"])
     check_properties = cast(dict[str, JsonValue], check_success["properties"])
     definitions["check_overall_next"] = copy.deepcopy(check_definitions["overall_next"])
@@ -4900,6 +4986,7 @@ def _status_result_v1_4_schema(entry: _RegistryEntry) -> dict[str, JsonValue]:
         "agent_criterion_unmet",
         "code_defect",
         "coordination_overlap",
+        "decision_needed",
         "task_requirement_unmet",
     ):
         if value not in finding_kind_values:
@@ -4962,6 +5049,12 @@ def _status_result_v1_4_schema(entry: _RegistryEntry) -> dict[str, JsonValue]:
     finding_item_properties["todo_state"] = {"$ref": "#/$defs/todo_state"}
     finding_item_properties["review_rounds"] = {"$ref": "#/$defs/canonical_uint"}
     findings_page = cast(dict[str, JsonValue], definitions["findings_page"])
+    cast(dict[str, JsonValue], findings_page["properties"])["review_delivery"] = {
+        "oneOf": [
+            {"type": "string", "minLength": 1, "maxLength": 4096},
+            {"$ref": "#/$defs/finding_omission"},
+        ]
+    }
     cast(dict[str, JsonValue], findings_page["properties"])["attempt_budget"] = (
         _attempt_budget_schema()
     )
@@ -6192,7 +6285,11 @@ def _add_status_semantic_progress(definitions: dict[str, JsonValue]) -> None:
         (
             reason.value
             for reason in models.SemanticReason
-            if reason is not models.SemanticReason.DEFERRED_BEFORE_FIRST_EDIT
+            if reason
+            not in {
+                models.SemanticReason.DEFERRED_BEFORE_FIRST_EDIT,
+                models.SemanticReason.ROUND_LIMIT_UNASSESSABLE,
+            }
         ),
         key=lambda item: str(item).encode("ascii"),
     )
@@ -6455,6 +6552,32 @@ def _receipt_document_v1_3_schema(entry: _RegistryEntry) -> dict[str, JsonValue]
         "receipts/receipt-document-1.2.0.schema.json",
     )
     definitions = cast(dict[str, JsonValue], document["$defs"])
+    receipt_properties = cast(dict[str, JsonValue], document["properties"])
+    receipt_properties["semantic_status"] = {"const": "unavailable"}
+    receipt_properties["semantic_reason"] = {"const": "round_limit_unassessable"}
+    receipt_properties["disproved_self_verified_finding_ids"] = {
+        "type": "array",
+        "items": {"$ref": "#/$defs/finding_id"},
+        "minItems": 1,
+        "maxItems": 100,
+        "uniqueItems": True,
+    }
+    document["dependentRequired"] = {
+        "semantic_status": ["semantic_reason"],
+        "semantic_reason": ["semantic_status"],
+        "disproved_self_verified_finding_ids": ["self_verified_finding_ids"],
+    }
+    cast(list[JsonValue], document.setdefault("allOf", [])).append(
+        {
+            "if": {"required": ["semantic_status"]},
+            "then": {
+                "properties": {
+                    "conclusion": {"enum": ["insufficient_coverage", "unresolved_findings_remain"]}
+                },
+                "not": {"required": ["semantic_provenance"]},
+            },
+        }
+    )
     _admit_current_receipt_package_name(definitions)
     definitions["child_finding"] = _lineage_child_finding_schema()
     definitions["receipt_child"] = {

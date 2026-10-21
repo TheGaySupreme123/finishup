@@ -53,3 +53,16 @@ provider review, and observation gaps explicit. A clean local check cannot stren
 its weakest material coverage. The complete vector, finding classification, and rendering fields
 remain in [`coverage-and-receipts.md`](coverage-and-receipts.md#receipt-format) and the receipt
 template.
+
+Keep incidental verification logs and evidence reports outside the workspace and outside declared
+output directories, then publish their evidence through the ledger. A report the task requires is
+a deliverable: keep and declare it. Byte-identical in-workspace shell rewrites preserve freshness
+only when FinishUP's trusted complete before/after comparison proves it; changed or newly created
+reports can still require verification. Do not rerun an expensive verification merely to reproduce
+identical evidence without first reading the task's readiness and named stale-input facts.
+
+`unavailable / round_limit_unassessable` means AI-powered review was requested and stopped after
+repeated unassessable rounds; it does not mean review was never requested. Required review remains
+incomplete. Self-verification reports the agent's own evidence about a concern; when the retained
+position rejected it, the receipt identifies it as a concern the agent reports disproved, without
+claiming an implementation repair or independent verification.

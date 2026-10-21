@@ -92,6 +92,37 @@ def _code_diff(files: int, lines: int) -> bytes:
     return b"".join(out)
 
 
+@pytest.mark.anyio
+async def test_read_action_capacity_maps_through_the_service_without_schema_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # #1135: force the boundary independently of changes to the first-packet planner. The real
+    # broker refuses this valid action before I/O, and the real service must map that refusal.
+    from finishup.application.reviewer_broker import ReviewerBroker
+
+    execute = ReviewerBroker.execute
+
+    async def nearly_full(self: Any, *args: Any, **kwargs: Any) -> str:
+        self._exchange_room = lambda: 2048  # pyright: ignore[reportPrivateUsage]
+        return await execute(self, *args, **kwargs)
+
+    monkeypatch.setattr(ReviewerBroker, "execute", nearly_full)
+    path = "\\" * 509
+    result, gateway, runtime = await _run(
+        tmp_path, monkeypatch, _read_file(path), policy=_expanded_policy()
+    )
+    assert (result.status, result.reason) == (
+        SemanticStatus.FAILED,
+        SemanticReason.CASE_CAPACITY_EXCEEDED,
+    )
+    assert result.judgment is None and len(gateway.exchanges) == 1
+    assert result.reviewer is not None and result.reviewer.ended == "case_capacity_exceeded"
+    assert result.reviewer.reads == ()
+    job = await runtime.ledger.load_semantic_job(runtime.writer_id or "", frozen_request())
+    assert job is not None and job.terminal_code is SemanticReason.CASE_CAPACITY_EXCEEDED
+    assert await cast(Any, runtime.ledger).review_step_usage(job.job_id) == (1, 0)
+
+
 def _decision_first_diff(files: int, lines: int, pad: int) -> bytes:
     """Quoted Python edits with a decision past each file's opening rows.
 

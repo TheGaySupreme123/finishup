@@ -1,0 +1,58 @@
+{
+  "cases": [
+    {
+      "case": "nextjs-performance-a2",
+      "pattern": "An agent records why it deferred some content to improve initial rendering; the task does not clearly exclude deferral.",
+      "expected_kind": "decision_needed",
+      "directives": [
+        "A reasoned trade-off or conflicting task wording and supplied inputs is decision_needed",
+        "check whether the task forbids deferred loading before asking to remove it"
+      ]
+    },
+    {
+      "case": "atrx-vep-crispr-a1",
+      "pattern": "Task wording and the supplied reference support different models; replacing the supplied one would discard an earlier passing comparison.",
+      "expected_kind": "decision_needed",
+      "directives": [
+        "For conflicting references, compare both reference models with the available validator.",
+        "Destructive flag: start message_to_main_agent with 'Destructive change:'"
+      ]
+    },
+    {
+      "case": "atrx-vep-crispr-a2",
+      "pattern": "Two plausible reference models produce different dimensions; the reviewer must preserve the alternative and let the agent decide.",
+      "expected_kind": "decision_needed",
+      "directives": [
+        "Give both interpretations with their evidence in discrepancy and alternative_interpretation",
+        "one cheap discriminating check in message_to_main_agent",
+        "you decide; record your choice and reason with respond acknowledged or rejected"
+      ]
+    },
+    {
+      "case": "unambiguous-requirement-control",
+      "pattern": "The task explicitly forbids deferral, and the agent defers content with a reason.",
+      "expected_kind": "task_requirement_unmet",
+      "directives": [
+        "Before task_requirement_unmet, locate the requirement in the task text and cite it.",
+        "A recorded reason does not excuse a clear violation of an unambiguous requirement"
+      ]
+    },
+    {
+      "case": "single-timing-control",
+      "pattern": "A single slower run under a changed warm-up setup is called a regression.",
+      "expected_kind": "uncertainty",
+      "directives": [
+        "Before calling a performance change a regression, require repeated, comparable timings",
+        "A single noisy timing or a changed measurement setup does not establish a regression."
+      ]
+    }
+  ],
+  "acceptance_boundaries": {
+    "biped-time-window": "time window",
+    "ctr-measurement-setup": "actual measurement",
+    "freecad-geometry": "units and geometry",
+    "pretrain-cycle": "cycle length",
+    "batched-eos-min-tokens": "stopping or minimum-token semantics",
+    "payments-cold-start-burst": "cold start versus warm state, burst load and scale"
+  }
+}

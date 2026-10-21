@@ -48,7 +48,7 @@ def test_the_card_says_it_is_enough_and_names_the_inspection_check() -> None:
     assert "This card is enough for ordinary work." in text
     assert "a prior `status` read or `dry_run` is optional" in text
     assert "`check` `mode: inspect` (records nothing)" in text
-    assert "This card is `finishup://guidance/agent-instructions.md`; on demand only:" in text
+    assert "On demand: resume/recovery/delegation/capacity" in text
     for page in _PROCEDURE_PAGES:
         assert f"finishup://guidance/{page}" in text, page
     # The old mandates are gone.

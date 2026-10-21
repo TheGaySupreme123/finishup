@@ -76,7 +76,7 @@ from finishup.kernel.task_facts import (
     decision_batches,
     effective_obligations,
 )
-from finishup.protocol.models import SemanticStatus
+from finishup.protocol.models import SemanticReason, SemanticStatus
 
 __all__ = [
     "BOOKKEEPING_KINDS",
@@ -398,6 +398,11 @@ def review_can_rule(state: ProjectionState, records: Iterable[LedgerRecord] = ()
     if check is None:
         return True
     if check.semantic_status in UNDELIVERABLE_SEMANTIC_STATUSES:
+        return False
+    if (
+        check.semantic_status is SemanticStatus.UNAVAILABLE
+        and check.semantic_reason is SemanticReason.ROUND_LIMIT_UNASSESSABLE
+    ):
         return False
     return not (
         check.semantic_route_required is False

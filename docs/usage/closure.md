@@ -56,3 +56,9 @@ Preparation errors name a bounded reason and its next step. Remove already-resol
 from a resolution selection; account for actual attempts before resolving an open obligation.
 Human status shows up to three command attempts per obligation and the remaining count; use
 JSON status to read every attempt on the page.
+
+Read the check's task-level next action and closure readiness together. The finding checklist may
+be empty while verification inputs, assessment inputs or linked work still need attention;
+`follow_overall_next` points to that task instruction. Standing limitations are disclosures. An
+outside-root or wrong-type assessment target is a limit, so moving private input into the project
+to satisfy it is not a supported continuation.

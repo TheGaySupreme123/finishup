@@ -156,6 +156,8 @@ class FindingKind(str, Enum):  # noqa: UP042 - exact wire enum base
     # with a recorded reason, which settles it as a disclosed, non-blocking limitation
     # (``is_limitation_request``). Recorded only on ``finding_recorded`` 1.4.0.
     AGENT_CRITERION_UNMET = "agent_criterion_unmet"
+    # #1146: an interpretation or trade-off to decide, never an unmet requirement.
+    DECISION_NEEDED = "decision_needed"
 
 
 # D7 keeps project coordination local: coordination findings are produced from the admitted
@@ -180,6 +182,7 @@ EXTERNAL_SEMANTIC_FINDING_KINDS: Final[tuple[FindingKind, ...]] = (
     FindingKind.CODE_DEFECT,
     FindingKind.TASK_REQUIREMENT_UNMET,
     FindingKind.AGENT_CRITERION_UNMET,
+    FindingKind.DECISION_NEEDED,
 )
 
 
@@ -242,7 +245,7 @@ RESPONSE_V1_1_DISPOSITIONS: Final = TERMINAL_RESPONSE_DISPOSITIONS | frozenset(
 # The one sentence every agent-facing text reuses when it tells the agent what to do with a
 # finding FinishUP cannot prove repaired (issue #984, COORD contract wording; tests pin it).
 SELF_VERIFIED_GUIDANCE: Final = (
-    "If you repaired this and FinishUP cannot prove it (a FinishUP limit), verify it yourself, record "
+    "If you repaired or disproved this and FinishUP cannot prove it (a FinishUP limit), verify it yourself, record "
     "that evidence, and respond `self_verified` with how you verified it and the evidence ids. "
     "Do not reshape your work for FinishUP, and a FinishUP limit is never a `finishup-blocker`."
 )
@@ -429,6 +432,7 @@ FINDING_KIND_TRAITS: Final[MappingProxyType[FindingKind, tuple[int, bool]]] = Ma
         FindingKind.CODE_DEFECT: (1, True),
         FindingKind.TASK_REQUIREMENT_UNMET: (1, True),
         FindingKind.AGENT_CRITERION_UNMET: (2, True),
+        FindingKind.DECISION_NEEDED: (3, False),
     }
 )
 

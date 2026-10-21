@@ -579,6 +579,9 @@ answers each review finding with a reason, and the next review sees that answer 
 answers to FinishUP's own findings) and rules on it; a reply that names an earlier finding comes back as
 a new finding linked to it. Routine checks and retries need no human prompt.
 
+The agent follows the review topic (`finishup://guidance/review.md`) for delivery pacing and
+independent judgment on findings, including conflicting inputs and decision-needed findings.
+
 The reviewer works as a verifying reviewer: it checks the change against the task and the recorded
 verification against the change. It judges recorded test and command output itself instead of
 asking the agent to run it again, reports every distinct problem it finds (up to three per review),

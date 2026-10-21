@@ -101,7 +101,6 @@ def test_agent_instructions_say_not_to_list_resources() -> None:
     )
     read_more = text.split("# Read more", 1)[1]
     for uri in (
-        "finishup://guidance/agent-instructions.md",
         "finishup://guidance/workflow.md",
         "finishup://guidance/publication-policy.md",
         "finishup://guidance/coverage-and-receipts.md",

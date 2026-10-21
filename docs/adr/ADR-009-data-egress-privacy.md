@@ -1025,6 +1025,11 @@ blocked the whole packet with `never_send_detected`. Decisions:
   `:` is never read as the separator. The exact-marker exemption accepts `[REDACTED]` in any of
   these forms, so redaction is a fixed point across encoding. Real assignments in encoded text are
   still detected and redacted.
+- Precision repair (2026-10-21, #1138): the exact fixed markers also remain exempt when the
+  prepared packet is nested as JSON text in the final reviewer conversation. Whitespace escape
+  widths must match the closing quote's encoding depth; literal backslash tails and other suffixes
+  do not gain an exemption. Concrete-secret detection, policy, consent and egress authority stay
+  unchanged.
 - At egress, a low-confidence (heuristic) match replaces only the value, in place, with the fixed
   placeholder `[withheld-by-yoetz:possible-credential]` (`EGRESS_CREDENTIAL_PLACEHOLDER`); the rest
   of the line, item and file is still sent, and the scanner exempts the placeholder like

@@ -13,13 +13,17 @@ import json
 from pathlib import Path
 from typing import Any, Final, cast
 
+import pytest
 from tests.unit.protocol.test_models_and_schemas import (
     _check_result_wire,  # pyright: ignore[reportPrivateUsage]
+    _status_result_wire,  # pyright: ignore[reportPrivateUsage]
 )
 
+from finishup.mcp import server as server_module
 from finishup.mcp.server import result_from_public_model
+from finishup.mcp.summaries import render_check_review_delivery
 from finishup.protocol.canonical import canonical_encode
-from finishup.protocol.models import CheckResult
+from finishup.protocol.models import CheckResult, StatusResultModel
 
 # codex-rs/models-manager model_info.rs fallback ``bytes(10_000)`` x1.2 serialization allowance.
 _CODEX_WINDOW_BYTES: Final = 12_000
@@ -117,3 +121,110 @@ def test_cursor_canonical_copy_lists_agent_next_first_or_second() -> None:
     assert keys.index("agent_next") <= 1
     assert copy["agent_next"] == cast(dict[str, Any], result.structuredContent)["agent_next"]
     assert content.text.encode() == canonical_encode(cast(Any, result.structuredContent))
+
+
+def test_advice_and_caveats_survive_the_native_codex_cut_with_escaping() -> None:
+    wire = _n7_shaped_wire()
+    wire["review_summary"] = "Review summary " + '\\"\n' * 2000
+    for index, finding in enumerate(wire["findings"][:3]):
+        finding["challenge"] = {
+            "discrepancy": f"discrepancy-{index} " + '\\"\n' * 2000,
+            "requested_next_step": "act",
+            "alternative_interpretation": f"alternative-{index} " + "א" * 4000,
+            "uncertainty": f"uncertainty-{index} " + "u" * 7000,
+            "snippet": "evidence " * 900,
+        }
+    result = result_from_public_model(CheckResult.model_validate(wire), host_profile="codex")
+    structured = cast(dict[str, Any], result.structuredContent)
+    head, _tail, size = _codex_view(structured)
+    assert size > 2 * _CODEX_WINDOW_BYTES
+    delivery = structured["review_delivery"]
+    assert len(canonical_encode(delivery)) < 3600
+    assert json.dumps(delivery, ensure_ascii=False) in head
+    for index in range(3):
+        assert f"discrepancy-{index}" in head
+        assert f"alternative-{index}" in head
+        assert f"uncertainty-{index}" in head
+    assert "Truncated" in head and "status view=findings" in head
+    assert delivery.index("Summary:") < delivery.index("Requested action:")
+    assert delivery.index("Requested action:") < delivery.index("Alternative interpretation:")
+    assert delivery.index("Alternative interpretation:") < delivery.index("Uncertainty:")
+    # The transport lead does not change the complete authorized finding or summary.
+    assert structured["findings"] == wire["findings"]
+    assert structured["review_summary"] == wire["review_summary"]
+    CheckResult.model_validate(structured)
+
+
+def test_review_delivery_uses_only_projected_prose_and_matches_the_golden() -> None:
+    fixture = (
+        Path(__file__).resolve().parents[3]
+        / "fixtures/canonical/check-reviewer-record-1.6.0.case.json"
+    )
+    golden = json.loads(fixture.read_bytes())["input"]["review_delivery"]
+    assert render_check_review_delivery(golden["source"]) == golden["text"]
+    assert canonical_encode(golden["text"]).hex() == golden["canonical_hex"]
+    source = golden["source"]
+    source["findings"][0]["challenge"]["alternative_interpretation"] = {
+        "omitted": True,
+        "category": "finding_summary",
+        "reason": "withheld_by_policy",
+    }
+    delivery = render_check_review_delivery(source)
+    assert "Keep the task-supplied reference" not in delivery
+    assert "Alternative interpretation: [review text omitted by privacy policy]" in delivery
+
+
+def test_findings_status_pages_also_keep_the_complete_bounded_caveats_first() -> None:
+    source = _n7_shaped_wire()
+    finding = source["findings"][0]
+    finding["challenge"] = {
+        "discrepancy": "Consider changing the supplied reference.",
+        "requested_next_step": "act",
+        "alternative_interpretation": "The supplied reference may be authoritative.",
+        "uncertainty": "Authority is ambiguous.",
+    }
+    wire = cast(dict[str, Any], _status_result_wire())
+    wire["view"] = "findings"
+    wire["page"] = {
+        "items": [
+            {
+                **finding,
+                "disposition": "none",
+                "resolved": False,
+                "response_event_id": None,
+                "reason": None,
+                "waiver_scope": None,
+                "waiver_expiry": None,
+            }
+        ],
+        "next_cursor": None,
+    }
+    result = result_from_public_model(StatusResultModel.model_validate(wire), host_profile="codex")
+    structured = cast(dict[str, Any], result.structuredContent)
+    head, _, _ = _codex_view(structured)
+    assert "The supplied reference may be authoritative." in head
+    assert "Authority is ambiguous." in head
+    assert list(structured["page"])[0] == "review_delivery"
+    assert structured["page"]["items"] == wire["page"]["items"]
+    StatusResultModel.model_validate(structured)
+
+
+def test_a_preview_render_failure_keeps_the_committed_result(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    wire = _n7_shaped_wire()
+    wire["review_summary"] = "The supplied reference may be intentional."
+    sites: list[str] = []
+
+    def fail(_wire: object) -> str:
+        raise RuntimeError("preview failed")
+
+    def record(failures: list[tuple[str, BaseException]], **_kwargs: object) -> str:
+        sites.extend(site for site, _exc in failures)
+        return "Preview degraded; the structured result is complete."
+
+    monkeypatch.setattr(server_module, "render_check_review_delivery", fail)
+    monkeypatch.setattr(server_module, "_record_summary_degradation", record)
+    result = result_from_public_model(CheckResult.model_validate(wire), host_profile="codex")
+    assert result.isError is False and result.structuredContent == wire
+    assert sites == ["review_delivery"]

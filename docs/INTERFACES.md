@@ -572,8 +572,8 @@ stay frozen. Advice and status `semantic_state` is the recorded attempt status (
 coverage: only validated AI-powered finding ids add `semantic_model_derived` to advice coverage.
 
 Every MCP result also carries a bounded ASCII text projection (the compact summary is at most 4,096
-bytes; 512 until tb4n3, ADR-043; the check-totals line, manifest line, reviewer output and publish
-blocker notices follow it under their own bounds) for hosts that drop `structuredContent`. The projection is composed, not
+bytes; 512 until tb4n3, ADR-043; reviewer output leads, while check totals, manifests and publish
+blocker notices follow under their own bounds) for hosts that drop `structuredContent`. The projection is composed, not
 concatenated: the verdict or state, the task continuation, the frontier with its head digest and the
 review status/reason are reserved first and optional clauses are granted room by priority, so it
 never raises and no data-only change can turn a committed operation into an error. A clause that
@@ -4688,6 +4688,16 @@ such as `p<ss>w0rd|x` or `Summer2024...`. A marker followed by more bytes
 (`password: str = "..."`, value span only) and JSON-escaped keys (`\"password\": \"...\"`) match.
 Capture-time redaction covers only high-confidence findings; heuristic-only matches are redacted
 at egress.
+
+The exact `[REDACTED]` and `[withheld-by-yoetz:possible-credential]` values remain exempt when a
+packet is JSON-encoded again inside a reviewer exchange (#1138). The exemption checks the
+encoding depth of whitespace escapes against the closing quote's framing; it does not strip
+arbitrary backslashes or suffixes. Marker lookalikes, concrete credentials, private-key markers
+and canaries keep their existing detection and whole-case refusal rules.
+Within one scan, enclosing JSON string spans and their validated decodes are cached per string.
+A byte-offset map accounts for escapes and UTF-8 widths, including surrogate pairs, so each
+occurrence still proves its own nesting without rescanning or decoding growing prefixes. The
+cache is discarded after the scan; invalid strings cannot supply an exemption.
 
 `PreDispatchAuditDecision` is structural-only and terminal; it permits no prepared bytes,
 authorization, or dispatch. A v0.1 content-bearing `DisclosureProposal` has one owning `task_id` and
@@ -10066,10 +10076,10 @@ follow-up loop is deleted.
 - Controller: `application.reviewer_loop.ReviewerLoop(model, broker, *, instruction, packet,
   deadline, history_admissible, final_reserve_seconds=30.0, clock=time.monotonic,
   resume_reserved=False).run() -> ReviewOutcome(status,
-  judgment, reason, history, model_turns, citable_refs, text_by_ref)`; the last two are the
-  citation union for `validate_semantic_judgment`. `ReviewerModel.complete(history, schema, *,
+  judgment, reason, history, model_turns, citable_refs, text_by_ref, capacity)`; the citation fields
+  hold the union for `validate_semantic_judgment`. `ReviewerModel.complete(history, schema, *,
   deadline) -> JsonValue` is the only model interface; a facade raises `ReviewerModelError(code)`.
-  Incomplete reasons: `format_invalid`, `read_limit`, `deadline`, `turn_limit`,
+  Incomplete reasons: `format_invalid`, `read_limit`, `case_capacity_exceeded`, `deadline`, `turn_limit`,
   `authorization_changed`, `interrupted`, `uncaptured_step`, `step_refused`, or the facade's code.
   The one repair covers `ReviewerReplyInvalid` from `complete` and from decoding alike; the turn is
   captured either way. With `resume_reserved`, a store whose `usage()` is exactly `(1, 1)` runs turn
@@ -10086,8 +10096,11 @@ follow-up loop is deleted.
   `(category, bytes, input_root)` tuples. `history_roots` lists every outside root the conversation
   holds bytes from. With `exchange_room` (#1118), `reads_allowed()` also needs `MIN_ROOM +
   READ_ACTION_ROOM` (2 KiB) of it; `execute` subtracts the `reply` turn's bytes and raises
-  `ReadExchangeFull` before reserving when less than `MIN_ROOM` is left (the loop ends
-  `read_limit`), and a result over its room keeps the longest head that fits, measured.
+  `ReadExchangeFull(required, available)` before reserving when less than `MIN_ROOM` is left.
+  The loop ends `case_capacity_exceeded`, carrying those minimum required and available exchange
+  bytes through `SemanticEgressBlocked.capacity` to the existing capacity outcome. It never
+  becomes `response_schema_invalid`; a read after the count cap still ends `read_limit`.
+  A result over its room keeps the longest head that fits, measured.
 - Steps: `ports.semantic.ReviewStepStore.reserve(kind, ordinal, selector)`, `capture(kind, ordinal,
   result)`, `usage() -> (steps, uncaptured)`; `ReviewStepRefused` on a repeated step or a lost lease.
   `SqliteLedger.review_steps(handle)` is the durable store (`semantic_review_steps`, ADR-003).
@@ -10096,7 +10109,13 @@ follow-up loop is deleted.
   roots, retained=())`.
   Reads: `task_input_read.read_text_beneath`, `list_beneath` (both take `expired` and raise
   `ReadDeadline`) and `clear_cut`; the broker raises `ReadDeadline` too when a read completes past
-  its local stop.
+  its local stop. `read_text_beneath` returns `(bytes, source_size)`; a native file over 1 MiB
+  returns no bytes, and the broker emits `partial` / `native_read_limit`, `truncated=true`, only
+  `data.source_bytes`, and no citations. `list_beneath` returns `(entries, truncated)` after at
+  most 128 native-entry inspections plus one uninspected lookahead. Hidden/refused entries spend
+  the inspection budget. An exhausted sample emits `partial` / `inspection_limit`, even with no
+  visible children. Cursors page the sampled entries only; the final sample page has no cursor
+  beyond it and still names the inspection limit. Neither result claims source completeness.
 
 ### Review dialogue record (issue #905)
 
@@ -10153,11 +10172,11 @@ The review packet (`outbound-case` `1.2.0`) adds the `prior_finding` section,
 `review_packet.prior_finding_item_ids` (every row of the section, at most 112) and
 `review_packet.prior_finding_refs` (the ruling unit: each carried finding's `finding_ref` exactly
 once, newest first, at most 16, listed only while its structural row is carried). It carries the newest readable, unresolved AI-powered
-findings (at most 16, 96 KiB of item content (issue #976; 8 and 48 KiB before), and only case capacity the other sections leave;
-outside the timeline's 64 rows, so hook rows never crowd it out). Under egress-envelope pressure its
-rows are removed first, oldest finding first, before any other bounding step, so the section never
-displaces work content; removed rows count in `catalog_dropped_count` and add
-`semantic_prior_findings_over_limit`. Each carried finding has one
+findings (at most 16, 96 KiB of item content (issue #976; 8 and 48 KiB before), reserved ahead of ordinary narrative and bulk excerpts;
+outside the timeline's 64 rows, so hook rows never crowd it out). Envelope bounding removes ordinary
+catalog bulk before whole prior findings. The task statement, admitted diff floor and reserved
+latest verification survive this fallback. Removed prior rows count in `catalog_dropped_count` and
+add `semantic_prior_findings_over_limit`. Each carried finding has one
 `yoetz.prior-finding/1` structural row per finding (kind, ids, recorded sequence, requested next
 step, `relates_to`, the latest response disposition, cited refs and recorded sequence, and the
 readable evidence/results recorded after the finding) plus, where the profile already sends
@@ -10863,7 +10882,7 @@ plan. Names and contracts:
   releases, and rebuilds
   an over-ceiling case without lower-priority narrative before reducing `max_total_excerpt_bytes`
   (and `max_excerpt_bytes`). `primary_material_selection` narrows goal, obligations, claims and
-  ordinary timeline plus finding prose; decisions, pending missing-input context and independent lineage remain.
+  ordinary timeline; permitted finding prose, decisions, pending missing-input context and independent lineage remain.
   A pending request retains one ordinary timeline slot, with history narrowed around it; independent
   lineage does not consume that request slot. The final diff
   floor (`final_diff_floor`) is the lesser of initially carried diff bytes and half the lesser of
@@ -10878,12 +10897,21 @@ plan. Names and contracts:
 - Resume (`PrivacyCoordinator._resume_admitted`) denies a stored `semantic-review` proposal,
   external or local-model, outside the current policy's excerpt limits or LLM `max_bytes` /
   `max_tokens` with `blocked_by_policy` / `policy_denied` before dispatch.
-- Capacity refusals (#1118): `SemanticEgressBlocked.capacity` is `(attempted, limit)` bytes on the
-  two size refusals (channel `max_bytes`; reviewer exchange over `MAX_MINIMIZED_DISCLOSURE_BYTES`),
-  only with `blocked_by_policy`, and only when `attempted > limit`. `_map_egress_to_final` maps it
+- Capacity refusals (#1118, #1142): `SemanticEgressBlocked.capacity` is `(attempted, limit)`,
+  only with `blocked_by_policy`, and only when `attempted > limit`. `capacity_scope` is
+  `disclosure`, `excerpt` or `excerpt_total`; `capacity_unit` is `bytes`, `tokens` or `excerpts`.
+  Channel byte/token limits and reviewer exchange limits count the whole disclosure. Excerpt
+  count, per-excerpt bytes and total excerpt bytes count the packet's post-replacement
+  `content_bytes`, after privacy minimization, including marker growth. Initial admission and
+  proposal resume both preserve the exceeded bound without trimming or dispatching the packet.
+  `_map_egress_to_final` maps it
   to `failed/case_capacity_exceeded` and records `semantic_composition/
-  semantic_disclosure_capacity_exceeded` with `semantic_disclosure_attempted_bytes` and
-  `semantic_disclosure_limit_bytes` (integers, never content).
+  semantic_disclosure_capacity_exceeded` with `semantic_<scope>_attempted_<unit>` and
+  `semantic_<scope>_limit_<unit>` (integers, never content). Unrecognized policy reasons map to
+  `failed/coordinator_failure`, rather than claiming a network denial. The existing privacy
+  receipt remains `blocked_by_policy/policy_denied` with zero final bytes; #1129 owns its new
+  schema reason. Check/job status and work-receipt gaps use the existing capacity vocabulary
+  across CLI, MCP, hooks and TUI for Codex, Claude Code and Cursor.
 - TUI: `PrivacyPosture.recipe_outdated` is true when the approved selection is an earlier version
   of its recipe. The privacy screen then offers the newer recipe instead of saying "already on the
   recommended privacy policy".
@@ -11888,6 +11916,20 @@ cleaning up. A completed Codex turn reports `runtime_evidence.process_cleanup = 
 `ReviewerSession.aclose()` returns the closing cleanup outcome. The service replaces `retained` in
 the final exchange's evidence with that outcome before anything is persisted, so
 `runtime-attempt-evidence` 1.1.0 is unchanged and `retained` never reaches a stored record.
+If closing the held session reports `failed`, the final judgment is withheld: the result is
+`unavailable`, failure class `transport`, runtime stage and reviewer ending `cleanup_unconfirmed`.
+An acknowledged Codex turn maps to `outcome_unknown`, preserving the existing no-retry rule.
+
+Active Codex turns account for notifications by four closed families (`control`, `telemetry`,
+`delta`, `intermediate`). Each notification spends the largest of its re-encoded JSON byte size,
+newly received wire bytes, and 256 work units, with a 32 MiB total work bound and the shared deadline
+checked per event. Buffered events spend their re-encoded size as well, conservatively.
+Discarded telemetry and streamed deltas no longer exhaust a 4,096-event allowance. The existing
+`event_limit` stage names work exhaustion; an acknowledged turn without a completed answer remains
+`outcome_unknown`. `turn_notifications` owner diagnostics carry only `codex_event_<family>_count`,
+`codex_event_<family>_bytes` (re-encoded JSON), `codex_event_wire_bytes` (active-turn traffic including
+the turn acknowledgement), and attempt `duration_ms` including cleanup. Per-message,
+request-queue and pre-disclosure bounds and all event/tool allowlists still apply.
 
 `complete(history, schema, deadline=)` returns the reply object. It raises the decoder's
 `ReviewerReplyInvalid("output_not_json")` only for a completed answer that is not one JSON object
@@ -12033,3 +12075,101 @@ as `outcome_unknown` and is never resent. For it, `operation_max_retries` is `0`
   `FinalSemanticEvaluation.reviewer` carry it in process; `FinalSemanticEvaluation`
   `reviewer_citable_refs` and `reviewer_paths` stay in process and in the encrypted
   `yoetz.semantic-response/1` object (`reviewer`, `reviewer_paths`).
+
+### Reviewer judgment choices and acceptance evidence (#1145, #1146)
+
+- `FindingKind.DECISION_NEEDED` / `decision_needed`: research-evidence, priority 3,
+  `FINDING_KIND_TRAITS == (3, False)`, available on finding/finding-recorded 1.4.0 and active
+  provider-judgment 1.2.0 on the unreleased integration branch. Earlier versions refuse it.
+  Generated status, check, receipt and child-dependency projections carry the kind. Its existing
+  challenge fields carry both interpretations, their evidence, one discriminating check and the
+  choice; `validate_semantic_judgment` forces `requested_next_step: answer_question`.
+- Decision choices are advisory: no mandatory unanswered count, receipt-blocking count or Stop
+  obligation. They remain visible and never resolve by review silence. A readable reasoned
+  `respond acknowledged` or `respond rejected` makes the prior-finding packet carry a settled,
+  non-rulable row and the answer. The response does not establish a repair. Missing, redacted and
+  unreasoned answers do not settle a choice.
+- `Destructive change:` is a prose label in the existing `message_to_main_agent` (recorded as
+  finding detail), not a structural table/log field: identify the task/input/passing-check match a
+  proposed removal or replacement would lose, and present the cost as a choice.
+- Closing review compares the decisive measurement/assumption to acceptance, names the strongest
+  evidence gap and a discriminating check, and requires repeated comparable performance timings.
+  It uses task-declared input paths from the existing owner-admitted read catalog; unavailable
+  inputs remain coverage limits. ADR-009 admission and removal fences are unchanged.
+
+  Full receipts carry the choice as an `AI-powered decision needed` advisory prose item in
+  `findings_and_dispositions`; after a readable reasoned acknowledgement/rejection, the label is
+  `AI-powered decision recorded`, with the answer labeled `Agent decision (self-reported)`.
+  The existing receipt profile, prose-leaf privacy projection and section/byte bounds apply.
+
+### Bounded advisory delivery and frozen ledger misses (#1139, #1126, #1148)
+
+ADR-006's 2026-10-21 amendment owns this behavior. MCP Codex check results may carry
+`review_delivery` (check-result 1.6.0, optional finding-summary text or an omission), inserted first.
+Findings status pages may carry the same optional member before `items` (status-result 1.4.0).
+The bridge derives it after privacy projection. It carries at most three complete bounded groups:
+summary → requested action → alternative interpretation → uncertainty. The review-summary budget
+is 420 JSON-encoded bytes and each challenge field's is 180, including escaping. Labels, ids and
+an explicit truncated-preview continuation remain within 3,600 encoded bytes. Full findings,
+review summary, evidence and provenance are retained. Generic and Claude text lead with this
+advisory before evidence. Cursor's canonical full-copy contract is unchanged. CLI, TUI, hooks and
+receipts keep their existing full-field and privacy contracts. They do not receive a new judgment.
+Native-host delivery is not established by the offline clipping simulation.
+
+Prior dialogue is reserved before aggregate case fitting, and channel fallback preserves the
+recipe's permitted finding prose. In a narrowed recipe, labelled fields can share one or more
+`prior-finding-context-N-<ref>` prose items (each at most 16 KiB). The structural `text_item_ids`
+map still names where each field is carried. The existing per-field text bounds remain. Before
+shrinking excerpt bytes, both planners try at most three smaller excerpt counts to bound catalog
+overhead while checking the exact payload and original diff floor. Count probes add to the
+reported planning rounds without consuming the existing byte-planning round allowance. The
+original section bounds, task statement, primary diff floor and latest verification reserve remain.
+After ordinary bulk yields, whole prior finding groups can leave the aggregate case or catalog
+with omissions and partial prior-context accounting. The protected primary core refuses if it
+cannot fit. Capacity cannot silently turn a recorded rebuttal into an empty structural question.
+
+`ReviewerBroker._ledger` reports an unmatched frozen selector as `not_in_frozen_case`, not
+`not_recorded`. Its fixed `continuation` explains that frozen absence does not prove non-recording
+and requests `final_judgment.missing_for_assessment` with the appropriate kind and target refs.
+The broker neither opens mutable ledger state nor grants extra content authority. Unknown and
+selection-omitted refs share this conservative label. This changes no #905 finding state or budget.
+
+### Closure honesty follow-ups (#1140, #1143, #1144, #1149)
+
+`check-result` 1.6.0 optionally carries `closure_readiness`, the exact status readiness model
+at its committed result frontier, including lineage and verification currency. Its finding list
+is finding work, `missing_for_assessment` is assessment-input work, and readiness's
+`standing_limitations` are disclosures. An empty finding list cannot authorize a receipt while
+that shared readiness is `action_required`: `overall_next` is `review_recorded_work`, and a
+finding checklist that otherwise offered a receipt says `follow_overall_next`. CLI, MCP and the
+terminal interface consume these shared results; Codex, Claude Code and Cursor Stop adapters
+continue consuming the same status readiness. Receipt prediction still comes from the receipt
+basis at that frontier. Unknown readiness never grants closure.
+
+An output request targeted at an event of the wrong type, a retained-only row, or a known path
+outside the available workspace root is `structurally_unavailable_on_this_host`, rather than
+`agent_suppliable`. This classification never authorizes copying input across a root boundary.
+Packet-room and unsupported-type classifications remain distinct. Root availability here is
+conservative: the classification context lacks a complete manifest of outside-root authority.
+
+A requested AI-powered review stopped by the existing repeated-unassessability cap is
+`semantic_status: unavailable`, `semantic_reason: round_limit_unassessable`. No new provider
+attempt or provenance is fabricated. This pair is admitted on check-result/check-recorded 1.6.0
+and the status operation's `check_outcome`; older check schemas keep their bytes and reject it.
+The 1.6.0 event can carry this pair without `reviewer`. Receipt-document 1.3.0 optionally carries
+the same two fields, together, for this stopped outcome; JSON, markdown, text and compact receipts
+name the stop. Required review remains incomplete and never becomes a local-only success.
+
+A self-verified concern is not necessarily a repair. A retained reasoned rejection makes its
+resolution explanation say the agent checked it and reports it does not hold. Otherwise the text
+says only that the agent recorded its own verification. Receipt-document 1.3.0 optionally carries
+`disproved_self_verified_finding_ids`, a sorted subset of `self_verified_finding_ids`, and human
+receipts identify those concerns separately. No row becomes independently resolved or clean.
+
+For freshness, a service-stamped, complete workspace fingerprint proving an in-workspace shell
+write byte-identical does not advance the verification edit frontier. The same trusted action set
+is frozen as `verification_unchanged_action_ids` in the internal deterministic case and used by
+work-integrity. Contradictory or unavailable observations, outside writes, and declared paths the
+fingerprint cannot compare retain conservative freshness. This is the bounded #1143 mitigation;
+new report files and changed report bytes still invalidate freshness. General per-command
+verification dependencies and generated-artifact roles remain an open design requirement.
