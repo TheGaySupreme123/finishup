@@ -590,15 +590,17 @@ class SemanticEgressBlocked:
     redacted_span_count: int = 0
     # PL2-1: bounded item refs and line numbers of replaced or withheld values, never values.
     redacted_values: tuple[SemanticRedactedValue, ...] = ()
-    # #1118: a size refusal's ``(attempted, limit)`` bytes: the rendered disclosure that would have
-    # been sent and the bound it exceeds. The receipt stays ``blocked_by_policy`` /
+    # A capacity refusal's ``(attempted, limit)`` for the typed scope and unit below.
+    # The receipt stays ``blocked_by_policy`` /
     # ``policy_denied``; the check reports ``case_capacity_exceeded`` from this. Never content.
     # For an unsent read continuation (#1135), these are its minimum action-plus-envelope bytes
     # and the remaining exchange allowance. Earlier exchanges may already have been sent.
     capacity: tuple[int, int] | None = None
-    # #1118: what ``capacity`` counts: bytes, or estimated model tokens on a route sized to its
-    # model's context.
-    capacity_unit: Literal["bytes", "tokens"] = "bytes"
+    # What ``capacity`` counts: bytes, estimated tokens, or the number of excerpts.
+    capacity_unit: Literal["bytes", "tokens", "excerpts"] = "bytes"
+    # Which approved bound was exceeded; excerpt bytes count the privacy-transformed content,
+    # not its original selection size or the JSON-escaped whole disclosure.
+    capacity_scope: Literal["disclosure", "excerpt", "excerpt_total"] = "disclosure"
 
     def __post_init__(self) -> None:
         _validate_withheld_item_ids(self.withheld_item_ids)
@@ -614,9 +616,14 @@ class SemanticEgressBlocked:
                 or self.outcome is not PrivacyOutcome.BLOCKED_BY_POLICY
             ):
                 raise ValueError("semantic_capacity_invalid")
-        if self.capacity_unit not in ("bytes", "tokens") or (
-            self.capacity_unit == "tokens" and self.capacity is None
-        ):
+        scope_unit = (self.capacity_scope, self.capacity_unit)
+        if scope_unit not in {
+            ("disclosure", "bytes"),
+            ("disclosure", "tokens"),
+            ("excerpt", "bytes"),
+            ("excerpt", "excerpts"),
+            ("excerpt_total", "bytes"),
+        } or (self.capacity is None and scope_unit != ("disclosure", "bytes")):
             raise ValueError("semantic_capacity_invalid")
 
 
@@ -1832,7 +1839,13 @@ class PrivacyCoordinator:
                     redacted_span_count=minimized.redacted_span_count,
                     redacted_values=minimized.redacted_values,
                 )
-        if _exceeds_current_limits(proposal, effective):
+        limit_capacity = None
+        limits_valid = True
+        try:
+            limit_capacity = _current_limit_capacity(proposal, effective)
+        except ValueError:
+            limits_valid = False
+        if not limits_valid or limit_capacity is not None:
             # A proposal prepared before the policy narrowed must not reach a provider on resume:
             # its excerpts and bytes answer to the policy in force now (issue #907 Phase 1b).
             return SemanticEgressBlocked(
@@ -1843,6 +1856,9 @@ class PrivacyCoordinator:
                 withheld_item_ids=proposal.withheld_item_ids,
                 redacted_span_count=minimized.redacted_span_count,
                 redacted_values=minimized.redacted_values,
+                capacity=None if limit_capacity is None else limit_capacity[0],
+                capacity_unit="bytes" if limit_capacity is None else limit_capacity[1],
+                capacity_scope="disclosure" if limit_capacity is None else limit_capacity[2],
             )
         if status == "authorized":
             auth_id = state.authorization_id
@@ -2204,13 +2220,22 @@ class PrivacyCoordinator:
                 redacted_values=minimized.redacted_values,
                 scan_stage=ReceiptSecretScanStage.PREPARED_CASE,
                 scan_match_count=_minimized_scan_match_count(minimized),
+                capacity=(minimized.token_count, llm.max_tokens),
+                capacity_unit="tokens",
             )
         # The approved excerpt limits are authoritative here too: a review packet with more
         # excerpts, or more excerpt bytes, than the effective policy approved is refused whole,
         # never trimmed to fit (issue #907 Phase 1b).
-        if candidate.purpose == _SEMANTIC_PURPOSE and not _within_excerpt_limits(
-            packet_bytes, effective.policy.review_selection
-        ):
+        excerpt_capacity = None
+        excerpt_packet_valid = True
+        if candidate.purpose == _SEMANTIC_PURPOSE:
+            try:
+                excerpt_capacity = _excerpt_limit_capacity(
+                    packet_bytes, effective.policy.review_selection
+                )
+            except ValueError:
+                excerpt_packet_valid = False
+        if not excerpt_packet_valid or excerpt_capacity is not None:
             return await self._complete_semantic_predispatch(
                 candidate,
                 effective,
@@ -2222,6 +2247,9 @@ class PrivacyCoordinator:
                 redacted_values=minimized.redacted_values,
                 scan_stage=ReceiptSecretScanStage.PREPARED_CASE,
                 scan_match_count=_minimized_scan_match_count(minimized),
+                capacity=None if excerpt_capacity is None else excerpt_capacity[0],
+                capacity_unit="bytes" if excerpt_capacity is None else excerpt_capacity[1],
+                capacity_scope="disclosure" if excerpt_capacity is None else excerpt_capacity[2],
             )
 
         task_id = candidate.scope.task_id
@@ -2871,7 +2899,8 @@ class PrivacyCoordinator:
         scan_match_count: int = 0,
         scan_not_run_reason: PrivacyReason | None = None,
         capacity: tuple[int, int] | None = None,
-        capacity_unit: Literal["bytes", "tokens"] = "bytes",
+        capacity_unit: Literal["bytes", "tokens", "excerpts"] = "bytes",
+        capacity_scope: Literal["disclosure", "excerpt", "excerpt_total"] = "disclosure",
     ) -> SemanticEgressBlocked:
         now = self._clock.now_utc()
         pid = proposal_id or self._ids.new(IdKind.PRIVACY_PROPOSAL)
@@ -3023,6 +3052,7 @@ class PrivacyCoordinator:
             redacted_values=redacted_values,
             capacity=capacity,
             capacity_unit=capacity_unit,
+            capacity_scope=capacity_scope,
         )
 
     def _local_decision(
@@ -3430,18 +3460,26 @@ class PrivacyCoordinator:
         )
 
 
-def _exceeds_current_limits(
+def _current_limit_capacity(
     proposal: DisclosureProposal, effective: EffectivePrivacyPolicy
-) -> bool:
-    """Whether a stored review proposal is outside the excerpt limits or channel ceilings now."""
+) -> (
+    tuple[
+        tuple[int, int],
+        Literal["bytes", "tokens", "excerpts"],
+        Literal["disclosure", "excerpt", "excerpt_total"],
+    ]
+    | None
+):
+    """The bound a stored proposal exceeds, measured from its privacy-transformed packet."""
 
     if proposal.purpose != _SEMANTIC_PURPOSE:
-        return False
+        return None
     # A reviewer exchange (#1118) carries the packet as its first user turn; the excerpt limits
     # answer to that packet, the channel ceilings below to the whole conversation.
     packet = reviewer_packet_bytes(proposal.prepared_bytes) or proposal.prepared_bytes
-    if not _within_excerpt_limits(packet, effective.policy.review_selection):
-        return True
+    capacity = _excerpt_limit_capacity(packet, effective.policy.review_selection)
+    if capacity is not None:
+        return capacity
     llm = next(
         (
             channel
@@ -3450,44 +3488,50 @@ def _exceeds_current_limits(
         ),
         None,
     )
-    return llm is not None and (
-        0 < llm.max_bytes < len(proposal.prepared_bytes) or 0 < llm.max_tokens < proposal.max_tokens
-    )
+    if llm is not None:
+        if 0 < llm.max_bytes < len(proposal.prepared_bytes):
+            return (len(proposal.prepared_bytes), llm.max_bytes), "bytes", "disclosure"
+        if 0 < llm.max_tokens < proposal.max_tokens:
+            return (proposal.max_tokens, llm.max_tokens), "tokens", "disclosure"
+    return None
 
 
-def _within_excerpt_limits(prepared: bytes, selection: ReviewSelectionPolicy) -> bool:
-    """Whether a prepared review packet stays inside the approved excerpt count and bytes.
-
-    Counted off the exact bytes that would leave, from the packet's own ``excerpt`` rows; a
-    document without item rows carries no excerpt. A document this cannot read is outside the
-    limits: the check fails closed.
-    """
+def _excerpt_limit_capacity(
+    prepared: bytes, selection: ReviewSelectionPolicy
+) -> (
+    tuple[tuple[int, int], Literal["bytes", "excerpts"], Literal["excerpt", "excerpt_total"]] | None
+):
+    """Measure the exact transformed excerpt content; malformed packets still fail closed."""
 
     try:
         document = strict_json_parse(prepared)
     except Exception:  # noqa: BLE001 - any unreadable packet fails closed
-        return False
+        raise ValueError("excerpt_packet_invalid") from None
     if not isinstance(document, dict):
-        return False
+        raise ValueError("excerpt_packet_invalid")
     rows = cast(dict[str, object], document).get("items", [])
     if not isinstance(rows, list):
-        return False
+        raise ValueError("excerpt_packet_invalid")
     sizes: list[int] = []
     for row in cast(list[object], rows):
         if not isinstance(row, dict):
-            return False
+            raise ValueError("excerpt_packet_invalid")
         fields = cast(dict[str, object], row)
         if fields.get("section") != "excerpt":
             continue
         size = fields.get("content_bytes")
         if type(size) is not int:
-            return False
+            raise ValueError("excerpt_packet_invalid")
         sizes.append(size)
-    return (
-        len(sizes) <= selection.max_excerpts
-        and all(size <= selection.max_excerpt_bytes for size in sizes)
-        and sum(sizes) <= selection.max_total_excerpt_bytes
-    )
+    if len(sizes) > selection.max_excerpts:
+        return (len(sizes), selection.max_excerpts), "excerpts", "excerpt"
+    largest = max(sizes, default=0)
+    if largest > selection.max_excerpt_bytes:
+        return (largest, selection.max_excerpt_bytes), "bytes", "excerpt"
+    total = sum(sizes)
+    if total > selection.max_total_excerpt_bytes:
+        return (total, selection.max_total_excerpt_bytes), "bytes", "excerpt_total"
+    return None
 
 
 def _scope_digest(scope: AuthorizationScope) -> str:

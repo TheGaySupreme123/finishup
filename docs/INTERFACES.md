@@ -4675,6 +4675,16 @@ such as `p<ss>w0rd|x` or `Summer2024...`. A marker followed by more bytes
 Capture-time redaction covers only high-confidence findings; heuristic-only matches are redacted
 at egress.
 
+The exact `[REDACTED]` and `[withheld-by-yoetz:possible-credential]` values remain exempt when a
+packet is JSON-encoded again inside a reviewer exchange (#1138). The exemption checks the
+encoding depth of whitespace escapes against the closing quote's framing; it does not strip
+arbitrary backslashes or suffixes. Marker lookalikes, concrete credentials, private-key markers
+and canaries keep their existing detection and whole-case refusal rules.
+Within one scan, enclosing JSON string spans and their validated decodes are cached per string.
+A byte-offset map accounts for escapes and UTF-8 widths, including surrogate pairs, so each
+occurrence still proves its own nesting without rescanning or decoding growing prefixes. The
+cache is discarded after the scan; invalid strings cannot supply an exemption.
+
 `PreDispatchAuditDecision` is structural-only and terminal; it permits no prepared bytes,
 authorization, or dispatch. A v0.1 content-bearing `DisclosureProposal` has one owning `task_id` and
 is encrypted as `ObjectKind.privacy_audit` in that task bundle; the privacy catalog stores its
@@ -10873,12 +10883,21 @@ plan. Names and contracts:
 - Resume (`PrivacyCoordinator._resume_admitted`) denies a stored `semantic-review` proposal,
   external or local-model, outside the current policy's excerpt limits or LLM `max_bytes` /
   `max_tokens` with `blocked_by_policy` / `policy_denied` before dispatch.
-- Capacity refusals (#1118): `SemanticEgressBlocked.capacity` is `(attempted, limit)` bytes on the
-  two size refusals (channel `max_bytes`; reviewer exchange over `MAX_MINIMIZED_DISCLOSURE_BYTES`),
-  only with `blocked_by_policy`, and only when `attempted > limit`. `_map_egress_to_final` maps it
+- Capacity refusals (#1118, #1142): `SemanticEgressBlocked.capacity` is `(attempted, limit)`,
+  only with `blocked_by_policy`, and only when `attempted > limit`. `capacity_scope` is
+  `disclosure`, `excerpt` or `excerpt_total`; `capacity_unit` is `bytes`, `tokens` or `excerpts`.
+  Channel byte/token limits and reviewer exchange limits count the whole disclosure. Excerpt
+  count, per-excerpt bytes and total excerpt bytes count the packet's post-replacement
+  `content_bytes`, after privacy minimization, including marker growth. Initial admission and
+  proposal resume both preserve the exceeded bound without trimming or dispatching the packet.
+  `_map_egress_to_final` maps it
   to `failed/case_capacity_exceeded` and records `semantic_composition/
-  semantic_disclosure_capacity_exceeded` with `semantic_disclosure_attempted_bytes` and
-  `semantic_disclosure_limit_bytes` (integers, never content).
+  semantic_disclosure_capacity_exceeded` with `semantic_<scope>_attempted_<unit>` and
+  `semantic_<scope>_limit_<unit>` (integers, never content). Unrecognized policy reasons map to
+  `failed/coordinator_failure`, rather than claiming a network denial. The existing privacy
+  receipt remains `blocked_by_policy/policy_denied` with zero final bytes; #1129 owns its new
+  schema reason. Check/job status and work-receipt gaps use the existing capacity vocabulary
+  across CLI, MCP, hooks and TUI for Codex, Claude Code and Cursor.
 - TUI: `PrivacyPosture.recipe_outdated` is true when the approved selection is an earlier version
   of its recipe. The privacy screen then offers the newer recipe instead of saying "already on the
   recommended privacy policy".
