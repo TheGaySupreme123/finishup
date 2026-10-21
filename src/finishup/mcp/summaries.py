@@ -1894,6 +1894,26 @@ _RECEIPT_REVIEW_MODE_POINTERS: Final = (
 )
 
 
+def _receipt_correctness_advisory_clause(source: Mapping[str, JsonValue]) -> str:
+    # Counts are authenticated structural fields; never extract them from reviewer/agent prose.
+    counts = source.get("correctness_advisory_counts")
+    if not isinstance(counts, Mapping):
+        return ""
+    total, unanswered = counts.get("total"), counts.get("no_recorded_response")
+    if (
+        type(total) is not str
+        or type(unanswered) is not str
+        or not total.isdigit()
+        or not unanswered.isdigit()
+    ):
+        return ""
+    return (
+        f"Earlier correctness advisories: {total}; no recorded response: {unanswered}. "
+        "Non-blocking; dispositions and provenance: status view=history "
+        "filter.schema_name=check_recorded (follow next_cursor)."
+    )
+
+
 def _receipt_review_mode_clause(source: Mapping[str, JsonValue]) -> str:
     """ADR-049: a fixed pointer to the receipt's review-mode sentences; never their text."""
 
@@ -2768,6 +2788,7 @@ def summary_for_receipt(envelope: object) -> str:
     gap_codes = _safe_gap_codes(source)
     parts: list[Part | None] = [
         _req(f"Receipt conclusion: {conclusion};"),
+        _req(_receipt_correctness_advisory_clause(source)),
         _req(f"{_frontier_clause(source)};"),
         _req(f"coverage limitations: {limitations};"),
         # The pairing is required and sits ahead of droppable gap codes (#1079).

@@ -12175,3 +12175,18 @@ work-integrity. Contradictory or unavailable observations, outside writes, and d
 fingerprint cannot compare retain conservative freshness. This is the bounded #1143 mitigation;
 new report files and changed report bytes still invalidate freshness. General per-command
 verification dependencies and generated-artifact roles remain an open design requirement.
+
+### Correctness advisories (#1162)
+
+`correctness_advisories` is the bounded routine-review note list on check-recorded 1.6.0,
+independent of findings. A `CorrectnessAdvisory` identity is the originating check's `evt_` id,
+colon, and its one-based ordinal (1–10). Summary/detail and subject refs retain the concern;
+subject frontier and semantic provenance belong to that check. `status view=history` filtered to
+`check_recorded` exposes the rows and their frontier-bound disposition with ordinary pagination.
+
+An optional `respond` targets this identity using the existing `finding_id`/`finding_frontier`
+keys. `addressed` means agent-reported with linked evidence; `declined` records the reason;
+absence is `no_recorded_response`. Source-redacted response details are `response_unavailable`.
+Typed `decision_recorded` 1.1.0 `advisory_response` records carry the target, disposition and mirrored
+evidence refs; `rationale` carries the reason. They are independent of review-mode switches and
+never change finding state, check applicability, closure readiness or receipt conclusions.

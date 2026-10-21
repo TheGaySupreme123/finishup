@@ -2103,6 +2103,14 @@ async def _closure_readiness(
     # without them keeps its bytes.
     cause = _check_cause_model(facts, checklist.agent_actionable, checklist.standing_limitations)
     optional_fields: dict[str, Any] = {}
+    if loaded is not None:
+        from finishup.kernel.correctness_advisories import (
+            advisory_closing_text,
+            correctness_advisories,
+        )
+
+        if notes := correctness_advisories(loaded.records):
+            optional_fields["correctness_advisory_summary"] = advisory_closing_text(notes)
     if cause is not None:
         optional_fields["check_cause"] = cause
     if facts.fact_lineage:

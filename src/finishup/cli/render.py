@@ -58,6 +58,7 @@ from finishup.protocol.models import (
     StatusCompactPageModel,
     StatusEvidencePageModel,
     StatusFindingsPageModel,
+    StatusHistoryPageModel,
     StatusLineagePageModel,
     StatusObligationsPageModel,
     StatusOperationPageModel,
@@ -186,6 +187,14 @@ def render_hook_recovery_suffix(
     if token is None:
         return ""
     return f" Continuation: {token}."
+
+
+def _projected_text_value(value: JsonValue | None) -> str:
+    if isinstance(value, str):
+        return value
+    if isinstance(value, Mapping):
+        return _projected_text(OmittedContentModel.model_validate(value))
+    return "[content unavailable]"
 
 
 def _projected_text(value: str | OmittedContentModel | None) -> str:
@@ -729,6 +738,8 @@ def render_closure_readiness_lines(readiness: StatusClosureReadinessModel) -> tu
         lines.append(
             "Acknowledged, not done: " + listed + (f" (+{hidden} more)" if hidden > 0 else "")
         )
+    if readiness.correctness_advisory_summary:
+        lines.append(readiness.correctness_advisory_summary)
     return tuple(lines)
 
 
@@ -939,6 +950,58 @@ def render_human_status(result: StatusSuccessModel) -> str:
             lines.append(f"- {receipt.task_id}: {receipt.conclusion} ({receipt.receipt_id})")
         if page.next_cursor is not None:
             lines.append(f"Next page: {page.next_cursor}")
+    if isinstance(result.page, StatusHistoryPageModel):
+        for entry in result.page.items:
+            notes = getattr(entry, "correctness_advisories", None)
+            if notes:
+                checked = getattr(entry, "advisory_subject_frontier", None)
+                if checked is not None:
+                    lines.append(
+                        f"Advisory check {entry.event_id}; subject frontier {checked.sequence}."
+                    )
+                provenance = getattr(entry, "advisory_provenance", None)
+                if isinstance(provenance, Mapping):
+                    provenance = cast(Mapping[str, JsonValue], provenance)
+                    lines.append(
+                        f"AI-powered source: {provenance.get('provider')}, "
+                        f"model {provenance.get('model')}; "
+                        f"attempt {provenance.get('semantic_attempt_id')}."
+                    )
+                for note in notes:
+                    if not isinstance(note, Mapping):
+                        continue
+                    note = cast(Mapping[str, JsonValue], note)
+                    disposition = str(note.get("disposition")).replace("_", " ")
+                    if disposition == "addressed":
+                        disposition = "addressed (agent-reported, linked evidence)"
+                    elif disposition == "declined":
+                        disposition = "declined with reason"
+                    lines.append(
+                        "Correctness advisory " + str(note.get("advisory_id")) + ": " + disposition
+                    )
+                    lines.append(
+                        "  Subjects: "
+                        + ", ".join(str(ref) for ref in cast(tuple[str, ...], note["subject_refs"]))
+                    )
+                    lines.append(
+                        "  "
+                        + _projected_text_value(note.get("summary"))
+                        + "\n"
+                        + _projected_text_value(note.get("detail"))
+                    )
+                    if note.get("reason") is not None:
+                        lines.append(
+                            "  Agent response (self-reported): "
+                            + _projected_text_value(note.get("reason"))
+                        )
+                    if note.get("evidence_refs"):
+                        lines.append(
+                            "  Linked evidence: "
+                            + ", ".join(
+                                str(ref)
+                                for ref in cast(tuple[JsonValue, ...], note["evidence_refs"])
+                            )
+                        )
     if isinstance(result.page, StatusEvidencePageModel):
         # One line per row: the ledger-recorded channel lets a reader tell cooperative evidence
         # from host-observed captures without reading any prose.

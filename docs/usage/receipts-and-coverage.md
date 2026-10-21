@@ -535,3 +535,15 @@ Keep incidental evidence reports and logs outside your project and its output di
 publish references through the ledger. Required reports remain deliverables. FinishUP can preserve
 verification after a byte-identical shell rewrite when its trusted workspace comparison proves
 no bytes changed; a new or changed report may still make earlier verification stale.
+
+Earlier correctness advice remains visible when you finish. The receipt shows how many notes
+were recorded and, for each displayed note, **addressed (agent-reported, linked evidence)**,
+**declined with reason**, or **no recorded response**. Advice never blocks closing. A later
+successful check does not establish that an earlier note was addressed. Export views label
+withheld prose; truncated lists link to the paginated history.
+
+Your agent may optionally record its response through `respond`, using the advisory identity in
+`finding_id` and a current `finding_frontier`: `addressed` needs a reason and recorded evidence
+refs, while `declined` needs a reason. This records the agent's account, not independent proof.
+Retrieve the full index through `status view=history` with `filter.schema_name=check_recorded`,
+following `next_cursor` with the same filter and limit.

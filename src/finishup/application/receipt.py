@@ -146,6 +146,7 @@ class ReceiptInternalResult:
     # The requesting writer, for the agent-context name provenance (receipt_projection). Internal
     # only: never admitted from a client and never serialized on the wire.
     writer_id: str | None = field(default=None, repr=False)
+    correctness_advisory_counts: JsonValue | None = None
 
     def as_json(self) -> dict[str, JsonValue]:
         versions = {
@@ -194,6 +195,11 @@ class ReceiptInternalResult:
             "coverage": coverage_to_json(self.coverage),
             "suppressed_finding_count": self.suppressed_finding_count,
             "versions": cast(JsonValue, versions),
+            **(
+                {}
+                if self.correctness_advisory_counts is None
+                else {"correctness_advisory_counts": self.correctness_advisory_counts}
+            ),
         }
 
 
@@ -508,6 +514,7 @@ def _internal_result(
         document.suppressed_finding_count,
         document.versions,
         request.writer_id,
+        document.correctness_advisory_counts,
     )
 
 

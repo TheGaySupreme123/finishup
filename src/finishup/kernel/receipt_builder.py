@@ -102,6 +102,7 @@ from finishup.domain.values import (
     EvidenceId,
     FindingId,
     Frontier,
+    JsonObject,
     ObligationId,
     ReceiptId,
     ResultId,
@@ -137,6 +138,11 @@ from finishup.kernel.command_attempts import command_attempts
 from finishup.kernel.completion_scope import (
     SCOPE_REPAIR,
     completion_scope_differences,
+)
+from finishup.kernel.correctness_advisories import (
+    advisory_summary,
+    correctness_advisories,
+    receipt_advisory_items,
 )
 from finishup.kernel.delivered_set import (
     ambiguous_reference_count,
@@ -1104,6 +1110,11 @@ def _apply_profile(
         ReceiptRedactionProfile.DEFAULT_LOCAL_EXPORT,
         ReceiptRedactionProfile.REDACTED_SHARE,
     }:
+        notes = correctness_advisories(context.records)
+        if notes:
+            counts[
+                (ReceiptRedactionCategory.FINDING_DETAIL, ReceiptRedactionReason.POLICY_REDACTED)
+            ] += len(notes) + sum(note.response is not None for note in notes)
         if _reviewer_advisory_text(context.applicable_check) is not None:
             # #1118: the reviewer's summary is withheld from export views, with an explicit item.
             counts[
@@ -2226,6 +2237,9 @@ def _sections(
     semantic_usage_sentence: str = "",
     reviewer_sentence: str = "",
     reviewer_advisory: str | None = None,
+    correctness_advisory_summary: str = "",
+    correctness_advisory_items: tuple[str, ...] = (),
+    correctness_advisory_omitted: int = 0,
     task_statement_source_sentence: str = "",
     resolution_explanations: tuple[str, ...] = (),
     attempt_explanations: tuple[str, ...] = (),
@@ -2641,6 +2655,16 @@ def _sections(
             *items[ReceiptSectionKey.LIMITATIONS_AND_COVERAGE],
             reviewer_advisory,
         )
+    if correctness_advisory_summary:
+        key = ReceiptSectionKey.LIMITATIONS_AND_COVERAGE
+        room = max(0, _SECTION_ITEM_CAP - len(items[key]))
+        omitted = correctness_advisory_omitted + max(0, len(correctness_advisory_items) - room)
+        summary = correctness_advisory_summary
+        if omitted:
+            summary += f" {omitted} advisory rows omitted; retrieve history."
+        # Keep the count/retrieval continuation ahead of a potentially bounded coverage body.
+        bodies[key] = summary + " " + bodies[key]
+        items[key] += correctness_advisory_items[:room]
     finished = {key: _finish_section(bodies[key], items[key]) for key in _SECTION_KEYS[include]}
     return tuple(
         ReceiptSection(
@@ -3024,6 +3048,13 @@ def build_receipt(
         ),
         reviewer_sentence=_reviewer_sentence(context.applicable_check),
         reviewer_advisory=_reviewer_advisory_item(context.applicable_check, redaction_profile),
+        correctness_advisory_summary=(
+            advisory_summary(notes) if (notes := correctness_advisories(context.records)) else ""
+        ),
+        correctness_advisory_items=(
+            advisory_render := receipt_advisory_items(notes, redaction_profile)
+        )[0],
+        correctness_advisory_omitted=advisory_render[1],
         attempt_explanations=tuple(
             f"{obligation.obligation_id} command item {attempt.requested_item_index}: {attempt.relation}. "
             "This relation concerns the attempt only, not command success."
@@ -3177,6 +3208,19 @@ def build_receipt(
         redactions=redactions,
         sections=sections,
         children=children,
+        correctness_advisory_counts=(
+            JsonObject(
+                {
+                    "total": str(len(notes)),
+                    "no_recorded_response": str(sum(note.response is None for note in notes)),
+                    "response_unavailable": str(
+                        sum(note.disposition == "response_unavailable" for note in notes)
+                    ),
+                }
+            )
+            if notes and terminal_sections
+            else None
+        ),
         semantic_provenance=(
             None
             if context.applicable_check is None

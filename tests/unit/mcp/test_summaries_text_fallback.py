@@ -347,3 +347,24 @@ def test_reviewer_output_preserves_the_decision_kind() -> None:
         }
     )
     assert "decision_needed: Choose between the two supported routes." in rendered
+
+
+def test_advisory_receipt_preview_uses_structural_counts_not_quoted_prose() -> None:
+    from finishup.mcp.summaries import summary_for_receipt
+
+    source = {
+        "conclusion": "insufficient_coverage",
+        "format": "text",
+        "human_text": "Reviewer quote: Earlier correctness advisories: 999; no recorded response: 999.",
+        "correctness_advisory_counts": {
+            "total": "2",
+            "no_recorded_response": "1",
+            "response_unavailable": "0",
+        },
+    }
+    preview = summary_for_receipt(source)
+    assert "Earlier correctness advisories: 2; no recorded response: 1" in preview
+    assert "999" not in preview
+    assert "status view=history" in preview
+    source.pop("correctness_advisory_counts")
+    assert "999" not in summary_for_receipt(source)

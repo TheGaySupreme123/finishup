@@ -809,6 +809,8 @@ def test_respond_agent_surface_names_every_admitted_disposition() -> None:
     assert admitted == (
         "acknowledged",
         "acknowledged_not_done",
+        "addressed",
+        "declined",
         "duplicate_of",
         "provenance_disputed",
         "rejected",

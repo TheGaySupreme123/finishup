@@ -1472,7 +1472,9 @@ def _describe_presentation_schema(name: str, schema: dict[str, JsonValue]) -> No
                 "breaks the link. Provenance_disputed contests the finding's authorship "
                 "or provenance premise rather than its conclusion. It, rejected, reopened and "
                 "acknowledged_not_done require reason and accept no waiver fields. Waived "
-                "requires reason and waiver_scope."
+                "requires reason and waiver_scope. A correctness advisory uses its check-event-id:ordinal "
+                "in finding_id: addressed requires reason and evidence_refs; declined requires reason. "
+                "Both are optional agent reports and non-blocking."
             )
         duplicate_of = properties.get("duplicate_of_finding_id")
         if isinstance(duplicate_of, dict):

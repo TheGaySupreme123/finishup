@@ -22,6 +22,7 @@ from finishup.application.missing_for_assessment import (
 )
 from finishup.application.review_concern import answer_bound, concern_material_after
 from finishup.domain.coordination import CoordinationError, CoordinationErrorCode
+from finishup.domain.correctness_advisories import validate_advisories
 from finishup.domain.events import (
     MAX_SEMANTIC_INCLUDED_REFS,
     MAX_UNDECLARED_REFERENCES,
@@ -493,6 +494,7 @@ class SemanticJudgmentReview:
     # Issue #1042: routine-phase correctness concerns (``code_defect``) recorded as advisory,
     # non-blocking notes in the review summary instead of findings.
     advisory_notes: int = 0
+    correctness_advisories: tuple[JsonObject, ...] = ()
     # Issue #1043: requirement challenges recorded as the agent's own criterion
     # (``agent_criterion_unmet``); they are still candidates, so this is a diagnostic count only.
     agent_criteria: int = 0
@@ -521,8 +523,14 @@ class SemanticJudgmentReview:
             raise _invalid("semantic_judgment_review_invalid")
         if type(self.refs_reduced) is not int or self.refs_reduced < 0:
             raise _invalid("semantic_judgment_review_invalid")
-        if type(self.advisory_notes) is not int or self.advisory_notes < 0:
+        if (
+            type(self.advisory_notes) is not int
+            or self.advisory_notes < 0
+            or type(self.correctness_advisories) is not tuple
+            or len(self.correctness_advisories) != self.advisory_notes
+        ):
             raise _invalid("semantic_judgment_review_invalid")
+        validate_advisories(self.correctness_advisories)
         if type(self.agent_criteria) is not int or not 0 <= self.agent_criteria <= len(
             self.candidates
         ):
@@ -4828,6 +4836,16 @@ def validate_semantic_judgment(
         snippets_rejected,
         fence.refs_reduced,
         advisory_notes=len(advisory),
+        correctness_advisories=tuple(
+            JsonObject(
+                {
+                    "summary": _bounded_review_text(item.summary),
+                    "detail": _bounded_review_text(item.message_to_main_agent),
+                    "subject_refs": tuple(sorted(set(item.cited_refs))),
+                }
+            )
+            for item in advisory
+        ),
         agent_criteria=agent_criteria,
     )
 
@@ -6596,6 +6614,7 @@ async def execute_check_commit(
                 claim_ids=scope.claim_ids, obligation_ids=scope.obligation_ids
             ),
             "semantic_conclusion": semantic_conclusion,
+            "correctness_advisories": review.correctness_advisories,
             "review_summary": (
                 review.review_summary
                 if semantic_result.status is SemanticStatus.SUCCEEDED

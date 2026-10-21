@@ -4439,6 +4439,7 @@ def _decide_closure_gate(
     remaining_seconds: float,
     _state: Path | None,
     active_stop: bool = False,
+    advisory_notes: list[str] | None = None,
 ) -> ClosureGate | None:
     """Decide the Stop-time closure gate for one mapped session (#977). Never raises.
 
@@ -4519,6 +4520,7 @@ def _decide_closure_gate(
                 reasked_blockers=reasked,
                 active_stop=active_stop,
                 code_mode=code_mode,
+                advisory_notes=advisory_notes,
             )
 
         decided = cast(ClosureGate | None, run(_read))
@@ -5298,6 +5300,7 @@ def handle_observe(
 
         # Assigned only by the Stop-time closure gate below (#977); every earlier render sees None.
         closure_gate: ClosureGate | None = None
+        stop_advisory_notes: list[str] = []
 
         def _render_context(
             additional_context: str, *, limit: int | None = None
@@ -6534,6 +6537,7 @@ def handle_observe(
                 ),
                 _state=_state,
                 active_stop=stop_already_active,
+                advisory_notes=stop_advisory_notes,
             )
             if closure_gate is not None:
                 # The gate is the whole Stop message: it names what remains, and ordinary
@@ -6655,8 +6659,16 @@ def handle_observe(
                 additional = f"{additional}\n{session_recap}".strip()
                 context_limit = RECAP_CONTEXT_LIMIT
             rendered_output = _render_context(additional, limit=context_limit) if additional else {}
+            if stop_advisory_notes:
+                # Advisory visibility never changes the gate or spends a continuation.
+                note = stop_advisory_notes[0]
+                if source is ObservationSource.CURSOR_HOOK:
+                    for sentence in note.split(". "):
+                        _stderr_line(sentence)
+                else:
+                    rendered_output["systemMessage"] = note
             host_consumable = bool(rendered_output)
-            if additional:
+            if additional or stop_advisory_notes:
                 emitted = _stdout_json(rendered_output, stdout)
             else:
                 emitted = _stdout_json({}, stdout)

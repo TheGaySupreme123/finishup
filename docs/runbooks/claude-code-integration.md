@@ -2945,3 +2945,20 @@ incomplete. Receipt JSON/markdown/text distinguish an agent-disproved concern fr
 repair. Trusted byte-identical in-workspace shell rewrites preserve verification freshness;
 changed reports remain conservative pending #1143's dependency/role manifest. These decisions
 are shared across macOS, Linux and Windows through WSL 2; no native Windows support is implied.
+
+### Correctness advisory closing visibility (#1162)
+
+Routine reviewer correctness notes persist independently of findings. Receipts (all formats and
+include levels), CLI/MCP and terminal-interface status/history show the original check, subjects,
+provenance and optional agent-reported disposition. No response is required and no advisory creates
+a closure gate. The shared guidance asks final prose to retain material advisory statuses.
+
+At Stop, Codex and Claude Code receive the structural count/status disclosure through the common
+owner-facing `systemMessage`, without a blocking decision or model-feedback continuation. Cursor's
+Stop stdout supports only continuing advice, so its non-blocking disclosure goes to stderr; UI
+visibility depends on the host's diagnostic display. Full retrieval stays available in the shared
+receipt and `status view=history` filtered to `check_recorded`. Model receipt of these Stop
+diagnostics and live host/OS parity have not been established by unit hook-contract tests.
+Follow-up owner for any richer non-continuing host channel: issue #1162.
+
+The non-continuing owner notice uses the documented common output field: [upstream hook reference](https://code.claude.com/docs/en/hooks).

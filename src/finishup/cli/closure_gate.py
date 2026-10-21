@@ -1274,6 +1274,7 @@ async def read_closure_gate(
     reasked_blockers: frozenset[str] = frozenset(),
     active_stop: bool = False,
     code_mode: bool = False,
+    advisory_notes: list[str] | None = None,
 ) -> ClosureGate | None:
     """Read the mapped session's compact status and decide the gate.
 
@@ -1307,6 +1308,9 @@ async def read_closure_gate(
         if type(sequence) is not str or type(digest) is not str:
             raise ClosureGateUnavailable("status_unreadable")
         readiness = getattr(branch, "closure_readiness", None)
+        note = getattr(readiness, "correctness_advisory_summary", None)
+        if advisory_notes is not None and type(note) is str and note:
+            advisory_notes.append(note[:1800])
         return closure_gate_from_readiness(
             readiness,
             frontier_sequence=sequence,

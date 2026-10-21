@@ -183,6 +183,10 @@ def test_a_routine_correctness_concern_is_an_advisory_note_not_a_finding() -> No
     routine = _review(case, concern, phase="routine")
     assert routine.candidates == ()
     assert routine.advisory_notes == 1
+    assert len(routine.correctness_advisories) == 1
+    assert routine.correctness_advisories[0]["summary"] == concern.summary
+    assert routine.correctness_advisories[0]["detail"] == concern.message_to_main_agent
+    assert routine.correctness_advisories[0]["subject_refs"] == concern.cited_refs
     assert routine.rejected_by_reason == ()
     assert "Reviewer correctness notes (advisory and non-blocking" in routine.review_summary
     assert "The key schedule skips the last byte" in routine.review_summary

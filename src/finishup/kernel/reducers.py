@@ -206,6 +206,8 @@ def supersedes_recorded_check(
     judges) and a response whose payload is unreadable.
     """
 
+    if type(payload) is DecisionRecordedPayload and payload.advisory_response is not None:
+        return False
     if not is_material_event_family(name):
         return False
     if (

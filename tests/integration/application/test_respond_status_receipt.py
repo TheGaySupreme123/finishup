@@ -9603,3 +9603,232 @@ async def test_the_receipt_catch_all_keeps_its_message_and_names_the_reason(
         "continuation": "lineage_integrity_review",
         "reason_code": "stored_result_shape_invalid",
     }
+
+
+@pytest.mark.parametrize("backend", ["memory", "sqlite"])
+@pytest.mark.parametrize("disposition", [None, "declined", "addressed"])
+async def test_correctness_advisory_survives_check_response_and_receipt(
+    backend: Literal["memory", "sqlite"], disposition: str | None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """TAMP-like: a note survives later clean review output; silence never reports repair."""
+    import finishup.application.check as checks
+    from finishup.kernel.correctness_advisories import correctness_advisories
+    from finishup.protocol.models import StatusHistoryPageModel
+
+    validate = checks.validate_semantic_judgment
+
+    def with_note(*args: Any, **kwargs: Any) -> checks.SemanticJudgmentReview:
+        review = validate(*args, **kwargs)
+        return replace(
+            review,
+            challenges_returned=1,
+            advisory_notes=1,
+            correctness_advisories=(
+                DomainJsonObject(
+                    {
+                        "summary": "Geometry uses world AABBs instead of receptacle-frame footprints.",
+                        "detail": "Transform the object origin into the receptacle frame; test a rotated receptacle.",
+                        "subject_refs": (),
+                    }
+                ),
+            ),
+        )
+
+    monkeypatch.setattr(checks, "validate_semantic_judgment", with_note)
+    app, runtime, _ = _build_app(semantic="required", ledger_backend=backend)
+
+    def advisory_versions(_runtime: object) -> ReceiptVersionSlice:
+        return replace(
+            _versions(), schema_versions=(SchemaVersionEntry("receipts/receipt-document", "1.3.0"),)
+        )
+
+    app = replace(app, receipt_version_resolver=advisory_versions)
+    started, checked, _ = await _bootstrap_finding(app, seed=216200, mode="semantic_required")
+    ledger, _objects = runtime.resources[started.task_id]
+    records = tuple([r async for r in ledger.load_events(started.session_id)])
+    notes = correctness_advisories(records)
+    assert len(notes) == 1 and notes[0].response is None
+    assert notes[0].check.schema.version == "1.6.0"
+    assert notes[0].check.payload.semantic_provenance is not None  # type: ignore[union-attr]
+    frontier = checked.result_frontier
+    # A second check returns no such note. Its silence cannot answer the earlier note.
+    monkeypatch.setattr(checks, "validate_semantic_judgment", validate)
+    later = await app.check(
+        CheckRequest.model_validate(
+            {
+                **_request_base(protocol_id("req_", 216210)),
+                "session_id": started.session_id,
+                "writer_id": started.writer_id,
+                "expected_frontier": _frontier(frontier),
+                "mode": "semantic_required",
+            }
+        )
+    )
+    assert isinstance(later, CheckCommitResult)
+    frontier = later.result_frontier
+    if disposition is not None:
+        # The linked result is an assertion's evidence, not independent proof of a repair.
+        refs: tuple[str, ...] = ()
+        if disposition == "addressed":
+            published = await app.publish_work(
+                PublishWorkRequest.model_validate(
+                    {
+                        **_request_base(protocol_id("req_", 216211)),
+                        "session_id": started.session_id,
+                        "writer_id": started.writer_id,
+                        "expected_frontier": _frontier(frontier),
+                        "event_drafts": [
+                            {
+                                "event_id": protocol_id("evt_", 216212),
+                                "schema": {"name": "action_recorded", "version": "1.0.0"},
+                                "occurred_at": "2026-07-19T12:00:02.000Z",
+                                "causal_parents": [],
+                                "payload": {
+                                    "action_id": protocol_id("act_", 216213),
+                                    "action_kind": "review",
+                                    "description": "Run the rotated-receptacle verification.",
+                                },
+                                "artifact_refs": [],
+                                "evidence_refs": [],
+                            },
+                            {
+                                "event_id": protocol_id("evt_", 216214),
+                                "schema": {"name": "result_recorded", "version": "1.0.0"},
+                                "occurred_at": "2026-07-19T12:00:03.000Z",
+                                "causal_parents": [protocol_id("evt_", 216212)],
+                                "payload": {
+                                    "result_id": protocol_id("res_", 216215),
+                                    "action_id": protocol_id("act_", 216213),
+                                    "outcome": "success",
+                                    "summary": "Local footprint test passed (agent-reported).",
+                                },
+                                "artifact_refs": [],
+                                "evidence_refs": [],
+                            },
+                        ],
+                    }
+                )
+            )
+            frontier = published.result_frontier
+            refs = (protocol_id("res_", 216215),)
+        body = {
+            **_request_base(protocol_id("req_", 216216)),
+            "session_id": started.session_id,
+            "writer_id": started.writer_id,
+            "expected_frontier": _frontier(frontier),
+            "finding_id": notes[0].advisory_id,
+            "finding_frontier": _frontier(checked.result_frontier),
+            "disposition": disposition,
+            "reason": "Kept the existing geometry with its limitation."
+            if disposition == "declined"
+            else "Changed to the local frame and checked the linked result.",
+            "evidence_refs": refs,
+        }
+        answered = await app.respond(RespondRequest.model_validate(body))
+        replayed = await app.respond(RespondRequest.model_validate(body))
+        assert answered.result_frontier == replayed.result_frontier
+        assert answered.response.disposition == disposition
+        frontier = answered.result_frontier
+    status = await app.status(
+        StatusRequest.model_validate(
+            {
+                **_request_base(protocol_id("req_", 216220)),
+                "session_id": started.session_id,
+                "writer_id": started.writer_id,
+                "view": "history",
+                "limit": "1",
+                "filter": {"schema_name": "check_recorded"},
+            }
+        )
+    )
+    assert isinstance(status.page, StatusHistoryPageModel)
+    row = status.page.items[0]
+    advisory = getattr(row, "correctness_advisories")[0]
+    assert advisory["disposition"] == (disposition or "no_recorded_response")
+    assert "world AABBs" in advisory["summary"]
+    assert getattr(row, "advisory_provenance") is not None
+    from builders.status_wire import compact_status
+    from finishup.cli.render import render_human_status
+    from finishup.protocol.models import StatusSuccessModel
+
+    history_text = render_human_status(
+        StatusSuccessModel.model_validate(
+            {
+                **status.as_json(),
+                "privacy_projection": cast(
+                    StatusSuccessModel, compact_status().result.root
+                ).privacy_projection.model_dump(mode="json"),
+            }
+        )
+    )
+    assert "world AABBs" in history_text and "AI-powered source:" in history_text
+    assert (
+        "no recorded response" in history_text
+        if disposition is None
+        else (
+            "declined with reason" in history_text
+            if disposition == "declined"
+            else "addressed (agent-reported, linked evidence)" in history_text
+        )
+    )
+    assert status.page.next_cursor is not None
+    # Following the cursor keeps the same bound frontier and omits the older check's note.
+    second = await app.status(
+        StatusRequest.model_validate(
+            {
+                **_request_base(protocol_id("req_", 216221)),
+                "session_id": started.session_id,
+                "writer_id": started.writer_id,
+                "view": "history",
+                "limit": "1",
+                "filter": {"schema_name": "check_recorded"},
+                "cursor": status.page.next_cursor,
+            }
+        )
+    )
+    assert second.subject_frontier == status.subject_frontier
+    assert isinstance(second.page, StatusHistoryPageModel)
+    assert getattr(second.page.items[0], "correctness_advisories", None) is None
+    assert status.closure_readiness.correctness_advisory_summary is not None
+    for offset, format_value in enumerate(("json", "markdown", "text")):
+        receipt = await app.receipt(
+            ReceiptRequest.model_validate(
+                {
+                    **_receipt_wire(
+                        request_seed=216230 + offset,
+                        task_id=started.task_id,
+                        session=started.session_id,
+                        writer=started.writer_id,
+                        frontier=frontier,
+                    ),
+                    "format": format_value,
+                    "include": "summary",
+                }
+            )
+        )
+        text = str(receipt.as_json())
+        assert "Earlier correctness advisories: 1" in text
+        assert "world AABBs" in text
+        assert (
+            "no recorded response"
+            if disposition is None
+            else "declined with reason"
+            if disposition == "declined"
+            else "addressed (agent-reported, linked evidence)"
+        ) in text
+
+    if backend == "sqlite":
+        cold = SqliteLedger(
+            db=runtime.sqlite_connections[0],
+            task_id=started.task_id,
+            ownership_fence=ownership_fence(
+                generation=runtime.owners[(started.session_id, started.writer_id)]
+            ),
+            clock=runtime.clock,
+            ids=runtime.ids,
+            objects=_objects,
+        )
+        cold_records = tuple([record async for record in cold.load_events(started.session_id)])
+        retained = correctness_advisories(cold_records)
+        assert len(retained) == 1
+        assert retained[0].disposition == (disposition or "no recorded response")

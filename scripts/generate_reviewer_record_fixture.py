@@ -108,6 +108,16 @@ def document() -> dict[str, JsonValue]:
                 "canonical_hex": canonical_encode(delivery).hex(),
                 "digest": canonical_digest(delivery),
             },
+            "correctness_advisory": {
+                "summary": "Receptacle-frame geometry needs a local footprint check.",
+                "detail": "Transform the object origin into the receptacle frame; add a rotated-receptacle case.",
+                "subject_refs": ["evt_00000000-0000-4000-8000-000000000001"],
+            },
+            "advisory_response": {
+                "advisory_id": "evt_00000000-0000-4000-8000-000000000002:1",
+                "disposition": "declined",
+                "evidence_refs": [],
+            },
             "stopped_review": {
                 "semantic_status": "unavailable",
                 "semantic_reason": "round_limit_unassessable",
@@ -123,6 +133,7 @@ def document() -> dict[str, JsonValue]:
             "ADR-006:reviewer-record",
             "ADR-040:requested-review-stopped",
             "ISSUE-1139:bounded-review-delivery",
+            "ISSUE-1162:non-blocking-advisory-disposition",
         ],
         "purpose": (
             "Freeze the reviewer conversation record. check-recorded 1.6.0 and the check-result "

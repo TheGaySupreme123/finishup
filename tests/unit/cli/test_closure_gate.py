@@ -1139,3 +1139,22 @@ def test_an_unadmitted_outside_task_input_changes_neither_the_stop_gate_nor_the_
     assert sentence is not None
     assert "finishup privacy input-roots add <folder>" in sentence
     assert "/" not in sentence.replace("<folder>", "")
+
+
+def test_advisory_only_stop_never_continues_the_agent(
+    tmp_path: Path, host: _Host, capsys: pytest.CaptureFixture[str]
+) -> None:
+    session = "advisory-only"
+    h = _Harness(tmp_path, host.key(session))
+    h.readiness = _readiness(state="ready_with_limitations", actionable=())
+    text = "Earlier correctness advisories: 1; no recorded response: 1. Non-blocking; status view=history."
+    h.readiness.correctness_advisory_summary = text
+    output = _stop(h, host, session)
+    assert "decision" not in output
+    assert "followup_message" not in output
+    assert "hookSpecificOutput" not in output
+    if host.name == "cursor":
+        assert output == {}
+        assert text.replace(". ", "\n") in capsys.readouterr().err
+    else:
+        assert output == {"systemMessage": text}

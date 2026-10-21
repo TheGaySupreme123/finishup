@@ -2907,3 +2907,49 @@ Maintainer acknowledgement: the explicit scoped implementation request and owner
 #1139/#1126 authorize these delivery, packing and label changes.
 They do not change reviewer judgment, disclosure authority, or the design-gated #905 todo-list
 convergence.
+
+### Amendment 2026-10-21 — routine correctness advisory dispositions (#1162)
+
+Routine `code_defect` notes remain advisory and non-blocking. In addition to their immediate
+review-summary delivery, check-recorded 1.6.0 retains up to ten `correctness_advisories`, each with
+the original summary, message and subject refs. Each prose field is bounded to 8,192 UTF-8 bytes;
+truncation is labeled. The originating check supplies its subject frontier and exact AI-powered
+provenance. Identity is `<check-event-id>:<one-based-ordinal>`. Notes are not findings, never enter
+finding ranking or resolution, and never affect closure readiness or the receipt conclusion.
+
+`respond` optionally accepts that identity in its existing `finding_id` target field and an
+in-chain `finding_frontier` at or after the check. `addressed` requires a reason and at least one
+readable task evidence/result ref; `declined` requires a reason. Both are agent reports, never
+proof of repair. A later response replaces the displayed disposition; earlier decisions remain
+retrievable. Idempotent replay uses the same response request identity. No answer is required,
+and later checks or silence never answer an advisory. An unreadable response is labeled
+unavailable, not unresponded.
+
+The response is a typed `decision_recorded` 1.1.0 `advisory_response` with a fixed statement,
+reason in `rationale`, check causal parent and mirrored evidence refs. This unreleased version
+now admits exactly one of `review_mode` or `advisory_response`; the latter cannot change review
+mode, affect obligations or supersede a decision. Recording it does not stale a check or require
+another check. Released 1.0.0 decisions and earlier check readers remain closed and unchanged.
+
+The existing frontier-bound `status view=history` with `filter.schema_name=check_recorded`
+retrieves original notes, provenance, and the latest response at that frontier. Its existing
+signed cursor, selector and limit rules apply. History prose is `finding_summary` content under
+the existing local disclosure policy. Every receipt include level and JSON/markdown/text rendering
+carries a task-wide count and bounded rows; export profiles explicitly withhold concern/response
+prose and count the redaction. The complete advisory prose is bounded to 8,192 characters and at most 64 rows are
+rendered, with omitted rows counted and the history continuation retained.
+
+Stop reads the same advisory index without creating a gate or continuation. Codex and Claude Code
+receive an owner-facing `systemMessage`; Cursor has no non-continuing Stop stdout advice channel,
+so its bounded disclosure uses stderr. These are owner-facing diagnostics, not proof of delivery
+to the model or of final-prose compliance. All hosts share the receipt/status index and guidance
+asks final prose to disclose material advisory statuses. No host is asked to resume merely to
+answer or repeat a correctness advisory.
+
+Current receipt-document/result 1.3.0 also carries optional structural
+`correctness_advisory_counts` (`total`, `no_recorded_response`, `response_unavailable`). These
+survive replay and supply the short MCP preview for every rendering. Counts are never extracted
+from quoted reviewer or agent prose; source text cannot impersonate the advisory inventory.
+Older receipt artifacts keep their exact shape.
+
+Historical check summaries without typed advisory rows are not parsed or backfilled into identities.
