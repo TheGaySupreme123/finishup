@@ -264,6 +264,7 @@ __all__ = [
     "build_semantic_case",
     "carries_task_inputs",
     "primary_material_selection",
+    "prior_context_selections",
     "final_diff_floor",
     "follow_up_byte_budget",
     "follow_up_new_parts",
@@ -2900,7 +2901,8 @@ def primary_material_selection(
             if section not in {"goal", "obligations", "claims"}
             and (section != "timeline" or keep_timeline)
         ),
-        include_finding_prose=False,
+        # The original finding, its alternative and the agent's answer are the question a
+        # recheck must adjudicate. Capacity fallback never disables already-permitted prose.
         max_timeline_items=min(selection.max_timeline_items, 1)
         if keep_timeline
         else selection.max_timeline_items,
@@ -2929,6 +2931,69 @@ def final_diff_floor(case: SemanticCase, selection: ReviewSelectionPolicy, limit
     return carried
 
 
+def prior_context_selections(
+    case: SemanticCase, selection: ReviewSelectionPolicy, floor: int
+) -> tuple[ReviewSelectionPolicy, ...]:
+    """Bound catalog overhead before shrinking excerpt bytes beside prior dialogue (#1126).
+
+    Many tiny lower-ranked excerpts can cost more metadata than a whole change part. Byte
+    budget search alone is not monotone at that boundary. Try a few count bounds, retaining
+    enough half-share slots for the original diff floor and room for inputs and verification.
+    Every caller still measures the exact candidate and checks the original floor.
+    """
+    if not case.packet.prior_finding_refs:
+        return ()
+    parts = carried = 0
+    for item in case.items:
+        if carried >= floor:
+            break
+        if item.item_id.startswith(CHECK_TIME_CHANGE_ITEM_PREFIX):
+            parts += 1
+            carried += _check_time_change_part_chunk_bytes(item.content)
+    counts = sorted({max(2 * parts, parts + extra, 4) for extra in (8, 4, 2)}, reverse=True)
+    return tuple(replace(selection, max_excerpts=n) for n in counts if n < selection.max_excerpts)
+
+
+def _primary_excerpt_item_ids(
+    items: Sequence[SemanticCaseItem], targeted: Sequence[TargetedExcerptRef]
+) -> set[str]:
+    """The reserved task input and newest verification, shared by both capacity fitters."""
+
+    by_id = {item.item_id: item for item in items}
+    verification_id = next(
+        (
+            ref.excerpt_item_id
+            for ref in targeted
+            if not by_id[ref.excerpt_item_id].superseded_by
+            and by_id[ref.excerpt_item_id].content.startswith(
+                b"[FinishUP: observed output captured by a host hook"
+            )
+        ),
+        "",
+    ) or next(
+        (
+            ref.excerpt_item_id
+            for ref in targeted
+            if ref.source_kind in {"test", "command"}
+            and not ref.excerpt_item_id.startswith(("excerpt-cmd-", "excerpt-fail-"))
+            and not by_id[ref.excerpt_item_id].superseded_by
+        ),
+        "",
+    )
+    return {
+        next(
+            (
+                ref.excerpt_item_id
+                for ref in targeted
+                if ref.excerpt_item_id.startswith(TASK_INPUT_ITEM_PREFIX)
+            ),
+            "",
+        ),
+        verification_id,
+        *(item.item_id for item in items if item.latest_for == "command"),
+    }
+
+
 def _fit_excerpts_within_case_bound(
     items: Sequence[SemanticCaseItem],
     targeted: list[TargetedExcerptRef],
@@ -2951,9 +3016,10 @@ def _fit_excerpts_within_case_bound(
     """
 
     by_id = {item.item_id: item for item in items}
+    case_items = sum(item_id in by_id for item_id in fixed_item_ids) + len(targeted)
     case_bytes = sum(by_id[item_id].content_bytes for item_id in fixed_item_ids if item_id in by_id)
     case_bytes += sum(by_id[excerpt.excerpt_item_id].content_bytes for excerpt in targeted)
-    if case_bytes <= MAX_SEMANTIC_CASE_BYTES:
+    if case_bytes <= MAX_SEMANTIC_CASE_BYTES and case_items <= MAX_SEMANTIC_CASE_ITEMS:
         return 0
     # Narrative yields before primary material, including at the pre-construction bound.
     # Keep special structural rows (lineage, missing-input requests, disclosures, deliverables).
@@ -2970,13 +3036,14 @@ def _fit_excerpts_within_case_bound(
         key=lambda item: (-item.content_bytes, item.item_id),
     )
     for item in narrative:
-        if case_bytes <= MAX_SEMANTIC_CASE_BYTES:
+        if case_bytes <= MAX_SEMANTIC_CASE_BYTES and case_items <= MAX_SEMANTIC_CASE_ITEMS:
             break
         fixed_item_ids.discard(item.item_id)
         for ids in narrative_lists:
             if item.item_id in ids:
                 ids.remove(item.item_id)
         case_bytes -= item.content_bytes
+        case_items -= 1
         _append_omission(
             omissions,
             item.source_ref,
@@ -2988,44 +3055,14 @@ def _fit_excerpts_within_case_bound(
         capture_gaps.add("content_unselected")
     selected = len(targeted)
     dropped_refs: set[str] = set()
-    verification_id = next(
-        (
-            ref.excerpt_item_id
-            for ref in targeted
-            if not by_id[ref.excerpt_item_id].superseded_by
-            and by_id[ref.excerpt_item_id].content.startswith(
-                b"[FinishUP: observed output captured by a host hook"
-            )
-        ),
-        "",
-    ) or next(
-        (
-            ref.excerpt_item_id
-            for ref in targeted
-            if ref.source_kind in {"test", "command"}
-            and not ref.excerpt_item_id.startswith(("excerpt-cmd-", "excerpt-fail-"))
-            and not by_id[ref.excerpt_item_id].superseded_by
-        ),
-        "",
-    )
-    primary_ids = {
-        next(
-            (
-                ref.excerpt_item_id
-                for ref in targeted
-                if ref.excerpt_item_id.startswith(TASK_INPUT_ITEM_PREFIX)
-            ),
-            "",
-        ),
-        verification_id,
-    }
+    primary_ids = _primary_excerpt_item_ids(items, targeted)
     diff_bytes = sum(
         ref.content_bytes
         for ref in targeted
         if ref.excerpt_item_id.startswith(CHECK_TIME_CHANGE_ITEM_PREFIX)
     )
     for excerpt in reversed(tuple(targeted)):
-        if case_bytes <= MAX_SEMANTIC_CASE_BYTES:
+        if case_bytes <= MAX_SEMANTIC_CASE_BYTES and case_items <= MAX_SEMANTIC_CASE_ITEMS:
             break
         is_diff = excerpt.excerpt_item_id.startswith(CHECK_TIME_CHANGE_ITEM_PREFIX)
         if excerpt.excerpt_item_id in primary_ids or (
@@ -3033,6 +3070,7 @@ def _fit_excerpts_within_case_bound(
         ):
             continue
         targeted.remove(excerpt)
+        case_items -= 1
         if is_diff:
             diff_bytes -= excerpt.content_bytes
         item = by_id[excerpt.excerpt_item_id]
@@ -3051,6 +3089,51 @@ def _fit_excerpts_within_case_bound(
         # Later parts of a split excerpt were cut while its earlier parts stay.
         capture_gaps.add("truncated_payload")
     return selected - len(targeted)
+
+
+def _fit_prior_findings_within_case_bound(
+    items: Sequence[SemanticCaseItem],
+    targeted: Sequence[TargetedExcerptRef],
+    fixed_item_ids: set[str],
+    prior_items: list[SemanticCaseItem],
+    omissions: list[ReviewOmission],
+) -> bool:
+    """Let whole earlier dialogues yield after bulk, never the protected primary material."""
+
+    kept = fixed_item_ids | {ref.excerpt_item_id for ref in targeted}
+    case_bytes = sum(item.content_bytes for item in items if item.item_id in kept)
+    case_items = len(kept)
+    groups: dict[tuple[bool, str], list[SemanticCaseItem]] = {}
+    for item in prior_items:
+        key = (item.item_id.startswith(SETTLED_FINDING_ITEM_PREFIX), item.source_ref)
+        groups.setdefault(key, []).append(item)
+    # Settled context leaves first. Within either class the oldest dialogue leaves first,
+    # matching envelope bounding and retaining the newest question for the next reviewer.
+    ordered = sorted(
+        groups.items(),
+        key=lambda pair: (not pair[0][0], min(item.occurred_order for item in pair[1]), pair[0][1]),
+    )
+    truncated = False
+    for (settled, source), rows in ordered:
+        if case_bytes <= MAX_SEMANTIC_CASE_BYTES and case_items <= MAX_SEMANTIC_CASE_ITEMS:
+            break
+        removed = {item.item_id for item in rows}
+        fixed_item_ids.difference_update(removed)
+        prior_items[:] = [item for item in prior_items if item.item_id not in removed]
+        case_bytes -= sum(item.content_bytes for item in rows)
+        case_items -= len(rows)
+        omissions.append(
+            _omit(
+                source,
+                DataCategory.FINDING_SUMMARY
+                if any(item.category is DataCategory.FINDING_SUMMARY for item in rows)
+                else DataCategory.BOUNDED_STRUCTURAL_METADATA,
+                "finding",
+                "not_selected",
+            )
+        )
+        truncated |= not settled
+    return truncated
 
 
 def _captured_content_groups(
@@ -5960,6 +6043,7 @@ def _prior_finding_items(
     allowed: frozenset[str],
     *,
     include_prose: bool,
+    compact: bool = False,
 ) -> tuple[list[SemanticCaseItem], list[ReviewOmission]]:
     """One earlier finding, what the reviewer asked, and how the main agent answered.
 
@@ -6058,9 +6142,26 @@ def _prior_finding_items(
             prose.append(("uncertainty", payload.challenge.uncertainty, record.source_frontier))
         if response_record is not None and response is not None and response.reason is not None:
             prose.append(("response", response.reason, response_record.source_frontier))
-        body["text_item_ids"] = {
-            field: f"prior-finding-{field}-{ref}" for field, _text, _order in prose
-        }
+        text_ids: dict[str, JsonValue] = {}
+        if compact:
+            # The fields remain whole and individually labelled. Packing small prose fields
+            # together avoids six catalog/provenance rows per finding under tight ceilings.
+            groups: list[tuple[str, str, int]] = []
+            for field, value, order in prose:
+                if len(value.encode()) > MAX_REVIEW_TEXT_BYTES:
+                    value = _head_tail(value.encode(), MAX_REVIEW_TEXT_BYTES)
+                labelled = f"{field}:\n{value}\n"
+                if groups and len((groups[-1][1] + labelled).encode()) <= MAX_SEMANTIC_ITEM_BYTES:
+                    name, text, previous = groups[-1]
+                    groups[-1] = (name, text + labelled, max(previous, order))
+                else:
+                    name = f"context-{len(groups) + 1}"
+                    groups.append((name, labelled, order))
+                text_ids[field] = f"prior-finding-{name}-{ref}"
+            prose = groups
+        else:
+            text_ids = {field: f"prior-finding-{field}-{ref}" for field, _text, _order in prose}
+        body["text_item_ids"] = text_ids
     text, _omitted = _bounded_json(body)
     items.append(
         _content_item(
@@ -6085,6 +6186,7 @@ def _prior_finding_items(
                 linked_subject_refs=(ref,),
                 occurred_order=order,
                 text=value,
+                limit=MAX_SEMANTIC_ITEM_BYTES if compact else MAX_REVIEW_TEXT_BYTES,
             )
         )
     return items, omissions
@@ -6095,6 +6197,7 @@ def _prior_findings_section(
     allowed: frozenset[str],
     *,
     include_prose: bool,
+    compact: bool = False,
     remaining_items: int,
     remaining_bytes: int,
 ) -> tuple[list[SemanticCaseItem], list[ReviewOmission], bool]:
@@ -6112,7 +6215,7 @@ def _prior_findings_section(
     carried = 0
     for ref, record in _prior_finding_candidates(projection, allowed):
         rows, row_omissions = _prior_finding_items(
-            ref, record, projection, allowed, include_prose=include_prose
+            ref, record, projection, allowed, include_prose=include_prose, compact=compact
         )
         size = sum(item.content_bytes for item in rows)
         if (
@@ -6628,6 +6731,12 @@ def build_semantic_case(
     case = build(None)
     if fits(case) is not False:
         return case
+    primary = selection
+    for selection in prior_context_selections(case, primary, floor):
+        candidate = build(None)
+        if fits(candidate) and check_time_change_floor_bytes_carried(candidate) >= floor:
+            return candidate
+    selection = primary
     excerpt_bytes = sum(item.content_bytes for item in case.items if item.section == "excerpt")
     if not excerpt_bytes:
         return case
@@ -8031,6 +8140,39 @@ def _build_semantic_case_once(
     review_assessments = review_assessments[: selection.max_assessments]
     changes = changes[: selection.max_change_observations]
     targeted = targeted[: selection.max_excerpts]
+    # Reserve the bounded prior dialogue before bulk excerpts (#1126). A closing review
+    # needs the discrepancy, alternative, response and newer-material refs as one question.
+    # The existing diff floor and latest verification still protect what changed in the work.
+    fixed_item_ids = {
+        *task_statement_ids,
+        *goal_ids,
+        *obligation_ids,
+        *claim_ids,
+        *decision_ids,
+        *timeline_ids,
+        *(
+            item_id
+            for assessment in review_assessments
+            if assessment.summary_item_id is not None and assessment.detail_item_id is not None
+            for item_id in (assessment.summary_item_id, assessment.detail_item_id)
+        ),
+    }
+    prior_items: list[SemanticCaseItem] = []
+    prior_omissions: list[ReviewOmission] = []
+    prior_findings_truncated = "deterministic_assessments" not in sections and bool(
+        _prior_finding_candidates(projection, allowed)
+    )
+    if "deterministic_assessments" in sections:
+        prior_items, prior_omissions, prior_findings_truncated = _prior_findings_section(
+            projection,
+            allowed,
+            include_prose=selection.include_finding_prose,
+            compact=not bool(sections & {"goal", "obligations", "claims"}),
+            remaining_items=MAX_SEMANTIC_CASE_ITEMS - len(fixed_item_ids),
+            remaining_bytes=MAX_PRIOR_FINDING_SECTION_BYTES,
+        )
+        items.extend(prior_items)
+        fixed_item_ids.update(item.item_id for item in prior_items)
     excerpts_cut_for_case_bound = _fit_excerpts_within_case_bound(
         items,
         targeted,
@@ -8038,20 +8180,10 @@ def _build_semantic_case_once(
         capture_gap_set,
         narrative_lists=(goal_ids, obligation_ids, claim_ids, timeline_ids),
         diff_floor=min(selection.max_total_excerpt_bytes, MAX_SEMANTIC_CASE_BYTES) // 2,
-        fixed_item_ids={
-            *task_statement_ids,
-            *goal_ids,
-            *obligation_ids,
-            *claim_ids,
-            *decision_ids,
-            *timeline_ids,
-            *(
-                item_id
-                for assessment in review_assessments
-                if assessment.summary_item_id is not None and assessment.detail_item_id is not None
-                for item_id in (assessment.summary_item_id, assessment.detail_item_id)
-            ),
-        },
+        fixed_item_ids=fixed_item_ids,
+    )
+    prior_findings_truncated |= _fit_prior_findings_within_case_bound(
+        items, targeted, fixed_item_ids, prior_items, prior_omissions
     )
 
     if check_change_admitted:
@@ -8121,6 +8253,7 @@ def _build_semantic_case_once(
         | set(claim_ids)
         | set(decision_ids)
         | set(timeline_ids)
+        | {item.item_id for item in prior_items}
     )
     for assessment in review_assessments:
         if assessment.summary_item_id is not None and assessment.detail_item_id is not None:
@@ -8131,31 +8264,11 @@ def _build_semantic_case_once(
 
     items = [item for item in items if item.item_id in keep_ids]
 
-    # --- Earlier AI-powered findings and the main agent's answers (issue #905) ---
-    # The reviewer has no memory between checks; this ledger-backed section is the channel. It
-    # rides the findings selection (never a new disclosure category): structural rows always,
-    # prose only where the profile already sends finding prose. Its own bounds keep it out of the
-    # 64-row timeline, and it takes only capacity the case bounds leave.
+    # Prior dialogue already reserved above; fold its omissions into the final manifest.
     prior_finding_ids: list[str] = []
     prior_finding_refs: list[str] = []
-    # What the prior-finding section could not carry, for its manifest label: an earlier finding
-    # cut by the section bounds, or finding prose a capacity narrowing withheld. Either makes the
-    # section ``partial``; it is never ``complete`` once any of it is missing.
     prior_context_omitted_refs: set[str] = set()
-    # A selection without the assessments section shows the reviewer no earlier finding at all;
-    # when any is open, that is the same disclosed truncation as a full section.
-    prior_findings_truncated = "deterministic_assessments" not in sections and bool(
-        _prior_finding_candidates(projection, allowed)
-    )
     if "deterministic_assessments" in sections:
-        prior_items, prior_omissions, prior_findings_truncated = _prior_findings_section(
-            projection,
-            allowed,
-            include_prose=selection.include_finding_prose,
-            remaining_items=MAX_SEMANTIC_CASE_ITEMS - len(items),
-            remaining_bytes=MAX_SEMANTIC_CASE_BYTES - sum(item.content_bytes for item in items),
-        )
-        items.extend(prior_items)
         prior_finding_ids = [item.item_id for item in prior_items]
         # One rulable entry per carried finding (its structural row), never one per prose row.
         prior_finding_refs = [
@@ -10051,6 +10164,15 @@ def _provider_bound_input_manifest(
             for row in section_omissions
             if type(row.get("subject_ref")) is str
         ]
+        prior_dialogue_cut_refs = (
+            original_refs - set(section_refs) - set(prior_omitted) - set(section_omitted_refs)
+            if name == "prior_finding_context"
+            else set[str]()
+        )
+        if prior_dialogue_cut_refs:
+            # Envelope bounding can remove whole dialogues after dropping the omission list.
+            # Derive their absence from this frozen section and the exact carried rows.
+            section_omitted_refs.extend(prior_dialogue_cut_refs)
         section["omitted_refs"] = cast(
             JsonValue,
             sorted(set([*prior_omitted, *section_omitted_refs]), key=str.encode)[:16],
@@ -10065,6 +10187,8 @@ def _provider_bound_input_manifest(
             else []
         )
         omission_reasons: set[str] = set(prior_reasons)
+        if prior_dialogue_cut_refs:
+            omission_reasons.add("not_selected")
         if any(item_id in redacted_item_ids for item_id in item_ids):
             omission_reasons.add("redacted_never_send")
         # Packet omission rows name a heuristic withholding ``never_send_heuristic``; the section
@@ -10722,7 +10846,25 @@ def _catalog_item_ids(envelope: Mapping[str, JsonValue]) -> frozenset[str]:
     return frozenset(ids)
 
 
-def _drop_catalog_row(envelope: dict[str, JsonValue]) -> bool:
+def _protected_catalog_item_ids(case: SemanticCase) -> frozenset[str]:
+    """Keep the task, the admitted diff floor and the reserved verification through bounding."""
+
+    protected = set(case.packet.task_statement_item_ids)
+    protected.update(_primary_excerpt_item_ids(case.items, case.packet.targeted_excerpts))
+    floor = final_diff_floor(case, case.review_selection, MAX_SEMANTIC_CASE_BYTES)
+    carried = 0
+    for item in case.items:
+        if carried >= floor:
+            break
+        if item.item_id.startswith(CHECK_TIME_CHANGE_ITEM_PREFIX):
+            protected.add(item.item_id)
+            carried += _check_time_change_part_chunk_bytes(item.content)
+    return frozenset(protected)
+
+
+def _drop_catalog_row(
+    envelope: dict[str, JsonValue], protected_item_ids: frozenset[str] = frozenset()
+) -> bool:
     """Remove the lowest-priority catalog row and every reference that would dangle.
 
     Catalog order is the case's own section/occurrence order, so the tail is the least
@@ -10736,13 +10878,24 @@ def _drop_catalog_row(envelope: dict[str, JsonValue]) -> bool:
     rows = _catalog_rows(envelope)
     if not rows:
         return False
-    index = len(rows) - 1
+    # Prior dialogue leaves as a whole finding only after ordinary catalog rows (#1126).
+    candidates = [
+        i
+        for i, row in enumerate(rows)
+        if row.get("section") not in {"prior_finding", "task_statement"}
+        and row.get("item_id") not in protected_item_ids
+    ]
+    if not candidates:
+        return False
+    index = candidates[-1]
     if (
         index
         and rows[index].get("item_id") == AGENT_DISCLOSURES_ITEM_ID
         and any(row.get("section") == "obligation" for row in rows)
     ):
-        index -= 1
+        if len(candidates) == 1:
+            return False
+        index = candidates[-2]
     dropped = rows.pop(index)
     envelope["item_catalog"] = cast(JsonValue, rows)
     dropped_id = dropped.get("item_id")
@@ -10817,9 +10970,8 @@ def _drop_prior_finding_rows(envelope: dict[str, JsonValue]) -> int:
     """Remove prior-finding rows until the envelope fits (issue #905): settled findings first,
     then open findings oldest first.
 
-    The dialogue section yields before any work content: every other row keeps exactly the
-    bounding it had without the section. A finding's rows leave together, its ids leave the
-    packet, and the packet coverage names the truncation.
+    Called only after ordinary catalog bulk yields. A finding's rows leave together, its ids
+    leave the packet, and the packet coverage names the truncation.
     """
 
     rows = _catalog_rows(envelope)
@@ -10986,13 +11138,6 @@ def bounded_case_envelope(case: SemanticCase) -> bytes:
     if len(encoded) <= MAX_EGRESS_ENVELOPE_BYTES:
         return encoded
 
-    # Earlier findings yield before any work content (issue #905).
-    reductions["catalog_dropped_count"] += _drop_prior_finding_rows(envelope)
-    _set_selection_accounting(envelope, reductions)
-    encoded = canonical_encode(cast(JsonValue, envelope))
-    if len(encoded) <= MAX_EGRESS_ENVELOPE_BYTES:
-        return encoded
-
     reductions["assessment_links_stripped_count"] += _strip_assessment_links(envelope)
     _set_selection_accounting(envelope, reductions)
     encoded = canonical_encode(cast(JsonValue, envelope))
@@ -11007,12 +11152,20 @@ def bounded_case_envelope(case: SemanticCase) -> bytes:
         fitted = _fit_packet_section(envelope, reductions, key, accounting_key)
         if fitted is not None:
             return fitted
-    while _drop_catalog_row(envelope):
+    protected_item_ids = _protected_catalog_item_ids(case)
+    while _drop_catalog_row(envelope, protected_item_ids):
         reductions["catalog_dropped_count"] += 1
         _set_selection_accounting(envelope, reductions)
         encoded = canonical_encode(cast(JsonValue, envelope))
         if len(encoded) <= MAX_EGRESS_ENVELOPE_BYTES:
             return encoded
+    # Whole prior dialogues yield after ordinary bulk and before the task and reserved work
+    # content. If that protected core cannot fit, refuse rather than dispatch an old dispute alone.
+    reductions["catalog_dropped_count"] += _drop_prior_finding_rows(envelope)
+    _set_selection_accounting(envelope, reductions)
+    encoded = canonical_encode(cast(JsonValue, envelope))
+    if len(encoded) <= MAX_EGRESS_ENVELOPE_BYTES:
+        return encoded
     raise SemanticCaseTooLarge("semantic_case_envelope_too_large")
 
 

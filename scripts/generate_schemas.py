@@ -4031,6 +4031,12 @@ def _check_result_v1_6_schema(entry: _RegistryEntry) -> dict[str, JsonValue]:
         "$ref": SCHEMA_NAMESPACE
         + "operations/status-result-1.4.0.schema.json#/$defs/closure_readiness"
     }
+    cast(dict[str, JsonValue], success["properties"])["review_delivery"] = {
+        "oneOf": [
+            {"type": "string", "minLength": 1, "maxLength": 4096},
+            {"$ref": "#/$defs/finding_omission"},
+        ]
+    }
     document["$id"] = SCHEMA_NAMESPACE + entry.relative_path
     document["title"] = f"FinishUP check result {entry.schema_version}"
     return document
@@ -5034,6 +5040,12 @@ def _status_result_v1_4_schema(entry: _RegistryEntry) -> dict[str, JsonValue]:
     finding_item_properties["todo_state"] = {"$ref": "#/$defs/todo_state"}
     finding_item_properties["review_rounds"] = {"$ref": "#/$defs/canonical_uint"}
     findings_page = cast(dict[str, JsonValue], definitions["findings_page"])
+    cast(dict[str, JsonValue], findings_page["properties"])["review_delivery"] = {
+        "oneOf": [
+            {"type": "string", "minLength": 1, "maxLength": 4096},
+            {"$ref": "#/$defs/finding_omission"},
+        ]
+    }
     cast(dict[str, JsonValue], findings_page["properties"])["attempt_budget"] = (
         _attempt_budget_schema()
     )

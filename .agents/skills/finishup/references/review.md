@@ -62,6 +62,20 @@ disclosed; a limitation you could reduce is work, not support.
 
 ## How to answer a finding
 
+**Read before answering.** Treat `review_delivery` as a bounded advisory preview.
+If it says the preview is truncated, read `status view=findings` with `detail=full` and `limit=1`.
+Follow the returned cursor until the finding you will answer carries its requested action,
+alternative interpretation and uncertainty, or explicitly labels them withheld.
+For example, a large check can keep an instruction while its alternative falls outside the preview.
+
+**Respect the frozen case.** Treat a reviewer read marked `not_in_frozen_case` as unavailable in
+that check.
+Do not infer that the item was never recorded.
+The reviewer can request it through `final_judgment.missing_for_assessment` with its kind and
+target refs, as the read's continuation says.
+As the working agent, follow the returned `missing_for_assessment` supply rule above.
+For example, an unknown event ref can be outside the frozen case without proving non-recording.
+
 Read the finding's row in `status view=findings` and find its case below before you call
 `respond`. A refused call records nothing and costs a turn.
 

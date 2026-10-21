@@ -126,7 +126,8 @@ def _original_reduction_states(case: SemanticCase) -> Iterator[bytes]:
             packet[key] = rows
             counts[f"{key}_dropped_count"] += 1
             yield encoded()
-    while module._drop_catalog_row(envelope):  # pyright: ignore[reportPrivateUsage]
+    protected = module._protected_catalog_item_ids(case)  # pyright: ignore[reportPrivateUsage]
+    while module._drop_catalog_row(envelope, protected):  # pyright: ignore[reportPrivateUsage]
         counts["catalog_dropped_count"] += 1
         yield encoded()
 

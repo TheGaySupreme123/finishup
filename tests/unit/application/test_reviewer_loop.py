@@ -48,6 +48,7 @@ from finishup.ports.semantic import (
     Deadline,
     ReviewStepKind,
     ReviewStepRefused,
+    SemanticCase,
     SemanticJudgment,
 )
 from finishup.protocol.canonical import JsonValue, canonical_encode
@@ -173,6 +174,7 @@ def _setup(
     policy: PrivacyPolicy | None = None,
     expired: bool = False,
     steps: _Steps | None = None,
+    case: SemanticCase | None = None,
 ) -> tuple[ReviewerLoop, ReviewerBroker, _Script, list[PrivacyPolicy]]:
     current = [policy or with_llm(minimal_external_policy())]
     coordinator = _coordinator(current[0])
@@ -189,7 +191,7 @@ def _setup(
 
     broker = ReviewerBroker(
         job_id="sjb_1",
-        case=_semantic_case(_DELIVERABLE_DIFF, with_aws_key=False),
+        case=case or _semantic_case(_DELIVERABLE_DIFF, with_aws_key=False),
         roots=roots,
         store=steps or _Steps(),
         admit=admit,
@@ -212,6 +214,36 @@ def _setup(
 
 def _observations(history: Sequence[Turn]) -> list[dict[str, JsonValue]]:
     return [json.loads(t.content) for t in history[2:] if t.role == "user" and t.content[0] == "{"]
+
+
+@pytest.mark.anyio
+async def test_a_frozen_ledger_miss_never_claims_the_item_was_not_recorded() -> None:
+    from builders.policy_cases import obl
+    from finishup.domain.privacy import ReviewContextProfile, ReviewSelectionPolicy
+    from unit.application.test_semantic_case_prior_findings import (
+        _build,  # pyright: ignore[reportPrivateUsage]
+        _numba_case,  # pyright: ignore[reportPrivateUsage]
+    )
+
+    selection = replace(
+        ReviewSelectionPolicy.for_profile(ReviewContextProfile.GOAL_AWARE),
+        sections=("deterministic_assessments",),
+    )
+    case = _build(_numba_case(), selection=selection)
+    assert str(obl(1)) in case.frontier_refs  # recorded, but excluded by the frozen selection
+    loop, broker, _, _ = _setup(
+        _read("read_ledger", view="obligations", refs=[str(obl(1))], max_bytes=1024),
+        _read("read_ledger", view="obligations", refs=[str(obl(999))], max_bytes=1024),
+        _FINAL,
+        case=case,
+    )
+    for result in _observations((await loop.run()).history):
+        assert result["reason"] == "not_in_frozen_case"
+        assert result["data"] is None and result["citable_refs"] == []
+        assert "missing_for_assessment" in cast(str, result["continuation"])
+        assert "target_refs" in cast(str, result["continuation"])
+        assert cast(int, result["result_utf8_bytes"]) <= 1024
+    assert not broker.cited_refs
 
 
 def _data(result: dict[str, JsonValue]) -> dict[str, JsonValue]:

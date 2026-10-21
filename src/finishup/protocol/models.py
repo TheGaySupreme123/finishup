@@ -4506,6 +4506,7 @@ class CheckInspectionModel(_ClosedModel):
 class CheckSuccessModel(_ClosedModel):
     optional_non_null_fields = frozenset(
         {
+            "review_delivery",
             "agent_next",
             "observations_awaited",
             "children",
@@ -4528,6 +4529,11 @@ class CheckSuccessModel(_ClosedModel):
         }
     )
 
+    # MCP-only presentation of already privacy-projected advisory fields (#1139). Never stored
+    # as a reviewer judgment or used as proof. Other delivery paths retain the full fields.
+    review_delivery: (
+        Annotated[str, Field(min_length=1, max_length=4096)] | OmittedContentModel | None
+    ) = None
     protocol_version: Literal["0.1"]
     schema_version: Literal["1.0.0"]
     request_id: RequestIdWire
@@ -5245,8 +5251,11 @@ class StatusFindingItemModel(_ClosedModel):
 
 
 class StatusFindingsPageModel(_ClosedModel):
-    optional_non_null_fields = frozenset({"attempt_budget"})
+    optional_non_null_fields = frozenset({"attempt_budget", "review_delivery"})
 
+    review_delivery: (
+        Annotated[str, Field(min_length=1, max_length=4096)] | OmittedContentModel | None
+    ) = None
     items: tuple[StatusFindingItemModel, ...]
     next_cursor: CursorWire | None
     # The owner's per-item review-round budget, so ``review_rounds`` reads as "2 of 5" (#905).
@@ -7481,7 +7490,6 @@ _CHECK_STRUCTURAL_POINTERS: Final = (
     _COMMON_SUCCESS_LEAVES
     + (
         "/semantic_conclusion",
-        "/closure_readiness",
         "/semantic_provenance",
         "/semantic_reason",
         # Issue #986: a closed boolean the service writes from the route, never case content.
@@ -7648,6 +7656,7 @@ _CHECK_STRUCTURAL_POINTERS: Final = (
     + _prefix_leaf_patterns("/findings/*/summary", _OMITTED_CONTENT_LEAVES)
     + _prefix_leaf_patterns("/findings/*/detail", _OMITTED_CONTENT_LEAVES)
     + _prefix_leaf_patterns("/review_summary", _OMITTED_CONTENT_LEAVES)
+    + _prefix_leaf_patterns("/review_delivery", _OMITTED_CONTENT_LEAVES)
     + _prefix_leaf_patterns("/verified/*", ("cited_refs/*", "verdict"))
     + _prefix_leaf_patterns("/verified/*/requirement_or_claim", _OMITTED_CONTENT_LEAVES)
     + _prefix_leaf_patterns("/verified/*/snippet", _OMITTED_CONTENT_LEAVES)
@@ -8074,6 +8083,7 @@ _STATUS_EVIDENCE_STRUCTURAL_POINTERS: Final = (
 
 _STATUS_FINDINGS_STRUCTURAL_POINTERS: Final = (
     ("/page/attempt_budget", "/page/next_cursor")
+    + _prefix_leaf_patterns("/page/review_delivery", _OMITTED_CONTENT_LEAVES)
     + _prefix_leaf_patterns(
         "/page/items/*",
         (
@@ -8497,6 +8507,7 @@ _RECEIPT_STRUCTURAL_POINTERS: Final = (
 )
 
 _CHECK_CONTENT_RULES: Final[tuple[tuple[str, DataCategory], ...]] = (
+    ("/review_delivery", DataCategory.FINDING_SUMMARY),
     ("/findings/*/detail", DataCategory.FINDING_SUMMARY),
     ("/findings/*/summary", DataCategory.FINDING_SUMMARY),
     ("/findings/*/challenge/alternative_interpretation", DataCategory.FINDING_SUMMARY),
@@ -8512,6 +8523,7 @@ _RESPOND_CONTENT_RULES: Final[tuple[tuple[str, DataCategory], ...]] = (
     ("/response/reason", DataCategory.FINDING_SUMMARY),
 )
 _STATUS_CONTENT_RULES: Final[tuple[tuple[str, str, DataCategory], ...]] = (
+    ("findings", "/page/review_delivery", DataCategory.FINDING_SUMMARY),
     ("candidate_findings", "/page/items/*/detail", DataCategory.FINDING_SUMMARY),
     ("candidate_findings", "/page/items/*/summary", DataCategory.FINDING_SUMMARY),
     (
@@ -8755,7 +8767,7 @@ def _build_result_leaf_rules() -> tuple[_ResultLeafRule, ...]:
         ):
             raise RuntimeError("invalid_result_leaf_classification")
     if (
-        len(result) != 1765
+        len(result) != 1772
     ):  # ... #1017 +3, #1027 +5, tb4n3 LO +9, W2-A +46, LF +34 (fact_lineage), W2-B +2,
         # tb4n4 #1044 +7 (closure_readiness.undeclared_references), #1048 +38 (inspection),
         # #1047 +2 (follow_up_round), tb4n5 +3 (publish action_notices),
@@ -8765,8 +8777,8 @@ def _build_result_leaf_rules() -> tuple[_ResultLeafRule, ...]:
         # +4 (status brief: detail and closure_state), +1 (status history occurred_at_source),
         # W5/D1 +2 (closure_readiness.acceptance_risk),
         # W6 +1 check (agent_next) / +15 status (operation check_outcome),
-        # #1118 +18 check (reviewer), +1 check_recorded 1.6.0
-        # #1140 +84 check (shared readiness, including one repository-excerpt leaf),
+        # #1118 +18 check (reviewer), +1 check_recorded 1.6.0; #1139 +8 check/status delivery
+        # #1140 +83 check (shared readiness, including one repository-excerpt leaf),
         # #1144/#1149 +3 receipt (disproved ids and stopped status/reason)
         raise RuntimeError("incomplete_result_leaf_registry")
     return result

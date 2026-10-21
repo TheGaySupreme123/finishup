@@ -2896,6 +2896,28 @@ path is added. The configured API fallback is targeted when Codex is primary. Bi
 policy stay unchanged, and status is presence-only after readiness reload. Shared-path tests do not
 claim a new native-host or platform certification.
 
+### Review context and delivery (#1139, #1126, #1148)
+
+Read the full finding before choosing a response.
+Treat `review_delivery` as a bounded advisory preview.
+When it reports truncation, follow its `status view=findings` continuation with `detail=full`,
+`limit=1` and the returned cursor.
+Stop when the finding you will answer includes its action, alternative interpretation and
+uncertainty, or labels them withheld.
+For example, a long check can keep an instruction while its alternative falls outside the preview.
+
+Treat `not_in_frozen_case` as unavailable in this frozen check.
+Do not infer that the item was never recorded.
+Follow the missing-input continuation so a later check can freeze the requested item.
+For example, an unknown ref can be outside this case.
+
+The shared packet builder retains bounded prior dialogue ahead of ordinary bulk.
+The task, diff floor and latest verification remain protected when whole prior dialogues yield.
+The MCP text advisory keeps bounded summary, action, alternative and uncertainty ahead of evidence.
+The complete structured record remains available.
+Offline contract tests cover this path. Native Claude delivery has not been re-dogfooded here.
+Issue #1139 owns that validation gap.
+
 **Closure honesty (#1140, #1143, #1144, #1149). Host decision: supported through shared service
 results.** Check carries the same readiness verdict that status and Stop consume, with finding
 work, missing assessment input and standing limits distinguished. A stopped requested review is

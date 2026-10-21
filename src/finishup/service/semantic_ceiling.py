@@ -33,6 +33,7 @@ from finishup.application.semantic_case import (
     check_time_change_floor_bytes_carried,
     final_diff_floor,
     primary_material_selection,
+    prior_context_selections,
     semantic_case_to_prepared_payload,
 )
 from finishup.config.models import (
@@ -322,6 +323,15 @@ def plan_under_channel_ceiling(
     protected_size = _prepared_size(protected, admission, measure)
     if protected_size is None or protected_size <= limit:
         return protected, approved, rounds
+    count_rounds = 0
+    for candidate_selection in prior_context_selections(protected, approved, floor):
+        rounds += 1
+        count_rounds += 1
+        candidate = rebuild(candidate_selection)
+        candidate_size = _prepared_size(candidate, admission, measure)
+        if candidate_size is not None and candidate_size <= limit:
+            if check_time_change_floor_bytes_carried(candidate) >= floor:
+                return candidate, candidate_selection, rounds
     size, excerpt_bytes = protected_size, _excerpt_bytes(protected)
     base = rebuild(_with_excerpt_budget(approved, 0))
     base_size = _prepared_size(base, admission, measure)
@@ -335,9 +345,11 @@ def plan_under_channel_ceiling(
     planned, planned_selection = (
         (protected, approved) if floor else (base, _with_excerpt_budget(approved, 0))
     )
-    while rounds < MAX_CEILING_PLANNING_ROUNDS and size > base_size and excerpt_bytes:
+    while (
+        rounds - count_rounds < MAX_CEILING_PLANNING_ROUNDS and size > base_size and excerpt_bytes
+    ):
         rounds += 1
-        room = limit - base_size - _ROUND_MARGIN_BYTES * (rounds - 1)
+        room = limit - base_size - _ROUND_MARGIN_BYTES * (rounds - count_rounds - 1)
         budget = room * excerpt_bytes // (size - base_size)
         candidate_selection = _with_excerpt_budget(approved, budget)
         candidate = rebuild(candidate_selection)
