@@ -62,7 +62,13 @@ Evidence bound to an older material state is stale. Hidden, redacted, or unknown
 
 ## Findings and responses
 
-For a finding, choose one recorded response: accept and act; provide additional evidence; revise the claim; dispute, optionally with evidence; or state an unresolved limitation. Then recheck after material change. A readable response identifying a finding the check itself returned is not material change and demands no recheck; a redacted or unreadable response does. A response never deletes the original challenge and never closes a coverage gap. Evidence-provenance limits such as `evidence_content_digest_only` are recorded history that no response, recheck, or later publication closes; the receipt discloses them and its coverage stays incomplete.
+Start with [the finding procedure](review.md). A `decision_needed` finding is a non-blocking
+advisory choice, never mandatory response work. You may record your choice and reason with
+`respond acknowledged` or `respond rejected`. It stays unresolved advisory history after an
+answer or later check; do not seek `verified_resolved` or a repair ruling for that choice.
+The defect-resolution rules below do not apply to it.
+
+For a defect finding, choose one recorded response: accept and act; provide additional evidence; revise the claim; dispute, optionally with evidence; or state an unresolved limitation. Then recheck after material change. A readable response identifying a finding the check itself returned is not material change and demands no recheck; a redacted or unreadable response does. A response never deletes the original challenge and never closes a coverage gap. Evidence-provenance limits such as `evidence_content_digest_only` are recorded history that no response, recheck, or later publication closes; the receipt discloses them and its coverage stays incomplete.
 
 Set `finding_frontier` to any frontier at or after the finding's own record: the item's `finding_frontier` from `status view=findings` when it carries one, otherwise the current status frontier (the result frontier of the check that returned it also works). Only a frontier before that record is rejected, including the finding's `subject_frontier`, which names the state the check tested.
 
@@ -70,15 +76,45 @@ Observation-authored findings that are not actionable (priority 3, such as "Obse
 
 A failed-command finding ("Unresolved failed command observed") retires, with no response, on a later passing run of the same command, exactly as written, alone or in a passing `&&` chain (`cd /app && pytest -q`, not after `exec CMD`, `exit`, `eval` or `source`; an added `VAR=`, `env`, `nohup`, `exec` or `time` is another command; basis `retired_by_passing_run`), or of a test, build, lint or typecheck command your plan already requested when it passed, run as is, unmasked and begun after the failure, which retires every earlier one (basis `retired_by_planned_verification`; waiving it or `acknowledged_not_done` reopens them). An edit, an unplanned command, a pipe or `;` chain, an unknown outcome and a check never retire it (`observed_failure_not_rerun`). If the failure stays, respond once `acknowledged` with the reason (`failed_run_disclosed`: non-blocking, never clean); `acknowledged_not_done` is bookkeeping. Name in your claim's `limitation_refs` a failure that stays or only a planned verification retired. A failed read (`cd`, `echo` banners, chains of reads), a failed FinishUP status read, and a command that stopped its own background job (`kill $!` exiting with that signal) raise none.
 
-Agents can record `acknowledged`, `self_verified`, `acknowledged_not_done`, `provenance_disputed`, or `rejected`; `waived` is reserved for an authorized local-CLI human and is not an agent option. Use `provenance_disputed` only to contest the finding's authorship or provenance premise; it does not reject the finding's conclusion or resolve the finding. A readable response removes the finding from `unanswered_finding_count`. Six things change a finding's receipt state. An accepted `self_verified` (a repair FinishUP could not prove because of its own limit) leaves `receipt_blocking_finding_count` and is disclosed as self-verified. A `rejected` finding the reviewer then withdraws is `rejection_accepted` (non-blocking), and one the reviewer repeats without newer material is `disputed_after_rebuttal` (a standing disagreement: non-blocking, never clean). A rejection with a reason waits for a reviewer ruling (`finding_rejection_awaiting_ruling`): run `check`, do not repair or acknowledge it; a rejection no review can rule on is disclosed instead. A reviewer's limitation request (`requested_next_step: state_unresolved_limitation`) is not repair work and, until you answer it, never counts in `receipt_blocking_finding_count`; your answer decides what it means. If the requirement may be met but cannot be verified here, one `acknowledged` response with a reason, or a `finishup-verification-limit:<obligation id>` decision line covering its obligation, settles it as a disclosed verification limit (listed as such; the receipt then reads at best `insufficient_coverage`). `acknowledged_not_done` says the requirement is NOT met: it counts like any requirement you acknowledged as not done (the receipt keeps `unresolved_findings_remain`) and is not listed as a verification limit; take it back with `reopened` if it may be met after all. A failed command FinishUP saw follows its own rule (above). Every other disposition leaves the finding in `receipt_blocking_finding_count` (the findings to do plus the requirements you acknowledged as not done; an acknowledged `action_without_result` bookkeeping finding is disclosed instead, never clean) until a later qualifying check that tested the work after your answer proves the issue absent from the repaired record, which resolves even an `acknowledged_not_done` or `self_verified` answer; to do the work after acknowledging it as not done, respond `reopened` with a reason. A check qualifies when it is whole-case or scoped to the finding's subject, its owning policy pack ran to completion, nothing was suppressed, and it tested a state that already contained the finding with readable proof inputs. Case-wide `captured_object_unavailable`, `content_unselected`, `host_outcome_unavailable`, and `unpaired_event` limitations do not veto an otherwise clean local-check structured-ledger proof, but remain receipt coverage gaps; the exception requires readable original finding coverage, and those same host-observation gaps remain tolerated when they are carried onto a hook-derived finding. A bounded AI-powered review scope (`semantic_reference_scope_reduced`) never vetoes local-check proof either, because the local check reads the whole record; it too stays a receipt coverage gap. For a `semantic_model_derived` finding, a completed AI-powered re-review may tolerate only the closed native capture gaps (including recorded item clipping and a bounded review scope) already present in its readable original coverage, and only after new material work or a revision of the named claim or obligation was recorded since the finding; a bounded review scope is tolerated only when that review actually sent the finding, its response-linked repair evidence, and that change, and each subject was sent, superseded by a sent corrected claim, or an early event the bounded history evicted (a mention, link, or omitted or withheld item does not count; a record carried by the history item of the event that recorded it, or any part of a carried multi-part captured excerpt, does; captured evidence counts only through its own excerpt); cite the repair's evidence rather than only a result, because rechecks select cited evidence first; `semantic_included_refs_not_recorded` means what that review sent could not be recorded, so that check cannot resolve the finding: run one new check with the repair evidence recorded and cited, and if the code repeats, stop and disclose the open finding; an unchanged re-run, a new gap, unassessable packet, unreadable original finding, or weakened review still blocks resolution. The re-review also rules on each earlier AI-powered finding it was shown; a `fixed` ruling that cites evidence or a result recorded after the finding resolves that finding on that check even when the packet as a whole was insufficient or the check records environment facts (`verification_only_as_root`, an install into a private environment, a write outside the workspace, a planned run FinishUP could not fully observe; they stay disclosed on the receipt, so do not answer `self_verified` for them), while any other ruling except `withdrawn`, which leaves the ordinary rules, keeps it current and names why. A `fixed` citing nothing newer counts only as unassessable. An earlier finding the review was not shown, or whose ruling was dropped, stays current on that check (`reviewer_assessment_incomplete`); silence proves nothing about it. Capture limitations remain on the receipt. Event-payload loss, source redaction, missing refs, unknown events, weak original coverage, stale state, failed packs, and scoped-away checks still prove nothing. A resolved finding is not erased: it stays visible in status (`resolved: true`, hidden unless `include_resolved`) and in the receipt as history, and the receipt wording names resolved history apart from current findings. Its own recorded coverage no longer lowers the receipt's coverage; current findings, the current case, and the applicable check still do. A `provenance_disputed` response keeps its finding current on the released status wire even after such a check. `findings_unanswered` therefore means response work remains; `receipt_findings_unresolved` means repair-then-recheck work remains and must not trigger another response loop. After one recheck, read `resolved`: if the issue did not re-fire but stays current because the check did not qualify, stop rechecking unchanged state, request the bounded receipt, and disclose that limitation. Independent coverage gaps remain separate limitations and are never closed by resolution. Word the final answer according to the receipt-blocking count, the receipt's conclusion, and its weakest coverage.
+Agents can record `acknowledged`, `self_verified`, `acknowledged_not_done`, `provenance_disputed`, or `rejected`; `waived` is reserved for an authorized local-CLI human and is not an agent option. Use `provenance_disputed` only to contest the finding's authorship or provenance premise; it does not reject the finding's conclusion or resolve the finding. A readable response removes the finding from `unanswered_finding_count`.
 
-`acknowledged` on an AI-powered (reviewer) finding requires a `reason`. A reviewer finding whose `requested_next_step` is `answer_question` is a question: answer it in the reason, using `rejected` with the reason when your answer shows the concern does not apply, or `acknowledged` with the reason when it does, and then act. The next check shows the reviewer your answer and the reviewer rules on it. When the reviewer replies to your answer with a challenge that cites that finding's id, it comes back as a new finding linked to it.
+Six things change a finding's receipt state. An accepted `self_verified` (a repair FinishUP could not prove because of its own limit) leaves `receipt_blocking_finding_count` and is disclosed as self-verified. A `rejected` finding the reviewer then withdraws is `rejection_accepted` (non-blocking), and one the reviewer repeats without newer material is `disputed_after_rebuttal` (a standing disagreement: non-blocking, never clean). A rejection with a reason waits for a reviewer ruling (`finding_rejection_awaiting_ruling`): run `check`, do not repair or acknowledge it; a rejection no review can rule on is disclosed instead.
+
+A reviewer's limitation request (`requested_next_step: state_unresolved_limitation`) is not repair work and, until you answer it, never counts in `receipt_blocking_finding_count`; your answer decides what it means. If the requirement may be met but cannot be verified here, one `acknowledged` response with a reason, or a `finishup-verification-limit:<obligation id>` decision line covering its obligation, settles it as a disclosed verification limit (listed as such; the receipt then reads at best `insufficient_coverage`). `acknowledged_not_done` says the requirement is NOT met: it counts like any requirement you acknowledged as not done (the receipt keeps `unresolved_findings_remain`) and is not listed as a verification limit; take it back with `reopened` if it may be met after all.
+
+A failed command FinishUP saw follows its own rule (above). Every other disposition leaves the finding in `receipt_blocking_finding_count` (the findings to do plus the requirements you acknowledged as not done; an acknowledged `action_without_result` bookkeeping finding is disclosed instead, never clean) until a later qualifying check that tested the work after your answer proves the issue absent from the repaired record, which resolves even an `acknowledged_not_done` or `self_verified` answer; to do the work after acknowledging it as not done, respond `reopened` with a reason.
+
+A check qualifies when it is whole-case or scoped to the finding's subject, its owning policy pack ran to completion, nothing was suppressed, and it tested a state that already contained the finding with readable proof inputs. Case-wide `captured_object_unavailable`, `content_unselected`, `host_outcome_unavailable`, and `unpaired_event` limitations do not veto an otherwise clean local-check structured-ledger proof, but remain receipt coverage gaps; the exception requires readable original finding coverage, and those same host-observation gaps remain tolerated when they are carried onto a hook-derived finding. A bounded AI-powered review scope (`semantic_reference_scope_reduced`) never vetoes local-check proof either, because the local check reads the whole record; it too stays a receipt coverage gap.
+
+For a `semantic_model_derived` finding, a completed AI-powered re-review may tolerate only the closed native capture gaps (including recorded item clipping and a bounded review scope) already present in its readable original coverage, and only after new material work or a revision of the named claim or obligation was recorded since the finding; a bounded review scope is tolerated only when that review actually sent the finding, its response-linked repair evidence, and that change, and each subject was sent, superseded by a sent corrected claim, or an early event the bounded history evicted (a mention, link, or omitted or withheld item does not count; a record carried by the history item of the event that recorded it, or any part of a carried multi-part captured excerpt, does; captured evidence counts only through its own excerpt); cite the repair's evidence rather than only a result, because rechecks select cited evidence first; `semantic_included_refs_not_recorded` means what that review sent could not be recorded, so that check cannot resolve the finding: run one new check with the repair evidence recorded and cited, and if the code repeats, stop and disclose the open finding; an unchanged re-run, a new gap, unassessable packet, unreadable original finding, or weakened review still blocks resolution.
+
+The re-review also rules on each earlier AI-powered finding it was shown; a `fixed` ruling that cites evidence or a result recorded after the finding resolves that finding on that check even when the packet as a whole was insufficient or the check records environment facts (`verification_only_as_root`, an install into a private environment, a write outside the workspace, a planned run FinishUP could not fully observe; they stay disclosed on the receipt, so do not answer `self_verified` for them), while any other ruling except `withdrawn`, which leaves the ordinary rules, keeps it current and names why. A `fixed` citing nothing newer counts only as unassessable. An earlier finding the review was not shown, or whose ruling was dropped, stays current on that check (`reviewer_assessment_incomplete`); silence proves nothing about it. Capture limitations remain on the receipt. Event-payload loss, source redaction, missing refs, unknown events, weak original coverage, stale state, failed packs, and scoped-away checks still prove nothing.
+
+A resolved finding is not erased: it stays visible in status (`resolved: true`, hidden unless `include_resolved`) and in the receipt as history, and the receipt wording names resolved history apart from current findings. Its own recorded coverage no longer lowers the receipt's coverage; current findings, the current case, and the applicable check still do. A `provenance_disputed` response keeps its finding current on the released status wire even after such a check.
+
+`findings_unanswered` therefore means response work remains; `receipt_findings_unresolved` means repair-then-recheck work remains and must not trigger another response loop. After one recheck, read `resolved`: if the issue did not re-fire but stays current because the check did not qualify, stop rechecking unchanged state, request the bounded receipt, and disclose that limitation. Independent coverage gaps remain separate limitations and are never closed by resolution. Word the final answer according to the receipt-blocking count, the receipt's conclusion, and its weakest coverage.
+
+`acknowledged` on an AI-powered (reviewer) finding requires a `reason`. For a defect finding (not `decision_needed`), `requested_next_step: answer_question` asks a question: answer it in the reason, using `rejected` with the reason when your answer shows the concern does not apply, or `acknowledged` with the reason when it does, and then act. The next check shows the reviewer your answer and the reviewer rules on it. A repeated same concern is recorded on its existing finding; new concerns may be linked. Follow the returned state and `next_actions`.
 
 Use `duplicate_of` only for a genuine restatement: a new finding of the same origin and kind that names the SAME issue as an earlier one you answered (`duplicate_of_finding_id`). Linking never resolves the new finding: it stays open until its own check proves it absent, is counted once with the earlier one, and inherits only its not-done or self-verified answer. A later check or review that raises it again breaks the link.
 
 ## Finding states
 
-Findings form a to-do list that ends. Each finding is `open` or in a final state: `verified_resolved` (a later qualifying check proved it absent, or, for a failed-command finding, a later passing run of the same command or of a planned verification retired it), `acknowledged_not_done` (you said, with a required non-empty reason, that you will not do it), `self_verified` (you repaired it, a later check still could not prove it because of a FinishUP limit, and you verified it yourself with a reason and your own recorded evidence ids), `rejection_accepted` (you rejected an AI-powered finding with a reason and a later review withdrew it), or `disputed_after_rebuttal` (the reviewer repeated a finding you rejected with a reason, without new material; listed on the receipt as a standing disagreement, not agent work; non-blocking but never clean). A final item is never re-reviewed. `respond` cannot change `verified_resolved`, `rejection_accepted` or `disputed_after_rebuttal`; `acknowledged_not_done` takes one answer, `reopened` with a reason (it becomes `open` and your earlier position is retracted), and a later qualifying check that tested the work after an `acknowledged_not_done` or `self_verified` answer and proves the issue absent makes it `verified_resolved`. If only a planned verification retired a failed-command finding, waiving its obligation, marking it `acknowledged_not_done`, or redacting the passing result or obligation reopens the finding; dropping it from a later plan version alone does not. Every other answer on a final item is refused with `finding_terminal`, which says which of these applies, so do not retry it. When the reviewer raises an open finding's problem again, it records that on the same finding: the item stays open, its review round advances, and the reviewer's new words appear in the review summary under that finding's id, so one concern stays one item and the round budget counts that concern; a different concern about it comes back as a new finding linked to it. A concern is matched by the obligations its subjects name, not by finding kind: `task_requirement_unmet`, `completion_with_open_obligations` and `requested_item_never_attempted` raised about the same obligation are one concern, and the reviewer need not name the earlier finding in `restates`. Only evidence, results or actions linked to those obligations and recorded after your answer (your standing position: the earliest answer you gave with a reason, which a later `acknowledged` never erases) are newer material; your own republished claims or obligations, responses, decisions and the evidence you cited when answering never are. A problem raised again over any answer without newer material is recorded on that item, never as a new finding: after `acknowledged_not_done` or `self_verified` as the reviewer's standing re-raise (the item stays final, the review summary names it, and no answer is needed), after a reasoned `rejected` or `acknowledged` as `disputed_after_rebuttal`, after `rejection_accepted` as a folded repeat. Only newer material comes back as a new finding. `acknowledged_not_done` of a requirement stays receipt-blocking in its own receipt section and never reads as clean (an acknowledged `action_without_result` bookkeeping finding is disclosed instead, never clean either). `self_verified` is not receipt-blocking, but it is never resolved either: the receipt names it in its own "Self-verified by the agent; FinishUP could not prove the repair" section and its conclusion is at best `insufficient_coverage`. Respond `self_verified` only after a later check: before one FinishUP refuses it with `finding_not_rechecked`, and while that check still sees the issue (a local rule fired again, a review without a packet limit ruled it still present, nothing changed, or the check did not cover it) with `finding_not_proof_limited`, whose `safe_details.blocking_reasons` and message name the recorded reasons that disqualified it. A check you inherently cannot run (a hidden verifier, a private reference) is not a FinishUP limit either: finish the work and disclose it with the decision line `finishup-verification-limit:<obligation id>`. When the reviewer's finding asks you to state that limit (a limitation request), that decision line or one `acknowledged` response with a reason settles it as a verification limit (the requirement may be met but cannot be verified here); do not withdraw, empty or "fix" working work over it, respond `acknowledged_not_done` only when you know the requirement is not met, and respond `rejected` only if the finding is wrong. A reviewer who asks you to `act` on something you could not find is a different case: do that work unless it is genuinely impossible, and an `acknowledged_not_done` there is checked once more at Stop. The check result's `finding_checklist` and `status` with `view: "findings"` show each item's state and its review rounds against the owner's budget (default 5), for example `[ ] F-3 open (2/5)`, plus one `next` token: `work_open_findings`, `disclose_limitations` (the only agent work left is a limitation request nobody answered: answer it, no repair; an open `agent_criterion_unmet`, your own criterion, is `work_open_findings`: fix it, or narrow it with `acknowledged` and a reason), `request_ruling`, `decide_at_budget`, or `request_receipt`. This token is a finding-only continuation; when an agent-suppliable review input is also listed, follow the overall input continuation first. At the budget, stop repeating the same repair: repair with new evidence; if you repaired it and FinishUP cannot prove it (a FinishUP limit), verify it yourself, record that evidence, and respond `self_verified` with how you verified it and the evidence ids; respond `acknowledged_not_done` with the reason only if you truly will not or cannot do it. A FinishUP limit is never a `finishup-blocker`. Checks are never throttled and nothing is closed or acknowledged for you.
+Defect findings form a to-do list that ends; `decision_needed` remains advisory history even after an answer. Each defect finding is `open` or in a final state: `verified_resolved` (a later qualifying check proved it absent, or, for a failed-command finding, a later passing run of the same command or of a planned verification retired it), `acknowledged_not_done` (you said, with a required non-empty reason, that you will not do it), `self_verified` (you repaired it, a later check still could not prove it because of a FinishUP limit, and you verified it yourself with a reason and your own recorded evidence ids), `rejection_accepted` (you rejected an AI-powered finding with a reason and a later review withdrew it), or `disputed_after_rebuttal` (the reviewer repeated a finding you rejected with a reason, without new material; listed on the receipt as a standing disagreement, not agent work; non-blocking but never clean). A final item is never re-reviewed. `respond` cannot change `verified_resolved`, `rejection_accepted` or `disputed_after_rebuttal`; `acknowledged_not_done` takes one answer, `reopened` with a reason (it becomes `open` and your earlier position is retracted), and a later qualifying check that tested the work after an `acknowledged_not_done` or `self_verified` answer and proves the issue absent makes it `verified_resolved`. If only a planned verification retired a failed-command finding, waiving its obligation, marking it `acknowledged_not_done`, or redacting the passing result or obligation reopens the finding; dropping it from a later plan version alone does not. Every other answer on a final item is refused with `finding_terminal`, which says which of these applies, so do not retry it.
+
+When the reviewer raises an open finding's problem again, it records that on the same finding: the item stays open, its review round advances, and the reviewer's new words appear in the review summary under that finding's id, so one concern stays one item and the round budget counts that concern; a different concern about it comes back as a new finding linked to it.
+
+A concern is matched by the obligations its subjects name, not by finding kind: `task_requirement_unmet`, `completion_with_open_obligations` and `requested_item_never_attempted` raised about the same obligation are one concern, and the reviewer need not name the earlier finding in `restates`.
+
+Only evidence, results or actions linked to those obligations and recorded after your answer (your standing position: the earliest answer you gave with a reason, which a later `acknowledged` never erases) are newer material; your own republished claims or obligations, responses, decisions and the evidence you cited when answering never are. A problem raised again over any answer without newer material is recorded on that item, never as a new finding: after `acknowledged_not_done` or `self_verified` as the reviewer's standing re-raise (the item stays final, the review summary names it, and no answer is needed), after a reasoned `rejected` or `acknowledged` as `disputed_after_rebuttal`, after `rejection_accepted` as a folded repeat. Only newer material comes back as a new finding.
+
+`acknowledged_not_done` of a requirement stays receipt-blocking in its own receipt section and never reads as clean (an acknowledged `action_without_result` bookkeeping finding is disclosed instead, never clean either). `self_verified` is not receipt-blocking, but it is never resolved either: the receipt names it in its own "Self-verified by the agent; FinishUP could not prove the repair" section and its conclusion is at best `insufficient_coverage`.
+
+Respond `self_verified` only after a later check: before one FinishUP refuses it with `finding_not_rechecked`, and while that check still sees the issue (a local rule fired again, a review without a packet limit ruled it still present, nothing changed, or the check did not cover it) with `finding_not_proof_limited`, whose `safe_details.blocking_reasons` and message name the recorded reasons that disqualified it.
+
+A check you inherently cannot run (a hidden verifier, a private reference) is not a FinishUP limit either: finish the work and disclose it with the decision line `finishup-verification-limit:<obligation id>`. When the reviewer's finding asks you to state that limit (a limitation request), that decision line or one `acknowledged` response with a reason settles it as a verification limit (the requirement may be met but cannot be verified here); do not withdraw, empty or "fix" working work over it, respond `acknowledged_not_done` only when you know the requirement is not met, and respond `rejected` only if the finding is wrong. A reviewer who asks you to `act` on something you could not find is a different case: do that work unless it is genuinely impossible, and an `acknowledged_not_done` there is checked once more at Stop.
+
+The check result's `finding_checklist` and `status` with `view: "findings"` show each item's state and its review rounds against the owner's budget (default 5), for example `[ ] F-3 open (2/5)`, plus one `next` token: `work_open_findings`, `disclose_limitations` (the only agent work left is a limitation request nobody answered: answer it, no repair; an open `agent_criterion_unmet`, your own criterion, is `work_open_findings`: fix it, or narrow it with `acknowledged` and a reason), `request_ruling`, `decide_at_budget`, or `request_receipt`. This token is a finding-only continuation; when an agent-suppliable review input is also listed, follow the overall input continuation first. At the budget, stop repeating the same repair: repair with new evidence; if you repaired it and FinishUP cannot prove it (a FinishUP limit), verify it yourself, record that evidence, and respond `self_verified` with how you verified it and the evidence ids; respond `acknowledged_not_done` with the reason only if you truly will not or cannot do it. A FinishUP limit is never a `finishup-blocker`. Checks are never throttled and nothing is closed or acknowledged for you.
 
 ## Coverage attribution
 
@@ -99,43 +135,20 @@ Lifecycle records are not material: `work_closed` (and the other work-state and 
 
 ## Repair then finish
 
-For a material repair, use one bounded repair → check → read → receipt sequence:
-
-1. Keep the frontier you hold (the `result_frontier` of your last accepted write) for the next
-   write; read `status` for one only when you hold none or after `frontier_changed`. Before
-   authoring replacement evidence or a completion claim, cite the evidence IDs you published, and
-   find native captures with a filtered `view=evidence` read only when you need them. Keep the
-   cursor-bound filter and original `limit`; reuse only permitted native IDs a structural link ties
-   to the claim.
-2. Publish the real repair results, corrected claim/evidence, and any required plan revision. Do not
-   fabricate success or infer scope from the user's prompt. A feedback obligation is complete only
-   when it is included in an effective plan revision or exact next-version restatement.
-3. Before the final check, read `status view=findings` and respond once to each finding with
-   `disposition: none`, using a current expected frontier and a `finding_frontier` as described in
-   [Findings and responses](#findings-and-responses). A row whose detail marks it an
-   observation-authored coverage limitation needs no response. A response is a disposition, not
-   repair proof.
-4. Choose the final check mode deliberately: `semantic_required` for an explicit user, policy, or
-   acceptance requirement; omitted `mode` to run in the task's review mode (`status`
-   `review_mode`; a `final_review: true` check in a task that already used AI-powered review runs
-   it); and `deterministic_only` only for explicitly local/structural work or a deliberate
-   no-egress choice.
-5. After the final check, respond only to the findings it returned that are still unanswered (a
-   second response replaces the first), then read
-   `status view=findings` with `filter.include_resolved: true` and `resolved`. “Not returned” is
-   not “resolved.” Responses to the check's own findings, an acknowledgement of an
-   observation-authored non-actionable finding, and `work_closed` need no recheck. Recheck before
-   the receipt only when a material record follows the check: a recorded repair (it always gets at
-   least one re-check), other published work, or a response to another finding the check did not
-   return.
-6. Request `receipt`, then publish `work_closed` when the work is complete: a receipt never closes
-   work, and `work_closed` never requires another check. Read
-   `closure_readiness.unanswered_finding_count` and
-   `closure_readiness.receipt_blocking_finding_count`, then report those actual counts (and `finding_counts`) alongside the
-   receipt's checked frontier, AI-powered review status/reason, and coverage limits. If one
-   current-state recheck still cannot qualify, stop repeating unchanged state and disclose the
-   blocker while continuing any distinct authorized work. When `closure_readiness.state` is
-   `ready_with_limitations`, request the receipt without another check.
+Use [receipt.md](receipt.md) for the single closing sequence; [review.md](review.md) owns finding
+decisions and pacing. Keep the frontier you hold (the `result_frontier` of your last accepted write);
+read `status` for one only when you hold none or after `frontier_changed`.
+Before the final check, read `status view=findings` for unanswered actionable defects.
+After the final check, respond only to the findings it returned that are still unanswered;
+`decision_needed` answers are optional. Inspect `resolved`, never infer it from absence.
+Responses to the check's own findings, an acknowledgement of an observation-authored
+non-actionable finding, and `work_closed` need no recheck. A material-for-review change includes
+a recorded repair (it always gets at least one re-check), changed acceptance evidence or a
+response to an older defect; use [coverage attribution](#coverage-attribution) for exact classes.
+Request `receipt`, then publish `work_closed` only if complete and its advertised lifecycle
+continuation permits it; `work_closed` never requires another check. When `closure_readiness.state` is
+`ready_with_limitations`, request the receipt without another check. Report actionable and unanswered counts, checked frontier,
+review status/reason and coverage limits as the receipt states them.
 
 ## Closure readiness: actionable, standing, acknowledged
 
@@ -159,11 +172,12 @@ each status read and never cached across frontiers:
 - `acknowledged_not_done`: findings answered `acknowledged_not_done`, with the required reason.
   A finding answered `self_verified` is not listed here: it reads as the standing
   `finding_self_verified` and is never agent work.
-  An obligation cannot be recorded as not done. One that a confirmed blocker decision names
-  (`finishup-blocker:<kind>`, confirmed after its challenge, see below) reads as the
-  standing `obligation_blocked_outside_agent_control`; a blocker you only claimed reads as the
-  agent-actionable `obligation_blocker_unconfirmed`; any other unfinished obligation stays in
-  `agent_actionable`, and you disclose it in your final answer.
+  Obligations also support not-done disclosure: repeat the meaning fields on
+  `obligation_published/1.1.0`, set `status: acknowledged_not_done`, and give
+  `acknowledged_not_done_reason`. This discloses noncompletion, never acceptance; use the owning
+  [obligation procedure](workflow.md#completion) to reopen or resolve it.
+  A confirmed blocker decision instead reads as `obligation_blocked_outside_agent_control`;
+  an unconfirmed one stays `obligation_blocker_unconfirmed` in `agent_actionable`.
 
 A closed, versioned table (`gap_classification_version`) assigns every gap code the product
 emits to exactly one group. `semantic_review_not_requested` is standing on a route where
@@ -347,31 +361,20 @@ Installing a harness integration or firing a trigger-only hook does not strength
 
 ## Discover evidence before authoring replacements
 
-Before publishing evidence for a material claim, check what already exists instead of re-authoring
-it. Cite the `evidence_id`s you already published: they are in your own `publish_work` requests, and
-each accepted result confirms the events were recorded. `status view=evidence` with
-`filter.author=mine` lists exactly the items you published in this session, with their descriptions
-returned to you. Find native captures with `filter.strength=immutable_snapshot`; every row names its
-`publication_channel`. Preserve the view, filter, frontier and original `limit` with each cursor;
-changing page size starts a fresh query with no cursor. Cite a native capture only when a structural
-link you can read ties it to the claim: a `status view=results` row whose `evidence_refs` names it,
-with that result's `action_id` and `outcome`, or a matching subject-state or byte digest. A captured
-object ID alone is not a typed provenance label or evidence of relevance; if no structural link
-establishes the relation, leave it unknown.
+Use the owning [evidence discovery procedure](publication-policy.md#discover-evidence-before-authoring-replacements).
+This field reference distinguishes identity, visibility and relevance:
 
-A `description` or `reference` returned as omitted with `local_disclosure_not_authorized` is a
-privacy setting, not missing evidence: the item still exists, and republishing it does not reveal
-it. Host-observed and other writers' descriptions stay omitted unless the owner grants
-`evidence_excerpt` to agent context. Walk the unfiltered list and match on descriptions only when
-the current projection shows them; never page through every item to match prose the projection
-omits.
+| Field or fact | Meaning / constraint |
+| --- | --- |
+| Published ids | Cite the `evidence_id`s you already published; they are in your own `publish_work` requests. |
+| Own rows | `status view=evidence` with `filter.author=mine` lists exactly the items you published, with their descriptions returned to you. |
+| Native rows | Find native captures with `filter.strength=immutable_snapshot`; every row names its `publication_channel`. |
+| Cursor | Preserve the view, filter, frontier and original `limit` with each cursor. |
+| Relevance | Cite a native capture only when a structural link you can read ties it to the claim: a `status view=results` row whose `evidence_refs` names it, or a matching digest/state; if no structural link establishes the relation, leave it unknown. |
+| Privacy | A description omitted with `local_disclosure_not_authorized` is a privacy setting, not missing evidence; republishing it does not reveal it. Host-observed and other writers' descriptions stay omitted unless the owner grants `evidence_excerpt`. For visible prose, match on descriptions only when the current projection shows them; never page through every item to match prose the projection omits. |
 
-Reuse suitable existing native evidence IDs directly in the claim's `supporting_refs` and relevant
-result evidence references. Do not replace matching observed bytes with a duplicate
-`caller_asserted` digest-only placeholder. Publish only genuinely missing bounded assertions;
-ordinary publication cannot mint `observation_captured` provenance. A published caller-asserted
-digest stays an unverified provenance label that the receipt discloses with a count; it raises no
-finding, and more digest-only items cannot upgrade it.
+Ordinary publication cannot mint `observation_captured` provenance. A caller-asserted digest stays
+an unverified provenance label; duplicating it cannot improve coverage.
 
 Interpret limitations per item: `content_unselected` means a retained kind was not selected;
 `evidence_content_digest_only` retains identity without content; `content_capture_unavailable`
@@ -384,13 +387,6 @@ reported as `not_selected` omissions and `content_unselected`; a bounded omissio
 fewer rows than the total count. The diff floor is protected against the final packet limit. If
 protected material cannot fit, the existing capacity or policy refusal remains. Read the actual
 provider-bound input manifest before claiming that a particular input reached review.
-
-For example, a synthetic inventory may span two pages: a matching source snapshot, an unrelated
-stale snapshot, matching test output, a digest-only documentation item and an oversized diff.
-Reuse the matching source and test IDs; exclude the stale item; disclose the documentation limit
-and the diff's clipping independently. Check the selected review input and final receipt before
-claiming that all needed content was reviewed. Acknowledging an evidence finding does not repair
-its basis: supply admissible evidence or retain an explicitly limited receipt.
 
 A finding's status detail explains the latest recorded candidate check separately from the original
 finding. `Not returned; absence remains unproven` is not a repair conclusion. The named policy,
@@ -540,57 +536,24 @@ quit instructions apply only to Cursor; use the current host's own continuation 
 
 <a id="recovery"></a>
 
-`awaiting_human` is nonterminal: neither a gap to disclose nor a retry to spend. Follow the exact
-continuation above, including its required user-approval path, before applying terminal recovery
-rules. A check `OPERATION_PENDING` carrying the `check_admission_same_identity` continuation was
-refused before admission and recorded nothing: wait its `retry_after_ms`, replay the exact body and
-`request_id`, and after three refusals retain and report the check as not admitted rather than
-switching mode or minting a new request. Its operation page reads `absent` with an `admission`
-stage. On a generic `OPERATION_PENDING`, read `status` once with the exact
-`filter.operation_request_id`; replay the same `request_id` only when the typed result or status
-page supplies that exact continuation and its approval has completed. A pending operation without
-such a continuation, or a quarantined/unknown operation, is retained and reported; a complete page
-uses its stored outcome. A separate local-only check is permissible only when no required
-AI-powered review or pending approval would be bypassed.
+`awaiting_human` is nonterminal: preserve its exact continuation and required approval.
+[recovery.md](recovery.md) owns unknown-write, `OPERATION_PENDING` and admission recovery;
+[review.md](review.md) owns approval. A separate local-only check is permissible only when no
+required review or pending approval would be bypassed.
 
 ### Bounded recovery and fresh verification
 
-Use this decision table after the typed result and any operation-specific continuation. It preserves
-the 0.2 wire contract: a sibling has a separate task boundary, while a complete new pair on
-`create_or_attach` is admitted as independent work without adding lineage, project, or parent
-fields. An explicit `mode=create` collision remains a `SESSION_CONFLICT`.
+Use [recovery.md](recovery.md) for an unknown write, and
+[workflow's recovery table](workflow.md#recovery-decision-table-02) for attach selectors, a deliberate
+verification sibling or a startup boundary. These are the owning procedures; a sibling never
+resets prior findings or inherits the predecessor's receipt authority.
 
-The operation view requires both `session_id` and `writer_id`. If a `start` response is lost before
-those ids are returned, do not invent them or issue a fabricated status query: replay the exact
-original `start` body once with its same `request_id`; the start idempotency path returns the stored
-result or a typed boundary. Once the required route ids are known, use the exact operation filter
-in the table below.
-
-The same start exception applies to a typed `OPERATION_PENDING` start result that has no returned
-session or writer: replay that exact start request once rather than fabricating ids for an operation
-query.
-
-| Situation | Required action | Prohibited action |
-| --- | --- | --- |
-| A retryable read timeout or reconnect (`status`, diagnostics, or an operation recovery read) | Retry the same read intent with a new read `request_id`, following the typed result. Preserve the cursor-bound view, filter, frontier, and original `limit`. | Reusing a timed-out read ID as a write, changing page size under a cursor, or treating a missing read as evidence of absence. |
-| Any write has an unknown outcome (`start`, `publish_work`, `check`, `respond`, or `receipt`) | For `start` without returned session/writer ids, use the exact-start branch above. Otherwise read `status view=operation` with `filter.operation_request_id` set to the exact write `request_id`. If it is `absent`, replay the exact original body with that exact `request_id` once (with an `admission` stage, after its `retry_after_ms`, at most three times); if it is `complete`, use the stored outcome and do not replay; if it is `pending` with an exact typed continuation, follow that continuation and its required approval, then replay the same request once; if it is `pending` without a continuation, `quarantined`, or still unknown, retain and report that boundary. | A fresh request ID, guessed result, new task, sibling created to escape ambiguity, fabricated start identity, or replay without the exact continuation. |
-| A typed `OPERATION_PENDING` result | For a `start` result without returned session/writer ids, use the exact-start branch above. For the `check_admission_same_identity` continuation, replay the exact check after `retry_after_ms`, at most three times, then report it as not admitted. Otherwise read operation status once with the exact operation filter. Perform the same-ID replay only after the typed continuation and required approval complete; if no continuation is supplied or the page remains pending, quarantined, or unknown, stop the write path and preserve/report it. | Blind replay, fabricated start identity, repeated probes, a new task, or a clean completion claim. |
-| An exact held `session_id` is available after session rotation or host handoff | Use `mode=attach` with that `session_id` as the selector; preserve the host's canonical working root for its binding, but do not add a guessed `workspace_ref`/`external_ref` pair. An explicit session-plus-new-pair recovery requires an active, non-quarantined root-task selector with matching workspace and repository binding; unrelated workspace tasks do not block it, while a pair selecting another task remains a conflict. Delegated child routes require an authenticated attach handle or target selector. Use the returned successor session/writer and inspect status before continuing. | A bare `task_id`, workspace membership as resume authority, or a guessed sibling. |
-| A fresh host conversation has the same work but no held session | Use `mode=create_or_attach` with the exact canonical `workspace_ref` + `external_ref` pair. | A remote URL as workspace identity, an invented task ID, or an implicit second task. |
-| Same-task pair/session recovery is exhausted, every prior write has a known terminal outcome, and the user declares a remaining or repaired verification scope | On one healthy, authorized binding, start one intentional sibling with `mode=create`, the same canonical workspace, and a different stable `external_ref`. Give it a fresh plan naming only that scope and establish its native host mapping from the returned session/task. | Silently replacing the task, inheriting old findings/obligations/evidence, reusing cross-task evidence IDs without a contract, or inventing lineage fields. |
-| Recovery is exhausted but no new scope is declared, or a sibling would only make the old receipt look clean | Keep the old receipt, findings, obligations, and limitations; report the bounded failure and wait for a supported continuation decision. | Creating an unbounded task sequence or presenting a sibling as whole-work closure. |
-| The current ledger has immutable proof limits and a fresh review of repaired/current state is wanted | Use one explicitly scoped verification sibling only after known outcomes and on a healthy authorized binding. Publish its current-state plan, new evidence, and checks; disclose the predecessor receipt's unresolved limits. | Repeating work only to obtain a smaller count, dropping acceptance criteria, or claiming the sibling resolved the predecessor. |
-| The first `start` fails | Follow exact continuations and same-request recovery first, including a named one-time repair. Outside the fallback below, if startup remains blocked without an applicable recovery path, ask the user for intro and guidance and pause material work. | Skipping recovery, inventing a substitute workflow, or continuing without a ledger task. |
-| After successful startup FinishUP becomes unavailable, or a named one-time repair/retry ends in terminal unavailability | Continue ordinary work only when FinishUP is optional, the user/host permits it, and no write or approval remains pending; disclose the work lacking FinishUP proof. A first non-retryable `start` failure alone does not qualify. Use the sibling row only later, once service and binding are healthy and a tracked continuation is still wanted. | Claiming a live task, finding, verdict, or receipt, bypassing startup handoff, or resetting old findings by switching tasks. |
-
-An explicit sibling is a new ledger boundary. Its receipt covers only its newly declared scope and
-newly observed work. The predecessor's receipt, actionable findings, feedback obligations, evidence,
-and unresolved status remain separate history and must be disclosed. A sibling never resets an old
-finding count or qualifies a clean whole-work claim, and it does not inherit the predecessor's native
-mapping, session, evidence IDs, or receipt authority. If the predecessor identity is unknown, say so
-without guessing or exposing a task ID. If an old write may have committed, operation recovery always
-wins over the sibling path. “Not give up” means one bounded, explicit handoff after a known terminal
-boundary, not repeated task creation until a receipt looks clean.
+Wire preconditions: the operation view requires both `session_id` and `writer_id`. If a `start`
+response is lost before they return, do not invent ids or issue a fabricated status query; recovery
+uses the exact original `start` body and same `request_id`. Preserve `filter.operation_request_id`
+for a known route. State vocabulary: `absent` has no stored operation; `complete` supplies the
+stored outcome; `pending` may carry an exact typed continuation and required approval;
+`quarantined` or unknown cannot be guessed. Read the owner before replay.
 
 ## Degraded and unavailable behavior
 
@@ -630,21 +593,11 @@ One typed exception: an error carrying `safe_details.continuation: vault_initial
 
 ### Inherited unavailability and delegation
 
-An availability failure belongs to the host binding — this MCP process, its route, and the service endpoint — not to the request that first saw it. When an error carries `safe_details.availability: terminal_unavailable`, the bridge has latched that state: every later call under a new `request_id` returns the same `correlation_id` with `availability_inherited: true` and records no new diagnostic, until the named repair changes the running service, the original `request_id` replays successfully, or — for a `retryable: true` class only — the bridge's own quiet handshake finds the service listening again, in which case the call simply proceeds. That handshake belongs to the bridge, never to you: nobody probes to find out. An inherited answer is not a fresh failure; do not diagnose it again.
-
-When you delegate after that result, carry it into every assignment as a bounded `finishup_availability` block: `state: terminal_unavailable`, the host binding (`host_profile`, `route_profile`), the parent `correlation_id` and original `request_id`, and the proof limit ("no live FinishUP ledger, publication, check, or receipt exists for this task") — never transcript content. A delegate given the same block under its pre-rename name, `yoetz_availability`, treats it exactly as `finishup_availability`. A delegate that inherits `terminal_unavailable` makes no FinishUP call for that binding and work item: no `start`, `status`, `check`, diagnostics, or `finishup service` command. It publishes nothing, states that the parent has no live ledger, and returns its work to the coordinator. Only the coordinator runs the one repair the typed result named and replays the original `request_id` once. In the final report, separate the initial integration cause (the parent's correlation) from delegate amplification, and never claim delegate publications, assignments, or attribution without a task and session.
-
-
-
-These source-inspection restrictions apply to recovering consumer workflow calls. They do not
-prohibit inspecting source/tests when the assigned task is to develop or debug FinishUP itself.
-Never use the live SQLite databases or catalog as a substitute for supported operation status.
-
-For a returned start error with `start_busy_same_identity`, the reservation remains durable and
-only its fenced lease was yielded. Replay the exact start body and request ID once, without
-inventing session or writer IDs. `start_pending_same_identity` instead means a live lease remains:
-wait up to 60 seconds before the one exact replay. If still busy or pending, retain the original
-request and report the unresolved start. These continuations do not authorize a new task.
+Use [workflow's inherited-unavailability procedure](workflow.md#inherited-unavailability-and-delegation).
+`terminal_unavailable` belongs to the host binding, not a new request. Carry its bounded
+`finishup_availability` block into assignments; an inherited result is not a fresh failure.
+Delegates make no calls for that binding. Only the coordinator follows the one named repair and
+same-request replay; never claim publications or receipts without a returned task.
 
 ### Unrelated command gaps and action-result repairs
 
@@ -676,69 +629,17 @@ above keep the partition rule; an unreadable or later result proves nothing.
 
 ### Missing review content and concrete repair attempts
 
-`insufficient_packet` means the reviewer could not assess the supplied content. It produces no
-new defect finding and carries `semantic_packet_insufficient`; it is never a clean review or
-permission to claim the work is verified. Existing findings and coverage limitations remain.
+Use [review.md](review.md) for the immediate supply decision and
+[workflow](workflow.md#missing-review-content-and-concrete-repair-attempts) for the detailed
+attempt, blocker and verification rules. `insufficient_packet` is an unassessable review, never
+clean verification; existing findings and coverage limitations remain.
 
-The check result lists what the reviewer needed in `missing_for_assessment`: each item's kind, case
-refs, and whether it is `agent_suppliable`, `structurally_unavailable_on_this_host`, or a FinishUP limit
-(gaps `semantic_missing_agent_suppliable`, `semantic_missing_structurally_unavailable`,
-`semantic_missing_yoetz_limit`). A `yoetz_limit_*` item is content the packet cannot show
-(unsupported data type, packet room): never your work and never a blocker; verify it yourself.
-Never reshape a deliverable to fit the reviewer. What answers each kind is in
-[workflow](workflow.md#missing-review-content-and-concrete-repair-attempts). If only FinishUP limits
-remain, or the reviewer named none (`semantic_missing_items_rejected`),
-report the named limitation instead. When `semantic_missing_already_supplied` says the reviewer asked again after you published or re-ran material for it, the item stays listed: read what the review summary says it still needs, supply exactly that once if it exists, and otherwise report the limitation. The reviewer reads recorded runs, observed output and workspace files itself, under the owner's privacy settings (Private sends nothing); what FinishUP never recorded stays yours to supply. A named
-item is a check limitation, never a finding.
-
-An older receipt's manifest may show `follow_up_round`: earlier versions resent the packet inside
-the check with requested content first. Current checks do not; the reviewer reads what it needs
-instead, and `missing_for_assessment` lists what remained.
-
-If `missing_for_assessment` names an `agent_suppliable` item you can supply, publish exactly that item once, linked to any named target, then `check` again. If it is already supplied, or it is a packet, type or authority limit, go to the receipt and state that specific limit. Only new material counts; tie it to any named target. The structured
-`overall_next` projection names that action and its bounded target refs (which may be empty for a
-global input); `finding_checklist.next` remains a finding-only continuation and does not override
-it. When open obligations or undisclosed live failures remain, or a delivered file may read a
-file the change created that no item declares, its action is `review_recorded_work` with bounded
-obligation/result/action ids. When only standing,
-`structurally_unavailable_on_this_host` or FinishUP-limit items remain, `overall_next` reports
-`ready_with_limitations` and the receipt endpoint remains available for acknowledging the
-limitation. Such an item stays a disclosed limitation rather than an impossible to-do.
-
-Before choosing to leave a remediable finding as an unresolved limitation, attempt one specific,
-authorized resolution: publish the relevant bounded diff or test/failure excerpt, run the
-relevant test/doctest/lint check, or repair the named defect. Select the target from the actual
-changed files and existing project checks, never invent a command. Record the action and its
-result; put exact requested items on an obligation in the effective plan and record their
-`attempted_items` on the action. Do not resolve an obligation while its requested items remain
-unattempted. If something genuinely outside your control prevents the attempt on an open
-obligation (authority, consent, credentials, or a dependency you cannot obtain), record it as a
-blocker instead of widening disclosure, credentials or runtime authority: publish
-`decision_recorded` naming the obligation in `affected_obligation_ids` with the exact statement
-line `finishup-blocker:<authority|consent|credential|dependency_unavailable>` and a rationale. Missing
-or inconsistent data the task says is recoverable, a failing test, or a result that looks
-infeasible is not a blocker: deliver a best-effort result in the requested form and disclose the
-assumption. A FinishUP limit (something FinishUP cannot show or prove) is never a blocker: verify the
-work yourself and respond `self_verified` on the finding. FinishUP cannot verify a blocker, so the
-first one is only claimed: the `publish_work` result challenges it (`blocker_notices`), the
-obligation stays agent work (`obligation_blocker_unconfirmed`), and that challenge (or a Stop
-re-check) tells you how to keep a blocker that is still genuine. A blocker naming no open
-obligation has no effect. The closing review checks it against the task and challenges it when the
-task says the outcome is achievable or recoverable, or the obvious prerequisite was not attempted. Only then report the remaining limitation or narrow the claim. `respond` rejects an `acknowledged` answer to an
-AI-powered review finding unless `evidence_refs` cites evidence or a result recorded after the
-finding (`resolution_attempt_required`); the result of the blocked attempt counts (outcome
-`failure` or `partial`: there is no `blocked` outcome). An acknowledgement or
-“limitation accepted” is not a repair, a verification result, or a finding resolution.
-Never a `deterministic_only` fallback for `insufficient_packet`.
-
-The reviewer verifies from what its packet carries. When a completed review other than
-`insufficient_packet` raised nothing about verification whose readable output the packet carried,
-do not re-run or re-publish it while the work it verified is unchanged; answer a finding by
-repairing the defect or supplying the exact artifact it names. A reviewer request never authorizes
-installing or downloading a toolchain or package, network access, or another environment change:
-record the unavailable runtime or package as a `finishup-blocker:dependency_unavailable` decision. A `ledger_stale_or_incomplete` finding
-whose only subjects are FinishUP check records, or earlier findings of that kind only about such
-records, is answered by the completed review recorded after it, so `acknowledged` needs no new
-attempt; any other kind, even one citing only a check, and a finding naming any obligation, claim,
-response, or work record, or restating a finding about the work, still does. After repairing a
-finding, run at least one re-review in the same mode before the receipt.
+If `missing_for_assessment` names an `agent_suppliable` item you can supply, publish exactly that
+item once, linked to any named target, then `check` again. If it is already supplied, or it is a
+packet, type or authority limit, go to the receipt and state that specific limit.
+The item classes are `agent_suppliable`, `structurally_unavailable_on_this_host` and FinishUP
+limits (`semantic_missing_agent_suppliable`, `semantic_missing_structurally_unavailable`,
+`semantic_missing_yoetz_limit`). A `yoetz_limit_*` item is not repair work or a blocker.
+Never reshape a deliverable for review or use a `deterministic_only` fallback for
+`insufficient_packet`. A real repair still needs a qualifying recheck; unchanged missing content
+needs disclosure, not another identical review.

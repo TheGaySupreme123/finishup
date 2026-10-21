@@ -227,6 +227,11 @@ task, and do not request a receipt before that check reaches a terminal result.
 ## `publish_work`: plan plus obligation
 
 <a id="plan-and-obligations"></a>
+<a id="publish-work-plan"></a>
+
+Use this first-plan body only when no plan exists (`plan_version: 1`). If a current plan exists,
+use `finishup://guidance/request-templates.md#publish-work-revised-plan` at its next version;
+[startup.md](startup.md) owns the plan procedure.
 
 This is the first material publication. Name the requested outcome in `description` and
 `acceptance_criteria`, and its acceptance evidence in `evidence_expectation`; do not turn
@@ -260,7 +265,9 @@ requirement forever. Put it in the `acceptance_criteria` of the deliverable obli
 resolve that obligation with the evidence you can produce, and disclose the limit in a
 `publish_work` decision (below) whose `statement` holds the exact line
 `finishup-verification-limit:<obligation id>` and whose `rationale` says what cannot be verified
-and why. Never empty or withdraw the deliverable because of it.
+and why. Never empty or withdraw the deliverable because of it. For example: "Resolved
+implementation obligation; hidden accuracy unverified." Preserve that original criterion and
+verification limit in final prose; resolving implementation work does not prove hidden acceptance.
 
 ```json
 {
@@ -486,6 +493,9 @@ result.
 
 ## `publish_work`: action
 
+<a id="publish-work-action-result"></a>
+<a id="publish-work-action-and-result"></a>
+
 `action_kind` is a closed enum: `command`, `edit`, `research`, `review`, or `other`. A source or
 file modification is `edit` — there is no `code_change` value — and `command` additionally
 requires the `command` field.
@@ -698,6 +708,9 @@ true`; append it only after the preview accepts it. `disputes_refs` and
 
 ## `publish_work`: revised plan
 
+Use the current plan version N returned by the service: `plan_version` is N+1 and
+`supersedes_plan_version` is N. The example assumes N=1; it is not a fresh-plan request.
+
 This example carries an obligation and therefore omits `no_obligations_reason`; omission clears any
 earlier empty-scope reason. For a revised effective plan with zero obligation refs, include one
 current closed reason. A revision never inherits an earlier reason by omission.
@@ -885,6 +898,9 @@ If `scope` is present, send both arrays. Either may be empty; two empty arrays m
 ```
 
 ## `respond`
+
+For `decision_needed`, a response optionally records a choice and reason, never a verified repair.
+Do not seek resolution or a repair ruling; use [review.md](review.md) for the finding procedure.
 
 Use `finding_frontier` = any frontier at or after the finding's own record: the item's
 `finding_frontier` from `status view=findings` when it carries one, otherwise the current status
@@ -1086,7 +1102,10 @@ Each request below is a separate alternative at a real current frontier. Parent 
 a returned direct child ID; work events affect the publishing task. Accept and reject apply
 only to a pending child. An accepted child cannot be rejected later. Cancellation revokes the
 FinishUP capability without claiming to stop a host process. Write-off retains the incomplete
-dependency. `work_closed` records closure explicitly; a receipt never does.
+dependency. `work_closed` records closure explicitly; a receipt never does. These are shapes,
+not instructions to force a transition: follow [receipt.md](receipt.md) and the advertised
+lifecycle continuation. On `lineage_work_transition`, read lineage state once and follow only a
+supported continuation; do not repeat the close blindly or claim it succeeded.
 
 Do not publish service-owned `delegation_declared`, `work_abandoned`,
 `child_dependencies_recorded`, or `coordination_context_recorded`.
@@ -1216,6 +1235,10 @@ Do not publish service-owned `delegation_declared`, `work_abandoned`,
 ```
 
 ### `work_closed`
+
+Send only when the task is complete and its advertised lifecycle continuation permits closure.
+Do not send for a task already cancelled, written off or otherwise terminal. A receipt and lifecycle
+state are separate facts; if no close is supported, report that boundary without inventing one.
 
 ```json
 {
