@@ -2443,7 +2443,13 @@ and ledger reads cover the frozen case's rendered records, including items the b
 bytes the case never kept are `not_retained`. File reads use the trusted descriptor walk beneath a
 service-issued alias: the workspace (minus ignored, hidden, credential-named and excluded paths), an
 owner-admitted outside root limited to the task-declared subset, or a kept snapshot. A listing
-applies the same rules to every child and inspects at most 128 entries. Cursors are opaque, issued
+applies the same rules to every child and inspects at most 128 entries. One uninspected lookahead
+detects whether native entries remain, including when hidden or refused entries consumed the whole
+sample. Such results are `partial` / `inspection_limit` with `truncated=true`; cursors page only
+the inspected sample, and no cursor promises access beyond it. Native text files above 1 MiB are
+withheld in full (`partial` / `native_read_limit`, `truncated=true`, only the original byte size in
+`data.source_bytes`), so a physical read cut never exposes a partial credential. This conservative
+refusal also applies when the requested lines precede the cut. Cursors are opaque, issued
 by the broker and bound to their selector and source version: a forged or rebound cursor is
 `denied`/`invalid_request`, a changed source `stale`/`source_changed`. The loop's outcome carries the
 citation union of the packet as sent and every admitted result as sent: exactly the refs a result
@@ -2741,12 +2747,28 @@ credential probe keep their one-shot dispatch; no check uses it.
   reads sent. An exchange's own blocked, awaiting or provider outcome ends the review as that
   outcome. Otherwise the loop's reason maps to closed results: `format_invalid`, `read_limit` and
   `turn_limit` to `invalid`, `deadline` to `timeout`, `authorization_changed` to blocked by policy,
-  and an earlier run of the job, an uncaptured step or a lost lease to `outcome_unknown`. The
+  and an earlier run of the job, an uncaptured step or a lost lease to `outcome_unknown`. A valid
+  action that leaves less than the minimum read-envelope room ends `case_capacity_exceeded`,
+  mapped through the existing case-capacity result before reserving or reading anything; genuine
+  read-count violations still map to `invalid`. The capacity counters in this path describe the
+  minimum action-plus-envelope requirement and the exchange allowance remaining. The
   provenance is the final exchange's: its token usage is that exchange's (Codex reports its
   thread's cumulative usage), not a sum.
 - **Cleanup.** `ReviewerSession.aclose()`'s outcome replaces the in-session `retained` value in the
   final runtime evidence, so `process_cleanup` stays within runtime-attempt-evidence 1.1.0 and no
-  schema bump was needed.
+  schema bump was needed. Failed final session cleanup withholds the final judgment and ends
+  `unavailable`, failure class `transport`, stage and reviewer ending `cleanup_unconfirmed`.
+  The acknowledged Codex turn maps to the existing non-retryable `outcome_unknown`; it never
+  opens a replacement session (#1137).
+- **Native notification work (#1141).** Active turns replace the 4,096-notification count with a
+  32 MiB work bound: each event spends the largest of its re-encoded JSON bytes, newly received
+  wire bytes, and 256 work units. The shared deadline is checked per event, buffered events
+  included; request and pre-disclosure queues keep their existing bounds. Telemetry, deltas and
+  intermediate output can exceed 4,096 events without crowding out the final answer. All method,
+  phase and tool allowlists still fail closed. Work exhaustion keeps `event_limit`, and an
+  acknowledged turn without a completed answer keeps `outcome_unknown`. Owner diagnostics report
+  only counts and re-encoded bytes for the closed `control`, `telemetry`, `delta`, `intermediate`
+  families, total active-turn wire bytes including its acknowledgement, and attempt duration.
 - **The record.** A bounded `ReviewerRecord` is built from the conversation's own service
   envelopes: exchanges, and per read the action, status, reason, an opaque source identity (for a
   file, the installation object store's keyed commitment of job, root alias and path under its own

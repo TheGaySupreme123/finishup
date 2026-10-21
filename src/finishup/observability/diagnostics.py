@@ -107,6 +107,15 @@ _FIELD_ORDER: Final = (
     # vanished from the durable ring an operator actually reads.
     "duration_ms",
     "operation_count",
+    "codex_event_control_count",
+    "codex_event_wire_bytes",
+    "codex_event_control_bytes",
+    "codex_event_telemetry_count",
+    "codex_event_telemetry_bytes",
+    "codex_event_delta_count",
+    "codex_event_delta_bytes",
+    "codex_event_intermediate_count",
+    "codex_event_intermediate_bytes",
     # Closed control-plane identity of an abandoned response write (tb4n2 NEW-8).
     "control_method",
     "client_kind",

@@ -114,6 +114,16 @@ _FIELD_ORDER: Final = (
     # Admits the loop-health connection count into _CALLER_FIELDS/_COUNT_FIELDS below, so a
     # bounded-counts caller can report how much work was in flight during a stall.
     "operation_count",
+    # #1141: native reviewer notifications, grouped without provider text or identifiers.
+    "codex_event_control_count",
+    "codex_event_wire_bytes",
+    "codex_event_control_bytes",
+    "codex_event_telemetry_count",
+    "codex_event_telemetry_bytes",
+    "codex_event_delta_count",
+    "codex_event_delta_bytes",
+    "codex_event_intermediate_count",
+    "codex_event_intermediate_bytes",
     # Closed control-plane identity for a response write the peer abandoned (tb4n2 NEW-8).
     "control_method",
     "client_kind",

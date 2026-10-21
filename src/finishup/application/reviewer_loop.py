@@ -96,6 +96,7 @@ class ReviewOutcome:
     model_turns: int
     citable_refs: frozenset[str]
     text_by_ref: Mapping[str, tuple[str, ...]]
+    capacity: tuple[int, int] | None = None
 
 
 class ReviewerLoop:
@@ -186,10 +187,10 @@ class ReviewerLoop:
                         lambda: self.clock() >= stop_at,
                         self.messages[-1].content,
                     )
-                except ReadExchangeFull:
+                except ReadExchangeFull as e:
                     # The read action alone filled the room its exchange has under the cap:
                     # nothing is read and nothing more is sent (#1118).
-                    return self.exit("read_limit")
+                    return self.exit("case_capacity_exceeded", capacity=e.capacity)
                 self.remaining()
                 self.messages.append(Turn("user", observation))
         except ReviewerModelError as e:
@@ -206,10 +207,16 @@ class ReviewerLoop:
             raise ReviewerModelError("deadline")
         return self.deadline.remaining_seconds(now)
 
-    def exit(self, code: str | None, judgment: SemanticJudgment | None = None) -> ReviewOutcome:
+    def exit(
+        self,
+        code: str | None,
+        judgment: SemanticJudgment | None = None,
+        *,
+        capacity: tuple[int, int] | None = None,
+    ) -> ReviewOutcome:
         status: Literal["final", "incomplete"] = "final" if judgment is not None else "incomplete"
         texts = {ref: tuple(texts) for ref, texts in self.broker.text_by_ref.items()}
         refs = frozenset(self.broker.cited_refs)
         return ReviewOutcome(
-            status, judgment, code, tuple(self.messages), self.n_calls, refs, texts
+            status, judgment, code, tuple(self.messages), self.n_calls, refs, texts, capacity
         )

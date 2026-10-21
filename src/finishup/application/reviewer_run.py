@@ -40,6 +40,7 @@ from finishup.application.reviewer_loop import (
     ReviewerModelError,
     ReviewOutcome,
 )
+from finishup.domain.findings import SemanticFailureClass
 from finishup.domain.privacy import (
     AuthorizationScope,
     CandidateContext,
@@ -58,6 +59,7 @@ from finishup.ports.semantic import (
     SemanticResultInvalid,
     SemanticResultSuccess,
     SemanticResultTimeout,
+    SemanticResultUnavailable,
     decode_reviewer_exchange,
     encode_reviewer_exchange,
     reviewer_exchange_tokens,
@@ -254,6 +256,8 @@ async def run_reviewer(
         )
         outcome = await loop.run()
         cleanup = await session.aclose()
+    if cleanup == "failed" and outcome.status == "final":
+        outcome = replace(outcome, status="incomplete", judgment=None, reason="cleanup_unconfirmed")
     record, paths = _record(outcome, results, carried, cleanup)
     sources: dict[int, str] = {}
     for call, path in paths.items():
@@ -284,6 +288,13 @@ def _terminal(
     """One egress result for the whole conversation, without inventing an AI judgment."""
 
     last = results[-1] if results else None
+    if outcome.reason == "case_capacity_exceeded" and outcome.capacity is not None:
+        return SemanticEgressBlocked(
+            request_id,
+            PrivacyOutcome.BLOCKED_BY_POLICY,
+            PrivacyReason.POLICY_DENIED,
+            capacity=outcome.capacity,
+        )
     if type(last) is SemanticEgressReply:
         provenance = last.result.provenance
         evidence = provenance.runtime_evidence
@@ -291,6 +302,20 @@ def _terminal(
             # The held session's actual cleanup, never the in-session "retained" of a turn.
             provenance = replace(
                 provenance, runtime_evidence=replace(evidence, process_cleanup=cleanup)
+            )
+        if cleanup == "failed":
+            evidence = provenance.runtime_evidence
+            if evidence is not None:
+                evidence = replace(evidence, failure_stage="cleanup_unconfirmed")
+            return last.outcome(
+                SemanticResultUnavailable(
+                    replace(
+                        provenance,
+                        status=SemanticStatus.UNAVAILABLE,
+                        failure_class=SemanticFailureClass.TRANSPORT,
+                        runtime_evidence=evidence,
+                    )
+                )
             )
         if outcome.status == "final" and outcome.judgment is not None:
             return last.success(SemanticResultSuccess(outcome.judgment, provenance))
