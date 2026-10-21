@@ -1,0 +1,721 @@
+"""#1139: the native MCP result fits, and continuation loses no actionable field."""
+
+from __future__ import annotations
+
+import copy
+from typing import Any, cast
+
+import pytest
+
+from finishup.application.result_delivery import (
+    HOST_RESULT_BUDGET_BYTES,
+    decode_cursor,
+    delivery_items,
+    mcp_delivery_bytes,
+    page_result,
+)
+from finishup.domain.result_delivery import collect_status_delivery, reassemble_delivery
+from finishup.mcp.server import result_from_public_model
+from finishup.ports.control import McpHostProfile
+from finishup.protocol.canonical import canonical_digest, canonical_encode
+from finishup.protocol.errors import PublicOperationError
+from finishup.protocol.models import CheckResultModel, StatusRequest
+
+_KEY = b"delivery-test-key" * 2
+_SESSION = "ses_00000000-0000-4000-8000-000000000001"
+_WRITER = "wri_00000000-0000-4000-8000-000000000002"
+
+
+def _source() -> dict[str, Any]:
+    return {
+        "protocol_version": "0.1",
+        "schema_version": "1.0.0",
+        "ok": True,
+        "state": "complete",
+        "request_id": "req_00000000-0000-4000-8000-000000000003",
+        "task_id": "tsk_00000000-0000-4000-8000-000000000004",
+        "session_id": _SESSION,
+        "result_frontier": {"sequence": "42", "head_digest": "sha256:" + "a" * 64},
+        "verdict": "action_required",
+        "agent_next": "Answer each question with its uncertainty.",
+        "review_summary": "Advisory: compare both readings before changing the deliverable.",
+        "findings": [
+            {
+                "finding_id": f"fnd_00000000-0000-4000-8000-{i:012x}",
+                "kind": "decision_needed",
+                "summary": f"Concern {i}: "
+                + "Repeated poles need a discriminating measurement. " * 8,
+                "detail": "Compare the measurement and preserve the owner-defined model. " * 8,
+                "challenge": {
+                    "discrepancy": "A pooled estimate can hide a mode shift. " * 10,
+                    "requested_next_step": "answer_question",
+                    "alternative_interpretation": "The supplied reference may intentionally pool the modes. "
+                    * 10,
+                    "uncertainty": "Do not replace it until the sensitivity diagnostic resolves the ambiguity. "
+                    * 10,
+                    "snippet": f"Supporting excerpt {i} " * 300,
+                },
+                "provenance": {"source": "model-derived", "refs": [f"ref_{i}"] * 100},
+            }
+            for i in range(1, 21)
+        ],
+    }
+
+
+def _pages(source: dict[str, Any]) -> list[dict[str, Any]]:
+    pages: list[dict[str, Any]] = []
+    position = 0
+    digest = None
+    while True:
+        page: dict[str, Any] = page_result(
+            source,
+            key=_KEY,
+            method="check",
+            selector={"request_id": source["request_id"]},
+            writer_id=_WRITER,
+            sink="agent_context",
+            position=position,
+            expected_digest=digest,
+        )
+        pages.append(page)
+        if page["complete"]:
+            assert page["next_cursor"] is None
+            return pages
+        cursor = decode_cursor(_KEY, page["next_cursor"], _SESSION, _WRITER)
+        assert cursor["position"] > position
+        position, digest = cursor["position"], cursor["digest"]
+
+
+@pytest.fixture(scope="module")
+def many_pages() -> list[dict[str, Any]]:
+    return _pages(_source())
+
+
+@pytest.mark.parametrize("host", ["codex", "claude", "cursor", "generic"])
+def test_many_substantive_findings_are_whole_on_every_host(
+    host: McpHostProfile, many_pages: list[dict[str, Any]]
+) -> None:
+    source = _source()
+    assert len(canonical_encode(source)) > 120_000
+    pages = many_pages
+    atoms = [item for page in pages for item in page["items"]]
+    assert atoms == delivery_items(source)
+    assert all("fragment" not in atom for atom in atoms if "snippet" not in atom["path"])
+    # Every complete action field, including fields well beyond the old 180-byte limit.
+    for i, finding in enumerate(source["findings"]):
+        for path, value in [
+            (f"/findings/{i}/detail", finding["detail"]),
+            *[
+                (f"/findings/{i}/challenge/{key}", value)
+                for key, value in finding["challenge"].items()
+                if key != "snippet"
+            ],
+        ]:
+            assert any(item["path"] == path and item["value"] == value for item in atoms)
+    first_bulk = next(
+        i
+        for i, atom in enumerate(atoms)
+        if "snippet" in atom["path"] or "provenance" in atom["path"]
+    )
+    assert all(
+        "snippet" not in atom["path"] and "provenance" not in atom["path"]
+        for atom in atoms[:first_bulk]
+    )
+    for page in pages:
+        result = result_from_public_model(CheckResultModel.model_validate(page), host_profile=host)
+        wire = result.model_dump(mode="json", by_alias=True, exclude_none=True)
+        assert (
+            len(canonical_encode({"jsonrpc": "2.0", "id": "x" * 128, "result": wire}))
+            <= HOST_RESULT_BUDGET_BYTES
+        )
+        assert mcp_delivery_bytes(page) <= HOST_RESULT_BUDGET_BYTES
+        assert page["truncated"] is True
+        assert "delivery_cursor=next_cursor" in page["required_next_step"]
+
+
+def test_oversized_scalar_has_lossless_explicit_fragments_including_escaping() -> None:
+    source = _source()
+    original = '😀 עברית "quoted" \\ \n\t' * 1000
+    source["findings"] = []
+    source["review_summary"] = original
+    atoms = [
+        item
+        for page in _pages(source)
+        for item in page["items"]
+        if item["path"] == "/review_summary"
+    ]
+    assert "".join(item["value"] for item in atoms) == original
+    offset = 0
+    for item in atoms:
+        fragment = item["fragment"]
+        assert fragment["unit"] == "unicode_scalar"
+        assert fragment["offset"] == offset
+        offset = fragment["end"]
+        assert fragment["length"] == len(original)
+        assert fragment["digest"] == canonical_digest(original)
+    assert atoms[-1]["fragment"]["complete"] is True
+
+
+def test_full_reconstruction_preserves_numeric_object_keys_and_rejects_incomplete_fields() -> None:
+    source = _source()
+    source["findings"] = []
+    source["bulk"] = {"0": "numeric object key " * 200, "a/b~c": [{"": "nested " * 300}]}
+    pages = _pages(source)
+    assert reassemble_delivery(pages) == source
+    with pytest.raises(ValueError, match="result_delivery_invalid"):
+        reassemble_delivery(pages[:-1])
+    altered = copy.deepcopy(pages)
+    fragment = next(item for page in altered for item in page["items"] if "fragment" in item)
+    fragment["value"] += "unrecorded tail"
+    with pytest.raises(ValueError, match="result_delivery_invalid"):
+        reassemble_delivery(altered)
+
+
+def test_page_partition_is_independent_of_mapping_insertion_order() -> None:
+    def reverse(value: Any) -> Any:
+        if isinstance(value, dict):
+            return {k: reverse(v) for k, v in reversed(list(cast(dict[str, Any], value).items()))}
+        if isinstance(value, list):
+            return [reverse(v) for v in cast(list[Any], value)]
+        return value
+
+    source = _source()
+    source["findings"] = source["findings"][:1]
+    assert _pages(source) == _pages(reverse(source))
+
+
+def test_cursor_rejects_tamper_other_writer_and_changed_authorized_content(
+    many_pages: list[dict[str, Any]],
+) -> None:
+    source = _source()
+    first = many_pages[0]
+    cursor = first["next_cursor"]
+    with pytest.raises(PublicOperationError):
+        decode_cursor(_KEY, cursor, _SESSION, _WRITER[:-1] + "3")
+    with pytest.raises(PublicOperationError):
+        decode_cursor(_KEY, cursor[:-2] + "AB", _SESSION, _WRITER)
+    changed = copy.deepcopy(source)
+    changed["review_summary"] = {"omitted": True, "reason": "withheld_by_policy"}
+    with pytest.raises(PublicOperationError):
+        page_result(
+            changed,
+            key=_KEY,
+            method="check",
+            selector={},
+            writer_id=_WRITER,
+            sink="agent_context",
+            position=1,
+            expected_digest=first["source_digest"],
+        )
+
+
+def test_status_continuation_freezes_watermarks_and_preserves_inventory_cursor() -> None:
+    source = _source()
+    source.update(
+        view="findings",
+        head_frontier=source["result_frontier"],
+        projection_lag="0",
+        page={"items": source.pop("findings"), "next_cursor": "original-inventory-cursor"},
+    )
+    selector: dict[str, Any] = {
+        "view": "findings",
+        "limit": "20",
+        "detail": "full",
+        "at_frontier": "42",
+    }
+    first = page_result(
+        source,
+        key=_KEY,
+        method="status",
+        selector=selector,
+        writer_id=_WRITER,
+        sink="agent_context",
+    )
+    inventory = first["inventory_read"]
+    assert isinstance(inventory, dict)
+    assert inventory == {**selector, "cursor": "original-inventory-cursor"}
+    cursor = decode_cursor(_KEY, cast(str, first["next_cursor"]), _SESSION, _WRITER)
+    source["head_frontier"] = {"sequence": "99", "head_digest": "sha256:" + "b" * 64}
+    source["projection_lag"] = "57"
+    continued = page_result(
+        source,
+        key=_KEY,
+        method="status",
+        selector=cursor["selector"],
+        writer_id=_WRITER,
+        sink="agent_context",
+        position=cursor["position"],
+        expected_digest=cursor["digest"],
+    )
+    assert continued["source_digest"] == first["source_digest"]
+    assert continued["inventory_read"] == inventory
+    with pytest.raises(PublicOperationError):
+        decode_cursor(
+            b"another-service-generation-key-32", cast(str, first["next_cursor"]), _SESSION, _WRITER
+        )
+
+
+def test_inventory_and_delivery_cursors_share_the_actual_envelope_budget() -> None:
+    import base64
+    import hashlib
+
+    opaque = (
+        base64.urlsafe_b64encode(
+            b"".join(hashlib.sha256(str(i).encode()).digest() for i in range(20))
+        )
+        .decode()
+        .rstrip("=")
+    )
+    source = _source()
+    source["findings"] = source["findings"][:1]
+    source["page"] = {"items": source.pop("findings"), "next_cursor": opaque}
+    selector: dict[str, Any] = {
+        "view": "findings",
+        "detail": "full",
+        "limit": "20",
+        "cursor": opaque,
+        "at_frontier": "42",
+    }
+    pages: list[dict[str, Any]] = []
+    position = 0
+    while True:
+        page = cast(
+            dict[str, Any],
+            page_result(
+                source,
+                key=_KEY,
+                method="status",
+                selector=selector,
+                writer_id=_WRITER,
+                sink="agent_context",
+                position=position,
+            ),
+        )
+        assert mcp_delivery_bytes(page) <= HOST_RESULT_BUDGET_BYTES
+        pages.append(page)
+        if page["complete"]:
+            break
+        cursor = decode_cursor(_KEY, page["next_cursor"], _SESSION, _WRITER)
+        selector, position = cursor["selector"], cursor["position"]
+    assert reassemble_delivery(pages) == source
+
+
+@pytest.mark.parametrize("host", ["codex", "claude", "cursor", "generic"])
+def test_small_check_text_also_contains_complete_action_fields(host: McpHostProfile) -> None:
+    from tests.unit.protocol.test_models_and_schemas import (
+        _check_result_wire,  # pyright: ignore[reportPrivateUsage]
+    )
+
+    wire = cast(dict[str, Any], _check_result_wire())
+    wire["findings"][0]["detail"] = "Measure the second mode before changing the reference."
+    wire["findings"][0].pop("challenge", None)
+    result = result_from_public_model(CheckResultModel.model_validate(wire), host_profile=host)
+    assert result.content[0].type == "text"
+    assert wire["findings"][0]["detail"] in result.content[0].text
+
+
+def test_delivery_read_is_an_explicit_unambiguous_status_selector(
+    many_pages: list[dict[str, Any]],
+) -> None:
+    source = _source()
+    cursor = many_pages[0]["next_cursor"]
+    body = {
+        "protocol_version": "0.1",
+        "schema_version": "1.0.0",
+        "request_id": source["request_id"],
+        "actor": {"actor_id": "test", "actor_type": "harness"},
+        "client": {"kind": "test_client", "version": "1", "integration": "local_cli"},
+        "session_id": _SESSION,
+        "writer_id": _WRITER,
+        "view": "compact",
+        "delivery_cursor": cursor,
+    }
+    assert StatusRequest.model_validate(body).delivery_cursor == cursor
+    with pytest.raises(ValueError):
+        StatusRequest.model_validate(
+            {**body, "filter": {"include_resolved": True}, "view": "findings"}
+        )
+
+
+@pytest.fixture
+def anyio_backend() -> str:
+    return "asyncio"
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("label", ["check", "status/findings", "receipt"])
+async def test_real_disclosure_and_recorded_source_continuation_do_not_repeat_work(
+    label: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from builders.projection_workflow import (
+        ProjectionCase,
+        project_case,
+        request_base,
+        run_projection_workflow,
+    )
+    from finishup.ports.control import ControlMethod
+
+    workflow = await run_projection_workflow(max_findings=10)
+    disclosures = 0
+    original_disclose = type(workflow.app.privacy).prepare_local_disclosure
+
+    async def disclose(*args: Any, **kwargs: Any) -> Any:
+        nonlocal disclosures
+        disclosures += 1
+        from finishup.protocol.canonical import strict_json_parse
+
+        audit = args[1].projection_audit_context
+        frame = strict_json_parse(audit.control_request_canonical)
+        assert isinstance(frame, dict)
+        assert audit.method == frame["method"]
+        assert args[1].request_id == audit.original_request_id
+        return await original_disclose(*args, **kwargs)
+
+    monkeypatch.setattr(type(workflow.app.privacy), "prepare_local_disclosure", disclose)
+    case = workflow.case(label)
+    first: dict[str, Any] = dict(await project_case(workflow.app, case, 9000, paginate=True))
+    assert first["state"] == "delivery_page"
+    seen: list[Any] = list(first["items"])
+    page = first
+    pages = [first]
+    seed = 9100
+
+    async def forbidden(*args: Any, **kwargs: Any) -> Any:
+        raise AssertionError("delivery read must not repeat a workflow write")
+
+    monkeypatch.setattr(type(workflow.app), "check", forbidden)
+    monkeypatch.setattr(type(workflow.app), "receipt", forbidden)
+    head_body = {
+        **request_base("req_00000000-0000-4000-8000-000000008888"),
+        "session_id": first["session_id"],
+        "writer_id": first["writer_id"],
+        "view": "compact",
+    }
+    before = await workflow.app.status(StatusRequest.model_validate(head_body))
+    original_id = first["source_request_id"]
+    while page["next_cursor"] is not None:
+        body = {
+            **request_base(f"req_00000000-0000-4000-8000-{seed:012x}"),
+            "session_id": page["session_id"],
+            "writer_id": page["writer_id"],
+            "view": "compact",
+            "delivery_cursor": page["next_cursor"],
+        }
+        internal = await workflow.app.read_result_delivery(StatusRequest.model_validate(body))
+        next_case = ProjectionCase("delivery", ControlMethod.STATUS, body, internal)
+        page = cast(
+            dict[str, Any], dict(await project_case(workflow.app, next_case, seed, paginate=True))
+        )
+        assert page["source_request_id"] == original_id
+        assert page["source_digest"] == first["source_digest"]
+        assert page["result_frontier"] == first["result_frontier"]
+        assert page["offset"] == len(seen)
+        assert mcp_delivery_bytes(page) <= HOST_RESULT_BUDGET_BYTES
+        seen.extend(page["items"])
+        pages.append(page)
+        seed += 2
+    assert len(seen) == first["total_items"]
+    reconstructed = reassemble_delivery(pages)
+    expected = dict(await project_case(workflow.app, case, seed + 10))
+    assert {k: v for k, v in reconstructed.items() if k != "privacy_projection"} == {
+        k: v for k, v in expected.items() if k != "privacy_projection"
+    }
+    collected_reads = 0
+    if label == "status/findings":
+        from finishup.domain.closure import prepare_closure
+        from finishup.protocol.models import (
+            ClosureSelectionModel,
+            StatusResultModel,
+            public_model_to_wire,
+        )
+
+        frozen_initial = True
+
+        async def fetch(request: StatusRequest) -> StatusResultModel:
+            nonlocal collected_reads
+            collected_reads += 1
+            internal = (
+                await workflow.app.read_result_delivery(request)
+                if request.delivery_cursor is not None
+                else case.internal
+                if frozen_initial
+                else await workflow.app.status(request)
+            )
+            read_case = ProjectionCase(
+                "collect", ControlMethod.STATUS, public_model_to_wire(request), internal
+            )
+            return StatusResultModel.model_validate(
+                await project_case(
+                    workflow.app, read_case, seed + 100 + collected_reads, paginate=True
+                )
+            )
+
+        collected = await collect_status_delivery(
+            fetch, StatusRequest.model_validate(case.request_body)
+        )
+        actual = public_model_to_wire(collected)
+        assert {k: v for k, v in actual.items() if k != "privacy_projection"} == {
+            k: v for k, v in expected.items() if k != "privacy_projection"
+        }
+        frozen_initial = False
+        prepared = await prepare_closure(
+            fetch,
+            first["session_id"],
+            first["writer_id"],
+            ClosureSelectionModel.model_validate({"phase": "inventory"}),
+        )
+        inventory = cast(dict[str, Any], prepared["inventory"])
+        assert inventory["findings"]
+        expected_page = cast(dict[str, Any], expected["page"])
+        assert {row["finding_id"] for row in expected_page["items"]} <= {
+            row["finding_id"] for row in inventory["findings"]
+        }
+    after = await workflow.app.status(
+        StatusRequest.model_validate(
+            {
+                **head_body,
+                "request_id": "req_00000000-0000-4000-8000-000000008889",
+            }
+        )
+    )
+    from finishup.application.status import StatusInternalResult
+
+    assert isinstance(before, StatusInternalResult) and isinstance(after, StatusInternalResult)
+    assert before.head_frontier == after.head_frontier
+    assert disclosures == 2 + (seed - 9100) // 2 + collected_reads
+
+
+@pytest.mark.anyio
+async def test_internal_collector_refuses_duplicate_pages_and_aggregate_overflow(
+    many_pages: list[dict[str, Any]],
+) -> None:
+    from finishup.protocol.models import StatusResultModel
+
+    source = _source()
+    request = StatusRequest.model_validate(
+        {
+            "protocol_version": "0.1",
+            "schema_version": "1.0.0",
+            "request_id": source["request_id"],
+            "session_id": _SESSION,
+            "writer_id": _WRITER,
+            "actor": {"actor_id": "test", "actor_type": "harness"},
+            "client": {"kind": "test_client", "version": "1", "integration": "local_cli"},
+            "view": "compact",
+        }
+    )
+    page = {**many_pages[0], "source_operation": "status"}
+    calls = 0
+
+    async def fetch(_request: StatusRequest) -> StatusResultModel:
+        nonlocal calls
+        calls += 1
+        return StatusResultModel.model_validate(page)
+
+    with pytest.raises(ValueError, match="result_delivery_invalid"):
+        await collect_status_delivery(fetch, request)
+    assert calls == 2
+    page["items"] = [{"path": "/bulk", "value": "x" * 1_048_576}]
+    with pytest.raises(ValueError, match="result_delivery_limit"):
+        await collect_status_delivery(fetch, request)
+
+
+@pytest.mark.anyio
+async def test_service_routes_status_cursor_to_read_only_delivery_handler(
+    monkeypatch: pytest.MonkeyPatch, many_pages: list[dict[str, Any]]
+) -> None:
+    from finishup.ports.control import ControlClientKind, ControlMethod
+    from finishup.protocol.models import DeliveryPageModel, StatusResultModel
+    from integration.service.test_daemon_clients import (
+        _daemon,  # pyright: ignore[reportPrivateUsage]
+        _request,  # pyright: ignore[reportPrivateUsage]
+        _status_body,  # pyright: ignore[reportPrivateUsage]
+    )
+
+    daemon, application, _vault, _listener = _daemon()
+    marker = object()
+    body = _status_body().model_copy(update={"delivery_cursor": many_pages[0]["next_cursor"]})
+
+    async def continuation(request: Any, **kwargs: Any) -> Any:
+        assert request == body
+        assert "repository_privacy_context" in kwargs
+        return marker
+
+    async def forbidden(*args: Any, **kwargs: Any) -> Any:
+        raise AssertionError("a delivery cursor must not execute the ordinary status query")
+
+    async def project(context: Any, binding: Any, result: Any) -> Any:
+        assert binding.method is ControlMethod.STATUS
+        assert result is marker
+        return StatusResultModel.model_validate({**many_pages[0], "request_id": body.request_id})
+
+    monkeypatch.setattr(application, "status", forbidden)
+    monkeypatch.setattr(application, "read_result_delivery", continuation, raising=False)
+    monkeypatch.setattr(application, "project_result_for_client", project)
+    await daemon.start()
+    try:
+        result = await daemon.dispatch(
+            ControlClientKind.MCP_BRIDGE, _request(daemon, ControlMethod.STATUS, body)
+        )
+        assert result.outcome == "ok"
+        assert isinstance(result.body, StatusResultModel)
+        assert isinstance(result.body.root, DeliveryPageModel)
+    finally:
+        await daemon.close()
+
+
+@pytest.mark.parametrize("json_output", [True, False])
+def test_cli_json_and_terminal_text_keep_the_explicit_cursor_page(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Any,
+    many_pages: list[dict[str, Any]],
+    json_output: bool,
+) -> None:
+    import json
+
+    from typer.testing import CliRunner
+
+    import finishup.cli.app as cli
+
+    page = many_pages[0]
+    result = CheckResultModel.model_validate(page)
+
+    class Client:
+        async def check(self, request: Any, *, deadline_ms: Any) -> Any:
+            return result
+
+        async def close(self) -> None:
+            pass
+
+    async def connect() -> Any:
+        return Client()
+
+    monkeypatch.setattr(cli, "build_service_client", connect)
+    request_path = tmp_path / "check.json"
+    request_path.write_text(
+        json.dumps(
+            {
+                "protocol_version": "0.1",
+                "schema_version": "1.0.0",
+                "request_id": page["source_request_id"],
+                "session_id": _SESSION,
+                "writer_id": _WRITER,
+                "actor": {"actor_id": "test", "actor_type": "harness"},
+                "client": {"kind": "test_client", "version": "1", "integration": "local_cli"},
+                "expected_frontier": {"sequence": "0", "head_digest": "genesis"},
+            }
+        )
+    )
+    if json_output:
+        output = CliRunner().invoke(cli.app, ["check", "--input", str(request_path), "--json"])
+        assert output.exit_code == 0, output.output
+        text = output.stdout
+    else:
+        from finishup.protocol.models import CheckRequest
+
+        shown: list[str] = []
+        monkeypatch.setattr(cli.sys.stdout, "isatty", lambda: True)
+
+        def show(value: str) -> None:
+            shown.append(value)
+
+        monkeypatch.setattr(cli.typer, "echo", show)
+        code = cli.run_async(
+            lambda: cli._call_workflow(  # pyright: ignore[reportPrivateUsage]
+                "check",
+                CheckRequest,
+                str(request_path),
+                None,
+                False,
+                None,
+            )
+        )
+        assert code == 0
+        text = shown[0]
+    assert json.loads(text) == page
+    assert len(text.encode()) <= HOST_RESULT_BUDGET_BYTES
+
+
+def test_cli_and_tui_findings_keep_every_challenge_field() -> None:
+    from types import SimpleNamespace
+
+    from finishup.cli.render import render_human_findings
+
+    source = _source()
+    rows = [
+        SimpleNamespace(**{**finding, "challenge": SimpleNamespace(**finding["challenge"])})
+        for finding in source["findings"]
+    ]
+    text = render_human_findings(rows)
+    for row in source["findings"]:
+        assert row["summary"] in text
+        assert row["detail"] in text
+        for key in (
+            "discrepancy",
+            "requested_next_step",
+            "alternative_interpretation",
+            "uncertainty",
+        ):
+            assert row["challenge"][key] in text
+
+
+@pytest.mark.parametrize(
+    "operation,version", [("check", "1.7.0"), ("status", "1.5.0"), ("receipt", "1.4.0")]
+)
+def test_delivery_page_survives_catalog_and_control_boundaries(
+    operation: str,
+    version: str,
+    many_pages: list[dict[str, Any]],
+) -> None:
+    from finishup.ports.control import ControlMethod, ControlResult
+    from finishup.protocol.models import ReceiptResultModel, StatusResultModel
+    from finishup.protocol.schemas import validate_schema_instance
+    from finishup.service.control_protocol import (
+        decode_control_frame,
+        encode_control_frame,
+        parse_control_result,
+    )
+
+    page = {**many_pages[0], "source_operation": operation}
+    validate_schema_instance(f"{operation}-result", version, page)
+    model = {"check": CheckResultModel, "status": StatusResultModel, "receipt": ReceiptResultModel}[
+        operation
+    ]
+    result = ControlResult(
+        protocol_version="1.0",
+        rpc_id="rpc_00000000-0000-4000-8000-000000000001",
+        service_instance_id="svc_00000000-0000-4000-8000-000000000002",
+        service_generation="1",
+        method=ControlMethod(operation),
+        outcome="ok",
+        body=model.model_validate(page),
+    )
+    decoded = parse_control_result(decode_control_frame(encode_control_frame(result)))
+    assert decoded.body == result.body
+
+
+def test_result_delivery_matches_owned_canonical_vector() -> None:
+    import json
+    from pathlib import Path
+
+    from finishup.protocol.schemas import validate_schema_instance
+
+    fixture = (
+        Path(__file__).resolve().parents[3]
+        / "fixtures/canonical/check-reviewer-record-1.6.0.case.json"
+    )
+    vector = json.loads(fixture.read_bytes())["input"]["result_delivery"]
+    page = page_result(
+        vector["source"],
+        key=b"fixture-delivery-key-not-a-secret",
+        method="check",
+        selector={"request_id": vector["source"]["request_id"]},
+        writer_id="wri_00000000-0000-4000-8000-000000000004",
+        sink="agent_context",
+    )
+    page["next_cursor"] = vector["cursor_normalization"]
+    assert page == vector["payload"]
+    assert canonical_encode(page).hex() == vector["canonical_hex"]
+    assert canonical_digest(page) == vector["digest"]
+    validate_schema_instance("check-result", "1.7.0", page)

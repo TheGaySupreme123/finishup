@@ -8551,9 +8551,15 @@ def _control_v2_9_schema(entry: _RegistryEntry) -> dict[str, JsonValue]:
     # follow the current public finding/check contracts; earlier control artifacts remain frozen.
     active_replacements = {
         SCHEMA_NAMESPACE + "operations/check-result-1.3.0.schema.json": SCHEMA_NAMESPACE
-        + "operations/check-result-1.6.0.schema.json",
+        + "operations/check-result-1.7.0.schema.json",
         SCHEMA_NAMESPACE + "findings/finding-1.3.0.schema.json": SCHEMA_NAMESPACE
         + "findings/finding-1.4.0.schema.json",
+        SCHEMA_NAMESPACE + "operations/status-request-1.2.0.schema.json": SCHEMA_NAMESPACE
+        + "operations/status-request-1.3.0.schema.json",
+        SCHEMA_NAMESPACE + "operations/status-result-1.4.0.schema.json": SCHEMA_NAMESPACE
+        + "operations/status-result-1.5.0.schema.json",
+        SCHEMA_NAMESPACE + "operations/receipt-result-1.3.0.schema.json": SCHEMA_NAMESPACE
+        + "operations/receipt-result-1.4.0.schema.json",
     }
 
     def retarget_active(node: JsonValue) -> None:
@@ -11751,6 +11757,50 @@ _REGISTRY: Final[tuple[_RegistryEntry, ...]] = (
         ),
     ),
     _RegistryEntry(
+        "operations/check-result-1.7.0.schema.json",
+        "check-result",
+        "1.7.0",
+        "request_result",
+        "MCP output",
+        lambda: (
+            __import__("finishup.protocol.models", fromlist=["CheckResultModel"]).CheckResultModel
+        ),
+    ),
+    _RegistryEntry(
+        "operations/receipt-result-1.4.0.schema.json",
+        "receipt-result",
+        "1.4.0",
+        "request_result",
+        "MCP output",
+        lambda: (
+            __import__(
+                "finishup.protocol.models", fromlist=["ReceiptResultModel"]
+            ).ReceiptResultModel
+        ),
+    ),
+    _RegistryEntry(
+        "operations/status-result-1.5.0.schema.json",
+        "status-result",
+        "1.5.0",
+        "request_result",
+        "MCP output",
+        lambda: (
+            __import__("finishup.protocol.models", fromlist=["StatusResultModel"]).StatusResultModel
+        ),
+    ),
+    _RegistryEntry(
+        "operations/status-request-1.3.0.schema.json",
+        "status-request",
+        "1.3.0",
+        "request_result",
+        "MCP input",
+        lambda: (
+            __import__(
+                "finishup.protocol.models", fromlist=["StatusRequestModel"]
+            ).StatusRequestModel
+        ),
+    ),
+    _RegistryEntry(
         "operations/status-request-1.2.0.schema.json",
         "status-request",
         "1.2.0",
@@ -12702,6 +12752,58 @@ def _load_disk_document(entry: _RegistryEntry, schema_root: Path) -> SchemaDocum
     )
 
 
+def _result_delivery_schema(entry: _RegistryEntry) -> dict[str, JsonValue]:
+    """Add a presentation branch while retaining every released result shape verbatim."""
+    predecessors = {
+        "check-result": "check-result-1.6.0",
+        "receipt-result": "receipt-result-1.3.0",
+        "status-result": "status-result-1.4.0",
+        "status-request": "status-request-1.2.0",
+    }
+    document = _load_versioned_template(
+        entry, "operations/" + predecessors[entry.schema_name] + ".schema.json"
+    )
+    if entry.schema_name == "status-request":
+        properties = cast(dict[str, JsonValue], document["properties"])
+        properties["delivery_cursor"] = {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 4096,
+            "pattern": "^[A-Za-z0-9_.-]+$",
+        }
+        rules = cast(list[JsonValue], document.setdefault("allOf", []))
+        rules.append(
+            {
+                "if": {"required": ["delivery_cursor"]},
+                "then": {
+                    "properties": {"view": {"const": "compact"}},
+                    "not": {
+                        "anyOf": [
+                            {"required": [name]}
+                            for name in (
+                                "cursor",
+                                "filter",
+                                "at_frontier",
+                                "project_id",
+                                "task_id",
+                                "correlation_id",
+                            )
+                        ]
+                    },
+                },
+            }
+        )
+    else:
+        from finishup.protocol.models import DeliveryPageModel
+
+        page = DeliveryPageModel.model_json_schema()
+        defs = cast(dict[str, JsonValue], document["$defs"])
+        defs.update(cast(dict[str, JsonValue], page.pop("$defs", {})))
+        defs["delivery_page"] = cast(JsonValue, page)
+        cast(list[JsonValue], document["oneOf"]).append({"$ref": "#/$defs/delivery_page"})
+    return document
+
+
 def build_schema_documents(
     *,
     schema_root: Path | None = None,
@@ -12906,6 +13008,13 @@ def build_schema_documents(
             normalized = _check_result_v1_4_schema(entry)
         elif entry.relative_path == "operations/check-result-1.5.0.schema.json":
             normalized = _check_result_v1_5_schema(entry)
+        elif entry.relative_path in {
+            "operations/check-result-1.7.0.schema.json",
+            "operations/receipt-result-1.4.0.schema.json",
+            "operations/status-result-1.5.0.schema.json",
+            "operations/status-request-1.3.0.schema.json",
+        }:
+            normalized = _result_delivery_schema(entry)
         elif entry.relative_path == "operations/check-result-1.6.0.schema.json":
             normalized = _check_result_v1_6_schema(entry)
         elif entry.relative_path == "operations/receipt-result-1.1.0.schema.json":

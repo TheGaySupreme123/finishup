@@ -29,6 +29,14 @@ from finishup.application.lineage_recovery import (
 from finishup.application.observation_advice_semantic import ObservationAdviceSemanticSupervisor
 from finishup.application.observation_verification import ObservationVerificationSupervisor
 from finishup.application.projects import ProjectApplication
+from finishup.application.result_delivery import (
+    HOST_RESULT_BUDGET_BYTES,
+    DeliverySource,
+    decode_cursor,
+    invalid_cursor,
+    mcp_delivery_bytes,
+    page_result,
+)
 from finishup.application.start import recover_delegation
 from finishup.application.unit_of_work import run_publish_response_commit
 from finishup.domain.coordination import (
@@ -587,6 +595,7 @@ type UnprojectedControlBody = (
     | ImportReportInternal
     | ReviewInternal
     | JsonObject
+    | DeliverySource
 )
 
 
@@ -709,6 +718,8 @@ def _classify_support_result_leaf(
 
 
 def _internal_json(result: UnprojectedControlBody) -> dict[str, JsonValue]:
+    if type(result) is DeliverySource:
+        return _internal_json(result.result)
     if type(result) is StartInternalResult:
         return result.as_wire()
     if type(result) is PublishWorkInternalResult:
@@ -2615,6 +2626,8 @@ class Application:
     ) -> StatusInternalResult:
         await self._require_repository_route(request, repository_privacy_context)
         await self._renew_activity_session(request.session_id, request)
+        if request.delivery_cursor is not None:
+            raise invalid_cursor()
         result = await execute_status(
             self,  # pyright: ignore[reportArgumentType]
             request,
@@ -2622,6 +2635,112 @@ class Application:
         )
         state = await self._credential_heuristic_state(repository_privacy_context)
         return result if state is None else replace(result, credential_heuristic=state)
+
+    async def read_result_delivery(
+        self,
+        request: StatusRequest,
+        *,
+        route_profile: Literal["policy", "strict"] | None = None,
+        repository_privacy_context: RepositoryPrivacyContext | None = None,
+    ) -> DeliverySource:
+        """Service status-cursor route, separate from typed internal status query results."""
+        await self._require_repository_route(request, repository_privacy_context)
+        await self._renew_activity_session(request.session_id, request)
+        return await self._read_delivery(request, repository_privacy_context, route_profile)
+
+    async def _read_delivery(
+        self,
+        request: StatusRequest,
+        repository_privacy_context: RepositoryPrivacyContext | None,
+        route_profile: Literal["policy", "strict"] | None,
+    ) -> DeliverySource:
+        """Read only an existing complete operation or an original frozen status selection."""
+        from finishup.application.check import Application as CheckApplication
+        from finishup.application.check import replayed_check_view
+        from finishup.application.receipt import read_recorded_receipt
+        from finishup.ports.ledger import OperationKind, OperationState
+
+        assert request.delivery_cursor is not None
+        cursor = decode_cursor(
+            self.status_cursor_key, request.delivery_cursor, request.session_id, request.writer_id
+        )
+        selector = cursor["selector"]
+        method = cursor["method"]
+        if method == "status":
+            source_body = request.model_dump(
+                mode="json",
+                exclude_none=True,
+                include={
+                    "protocol_version",
+                    "schema_version",
+                    "actor",
+                    "client",
+                    "session_id",
+                    "writer_id",
+                },
+            )
+            source_request = StatusRequest.model_validate(
+                {**source_body, **{k: v for k, v in selector.items() if k != "_delivery_snapshot"}}
+            )
+            internal = await self.status(
+                source_request,
+                route_profile=route_profile,
+                repository_privacy_context=repository_privacy_context,
+            )
+        else:
+            runtime = await self.runtime.route(
+                RouteCommand(
+                    request.session_id,
+                    request.writer_id,
+                    RouteAccess.PAYLOAD_READ,
+                    frozenset({RuntimeCapability.STRUCTURAL_READ, RuntimeCapability.PAYLOAD_READ}),
+                )
+            )
+            try:
+                operation = await runtime.ledger.lookup_task_operation(
+                    request.writer_id, str(selector["request_id"])
+                )
+                if (
+                    operation is None
+                    or operation.state is not OperationState.COMPLETE
+                    or operation.operation_kind.value != method
+                ):
+                    raise invalid_cursor()
+                if operation.operation_kind is OperationKind.CHECK:
+                    stored = await runtime.ledger.load_check_result(
+                        operation.writer_id, operation.operation_id
+                    )
+                    if stored is None:
+                        raise invalid_cursor()
+                    internal = await replayed_check_view(
+                        cast(CheckApplication, self), runtime, stored, route_profile=route_profile
+                    )
+                else:
+                    receipt_request = ReceiptRequest.model_validate(
+                        {
+                            **request.model_dump(
+                                mode="json",
+                                exclude_none=True,
+                                include={"protocol_version", "schema_version", "actor", "client"},
+                            ),
+                            **selector,
+                            "session_id": request.session_id,
+                            "writer_id": request.writer_id,
+                        }
+                    )
+                    internal = await read_recorded_receipt(runtime, receipt_request, operation)
+            finally:
+                await self.runtime.release(runtime)
+        return DeliverySource(
+            internal,
+            method,
+            selector,
+            cursor["position"],
+            cursor["digest"],
+            request.request_id,
+            request.writer_id,
+            cursor["sink"],
+        )
 
     async def _credential_heuristic_state(
         self, repository_privacy_context: RepositoryPrivacyContext | None
@@ -2981,9 +3100,35 @@ class Application:
         context: ClientProjectionContext,
         binding: ControlProjectionBinding,
         result: UnprojectedControlBody,
+        *,
+        _source_method: ControlMethod | None = None,
+        _paginate: bool = True,
     ) -> ProjectedControlBody:
+        if type(result) is DeliverySource:
+            if result.sink != resolve_client_disclosure_sink(context).value:
+                raise invalid_cursor()
+            projected_source = await self.project_result_for_client(
+                context,
+                binding,
+                result.result,
+                _source_method=ControlMethod(result.method),
+                _paginate=False,
+            )
+            return StatusResultModel.model_validate(
+                page_result(
+                    public_model_to_wire(projected_source),
+                    key=self.status_cursor_key,
+                    method=result.method,
+                    selector=result.selector,
+                    writer_id=result.writer_id,
+                    sink=result.sink,
+                    position=result.position,
+                    expected_digest=result.digest,
+                    request_id=result.request_id,
+                )
+            )
         source = _projection_json(result)
-        method = binding.method
+        method = _source_method or binding.method
         if "privacy_projection" in source or (
             method in _WORKFLOW_METHODS and source.get("ok") is not True
         ):
@@ -3160,7 +3305,11 @@ class Application:
             )
         source_request_id = source.get("request_id")
         projection_request_id = (
-            source_request_id if type(source_request_id) is str else self.ids.new(IdKind.REQUEST)
+            binding.original_request_id
+            if _source_method is not None and binding.original_request_id is not None
+            else source_request_id
+            if type(source_request_id) is str
+            else self.ids.new(IdKind.REQUEST)
         )
         provenance: ProjectionProvenanceContext | None = receipt_provenance
         if all(source.get(key) is not None for key in ("session_id", "writer_id")) and (
@@ -3191,7 +3340,7 @@ class Application:
             provenance_context=(provenance if sink is LocalDisclosureSink.AGENT_CONTEXT else None),
             projection_audit_context=ProjectionAuditContext(
                 binding.rpc_id,
-                method.value,
+                binding.method.value,
                 binding.service_instance_id,
                 binding.service_generation,
                 binding.original_request_id,
@@ -3304,7 +3453,54 @@ class Application:
                 nested_complete["privacy_projection"]
             ):
                 raise AssertionError("review_projection_identity_invalid")
-        return _public_model(method, complete)
+        public = _public_model(method, complete)
+        # Hooks consume structural status and have their own bounded, typed
+        # continuation. The native TUI has no model context clip and retains its complete view.
+        pageable = (
+            method is ControlMethod.RECEIPT
+            or method is ControlMethod.CHECK
+            and source.get("state") == "complete"
+            or method is ControlMethod.STATUS
+            and (
+                context.client_kind is ControlClientKind.MCP_BRIDGE
+                or source.get("view") == "findings"
+            )
+        )
+        if (
+            _paginate
+            and pageable
+            and context.client_kind is not ControlClientKind.UI
+            and not context.owner_view
+            and mcp_delivery_bytes(complete) > HOST_RESULT_BUDGET_BYTES
+        ):
+            control = strict_json_parse(binding.control_request_canonical)
+            body = cast(dict[str, JsonValue], cast(dict[str, JsonValue], control)["body"])
+            excluded = {"actor", "client", "protocol_version", "schema_version"}
+            selector = (
+                {"request_id": source["request_id"]}
+                if method is ControlMethod.CHECK
+                else {k: v for k, v in body.items() if k not in excluded}
+            )
+            if method is ControlMethod.STATUS:
+                selector["at_frontier"] = cast(dict[str, JsonValue], source["requested_frontier"])[
+                    "sequence"
+                ]
+            writer_id = cast(str, body["writer_id"])
+            paged = page_result(
+                complete,
+                key=self.status_cursor_key,
+                method=method.value,
+                selector=selector,
+                writer_id=writer_id,
+                sink=sink.value,
+            )
+            model = {
+                ControlMethod.CHECK: CheckResultModel,
+                ControlMethod.RECEIPT: ReceiptResultModel,
+                ControlMethod.STATUS: StatusResultModel,
+            }[method]
+            return model.model_validate(paged)
+        return public
 
     async def close(self) -> None:
         async with self._close_lock:

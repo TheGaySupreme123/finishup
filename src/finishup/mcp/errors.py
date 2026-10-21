@@ -101,6 +101,7 @@ _SAFE_LOCATION_SEGMENTS: Final = frozenset(
         "content_availability",
         "content_digest",
         "cursor",
+        "delivery_cursor",
         "described_state",
         "description",
         # Issue #1084: the status detail level (``brief`` or ``full``).

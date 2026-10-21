@@ -46,6 +46,7 @@ from finishup.config.models import ConfigError, LoggingConfig
 from finishup.config.paths import PathSafetyError, isolated_root_variable
 from finishup.domain.check_totals import render_check_totals
 from finishup.domain.closure import PREPARATION_REMEDIATIONS, prepare_closure
+from finishup.domain.result_delivery import HOST_RESULT_BUDGET_BYTES, mcp_delivery_bytes
 from finishup.domain.review_input_render import render_review_input_manifest_compact
 from finishup.mcp.descriptors import (
     TOOL_DESCRIPTORS,
@@ -94,7 +95,6 @@ from finishup.mcp.status_streak import (
     status_streak_nudge,
 )
 from finishup.mcp.summaries import (
-    render_check_review_delivery,
     render_check_reviewer_output,
     render_publish_action_notices,
     render_publish_blocker_notices,
@@ -1057,7 +1057,9 @@ def _result_text(
 
     Cursor 3.17.x does not reliably deliver MCP ``structuredContent`` to the model. Its native
     plugin therefore opts into an exact canonical-JSON copy in ``content`` while retaining the
-    structured result. Other hosts keep the privacy-minimized bounded summary. The Cursor copy
+    structured result. Delivery pages, receipts and findings reads use the same complete text
+    channel for every host. Small checks retain their coverage-bounded summary alongside the
+    complete JSON; other small results retain their existing summary. The copy
     adds no fields: it is byte-for-byte a second encoding of the already-authorized wire body.
 
     This function does not raise for a result it was handed (tb4n3 RC-2): the operation has
@@ -1068,7 +1070,12 @@ def _result_text(
     if host_profile not in {"generic", "codex", "claude", "cursor"}:
         raise ValueError("mcp_host_profile_invalid")
     failures: list[tuple[str, BaseException]] = []
-    if host_profile == "cursor":
+    if (
+        wire.get("state") == "delivery_page"
+        or "receipt_id" in wire
+        or "page" in wire
+        or host_profile == "cursor"
+    ):
         try:
             return canonical_encode(cast(JsonValue, dict(wire))).decode("utf-8")
         except Exception as exc:  # noqa: BLE001 - fall back to the bounded summary below
@@ -1112,7 +1119,12 @@ def _result_text(
         if failures
         else ""
     )
-    return "\n".join(part for part in (*parts, note) if part)
+    complete_check = (
+        canonical_encode(cast(JsonValue, dict(wire))).decode("utf-8")
+        if wire.get("state") == "complete" and "verdict" in wire
+        else ""
+    )
+    return "\n".join(part for part in (*parts, note, complete_check) if part)
 
 
 def result_from_public_model(
@@ -1125,40 +1137,18 @@ def result_from_public_model(
     """Validate and project one public result to structured plus host-compatible text."""
 
     wire = public_model_to_wire(result)
-    delivery_failures: list[tuple[str, BaseException]] = []
-    page = wire.get("page")
-    if host_profile == "codex" and wire.get("view") == "findings" and isinstance(page, dict):
-        delivery = _guarded_text(
-            "review_delivery",
-            lambda: render_check_review_delivery({"findings": page.get("items")}),
-            delivery_failures,
-        )
-        if delivery:
-            page.pop("review_delivery", None)
-            wire["page"] = {"review_delivery": delivery, **page}
-    # Codex reads structuredContent and can discard the middle of a large result. Preserve a
-    # bounded advisory, including its counterinterpretation, ahead of every bulk field (#1139).
-    # This is derived only after the ordinary privacy projection; original fields stay intact.
-    if host_profile == "codex" and wire.get("state") == "complete" and "verdict" in wire:
-        delivery = _guarded_text(
-            "review_delivery", lambda: render_check_review_delivery(wire), delivery_failures
-        )
-        if delivery:
-            wire.pop("review_delivery", None)
-            wire = {"review_delivery": delivery, **wire}
-    delivery_note = (
-        _record_summary_degradation(delivery_failures, request_id=request_id, operation=operation)
-        if delivery_failures
-        else ""
+    rendered = _result_text(
+        wire, host_profile=host_profile, request_id=request_id, operation=operation
     )
+    # The service budgets canonical text plus structured content. A small result's prose can
+    # repeat several fields more often: fall back to that complete canonical text if needed.
+    if mcp_delivery_bytes(wire, text=rendered) > HOST_RESULT_BUDGET_BYTES:
+        rendered = canonical_encode(wire).decode("utf-8")
     return types.CallToolResult(
         content=[
             types.TextContent(
                 type="text",
-                text=_result_text(
-                    wire, host_profile=host_profile, request_id=request_id, operation=operation
-                )
-                + (f"\n{delivery_note}" if delivery_note else ""),
+                text=rendered,
             )
         ],
         structuredContent=cast(dict[str, object], wire),
@@ -3965,6 +3955,10 @@ def _with_status_streak_nudge(
         wire = result.structuredContent
         if not isinstance(wire, Mapping):
             return result
+        if wire.get("state") == "delivery_page":
+            # These consecutive reads are required to reconstruct actionable fields. Their
+            # fixed next step already occupies the measured envelope; do not add a write nudge.
+            return result
         nudge = status_streak_nudge(cast(Mapping[str, object], wire), streak)
         if not nudge:
             return result
@@ -3976,7 +3970,13 @@ def _with_status_streak_nudge(
             # Cursor's first block is the exact canonical JSON a consumer may parse as the result;
             # it stays first and the nudge follows it as its own block.
             content.append(types.TextContent(type="text", text=nudge))
-        return result.model_copy(update={"content": content})
+        updated = result.model_copy(update={"content": content})
+        if (
+            _serialized_mcp_result_bytes(updated, transport_request_id="x" * 128)
+            > HOST_RESULT_BUDGET_BYTES
+        ):
+            return result
+        return updated
     except Exception:  # noqa: BLE001 - the nudge is advisory text; the served result stands
         return result
 

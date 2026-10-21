@@ -400,8 +400,9 @@ async def project_case(
     seed: int,
     *,
     context: ClientProjectionContext | None = None,
+    paginate: bool = False,
 ) -> Mapping[str, JsonValue]:
-    """Run the daemon's exact post-commit projection, for an MCP bridge client by default."""
+    """Sweep complete disclosure fields; opt into the separately tested wire presentation."""
 
     facts = await app.projection_binding_facts(case.method, case.request_body, case.internal)
     rpc_id = protocol_id("rpc_", seed)
@@ -419,6 +420,7 @@ async def project_case(
                 "method": case.method.value,
                 "service_instance_id": service_instance_id,
                 "service_generation": "1",
+                "body": dict(case.request_body),
             }
         ),
     )
@@ -429,6 +431,7 @@ async def project_case(
         ),
         binding,
         case.internal,
+        _paginate=paginate,
     )
     return public_model_to_wire(projected)
 
