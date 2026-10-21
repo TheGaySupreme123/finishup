@@ -67,6 +67,8 @@ class VerificationFreshness:
     input FinishUP cannot rule out) or ``current``. A ``current`` row exists only to disclose that
     a later change was set aside on the caller's complete-declaration assertion. ``basis`` names
     how the run's inputs are known and ``label`` is the requested command it matched, if any.
+    ``set_aside`` says that a later change was set aside on that assertion; it is derived with
+    the row and not persisted (a frozen ``current`` row implies it).
     """
 
     run_ref: ResultId
@@ -75,6 +77,7 @@ class VerificationFreshness:
     change_refs: tuple[EventId, ...]
     basis: str = "undeclared"
     label: str | None = None
+    set_aside: bool = field(default=False, compare=False)
 
     def __post_init__(self) -> None:
         result_id(self.run_ref)
@@ -99,14 +102,21 @@ class VerificationFreshness:
             raise ValueError("verification_freshness_invalid")
         if self.state == "current" and (self.basis != "complete" or not self.change_refs):
             raise ValueError("verification_freshness_invalid")
+        if type(self.set_aside) is not bool or self.set_aside and self.basis != "complete":
+            raise ValueError("verification_freshness_invalid")
         for ref in self.change_refs:
             event_id(ref)
 
     @property
     def caller_asserted(self) -> bool:
-        """Freshness set a later change aside only on the caller's complete declaration."""
+        """Freshness set a later change aside only on the caller's complete declaration.
 
-        return self.basis == "complete" and bool(self.change_refs) and self.state != "stale"
+        A change the record cannot place (an unnamed host edit) is asked about, not set aside, so
+        a complete declaration alone never raises the disclosure. A stale run already demands a
+        rerun, so it discloses nothing more.
+        """
+
+        return self.state == "current" or self.set_aside and self.state != "stale"
 
     def to_json(self) -> list[JsonValue]:
         return cast(
@@ -609,6 +619,7 @@ def verification_freshness(
                 ),
                 basis,
                 label if label is None or len(label.encode("utf-8")) <= _MAX_LABEL_BYTES else None,
+                bool(asserted_names or asserted_unnamed),
             )
         )
     return tuple(output)

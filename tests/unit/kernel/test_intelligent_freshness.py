@@ -573,6 +573,31 @@ def test_a_complete_declaration_that_omits_an_edited_file_is_accepted_and_disclo
         assert "verification_inputs_caller_asserted" in text
 
 
+def test_a_complete_declaration_discloses_reliance_only_when_it_set_a_change_aside() -> None:
+    """An unnamed host edit is asked about, not set aside: no caller-assertion disclosure."""
+
+    ledger = ObservedLedger()
+    ledger.plan("pytest -q")
+    run = ledger.passes("pytest -q")
+    manifest(ledger, run, inputs=("src/control.py",))
+    ledger.edit()
+    (row,) = verification_freshness(replay(ledger.prefix), ledger.prefix)
+    assert (row.state, row.basis) == ("unknown", "complete")
+    assert not row.caller_asserted
+    facts = task_fact_signals(replay(ledger.prefix), ledger.prefix)
+    assert "verification_rerun_question" in facts.codes
+    assert "verification_inputs_caller_asserted" not in facts.codes
+
+    changed(ledger, "src/other.py")
+    (row,) = verification_freshness(replay(ledger.prefix), ledger.prefix)
+    assert (row.state, row.basis) == ("unknown", "complete")
+    assert row.caller_asserted
+    facts = task_fact_signals(replay(ledger.prefix), ledger.prefix)
+    assert {"verification_rerun_question", "verification_inputs_caller_asserted"} <= set(
+        facts.codes
+    )
+
+
 def test_an_undeclared_change_says_so_and_names_what_the_record_names() -> None:
     """The Cursor smoke: no declaration, an evidence write and a source edit (#1167 review).
 

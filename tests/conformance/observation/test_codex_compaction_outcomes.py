@@ -51,6 +51,7 @@ from finishup.domain.observation import (
     ObservationSource,
 )
 from finishup.kernel.task_facts import EDITED_AFTER_LAST_VERIFICATION_GAP, task_fact_signals
+from finishup.kernel.verification_freshness import RERUN_QUESTION
 
 type Bump = Literal["compact", "resume", "clear"]
 type Order = Literal["pre_post_stream", "pre_stream_post"]
@@ -208,14 +209,16 @@ async def test_stream_completion_after_a_generation_bump_reaches_its_hook_call(
 
 @pytest.mark.anyio
 @pytest.mark.parametrize("capture", [False, True], ids=["contentless-hook", "captured-hook-post"])
-async def test_green_post_compaction_run_after_an_edit_clears_the_stale_edit_fact(
+async def test_green_post_compaction_run_after_an_edit_clears_the_freshness_question(
     replay: Replay, capture: bool
 ) -> None:
     """N3-7 consequence: a verification run after the last edit is seen once compaction passed.
 
-    The edit lands after the last pre-compaction test run, so the fact holds; the green run after
-    the compaction (hook post without an exit, outcome carried by the rollout item) clears it and
-    reaches the ledger as a success rather than an unknown.
+    The edit lands after the last pre-compaction test run. A host-native edit records no path
+    identity, so FinishUP cannot rule out that the test read the edited file: the run's freshness
+    is the standing rerun question, never a staleness assertion (#1143, ADR-042). The green run
+    after the compaction (hook post without an exit, outcome carried by the rollout item) clears
+    it and reaches the ledger as a success rather than an unknown.
     """
 
     session_start(replay)
@@ -223,7 +226,9 @@ async def test_green_post_compaction_run_after_an_edit_clears_the_stale_edit_fac
     await sweep_all(replay, capture_hook_output=capture)
     _edit(replay, "call_patch", "src/public.py")
     await sweep_all(replay, capture_hook_output=capture)
-    assert EDITED_AFTER_LAST_VERIFICATION_GAP in _facts(replay)
+    facts = _facts(replay)
+    assert RERUN_QUESTION in facts
+    assert EDITED_AFTER_LAST_VERIFICATION_GAP not in facts
 
     compact(replay)
     await sweep_all(replay, capture_hook_output=capture)
@@ -232,7 +237,7 @@ async def test_green_post_compaction_run_after_an_edit_clears_the_stale_edit_fac
 
     assert swept.refused == [], swept.refused
     assert replay.store.list_quarantine(replay.commitment) == ()
-    assert EDITED_AFTER_LAST_VERIFICATION_GAP not in _facts(replay)
+    assert not {RERUN_QUESTION, EDITED_AFTER_LAST_VERIFICATION_GAP} & _facts(replay)
     green = [
         results
         for results in _ledger_calls(replay).values()

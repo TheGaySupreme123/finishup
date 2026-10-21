@@ -12191,6 +12191,9 @@ versioned, caller-asserted evidence convention
 `description={"inputs":["source.py","config.json"],"outputs":["evidence.json"],"complete":true}`.
 Only exact file inputs are declared; arbitrary shell process reads are not observed by any host.
 An input takes precedence over an evidence output. Unknown coverage asks, never demands a rerun.
+Host-native edit tools are not fingerprinted (`fingerprinted_tool`), so their edits carry no
+changed-entry identity: an edit through one after a verification asks the rerun question even when
+the edited file is a known input, and only a fingerprinted call establishes staleness.
 
 Input scopes are per verification: a requested input belongs to the runs of its obligation's
 command; a command-less obligation's inputs apply to runs without their own complete declaration.
@@ -12198,7 +12201,9 @@ An input outside the fingerprint's coverage makes its runs ask about every later
 requested in-workspace directory rules out only named changed paths outside it. An output is
 exempt only when the run's own trusted comparison wrote it. A `complete: true` declaration with no
 inputs is not complete. A complete declaration that omits a later-edited file keeps the run
-current and raises the standing disclosure `verification_inputs_caller_asserted` (G4d).
+current and raises the standing disclosure `verification_inputs_caller_asserted` (G4d); the
+disclosure appears only when a keyed change was actually set aside on that assertion
+(`VerificationFreshness.set_aside`, derived and not persisted), never for an unplaced host edit.
 
 `domain.workspace_effect.workspace_path_identity(key, relative)` reuses the fingerprint's keyed
 path identity. `WorkspaceEffectReading.changed_entries` and the optional active-control structural

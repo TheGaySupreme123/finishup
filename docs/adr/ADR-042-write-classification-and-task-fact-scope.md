@@ -477,6 +477,14 @@ the dependency or change coverage is uncertain, ask instead of demanding a rerun
 bounded fallback, not a claim to infer arbitrary dependencies. Capturing process reads is outside
 this change and grants no new capture, disclosure or network authority.
 
+Host-native edit tools (Codex `apply_patch`, the Claude Code and Cursor edit and write tools) are
+not fingerprinted and record no path identity. An edit through one of them after a verification is
+therefore a change FinishUP cannot place: it asks the rerun question even when the edited file is a
+requested or declared input, and only a fingerprinted call (a shell command or another non-edit
+tool) can establish staleness. Before this amendment the same edit made the verification stale and
+held Stop. A complete declaration does not set such an unplaced edit aside, so it raises no
+`verification_inputs_caller_asserted` disclosure.
+
 AI-powered review treats freshness as advisory even when an input change is known. The packet
 carries the recorded verification with subsequent paths and short change summaries in a
 non-blocking local question. The reviewer asks the agent to decide: rerun, or `respond` with

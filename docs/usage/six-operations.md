@@ -386,7 +386,9 @@ when the task requests them as input files or when you publish its per-run input
 verification's inputs, it asks whether a rerun is needed (`verification_rerun_question`) instead
 of demanding one: rerun it, or answer with `respond` and a reason a rerun is not needed. That
 question never blocks closure, and with AI-powered review freshness is always such a question.
-Edits under a temporary directory outside your workspace and a
+An edit made with the coding agent's own file-edit tool records no file identity, so after one
+FinishUP asks rather than stops you, even when the file is a recorded input; a change a shell
+command makes can be matched to a recorded input. Edits under a temporary directory outside your workspace and a
 FinishUP receipt you saved never count as edits for these facts. Documentation-only edits (a README,
 a changelog, Markdown guides outside test, fixture, data, golden, resource, prompt or template
 folders) are recorded as work but never make an earlier verification stale, unless the task

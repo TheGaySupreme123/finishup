@@ -273,8 +273,10 @@ that verification wrote, byte-identical writes and unrelated changes do not dema
 stale finding names the verification and changed input. If its dependencies or the later changes are unknown,
 `verification_rerun_question` asks for a decision without blocking closure: inspect the recorded
 verification and subsequent paths/change summaries, then rerun or `respond` with `acknowledged`
-and a reasoned explanation that a rerun is not needed. A later change asks again. A FinishUP check
-records the decision; it does not run tests for you.
+and a reasoned explanation that a rerun is not needed. A later change asks again. An edit made
+with your host's file-edit tool records no file identity, so it can only ask, even for a recorded
+input: after changing anything a verification reads, rerun it. A FinishUP check records the
+decision; it does not run tests for you.
 
 To declare a verification's exact file inputs and evidence outputs, publish an ordinary evidence
 row with reference `finishup-verification-inputs/v1:<observed res_ id>` and a JSON description:
