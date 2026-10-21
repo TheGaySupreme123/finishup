@@ -572,8 +572,8 @@ stay frozen. Advice and status `semantic_state` is the recorded attempt status (
 coverage: only validated AI-powered finding ids add `semantic_model_derived` to advice coverage.
 
 Every MCP result also carries a bounded ASCII text projection (the compact summary is at most 4,096
-bytes; 512 until tb4n3, ADR-043; the check-totals line, manifest line, reviewer output and publish
-blocker notices follow it under their own bounds) for hosts that drop `structuredContent`. The projection is composed, not
+bytes; 512 until tb4n3, ADR-043; reviewer output leads, while check totals, manifests and publish
+blocker notices follow under their own bounds) for hosts that drop `structuredContent`. The projection is composed, not
 concatenated: the verdict or state, the task continuation, the frontier with its head digest and the
 review status/reason are reserved first and optional clauses are granted room by priority, so it
 never raises and no data-only change can turn a committed operation into an error. A clause that
@@ -10139,10 +10139,9 @@ The review packet (`outbound-case` `1.2.0`) adds the `prior_finding` section,
 `review_packet.prior_finding_item_ids` (every row of the section, at most 112) and
 `review_packet.prior_finding_refs` (the ruling unit: each carried finding's `finding_ref` exactly
 once, newest first, at most 16, listed only while its structural row is carried). It carries the newest readable, unresolved AI-powered
-findings (at most 16, 96 KiB of item content (issue #976; 8 and 48 KiB before), and only case capacity the other sections leave;
-outside the timeline's 64 rows, so hook rows never crowd it out). Under egress-envelope pressure its
-rows are removed first, oldest finding first, before any other bounding step, so the section never
-displaces work content; removed rows count in `catalog_dropped_count` and add
+findings (at most 16, 96 KiB of item content (issue #976; 8 and 48 KiB before), reserved ahead of ordinary narrative and bulk excerpts;
+outside the timeline's 64 rows, so hook rows never crowd it out). Envelope bounding removes ordinary
+catalog bulk before whole prior findings; removed prior rows count in `catalog_dropped_count` and add
 `semantic_prior_findings_over_limit`. Each carried finding has one
 `yoetz.prior-finding/1` structural row per finding (kind, ids, recorded sequence, requested next
 step, `relates_to`, the latest response disposition, cited refs and recorded sequence, and the
@@ -10849,7 +10848,7 @@ plan. Names and contracts:
   releases, and rebuilds
   an over-ceiling case without lower-priority narrative before reducing `max_total_excerpt_bytes`
   (and `max_excerpt_bytes`). `primary_material_selection` narrows goal, obligations, claims and
-  ordinary timeline plus finding prose; decisions, pending missing-input context and independent lineage remain.
+  ordinary timeline; permitted finding prose, decisions, pending missing-input context and independent lineage remain.
   A pending request retains one ordinary timeline slot, with history narrowed around it; independent
   lineage does not consume that request slot. The final diff
   floor (`final_diff_floor`) is the lesser of initially carried diff bytes and half the lesser of
@@ -12019,3 +12018,33 @@ as `outcome_unknown` and is never resent. For it, `operation_max_retries` is `0`
   `FinalSemanticEvaluation.reviewer` carry it in process; `FinalSemanticEvaluation`
   `reviewer_citable_refs` and `reviewer_paths` stay in process and in the encrypted
   `yoetz.semantic-response/1` object (`reviewer`, `reviewer_paths`).
+
+### Bounded advisory delivery and frozen ledger misses (#1139, #1126, #1148)
+
+ADR-006's 2026-10-21 amendment owns this behavior. MCP Codex check results may carry
+`review_delivery` (check-result 1.6.0, optional finding-summary text or an omission), inserted first;
+findings status pages may carry the same optional member before `items` (status-result 1.4.0).
+The bridge derives it after privacy projection. It carries at most three complete bounded groups:
+summary → requested action → alternative interpretation → uncertainty. The review-summary budget
+is 420 JSON-encoded bytes and each challenge field's is 180, including escaping; labels, ids and
+an explicit truncated-preview continuation remain within 3,600 encoded bytes. Full findings,
+review summary, evidence and provenance are retained. Generic and Claude text lead with this
+advisory before evidence; Cursor's canonical full-copy contract is unchanged. CLI, TUI, hooks and
+receipts keep their existing full-field and privacy contracts; they do not receive a new judgment.
+Native-host delivery is not established by the offline clipping simulation.
+
+Prior dialogue is reserved before aggregate case fitting, and channel fallback preserves the
+recipe's permitted finding prose. In a narrowed recipe, labelled fields can share one or more
+`prior-finding-context-N-<ref>` prose items (each at most 16 KiB); the structural `text_item_ids`
+map still names where each field is carried. The existing per-field text bounds remain. Before
+shrinking excerpt bytes, both planners try at most three smaller excerpt counts to bound catalog
+overhead while checking the exact payload and original diff floor. Count probes add to the
+reported planning rounds without consuming the existing byte-planning round allowance. The
+original section bounds, primary diff floor and latest verification reserve remain. Capacity cannot silently turn a recorded rebuttal into an empty
+structural question; a section that exceeds its own bounds is still partial with omissions.
+
+`ReviewerBroker._ledger` reports an unmatched frozen selector as `not_in_frozen_case`, not
+`not_recorded`. Its fixed `continuation` explains that frozen absence does not prove non-recording
+and requests `final_judgment.missing_for_assessment` with the appropriate kind and target refs.
+The broker neither opens mutable ledger state nor grants extra content authority. Unknown and
+selection-omitted refs share this conservative label. This changes no #905 finding state or budget.

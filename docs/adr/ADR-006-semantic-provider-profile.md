@@ -1443,11 +1443,11 @@ builds keep their bytes and still validate; the public finding wire is unchanged
 
 **The prior-findings section.** The review packet (`outbound-case/1.2.0`) carries the newest
 unresolved AI-powered findings in their own `prior_finding` section, outside the 64-row timeline so
-hook rows never crowd it out. Under egress-envelope pressure its rows yield first, oldest finding
-first, so it never displaces work content: a structural row with what was asked, the latest answer
+hook rows never crowd it out. Its bounded dialogue is reserved ahead of bulk excerpts and
+ordinary narrative (2026-10-21 amendment, #1126): a structural row with what was asked, the latest answer
 (disposition, cited refs) and the evidence and results recorded after the finding, plus the prose
 rows the profile's finding-prose selection already permits. It is bounded (16 findings, 96 KiB since issue #976; 8 and 48 KiB before;
-leftover case capacity only); what does not fit is named as `not_selected` omissions and discloses
+reserved before bulk excerpts); what does not fit is named as `not_selected` omissions and discloses
 `semantic_prior_findings_over_limit`, a gap that stays on the receipt but does not veto absence
 proof. Findings recorded without challenge fields degrade to summary and message with a `not_recorded`
 omission. No new data category leaves the machine. A carried finding contributes one structural
@@ -2806,3 +2806,42 @@ not account entitlement or live interoperability. The Anthropic compatible adapt
 `temperature`, `top_p`, `tools` and `tool_choice`; tests pin their absence for the new Opus, Sonnet,
 Haiku and Fable suggestions on review and probe requests. Its prompt-only output enforcement and
 local judgment validation remain unchanged. No live provider call is part of this change.
+
+## Amendment — 2026-10-21: finding delivery and frozen review context (#1139, #1126, #1148)
+
+Maintainer acknowledgement: the explicit scoped implementation request and the owner comments on
+#1139/#1126 authorize these delivery, packing and label changes. They do not change reviewer
+judgment, disclosure authority, or the design-gated #905 todo-list convergence.
+
+**Delivery.** Codex receives an optional `review_delivery` advisory before the full check-result
+fields (unreleased check-result 1.6.0, extended in place), and before the items of a findings
+status page (status-result 1.4.0). It is computed only from the privacy-projected fields, never
+from unprojected storage. A bounded review summary leads; each of up to three challenges keeps
+its summary, requested action, alternative interpretation and uncertainty together, with separate
+JSON-encoded byte budgets. A continuation explicitly calls the preview truncated and points to
+`status view=findings`, `detail=full`, `limit=1` and its cursor. Full authorized fields remain
+unchanged; a `full_local` receipt carries the recorded review summary under the existing export
+policy. Evidence, snippets, manifests and provenance follow the advisory. The generic/Claude text
+channel uses the same lead ahead of its evidence; Cursor retains its canonical full JSON copy.
+The bounded lead does not establish that a host delivered the full record.
+
+**Packing.** The prior-finding section retains its existing 16-finding, 112-item and 96 KiB bounds
+and category policy. Reserve it before fitting ordinary narrative and bulk excerpts to the case
+ceiling. Capacity fallback keeps permitted finding prose, including the original discrepancy,
+alternative, uncertainty and the agent's response. Its structural row still names response evidence
+and newer results; the existing diff floor and latest verification reserve retain material for
+judging what changed. In a narrowed recipe, fields share labelled `context-N` prose items within the existing 16 KiB
+item bound; each field keeps its earlier 4 KiB bound and `text_item_ids` locates it. Both planners
+try at most three smaller excerpt-count bounds before reducing excerpt bytes, measuring each
+exact candidate and preserving the original diff floor. These probes account for catalog overhead
+that a pure byte search misses when many tiny excerpts replace one large change part. Envelope
+bounding removes ordinary catalog bulk before whole prior findings.
+If the bounded dialogue itself cannot fit, its existing omissions and partial labels still apply;
+this is no guarantee of complete history. No privacy category, ceiling, consent or ruling changes.
+
+**Frozen reads.** An unmatched `read_ledger` returns `unavailable/not_in_frozen_case`, with no
+data or citable refs. It does not consult the mutable ledger, infer non-recording, or assert an
+unknown ref exists. The fixed continuation asks for `final_judgment.missing_for_assessment` with
+the appropriate kind and target refs so a later check can freeze the requested content. This is
+a request, not a promise of retention or new disclosure authority. File-read absence keeps its
+existing reason. The recorded reason reaches CLI, MCP, TUI and receipt review-read renderings.

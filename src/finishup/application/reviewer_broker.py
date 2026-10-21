@@ -245,6 +245,12 @@ class ReviewerBroker:
                 "data": data,
                 "result_digest": canonical_digest(data),
             }
+            if reason == "not_in_frozen_case":
+                body["continuation"] = (
+                    "This frozen lookup does not establish that the item was never recorded. "
+                    "Request the needed content in final_judgment.missing_for_assessment with "
+                    "the appropriate kind and target_refs; a later check must freeze it."
+                )
             encoded, size = b"", 0
             for _ in range(8):  # the length fixed point: the size and the remainder's digits
                 body["result_utf8_bytes"] = size
@@ -361,7 +367,9 @@ class ReviewerBroker:
             return start
         page = matched[start : start + _MAX_RECORDS]
         if not page:
-            return ("unavailable", "not_recorded")
+            # A case is a bounded selection, not the entire ledger. Do not consult mutable
+            # storage or turn absence from this frozen selection into a claim of non-recording.
+            return ("unavailable", "not_in_frozen_case")
         left = len(matched) - start - len(page)
         return ("records", [self._item(i, 0) for i in page], (selector, version, start), left)
 

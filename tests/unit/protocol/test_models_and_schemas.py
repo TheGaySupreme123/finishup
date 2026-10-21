@@ -317,7 +317,7 @@ _EXPECTED_RESULT_PATTERN_COUNTS: dict[tuple[str, str | None], int] = {
     (
         "check",
         None,
-    ): 461,  # #1118 +18 reviewer; tb4n2 LA: counts/disputed_after_rebuttal; W2-A +8; tb4n3 LF +17; #1048 +38 inspection;
+    ): 465,  # #1139 +4 review_delivery; #1118 +18 reviewer; tb4n2 LA: counts/disputed_after_rebuttal; W2-A +8; tb4n3 LF +17; #1048 +38 inspection;
     # #1047 +1 follow_up_round; ADR-049 +4 review_mode; W6 #1107 +1 agent_next
     ("publish_work", None): 67,  # #1084 +3 server_filled
     ("receipt", None): 301,  # tb4n2 LA: disputed_after_rebuttal_finding_ids; #1017 +3; W2-A +8
@@ -335,7 +335,10 @@ _EXPECTED_RESULT_PATTERN_COUNTS: dict[tuple[str, str | None], int] = {
     ("status", "candidate_findings"): 32,
     ("status", "compact"): 61,  # #1027: latest_check +4
     ("status", "evidence"): 19,
-    ("status", "findings"): 129,  # W2-A +3: closure_class/basis/next_actions
+    (
+        "status",
+        "findings",
+    ): 133,  # #1139 +4 review_delivery; W2-A +3: closure_class/basis/next_actions
     # #1047 +1: review_input_manifest/follow_up_round; #1084 +1: occurred_at_source (review R7).
     ("status", "history"): 65,
     ("status", "lineage"): 17,
@@ -2597,7 +2600,7 @@ def test_result_leaf_registry_has_exhaustive_schema_parity() -> None:
 
     derived_patterns = _derived_result_success_patterns(catalog)
     assert (
-        len(derived_patterns) == 1649
+        len(derived_patterns) == 1657
     )  # #1118 +18 check reviewer, +9 LO check_cause, W2-A +46 closure verdict, +34 LF fact_lineage, W2-B +2 closure_after,
     # W6 #1107 +1 check agent_next, +15 status operation check_outcome,
     # tb4n4 #1044 +7 closure_readiness.undeclared_references, #1048 +38 inspection, #1047 +2,
@@ -2615,7 +2618,7 @@ def test_result_leaf_registry_has_exhaustive_schema_parity() -> None:
     assert type(rules) is tuple
     assert (
         len(rules)
-        == 1678  # #1118 +18 check reviewer, +1 check_recorded 1.6.0; n6 item 4: check_recorded 1.5.0; #1079 +2 admissible_verification;
+        == 1686  # #1139 +8 check/status review_delivery; #1118 +18 check reviewer, +1 check_recorded 1.6.0; n6 item 4: check_recorded 1.5.0; #1079 +2 admissible_verification;
         # W6 #1107 +16 (check agent_next, status operation check_outcome);
         # +1 closing_material_frontier; #1084 +10 server_filled and brief status,
         # +1 history occurred_at_source (review R7), -2 replay_notice retired (round 2),
@@ -2632,7 +2635,7 @@ def test_result_leaf_registry_has_exhaustive_schema_parity() -> None:
 
     registry_patterns = {(rule.method, rule.status_view, rule.segments) for rule in rules}
     assert (
-        len(registry_patterns) == 1649
+        len(registry_patterns) == 1657
     )  # #1118 +18 check reviewer, W6 #1107 +16, #1084 review R7 +1, #1027 +5, LO +9, W2-A +46, LF +34, W2-B +2, #1044 +7,
     # #1048 +38, #1047 +2, tb4n5 +3, ADR-049 +12 review_mode, #1079 +2 admissible_verification,
     # W5/D1 +2 closure_readiness.acceptance_risk
@@ -3024,6 +3027,8 @@ def _expected_nonpublish_content_rules(
     repository_excerpt = models.DataCategory.REPOSITORY_EXCERPT
 
     rows: tuple[tuple[str, str | None, str, object], ...] = (
+        ("check", None, "/review_delivery", finding_summary),
+        ("status", "findings", "/page/review_delivery", finding_summary),
         ("check", None, "/findings/*/detail", finding_summary),
         ("check", None, "/findings/*/summary", finding_summary),
         # Reviewer-authored challenge prose, summary, and verified items (issue #961).
@@ -3368,7 +3373,7 @@ def test_schema_catalog_record_shape_and_indexes_are_exact() -> None:
     # #1118: privacy-policy 1.3.0 (its 1.2.0 refs plus the 524,288 bound) and its control 2.9.0
     # admissions add 96.
     assert (
-        sum(_count_refs(document.json_schema) for document in catalog.documents) == 8_464
+        sum(_count_refs(document.json_schema) for document in catalog.documents) == 8_466
     )  # #1119 +13: additive host-connection batch report references,
     # #1118 +225 (check-result 1.6.0 and check-recorded 1.6.0, which carry the reviewer record),
     # #1118 unit 2 +27 (reviewer-reply 1.0.0), #1084 +55 (publish server_filled; status results_filter, brief_success, server_filled),

@@ -2888,3 +2888,12 @@ same removal flow. Agents direct the owner to it and never run it; no MCP or cha
 path is added. The configured API fallback is targeted when Codex is primary. Binding and privacy
 policy stay unchanged, and status is presence-only after readiness reload. Shared-path tests do not
 claim a new native-host or platform certification.
+
+### Review context and delivery (#1139, #1126, #1148)
+
+The shared reviewer broker and packet builder retain bounded prior finding/rebuttal context ahead
+of bulk excerpts. An unmatched frozen ledger read is `not_in_frozen_case`, with a continuation
+asking for the missing input in a later check; it never proves the item was unrecorded.
+The MCP text advisory keeps bounded summary, action, alternative and uncertainty together ahead
+of evidence and provenance. The complete structured record remains available. This is offline
+contract coverage; native Claude delivery has not been re-dogfooded here (#1139 validation gap).

@@ -911,19 +911,48 @@ def test_a_tight_case_omits_narrative_before_cutting_the_diff_floor() -> None:
     assert len(semantic.packet.prior_finding_refs) == 16
     assert _assert_change_leads_and_is_accounted(semantic, text) >= 4
     assert check_time_change_bytes_carried(semantic) >= 64_000
+    contexts = [i for i in semantic.items if i.section == "prior_finding"]
+    assert any(i.category is DataCategory.FINDING_SUMMARY for i in contexts)
+    assert len(contexts) == 32  # structural row and packed labelled prose for each finding
     assert all(
-        item.category is DataCategory.BOUNDED_STRUCTURAL_METADATA
-        for item in semantic.items
-        if item.section == "prior_finding"
+        b"alternative:" in i.content for i in contexts if i.category is DataCategory.FINDING_SUMMARY
     )
     omitted = {
         item.subject_ref for item in semantic.packet.omissions if item.reason == "not_selected"
     }
-    assert set(semantic.packet.prior_finding_refs) <= omitted
+    assert not (set(semantic.packet.prior_finding_refs) & omitted)
     assert (
         len(semantic_case_to_prepared_payload(semantic, {item.item_id for item in semantic.items}))
         <= 162_000
     )
+
+
+def test_channel_planning_keeps_the_dispute_change_and_latest_verification() -> None:
+    from finishup.service.semantic_ceiling import plan_under_channel_ceiling
+
+    change = _change(_cracker_change())
+    findings = _open_prior_findings()
+    selection = ReviewSelectionPolicy.for_profile(ReviewContextProfile.EXPANDED)
+    initial, ledger = _ledger_build(change, ceiling=None, findings=findings)
+
+    def rebuild(recipe: ReviewSelectionPolicy) -> SemanticCase:
+        return _ledger_build(change, ceiling=None, findings=findings, selection=recipe)[0]
+
+    planned, narrowed, _ = plan_under_channel_ceiling(initial, selection, 162_000, rebuild)
+    assert (
+        len(semantic_case_to_prepared_payload(planned, {i.item_id for i in planned.items}))
+        <= 162_000
+    )
+    assert len(planned.packet.prior_finding_refs) == 16
+    assert narrowed.include_finding_prose and narrowed.max_excerpts < selection.max_excerpts
+    assert check_time_change_bytes_carried(planned) >= 64_000
+    assert any(
+        i.category is DataCategory.FINDING_SUMMARY
+        for i in planned.items
+        if i.section == "prior_finding"
+    )
+    carried = {i.source_ref for i in planned.items if i.section == "excerpt"}
+    assert {str(refs[-1]) for refs in ledger.verification.values()} <= carried
 
 
 @pytest.mark.parametrize("limit", (200_000, 170_000, 162_000))

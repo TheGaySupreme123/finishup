@@ -94,6 +94,7 @@ from finishup.mcp.status_streak import (
     status_streak_nudge,
 )
 from finishup.mcp.summaries import (
+    render_check_review_delivery,
     render_check_reviewer_output,
     render_publish_action_notices,
     render_publish_blocker_notices,
@@ -1105,7 +1106,7 @@ def _result_text(
         action_notices = _guarded_text(
             "action_notices", lambda: render_publish_action_notices(wire), failures
         )
-        parts = (compact, totals, manifest, reviewer, blocker_notices, action_notices)
+        parts = (reviewer, compact, totals, manifest, blocker_notices, action_notices)
     note = (
         _record_summary_degradation(failures, request_id=request_id, operation=operation)
         if failures
@@ -1124,13 +1125,40 @@ def result_from_public_model(
     """Validate and project one public result to structured plus host-compatible text."""
 
     wire = public_model_to_wire(result)
+    delivery_failures: list[tuple[str, BaseException]] = []
+    page = wire.get("page")
+    if host_profile == "codex" and wire.get("view") == "findings" and isinstance(page, dict):
+        delivery = _guarded_text(
+            "review_delivery",
+            lambda: render_check_review_delivery({"findings": page.get("items")}),
+            delivery_failures,
+        )
+        if delivery:
+            page.pop("review_delivery", None)
+            wire["page"] = {"review_delivery": delivery, **page}
+    # Codex reads structuredContent and can discard the middle of a large result. Preserve a
+    # bounded advisory, including its counterinterpretation, ahead of every bulk field (#1139).
+    # This is derived only after the ordinary privacy projection; original fields stay intact.
+    if host_profile == "codex" and wire.get("state") == "complete" and "verdict" in wire:
+        delivery = _guarded_text(
+            "review_delivery", lambda: render_check_review_delivery(wire), delivery_failures
+        )
+        if delivery:
+            wire.pop("review_delivery", None)
+            wire = {"review_delivery": delivery, **wire}
+    delivery_note = (
+        _record_summary_degradation(delivery_failures, request_id=request_id, operation=operation)
+        if delivery_failures
+        else ""
+    )
     return types.CallToolResult(
         content=[
             types.TextContent(
                 type="text",
                 text=_result_text(
                     wire, host_profile=host_profile, request_id=request_id, operation=operation
-                ),
+                )
+                + (f"\n{delivery_note}" if delivery_note else ""),
             )
         ],
         structuredContent=cast(dict[str, object], wire),
