@@ -2407,11 +2407,14 @@ No history, projection, availability or integrity evidence is discarded to fit t
 The shared error reasons `check_resume_capacity_exceeded` and `check_result_capacity_exceeded`
 use `LIMIT_EXCEEDED`, `retryable=false`, structural byte `count`/`limit`, and continuation
 `check_capacity_handoff`. The latter limit remains 4 MiB for the local deterministic-result
-checkpoint. A pre-admission resume overflow records no operation; a post-admission result
-overflow terminalizes that exact operation with the stored typed error. CLI, MCP (Codex,
-Claude Code and Cursor), hooks and TUI share this error/continuation contract. No check verdict
-or reviewer result is fabricated; a receipt retains the missing-check coverage. An explicitly
-scoped follow-up may continue work but cannot close the original task by substitution.
+checkpoint. A pre-admission resume overflow records no operation. A post-admission result
+overflow terminalizes that exact operation with the stored typed error. So does a resume
+overflow while the parked review-input case of an admitted check is rebuilt, but only when the
+overflow was computed from the operation's current inputs; otherwise the refusal is the retryable
+`check_admission_contended`. CLI, MCP (Codex, Claude Code and Cursor), hooks and TUI share this
+error/continuation contract. No check verdict or reviewer result is fabricated; a receipt retains
+the missing-check coverage. An explicitly scoped follow-up may continue work but cannot close the
+original task by substitution.
 
 `ports/ledger.py` owns the shared closed enums: `OperationKind` is
 `start|publish_work|check|respond|receipt`; `OperationState` is `pending|complete|quarantined`;

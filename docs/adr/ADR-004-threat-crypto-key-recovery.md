@@ -103,7 +103,14 @@ ordinary UI content trusted.
    leaves no page roots. Existing inline checkpoints remain readable. Aggregate overflow is
    `LIMIT_EXCEEDED/check_resume_capacity_exceeded`; an oversized local-result checkpoint is
    `LIMIT_EXCEEDED/check_result_capacity_exceeded`. Both carry `check_capacity_handoff`, never
-   provider repair or unchanged same/new-ID retry advice.
+   provider repair or unchanged same/new-ID retry advice. A resume overflow before admission
+   records no operation. When an already admitted check outgrows the cap while its parked
+   review-input case is rebuilt, the overflow closes that operation with the stored error.
+   An oversized result does the same. Status and exact replay then agree.
+   Superseded or unadmitted checkpoint generations are not yet reclaimed (#1179). A build from
+   before this amendment fails closed on a paged root: a pending check holding one reports
+   storage corruption for that operation. This is a downgrade-only gap, and no explicit
+   version gate exists yet (#1180).
 
 Wrapped BMKs and encrypted objects are ciphertext, not an alternate plaintext key store. Plaintext
 IVKs, BMKs, derived keys (including installation MAC keys), DEKs, provider credentials, and
