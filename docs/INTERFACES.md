@@ -1320,6 +1320,20 @@ compares is folded with it). The same command wins when one run is both.
 `finding_resolution.retired_failed_command_finding_ids(state)` names the retired, resolved
 observed failed-command findings; the status advice view drops their `failed_command_unresolved`
 items.
+`application.observation_advice.bind_failed_command_advice` binds advice to one accepted
+action/result event pair before the coordinator writes a finding or publishes its snapshot
+(#1160, ADR-022 decision 7). Fresh IDs are task-scoped over that pair; an existing readable
+observation-authored finding supplies its recorded ID and original reason instead. Only rows
+`kernel.finding_resolution.current_finding_records` selects (the newest per `issue_key`, the
+selection `current_receipt_findings` uses) are eligible, so advice and the receipt name the same
+ID; among eligible rows for one pair the earliest recorded wins. The coordinator's in-process
+binding cache reuses an ID only while that row stays current and readable, ignores advice-only
+rows, recomputes on any mismatch, and evicts the least recently used entry.
+Repeated envelopes update snapshot context and do not append another finding. Missing or
+ambiguous pairs do not coalesce; command commitments alone are not finding identities. Original
+findings, responses, historical duplicate IDs and retirement facts remain intact. JSON, markdown
+and text receipt sections name the original trigger and first-recorded frontier beside the
+resolution explanation, using existing fields.
 `FindingProjectionRecord` gains `observed_failed_command`, `failed_run_result_id`,
 `retired_by_event_id`, `retired_frontier` (set together with the event id) and
 `retired_by_planned_verification` (only with a retirement), each emitted into

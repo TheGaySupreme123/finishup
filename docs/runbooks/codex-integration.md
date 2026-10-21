@@ -1797,6 +1797,14 @@ the same issue.
 A failed shell call becomes an observation finding (`failed_command_unresolved`, kind
 `failed_work_omitted`) seconds after FinishUP records the failure. Decisions for Codex:
 
+Repeated observations that name the same accepted action/result event pair reuse the readable
+finding ID and original reason that receipts, status and check report for that pair (#1160,
+ADR-022 decision 7). The shared coordinator updates the advice snapshot; responses,
+`duplicate_of` links and retirement proofs keep their recorded identities. Copies an older build
+already recorded stay in the ledger; where they share an issue key, advice and the receipt both
+name the newest. A distinct failed invocation remains distinct. This does not change the host
+outcome requirements below.
+
 - **Retire on pass: supported.** A later passing run of the same command, alone or as a segment
   of a passing `&&` chain (`cd /app && pytest -q`), retires the finding (`verified_resolved`,
   closure basis `retired_by_passing_run`). The segment must run as is: behind a leading

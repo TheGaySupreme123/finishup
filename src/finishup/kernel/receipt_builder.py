@@ -155,6 +155,7 @@ from finishup.kernel.finding_resolution import (
     issue_key,
     unverified_resolution_finding_ids,
 )
+from finishup.kernel.finding_retirement import is_observed_failed_command_finding
 from finishup.kernel.gap_effect import GapContext, gap_effect, judge_gaps
 from finishup.kernel.later_material import LaterMaterialClass, counted_later_material
 from finishup.kernel.lineage import LineageEvaluation, LineageRollupState
@@ -1552,6 +1553,26 @@ def _retired_count(
         and record.resolved_by_check_event_id is None
         and record.retired_by_event_id is not None
         and record.retired_by_planned_verification is planned
+    )
+
+
+def _failed_command_trigger(projection: ProjectionState, key: FindingId) -> str:
+    """Keep the original trigger visible beside the current resolution basis (#1160)."""
+
+    record = projection.findings.get(key)
+    if not is_observed_failed_command_finding(record) or record is None:
+        return ""
+    result = (
+        projection.results.get(record.failed_run_result_id) if record.failed_run_result_id else None
+    )
+    if result is None or result.payload is None:
+        return ""
+    action = projection.actions.get(result.payload.action_id)
+    if action is None or action.payload is None:
+        return ""
+    return (
+        f" Original failed-command trigger: {action.source_event_id} / {result.source_event_id};"
+        f" finding first recorded at frontier {record.source_frontier}."
     )
 
 
@@ -3042,6 +3063,7 @@ def build_receipt(
                 context.records,
                 proof_state_cache=proof_state_cache,
             )
+            + _failed_command_trigger(context.projection, finding.finding_id)
             for finding in retained_findings[:10]
         )
         if context.records
