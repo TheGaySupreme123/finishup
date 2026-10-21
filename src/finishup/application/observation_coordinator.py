@@ -39,6 +39,7 @@ from finishup.application.lineage_coordinator import LineageManifestCoordinator
 from finishup.application.observation_advice import (
     ADVICE_SEMANTIC_PENDING_GAP,
     ObservationAdviceContextBuilder,
+    bind_failed_command_advice,
     scoped_session_envelopes,
     without_retired_failed_commands,
 )
@@ -189,6 +190,7 @@ from finishup.domain.workspace_effect import (
     workspace_write_scopes,
     workspace_write_scopes_from_summary,
 )
+from finishup.kernel.finding_resolution import current_finding_records
 from finishup.kernel.projections import ProjectionRecord, ProjectionState
 from finishup.observability.logging import record_unexpected_exception_without_raising
 from finishup.observability.privacy import prepare_persisted_plaintext
@@ -250,6 +252,8 @@ _ADVICE_FINDING_KIND_BY_RULE: Final = MappingProxyType(
     }
 )
 
+# Failed-command advice bindings kept per coordinator (#1160), least recently used evicted.
+_ADVICE_BINDING_CACHE_LIMIT: Final = 64
 _LEGACY_UNPAIRED_REPLAY_PROFILE: Final = "legacy-paired-replay"
 # How many recent hook generations a post-compaction stream completion may search for its
 # hook call (#1019). Each Codex SessionStart (compact, resume, clear) is one generation.
@@ -333,6 +337,64 @@ def _materialized_advice_items(items: Sequence[AdviceItem]) -> tuple[AdviceItem,
         item
         for item in items
         if item.origin == "deterministic" and item.rule_code in _ADVICE_FINDING_KIND_BY_RULE
+    )
+
+
+def _rebound_cached_advice(
+    cached: tuple[AdviceItem, ...],
+    snapshot: AdviceSnapshot,
+    findings: Mapping[FindingId, ProjectionRecord[Finding]],
+) -> AdviceSnapshot | None:
+    """Reapply cached failed-command bindings (#1160) to a fresh snapshot, or ``None``.
+
+    Reuse only identities, original prose and condition keys, never cached coverage or
+    retirement. Only materialized items need a readable finding in the live projection: an
+    advice-only row such as ``provider_not_ready`` never has one. A bound failed-command ID must
+    still be the row receipts report (``current_finding_records``). Any mismatch, such as a
+    changed evidence ref or a superseded or unreadable row, returns ``None`` so the caller
+    recomputes the binding instead of failing on the hook path.
+    """
+
+    failed_rule = "failed_command_unresolved"
+    by_evidence = {
+        item.evidence_refs: item for item in snapshot.ranked_items if item.rule_code == failed_rule
+    }
+    if len(by_evidence) != sum(item.rule_code == failed_rule for item in snapshot.ranked_items):
+        return None
+    by_id = {item.finding_id: item for item in snapshot.ranked_items}
+    current_ids = frozenset(
+        record.payload.finding_id
+        for record in current_finding_records(findings.values())
+        if record.payload is not None
+    )
+    rebound: list[AdviceItem] = []
+    for item in cached:
+        if item.rule_code == failed_rule:
+            fresh = by_evidence.get(item.evidence_refs)
+            if fresh is None or item.finding_id not in current_ids:
+                return None
+            rebound.append(
+                replace(
+                    fresh,
+                    finding_id=item.finding_id,
+                    summary=item.summary,
+                    detail=item.detail,
+                    condition_identity=item.condition_identity,
+                )
+            )
+            continue
+        fresh = by_id.get(item.finding_id)
+        if fresh is None:
+            return None
+        rebound.append(fresh)
+    for item in _materialized_advice_items(rebound):
+        record = findings.get(item.finding_id)
+        if record is None or record.payload is None:
+            return None
+    return replace(
+        snapshot,
+        ranked_items=tuple(rebound),
+        ranked_finding_ids=tuple(item.finding_id for item in rebound),
     )
 
 
@@ -826,6 +888,12 @@ def _empty_advice_event_ref_cache() -> dict[tuple[str, str], tuple[str, ...]]:
     return {}
 
 
+def _empty_advice_binding_cache() -> dict[
+    tuple[str, tuple[FindingId, ...]], tuple[AdviceItem, ...]
+]:
+    return {}
+
+
 def _empty_storage_corrupt_sessions() -> set[str]:
     return set()
 
@@ -881,6 +949,9 @@ class ObservationCoordinator:
     observed_activity_max_age_seconds: int = 86_400 + 60
     _advice_event_ref_cache: dict[tuple[str, str], tuple[str, ...]] = field(
         default_factory=_empty_advice_event_ref_cache, init=False, repr=False
+    )
+    _advice_binding_cache: dict[tuple[str, tuple[FindingId, ...]], tuple[AdviceItem, ...]] = field(
+        default_factory=_empty_advice_binding_cache, init=False, repr=False
     )
     _storage_corrupt_sessions: set[str] = field(
         default_factory=_empty_storage_corrupt_sessions, init=False, repr=False
@@ -7105,13 +7176,15 @@ class ObservationCoordinator:
                 and not isinstance(runtime, str)
                 and runtime.writer_id is not None
             ):
-                await self._materialize_advice_findings(
+                materialized = await self._materialize_advice_findings(
                     runtime,
                     envelopes,
                     snapshot,
                     store=store,
                     legacy_writer_id=legacy_writer_id,
                 )
+                if materialized is not None:
+                    snapshot = materialized
             now = timestamp_from_datetime(self.clock.now_utc())
             store.set_advice_snapshot(workspace, snapshot, now)
             session_setter = getattr(store, "set_session_advice_snapshot", None)
@@ -7449,14 +7522,14 @@ class ObservationCoordinator:
         *,
         store: TaskObservationPort | None = None,
         legacy_writer_id: str | None = None,
-    ) -> None:
+    ) -> AdviceSnapshot | None:
         from finishup.domain.observation import AdviceSnapshot
 
         if type(snapshot) is not AdviceSnapshot or runtime.writer_id is None:
             return
         candidate_items = _materialized_advice_items(snapshot.ranked_items)
         if not candidate_items:
-            return
+            return snapshot
         finding_projection = await runtime.ledger.load_projection(
             runtime.session_id, ProjectionView.CANDIDATE_FINDINGS
         )
@@ -7465,29 +7538,35 @@ class ObservationCoordinator:
             if finding_projection is not None and type(finding_projection.state) is ProjectionState
             else {}
         )
+        binding_key = (runtime.task_id, snapshot.ranked_finding_ids)
+        cached = self._advice_binding_cache.pop(binding_key, None)
+        if cached is not None:
+            # Least recently used leaves first: a hit moves its key to the newest position.
+            self._advice_binding_cache[binding_key] = cached
+            # Routine observations then need no event-stream scan or extra operation lookup.
+            rebound = _rebound_cached_advice(cached, snapshot, projected_findings)
+            if rebound is not None:
+                return rebound
         candidate_items = tuple(
             item
             for item in candidate_items
-            if (
-                (existing := projected_findings.get(item.finding_id)) is None
-                or existing.payload is None
-            )
+            if item.rule_code == "failed_command_unresolved"
+            or (existing := projected_findings.get(item.finding_id)) is None
+            or existing.payload is None
         )
         if not candidate_items:
-            # A readable condition finding already anchors the durable record.
-            # Rolling evidence remains current in the observation snapshot and
-            # coverage/gap state; appending a revision here would invalidate
-            # checks and grow the ledger once per routine envelope.
-            return
+            return snapshot
         refs_by_source: dict[str, set[str]] = {}
         for envelope in envelopes:
             refs_by_source.setdefault(envelope.source_identity, set()).update(
                 self._materialized_event_refs(runtime.task_id, envelope, store)
             )
         known_event_ids: set[str] = set()
+        event_schemas: dict[str, str] = {}
         lifecycle_ref: str | None = None
         async for record in runtime.ledger.load_events(runtime.session_id):
             known_event_ids.add(str(record.event_id))
+            event_schemas[str(record.event_id)] = record.schema.name
             if lifecycle_ref is None and record.schema.name in {
                 "session_opened",
                 "session_resumed",
@@ -7498,6 +7577,7 @@ class ObservationCoordinator:
         )
         frontier = Frontier.genesis() if projection is None else projection.frontier
         items: list[tuple[AdviceItem, tuple[str, ...]]] = []
+        identity_refs: dict[FindingId, tuple[str, ...]] = {}
         for item in candidate_items:
             matched_refs = {
                 ref
@@ -7505,6 +7585,7 @@ class ObservationCoordinator:
                 for ref in refs_by_source.get(source_ref, ())
                 if ref in known_event_ids
             }
+            identity_refs[item.finding_id] = tuple(sorted(matched_refs, key=str.encode))
             if not matched_refs:
                 # A candidate that names no envelope is a standing condition about the session,
                 # so anchor it on the session lifecycle event: one stable ref for the life of the
@@ -7524,7 +7605,84 @@ class ObservationCoordinator:
                 continue
             items.append((item, subject_refs))
         if not items:
-            return
+            return snapshot
+        legacy_snapshot, legacy_items = snapshot, items
+        # Bind before the readable-ID guard: different observer envelopes may have minted
+        # different provisional IDs for the exact same accepted action/result event pair.
+        # Keep that binding in every cached/delivered snapshot, including after retirement.
+        snapshot = bind_failed_command_advice(
+            snapshot,
+            task_id=runtime.task_id,
+            subject_refs=identity_refs,
+            event_schemas=event_schemas,
+            findings=projected_findings,
+        )
+        # Later passes look up either key: the bound IDs when the builder reissues the stored
+        # snapshot, the provisional IDs when new evidence rebuilds it. A recompute refreshes
+        # both here; a hit refreshes only the key it looked up. Overflow evicts the least
+        # recently used entry, and a sibling key evicted first costs one rescan, not
+        # correctness.
+        for key in ((runtime.task_id, snapshot.ranked_finding_ids), binding_key):
+            self._advice_binding_cache.pop(key, None)
+            self._advice_binding_cache[key] = snapshot.ranked_items
+        while len(self._advice_binding_cache) > _ADVICE_BINDING_CACHE_LIMIT:
+            self._advice_binding_cache.pop(next(iter(self._advice_binding_cache)))
+        # Keyed by rule as well: two rules citing the same envelope keep their own refs.
+        refs_by_evidence = {(item.rule_code, item.evidence_refs): refs for item, refs in items}
+        for item, _refs in items:
+            if item.rule_code != "failed_command_unresolved":
+                continue
+            trigger = tuple(
+                ref
+                for ref in identity_refs[item.finding_id]
+                if event_schemas.get(ref) in {"action_recorded", "result_recorded"}
+            )
+            if len(trigger) == 2 and {event_schemas[ref] for ref in trigger} == {
+                "action_recorded",
+                "result_recorded",
+            }:
+                # The durable challenge names the stable trigger. Other changing envelope
+                # citations stay in the snapshot and cannot change its append identity.
+                refs_by_evidence[item.rule_code, item.evidence_refs] = trigger
+        items = [
+            (item, refs_by_evidence[item.rule_code, item.evidence_refs])
+            for item in _materialized_advice_items(snapshot.ranked_items)
+            if (item.rule_code, item.evidence_refs) in refs_by_evidence
+            and (
+                (existing := projected_findings.get(item.finding_id)) is None
+                or existing.payload is None
+            )
+        ]
+        if not items:
+            # The original finding and its reason/history stay immutable. The snapshot
+            # carries the latest evidence context without appending another challenge.
+            return snapshot
+        if items != legacy_items:
+            # Recover a committed pre-upgrade operation even when its projection has not
+            # arrived yet. Never change the identity of an already accepted challenge (#560).
+            legacy_digest = canonical_digest(
+                JsonObject(
+                    {
+                        "format": "yoetz.observation-advice-findings/1",
+                        "task_id": runtime.task_id,
+                        "findings": tuple(
+                            {"finding_id": str(item.finding_id), "subject_refs": refs}
+                            for item, refs in legacy_items
+                        ),
+                    }
+                )
+            )
+            legacy_operation = await runtime.ledger.lookup_task_operation(
+                runtime.writer_id, self._stable_operation_id(legacy_digest)
+            )
+            if legacy_operation is not None:
+                if legacy_operation.request_digest != legacy_digest:
+                    raise PublicOperationError(
+                        PublicErrorCode.IDEMPOTENCY_CONFLICT,
+                        "Observation advice identity is already committed with other content.",
+                        retryable=False,
+                    )
+                return legacy_snapshot
         request_digest_value = canonical_digest(
             JsonObject(
                 {
@@ -7553,7 +7711,7 @@ class ObservationCoordinator:
                     "Observation advice identity is already committed with other content.",
                     retryable=False,
                 )
-            return
+            return snapshot
         if legacy_writer_id is not None and legacy_writer_id != runtime.writer_id:
             legacy_existing = await runtime.ledger.lookup_operation(legacy_writer_id, operation_id)
             if legacy_existing is not None:
@@ -7563,7 +7721,7 @@ class ObservationCoordinator:
                         "Observation advice identity is already committed with other content.",
                         retryable=False,
                     )
-                return
+                return snapshot
         entries: list[AppendEntry] = []
         object_refs: list[ObjectRef] = []
         staged_objects: list[StagedObject] = []
@@ -7682,3 +7840,4 @@ class ObservationCoordinator:
                 request_id=operation_id,
             )
             raise
+        return snapshot
