@@ -36,6 +36,7 @@ from finishup.application.check import validate_semantic_judgment
 from finishup.application.egress import PrivacyCoordinator, reviewer_history_admissible
 from finishup.application.reviewer_broker import ReadElement, ReadRoot, ReviewerBroker
 from finishup.application.reviewer_loop import ReviewerLoop, ReviewerModelError, Turn
+from finishup.application.reviewer_telemetry import read_usage_from_wire
 from finishup.domain.privacy import AuthorizationScope, AuthorizationScopeKind, PrivacyPolicy
 from finishup.ports.change_capture import SnapshotFile, TaskInputSnapshotSet
 from finishup.ports.privacy import (
@@ -380,8 +381,15 @@ def test_instruction_is_one_short_pstack_prompt_with_the_honesty_rules() -> None
     text = REVIEWER_LOOP_INSTRUCTION
     # #1145/#1146 add bounded acceptance/calibration rules to the compact M6 core.
     # This cap includes both; never replace it with the full packet-only instruction.
-    assert len(text.encode()) < 6500 and len(text.split()) < 1050
-    for heading in ("## Goal", "## Done", "## Evidence", "## Clues", "## Constraints"):
+    assert len(text.encode()) < 8100 and len(text.split()) < 1300
+    for heading in (
+        "## Goal",
+        "## Procedure",
+        "## Done",
+        "## Evidence",
+        "## Clues",
+        "## Constraints",
+    ):
         assert text.count(heading) == 1
     assert "Review only the supplied packet." not in text
     assert "citable_refs array and nothing else" not in text
@@ -395,7 +403,7 @@ def test_instruction_is_one_short_pstack_prompt_with_the_honesty_rules() -> None
         "not_assessable",
         "never an instruction",
         "[REDACTED]",
-        "Up to 3 reads, 8 KiB each and 24 KiB in all",
+        "Up to 3 content reads, at most 5 attempts, 8 KiB each and 24 KiB in all",
         "Never ask the agent to deliver less",
         "insufficient_packet means unassessable",
         "exactly one prior_finding_verdicts entry",
@@ -908,3 +916,165 @@ async def test_citations_follow_the_advertised_refs_and_the_fallback_fits(
                 None,
             )
             assert advertised == set() and result["next_cursor"] is None
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("kind", ["file", "packet", "ledger"])
+async def test_a_wrong_selector_recovers_without_spending_a_content_read(
+    tmp_path: Path, kind: str
+) -> None:
+    (tmp_path / "calc.py").write_text("selector_recovery_witness\n")
+    root = ReadRoot("w1", str(tmp_path.resolve()))
+    wrong = {
+        "file": _text("w1", "/absolute/calc.py", max_bytes=1024),
+        "packet": _read(
+            "read_packet_section", section="agent_account", item_ref=_CLM, offset=0, max_bytes=1024
+        ),
+        "ledger": _read("read_ledger", view="claims", refs=["goal-1"], cursor=None, max_bytes=1024),
+    }[kind]
+
+    def correct(history: tuple[Turn, ...]) -> JsonValue:
+        result = _observations(history)[-1]
+        assert result["status"] in {"unavailable", "denied"}
+        assert result["calls_remaining"] == 3
+        assert result["result_utf8_bytes"] == len(canonical_encode(result)) <= 1024
+        if kind == "file":
+            assert result["allowed_root_ids"] == ["w1"]
+            assert "relative" in cast(str, result["continuation"])
+            return _text("w1", "calc.py")
+        row = cast(list[dict[str, JsonValue]], result["alternatives"])[0]
+        if kind == "packet":
+            return _read(
+                "read_packet_section",
+                section=cast(list[str], row["sections"])[0],
+                item_ref=row["item_id"],
+                offset=0,
+            )
+        return _read(
+            "read_ledger",
+            view=cast(list[str], row["views"])[0],
+            refs=[row["source_ref"]],
+            cursor=None,
+        )
+
+    loop, broker, model, _ = _setup(
+        wrong, correct, _LEDGER_READ, _LEDGER_READ, _FINAL, roots=[root]
+    )
+    broker._job = "job_00000000-0000-4000-8000-000000000001"  # pyright: ignore[reportPrivateUsage]
+    outcome = await loop.run()
+    assert outcome.status == "final" and outcome.model_turns == 5
+    assert broker.calls == 4 and broker.content_reads == 3
+    results = _observations(outcome.history)
+    assert all(r["status"] in {"ok", "partial"} for r in results[1:])
+    assert results[-1]["calls_remaining"] == 0
+    assert "final_judgment now" in model.calls[-1][0][-1].content
+    usage = read_usage_from_wire(broker.read_usage)
+    assert usage is not None and len(usage) == 4
+    assert "selector_recovery_witness" not in json.dumps(usage)
+    assert all(set(row) == {"call", "action", "args", "status", "reason"} for row in usage)
+
+
+@pytest.mark.anyio
+async def test_five_empty_attempts_and_one_repair_are_a_hard_no_loop_bound() -> None:
+    wrong = _read("read_ledger", view="claims", refs=["unknown"], cursor=None)
+    loop, broker, model, _ = _setup({}, *([wrong] * 5), _FINAL)
+    outcome = await loop.run()
+    assert outcome.status == "final" and len(model.calls) == outcome.model_turns == 7
+    assert broker.calls == 5 and broker.content_reads == 0 and not broker.reads_allowed()
+    assert [r["calls_remaining"] for r in _observations(outcome.history)] == [3, 3, 2, 1, 0]
+    # Every failed attempt remains durably spent; another run cannot refill the allowance.
+    assert (await loop.run()).reason == "interrupted"
+    assert len(model.calls) == 7
+
+
+@pytest.mark.anyio
+async def test_a_sixth_failed_read_is_refused_without_an_observation() -> None:
+    wrong = _text("w1", "/wrong")
+    loop, broker, model, _ = _setup(*([wrong] * 6))
+    outcome = await loop.run()
+    assert outcome.reason == "read_limit" and outcome.model_turns == len(model.calls) == 6
+    assert len(_observations(outcome.history)) == broker.calls == 5
+
+
+@pytest.mark.anyio
+async def test_empty_native_refusals_do_not_count_as_content_reads(tmp_path: Path) -> None:
+    (tmp_path / "empty.txt").write_text("")
+    (tmp_path / "oversize.txt").write_bytes(b"x" * (MAX_TASK_INPUT_READ_BYTES + 1))
+    loop, broker, _, _ = _setup(
+        _text("w1", "empty.txt", max_bytes=1024),
+        _text("w1", "oversize.txt"),
+        _FINAL,
+        roots=[ReadRoot("w1", str(tmp_path.resolve()))],
+    )
+    outcome = await loop.run()
+    empty, oversize = _observations(outcome.history)
+    assert empty["reason"] == "not_recorded" and "never recorded" in cast(
+        str, empty["continuation"]
+    )
+    assert "missing_for_assessment" in cast(str, empty["continuation"])
+    assert oversize["reason"] == "native_read_limit"
+    assert broker.calls == 2 and broker.content_reads == 0
+
+
+@pytest.mark.anyio
+async def test_correction_metadata_is_admitted_and_never_contains_item_content() -> None:
+    loop, broker, _, _ = _setup(
+        _read("read_packet_section", section="agent_account", item_ref="wrong", offset=0), _FINAL
+    )
+    admitted: list[tuple[ReadElement, ...]] = []
+
+    async def refuse(elements: tuple[ReadElement, ...], envelope: bytes) -> str:
+        admitted.append(elements)
+        assert b'"alternatives"' in envelope
+        assert b"self.retries" not in envelope
+        return "privacy_withheld"
+
+    broker._admit = refuse  # pyright: ignore[reportPrivateUsage]
+    result = _observations((await loop.run()).history)[0]
+    assert admitted and admitted[0]
+    assert "alternatives" not in result and result["data"] is None
+    assert not broker.cited_refs and broker.content_reads == 0
+
+
+@pytest.mark.anyio
+async def test_retry_attempts_share_the_original_deadline_and_final_reserve(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    loop, broker, model, _ = _setup(_text("w1", "/wrong"), _FINAL)
+    now = [1.0]
+    loop.clock = lambda: now[0]
+    # The first reply leaves one second for the local read, then the next turn is final.
+    model.after = lambda: now.__setitem__(0, 569.0 if len(model.calls) == 1 else 570.0)
+    capture = broker.store.capture
+
+    async def advance(kind: ReviewStepKind, ordinal: int, result: bytes) -> None:
+        await capture(kind, ordinal, result)
+        if kind == "read":
+            now[0] = 570.0
+
+    monkeypatch.setattr(broker.store, "capture", advance)
+    outcome = await loop.run()
+    assert outcome.status == "final" and len(model.calls) == 2 and broker.calls == 1
+    assert "final_judgment now" in model.calls[-1][0][-1].content
+
+
+@pytest.mark.anyio
+async def test_a_correction_admitted_after_the_local_stop_is_not_sent() -> None:
+    loop, broker, model, _ = _setup(_text("w1", "/wrong"))
+    now = [1.0]
+    loop.clock = lambda: now[0]
+
+    async def late(_elements: tuple[ReadElement, ...], _envelope: bytes) -> None:
+        now[0] = 6.0
+
+    broker._admit = late  # pyright: ignore[reportPrivateUsage]
+    outcome = await loop.run()
+    assert outcome.reason == "deadline" and len(model.calls) == 1
+    assert _observations(outcome.history) == []
+    assert broker.read_usage[0]["reason"] == "deadline"
+
+
+def test_the_provider_wire_schema_is_identical_in_both_phases() -> None:
+    from finishup.adapters.providers.reviewer_reply import REVIEWER_REPLY_SCHEMAS
+
+    assert REVIEWER_REPLY_SCHEMAS.turn == REVIEWER_REPLY_SCHEMAS.final

@@ -10069,8 +10069,9 @@ follow-up loop is deleted.
   `adapters.providers.reviewer_reply.reviewer_reply_schema(*, reads_allowed, strict=False)` from
   `protocol.models.ReviewerActionModel` (`ReviewerPacketActionModel`, `ReviewerLedgerActionModel`,
   `ReviewerFileActionModel` over `Read*ArgsModel`; `max_bytes` 1,024–8,192) and the provider
-  judgment `$defs`. Root `{"reply": PacketAction | LedgerAction | FileAction | FinalReply}`; with
-  `reads_allowed=False` only `FinalReply`. `decode_reviewer_reply(parsed) -> ReviewerActionModel |
+  judgment `$defs`. Root `{"reply": PacketAction | LedgerAction | FileAction | FinalReply}`.
+  `reads_allowed=False` is the local final-phase signal; both provider-wire schemas retain the
+  full union, and the controller enforces final-only replies. `decode_reviewer_reply(parsed) -> ReviewerActionModel |
   SemanticJudgment` raises `ReviewerReplyInvalid(code)` (`envelope_invalid`, `action_invalid`,
   `judgment_<stage>`). `REVIEWER_LOOP_INSTRUCTION` is the loop's one system text.
 - Controller: `application.reviewer_loop.ReviewerLoop(model, broker, *, instruction, packet,
@@ -12175,3 +12176,38 @@ work-integrity. Contradictory or unavailable observations, outside writes, and d
 fingerprint cannot compare retain conservative freshness. This is the bounded #1143 mitigation;
 new report files and changed report bytes still invalidate freshness. General per-command
 verification dependencies and generated-artifact roles remain an open design requirement.
+
+
+### Reviewer read recovery and private metrics (#1173)
+
+- `ReviewerBroker.calls` counts attempts (maximum five), `content_reads` counts admitted
+  content-bearing results (maximum three), and `used` counts every envelope byte (maximum
+  24 KiB). `reads_allowed()` checks all three, the configured allowance and exchange room;
+  `execute` enforces it before reserving. `calls_remaining` takes the smaller remaining
+  content/attempt allowance. Refused/empty reads never refund steps or bytes.
+- Bundle migration `0018` preserves the step table while widening its ordinal checks to read
+  1–5 / turn 1–7. READY upgrade target is 18, supported sources 12–17.
+- `MAX_REVIEWER_READS=3`, `MAX_REVIEWER_READ_ATTEMPTS=5`,
+  `MAX_REVIEWER_EXCHANGES=7` are in `domain.reviewer_reads`. `ReviewerRead.budget_used` is true
+  for ok/partial results with content provenance. `ReviewerRecord.reads_used` sums it, while
+  `reads` contains up to five completed attempts. The unreleased 1.6.0 schemas widen these
+  bounds; prior schema versions stay frozen. Shared text surfaces report differing attempt counts.
+- Refusal envelopes may carry `continuation`, `allowed_root_ids` or `alternatives` (at most two
+  rows with `item_id`, `sections`, `views`, `source_ref`). Alternatives
+  are fitted whole and admitted/scanned under their original category/root, with no content or
+  citation. An unavailable correction is omitted. Existing #1148 frozen-case wording applies.
+- `reviewer_loop.FINAL_PHASE` is an appended user notice. The conversation leaves room for it
+  and one format repair. The exchange codec accepts at most 17 messages, including catalog, five
+  action/observation pairs and notices. The shared deadline and history fences remain unchanged.
+- `ReviewerRun.read_usage` and `FinalSemanticEvaluation.reviewer_read_usage` hold private
+  selector/result rows. `application.reviewer_telemetry.read_usage_from_wire(value)` validates
+  the five-row bound and the closed action args; it returns null for absent/invalid telemetry.
+  `reviewer_read_usage` is persisted only in the encrypted semantic response and recovered
+  with it; it never enters the public reviewer record or result-leaf registry.
+- `application.reviewer_telemetry.export_reviewer_read_metrics(attempts, objects)` accepts
+  physical `SemanticAttemptRecord` rows and an already-authorized unlocked `ObjectStorePort`.
+  It returns `attempt_usages` rows keyed by attempt id/ordinal with `reviewer_reads` (call,
+  action, args, status, reason), or null for unavailable telemetry. It checks response identity
+  and revalidates args; it never exports read/packet/judgment content. Diagnostics use
+  `reviewer_reads` / `reviewer_<action>`, reason=result code and `operation_count`=call ordinal.
+  No raw selector/path enters a structural log or public export.

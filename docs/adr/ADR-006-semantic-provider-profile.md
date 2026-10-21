@@ -2405,14 +2405,19 @@ FinishUP owns a small verifying loop. Each model turn returns exactly one reply 
 `findings/reviewer-reply-1.0.0`: `read_packet_section`, `read_ledger` or `read_file` (the round-1
 broker inputs, as JSON text FinishUP interprets, never provider tool registrations), or
 `final_judgment`, the existing provider judgment validated by `normalize_judgment(...,
-require_part2=True)`. The root is an object wrapper; with no read allowance left the same root
-offers only `FinalReply`. Strict wire form comes from `strict_output_schema`; the decoder still
+require_part2=True)`. The root is an object wrapper. The provider-wire schema stays identical
+across turns; when no read allowance remains the controller appends a final-phase notice and
+accepts only `FinalReply`. Strict wire form comes from `strict_output_schema`; the decoder still
 enforces what it drops, and reads a strict null as the field's default.
 
-The loop allows at most three reads, 8 KiB per complete result and 24 KiB in all. Every model turn
-(at most five), the one format repair and every read is a durable step of the review job
-(ADR-003, migration `0017`), reserved before it runs and never refunded; a denied or empty read
-spends its read. A job that already holds steps is not resumed: its review ends incomplete
+The loop allows at most three content-bearing reads and five attempts, 8 KiB per complete result
+and 24 KiB in all (#1173). Every model turn (at most seven, including the final judgment and one
+format repair), the repair and every attempt is a durable step of the review job (ADR-003,
+migration `0017`), reserved before it runs and never refunded. Refused and empty results spend
+attempts and bytes, but no content read; at most two extra attempts are available. A partial
+result containing text or listed entries spends a content read; metadata-only native-limit
+refusals do not. The existing shared deadline, five-second local read limit and final reserve
+do not change. A job that already holds steps is not resumed: its review ends incomplete
 (`interrupted`, or `uncaptured_step` when a reserved step has no captured result). The one
 exception is a first turn that waited for the owner before anything was sent, which runs once more
 in its own reservation (see "Owner approval" under "Service wiring and delivery"). After the cap
@@ -2907,3 +2912,49 @@ Maintainer acknowledgement: the explicit scoped implementation request and owner
 #1139/#1126 authorize these delivery, packing and label changes.
 They do not change reviewer judgment, disclosure authority, or the design-gated #905 todo-list
 convergence.
+
+
+## Amendment — 2026-10-21: bounded reviewer read recovery (#1173)
+
+Maintainer acknowledgement: the explicit scoped request on issue #1173 approves all four parts.
+Bundle migration `0018` widens the durable step ordinal bounds without altering existing rows
+(ADR-003); READY upgrades v17 bundles through the existing backup/fenced path.
+The procedure above retains every reservation and every response byte, including refusals, with
+three content reads and a hard five-attempt/seven-completion limit. `calls_remaining` is the
+smaller of content reads remaining and attempts remaining, using the configured allowance
+(zero reads also means zero retries). Existing history and category/root revocation checks apply
+to every extra turn. No failed transport is retried and a prior job's steps never refill.
+
+A `forbidden_path` correction names only issued aliases and the relative-path form, never an
+absolute root or the rejected path. `not_retained` and `not_in_frozen_case` offer at most two
+nearest catalog rows: exact item/ref matches first, then matching section/view, then item-id
+order. These contain only item ids, source refs and valid action sections/views. Each row
+is admitted under its item's category and outside root, and the complete envelope is scanned;
+rows are dropped whole to fit the existing result/exchange bounds. A withheld correction has no
+alternatives. Hints add no citations or content-read credit. `not_recorded` describes unavailable
+file/snapshot/line/listing material; frozen lookup absence never establishes non-recording
+(#1148). Unavailable material can be requested through `missing_for_assessment` with kind and
+`target_refs`, for a later check to freeze; this creates no live-ledger query or disclosure grant.
+
+The instruction gains only the read procedure and the changed budget rule. Its role, goal, done,
+evidence, clues, acceptance and calibration rules keep their existing order. Read-field
+descriptions distinguish relative file paths, packet `item_id`, and ledger `source_ref` or
+`linked_subject_refs` plus view, with examples. The provider schema is the same in both phases;
+the final-only local schema remains the controller/facade phase signal.
+
+The unreleased check 1.6.0 record now permits five attempt entries and seven exchanges.
+`reads_used` counts content reads; `reads` retains every completed attempt and `read_bytes`
+counts every envelope. CLI/MCP/TUI/receipt text includes the attempt count when it differs from
+content reads. Earlier 1.4.0/1.5.0 documents stay byte-identical.
+
+For attribution, each attempt's encrypted `yoetz.semantic-response/1` object gains optional
+`reviewer_read_usage`: at most five rows with call, action, validated args, status and reason.
+Arguments are selector/path fields only; no returned text, hints, packet or judgment is copied.
+This private payload survives response recovery and includes failed reviews. Structural
+diagnostics contain the action/result code, request id and ordinal only; raw selectors/paths
+remain excluded from logs, SQLite structural tables, public records and ordinary exports.
+`application.reviewer_telemetry.export_reviewer_read_metrics` joins physical attempt rows with
+their encrypted response for an already-authorized owner-local metrics collector. It exports
+`attempt_usages[].reviewer_reads` without read content; missing/old/invalid telemetry is null.
+It adds no CLI/MCP/host route and no network channel. Codex, Claude Code and Cursor continue to
+share this controller and the existing result projection.

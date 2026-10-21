@@ -1114,7 +1114,7 @@ async def run_durable_semantic_attempts(
     async def _publish_terminal_response(
         handle: SemanticAttemptHandle, evaluation: _AttemptEvaluation
     ) -> tuple[ObjectRef | None, bool]:
-        """Persist privacy omission identities for a non-success attempt.
+        """Persist privacy omission identities and private read usage for a non-success attempt.
 
         Successful attempts already publish their response object before selection. A blocked,
         exhausted, retryable, or otherwise non-success attempt is never selected, but its
@@ -1124,8 +1124,10 @@ async def run_durable_semantic_attempts(
         write is retryable or an explicit persistence-unknown terminal outcome.
         """
 
-        if not getattr(evaluation, "semantic_withheld_item_ids", ()) and not getattr(
-            evaluation, "semantic_redacted_values", ()
+        if (
+            not getattr(evaluation, "semantic_withheld_item_ids", ())
+            and not getattr(evaluation, "semantic_redacted_values", ())
+            and not getattr(evaluation, "reviewer_read_usage", None)
         ):
             return None, False
         try:

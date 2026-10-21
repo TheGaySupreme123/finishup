@@ -3749,3 +3749,54 @@ async def test_reviewer_step_lease_time_is_read_after_the_writer_wait(
     finally:
         blocker.close()
         target.close()
+
+
+@pytest.mark.anyio
+async def test_reviewer_steps_upgrade_preserves_reservations_and_admits_bounded_corrections() -> (
+    None
+):
+    """#1173: the v17->v18 rebuild retains real leased-job commitments and their spent state."""
+    import apsw
+
+    from finishup.adapters.sqlite.migrations import BUNDLE_MIGRATIONS, run_migrations
+
+    command = ledger_command(request_suffix="e")
+    adapter = sqlite_ledger(command)
+    await adapter.append_batch(command)
+    lease = await _semantic_wait_lease(adapter, command, "req_00000000-0000-4000-8000-0000000000de")
+    case_ref = await _object_ref(
+        adapter, command, ObjectKind.SEMANTIC_CASE, semantic_case_digest="sha256:" + "e" * 64
+    )
+    job = await adapter.enqueue_semantic_job(lease, "sha256:" + "e" * 64, case_ref)
+    handle = await adapter.claim_semantic_job(lease, job.job_id)
+    db = adapter._db  # pyright: ignore[reportPrivateUsage]
+    # Build the prior, empty step table inside this in-memory fixture, then write through the
+    # real lease-fenced store. Nothing touches an installed service or a user ledger.
+    db.execute("DROP TABLE semantic_review_steps")
+    db.execute(BUNDLE_MIGRATIONS[16].ddl.decode())
+    db.execute("UPDATE bundle_meta SET value='17' WHERE key='storage_schema_version'")
+    steps = adapter.review_steps(handle)
+    await steps.reserve("turn", 1, b"turn")
+    await steps.capture("turn", 1, b"captured")
+    await steps.reserve("read", 1, b"private/path.py")
+    before = db.execute("SELECT * FROM semantic_review_steps ORDER BY kind,ordinal").fetchall()
+    report = run_migrations(db, BUNDLE_MIGRATIONS, maintenance=None)
+    assert report.applied_versions == ("0018",) and report.to_version == 18
+    assert (
+        db.execute("SELECT * FROM semantic_review_steps ORDER BY kind,ordinal").fetchall() == before
+    )
+    assert await steps.usage() == (2, 1)
+    with pytest.raises(ReviewStepRefused):
+        await steps.reserve("read", 1, b"same spent attempt")
+    await steps.reserve("read", 4, b"corrected/path.py")
+    await steps.reserve("read", 5, b"last attempt")
+    await steps.reserve("turn", 7, b"last completion")
+    for kind, ordinal in (("read", 6), ("turn", 8), ("repair", 2)):
+        with pytest.raises(apsw.ConstraintError):
+            db.execute(
+                "INSERT INTO semantic_review_steps(job_id,kind,ordinal,selector_commitment) "
+                "VALUES(?,?,?,?)",
+                (job.job_id, kind, ordinal, "commitment"),
+            )
+    assert run_migrations(db, BUNDLE_MIGRATIONS, maintenance=None).applied_versions == ()
+    assert db.execute("PRAGMA foreign_key_check").fetchall() == []

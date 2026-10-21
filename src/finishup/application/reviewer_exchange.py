@@ -13,7 +13,11 @@ from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass
 from typing import Final
 
-from finishup.adapters.providers.reviewer_reply import REVIEWER_REPLY_SCHEMAS, ReviewerReplyInvalid
+from finishup.adapters.providers.reviewer_reply import (
+    REVIEWER_REPLY_SCHEMAS,
+    ReviewerReplyInvalid,
+    reviewer_reply_schema,
+)
 from finishup.application.reviewer_loop import ReviewerModelError, Turn
 from finishup.domain.findings import SemanticFailureClass
 from finishup.domain.privacy import ProviderBinding
@@ -56,7 +60,7 @@ class ReviewerExchangeModel:
     ) -> JsonValue:
         if schema == REVIEWER_REPLY_SCHEMAS.turn:
             media_type = REVIEWER_EXCHANGE_MEDIA_TYPES["turn"]
-        elif schema == REVIEWER_REPLY_SCHEMAS.final:
+        elif schema == reviewer_reply_schema(reads_allowed=False, strict=True):
             media_type = REVIEWER_EXCHANGE_MEDIA_TYPES["final"]
         else:
             raise ReviewerModelError("reviewer_schema_unknown")

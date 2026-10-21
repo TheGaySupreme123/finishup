@@ -2129,16 +2129,16 @@ class SemanticResultUnavailable:
 # canonical linear history: a JSON array of ``{"content", "role"}`` messages, a system message
 # first, then user and assistant turns ending with user. Two user turns may follow each other (the
 # loop's format-repair notice never echoes the malformed reply); two assistant turns may not. The
-# case media type names which reply schema the provider must enforce: every branch, or the final
-# judgment only.
+# case media type names the phase; both phases use the same provider-wire reply schema. The
+# controller enforces the read limit and appends the final-phase notice.
 type ReviewerMessage = tuple[Literal["system", "user", "assistant"], str]
 REVIEWER_EXCHANGE_MEDIA_TYPES: Final = {
     "turn": "application/vnd.finishup.reviewer-turn+json",
     "final": "application/vnd.finishup.reviewer-final+json",
 }
-# System, packet, three action/observation pairs, and one format-repair notice (plus, at most,
-# the malformed turn's own pair when a route keeps it).
-_MAX_REVIEWER_MESSAGES: Final = 12
+# System, packet, catalog, five action/observation pairs, one final-phase notice and a repair.
+# Keep room for the malformed turn's own pair when a route retains it, too.
+_MAX_REVIEWER_MESSAGES: Final = 17
 
 
 def encode_reviewer_exchange(history: tuple[ReviewerMessage, ...]) -> bytes:

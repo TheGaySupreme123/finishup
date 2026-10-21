@@ -36,7 +36,11 @@ from finishup.adapters.providers.openai_responses import (
     owner_declared_data_use_profile,
 )
 from finishup.adapters.providers.openai_responses import render_case as render_responses
-from finishup.adapters.providers.reviewer_reply import ReviewerReplyInvalid, decode_reviewer_reply
+from finishup.adapters.providers.reviewer_reply import (
+    ReviewerReplyInvalid,
+    decode_reviewer_reply,
+    reviewer_reply_schema,
+)
 from finishup.application.reviewer_exchange import REVIEWER_REPLY_SCHEMAS, ReviewerExchangeModel
 from finishup.application.reviewer_loop import (
     ReviewerLoop,
@@ -530,7 +534,7 @@ async def test_facade_refuses_a_reply_from_another_route() -> None:
     model = ReviewerExchangeModel(binding, dispatch, ReviewerSession("review-a", _DEADLINE))
     deadline = _DEADLINE
     turns = [Turn(role, text) for role, text in _FIRST]
-    final_schema = REVIEWER_REPLY_SCHEMAS.final
+    final_schema = reviewer_reply_schema(reads_allowed=False, strict=True)
     with pytest.raises(ReviewerModelError, match="reviewer_exchange_route_mismatch"):
         await model.complete(turns, final_schema, deadline=deadline)
     assert seen == [REVIEWER_EXCHANGE_MEDIA_TYPES["final"]]

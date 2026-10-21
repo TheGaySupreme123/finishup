@@ -116,3 +116,42 @@ Input-root behavior is shared by Codex, Claude Code and Cursor: the existing own
 supplies current declared inputs and any retained snapshot. Verify declared-path boundaries and
 root-removal fences with `tests/unit/application/test_reviewer_loop.py` and
 `tests/unit/application/test_input_snapshot.py`. No root is admitted by reviewer instructions.
+
+
+## Reviewer read recovery and attribution (#1173)
+
+Run the scripted recovery checks without a provider or service install:
+
+```text
+uv run pytest tests/unit/application/test_reviewer_loop.py \
+  tests/unit/domain/test_reviewer_reads.py \
+  tests/integration/service/test_reviewer_read_recovery.py -q
+```
+
+The loop permits three content reads, at most five attempts and seven completions including
+one format repair. Every attempt and response byte stays spent; retries share the original
+deadline. Paths are relative to issued aliases. Packet reads use exact catalog `item_id`;
+ledger reads use `source_ref`/`linked_subject_refs` with the matching view in the frozen case.
+An absent frozen item does not prove it was never recorded.
+
+Owner-local metrics tooling that already holds an unlocked isolated test runtime can add:
+
+```python
+from finishup.application.reviewer_telemetry import export_reviewer_read_metrics
+
+attempts = await runtime.ledger.list_semantic_attempts(job_id)
+read_metrics = await export_reviewer_read_metrics(attempts, runtime.objects)
+metrics["reviewer_read_usage"] = read_metrics
+```
+
+This reads the attempt's encrypted response, returning each call's validated selector/path
+arguments and result code in `attempt_usages[].reviewer_reads`; it does not include returned
+content, correction hints, judgments or packet text. It does not unlock storage or authorize an
+export. Keep these selector-bearing metrics owner-local and apply the existing privacy rules
+before sharing them. Structural diagnostics carry only action/result code, request id and
+ordinal (`operation_count`); correlate them with the private metrics. Older responses or
+missing/invalid objects yield null usage, so old failed calls cannot be reconstructed.
+
+This shared path serves Codex, Claude Code and Cursor; CLI, MCP, TUI and receipts keep their
+existing path-free record/projection and show both content reads and attempts when they differ.
+No real-model accuracy or latency improvement is implied by the scripted checks.

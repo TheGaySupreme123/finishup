@@ -20,6 +20,7 @@ import pytest
 import finishup.service.ready_composition as ready_composition_module
 from builders.ledger_adapters import FixedClock, append_command, sqlite_adapter
 from builders.privacy_policies import minimal_external_policy
+from builders.privacy_widenings import with_llm
 from finishup.adapters.memory.privacy import MemoryPrivacyAudit, MemoryPrivacyCatalogState
 from finishup.adapters.privacy.local_enforcer import LocalPrivacyEnforcer
 from finishup.adapters.providers.reviewer_reply import REVIEWER_REPLY_SCHEMAS
@@ -208,7 +209,9 @@ async def _run(
     command = append_command()
     adapter = sqlite_adapter(command)
     frozen, runtime = await non_dispatch._durable_semantic_case(adapter)  # pyright: ignore[reportPrivateUsage]
-    policy = policy or minimal_external_policy()
+    # Exercise the full five-attempt path with room for its history and instruction. Capacity
+    # tests pass their own tight policy; no runtime limit is widened by this scripted fixture.
+    policy = policy or with_llm(minimal_external_policy(), max_tokens=16_384)
     effective = EffectivePrivacyPolicy(policy, 1, policy.policy_digest)
     store = non_dispatch._PolicyStore(effective, repository_granted=True)  # pyright: ignore[reportPrivateUsage]
     gateway = _ScriptedGateway(*replies)

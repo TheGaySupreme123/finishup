@@ -26,7 +26,7 @@
 # SOFTWARE.
 """The reviewer loop: a linear history, one read or the final judgment per turn (#1118 unit 2).
 
-At most three reads, then only the final judgment. One format repair for the whole review, for a
+At most three content-bearing reads, five read attempts, then only the final judgment. One format repair for the whole review, for a
 completed answer that is not one JSON object or not a valid reply; a second malformed reply, a read
 after the cap, a revoked binding, a lost lease or the deadline ends the review incomplete. Every
 model turn, the repair and every read is a durable job step, reserved before it runs; a job that
@@ -49,18 +49,20 @@ from finishup.adapters.providers.reviewer_reply import (
 )
 from finishup.adapters.task_input_read import ReadDeadline
 from finishup.application.reviewer_broker import ReadExchangeFull, ReviewerBroker
+from finishup.domain.reviewer_reads import MAX_REVIEWER_EXCHANGES
 from finishup.ports.semantic import Deadline, ReviewStepRefused, SemanticJudgment
 from finishup.protocol.canonical import JsonValue, canonical_encode
 
 __all__ = ["ReviewOutcome", "ReviewerLoop", "ReviewerModel", "ReviewerModelError", "Turn"]
 
-# Four normal completions (the first plus one per read) and the one format repair.
-MAX_MODEL_TURNS: Final = 5
+# Five read attempts, the final judgment and one format repair, on the original deadline.
+MAX_MODEL_TURNS: Final = MAX_REVIEWER_EXCHANGES
 LOCAL_READ_SECONDS: Final = 5.0
 FORMAT_ERROR: Final = (
     "format_error: {code}. Reply with exactly one read action or final_judgment that matches the "
     "schema."
 )
+FINAL_PHASE: Final = "FinishUP: read allowance or time reserve reached. Return final_judgment now."
 
 
 @dataclass(frozen=True, slots=True)
@@ -126,6 +128,7 @@ class ReviewerLoop:
         """Query the model and run its one read until the final judgment or an exit."""
         self.messages = [Turn("system", self.instruction), Turn("user", self.packet)]
         repaired = False
+        final_phase = False
         try:
             usage = await self.store.usage()
             # The caller proved the one reserved first turn waited for the owner and sent nothing;
@@ -141,6 +144,9 @@ class ReviewerLoop:
                 if not await self.history_admissible(frozenset(self.broker.history_roots)):
                     return self.exit("authorization_changed")
                 reads = self.broker.reads_allowed() and self.remaining() > self.reserve
+                if not reads and not final_phase:
+                    self.messages.append(Turn("user", FINAL_PHASE))
+                    final_phase = True
                 self.n_calls = turn = self.n_calls + 1
                 if not (resumed and turn == 1):
                     await self.store.reserve("turn", turn, b"turn" if reads else b"final")

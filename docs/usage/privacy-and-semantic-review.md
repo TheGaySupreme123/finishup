@@ -604,11 +604,14 @@ OpenAI-compatible endpoints — gets the same instructions. Track a required rev
 `semantic_required` for each check, not as a plan item.
 
 Every AI-powered review is a short conversation. The reviewer gets the packet and a list of what it
-may read, and before it judges it may choose up to three reads of its own: a part of the packet,
+may read, and before it judges it may choose up to three reads that return content: a part of the packet,
 records of this task, or a task file in the workspace (a Git repository; files Git ignores are
 refused) or in a folder you admitted, limited to the files the task names there. Each read is at
 most 8 KiB and all reads together at most 24 KiB, and each passes the same policy, limits and
-never-send rules as the packet. Each further turn of the conversation is sent with its own privacy
+never-send rules as the packet. A refused or empty read can be corrected without using one of
+the three content reads, with at most five attempts in total and the same time limit. Refusals
+explain the allowed path or frozen-record selector where policy permits. Their bytes still count.
+Each further turn of the conversation is sent with its own privacy
 check and receipt, and the whole conversation, packet and reads included, must fit your channel
 limits: with tight limits the reviewer gets fewer reads or none. If the packet cannot be made to
 fit your channel's byte limit, or the conversation the 256 KiB a single send may carry, nothing is

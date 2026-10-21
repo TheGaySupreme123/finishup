@@ -8,7 +8,8 @@ room first (a listed entry is whole or left for the cursor, never shortened); th
 carries is admitted unchanged, and its exact encoding is scanned. Spans, cursors and citable text
 come from what was fitted and sent, nothing else. A read that completes past its local stop is
 discarded, not used; that is a check after each blocking call, not preemption of one. At most three
-reads, 8 KiB each and 24 KiB in all, each reserved durably before it runs and never refunded.
+content-bearing reads and five attempts, 8 KiB each and 24 KiB in all. Attempts and bytes are
+reserved durably and never refunded; refused/empty results do not spend a content read.
 """
 
 from __future__ import annotations
@@ -24,8 +25,10 @@ from finishup.adapters.task_input_read import (
     list_beneath,
     read_text_beneath,
 )
+from finishup.domain.reviewer_reads import MAX_REVIEWER_READ_ATTEMPTS, MAX_REVIEWER_READS
 from finishup.ports.change_capture import TaskInputSnapshotSet
 from finishup.ports.semantic import (
+    ReviewStepRefused,
     ReviewStepStore,
     SemanticCase,
     SemanticCaseItem,
@@ -44,7 +47,7 @@ from finishup.protocol.models import (
 
 __all__ = ["MAX_READS", "ReadElement", "ReadExchangeFull", "ReadRoot", "ReviewerBroker"]
 
-MAX_READS: Final = 3
+MAX_READS: Final = MAX_REVIEWER_READS
 MAX_RESULT_BYTES: Final = 8192
 MAX_TOTAL_BYTES: Final = 24_576
 # Past any envelope without data, as the exchange carries it; below it only the final judgment
@@ -162,12 +165,16 @@ class ReviewerBroker:
         # action, measured as the exchange encodes both, escaping included.
         self._exchange_room = exchange_room
         self._max_reads = min(max_reads, MAX_READS)
+        self._max_attempts = (
+            min(MAX_REVIEWER_READ_ATTEMPTS, self._max_reads + 2) if self._max_reads else 0
+        )
         # The read bytes this review may still add; the conversation lowers it to fit the channel.
         self.total = MAX_TOTAL_BYTES
         self._roots = {root.alias: root for root in roots}
         self._allowed = frozenset(case.frontier_refs | case.local_check_refs)
         self._cursors: dict[str, tuple[str, str, int]] = {}
-        self.calls = self.used = 0
+        self.calls = self.used = self.content_reads = 0
+        self.read_usage: list[Mapping[str, JsonValue]] = []
         # Every outside root the conversation holds bytes from; rechecked before each turn.
         self.history_roots: set[str] = set(dict(case.input_roots).values())
         # The citation union: the packet as sent, then every admitted read as sent.
@@ -180,7 +187,8 @@ class ReviewerBroker:
         # unsent (``ReadExchangeFull``) rather than outgrow the cap.
         room = self._exchange_room()
         return (
-            self.calls < self._max_reads
+            self.content_reads < self._max_reads
+            and self.calls < self._max_attempts
             and self.total - self.used >= MIN_ROOM
             and (room is None or room >= MIN_ROOM + READ_ACTION_ROOM)
         )
@@ -195,6 +203,10 @@ class ReviewerBroker:
         leaves of that exchange's room.
         """
 
+        # The model's completed turn may leave less than READ_ACTION_ROOM. That allowance is
+        # only for offering the read; measure this actual action below instead of reapplying it.
+        if self.content_reads >= self._max_reads or self.calls >= self._max_attempts:
+            raise ReviewStepRefused("review_step_refused")
         left = self._exchange_room()
         if left is not None:
             required = reviewer_message_bytes("assistant", reply) + MIN_ROOM
@@ -205,6 +217,13 @@ class ReviewerBroker:
         ordinal = self.calls + 1
         await self.store.reserve("read", ordinal, canonical_encode(action.model_dump(mode="json")))
         self.calls, tool_ref, args = ordinal, f"{self._job}:read:{ordinal}", action.args
+        usage: dict[str, JsonValue] = {
+            "call": ordinal,
+            **action.model_dump(mode="json"),
+            "status": "unavailable",
+            "reason": "outcome_unknown",
+        }
+        self.read_usage.append(usage)
         if isinstance(action, ReviewerFileActionModel):
             selected = self._file(action.args, expired, tool_ref)
         elif isinstance(args, ReadLedgerArgsModel):
@@ -212,9 +231,17 @@ class ReviewerBroker:
         else:
             selected = self._packet(cast(ReadPacketSectionArgsModel, args))
         if expired():  # completed past its local stop: discarded, never retained or sent
+            usage["reason"] = "deadline"
             raise ReadDeadline("reviewer_read_deadline")
         room = min(MAX_RESULT_BYTES, args.max_bytes, self.total - self.used)
-        encoded = await self._result(tool_ref, ordinal, selected, room, left)
+        encoded = await self._result(tool_ref, ordinal, selected, room, left, action)
+        if expired():  # admission of a correction/result also shares the local read stop
+            usage["reason"] = "deadline"
+            raise ReadDeadline("reviewer_read_deadline")
+        from finishup.protocol.canonical import strict_json_parse
+
+        result = cast(dict[str, JsonValue], strict_json_parse(encoded))
+        usage.update(status=result["status"], reason=result["reason"])
         self.used += len(encoded)
         await self.store.capture("read", ordinal, encoded)
         return encoded.decode()
@@ -226,6 +253,7 @@ class ReviewerBroker:
         selected: _Selected,
         room: int,
         exchange_left: int | None = None,
+        action: ReviewerActionModel | None = None,
     ) -> bytes:
         """Fit the selection into ``room``, admit exactly what fits, and record what was sent.
 
@@ -238,6 +266,9 @@ class ReviewerBroker:
             if exchange_left is None:
                 return over
             return max(over, reviewer_message_bytes("user", encoded.decode()) - exchange_left)
+
+        file = False
+        correction: dict[str, JsonValue] = {}
 
         def envelope(
             status: str,
@@ -255,16 +286,14 @@ class ReviewerBroker:
                 "citable_refs": list[JsonValue](refs or ()),
                 "truncated": status == "partial",
                 "next_cursor": cursor,
-                "calls_remaining": MAX_READS - ordinal,
+                "calls_remaining": min(
+                    self._max_reads - self.content_reads - int(_has_content(data)),
+                    self._max_attempts - ordinal,
+                ),
                 "data": data,
                 "result_digest": canonical_digest(data),
             }
-            if reason == "not_in_frozen_case":
-                body["continuation"] = (
-                    "This frozen lookup does not establish that the item was never recorded. "
-                    "Request the needed content in final_judgment.missing_for_assessment with "
-                    "the appropriate kind and target_refs; a later check must freeze it."
-                )
+            body.update(correction)
             encoded, size = b"", 0
             for _ in range(8):  # the length fixed point: the size and the remainder's digits
                 body["result_utf8_bytes"] = size
@@ -279,7 +308,26 @@ class ReviewerBroker:
             file = True
             return envelope("partial", "native_read_limit", {"source_bytes": selected.size})
         if len(selected) == 2:
-            return envelope(*selected)
+            status, reason = selected
+            correction, elements = self._correction(reason, action)
+            encoded = envelope(status, reason)
+            # Hints are metadata from the frozen catalog, admitted under their own categories
+            # and roots. Drop whole rows to fit; never shorten an identity into a wrong selector.
+            while over_by(encoded) > 0 and elements:
+                elements = elements[:-1]
+                cast(list[JsonValue], correction["alternatives"]).pop()
+                encoded = envelope(status, reason)
+            if over_by(encoded) > 0:
+                correction = {}
+                encoded = envelope(status, reason)
+            if correction and await self._admit(elements, encoded) is not None:
+                correction = {}  # no catalog metadata bypasses the ordinary privacy projection
+                encoded = envelope(status, reason)
+            elif correction:
+                self.history_roots.update(
+                    root for _category, _data, root in elements if root is not None
+                )
+            return encoded
         shape, pieces, page, left = selected
         count, file = len(pieces), pieces[0].prov["root_id"] is not None
         for piece in pieces if shape != "list" else ():  # an even share of the text room first
@@ -330,7 +378,107 @@ class ReviewerBroker:
             self.cited_refs.add(ref)
             self.text_by_ref.setdefault(ref, []).extend(cites[ref])
         self.history_roots.update(piece.root for piece in pieces if piece.root is not None)
+        self.content_reads += 1
         return encoded
+
+    def _correction(
+        self, reason: str, action: ReviewerActionModel | None
+    ) -> tuple[dict[str, JsonValue], tuple[ReadElement, ...]]:
+        """Bounded replacement selectors, never content or absolute filesystem roots (#1173)."""
+
+        if reason == "forbidden_path":
+            aliases = (
+                [action.args.root_id]
+                if isinstance(action, ReviewerFileActionModel)
+                and action.args.root_id in self._roots
+                else sorted(self._roots)[:2]
+            )
+            if not aliases:
+                return {
+                    "continuation": (
+                        "No file root is available in this review. Use packet/ledger catalog "
+                        "selectors or final_judgment.missing_for_assessment for unavailable "
+                        "material; no path correction grants a root."
+                    ),
+                    "allowed_root_ids": [],
+                }, ()
+            return {
+                "continuation": (
+                    "Use a catalog root_id and a path relative to that root, e.g. "
+                    "path=src/main.py; list path=. first. Absolute, hidden, ignored and "
+                    "traversing paths remain forbidden. No alias grants another root."
+                ),
+                "allowed_root_ids": cast(list[JsonValue], aliases),
+            }, ()
+        if reason == "not_recorded":
+            return {
+                "continuation": (
+                    "No readable file, retained snapshot entry, directory entry or requested line "
+                    "was available through this root. This does not establish that a task record "
+                    "was never recorded. List a permitted parent or correct the relative path/line; "
+                    "request unavailable content in final_judgment.missing_for_assessment with "
+                    "the appropriate kind and target_refs; a later check must freeze it."
+                )
+            }, ()
+        if reason not in {"not_in_frozen_case", "not_retained"} or action is None:
+            return {}, ()
+        args = action.args
+        requested = (
+            {args.item_ref}
+            if isinstance(args, ReadPacketSectionArgsModel)
+            else set(args.refs if isinstance(args, ReadLedgerArgsModel) else ())
+        )
+        wanted_sections: set[str] = (
+            _PACKET_SECTIONS[args.section]
+            if isinstance(args, ReadPacketSectionArgsModel)
+            else _LEDGER_VIEWS[args.view]
+            if isinstance(args, ReadLedgerArgsModel)
+            else set[str]()
+        )
+        candidates = sorted(
+            (i for i in self._case.items if i.content),
+            key=lambda i: (
+                not bool(requested & {i.item_id, i.source_ref, *i.linked_subject_refs}),
+                i.section not in wanted_sections and i.source_kind not in wanted_sections,
+                i.item_id,
+            ),
+        )
+        alternatives: list[JsonValue] = []
+        elements: list[ReadElement] = []
+        for item in candidates:
+            sections = [name for name, kinds in _PACKET_SECTIONS.items() if item.section in kinds]
+            views = [
+                name
+                for name, kinds in _LEDGER_VIEWS.items()
+                if item.section in kinds or item.source_kind in kinds
+            ]
+            if not sections and not views:
+                continue
+            row: dict[str, JsonValue] = {
+                "item_id": item.item_id,
+                "sections": cast(list[JsonValue], sections),
+                "views": cast(list[JsonValue], views),
+                "source_ref": item.source_ref,
+            }
+            alternatives.append(row)
+            elements.append(
+                (
+                    item.category,
+                    canonical_encode(row),
+                    dict(self._case.input_roots).get(item.item_id),
+                )
+            )
+            if len(alternatives) == 2:
+                break
+        return {
+            "continuation": (
+                "This frozen lookup does not establish that the item was never recorded. "
+                "Retry listed item_id/section (offset=0) or source_ref/view. "
+                "Request unavailable content via final_judgment.missing_for_assessment "
+                "(kind, target_refs); a later check must freeze it."
+            ),
+            "alternatives": alternatives,
+        }, tuple(elements)
 
     def _page(self, selector: str, version: str, cursor: str | None) -> int | tuple[str, str]:
         """The offset a cursor this broker issued names; a forged or rebound one is refused."""
@@ -475,6 +623,12 @@ class ReviewerBroker:
             return ("unavailable", "unsupported_type")
         piece = _Piece(data, starts[first], stop, refs, prov, "", args.start_line, root.input_root)
         return ("text", [piece], None, 0)
+
+
+def _has_content(data: JsonValue) -> bool:
+    return isinstance(data, dict) and bool(
+        data.get("text") or data.get("entries") or data.get("records")
+    )
 
 
 def _data(shape: str, pieces: list[_Piece]) -> tuple[JsonValue, dict[str, list[str]]]:
