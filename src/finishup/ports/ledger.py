@@ -770,6 +770,7 @@ _TODO_STATES: Final = frozenset(
 # (owner decision 2026-10-12, #1024) is the only remaining agent work being a reviewer's
 # limitation request the agent has not answered yet; real work keeps ``work_open_findings``.
 ChecklistNext = Literal[
+    "follow_overall_next",
     "decide_at_budget",
     "disclose_limitations",
     "request_receipt",
@@ -778,6 +779,7 @@ ChecklistNext = Literal[
 ]
 _CHECKLIST_NEXT: Final = frozenset(
     {
+        "follow_overall_next",
         "decide_at_budget",
         "disclose_limitations",
         "request_receipt",
@@ -1047,6 +1049,7 @@ class CheckCommitResult:
     finding_checklist: CheckFindingChecklist | None = None
     # Task-level continuation; ``finding_checklist.next`` remains finding-only (issue #963).
     overall_next: CheckOverallNext | None = None
+    closure_readiness: JsonObject | None = None
     # Opaque case item identities withheld by the never-send heuristic. The check result keeps
     # these bounded references so recovery and every presentation surface can name the omitted
     # context without exposing matched bytes.

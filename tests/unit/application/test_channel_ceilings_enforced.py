@@ -356,7 +356,8 @@ async def test_oversize_tokens_blocks_admission() -> None:
     assert isinstance(result, SemanticEgressBlocked)
     assert result.outcome is PrivacyOutcome.BLOCKED_BY_POLICY
     assert result.reason is PrivacyReason.POLICY_DENIED
-    assert result.capacity is None  # the owner decision (#1118) widened bytes, not tokens
+    assert result.capacity == (_OVERSIZE_TOKENS, _POLICY_CEILING_TOKENS)
+    assert result.capacity_unit == "tokens"
     assert audit.prepared == []
 
 
@@ -599,6 +600,8 @@ async def test_more_excerpts_than_the_policy_approved_is_policy_denied_never_tri
     over, over_audit = await _evaluate(current, _packet_with_excerpts(65))
     assert isinstance(over, SemanticEgressBlocked)
     assert over.reason is PrivacyReason.POLICY_DENIED
+    assert over.capacity == (65, 64)
+    assert (over.capacity_scope, over.capacity_unit) == ("excerpt", "excerpts")
     assert over_audit.prepared == []
 
 
@@ -623,12 +626,20 @@ async def test_excerpt_bytes_over_the_approved_budget_are_policy_denied() -> Non
     over_total, _ = await _evaluate(current, _packet_with_excerpts(9, content_bytes=per_excerpt))
     assert isinstance(over_total, SemanticEgressBlocked)
     assert over_total.reason is PrivacyReason.POLICY_DENIED
+    assert over_total.capacity == (
+        9 * per_excerpt,
+        current.review_selection.max_total_excerpt_bytes,
+    )
+    assert (over_total.capacity_scope, over_total.capacity_unit) == ("excerpt_total", "bytes")
     over_one, _ = await _evaluate(current, _packet_with_excerpts(1, content_bytes=per_excerpt + 1))
     assert isinstance(over_one, SemanticEgressBlocked)
     assert over_one.reason is PrivacyReason.POLICY_DENIED
+    assert over_one.capacity == (per_excerpt + 1, per_excerpt)
+    assert (over_one.capacity_scope, over_one.capacity_unit) == ("excerpt", "bytes")
     unreadable, _ = await _evaluate(current, b"not a review packet")
     assert isinstance(unreadable, SemanticEgressBlocked)
     assert unreadable.reason is PrivacyReason.POLICY_DENIED
+    assert unreadable.capacity is None
 
 
 @pytest.mark.anyio
@@ -641,7 +652,7 @@ async def test_a_packet_over_the_channel_ceiling_is_denied_whatever_its_excerpt_
     """
 
     from finishup.application.egress import (
-        _within_excerpt_limits,  # pyright: ignore[reportPrivateUsage]
+        _excerpt_limit_capacity,  # pyright: ignore[reportPrivateUsage]
     )
     from finishup.protocol.canonical import canonical_encode
 
@@ -675,7 +686,7 @@ async def test_a_packet_over_the_channel_ceiling_is_denied_whatever_its_excerpt_
         cast(JsonValue, {"items": rows, "schema": "yoetz.review-packet-case/1"})
     )
     assert len(prepared) > 200_000
-    assert _within_excerpt_limits(prepared, policy.review_selection)
+    assert _excerpt_limit_capacity(prepared, policy.review_selection) is None
 
     result, audit = await _evaluate(policy, prepared)
 

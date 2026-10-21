@@ -155,7 +155,7 @@ def test_installed_guidance_links_and_explicit_anchors_resolve(host: str, tmp_pa
         assert "follow [the finding procedure](review.md)" in card
         for directive in (
             "1. Re-read the task and supplied inputs.",
-            "2. Consider the finding's alternative interpretation.",
+            "2. Read both interpretations and their evidence.",
             "3. Run its discriminating check if available.",
             "4. If ambiguity remains, keep the version matching the literal task and supplied inputs.",
             "5. For a dispute, `respond` `rejected` with reasons and evidence.",
@@ -164,11 +164,12 @@ def test_installed_guidance_links_and_explicit_anchors_resolve(host: str, tmp_pa
             assert directive in review
         for required in (
             "including a decision-needed finding",
-            "For a deadline or performance measurement",
-            "Send the task's specified completion signal as soon as its stated prerequisites are met.",
-            "Request routine review after a material milestone:",
+            "Deliver before optional refinement for a deadline, performance measurement,",
+            "Send the specified signal as soon as its prerequisites pass.",
+            "Review changed behavior, outputs or acceptance evidence at",
             "**Done.** Stop when outcomes",
-            "A completion signal alone does not show that verification ran.",
+            "A signal does not prove completion or verification.",
+            "Use only stated timing.",
             "a finding prefers a reference the task did not supply",
         ):
             assert required in review

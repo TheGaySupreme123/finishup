@@ -1057,6 +1057,10 @@ def qualifying_check_resolves(
         raise ValueError("finding_resolution_invalid")
     if type(finding_source_frontier) is not int or finding_source_frontier < 1:
         raise ValueError("finding_resolution_invalid")
+    # #1146: silence in a later review is not the agent's decision. These advisory rows stay
+    # unresolved history, including after respond; a response records a choice, never a repair.
+    if finding.kind is FindingKind.DECISION_NEEDED:
+        return False
     return not resolution_blockers(
         finding,
         finding_source_frontier,
@@ -1612,6 +1616,26 @@ def _finding_resolution_explanation(
     finding_record = state.findings.get(finding_id)
     if finding_record is None or finding_record.payload is None:
         return "Resolution explanation unavailable: original finding is unreadable."
+    if finding_record.payload.kind is FindingKind.DECISION_NEEDED:
+        answer = state.responses.get(finding_id)
+        if (
+            answer is not None
+            and not answer.redacted
+            and answer.payload is not None
+            and answer.payload.disposition
+            in {ResponseDisposition.ACKNOWLEDGED, ResponseDisposition.REJECTED}
+            and answer.payload.reason
+            and answer.payload.reason.strip()
+        ):
+            return (
+                "Decision recorded (advisory, non-blocking): the agent recorded its choice and "
+                "reason with respond. The finding stays as history; this is not a verified repair."
+            )
+        return (
+            "Decision needed (advisory, non-blocking): consider both interpretations and the "
+            "discriminating check. You decide; record your choice and reason with respond "
+            "acknowledged or rejected. A response records the decision, not a verified repair."
+        )
     # A reviewer's limitation request (tb4n3 RC-1, ADR-046) is a disclosure to make, not a repair:
     # it never says "repair it, then check", and once disclosed it is final and never clean.
     from finishup.kernel.limitation import limitation_standing
@@ -1682,8 +1706,14 @@ def _finding_resolution_explanation(
             "The item is final, is not reviewed again, and keeps the receipt from reading clean."
         )
     if disposition is ResponseDisposition.SELF_VERIFIED:
+        position = finding_record.standing_position
+        verification = (
+            "the agent checked the concern and reports that it does not hold"
+            if position is not None and position.kind == "rejected"
+            else "the agent recorded its own verification of the concern"
+        )
         return (
-            "Self-verified by the agent: the agent repaired this and verified the repair itself, "
+            f"Self-verified by the agent: {verification}, "
             "citing its own recorded evidence, because FinishUP could not prove it (a FinishUP limit). "
             "The item is final, is not reviewed again and is not agent work; the receipt "
             "discloses it and cannot read clean."

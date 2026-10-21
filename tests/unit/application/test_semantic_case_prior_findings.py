@@ -49,6 +49,7 @@ from finishup.domain.events import (
     ResponseRecordedPayload,
     ResultOutcome,
     ResultRecordedPayload,
+    encode_payload,
 )
 from finishup.domain.findings import (
     Finding,
@@ -70,7 +71,7 @@ from finishup.kernel.projections import (
     ProjectionRecord,
 )
 from finishup.ports.semantic import ReviewInputSection, SemanticCase
-from finishup.protocol.canonical import JsonValue, strict_json_parse
+from finishup.protocol.canonical import JsonValue, canonical_digest, strict_json_parse
 from finishup.protocol.coverage import EvidenceImmutability
 from finishup.protocol.models import DataCategory, SemanticReason, SemanticStatus
 
@@ -533,10 +534,10 @@ _REDUCTION_KEYS = (
 )
 
 
-def test_bounded_case_envelope_drops_prior_findings_first_and_accounts_for_them(
+def test_bounded_case_envelope_keeps_prior_findings_ahead_of_bulk(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """The bounding entry point, not only the helper, yields the dialogue section first."""
+    """The actual bounding entry point preserves the dialogue before ordinary catalog bulk."""
 
     from finishup.application import semantic_case as module
     from finishup.domain.privacy import MAX_EGRESS_ENVELOPE_BYTES
@@ -580,14 +581,105 @@ def test_bounded_case_envelope_drops_prior_findings_first_and_accounts_for_them(
         cast(Mapping[str, JsonValue], item)["item_id"]
         for item in cast(list[JsonValue], bounded["item_catalog"])
     ]
-    assert kept == [f"prior-finding-{newer}", "excerpt-evd"]
+    assert kept == [f"prior-finding-{older}", f"prior-finding-{newer}"]
     packet_view = cast(Mapping[str, JsonValue], bounded["review_packet"])
-    assert packet_view["prior_finding_refs"] == [newer]
+    assert packet_view["prior_finding_refs"] == [newer, older]
     accounting = cast(Mapping[str, JsonValue], bounded["selection_accounting"])
     assert accounting["catalog_dropped_count"] == "1"
     packet = cast(Mapping[str, JsonValue], bounded["review_packet"])
     coverage = cast(Mapping[str, JsonValue], packet["coverage"])
-    assert SEMANTIC_PRIOR_FINDINGS_OVER_LIMIT_GAP in cast(list[JsonValue], coverage["known_gaps"])
+    assert SEMANTIC_PRIOR_FINDINGS_OVER_LIMIT_GAP not in cast(
+        list[JsonValue], coverage["known_gaps"]
+    )
+
+
+def test_case_bound_omits_whole_dialogues_beside_fixed_decisions_and_primary_material() -> None:
+    """#1152 R1: a rich recheck reaches ceiling planning rather than failing construction."""
+
+    from unit.application.test_semantic_case_check_change import (
+        _change,  # pyright: ignore[reportPrivateUsage]
+        _cracker_change,  # pyright: ignore[reportPrivateUsage]
+        _ledger_build,  # pyright: ignore[reportPrivateUsage]
+    )
+
+    rich = replace(
+        _CHALLENGE,
+        discrepancy="Discrepancy " * 300,
+        alternative_interpretation="Alternative " * 300,
+        uncertainty="Uncertainty " * 300,
+    )
+    findings = {
+        fnd(number): finding_record(_semantic(number, challenge=rich), 80 + number)
+        for number in range(1, 17)
+    }
+    _, ledger = _ledger_build(_change(_cracker_change()), ceiling=None, findings=findings)
+    decisions: dict[EventId, DecisionProjectionRecord] = {}
+    for number in range(16):
+        decision = limit_decision(80 + number, obl(1))
+        assert decision.payload is not None
+        payload = replace(
+            decision.payload, statement="Decision " * 440, rationale="Rationale " * 400
+        )
+        decisions[evt(80 + number)] = replace(
+            decision, payload=payload, payload_digest=canonical_digest(encode_payload(payload))
+        )
+    from unit.application.test_semantic_case_packet_completeness import (
+        _react_case,  # pyright: ignore[reportPrivateUsage]
+    )
+
+    statement = _react_case().task_statement
+    assert statement is not None
+    frozen = replace(
+        ledger.case,
+        task_statement=replace(statement, text="Task requirement. " * 800),
+        projection=replace(ledger.case.projection, decisions=MappingProxyType(decisions)),
+        allowed_ids=ledger.case.allowed_ids | frozenset(decisions),
+        coverage_by_ref={
+            **ledger.case.coverage_by_ref,
+            **dict.fromkeys(decisions, BASE_COVERAGE),
+        },
+    )
+    from unit.application.test_semantic_case_envelope import (
+        _findings_for,  # pyright: ignore[reportPrivateUsage]
+    )
+
+    local_findings = tuple(
+        replace(finding, summary="Local summary " * 280, detail="Local detail " * 300)
+        for finding in _findings_for(frozen)[:8]
+    )
+    assert len(local_findings) == 2
+    built = build_semantic_case(
+        case_id="cas_10000000-0000-4000-8000-000000000001",
+        frozen_case=frozen,
+        dependency_digest=_DIGEST,
+        findings=local_findings,
+        review_context_profile=ReviewContextProfile.EXPANDED,
+        review_selection=ReviewSelectionPolicy.for_profile(ReviewContextProfile.EXPANDED),
+        policy_id="pvy_10000000-0000-4000-8000-000000000001",
+        policy_version="1",
+        captured_content=ledger.captured,
+        captured_content_scope=ledger.scope,
+        check_time_change=_change(_cracker_change()),
+    )
+    assert len(built.packet.decision_item_ids) == 16
+    assert built.packet.task_statement_item_ids
+    assert sum(item.content_bytes for item in built.items) <= 262_144
+    assert 0 < len(built.packet.prior_finding_refs) < 8
+    assert semantic_case_module.check_time_change_bytes_carried(built) >= 64_000
+    carried = {item.source_ref for item in built.items if item.section == "excerpt"}
+    assert {str(refs[-1]) for refs in ledger.verification.values()} <= carried
+    missing = set(map(str, findings)) - set(built.packet.prior_finding_refs)
+    # The packet omission list is capped. The prior-context manifest still names every lost
+    # finding, and total accounting includes omissions beyond the listed rows.
+    manifest = built.packet.input_manifest
+    assert manifest is not None and manifest.omitted_item_total is not None
+    assert manifest.omitted_item_total > len(built.packet.omissions)
+    assert not any(
+        item.section == "prior_finding" and item.source_ref in missing for item in built.items
+    )
+    assert SEMANTIC_PRIOR_FINDINGS_OVER_LIMIT_GAP in built.packet.coverage.known_gaps
+    assert manifest.prior_finding_context.status == "partial"
+    assert missing <= set(manifest.prior_finding_context.omitted_refs)
 
 
 def test_the_packet_view_reports_prior_rows_bounding_removed(
@@ -1097,12 +1189,8 @@ def _ceiling_build(case: DeterministicCase, selection: ReviewSelectionPolicy) ->
     return build(size + 4_096 - 1)
 
 
-def test_a_ceiling_narrowed_case_labels_withheld_finding_prose_partial() -> None:
-    """Issue #1118: the ceiling fallback drops allowed finding prose; the label must say so.
-
-    Before the fix the section read ``complete`` although the original finding text was cut,
-    so a follow-up review could rule a repaired finding unassessable without knowing why.
-    """
+def test_a_ceiling_narrowed_case_keeps_the_original_finding_and_response() -> None:
+    """#1126: a recheck retains the whole question instead of only its structural identity."""
 
     selection = ReviewSelectionPolicy.for_profile(ReviewContextProfile.GOAL_AWARE)
     assert selection.include_finding_prose
@@ -1112,20 +1200,14 @@ def test_a_ceiling_narrowed_case_labels_withheld_finding_prose_partial() -> None
 
     narrowed = _ceiling_build(_numba_case(), selection)
 
-    assert not any(
-        item.section == "prior_finding" and item.category is DataCategory.FINDING_SUMMARY
-        for item in narrowed.items
-    )
+    packed = b"\n".join(i.content for i in narrowed.items if i.section == "prior_finding")
+    for item in full.items:
+        if item.section == "prior_finding" and item.category is DataCategory.FINDING_SUMMARY:
+            assert item.content in packed
+    assert len(narrowed.packet.prior_finding_item_ids) < len(full.packet.prior_finding_item_ids)
     section = _prior_context(narrowed)
-    assert section.status == "partial"
-    assert "content_unselected" in section.omission_reasons
-    assert {str(fnd(1)), str(fnd(2))} <= set(section.omitted_refs)
-    omitted = {
-        omission.subject_ref
-        for omission in narrowed.packet.omissions
-        if omission.category is DataCategory.FINDING_SUMMARY and omission.reason == "not_selected"
-    }
-    assert {str(fnd(1)), str(fnd(2))} <= omitted
+    assert section.status == "complete"
+    assert not section.omitted_refs
 
 
 def test_a_disallowed_finding_prose_category_stays_omitted_and_labelled() -> None:
@@ -1140,6 +1222,47 @@ def test_a_disallowed_finding_prose_category_stays_omitted_and_labelled() -> Non
     section = _prior_context(case)
     assert section.status == "partial"
     assert "content_unselected" in section.omission_reasons
+
+
+def test_bulk_excerpts_yield_to_the_dispute_while_the_change_floor_stays(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from unit.application.test_semantic_case_check_change import (
+        _change,  # pyright: ignore[reportPrivateUsage]
+    )
+
+    selection = replace(
+        ReviewSelectionPolicy.for_profile(ReviewContextProfile.EXPANDED),
+        max_excerpt_bytes=8192,
+        max_total_excerpt_bytes=50_000,
+    )
+
+    def build() -> SemanticCase:
+        return build_semantic_case(
+            case_id="cas_10000000-0000-4000-8000-000000000001",
+            frozen_case=_numba_case(),
+            dependency_digest=_DIGEST,
+            findings=(),
+            review_context_profile=ReviewContextProfile.CUSTOM,
+            review_selection=selection,
+            policy_id="work-integrity",
+            policy_version="0.1.0",
+            check_time_change=_change(
+                b"diff --git a/page.ts b/page.ts\n" + b"+keep_lazy_loading();\n" * 2000
+            ),
+        )
+
+    full = build()
+    monkeypatch.setattr(semantic_case_module, "MAX_SEMANTIC_CASE_BYTES", 28_000)
+    narrowed = build()
+    assert sum(i.content_bytes for i in narrowed.items) <= 28_000
+    assert narrowed.excerpts_cut_for_case_bound > 0
+    assert {i.item_id: i.content for i in full.items if i.section == "prior_finding"} == {
+        i.item_id: i.content for i in narrowed.items if i.section == "prior_finding"
+    }
+    assert _prior_context(narrowed).status == "complete"
+    assert semantic_case_module.check_time_change_bytes_carried(narrowed) >= 14_000
+    assert any(b"keep_lazy_loading" in i.content for i in narrowed.items if i.section == "excerpt")
 
 
 def test_bound_truncated_prior_findings_are_labelled_partial() -> None:

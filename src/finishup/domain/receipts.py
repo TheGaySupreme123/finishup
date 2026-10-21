@@ -832,7 +832,7 @@ class ReceiptConclusionBasis:
 # without citing anything newer. A standing disagreement, disclosed; never agent work.
 DISPUTED_AFTER_REBUTTAL_SECTION_TITLE: Final = "Disputed after rebuttal"
 SELF_VERIFIED_SECTION_TITLE: Final = (
-    "Self-verified by the agent; FinishUP could not prove the repair"
+    "Self-verified by the agent; FinishUP could not independently prove the outcome"
 )
 # Issue #984 (ADR-034): how a child's self-verified finding reads on the parent receipt.
 CHILD_SELF_VERIFIED_NOTE: Final = "self-verified by the child agent; FinishUP could not prove it"
@@ -1559,6 +1559,10 @@ class ReceiptDocument:
     # field is optional so historical local-only receipts keep their exact frozen bytes and
     # old readers can continue to omit it.
     semantic_provenance: SemanticProvenance | None = None
+    # #1149: the stopped check has no new provider attempt/provenance. Keep its outcome
+    # explicitly, rather than manufacture provenance or call requested review local-only.
+    semantic_status: SemanticStatus | None = None
+    semantic_reason: SemanticReason | None = None
     # Issue #905 terminal states, disclosed by id in their own sections on a 1.3.0 artifact.
     # Absent (empty) keeps every earlier receipt's exact bytes.
     acknowledged_not_done_finding_ids: tuple[FindingId, ...] = ()
@@ -1566,6 +1570,8 @@ class ReceiptDocument:
     # Issue #984 (ADR-034): the agent repaired these and verified the repair itself because FinishUP
     # could not prove it. Disclosed by id in their own section; the conclusion is never clean.
     self_verified_finding_ids: tuple[FindingId, ...] = ()
+    # #1144: subset whose recorded standing position rejected the concern.
+    disproved_self_verified_finding_ids: tuple[FindingId, ...] = ()
     # Issue #1020 (ADR-040): the reviewer repeated these after the agent's reasoned rejection
     # without citing anything newer. Disclosed by id in their own section; never clean.
     disputed_after_rebuttal_finding_ids: tuple[FindingId, ...] = ()
@@ -1648,6 +1654,15 @@ class ReceiptDocument:
         if type(self.children) is not ReceiptChildren:
             raise ProtocolValueError(invalid)
         receipt_schema_version = _receipt_document_artifact_version(self.versions)
+        if self.semantic_status is not None or self.semantic_reason is not None:
+            if (
+                receipt_schema_version != "1.3.0"
+                or self.semantic_status is not SemanticStatus.UNAVAILABLE
+                or self.semantic_reason is not SemanticReason.ROUND_LIMIT_UNASSESSABLE
+                or self.semantic_provenance is not None
+                or self.conclusion is ReceiptConclusion.NO_UNRESOLVED_DETERMINISTIC_FINDINGS
+            ):
+                raise ProtocolValueError(invalid)
         if self.children.children and receipt_schema_version != "1.3.0":
             raise ProtocolValueError("receipt_children_schema_version")
         carried_ids = frozenset(
@@ -1667,6 +1682,14 @@ class ReceiptDocument:
         ]
         if len(terminal_ids) != len(set(terminal_ids)):
             raise ProtocolValueError(invalid)
+        disproved = tuple(
+            finding_id(value)
+            for value in _validate_tuple(self.disproved_self_verified_finding_ids, 0, 100, invalid)
+        )
+        _validate_sorted_unique_strings(cast(tuple[str, ...], disproved))
+        if not set(disproved) <= set(self.self_verified_finding_ids):
+            raise ProtocolValueError(invalid)
+        object.__setattr__(self, "disproved_self_verified_finding_ids", disproved)
         if (
             self.self_verified_finding_ids
             or self.disputed_after_rebuttal_finding_ids
@@ -2157,10 +2180,13 @@ def receipt_document_from_json(value: object) -> ReceiptDocument:
                 "duplicate_finding_links",
                 "rejection_accepted_finding_ids",
                 "self_verified_finding_ids",
+                "disproved_self_verified_finding_ids",
                 "disputed_after_rebuttal_finding_ids",
                 "semantic_withheld_items",
                 "semantic_redacted_values",
                 "semantic_provenance",
+                "semantic_status",
+                "semantic_reason",
                 "limitation_disclosed_finding_ids",
                 "conclusion_basis",
             }
@@ -2258,6 +2284,16 @@ def receipt_document_from_json(value: object) -> ReceiptDocument:
         redactions=redactions,
         sections=sections,
         semantic_provenance=semantic_provenance_value,
+        semantic_status=(
+            _enum_value(source["semantic_status"], SemanticStatus, invalid)
+            if "semantic_status" in source
+            else None
+        ),
+        semantic_reason=(
+            _enum_value(source["semantic_reason"], SemanticReason, invalid)
+            if "semantic_reason" in source
+            else None
+        ),
         children=(
             _children_from_json(_field(source, "children", invalid))
             if has_children
@@ -2274,6 +2310,10 @@ def receipt_document_from_json(value: object) -> ReceiptDocument:
         self_verified_finding_ids=tuple(
             finding_id(item)
             for item in _array(source.get("self_verified_finding_ids", ()), invalid)
+        ),
+        disproved_self_verified_finding_ids=tuple(
+            finding_id(item)
+            for item in _array(source.get("disproved_self_verified_finding_ids", ()), invalid)
         ),
         disputed_after_rebuttal_finding_ids=tuple(
             finding_id(item)
@@ -2487,6 +2527,13 @@ def receipt_document_to_json(document: ReceiptDocument) -> dict[str, object]:
         result["rejection_accepted_finding_ids"] = list(document.rejection_accepted_finding_ids)
     if document.self_verified_finding_ids:
         result["self_verified_finding_ids"] = list(document.self_verified_finding_ids)
+    if document.disproved_self_verified_finding_ids:
+        result["disproved_self_verified_finding_ids"] = list(
+            document.disproved_self_verified_finding_ids
+        )
+    if document.semantic_status is not None and document.semantic_reason is not None:
+        result["semantic_status"] = document.semantic_status.value
+        result["semantic_reason"] = document.semantic_reason.value
     if document.disputed_after_rebuttal_finding_ids:
         result["disputed_after_rebuttal_finding_ids"] = list(
             document.disputed_after_rebuttal_finding_ids
@@ -2924,10 +2971,22 @@ def render_receipt_human(document: ReceiptDocument, *, markdown: bool) -> str:
             "\n".join(
                 (
                     heading,
-                    "The agent repaired these findings and verified each repair itself, citing "
-                    "its own recorded evidence, because FinishUP could not prove the repair. They "
+                    "The agent recorded its own verification of these concerns, citing "
+                    "its own evidence, because FinishUP could not independently prove the outcome. They "
                     "are not resolved by FinishUP and keep this receipt from reading clean.",
                     *(f"- {item}" for item in document.self_verified_finding_ids),
+                )
+            )
+        )
+    if document.disproved_self_verified_finding_ids:
+        heading = "Concerns the agent reports disproved"
+        parts.append(
+            "\n".join(
+                (
+                    f"## {heading}" if markdown else heading,
+                    "The agent checked these concerns and reports that they do not hold. This does not "
+                    "assert an implementation repair or independent FinishUP verification.",
+                    *(f"- {item}" for item in document.disproved_self_verified_finding_ids),
                 )
             )
         )
@@ -3074,7 +3133,10 @@ def render_receipt_human(document: ReceiptDocument, *, markdown: bool) -> str:
             )
         )
     advisory_count = sum(
-        1 for finding in document.findings if not FINDING_KIND_TRAITS[finding.kind][1]
+        1
+        for finding in document.findings
+        if not FINDING_KIND_TRAITS[finding.kind][1]
+        and finding.kind is not FindingKind.DECISION_NEEDED
     )
     if advisory_count:
         heading = "## Coverage limitations" if markdown else "Coverage limitations"
@@ -3084,6 +3146,11 @@ def render_receipt_human(document: ReceiptDocument, *, markdown: bool) -> str:
             "and do not by themselves select unresolved_findings_remain."
         )
     recovery = _semantic_recovery_lines(document)
+    if document.semantic_reason is SemanticReason.ROUND_LIMIT_UNASSESSABLE:
+        parts.append(
+            "AI-powered review: unavailable / round_limit_unassessable. Requested review "
+            "stopped after repeated unassessable rounds; this check sent no new review."
+        )
     if recovery:
         heading = "## Recovery" if markdown else "Recovery"
         parts.append("\n".join((heading, *recovery)))
@@ -3143,6 +3210,12 @@ def render_receipt_compact(document: ReceiptDocument) -> str:
     # Historical gaps (issue #1017) never select a compact limitation sentence.
     gap_codes = frozenset(gap.code for gap in document.gaps if gap.live)
     unresolved = unresolved_findings_for_render(document)
+
+    if document.semantic_reason is SemanticReason.ROUND_LIMIT_UNASSESSABLE:
+        return (
+            prefix + f"{document.conclusion.value}; AI-powered review unavailable / "
+            "round_limit_unassessable: requested review stopped after repeated unassessable rounds."
+        )
 
     if "encryption_key_unavailable" in gap_codes:
         return (
@@ -3280,7 +3353,7 @@ def render_receipt_compact(document: ReceiptDocument) -> str:
             noun = "finding was" if count == 1 else "findings were"
             return (
                 prefix + f"coverage is insufficient. {count} {noun} self-verified by the agent; "
-                "FinishUP could not prove the repair."
+                "FinishUP could not independently prove the outcome."
             )
         if document.disputed_after_rebuttal_finding_ids:
             count = len(document.disputed_after_rebuttal_finding_ids)
@@ -3297,7 +3370,7 @@ def render_receipt_compact(document: ReceiptDocument) -> str:
             noun = "child finding was" if child_self_verified == 1 else "child findings were"
             return (
                 prefix + f"coverage is insufficient. {child_self_verified} {noun} self-verified "
-                "by the child agent; FinishUP could not prove the repair."
+                "by the child agent; FinishUP could not independently prove the outcome."
             )
         return prefix + "coverage is insufficient. Declared gaps bound this receipt's conclusion."
 

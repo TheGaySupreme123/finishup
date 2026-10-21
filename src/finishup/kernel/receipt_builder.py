@@ -29,6 +29,7 @@ from finishup.domain.events import (
 from finishup.domain.findings import (
     FINDING_KIND_TRAITS,
     Finding,
+    FindingKind,
     FindingOrigin,
     ResponseDisposition,
     SemanticProvenance,
@@ -2250,6 +2251,7 @@ def _sections(
     coordinator_failure: bool = False,
     claim_verification: tuple[str, ...] = (),
     claim_verification_limitation: str = "",
+    decision_answers: Mapping[FindingId, str] | None = None,
 ) -> tuple[ReceiptSection, ...]:
     # Issue #1017: the limitations section lists live gaps only; the human renderings list the
     # historical ones (a later check cleared them) in their own section from the gap rows.
@@ -2403,6 +2405,13 @@ def _sections(
         )
     if closure_summary is not None and closure_summary.findings_note:
         bodies[ReceiptSectionKey.FINDINGS_AND_DISPOSITIONS] += " " + closure_summary.findings_note
+    choices = tuple(finding for finding in findings if finding.kind is FindingKind.DECISION_NEEDED)
+    answers: Mapping[FindingId, str] = {} if decision_answers is None else decision_answers
+    if choices and actionable_count == 0:
+        bodies[ReceiptSectionKey.FINDINGS_AND_DISPOSITIONS] = (
+            "No actionable finding remains open. Advisory decision choices stay on record."
+            + resolved_sentence
+        )
     if resolution_explanations:
         for explanation in resolution_explanations:
             current = bodies[ReceiptSectionKey.FINDINGS_AND_DISPOSITIONS]
@@ -2416,6 +2425,35 @@ def _sections(
         finding_id_value
         for finding_id_value in unresolved_actionable_ids
         if any(finding.finding_id == finding_id_value for finding in findings)
+    )
+    # #1146: model-derived choices belong in fenced prose leaves, never the structural body.
+    # ``findings`` has already passed the receipt profile; redacted-share drops semantic rows.
+    items[ReceiptSectionKey.FINDINGS_AND_DISPOSITIONS] += tuple(
+        clip_to_limit(
+            (
+                "AI-powered decision recorded"
+                if finding.finding_id in answers
+                else "AI-powered decision needed"
+            )
+            + f" (advisory, non-blocking) {finding.finding_id}: "
+            f"{finding.summary}\n{finding.detail}"
+            + (
+                f"\nInterpretation: {finding.challenge.discrepancy}"
+                f"\nAlternative: {finding.challenge.alternative_interpretation}"
+                f"\nUncertainty: {finding.challenge.uncertainty}"
+                if finding.challenge is not None
+                else ""
+            )
+            + (
+                f"\nAgent decision (self-reported): {answers[finding.finding_id]}"
+                if finding.finding_id in answers
+                else ""
+            ),
+            8192,
+            marker=" [decision detail cut; inspect status view=findings]",
+            ascii_only=False,
+        )
+        for finding in choices
     )
 
     claim_phrase = _count_phrase(len(claim_refs), "claim reference", "claim references")
@@ -2453,7 +2491,7 @@ def _sections(
         )
         if check_sentence:
             gap_body = f"{check_sentence} Coverage is limited by: {', '.join(gap_codes)}."
-        elif not_requested and SEMANTIC_REVIEW_SKIPPED_INSUFFICIENT_PACKET_GAP in gap_codes:
+        elif SEMANTIC_REVIEW_SKIPPED_INSUFFICIENT_PACKET_GAP in gap_codes:
             gap_body = (
                 "AI-powered review was skipped: the reviewer twice in a row, or four times since "
                 "the last assessed review, could not assess the review packet or a finding the "
@@ -2937,6 +2975,14 @@ def build_receipt(
         frontier=context.subject_frontier,
         versions=versions,
         findings=retained_findings,
+        decision_answers={
+            response.finding_id: response.reason
+            for response in retained_responses
+            if response.disposition
+            in {ResponseDisposition.ACKNOWLEDGED, ResponseDisposition.REJECTED}
+            and response.reason
+            and response.reason.strip()
+        },
         unresolved_actionable_count=len(unresolved_actionable),
         unresolved_actionable_ids=tuple(finding.finding_id for finding in unresolved_actionable),
         obligations=retained_obligations,
@@ -3136,9 +3182,30 @@ def build_receipt(
             if context.applicable_check is None
             else context.applicable_check.semantic_provenance
         ),
+        semantic_status=(
+            SemanticStatus.UNAVAILABLE
+            if terminal_sections
+            and context.applicable_check is not None
+            and context.applicable_check.semantic_reason is SemanticReason.ROUND_LIMIT_UNASSESSABLE
+            else None
+        ),
+        semantic_reason=(
+            SemanticReason.ROUND_LIMIT_UNASSESSABLE
+            if terminal_sections
+            and context.applicable_check is not None
+            and context.applicable_check.semantic_reason is SemanticReason.ROUND_LIMIT_UNASSESSABLE
+            else None
+        ),
         acknowledged_not_done_finding_ids=acknowledged_not_done_ids,
         rejection_accepted_finding_ids=rejection_accepted_ids,
         self_verified_finding_ids=self_verified_ids,
+        disproved_self_verified_finding_ids=tuple(
+            finding
+            for finding in self_verified_ids
+            if (row := context.projection.findings.get(finding)) is not None
+            and row.standing_position is not None
+            and row.standing_position.kind == "rejected"
+        ),
         disputed_after_rebuttal_finding_ids=disputed_ids,
         duplicate_finding_links=duplicate_links,
         # Issue #984 (D7a): the acknowledged findings whose premise the reviewer disputes.

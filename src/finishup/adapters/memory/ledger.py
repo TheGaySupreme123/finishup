@@ -4340,6 +4340,7 @@ class MemoryLedgerAdapter:
                         FindingKind.CODE_DEFECT,
                         FindingKind.TASK_REQUIREMENT_UNMET,
                         FindingKind.AGENT_CRITERION_UNMET,
+                        FindingKind.DECISION_NEEDED,
                     }
                     or (payload.challenge is not None and payload.challenge.snippet is not None)
                 )
@@ -4351,6 +4352,7 @@ class MemoryLedgerAdapter:
             check_schema_version = (
                 REVIEWER_CHECK_EVENT_SCHEMA_VERSION
                 if check_payload.reviewer is not None
+                or check_payload.semantic_reason is SemanticReason.ROUND_LIMIT_UNASSESSABLE
                 else DEFERRED_CHECK_EVENT_SCHEMA_VERSION
                 if check_payload.semantic_reason is SemanticReason.DEFERRED_BEFORE_FIRST_EDIT
                 else REVIEW_CHECK_EVENT_SCHEMA_VERSION

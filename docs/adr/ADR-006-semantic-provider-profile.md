@@ -1443,11 +1443,11 @@ builds keep their bytes and still validate; the public finding wire is unchanged
 
 **The prior-findings section.** The review packet (`outbound-case/1.2.0`) carries the newest
 unresolved AI-powered findings in their own `prior_finding` section, outside the 64-row timeline so
-hook rows never crowd it out. Under egress-envelope pressure its rows yield first, oldest finding
-first, so it never displaces work content: a structural row with what was asked, the latest answer
+hook rows never crowd it out. Its bounded dialogue is reserved ahead of bulk excerpts and
+ordinary narrative (2026-10-21 amendment, #1126): a structural row with what was asked, the latest answer
 (disposition, cited refs) and the evidence and results recorded after the finding, plus the prose
 rows the profile's finding-prose selection already permits. It is bounded (16 findings, 96 KiB since issue #976; 8 and 48 KiB before;
-leftover case capacity only); what does not fit is named as `not_selected` omissions and discloses
+reserved before bulk excerpts); what does not fit is named as `not_selected` omissions and discloses
 `semantic_prior_findings_over_limit`, a gap that stays on the receipt but does not veto absence
 proof. Findings recorded without challenge fields degrade to summary and message with a `not_recorded`
 omission. No new data category leaves the machine. A carried finding contributes one structural
@@ -2443,7 +2443,13 @@ and ledger reads cover the frozen case's rendered records, including items the b
 bytes the case never kept are `not_retained`. File reads use the trusted descriptor walk beneath a
 service-issued alias: the workspace (minus ignored, hidden, credential-named and excluded paths), an
 owner-admitted outside root limited to the task-declared subset, or a kept snapshot. A listing
-applies the same rules to every child and inspects at most 128 entries. Cursors are opaque, issued
+applies the same rules to every child and inspects at most 128 entries. One uninspected lookahead
+detects whether native entries remain, including when hidden or refused entries consumed the whole
+sample. Such results are `partial` / `inspection_limit` with `truncated=true`; cursors page only
+the inspected sample, and no cursor promises access beyond it. Native text files above 1 MiB are
+withheld in full (`partial` / `native_read_limit`, `truncated=true`, only the original byte size in
+`data.source_bytes`), so a physical read cut never exposes a partial credential. This conservative
+refusal also applies when the requested lines precede the cut. Cursors are opaque, issued
 by the broker and bound to their selector and source version: a forged or rebound cursor is
 `denied`/`invalid_request`, a changed source `stale`/`source_changed`. The loop's outcome carries the
 citation union of the packet as sent and every admitted result as sent: exactly the refs a result
@@ -2741,12 +2747,28 @@ credential probe keep their one-shot dispatch; no check uses it.
   reads sent. An exchange's own blocked, awaiting or provider outcome ends the review as that
   outcome. Otherwise the loop's reason maps to closed results: `format_invalid`, `read_limit` and
   `turn_limit` to `invalid`, `deadline` to `timeout`, `authorization_changed` to blocked by policy,
-  and an earlier run of the job, an uncaptured step or a lost lease to `outcome_unknown`. The
+  and an earlier run of the job, an uncaptured step or a lost lease to `outcome_unknown`. A valid
+  action that leaves less than the minimum read-envelope room ends `case_capacity_exceeded`,
+  mapped through the existing case-capacity result before reserving or reading anything; genuine
+  read-count violations still map to `invalid`. The capacity counters in this path describe the
+  minimum action-plus-envelope requirement and the exchange allowance remaining. The
   provenance is the final exchange's: its token usage is that exchange's (Codex reports its
   thread's cumulative usage), not a sum.
 - **Cleanup.** `ReviewerSession.aclose()`'s outcome replaces the in-session `retained` value in the
   final runtime evidence, so `process_cleanup` stays within runtime-attempt-evidence 1.1.0 and no
-  schema bump was needed.
+  schema bump was needed. Failed final session cleanup withholds the final judgment and ends
+  `unavailable`, failure class `transport`, stage and reviewer ending `cleanup_unconfirmed`.
+  The acknowledged Codex turn maps to the existing non-retryable `outcome_unknown`; it never
+  opens a replacement session (#1137).
+- **Native notification work (#1141).** Active turns replace the 4,096-notification count with a
+  32 MiB work bound: each event spends the largest of its re-encoded JSON bytes, newly received
+  wire bytes, and 256 work units. The shared deadline is checked per event, buffered events
+  included; request and pre-disclosure queues keep their existing bounds. Telemetry, deltas and
+  intermediate output can exceed 4,096 events without crowding out the final answer. All method,
+  phase and tool allowlists still fail closed. Work exhaustion keeps `event_limit`, and an
+  acknowledged turn without a completed answer keeps `outcome_unknown`. Owner diagnostics report
+  only counts and re-encoded bytes for the closed `control`, `telemetry`, `delta`, `intermediate`
+  families, total active-turn wire bytes including its acknowledgement, and attempt duration.
 - **The record.** A bounded `ReviewerRecord` is built from the conversation's own service
   envelopes: exchanges, and per read the action, status, reason, an opaque source identity (for a
   file, the installation object store's keyed commitment of job, root alias and path under its own
@@ -2806,3 +2828,82 @@ not account entitlement or live interoperability. The Anthropic compatible adapt
 `temperature`, `top_p`, `tools` and `tool_choice`; tests pin their absence for the new Opus, Sonnet,
 Haiku and Fable suggestions on review and probe requests. Its prompt-only output enforcement and
 local judgment validation remain unchanged. No live provider call is part of this change.
+
+## Amendment: reviewer judgment calibration (2026-10-21, issues #1145, #1146)
+
+The active reviewer loop and the packet-only provider instruction now share bounded calibration
+and acceptance paragraphs (`REVIEWER_JUDGMENT_CALIBRATION`, `REVIEWER_ACCEPTANCE_INSTRUCTION`).
+They distinguish a `decision_needed` choice from a clear unmet requirement, flag destructive costs,
+require repeated comparable timings for regression claims, and test the decisive acceptance
+measurement. The compact core asks for a choice, never a repair, on `decision_needed`.
+Other challenges name the repair or exact missing artifact. The loop remains one compact
+instruction: 6,496 UTF-8 bytes / 1,034 words,
+compared with the earlier 4,371 bytes / 736 words, capped by tests at 6,500 UTF-8 bytes
+and 1,050 words. This explicit increase carries the requested judgment rules on the actual
+conversation path; it does not replace the compact core with the full packet-only prompt.
+The phase question repeats only the closing acceptance purpose. Wire and finding semantics are
+specified in [ADR-040's judgment amendment](ADR-040-reviewer-disagreement-and-route-derived-review.md).
+
+## Amendment — 2026-10-21: finding delivery and frozen review context (#1139, #1126, #1148)
+
+**Read the full finding before answering.** Treat `review_delivery` as a bounded advisory preview.
+When it reports truncation, follow its findings-status continuation.
+Read the action, alternative interpretation and uncertainty together before deciding.
+For example, a large result can retain the instruction while its alternative falls outside the
+host's head/tail window.
+
+**Keep the question beside the work.** Reserve bounded prior dialogue before ordinary narrative
+and bulk excerpts.
+Keep each finding's discrepancy, alternative, uncertainty, response and newer-material refs together.
+Let whole prior dialogues yield when they cannot fit beside the protected task statement, diff
+floor and latest verification.
+Name their omissions and mark partial prior context at both case construction and envelope bounding.
+Refuse a packet whose protected primary material cannot fit.
+For example, a rich recheck must not dispatch an old dispute after dropping the user's task or the
+verification needed to judge the repair.
+
+**Respect the frozen case.** An unmatched `read_ledger` returns `unavailable/not_in_frozen_case`.
+Return no data or citable refs.
+Do not consult the mutable ledger.
+Do not infer non-recording.
+Do not assert that an unknown ref exists.
+Request missing input through `final_judgment.missing_for_assessment` with its kind and target refs.
+For example, an unknown event ref can be outside this check without proving the event was never
+recorded.
+A later check can freeze the requested content only if retention and disclosure authority permit it.
+File-read absence keeps its existing reason.
+CLI, MCP, TUI and receipt review-read renderings carry the recorded reason.
+
+**Delivery contract.** Codex receives optional `review_delivery` before the full check-result
+fields in unreleased check-result 1.6.0, extended in place.
+The advisory also precedes the findings-status items in status-result 1.4.0.
+It uses only privacy-projected fields.
+A bounded review summary leads.
+Each of up to three challenges keeps its summary, requested action, alternative interpretation and
+uncertainty together within separate JSON-encoded byte budgets.
+The continuation marks the preview truncated and names `status view=findings`, `detail=full`,
+`limit=1` and the returned cursor.
+Full authorized fields remain unchanged.
+A `full_local` receipt carries the recorded review summary under the existing export policy.
+Evidence, snippets, manifests and provenance follow the advisory.
+The generic/Claude text channel uses the same lead ahead of evidence.
+Cursor retains its canonical full JSON copy.
+The bounded lead does not establish that a host delivered the full record.
+
+**Packing bounds.** The prior-finding section retains its existing 16-finding, 112-item and
+96 KiB bounds and category policy.
+Capacity fallback keeps permitted finding prose in each carried dialogue.
+In a narrowed recipe, fields share labelled `context-N` prose items within the existing 16 KiB
+item bound.
+Each field keeps its earlier 4 KiB bound, located by `text_item_ids`.
+Both planners try at most three smaller excerpt-count bounds before reducing excerpt bytes.
+Each probe measures the exact candidate and preserves the original diff floor.
+These probes account for catalog overhead when many tiny excerpts replace one large change part.
+Ordinary catalog bulk yields before whole prior findings.
+Complete history is not guaranteed.
+No privacy category, ceiling, consent or ruling changes.
+
+Maintainer acknowledgement: the explicit scoped implementation request and owner comments on
+#1139/#1126 authorize these delivery, packing and label changes.
+They do not change reviewer judgment, disclosure authority, or the design-gated #905 todo-list
+convergence.

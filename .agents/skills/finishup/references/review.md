@@ -64,34 +64,39 @@ disclosed; a limitation you could reduce is work, not support.
 
 ## Pace delivery and review
 
-**Goal.** For a deadline or performance measurement, deliver a working version before optional refinement.
-A timed scorer or evaluation-start signal counts.
+**Goal.** Deliver before optional refinement for a deadline, performance measurement, timed scorer, or evaluation-start signal.
 
-1. Record the stated trigger and deadline before optional review.
-2. Complete the checks and review the task requires before delivery.
-3. Deliver a working version once those prerequisites pass.
-4. Send the task's specified completion signal as soon as its stated prerequisites are met.
-5. Improve unmet requested outcomes.
+1. Record stated triggers and deadlines before optional review.
+2. Deliver a working version after required pre-delivery checks/review.
+3. Send the specified signal as soon as its prerequisites pass.
+4. Improve unmet requested outcomes.
 
-Request routine review after a material milestone: a change to behavior, requested outputs, or acceptance evidence.
-Follow the [check cadence](workflow.md#cadence).
-
-**Done.** Stop when outcomes and required checks/review pass, or a disclosed blocker leaves no authorized action.
-
-**Evidence.** Bound claims to recorded results.
-A completion signal alone does not show that verification ran.
-
-**Clue.** Optional review can delay a working result's signal past its measurement window.
-
-**Constraints.** Use only stated timing.
+**Done.** Stop when outcomes/checks/review pass, or a disclosed blocker leaves no authorized action.
+**Evidence.** A signal does not prove completion or verification.
+**Clue.** Optional review can miss a measurement window.
+**Constraints.** Use only stated timing. Review changed behavior, outputs or acceptance evidence at [cadence](workflow.md#cadence).
 
 ## How to answer a finding
+
+**Read before answering.** Treat `review_delivery` as a bounded advisory preview.
+If it says the preview is truncated, read `status view=findings` with `detail=full` and `limit=1`.
+Follow the returned cursor until the finding you will answer carries its requested action,
+alternative interpretation and uncertainty, or explicitly labels them withheld.
+For example, a large check can keep an instruction while its alternative falls outside the preview.
+
+**Respect the frozen case.** Treat a reviewer read marked `not_in_frozen_case` as unavailable in
+that check.
+Do not infer that the item was never recorded.
+The reviewer can request it through `final_judgment.missing_for_assessment` with its kind and
+target refs, as the read's continuation says.
+As the working agent, follow the returned `missing_for_assessment` supply rule above.
+For example, an unknown event ref can be outside the frozen case without proving non-recording.
 
 A finding is evidence, not an order.
 Before reversing a deliberate choice or resolving conflicting inputs, including a decision-needed finding:
 
 1. Re-read the task and supplied inputs.
-2. Consider the finding's alternative interpretation.
+2. Read both interpretations and their evidence.
 3. Run its discriminating check if available.
 4. If ambiguity remains, keep the version matching the literal task and supplied inputs.
 5. For a dispute, `respond` `rejected` with reasons and evidence.
@@ -190,3 +195,9 @@ their standing permission for you to turn on AI-powered review for a task. The p
 sends only what the owner's policy allows, never-send items are always withheld, and receipts
 record what was reviewed. Your switch is a request, never a grant: the owner's policy governs and
 is enforced.
+
+A `decision_needed` finding is an advisory choice between defensible interpretations or a reasoned
+trade-off. It does not block closure. You decide. Record the choice and reason with `respond acknowledged` or
+`respond rejected`. That records a decision, not a verified repair. A `Destructive change:` label
+names what a proposed removal or replacement would lose; consider that cost before changing work
+that matches the task, a supplied input, or an earlier passing check.

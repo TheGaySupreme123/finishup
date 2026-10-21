@@ -557,6 +557,10 @@ DETERMINISTIC_FINDING_TEMPLATES: Final[
             "A criterion the agent set for itself beyond the task's stated scope is not met.",
             "Fix the work, or narrow the criterion by responding acknowledged with the reason.",
         ),
+        FindingKind.DECISION_NEEDED: DeterministicFindingTemplate(
+            "The reviewer identified a choice between defensible interpretations.",
+            "You decide; record the choice and reason with respond acknowledged or rejected.",
+        ),
     }
 )
 if frozenset(DETERMINISTIC_FINDING_TEMPLATES) != frozenset(FindingKind):
@@ -1168,8 +1172,18 @@ class DeterministicCase:
     # needs it so a sibling action in the same batch is never "subsequent unrelated work".
     action_batches: tuple[tuple[EventId, ...], ...] = ()
     workspace_verification_edit_frontier: int = 0
+    # Trusted, prefix-derived no-op shell writes. Persist with the frozen case so the local
+    # claim rule and task-fact freshness use the same decision after recovery (#1143).
+    verification_unchanged_action_ids: tuple[ActionId, ...] = ()
 
     def __post_init__(self) -> None:
+        if type(self.verification_unchanged_action_ids) is not tuple:
+            raise _invalid_case()
+        unchanged = tuple(action_id(value) for value in self.verification_unchanged_action_ids)
+        if unchanged != tuple(sorted(set(unchanged), key=str.encode)) or any(
+            action not in self.projection.actions for action in unchanged
+        ):
+            raise _invalid_case()
         if (
             type(self.workspace_verification_edit_frontier) is not int
             or not 0 <= self.workspace_verification_edit_frontier <= self.projection.frontier
@@ -1572,6 +1586,11 @@ def deterministic_case_to_json(case: DeterministicCase) -> dict[str, JsonValue]:
             else {}
         ),
         **(
+            {"verification_unchanged_action_ids": list(case.verification_unchanged_action_ids)}
+            if case.verification_unchanged_action_ids
+            else {}
+        ),
+        **(
             {
                 _ACTION_BATCHES_CASE_JSON_KEY: [
                     [str(member) for member in group] for group in case.action_batches
@@ -1592,6 +1611,11 @@ def deterministic_case_from_json(value: JsonValue) -> DeterministicCase:
         source_keys = frozenset(source)
         workspace_edit = source.get("workspace_verification_edit_frontier", 0)
         source_keys -= {"workspace_verification_edit_frontier"}
+        unchanged_actions = tuple(
+            action_id(cast(str, value))
+            for value in _case_json_array(source.get("verification_unchanged_action_ids", ()))
+        )
+        source_keys -= {"verification_unchanged_action_ids"}
         action_batches: tuple[tuple[EventId, ...], ...] = ()
         if _ACTION_BATCHES_CASE_JSON_KEY in source_keys:
             source_keys = source_keys - {_ACTION_BATCHES_CASE_JSON_KEY}
@@ -1754,6 +1778,7 @@ def deterministic_case_from_json(value: JsonValue) -> DeterministicCase:
             task_title=task_title,
             action_batches=action_batches,
             workspace_verification_edit_frontier=cast(int, workspace_edit),
+            verification_unchanged_action_ids=unchanged_actions,
         )
     except (KeyError, TypeError, ValueError) as exc:
         raise _invalid_case() from exc
@@ -2148,6 +2173,7 @@ def build_deterministic_case(
     from finishup.kernel.task_facts import (
         observed_event_ids_from_records,
         task_fact_signals,
+        verification_unchanged_actions,
         workspace_verification_edits,
     )
 
@@ -2480,6 +2506,9 @@ def build_deterministic_case(
                 )
             ),
             default=0,
+        ),
+        verification_unchanged_action_ids=tuple(
+            sorted(verification_unchanged_actions(projection, accepted_prefix), key=str.encode)
         ),
     )
 

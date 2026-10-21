@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from collections.abc import Mapping
 from dataclasses import replace
 from pathlib import Path
 from typing import Any, cast
@@ -69,6 +70,31 @@ def _event_body() -> dict[str, Any]:
 
     row, _digest = named_checks._check_row(with_names=True)  # pyright: ignore[reportPrivateUsage]
     return cast(dict[str, Any], json.loads(canonical_encode(row.payload)))
+
+
+def test_requested_but_stopped_pair_has_no_new_provider_attempt_and_uses_1_6() -> None:
+    fixture = json.loads(_FIXTURE.read_bytes())
+    pair = fixture["input"]["stopped_review"]
+    event = _event_body()
+    event.update(pair)
+    event.pop("semantic_provenance", None)
+    event.pop("semantic_conclusion", None)
+    event.pop("semantic_included_refs", None)
+    validate_schema_instance("check-recorded", "1.6.0", event)
+    payload = _decode("1.6.0", event)
+    encoded = encode_payload(payload)
+    assert isinstance(encoded, Mapping)
+    assert encoded["semantic_reason"] == "round_limit_unassessable"
+    result = _check_result_wire()
+    result.update(pair)
+    result["semantic_provenance"] = None
+    validate_schema_instance("check-result", "1.6.0", result)
+    CheckResult.model_validate(result)
+    for version in ("1.4.0", "1.5.0"):
+        with pytest.raises(SchemaInstanceInvalid):
+            validate_schema_instance("check-recorded", version, event)
+        with pytest.raises(ProtocolValueError):
+            _decode(version, event)
 
 
 @pytest.mark.parametrize("path", sorted(_FROZEN))

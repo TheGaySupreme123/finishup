@@ -13,6 +13,7 @@ import json
 from pathlib import Path
 from typing import Final, cast
 
+from finishup.mcp.summaries import render_check_review_delivery
 from finishup.protocol.canonical import JsonValue, canonical_digest, canonical_encode
 
 _PATH: Final = "canonical/check-reviewer-record-1.6.0.case.json"
@@ -74,6 +75,21 @@ def _vectors() -> tuple[dict[str, JsonValue], ...]:
 
 
 def document() -> dict[str, JsonValue]:
+    delivery_source: dict[str, JsonValue] = {
+        "review_summary": "The supplied reference may be intentional.",
+        "findings": [
+            {
+                "finding_id": "fnd_00000000-0000-4000-8000-000000000001",
+                "challenge": {
+                    "discrepancy": "The two references disagree.",
+                    "requested_next_step": "act",
+                    "alternative_interpretation": "Keep the task-supplied reference.",
+                    "uncertainty": "The authoritative reference is ambiguous.",
+                },
+            }
+        ],
+    }
+    delivery = render_check_review_delivery(delivery_source)
     return {
         "controls": {
             "clock": "fixture_supplied",
@@ -84,14 +100,30 @@ def document() -> dict[str, JsonValue]:
         "fixture_id": _FIXTURE_ID,
         "fixture_schema": "yoetz.fixture-case/1.0.0",
         "fixture_version": "1.0.0",
-        "input": {"vectors": list(_vectors())},
+        "input": {
+            "vectors": list(_vectors()),
+            "review_delivery": {
+                "source": delivery_source,
+                "text": delivery,
+                "canonical_hex": canonical_encode(delivery).hex(),
+                "digest": canonical_digest(delivery),
+            },
+            "stopped_review": {
+                "semantic_status": "unavailable",
+                "semantic_reason": "round_limit_unassessable",
+            },
+        },
         "minimum_versions": {
             "check_recorded_schema": "1.6.0",
             "check_result_schema": "1.6.0",
             "engine": "0.1.0",
             "protocol": "0.1",
         },
-        "owns_requirements": ["ADR-006:reviewer-record"],
+        "owns_requirements": [
+            "ADR-006:reviewer-record",
+            "ADR-040:requested-review-stopped",
+            "ISSUE-1139:bounded-review-delivery",
+        ],
         "purpose": (
             "Freeze the reviewer conversation record. check-recorded 1.6.0 and the check-result "
             "1.6.0 success admit it; check-recorded 1.4.0/1.5.0 and check-result 1.5.0 refuse it."

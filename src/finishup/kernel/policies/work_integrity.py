@@ -607,6 +607,7 @@ def _observed_verification_facts(
         if (
             payload is not None
             and action.source_event_id in observed
+            and payload.action_id not in case.verification_unchanged_action_ids
             # A scratch or FinishUP-owned write (a saved receipt) changes nothing a claim's
             # verification covered (ADR-042, tb4n2 R4: cad S, lake D). A shell write counts
             # as an edit under the same rule task_facts uses (ADR-045). A documentation-only

@@ -1,5 +1,13 @@
 # Codex integration runbook
 
+Reviewer robustness (#1134–#1137, #1141) is shared service behavior on macOS, Linux and WSL 2:
+native reads over 1 MiB are withheld with an explicit limit, sampled directory listings disclose
+inspection exhaustion, and read capacity is reported separately from invalid replies. The Codex
+reviewer route also withholds judgments after unconfirmed session cleanup and bounds active
+notifications by bytes/work. These evaluator rules apply whichever host requested the review;
+native acceptance on each host/OS remains a separate claim. See
+[the reviewer contract](../INTERFACES.md#reviewer-loop-issue-1118-unit-2).
+
 For setup prerequisites, use `finishup setup status --next --host codex` with the same
 executable, configuration root and project. `--operation connection` inspects installation without
 provider sign-in; `local` and `review` inspect their respective vault/privacy prerequisites.
@@ -3961,7 +3969,20 @@ back. Persisting the continuation with the stored check is a storage follow-up o
 
 **Reviewer reads on Codex (#1118). Host decision: supported.** The reviewer conversation runs in the service for every host: up to three reads, each sent in its own privacy-checked exchange, within the channel limits. What it read reaches this host as `reviewer` on the check result (closed tokens, folder aliases, opaque source ids, line spans, sizes and the privacy receipt of the exchange that first carried each read; never a path or content), as the read lines at the head of the MCP text channel's reviewer section, in the CLI and TUI check text, and in every receipt format; a same-id check replay returns it too. Hooks carry no reads, and status's operation `check_outcome` stays structural without it. Gap: in Codex's structured result `reviewer` follows the bulky fields, so in a large result it can fall in the cut middle; the MCP text channel and the receipt carry the same lines. Codex as the review provider is a separate role: the subscription route serves the conversation only on the reviewed 0.162.1 runtime with capability profile v3 (`environments: []`, plan and user-input tools disabled), and fails closed otherwise (ADR-006).
 
-**Residual requests on Codex (#1118 unit 4). Host decision: supported.** As on every host, the reviewer's own reason for each residual request reaches the agent inside the fenced `review_summary` ("What the reviewer still needs"), never in `agent_next` or the structural item; a `full_local` receipt carries the same summary as one fenced advisory item, an exported receipt says it was withheld, and the privacy projection decides the agent's view of either; a linked supply no longer erases a reviewer's repeat (`semantic_missing_already_supplied` discloses it); and a `semantic_required` check stops at the same round limits, reading `incomplete_check`. The reviewer's own reads (up to three, bounded and privacy-checked) run in the service, not in the host, so they behave the same here; the provider route that serves them is a separate role (ADR-006). Recovery's `check_outcome` stays structural and omits the reason. Gap: in Codex's structured result `review_summary` follows findings, so in a large result it can fall in the cut middle; the MCP text channel's reviewer section carries it, and a resend or the CLI JSON returns it whole.
+**Residual requests on Codex (#1118 unit 4). Host decision: supported.** As on every host, the reviewer's own reason for each residual request reaches the agent inside the fenced `review_summary` ("What the reviewer still needs"), never in `agent_next` or the structural item; a `full_local` receipt carries the same summary as one fenced advisory item, an exported receipt says it was withheld, and the privacy projection decides the agent's view of either; a linked supply no longer erases a reviewer's repeat (`semantic_missing_already_supplied` discloses it); and a `semantic_required` check stops at the same round limits, reading `incomplete_check`. The reviewer's own reads (up to three, bounded and privacy-checked) run in the service, not in the host, so they behave the same here; the provider route that serves them is a separate role (ADR-006). Recovery's `check_outcome` stays structural and omits the reason.
+
+**Read reviewer advice on Codex (#1139). Host decision: supported.** Read the full finding
+before choosing a response. Treat `review_delivery` as a bounded advisory preview.
+When it reports truncation, use its continuation: `status view=findings`, `detail=full`,
+`limit=1`, then the returned cursor. Stop when the finding you will answer includes its action,
+alternative interpretation and uncertainty, or labels them withheld.
+For example, a long check can retain the instruction while the alternative falls outside the preview.
+
+The optional advisory leads the structured check result and findings status page.
+Full authorized fields stay present. A `full_local` receipt carries the recorded review summary
+under export policy. Offline tests simulate Codex's 12,000-byte head/tail cut, including JSON
+escaping and Unicode. Native Codex delivery has not been re-dogfooded for this change.
+Issue #1139 owns that validation gap.
 
 **Supply on Codex.** The captured output of a shell re-run of the target's exact command that
 FinishUP observed after the request counts as supplying a targeted `verification_output` (or
@@ -4025,3 +4046,22 @@ same removal flow. Agents direct the owner to it and never run it; no MCP or cha
 path is added. The configured API fallback is targeted when Codex is primary. Binding and privacy
 policy stay unchanged, and status is presence-only after readiness reload. Shared-path tests do not
 claim a new native-host or platform certification.
+
+
+### Reviewer judgment calibration (#1145, #1146)
+
+This host uses the shared reviewer instruction and finding pipeline. `decision_needed` is an
+advisory priority-3 choice: keep both interpretations and the destructive cost visible, then
+record the choice and reason with `respond acknowledged` or `respond rejected`. It never counts
+as unmet work or blocks Stop/closure. Closing review challenges the decisive acceptance measurement
+and uses the existing task-declared inputs beneath owner-admitted roots; this change admits no
+new root. Details and offline checks: [reviewer instruction evaluation](reviewer-instruction-evaluation.md).
+
+**Closure honesty (#1140, #1143, #1144, #1149). Host decision: supported through shared service
+results.** Check carries the same readiness verdict that status and Stop consume, with finding
+work, missing assessment input and standing limits distinguished. A stopped requested review is
+`unavailable / round_limit_unassessable`, with no new attempt, and required review remains
+incomplete. Receipt JSON/markdown/text distinguish an agent-disproved concern from an asserted
+repair. Trusted byte-identical in-workspace shell rewrites preserve verification freshness;
+changed reports remain conservative pending #1143's dependency/role manifest. These decisions
+are shared across macOS, Linux and Windows through WSL 2; no native Windows support is implied.
