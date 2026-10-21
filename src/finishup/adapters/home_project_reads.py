@@ -40,7 +40,12 @@ _FOLDED_FILES: Final = frozenset(name.casefold() for name in _PRIVATE_FILES)
 
 
 def home_private_path(root: Path, relative: bytes) -> bool:
-    """Lexical, case-insensitive exclusion, including not-yet-created paths."""
+    """Lexical exclusion, including not-yet-created paths.
+
+    Any dot component excludes the path. Top-level host trees and credential/auth file names
+    match case-insensitively; a copied profile tree below the top level matches only its exact
+    name, so project folders such as ``src/library`` stay reviewable.
+    """
 
     if root != Path.home():
         return False
