@@ -30,6 +30,7 @@ from builders.privacy_widenings import with_llm
 from builders.projection_workflow import ProjectionCase, project_case
 from finishup.adapters.integrations.observation_local import LocalObservationStore
 from finishup.adapters.providers import codex_app_server as codex
+from finishup.adapters.providers import reviewer_cache_telemetry as telemetry
 from finishup.adapters.providers.codex_app_server import codex_binding_from_config
 from finishup.adapters.providers.codex_capability import host_codex_platform
 from finishup.adapters.providers.reviewer_reply import REVIEWER_LOOP_INSTRUCTION
@@ -283,6 +284,13 @@ def _encoded(*replies: dict[str, JsonValue]) -> list[str]:
 async def test_a_service_review_runs_on_one_codex_thread_through_the_real_evaluator(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    cache_records: list[dict[str, Any]] = []
+
+    def record(**fields: Any) -> str:
+        cache_records.append(fields)
+        return new_id(IdKind.CORRELATION)
+
+    monkeypatch.setattr(telemetry, "record_bounded_counts_without_raising", record)
     checked, wire, mcp_wire = await _review(tmp_path, monkeypatch, _encoded(_READ, _FINAL))
     # Before the fix no child was ever launched: the case failed as ``case_invalid``.
     methods = [request["method"] for request in wire]
@@ -313,6 +321,15 @@ async def test_a_service_review_runs_on_one_codex_thread_through_the_real_evalua
     # The replayed 0.162.1 wire (``thread/settings/updated`` before the first ack, reasoning,
     # deltas, moderation metadata, usage) is admitted without any stage (#1118).
     assert "failure_stage" not in cast(dict[str, JsonValue], evidence)
+    # #1172: each exchange recorded its own usage, both under the review's first request id.
+    assert [(r["operation"], r["counts"]["reviewer_exchange_index"]) for r in cache_records] == [
+        ("exchange_cache", 1),
+        ("exchange_cache", 2),
+    ]
+    assert len({r["request_id"] for r in cache_records}) == 1
+    assert [r["counts"]["reviewer_cache_miss"] for r in cache_records] == ["first_turn", "none"]
+    assert [r["counts"]["reviewer_input_tokens"] for r in cache_records] == [900, 900]
+    assert cache_records[1]["counts"]["reviewer_prefix_tokens"] == 900
 
 
 async def test_failed_final_held_session_cleanup_withholds_the_judgment(

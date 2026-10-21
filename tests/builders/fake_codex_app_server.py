@@ -103,14 +103,16 @@ def _turn_events(
             }
         )
     events.append({"id": rid, "result": {"turn": {"id": turn, "status": "inProgress"}}})
-    usage = {
-        "inputTokens": 900 * number,
+    # One model request per turn: ``last`` is that request, ``total`` the thread's running sum.
+    last = {
+        "inputTokens": 900,
         "cachedInputTokens": 0,
         "cacheWriteInputTokens": 0,
-        "outputTokens": 60 * number,
-        "reasoningOutputTokens": 20 * number,
-        "totalTokens": 960 * number,
+        "outputTokens": 60,
+        "reasoningOutputTokens": 20,
+        "totalTokens": 960,
     }
+    usage = {name: value * number for name, value in last.items()}
     for method, item in (
         ("item/started", {"type": "userMessage", "id": "u"}),
         ("item/completed", {"type": "userMessage", "id": "u"}),
@@ -133,7 +135,7 @@ def _turn_events(
         {"method": "item/completed", "params": {**ids, "item": final}},
         {
             "method": "thread/tokenUsage/updated",
-            "params": {**ids, "tokenUsage": {"last": usage, "total": usage}},
+            "params": {**ids, "tokenUsage": {"last": last, "total": usage}},
         },
         {"method": "thread/status/changed", "params": {"threadId": thread, "status": {}}},
         {"method": "turn/completed", "params": {"threadId": thread, "turn": done}},

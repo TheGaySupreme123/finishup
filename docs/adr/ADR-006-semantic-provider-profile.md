@@ -2907,3 +2907,32 @@ Maintainer acknowledgement: the explicit scoped implementation request and owner
 #1139/#1126 authorize these delivery, packing and label changes.
 They do not change reviewer judgment, disclosure authority, or the design-gated #905 todo-list
 convergence.
+
+## Amendment — 2026-10-21: per-exchange prompt-cache telemetry (#1172)
+
+About half of the reviewer's input is served from the provider's prompt cache (49.8% over 27
+TB-Science pilot trials), and input is nearly all of its cost. Until now only each attempt's
+cumulative usage was kept, so a miss could not be attributed. Every provider exchange that
+reports usage now writes one `exchange_cache` owner diagnostic: its input, cached input,
+cache-write (Codex only) and output tokens, how many model requests it made, the prefix it could
+reuse from the review's previous exchange, how much of that its first request reused, and one
+closed miss label: `compaction`, `first_turn`, `none`, `schema_or_settings_change`, `retry` or
+`unexplained`, the first that applies (see INTERFACES, "Per-exchange prompt-cache telemetry").
+`none` allows a 1,024-token shortfall, one minimum cache block. Every exchange of a review names
+the review's first provider request id, so the records join the attempt row; the owner reads them
+with `finishup service diagnostics --request-id`, and an exporter that copies the diagnostics ring
+carries them.
+
+The record holds integers, one closed token and that request id. It never holds content, a
+content digest or a provider identifier. Between a review's exchanges, the `ReviewerSession` keeps
+counts, the last history's message count and a digest of the settings the route sent beside the
+messages, to notice a changed schema, model or effort. The usage arrives on the responses FinishUP
+already reads (Codex `thread/tokenUsage/updated`; the Responses and Chat Completions `usage`
+object), so no request, egress or retention changes. Recording never changes an outcome. The
+local model route and the credential probe record nothing.
+
+This is phase 1's measurement. It changes no prompt, schema, thread or packet. The schema
+change it will attribute is the final-only reply schema after the third read: the TB-Science rows
+show a three-read review caching its two middle turns and nothing of its final turn (189,056 of
+381,293 input tokens). Phase 2 (reusing a thread across reviews) stays undecided until these
+records show what is left to gain.

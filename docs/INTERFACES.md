@@ -11931,6 +11931,42 @@ Discarded telemetry and streamed deltas no longer exhaust a 4,096-event allowanc
 the turn acknowledgement), and attempt `duration_ms` including cleanup. Per-message,
 request-queue and pre-disclosure bounds and all event/tool allowlists still apply.
 
+**Per-exchange prompt-cache telemetry (issue #1172).** Every provider exchange that reports usage
+writes one `exchange_cache` owner diagnostic (component `codex_app_server`, `openai_responses` or
+`openai_chat_completions`; reason `completed` or `incomplete`). Its `request_id` is the review's
+first provider request id, the attempt row's `provider_request_id`, so every exchange of one review
+shares it and `finishup service diagnostics --request-id <id>` returns them all; a one-shot case
+names its own. Fields, all integers but the last:
+
+| Field | Meaning |
+|---|---|
+| `reviewer_exchange_index` | 1-based exchange of the review (a one-shot case is 1) |
+| `reviewer_model_requests` | model requests the exchange made |
+| `reviewer_input_tokens`, `reviewer_cached_input_tokens`, `reviewer_output_tokens` | provider-reported, summed over those requests |
+| `reviewer_cache_write_input_tokens` | Codex only; neither API reports cache writes, so it is absent there |
+| `reviewer_prefix_tokens` | input of the previous exchange's last request: what this exchange could reuse (0 when it opened the conversation; absent when the previous exchange reported no usage) |
+| `reviewer_prefix_cached_tokens` | cached input of this exchange's first request |
+| `reviewer_cache_miss` | closed label, below; absent when the prefix is unknown |
+
+Codex counts are the thread's cumulative `total` across the turn; a snapshot whose input grew is one
+more request, and that snapshot's `last` names the request (a repeated snapshot is not another one).
+Responses reads `usage.input_tokens`, `usage.input_tokens_details.cached_tokens` and
+`usage.output_tokens`; Chat Completions `prompt_tokens`, `prompt_tokens_details.cached_tokens` and
+`completion_tokens`. An answer without those counts records nothing. The local model route
+records nothing (FinishUP observes no provider prompt cache there), nor does the credential probe.
+
+`reviewer_cache_miss` is the first that applies: `compaction` (a `thread/compacted` notification or
+`contextCompaction` item in the turn, recorded even where the reviewer then refuses it);
+`first_turn` (the exchange opened the review's conversation; every one-shot case); `none` (the
+first request's cached input is within 1,024 tokens of the prefix, one minimum cache block);
+`schema_or_settings_change` (the digest of what the route sends beside the messages differs from
+the previous exchange's: the Codex `turn/start` parameters except `input` and `threadId`, or the API
+body except `input`/`messages`); `retry` (the history does not carry the previous answer, so this
+is the loop's one format repair); `unexplained`. The state between a review's exchanges is
+`ReviewerSession.cache` (`domain.reviewer_cache.ReviewerCacheState`): counts, the last history's
+message count and that settings digest, never content. Recording never changes an outcome: any
+failure in it is dropped. A record is at most 656 bytes, inside the ring's 1,024-byte line cap.
+
 `complete(history, schema, deadline=)` returns the reply object. It raises the decoder's
 `ReviewerReplyInvalid("output_not_json")` only for a completed answer that is not one JSON object
 (API `response_schema` from a completed generation, Codex `output_not_json` or `output_empty`):
