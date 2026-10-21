@@ -180,6 +180,8 @@ admitted input, including clipping and privacy omissions.
 
 Under-publishing hides the work; over-publishing buries it. The test is whether an independent reader reviewing only the ledger would reach a different conclusion without the fact.
 
+Follow the [delivery pacing and finding procedures](review.md) for timed work and disputed advice.
+
 A `publish_work` may omit `expected_frontier`: FinishUP guards the batch with the frontier it reads
 on admission, so a cooperative write that lands meanwhile is a conflict. For a `check`, `respond`
 or `receipt`, or a batch that rests on what you read earlier, hold the frontier `start`

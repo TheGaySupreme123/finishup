@@ -1,5 +1,7 @@
 # Review topic
 
+You are the working agent using FinishUP.
+
 Read this topic when a check needs more than the operating card: a finding or pending review
 appears, a final check must be recovered, or a result names it. A check evaluates only the
 recorded, readable, frontier-bound packet.
@@ -60,6 +62,20 @@ does, then act). The next check shows the reviewer your answer, and it rules on 
 outside your control (authority, credentials, unavailable external resources) stay acceptable when
 disclosed; a limitation you could reduce is work, not support.
 
+## Pace delivery and review
+
+**Goal.** Deliver before optional refinement for a deadline, performance measurement, timed scorer, or evaluation-start signal.
+
+1. Record stated triggers and deadlines before optional review.
+2. Deliver a working version after required pre-delivery checks/review.
+3. Send the specified signal as soon as its prerequisites pass.
+4. Improve unmet requested outcomes.
+
+**Done.** Stop when outcomes/checks/review pass, or a disclosed blocker leaves no authorized action.
+**Evidence.** A signal does not prove completion or verification.
+**Clue.** Optional review can miss a measurement window.
+**Constraints.** Use only stated timing. Review changed behavior, outputs or acceptance evidence at [cadence](workflow.md#cadence).
+
 ## How to answer a finding
 
 **Read before answering.** Treat `review_delivery` as a bounded advisory preview.
@@ -76,6 +92,20 @@ target refs, as the read's continuation says.
 As the working agent, follow the returned `missing_for_assessment` supply rule above.
 For example, an unknown event ref can be outside the frozen case without proving non-recording.
 
+A finding is evidence, not an order.
+Before reversing a deliberate choice or resolving conflicting inputs, including a decision-needed finding:
+
+1. Re-read the task and supplied inputs.
+2. Read both interpretations and their evidence.
+3. Run its discriminating check if available.
+4. If ambiguity remains, keep the version matching the literal task and supplied inputs.
+5. For a dispute, `respond` `rejected` with reasons and evidence.
+6. Run `check` with `final_review: true`.
+
+For a defect, use repair/self-verification instead of the dispute steps.
+Example: a finding prefers a reference the task did not supply.
+`acknowledged_not_done` keeps `unresolved_findings_remain`.
+
 Read the finding's row in `status view=findings` and find its case below before you call
 `respond`. A refused call records nothing and costs a turn.
 
@@ -85,7 +115,7 @@ Read the finding's row in `status view=findings` and find its case below before 
 | `todo_state` `acknowledged_not_done` | Repair and run `check`, or respond `reopened` with a reason to take the answer back. |
 | A problem you can fix | Repair it, publish the result and evidence, then run `check`. Only a later qualifying check resolves it; a response never does. |
 | "Unresolved failed command observed" (a command FinishUP saw fail) | Fix it and rerun the same command exactly as written (no added `VAR=`, `env`, `nohup` or `time`), alone or inside a passing `&&` chain: the pass retires it, with no response. A chain whose earlier part can end the shell or runs text FinishUP cannot read (`exec CMD`, `exit`, `eval`, `source`/`.`) retires nothing. A passing test, build, lint or typecheck run of a command your plan already requested when it passed retires it too, with every other earlier failed-command finding, but the failed command itself never passed: still name it in your completion claim's `limitation_refs`. A check never resolves it. If the failure is expected or will stay, `acknowledged` with the reason (disclosed on the receipt, never clean). |
-| You repaired it, and a later check still cannot prove the repair for a FinishUP reason | Verify it yourself, record that evidence, then respond `self_verified` citing it. Before a later check this is refused (`finding_not_rechecked`), and so is a check that still sees the issue (`finding_not_proof_limited`). |
+| You repaired it, and a later check still cannot prove the repair for a FinishUP reason | Verify it yourself, record that evidence, then respond `self_verified` citing it. Before a later check this is refused (`finding_not_rechecked`), and so is a check that still sees the issue (`finding_not_proof_limited`). A FinishUP limit is never a `finishup-blocker`. |
 | `requested_next_step` `answer_question` | Answer in the `reason`: `rejected` when the concern does not apply, `acknowledged` when it does, then act. |
 | `requested_next_step` `state_unresolved_limitation` | `acknowledged` with the reason when the requirement may be met but cannot be verified here; `acknowledged_not_done` only when you know it is not met. |
 | You dispute an AI-powered finding | `rejected` with the reason, then `check` with `final_review: true` so the reviewer rules. |
@@ -167,8 +197,7 @@ record what was reviewed. Your switch is a request, never a grant: the owner's p
 is enforced.
 
 A `decision_needed` finding is an advisory choice between defensible interpretations or a reasoned
-trade-off. It does not block closure. Read both interpretations, their evidence, and the proposed
-discriminating check; you decide. Record the choice and reason with `respond acknowledged` or
+trade-off. It does not block closure. You decide. Record the choice and reason with `respond acknowledged` or
 `respond rejected`. That records a decision, not a verified repair. A `Destructive change:` label
 names what a proposed removal or replacement would lose; consider that cost before changing work
 that matches the task, a supplied input, or an earlier passing check.

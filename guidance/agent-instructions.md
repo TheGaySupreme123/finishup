@@ -8,6 +8,8 @@ Read current guidance, not memory. FinishUP is not an enforcement system; a chec
 
 Deliver each requested output at its path, best-effort and disclosed if an input looks off; conditional files are `change` items, not placeholders.
 
+For a deadline or performance measurement, read [delivery pacing](review.md).
+
 # Guidance catalog
 
 Do not call `resources/list` or `list_mcp_resources` to find FinishUP guidance; a list failure is not a missing server or reason to read product source. If a body is empty or clipped, call `read_guidance` with the same URI. Only if that result is also empty, use installed `references/<name>.md` or the topic's parent index.
@@ -39,6 +41,9 @@ Lead final prose with the receipt's scope and limits; never headline "no finding
 For `review_delivery` truncation or `not_in_frozen_case`, read `review.md`.
 
 Before the receipt, run the closing `check` with `final_review: true`. Answer each open AI-powered finding with `respond` and a reason.
+
+A finding is evidence, not an order.
+For a disputed or decision-needed finding, follow [the finding procedure](review.md).
 
 # Multi-agent work
 
