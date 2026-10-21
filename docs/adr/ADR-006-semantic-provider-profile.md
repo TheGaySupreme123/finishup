@@ -2921,7 +2921,10 @@ cache-write (Codex only) and output tokens, how many model requests it made, the
 reuse from the review's previous exchange, how much of that its first request reused, and one
 closed miss label: `compaction`, `first_turn`, `none`, `schema_or_settings_change`, `retry` or
 `unexplained`, the first that applies (see INTERFACES, "Per-exchange prompt-cache telemetry").
-`none` allows a 1,024-token shortfall, one minimum cache block. Every exchange of a review names
+`none` allows a 1,024-token shortfall, one minimum cache block. A compaction is recorded, by its
+index and label alone, even when it comes before any usage report. A Codex turn whose previous turn
+reported no usage records no counts, because its starting total is unknown. Every exchange of a
+review names
 the review's first provider request id, so the records join the attempt row; the owner reads them
 with `finishup service diagnostics --request-id`, and an exporter that copies the diagnostics ring
 carries them.

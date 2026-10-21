@@ -2447,6 +2447,9 @@ class _ReviewerThread:
     # The histories a next exchange may extend: the thread with its answer, and, after an answer
     # the loop's decoder rejected and left out of its history, the same thread before that answer.
     prefixes: tuple[tuple[ReviewerMessage, ...], ...]
+    # Whether ``token_usage`` is the thread's total after its last turn: that turn reported usage
+    # and none of it was refused. Only then can the next turn's own usage be told apart (#1172).
+    usage_current: bool
 
     async def aclose(self) -> str:
         return await _cleanup_guaranteed(self.runtime)
@@ -2524,7 +2527,7 @@ class CodexAppServerEvaluator:
         turn_settings: dict[str, JsonValue] | None = None
         turn_start_usage: RuntimeTokenUsage | None = None
         requests = first_cached = last_input = 0
-        compacted = False
+        compacted = usage_refused = False
         try:
             exchange = reviewer_exchange(case.media_type, case.payload, self.reply_schemas)
             if exchange is not None:
@@ -2694,6 +2697,7 @@ class CodexAppServerEvaluator:
                         # turn an otherwise valid AI-powered judgment into a provider failure, and
                         # it must not erase a valid earlier cumulative snapshot.
                         failure_stage = "token_usage_invalid"
+                        usage_refused = True
                     else:
                         observed_usage, request_usage = (
                             (None, None) if observed is None else observed
@@ -2724,6 +2728,7 @@ class CodexAppServerEvaluator:
                                 )
                             ):
                                 failure_stage = "token_usage_invalid"
+                                usage_refused = True
                             else:
                                 if observed_usage.input_tokens > (
                                     0 if token_usage is None else token_usage.input_tokens
@@ -2832,7 +2837,14 @@ class CodexAppServerEvaluator:
                     answer = ("assistant", canonical_encode(reply).decode())
                     prefixes = ((*exchange.history, answer), exchange.history)
                 session.held = _ReviewerThread(
-                    self.profile, runtime, thread_id, auth_mode, plan_type, token_usage, prefixes
+                    self.profile,
+                    runtime,
+                    thread_id,
+                    auth_mode,
+                    plan_type,
+                    token_usage,
+                    prefixes,
+                    requests > 0 and not usage_refused,
                 )
                 cleanup = "retained"
             else:
@@ -2861,9 +2873,10 @@ class CodexAppServerEvaluator:
             },
         )
         if turn_settings is not None:
-            # A continuation whose thread never reported usage has no known starting counters: the
-            # thread's cumulative total is not this turn's, so it records nothing.
-            known = held is None or turn_start_usage is not None
+            # A continuation measures from the thread's total after its last turn; when that turn
+            # reported nothing (or had a snapshot refused), the start is unknown and the thread's
+            # total is not this turn's, so it records no counts.
+            known = held is None or (held.usage_current and turn_start_usage is not None)
             record_exchange_cache(
                 component="codex_app_server",
                 request_id=case.request_id,
