@@ -3430,6 +3430,26 @@ path. Connection disclosure and report `status.home_project_allowed` name this c
 existing extensible status object (ADR-012, 2026-10-21). It grants no observation or disclosure
 authority. Status and disconnect do not require a new connect opt-in.
 
+The Git adapter's internal `admitted_home_project` option carries an already-selected,
+authenticated HOME locator across the host/service process boundary (#1161). The local
+`home_project_scope` also admits that exact root in `open_local_workspace`. Neither admits `/`;
+change capture cannot use the service option to discover HOME above another selected directory.
+HOME reviewer roots additionally require a matching `CheckWorkspaceSource` workspace and task
+repository commitment; a session's public workspace selector alone cannot grant the exception.
+The handshake does not carry the launcher's opt-in, so the service admits HOME for any
+authenticated same-user locator; binding it to a recorded opt-in is design-gated #1181.
+`adapters/home_project_reads.py` shares one home-state exclusion across Git pathspec selection,
+structural tree walks, direct reads, listings and requested-output probes (ADR-012): every path
+with a dot-named component at any depth, the top-level `Library`, `AppData` and `snap` trees
+(case-insensitive), copies named exactly `Library` or `AppData` at any depth, local
+authentication files (including `token.json` and `kubeconfig`) and the ADR-031 credential names
+at any depth.
+Tracked host state is excluded too; excluded outputs have unknown existence/ignore facts.
+Structural capture reports a link outside the exclusions as `symlink_unsupported` in every root,
+never following it. Reviewer root aliases, relative-only selectors, hidden-component refusals,
+Git ignores, observation consent and outbound admission retain their existing contracts. No wire
+field changes.
+
 Cursor shared-hook refreshes preserve that choice only with recorded HOME membership
 and a still-installed exact opted-in HOME project MCP entry; disclosure `shared_home_project`
 and `shared_home_project_registration` bind the retained path and registration identity/digest.

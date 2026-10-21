@@ -6571,7 +6571,9 @@ class ObservationCoordinator:
             return None
         try:
             locator = base64.b64decode(content_b64.encode("ascii"), validate=True).decode("utf-8")
-            handle = open_local_workspace(Path(locator))
+            # The locator was retained under this workspace's observation grant; the service
+            # does not inherit the host launcher's process-local HOME exception.
+            handle = open_local_workspace(Path(locator), admitted_home_project=True)
             policy, _raw_policy = load_observation_check_policy(Path(locator))
         except ObservationCheckPolicyAbsent:
             # No approved-check policy is the ordinary opt-in state, not lost content capture.
@@ -6836,7 +6838,7 @@ class ObservationCoordinator:
             return None
         try:
             locator = base64.b64decode(content_b64.encode("ascii"), validate=True).decode("utf-8")
-            handle = open_local_workspace(Path(locator))
+            handle = open_local_workspace(Path(locator), admitted_home_project=True)
             policy, _raw_policy = load_observation_check_policy(Path(locator))
         except Exception:
             return None
