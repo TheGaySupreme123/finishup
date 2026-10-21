@@ -10,8 +10,10 @@ from builders.observed_runs import INSTALLATION_KEY, ObservedLedger
 from finishup.domain.events import (
     ActionKind,
     ActionRecordedPayload,
+    ClientKind,
     DecisionRecordedPayload,
     EventSchema,
+    IntegrationKind,
     ObligationPublishedPayload,
     ObligationStatus,
     PlanPublishedPayload,
@@ -19,6 +21,8 @@ from finishup.domain.events import (
     RequestedItemKind,
     RequestedItemRole,
     ResultOutcome,
+    RuntimeProfile,
+    SessionOpenedPayload,
 )
 from finishup.domain.values import EventId, ObligationId, action_id, actor_id, obligation_id
 from finishup.kernel.closure_readiness import (
@@ -1459,3 +1463,149 @@ def test_publish_notices_challenge_a_first_claim_and_confirm_only_from_a_later_b
     projection = replay(ledger.prefix)
     [notice] = blocker_publication_notices(projection, ((third, payload),))
     assert notice.notice == BLOCKER_NOTICE_CONFIRMED
+
+
+@pytest.mark.parametrize("effect", ["unchanged", "changed", "unavailable", None])
+def test_a_report_rewrite_stales_verification_only_without_trusted_byte_identity(
+    effect: str | None,
+) -> None:
+    ledger = ObservedLedger()
+    _planned(ledger, _command("pytest -q"))
+    _plan(ledger, _OBLIGATION)
+    ledger.edit()
+    ledger.passes("pytest -q")
+    ledger.run(
+        "cat saved.json > evidence-report.json",
+        ResultOutcome.SUCCESS,
+        write_scope="workspace",
+        workspace_effect=effect,
+    )
+    stale = {EDITED_AFTER_LAST_VERIFICATION_GAP, PLANNED_VERIFICATION_STALE_GAP}
+    assert bool(_codes(ledger) & stale) is (effect != "unchanged")
+
+
+def test_a_contradictory_later_fingerprint_retracts_the_noop_exemption() -> None:
+    ledger = ObservedLedger()
+    _planned(ledger, _command("pytest -q"))
+    _plan(ledger, _OBLIGATION)
+    ledger.passes("pytest -q")
+    result = ledger.run(
+        "cat report.json > report.json",
+        ResultOutcome.SUCCESS,
+        write_scope="workspace",
+        workspace_effect="unchanged",
+    )
+    assert EDITED_AFTER_LAST_VERIFICATION_GAP not in _codes(ledger)
+    ledger.annotate_workspace_effect(result, "changed")
+    assert EDITED_AFTER_LAST_VERIFICATION_GAP in _codes(ledger)
+
+
+def test_noop_write_proof_survives_case_freeze_and_untrusted_annotations_do_not_supply_it() -> None:
+    from finishup.kernel.deterministic_checks import (
+        CaseAvailabilityFacts,
+        build_deterministic_case,
+        deterministic_case_from_json,
+        deterministic_case_to_json,
+    )
+
+    ledger = ObservedLedger()
+    ledger.edit()
+    ledger.passes("pytest -q")
+    result = ledger.run(
+        "cat saved.json > evidence-report.json", ResultOutcome.SUCCESS, write_scope="workspace"
+    )
+    ledger.annotate_workspace_effect(result, "unchanged", observed=False)
+    assert EDITED_AFTER_LAST_VERIFICATION_GAP in _codes(ledger)
+    ledger.annotate_workspace_effect(result, "unchanged")
+    assert EDITED_AFTER_LAST_VERIFICATION_GAP not in _codes(ledger)
+    case = build_deterministic_case(replay(ledger.prefix), ledger.prefix, CaseAvailabilityFacts())
+    assert len(case.verification_unchanged_action_ids) == 1
+    restored = deterministic_case_from_json(deterministic_case_to_json(case))
+    assert restored.verification_unchanged_action_ids == case.verification_unchanged_action_ids
+
+
+def test_an_outside_write_cannot_use_a_workspace_only_unchanged_proof() -> None:
+    ledger = ObservedLedger()
+    ledger.passes("pytest -q")
+    ledger.run(
+        "cat saved.json > /outside/report.json",
+        ResultOutcome.SUCCESS,
+        write_scope="outside_workspace",
+        workspace_effect="unchanged",
+    )
+    assert EDITED_AFTER_LAST_VERIFICATION_GAP in _codes(ledger)
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "node_modules/pkg/deep/input.json",
+        "subdir/../../input.json",
+        "subdir/../..",
+        r"subdir\..\..\input.json",
+    ],
+)
+def test_an_opaque_declared_input_prevents_the_noop_write_exemption(path: str) -> None:
+    ledger = ObservedLedger()
+    _planned(
+        ledger,
+        _command("pytest -q"),
+        RequestedItem(
+            RequestedItemKind.FILE,
+            path,
+            RequestedItemRole.INPUT,
+        ),
+    )
+    _plan(ledger, _OBLIGATION)
+    ledger.passes("pytest -q")
+    ledger.run(
+        "cat saved.json > evidence-report.json",
+        ResultOutcome.SUCCESS,
+        write_scope="workspace",
+        workspace_effect="unchanged",
+    )
+    assert EDITED_AFTER_LAST_VERIFICATION_GAP in _codes(ledger)
+    assert PLANNED_VERIFICATION_STALE_GAP in _codes(ledger)
+
+
+@pytest.mark.parametrize(
+    ("path", "covered"),
+    [
+        ("/app/subdir/../../input.json", False),
+        (r"/app/subdir\..\..\input.json", False),
+        ("/app/subdir/../input.json", True),
+        ("//app/subdir/../input.json", True),
+        ("subdir/../input.json", True),
+    ],
+)
+def test_declared_input_normalization_checks_the_known_workspace_boundary(
+    path: str, covered: bool
+) -> None:
+    ledger = ObservedLedger()
+    ledger.append(
+        EventSchema("session_opened", "1.0.0"),
+        SessionOpenedPayload(
+            task_title="Use the declared input",
+            client_kind=ClientKind.FINISHUP_CLI,
+            client_version="0.3.0",
+            integration=IntegrationKind.LOCAL_CLI,
+            profile=RuntimeProfile.STRICT_LOCAL,
+            workspace_ref="/app",
+        ),
+        observed=False,
+    )
+    _planned(
+        ledger,
+        _command("pytest -q"),
+        RequestedItem(RequestedItemKind.FILE, path, RequestedItemRole.INPUT),
+    )
+    _plan(ledger, _OBLIGATION)
+    ledger.passes("pytest -q")
+    ledger.run(
+        "cat saved.json > evidence-report.json",
+        ResultOutcome.SUCCESS,
+        write_scope="workspace",
+        workspace_effect="unchanged",
+    )
+    assert (EDITED_AFTER_LAST_VERIFICATION_GAP in _codes(ledger)) is not covered
+    assert (PLANNED_VERIFICATION_STALE_GAP in _codes(ledger)) is not covered

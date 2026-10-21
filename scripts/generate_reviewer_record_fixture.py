@@ -108,6 +108,10 @@ def document() -> dict[str, JsonValue]:
                 "canonical_hex": canonical_encode(delivery).hex(),
                 "digest": canonical_digest(delivery),
             },
+            "stopped_review": {
+                "semantic_status": "unavailable",
+                "semantic_reason": "round_limit_unassessable",
+            },
         },
         "minimum_versions": {
             "check_recorded_schema": "1.6.0",
@@ -115,7 +119,11 @@ def document() -> dict[str, JsonValue]:
             "engine": "0.1.0",
             "protocol": "0.1",
         },
-        "owns_requirements": ["ADR-006:reviewer-record", "ISSUE-1139:bounded-review-delivery"],
+        "owns_requirements": [
+            "ADR-006:reviewer-record",
+            "ADR-040:requested-review-stopped",
+            "ISSUE-1139:bounded-review-delivery",
+        ],
         "purpose": (
             "Freeze the reviewer conversation record. check-recorded 1.6.0 and the check-result "
             "1.6.0 success admit it; check-recorded 1.4.0/1.5.0 and check-result 1.5.0 refuse it."

@@ -401,6 +401,7 @@ _TODO_STATES: Final = (
 )
 _CHECKLIST_NEXT: Final = frozenset(
     {
+        "follow_overall_next",
         "decide_at_budget",
         "disclose_limitations",
         "request_receipt",
@@ -1554,8 +1555,9 @@ def _check_lead_variants(
             f"{sentence} local plan check verdict: {verdict};",
             f"{sentence}",
         )
-    if status == "not_requested" and (
-        "semantic_review_skipped_insufficient_packet" in _safe_gap_codes(source)
+    if reason == "round_limit_unassessable" or (
+        status == "not_requested"
+        and "semantic_review_skipped_insufficient_packet" in _safe_gap_codes(source)
     ):
         # tb4n1 D3: not a local-only request; the round stopped after one insufficient retry.
         return (

@@ -159,3 +159,26 @@ def test_a_rejection_no_reviewer_can_rule_on_is_not_open_work(
         ("open", "rejected_review_unavailable")
     ]
     assert checklist.next == "request_receipt"
+
+
+def test_whole_task_readiness_prevents_a_finding_only_receipt_invitation() -> None:
+    from dataclasses import replace
+
+    from builders.policy_cases import plan_record
+    from finishup.domain.events import PlanPublishedPayload
+
+    state, _ = _one(_finding(1), ResponseDisposition.SELF_VERIFIED, reasoned=True)
+    # A plan row supplies a structural target for the task-level instruction.
+    state = replace(state, plans={1: plan_record(PlanPublishedPayload(1, "Plan", ()), 2)})
+    checklist = build_finding_checklist(state, attempt_budget=5)
+    assert checklist.next == "request_receipt"
+    overall = build_overall_next(
+        _RESULT,
+        checklist,
+        state,
+        readiness=SimpleNamespace(
+            state="action_required", agent_actionable=("edited_after_last_verification",)
+        ),
+    )
+    assert overall is not None
+    assert (overall.status, overall.action) == ("action_required", "review_recorded_work")

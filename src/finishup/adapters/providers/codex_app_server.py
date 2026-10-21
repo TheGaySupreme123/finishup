@@ -21,7 +21,7 @@ import stat
 import tempfile
 from collections import deque
 from collections.abc import Callable, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Final, Literal, cast
@@ -77,7 +77,10 @@ from finishup.domain.privacy import (
     ProviderDataUseProfile,
     RequestCommitment,
 )
-from finishup.observability.logging import record_bounded_event_without_raising
+from finishup.observability.logging import (
+    record_bounded_counts_without_raising,
+    record_bounded_event_without_raising,
+)
 from finishup.observability.semantic_context import report_semantic_progress
 from finishup.ports.clock import ClockPort
 from finishup.ports.secret_memory import ProviderAttemptAuthBinding
@@ -248,10 +251,11 @@ _CODEX_JUDGMENT_JSON_SCHEMA: Final = cast(
     dict[str, JsonValue], _codex_output_schema(cast(JsonValue, STRICT_JUDGMENT_JSON_SCHEMA))
 )
 _MAX_MESSAGE_BYTES: Final = 1_048_576
-# Streamed agent-message and reasoning deltas each arrive as one notification, so a content-rich
-# judgment can legitimately cross several hundred events. Every event is still bounded by
-# ``_MAX_MESSAGE_BYTES`` and the attempt deadline; this cap only stops an unbounded stream.
+# Request and pre-disclosure queues retain their count bound. Active turns instead spend a byte
+# and work budget: discarded telemetry/deltas do not consume a useful-event allowance (#1141).
 _MAX_EVENT_COUNT: Final = 4096
+_MAX_TURN_EVENT_WORK: Final = 32 * 1024 * 1024
+_MIN_EVENT_WORK: Final = 256
 _EFFORT_PATTERN: Final = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:/+-]{0,63}$", re.ASCII)
 # Default effort for background observation advice when no routine effort is configured (#888).
 CODEX_BACKGROUND_ADVICE_EFFORT: Final = "low"
@@ -892,6 +896,7 @@ class _CodexProcess:
     # The digest of the argv this process was spawned with, frozen at launch (#1118 V3): a later
     # catalog measurement by another launch must never change what this process's evidence says.
     launcher_sha256: str | None = None
+    received_bytes: int = 0
 
     async def send(self, value: Mapping[str, object]) -> None:
         stdin = self.process.stdin
@@ -910,6 +915,7 @@ class _CodexProcess:
         if stdout is None:
             raise ValueError("codex_app_server_stdout_unavailable")
         line = await asyncio.wait_for(stdout.readline(), timeout=max(0.001, timeout))
+        self.received_bytes += len(line)
         if not line or len(line) > _MAX_MESSAGE_BYTES or not line.endswith(b"\n"):
             raise ValueError("codex_app_server_message_invalid")
         if self.stderr_task.done() and self.stderr_task.result():
@@ -1888,6 +1894,47 @@ def _record_forbidden_event(operation: str, method: object, item_type: object = 
     )
 
 
+@dataclass(slots=True)
+class _TurnEvents:
+    """Bound decoding/inspection work, retaining only closed family counts and encoded sizes."""
+
+    work: int = 0
+    wire_seen: int = 0
+    counts: dict[str, int] = field(default_factory=lambda: dict[str, int]())
+
+    def account(self, message: Mapping[str, object], received_bytes: int = 0) -> None:
+        method = message.get("method")
+        family = "control"
+        if method in ("account/rateLimits/updated", "thread/tokenUsage/updated"):
+            family = "telemetry"
+        elif type(method) is str and method.endswith("/delta"):
+            family = "delta"
+        elif method in ("item/started", "item/completed"):
+            params = message.get("params")
+            item = cast(Mapping[str, object], params).get("item") if type(params) is dict else None
+            if type(item) is dict:
+                item = cast(Mapping[str, object], item)
+                phase = item.get("phase")
+                if item.get("type") == "reasoning" or (
+                    type(phase) is str and phase in _NON_FINAL_PHASES
+                ):
+                    family = "intermediate"
+        # Telemetry may contain floats or out-of-range counters: accounting must not run the
+        # final-answer canonical validator before the telemetry can be discarded.
+        size = len(json.dumps(dict(message), ensure_ascii=False, separators=(",", ":")).encode())
+        wire_bytes = max(0, received_bytes - self.wire_seen)
+        self.wire_seen = received_bytes
+        key = "codex_event_wire_bytes"
+        self.counts[key] = self.counts.get(key, 0) + wire_bytes
+        prefix = f"codex_event_{family}"
+        for suffix, amount in (("count", 1), ("bytes", size)):
+            key = f"{prefix}_{suffix}"
+            self.counts[key] = self.counts.get(key, 0) + amount
+        self.work += max(_MIN_EVENT_WORK, size, wire_bytes)
+        if self.work > _MAX_TURN_EVENT_WORK:
+            raise ValueError("codex_app_server_event_limit")
+
+
 def _notification_item(
     message: Mapping[str, object],
 ) -> tuple[str | None, str | None, str | None]:
@@ -2400,6 +2447,7 @@ class CodexAppServerEvaluator:
             raise ValueError("codex_runtime_attempt_binding_invalid")
 
         started = self.clock.monotonic_seconds()
+        events = _TurnEvents()
         runtime: _CodexProcess | None = None
         auth_mode: Literal["chatgpt"] | None = None
         plan_type: str | None = None
@@ -2506,6 +2554,7 @@ class CodexAppServerEvaluator:
             )
             strict_json_parse(case.payload)
             case_disclosed = True
+            events.wire_seen = getattr(runtime, "received_bytes", 0)
             turn_result = await runtime.request(
                 31 if exchange is None else 100 + len(exchange.history),
                 "turn/start",
@@ -2538,12 +2587,10 @@ class CodexAppServerEvaluator:
             untagged_texts: list[str] = []
             messages = runtime.pending_notifications
             runtime.pending_notifications = deque()
-            for _ in range(_MAX_EVENT_COUNT):
-                message = (
-                    messages.popleft()
-                    if messages
-                    else await runtime.read(_remaining(deadline, self.clock))
-                )
+            while True:
+                remaining = _remaining(deadline, self.clock)
+                message = messages.popleft() if messages else await runtime.read(remaining)
+                events.account(message, getattr(runtime, "received_bytes", 0))
                 method = message.get("method")
                 if "method" in message and "id" in message:
                     _record_forbidden_event("codex_app_server_tool_request_forbidden", method)
@@ -2561,7 +2608,7 @@ class CodexAppServerEvaluator:
                     except ValueError:
                         # Bookkeeping cannot overrule the eventual answer or authoritative
                         # native error. Keep only this closed diagnostic; a terminal failure
-                        # below replaces it. Event-count, byte, and deadline bounds still apply.
+                        # below replaces it. Byte/work and deadline bounds still apply.
                         failure_stage = "rate_limits_invalid"
                     continue
                 if method == "thread/tokenUsage/updated":
@@ -2675,8 +2722,6 @@ class CodexAppServerEvaluator:
                         raise ValueError("reviewer_reply_not_object")
                     reply = cast(dict[str, JsonValue], parsed)
                 break
-            else:
-                raise ValueError("codex_app_server_event_limit")
         except Exception as error:  # noqa: BLE001 - no foreign native exception crosses boundary
             failure, failure_class = _classify_runtime_exception(
                 error, turn_acknowledged=turn_acknowledged
@@ -2720,6 +2765,15 @@ class CodexAppServerEvaluator:
                 finally:
                     cleanup = await _cleanup_guaranteed(runtime)
 
+        record_bounded_counts_without_raising(
+            component="codex_app_server",
+            operation="turn_notifications",
+            outcome="completed" if turn_completed else "incomplete",
+            counts={
+                **events.counts,
+                "duration_ms": max(0, int((self.clock.monotonic_seconds() - started) * 1000)),
+            },
+        )
         if cleanup == "failed" and failure is None:
             failure = "post_ack_unknown" if turn_acknowledged else "unavailable"
             failure_class = SemanticFailureClass.TRANSPORT

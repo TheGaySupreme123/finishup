@@ -1434,12 +1434,77 @@ def workspace_verification_edits(
     return tuple(sorted(edits))
 
 
+def _verification_input_not_fingerprinted(
+    value: str, *, directory: bool, workspace_root: str | None
+) -> bool:
+    """Normalize declared inputs before asking whether the workspace comparison covers them."""
+
+    path = posixpath.normpath(value.replace("\\", "/"))
+    if path.startswith("/"):
+        path = "/" + path.lstrip("/")
+        if workspace_root is None or not (
+            path == workspace_root or path.startswith(workspace_root.rstrip("/") + "/")
+        ):
+            return True
+    elif path == ".." or path.startswith("../"):
+        return True
+    return path_beyond_workspace_fingerprint(
+        path, directory=directory, workspace_root=workspace_root
+    )
+
+
+def verification_unchanged_actions(
+    projection: ProjectionState,
+    records: Iterable[LedgerRecord],
+) -> frozenset[ActionId]:
+    """In-workspace shell writes whose trusted before/after input state is identical (#1143).
+
+    This is a bounded plaster, not a claim to know arbitrary command dependencies. Unknown or
+    contradictory fingerprints and writes outside the compared workspace remain stale-making.
+    """
+
+    from finishup.kernel.later_material import workspace_effects
+
+    records = tuple(records)
+    root = task_workspace_root(records)
+    # Deliverables are checked by workspace_effects; verification also depends on declared
+    # inputs. An opaque input must not borrow a comparison that did not cover it.
+    if any(
+        row.payload is None
+        or row.redacted
+        or any(
+            item.role is RequestedItemRole.INPUT
+            and item.item_kind in _DECLARED_OUTPUT_KINDS
+            and _verification_input_not_fingerprinted(
+                item.value,
+                directory=item.item_kind is RequestedItemKind.DIRECTORY,
+                workspace_root=root,
+            )
+            for item in row.payload.requested_items
+        )
+        for row in projection.obligations.values()
+    ):
+        return frozenset()
+    effects = workspace_effects(records, projection, for_verification_freshness=True)
+    return frozenset(
+        action
+        for action in effects.quiet
+        if (row := projection.actions.get(action)) is not None
+        and row.payload is not None
+        and row.payload.action_kind is ActionKind.COMMAND
+        and "write workspace" in observed_action_runtime_tokens(row.payload.description)
+        and "write outside_workspace" not in observed_action_runtime_tokens(row.payload.description)
+    )
+
+
 def _observed_state(
     projection: ProjectionState,
     observed: frozenset[EventId],
     cooperative: frozenset[EventId],
     records: Iterable[LedgerRecord] = (),
 ) -> _ObservedState:
+    records = tuple(records)
+    unchanged = verification_unchanged_actions(projection, records)
     exempt = non_counting_edits_exempt(projection)
     stale_exempt = stale_exempt_write_tokens(projection)
     runs: list[_ObservedRun] = []
@@ -1482,7 +1547,9 @@ def _observed_state(
                 # whatever its exit status (``: > f; false`` emptied ``f``). A write to the
                 # agent's notes counts only when the task declares a notes-like output. A write of
                 # only project documentation is material but leaves verification current.
-                if observed_write_stales_verification(description, stale_exempt):
+                if payload.action_id not in unchanged and observed_write_stales_verification(
+                    description, stale_exempt
+                ):
                     latest_edit = max(latest_edit or 0, result.source_frontier)
                     latest_edit_event = action.source_event_id
                 edit_tokens.update(tokens & (SHELL_EDIT_TOKENS | NON_COUNTING_WRITE_TOKENS))
@@ -1537,7 +1604,9 @@ def _observed_state(
                 # arrives counts like a pending edit. A Codex shell ``apply_patch <<EOF`` is
                 # always one: Codex applies the patch itself and fires only the pre-event
                 # (#1041), so its write token is the ledger's only record of the edit (#1046).
-                if observed_write_stales_verification(payload.description, stale_exempt):
+                if payload.action_id not in unchanged and observed_write_stales_verification(
+                    payload.description, stale_exempt
+                ):
                     latest_edit = max(latest_edit or 0, action.source_frontier)
                     latest_edit_event = action.source_event_id
                 edit_tokens.update(tokens & (SHELL_EDIT_TOKENS | NON_COUNTING_WRITE_TOKENS))

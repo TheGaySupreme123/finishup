@@ -3,6 +3,8 @@ from __future__ import annotations
 import hashlib
 import hmac
 import json
+import re
+from collections.abc import Iterator
 from dataclasses import dataclass
 
 import pytest
@@ -521,6 +523,132 @@ def test_redacted_line_stays_clean_after_json_encoding(line: bytes) -> None:
     assert scan_for_sensitive_content(encoded) == ()
     # Redacting the encoded form again is a fixed point.
     assert redact_heuristic_spans(encoded) == (encoded, 0)
+
+
+@pytest.mark.parametrize("depth", range(7))
+@pytest.mark.parametrize("marker", (b"[REDACTED]", EGRESS_CREDENTIAL_PLACEHOLDER))
+@pytest.mark.parametrize("ending", (b"", b"\n", b"\r\n\t"))
+def test_exact_replacement_marker_is_stable_in_nested_json(
+    depth: int, marker: bytes, ending: bytes
+) -> None:
+    encoded = b"API_KEY=" + marker + ending
+    for _ in range(depth):
+        encoded = canonical_encode({"content": encoded.decode()})
+    assert scan_for_sensitive_content(encoded) == ()
+    assert redact_heuristic_spans(encoded) == (encoded, 0)
+
+
+@pytest.mark.parametrize("depth", range(5))
+@pytest.mark.parametrize(
+    "value",
+    (
+        EGRESS_CREDENTIAL_PLACEHOLDER + b"realsecret",
+        EGRESS_CREDENTIAL_PLACEHOLDER + b"\\",
+        EGRESS_CREDENTIAL_PLACEHOLDER + b"\\nsecret",
+        EGRESS_CREDENTIAL_PLACEHOLDER + b'\\"secret42',
+        EGRESS_CREDENTIAL_PLACEHOLDER + b'\\"}',
+        b"hunter2",
+        b"sk-" + b"a1" * 20,
+    ),
+)
+def test_marker_lookalikes_and_secrets_are_not_exempted(depth: int, value: bytes) -> None:
+    encoded = b"password=" + value + b"\n"
+    for _ in range(depth):
+        encoded = canonical_encode({"content": encoded.decode()})
+    assert scan_for_sensitive_content(encoded)
+    with pytest.raises(PrivacyFenceError):
+        assert_plaintext_safe(encoded, "synthetic_secret")
+
+
+def test_nested_marker_framing_keeps_unicode_offsets_and_scan_chunk_boundaries() -> None:
+    line = "é" * 32_760 + "\npassword=" + EGRESS_CREDENTIAL_PLACEHOLDER.decode() + "\n"
+    packet = canonical_encode({"content": line})
+    exchange = canonical_encode({"packet": packet.decode()})
+    assert scan_for_sensitive_content(exchange) == ()
+
+
+def test_a_clean_marker_elsewhere_does_not_exempt_a_secret_suffix() -> None:
+    packet = canonical_encode(
+        {
+            "clean": "password=" + EGRESS_CREDENTIAL_PLACEHOLDER.decode() + "\n",
+            "secret": "password=" + EGRESS_CREDENTIAL_PLACEHOLDER.decode() + '\\"secret42',
+        }
+    )
+    assert scan_for_sensitive_content(canonical_encode({"packet": packet.decode()}))
+
+
+@pytest.mark.parametrize("marker_count", (1, 128))
+@pytest.mark.parametrize("depth", (2, 4))
+def test_nested_markers_share_bounded_scans_and_decoding(
+    monkeypatch: pytest.MonkeyPatch, marker_count: int, depth: int
+) -> None:
+    # A reviewer user message shares its large JSON string across all excerpt markers. Neither
+    # the number of full string scans nor the bytes decoded may grow with that marker count.
+    encoded = canonical_encode(
+        {
+            "context": "ordinary context " * 4096,
+            "excerpts": [
+                {"content": "API_KEY=" + EGRESS_CREDENTIAL_PLACEHOLDER.decode() + "\n"}
+                for _ in range(marker_count)
+            ],
+        }
+    )
+    for _ in range(depth - 1):
+        encoded = canonical_encode({"content": encoded.decode()})
+    loads = json.loads
+    tokens: re.Pattern[bytes] = getattr(privacy_module, "_JSON_STRING_TOKEN")
+    decoded_sizes: list[int] = []
+    scanned_sizes: list[int] = []
+
+    def counted_loads(value: bytes) -> object:
+        decoded_sizes.append(len(value))
+        return loads(value)
+
+    class CountedTokens:
+        def finditer(self, value: bytes) -> Iterator[re.Match[bytes]]:
+            scanned_sizes.append(len(value))
+            return tokens.finditer(value)
+
+    monkeypatch.setattr(privacy_module.json, "loads", counted_loads)
+    monkeypatch.setattr(privacy_module, "_JSON_STRING_TOKEN", CountedTokens())
+    for scan_number in (1, 2):
+        assert scan_for_sensitive_content(encoded) == ()
+        assert len(decoded_sizes) == len(scanned_sizes) == (depth - 1) * scan_number
+        assert sum(decoded_sizes) <= len(encoded) * (depth - 1) * scan_number
+        assert sum(scanned_sizes) <= len(encoded) * (depth - 1) * scan_number
+
+
+@pytest.mark.parametrize("ensure_ascii", (False, True))
+@pytest.mark.parametrize("depth", (2, 4))
+def test_cached_marker_offsets_preserve_unicode_escapes_and_occurrence_proof(
+    ensure_ascii: bool, depth: int
+) -> None:
+    marker = EGRESS_CREDENTIAL_PLACEHOLDER.decode()
+    # Prefix escapes have different UTF-8 widths, including a surrogate pair with ensure_ascii.
+    # Both occurrences share one decoded string but only the first has genuine JSON framing.
+    for suffix in ("", '\\"}', '\\"secret42'):
+        encoded = json.dumps(
+            {
+                "unicode": 'é€😀\\/\b\f\t\r\n"',
+                "clean": "password=" + marker + "\n",
+                "other": "password=" + marker + suffix + "\n",
+            },
+            ensure_ascii=ensure_ascii,
+        ).encode()
+        for _ in range(depth - 1):
+            encoded = json.dumps({"content": encoded.decode()}, ensure_ascii=ensure_ascii).encode()
+        assert bool(scan_for_sensitive_content(encoded)) is bool(suffix)
+
+
+@pytest.mark.parametrize("bad_prefix", (b"\\q", b"\\ud800", b"\xff", b"\x01"))
+def test_cached_marker_framing_fails_closed_for_invalid_json_strings(bad_prefix: bytes) -> None:
+    nested = canonical_encode(
+        {"content": "password=" + EGRESS_CREDENTIAL_PLACEHOLDER.decode() + "\n"}
+    )
+    encoded = canonical_encode({"packet": nested.decode()})
+    # Invalid string bytes before the matched occurrence must invalidate the enclosing proof.
+    encoded = encoded.replace(b"password", bad_prefix + b" password")
+    assert scan_for_sensitive_content(encoded)
 
 
 @pytest.mark.parametrize(

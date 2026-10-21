@@ -147,7 +147,7 @@ def test_skipped_review_reason_splits_deferral_from_a_local_only_stop() -> None:
     stopped = CheckRequest.model_construct(mode="semantic_required")
     assert (
         _skipped_review_reason(stopped, round_stopped=True, deferred_before_first_edit=False)
-        is SemanticReason.DETERMINISTIC_MODE
+        is SemanticReason.ROUND_LIMIT_UNASSESSABLE
     )
     local = CheckRequest.model_construct(mode="deterministic_only")
     assert (

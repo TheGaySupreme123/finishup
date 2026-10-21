@@ -24,7 +24,7 @@ from finishup.application.check import (
     run_deterministic_policies,
 )
 from finishup.application.egress import (
-    _within_excerpt_limits,  # pyright: ignore[reportPrivateUsage]
+    _excerpt_limit_capacity,  # pyright: ignore[reportPrivateUsage]
 )
 from finishup.application.semantic_case import (
     LineageSemanticCapacityExceeded,
@@ -162,7 +162,7 @@ def test_a_case_over_the_ceiling_is_rebuilt_below_it_with_the_reduction_disclose
 
     prepared = _prepared(planned)
     assert len(prepared) <= _LIMIT
-    assert _within_excerpt_limits(prepared, _CURRENT)
+    assert _excerpt_limit_capacity(prepared, _CURRENT) is None
     assert 1 <= rounds <= MAX_CEILING_PLANNING_ROUNDS
     assert CEILING_PLANNING_GAP in planned.packet.coverage.known_gaps
     # A narrowing of the approved selection, never a widening, and still more than 16 excerpts.

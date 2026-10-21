@@ -312,7 +312,8 @@ REVIEW_CHECK_EVENT_SCHEMA_VERSION: Final = "1.4.0"
 # earlier bytes and a 1.4.0 record of ``deterministic_mode`` still replays.
 DEFERRED_CHECK_EVENT_SCHEMA_VERSION: Final = "1.5.0"
 # 1.6.0 (#1118) is 1.5.0 plus the reviewer conversation's record and is chosen exactly when that
-# record is present. 1.4.0 and 1.5.0 readers reject the field, so it never rides an older version.
+# record is present, or for a requested review stopped at its unassessability cap (#1149).
+# 1.4.0 and 1.5.0 readers reject the field/reason, so neither rides an older version.
 REVIEWER_CHECK_EVENT_SCHEMA_VERSION: Final = "1.6.0"
 SEMANTIC_EVENT_SCHEMA_VERSION: Final = "1.2.0"
 SEMANTIC_EVENT_SCHEMA_VERSIONS: Final = ("1.1.0", SEMANTIC_EVENT_SCHEMA_VERSION)
@@ -5732,8 +5733,15 @@ def _validate_event_schema_payload(
         # 1.6.0 exists exactly for the reviewer record (#1118), so that gate is first. 1.5.0 exists
         # only for the pre-edit deferral reason. A deferred check still carries review_mode and
         # totals, so that gate is next: those fields do not promote it to 1.4.0.
-        if payload.reviewer is not None or schema.version == REVIEWER_CHECK_EVENT_SCHEMA_VERSION:
-            if payload.reviewer is None or schema.version != REVIEWER_CHECK_EVENT_SCHEMA_VERSION:
+        if (
+            payload.reviewer is not None
+            or payload.semantic_reason is SemanticReason.ROUND_LIMIT_UNASSESSABLE
+            or schema.version == REVIEWER_CHECK_EVENT_SCHEMA_VERSION
+        ):
+            if schema.version != REVIEWER_CHECK_EVENT_SCHEMA_VERSION or (
+                payload.reviewer is None
+                and payload.semantic_reason is not SemanticReason.ROUND_LIMIT_UNASSESSABLE
+            ):
                 raise ProtocolValueError("invalid_event_schema")
         elif payload.semantic_reason is SemanticReason.DEFERRED_BEFORE_FIRST_EDIT:
             if schema.version != DEFERRED_CHECK_EVENT_SCHEMA_VERSION:

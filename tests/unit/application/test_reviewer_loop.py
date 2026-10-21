@@ -26,7 +26,12 @@ from finishup.adapters.providers.reviewer_reply import (
     decode_reviewer_reply,
     reviewer_reply_schema,
 )
-from finishup.adapters.task_input_read import ReadDeadline
+from finishup.adapters.task_input_read import (
+    MAX_TASK_INPUT_READ_BYTES,
+    ReadDeadline,
+    list_beneath,
+    read_text_beneath,
+)
 from finishup.application.check import validate_semantic_judgment
 from finishup.application.egress import PrivacyCoordinator, reviewer_history_admissible
 from finishup.application.reviewer_broker import ReadElement, ReadRoot, ReviewerBroker
@@ -243,6 +248,74 @@ async def test_a_frozen_ledger_miss_never_claims_the_item_was_not_recorded() -> 
 
 def _data(result: dict[str, JsonValue]) -> dict[str, JsonValue]:
     return cast(dict[str, JsonValue], result["data"])
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    "suffix",
+    [b"ordinary text", b"postgres:" + b"//alice:" + b"synthetic-password@db/name", "é".encode()],
+)
+async def test_a_native_read_over_the_physical_limit_withholds_every_byte(
+    tmp_path: Path, suffix: bytes
+) -> None:
+    # #1134: even a credential or UTF-8 sequence split at the 1 MiB boundary is never exposed.
+    cut = MAX_TASK_INPUT_READ_BYTES
+    prefix = b"x\n" * ((cut - 20) // 2)
+    data = prefix + suffix * 20
+    (tmp_path / "large.txt").write_bytes(data)
+    root = str(tmp_path.resolve())
+    assert read_text_beneath(root, "large.txt", excluded=(), expired=lambda: False) == (
+        b"",
+        len(data),
+    )
+    loop, broker, _model, _ = _setup(
+        _text("w1", "large.txt", len(prefix) // 2 + 1), _FINAL, roots=(ReadRoot("w1", root),)
+    )
+    (result,) = _observations((await loop.run()).history)
+    assert (result["status"], result["reason"], result["truncated"]) == (
+        "partial",
+        "native_read_limit",
+        True,
+    )
+    assert result["data"] == {"source_bytes": len(data)}
+    assert result["citable_refs"] == [] and result["next_cursor"] is None
+    assert not broker.text_by_ref
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    ("count", "hidden", "truncated"),
+    [(32, False, False), (128, False, False), (129, False, True), (1000, True, True)],
+)
+async def test_native_directory_inspection_exhaustion_is_explicit(
+    tmp_path: Path, count: int, hidden: bool, truncated: bool
+) -> None:
+    for i in range(count):
+        (tmp_path / f"{'.' if hidden else ''}file{i:04}.txt").write_text("x")
+    listing = list_beneath(str(tmp_path.resolve()), "", excluded=(), expired=lambda: False)
+    assert listing is not None and listing[1] is truncated
+    action = _read("read_file", root_id="w1", path=".", mode="list", cursor=None)
+    loop, _broker, _model, _ = _setup(
+        action, _FINAL, roots=(ReadRoot("w1", str(tmp_path.resolve())),)
+    )
+    (result,) = _observations((await loop.run()).history)
+    assert result["truncated"] is (truncated or count > 32)
+    assert result["reason"] == ("inspection_limit" if truncated else None)
+    assert result["status"] == ("partial" if truncated or count > 32 else "ok")
+    if hidden:
+        assert result["data"] is None and result["next_cursor"] is None
+
+
+@pytest.mark.anyio
+async def test_a_large_valid_action_ends_as_capacity_before_reserving_a_read() -> None:
+    # Escaping can make a valid action exceed the ordinary action allowance.
+    loop, broker, model, _ = _setup(_text("w1", "\\" * 509))
+    broker._exchange_room = lambda: 2048  # pyright: ignore[reportPrivateUsage]
+    outcome = await loop.run()
+    assert outcome.reason == "case_capacity_exceeded" and outcome.judgment is None
+    assert outcome.capacity is not None and outcome.capacity[0] > outcome.capacity[1]
+    assert broker.calls == 0 and len(model.calls) == 1
+    assert await broker.store.usage() == (1, 0)
 
 
 def _late(model: _Script, loop: ReviewerLoop) -> None:

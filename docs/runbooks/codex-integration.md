@@ -1,5 +1,13 @@
 # Codex integration runbook
 
+Reviewer robustness (#1134–#1137, #1141) is shared service behavior on macOS, Linux and WSL 2:
+native reads over 1 MiB are withheld with an explicit limit, sampled directory listings disclose
+inspection exhaustion, and read capacity is reported separately from invalid replies. The Codex
+reviewer route also withholds judgments after unconfirmed session cleanup and bounds active
+notifications by bytes/work. These evaluator rules apply whichever host requested the review;
+native acceptance on each host/OS remains a separate claim. See
+[the reviewer contract](../INTERFACES.md#reviewer-loop-issue-1118-unit-2).
+
 For setup prerequisites, use `finishup setup status --next --host codex` with the same
 executable, configuration root and project. `--operation connection` inspects installation without
 provider sign-in; `local` and `review` inspect their respective vault/privacy prerequisites.
@@ -4038,3 +4046,12 @@ same removal flow. Agents direct the owner to it and never run it; no MCP or cha
 path is added. The configured API fallback is targeted when Codex is primary. Binding and privacy
 policy stay unchanged, and status is presence-only after readiness reload. Shared-path tests do not
 claim a new native-host or platform certification.
+
+**Closure honesty (#1140, #1143, #1144, #1149). Host decision: supported through shared service
+results.** Check carries the same readiness verdict that status and Stop consume, with finding
+work, missing assessment input and standing limits distinguished. A stopped requested review is
+`unavailable / round_limit_unassessable`, with no new attempt, and required review remains
+incomplete. Receipt JSON/markdown/text distinguish an agent-disproved concern from an asserted
+repair. Trusted byte-identical in-workspace shell rewrites preserve verification freshness;
+changed reports remain conservative pending #1143's dependency/role manifest. These decisions
+are shared across macOS, Linux and Windows through WSL 2; no native Windows support is implied.

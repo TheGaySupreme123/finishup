@@ -1536,15 +1536,18 @@ def test_a_suffix_less_binary_the_change_marks_is_an_unsupported_data_type() -> 
             assert _named_file_review(name, kind, binary_paths=binary) == [
                 "yoetz_limit_unsupported_data_type"
             ], (name, kind)
-    # A text file in the same change, and a binary's name outside the workspace, stay agent work.
+    # A text file in the same change stays agent work. An outside-root target needs owner
+    # authority; publishing it elsewhere is not an agent continuation (#1140).
     for name in (
         "Makefile",
         "src/solver.c",
-        "/elsewhere/solver",
-        "/elsewhere/old tool",
         "old  tool",
     ):
         assert _named_file_review(name, binary_paths=binary) == ["agent_suppliable"], name
+    for name in ("/elsewhere/solver", "/elsewhere/old tool"):
+        assert _named_file_review(name, binary_paths=binary) == [
+            "structurally_unavailable_on_this_host"
+        ]
 
 
 def test_an_other_item_whose_requested_outputs_are_marked_binary_is_a_finishup_limit() -> None:
@@ -2190,3 +2193,19 @@ def test_a_hook_observed_target_is_answered_by_the_published_command_text(w6_key
     }
     case = _w6_case(actions=observed_target, kind="command_identity", target=str(act(3)))
     assert _w6_supplied(case) == ((str(act(93)),),)
+
+
+def test_a_wrong_type_event_is_a_limit_rather_than_an_impossible_output_request() -> None:
+    # A session-resumed id can be citable without denoting any output-bearing row (#1140).
+    target = str(evt(99))
+    case = make_case(extra_refs=(evt(99),))
+    reviewed = review_missing_for_assessment(
+        case,
+        (),
+        _repeat("verification_output", target),
+        unsuppliable_kinds=frozenset(),
+    )
+    assert [item.availability for item in reviewed.items] == [
+        "structurally_unavailable_on_this_host"
+    ]
+    assert "semantic_missing_agent_suppliable" not in reviewed.gaps

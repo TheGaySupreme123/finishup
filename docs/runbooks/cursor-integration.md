@@ -1,5 +1,12 @@
 # Cursor local integration runbook
 
+Reviewer robustness (#1134–#1137, #1141) applies to Cursor IDE and CLI through the shared service:
+oversized native reads are withheld, sampled listings disclose inspection exhaustion, and read
+capacity is distinct from invalid replies. Codex session cleanup and notification bounds also
+apply when the configured review provider is Codex; they do not depend on the agent host. This is
+shared behavior on macOS, Linux and WSL 2, without claiming new native acceptance. See
+[the reviewer contract](../INTERFACES.md#reviewer-loop-issue-1118-unit-2).
+
 MCP input advertisements use the shared compact authoring schema, targeting 4,800 bytes per tool.
 Required fields, enums and event envelopes remain inline; read `read_guidance` at
 `finishup://guidance/request-templates.md` for payload variants, conditional rules and complete
@@ -2983,3 +2990,12 @@ Cursor keeps the canonical full JSON copy in the MCP text channel.
 The Codex compact structured lead leaves that contract unchanged.
 Offline contract tests cover the shared packet and read paths.
 Native Cursor delivery has not been re-dogfooded here. Issue #1139 owns that validation gap.
+
+**Closure honesty (#1140, #1143, #1144, #1149). Host decision: supported through shared service
+results.** Check carries the same readiness verdict that status and Stop consume, with finding
+work, missing assessment input and standing limits distinguished. A stopped requested review is
+`unavailable / round_limit_unassessable`, with no new attempt, and required review remains
+incomplete. Receipt JSON/markdown/text distinguish an agent-disproved concern from an asserted
+repair. Trusted byte-identical in-workspace shell rewrites preserve verification freshness;
+changed reports remain conservative pending #1143's dependency/role manifest. These decisions
+are shared across macOS, Linux and Windows through WSL 2; no native Windows support is implied.

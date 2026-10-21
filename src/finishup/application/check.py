@@ -320,6 +320,7 @@ from finishup.version import ENGINE_VERSION
 if TYPE_CHECKING:  # the inspection module imports status, which imports this module
     from finishup.application.check_inspection import Application as CheckInspectionApplication
     from finishup.application.check_inspection import CheckInspection
+    from finishup.application.status import Application as StatusApplication
 
 __all__ = [
     "SEMANTIC_CASE_CONTENT_GAPS",
@@ -817,6 +818,11 @@ def check_internal_json(result: CheckCommitResult) -> dict[str, JsonValue]:
             if result.overall_next is None
             else {"overall_next": _overall_next_json(result.overall_next)}
         ),
+        **(
+            {"closure_readiness": dict(result.closure_readiness.items())}
+            if result.closure_readiness is not None
+            else {}
+        ),
         # W6 (ADR-043 amendment): the bounded lead every host reads first, derived here so the
         # MCP result, CLI JSON, an import's check result and a status recovery read agree.
         **({} if not (agent_next := _agent_next(result)) else {"agent_next": agent_next}),
@@ -1002,7 +1008,11 @@ async def _lineage_at_frontier(
 
 
 async def replayed_check_view(
-    app: Application, runtime: TaskRuntime, result: CheckCommitResult
+    app: Application,
+    runtime: TaskRuntime,
+    result: CheckCommitResult,
+    *,
+    route_profile: Literal["policy", "strict"] | None = None,
 ) -> CheckCommitResult:
     """A stored committed check as a same-id replay returns it (before project advice).
 
@@ -1013,7 +1023,7 @@ async def replayed_check_view(
 
     replayed = await _attach_replayed_lineage_preview(runtime, result)
     replayed = await _attach_replayed_fact_lineage(runtime, replayed)
-    return await _attach_finding_checklist(app, runtime, replayed)
+    return await _attach_finding_checklist(app, runtime, replayed, route_profile=route_profile)
 
 
 async def _attach_replayed_lineage_preview(
@@ -1605,6 +1615,7 @@ def build_overall_next(
     *,
     obligations: tuple[ObligationClosure, ...] | None = None,
     predicted_conclusion: str | None = None,
+    readiness: object | None = None,
 ) -> CheckOverallNext | None:
     """Derive the task continuation without letting the finding list speak for the task (#963).
 
@@ -1619,6 +1630,19 @@ def build_overall_next(
         # fabricated. The structured continuation is therefore omitted and the caller keeps the
         # existing coverage/result fields.
         return None
+    if readiness is not None and getattr(readiness, "state", None) in {
+        "ready",
+        "ready_with_limitations",
+    }:
+        ready_state = cast(Literal["ready", "ready_with_limitations"], getattr(readiness, "state"))
+        return CheckOverallNext(
+            status=ready_state,
+            action="request_receipt",
+            acknowledged_incomplete_endpoint="receipt"
+            if ready_state == "ready_with_limitations"
+            else None,
+            predicted_conclusion=predicted_conclusion,
+        )
     supply = _supply_overall_next(result, predicted_conclusion)
     if supply is not None:
         return supply
@@ -1670,6 +1694,29 @@ def build_overall_next(
             target_refs=recorded_work_refs,
             predicted_conclusion=predicted_conclusion,
         )
+    # The finding list is only one part of closure. Use the same verdict Stop and status read,
+    # including live lineage, stale verification and check currency, before offering a receipt.
+    if readiness is not None:
+        state = getattr(readiness, "state", None)
+        if state == "action_required":
+            plans = () if projection is None else tuple(projection.plans.values())
+            tested = None if projection is None else projection.latest_tested_state
+            target = (
+                str(max(plans, key=lambda row: row.source_frontier).source_event_id)
+                if plans
+                else str(tested.source_check_event_id)
+                if tested is not None
+                else None
+            )
+            if target is None:
+                return None
+            return CheckOverallNext(
+                status="action_required",
+                action="review_recorded_work",
+                target_refs=(target,),
+                predicted_conclusion=predicted_conclusion,
+            )
+        return None
     counted_closures = checklist.closure_counts
     settled = bool(
         (
@@ -2040,6 +2087,7 @@ async def _attach_finding_checklist(
     result: CheckCommitResult,
     *,
     coverage_by_ref: Mapping[FindingBasisRef, Coverage] | None = None,
+    route_profile: Literal["policy", "strict"] | None = None,
 ) -> CheckCommitResult:
     """Attach the task's findings as a to-do list after this check (issue #905).
 
@@ -2084,6 +2132,18 @@ async def _attach_finding_checklist(
         checklist = build_finding_checklist(
             projection, attempt_budget=budget, records=loaded.records
         )
+        # Local import: status recovers check outcomes through this module, while both now
+        # consume its one snapshot-bound closure verdict rather than deriving competing ones.
+        from finishup.application.status import closure_readiness_at
+
+        readiness = await closure_readiness_at(
+            cast("StatusApplication", app),
+            runtime,
+            result.result_frontier,
+            result.request_id,
+            loaded=loaded,
+            route_profile=route_profile,
+        )
         overall_next = build_overall_next(
             result,
             checklist,
@@ -2091,11 +2151,21 @@ async def _attach_finding_checklist(
             coverage_by_ref,
             obligations=loaded.basis.obligations,
             predicted_conclusion=predict_receipt_conclusion(loaded.basis).conclusion.value,
+            readiness=readiness,
         )
         return replace(
             result,
-            finding_checklist=checklist,
+            finding_checklist=(
+                replace(checklist, next="request_receipt")
+                if readiness.state in {"ready", "ready_with_limitations"}
+                else replace(checklist, next="follow_overall_next")
+                if checklist.next == "request_receipt"
+                else checklist
+            ),
             overall_next=overall_next,
+            closure_readiness=JsonObject(
+                cast(dict[str, JsonValue], readiness.model_dump(mode="json", exclude_unset=True))
+            ),
         )
     except Exception as exc:
         record_unexpected_exception_without_raising(
@@ -5457,14 +5527,15 @@ def _skipped_review_reason(
 ) -> SemanticReason | None:
     """The ``not_requested`` reason when this check will not dispatch a review.
 
-    The pre-edit deferral (#1046) keeps its own reason. A local-only request and a stopped
-    insufficient-packet round stay on ``deterministic_mode``.
+    Local-only, pre-edit deferral and a requested review stopped at its round cap are distinct.
     """
 
     if deferred_before_first_edit:
         return SemanticReason.DEFERRED_BEFORE_FIRST_EDIT
-    if request.mode == "deterministic_only" or round_stopped:
+    if request.mode == "deterministic_only":
         return SemanticReason.DETERMINISTIC_MODE
+    if round_stopped:
+        return SemanticReason.ROUND_LIMIT_UNASSESSABLE
     return None
 
 
@@ -5491,7 +5562,12 @@ async def _semantic_evaluation(
         # tb4n1 D3: after two insufficient-packet reviews in a row with no edit since, the round
         # stops; the check runs its local checks only and discloses why (see the commit path).
         # Issue #1046: the pre-edit deferral is the same local-only run with its own reason.
-        return FinalSemanticEvaluation(SemanticStatus.NOT_REQUESTED, skipped)
+        status = (
+            SemanticStatus.UNAVAILABLE
+            if skipped is SemanticReason.ROUND_LIMIT_UNASSESSABLE
+            else SemanticStatus.NOT_REQUESTED
+        )
+        return FinalSemanticEvaluation(status, skipped)
     if route_profile == "strict":
         return FinalSemanticEvaluation(
             SemanticStatus.BLOCKED_BY_POLICY,
@@ -5928,7 +6004,9 @@ async def execute_check_commit(
                 digest,
             )
         if isinstance(frozen_or_replay, CheckCommitResult):
-            replayed = await replayed_check_view(app, runtime, frozen_or_replay)
+            replayed = await replayed_check_view(
+                app, runtime, frozen_or_replay, route_profile=route_profile
+            )
             # The ledger replay is frozen; only the additive project-advice projection is current.
             return await _attach_current_project_advisory_notes(app, runtime.task_id, replayed)
         frozen = frozen_or_replay
@@ -6171,9 +6249,9 @@ async def execute_check_commit(
             route_profile=route_profile,
             workspace_changed=workspace_changed,
         )
-        round_stopped = bool(skip_gaps)
+        round_stopped = SEMANTIC_REVIEW_SKIPPED_INSUFFICIENT_PACKET_GAP in skip_gaps
         deferred_before_first_edit = SEMANTIC_REVIEW_DEFERRED_BEFORE_FIRST_EDIT_GAP in skip_gaps
-        semantic_wait = _semantic_wait(request, runtime, round_stopped=round_stopped)
+        semantic_wait = _semantic_wait(request, runtime, round_stopped=bool(skip_gaps))
         if semantic_wait and frozen.lease.phase is CheckPhase.LOCAL_READY:
             lease = await runtime.ledger.advance_check_phase(
                 frozen.lease,
@@ -6598,6 +6676,7 @@ async def execute_check_commit(
             runtime,
             projected,
             coverage_by_ref=frozen.case.coverage_by_ref,
+            route_profile=route_profile,
         )
         # Advice is deliberately attached after the deterministic commit.  It is current
         # projection context, never part of the frozen check event or its verdict calculation.
