@@ -851,3 +851,40 @@ The additive batch JSON contract is `yoetz.host-connection-batch-report/1`, regi
 `integrations/host-connection-batch-1.0.0.schema.json`; per-host reports and plans keep their
 existing identifiers. No MCP, hook or receipt contract changes. This amendment adds no platform
 or native-session certification beyond the existing adapters' evidence.
+
+### Amendment — explicit home-folder projects (2026-10-21, issue #1154)
+
+Setup continues to refuse the user's home folder by default. An explicit
+`setup run --allow-home-project` permits exactly `$HOME` as the selected project, including
+non-interactive setup; neither `--accept`, an existing connection, nor an inherited native
+launcher opt-in substitutes for that flag. There is no container detection or automatic grant.
+The filesystem root remains refused, even when `$HOME` is `/`; symlink, ownership, and
+writability checks remain in force. The exception applies to Codex, Claude Code, both Cursor
+surfaces, and single or batch setup. The TUI retains its default refusal; its continuation is
+the explicit CLI command.
+
+Native artifacts bind this choice into their existing reviewed launcher commands as the exact
+global argument `--home-project <absolute-home>`. Only that path, while it is still the current
+user's home, is admitted by later hook/MCP locator checks. The choice is process-local, reset
+after each invocation, and adds no state file. Codex's skill, plugin, marketplace, MCP command
+classifier, and cached MCP entry honor the same choice; Claude Code and Cursor carry it through
+their shared launcher renderer. Exact preview approval and separate observation, provider, and
+disclosure permissions remain required. No hook, MCP operation, or receipt wire shape changes.
+
+Cursor's user plugin is shared by its connected projects. Connecting an ordinary project keeps
+an existing HOME choice in those shared hooks only when the connected-project record still
+names the current HOME and its safely read project MCP entry still carries the exact-home
+opt-in through a FinishUP launcher. The entry remains the evidence when later connections
+replace the shared marker or use a newer runtime; the selected ordinary project's own MCP
+command and setup locator do not acquire the exception. The complete preview binds the HOME
+registration's bytes and filesystem identity and discloses the retained choice. Missing
+membership or permission never grants it; unreadable permission evidence stops the connect.
+Disconnecting HOME updates kept shared hooks to remove the exception while other projects
+retain their own connections. An ordinary project's disconnect keeps HOME's existing hooks.
+
+Connection plans bind `home_project_allowed: true` in the existing disclosure, and JSON reports
+expose it in `status` (per member for batches); an invalid-folder report says `false` and names
+the flag in `next_step`. The legacy Codex-only wizard report carries the same field at its top
+level. Status and disconnect may inspect/remove a home-folder connection
+without a new connect opt-in; disconnect keeps its exact preview approval and retained-data
+rules. This is not native-session or platform certification.

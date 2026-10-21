@@ -13,11 +13,14 @@ from pathlib import Path
 import anyio
 import pytest
 
+from builders.codex_capability import binding_for, record_for
 from finishup.adapters.integrations import codex_launcher
 from finishup.adapters.integrations.codex_launcher import installed_launcher
 from finishup.adapters.integrations.codex_mcp import CodexMcpAdapter, CommandOutput
 from finishup.application.applied_mcp_route import read_applied_route
 from finishup.application.harness_mcp import HarnessMcpService, McpRegistrationConfirmation
+from finishup.config.home_project import home_project_scope
+from finishup.config.models import FinishUpConfig, VerificationConfig
 from finishup.config.paths import PathSafetyError
 from finishup.ports.harness_mcp import (
     HarnessBinary,
@@ -28,6 +31,7 @@ from finishup.ports.harness_mcp import (
     McpRegistrationState,
 )
 from finishup.ports.integrations import HarnessId
+from finishup.protocol.canonical import JsonValue
 
 _BINARY = HarnessBinary(HarnessId.CODEX, "/test/codex", "0.150.1", "supported")
 
@@ -118,6 +122,105 @@ class Host:
             if environment:
                 self.entry["env"] = environment
         return CommandOutput(0, b"")
+
+
+@pytest.mark.parametrize("selected_home", ["default", "explicit"])
+def test_home_project_route_survives_install_status_reconcile_and_remove(
+    launcher: Path, monkeypatch: pytest.MonkeyPatch, selected_home: str
+) -> None:
+    """Zero-quota reproduction of #1154's second failure, using the real route/store stack."""
+    from finishup.cli import provider_status, setup
+
+    project = launcher.parent
+    monkeypatch.setenv("HOME", str(project))
+    monkeypatch.chdir(project)
+    codex_home = project / (".codex" if selected_home == "default" else "selected-codex")
+    codex_home.mkdir(mode=0o700)
+    host = Host()
+
+    def runner(argv: tuple[str, ...], *, codex_home: Path | None = None) -> CommandOutput:
+        assert codex_home == project / (
+            ".codex" if selected_home == "default" else "selected-codex"
+        )
+        return host(argv)
+
+    monkeypatch.setattr("finishup.adapters.integrations.codex_mcp._default_runner", runner)
+    monkeypatch.setattr(
+        "finishup.adapters.integrations.codex_discovery.discover_codex_binaries",
+        lambda: (_BINARY,),
+    )
+    runtime = binding_for(record_for(b"codex", b"host"), project / "codex", codex_home)
+    config = FinishUpConfig(profile="codex-subscription", external_runtime=runtime)
+
+    def load_config(*_args: object) -> FinishUpConfig:
+        return config
+
+    monkeypatch.setattr(setup, "load_config", load_config)
+    monkeypatch.setattr(setup, "discover_codex_binaries", lambda: (_BINARY,))
+    status: dict[str, JsonValue] = {}
+
+    def emit(value: dict[str, JsonValue], *, json_output: bool) -> None:
+        assert json_output is True
+        status.update(value)
+
+    monkeypatch.setattr(setup, "_emit", emit)
+    state = project / "state"
+    with home_project_scope(project):
+        adapter = CodexMcpAdapter(codex_home=codex_home)
+        service = HarnessMcpService(adapter)
+        preview = anyio.run(lambda: service.preview(_BINARY))
+        confirmation = McpRegistrationConfirmation(
+            preview.preview_digest, True, "noninteractive_flag"
+        )
+        anyio.run(lambda: service.register(_BINARY, confirmation, _state=state))
+        record = read_applied_route(_state=state)
+        assert record is not None
+        assert record["applied_serve_command"] == list(preview.serve_command)
+        assert preview.serve_command[1:3] == ("--home-project", str(project))
+        noop = anyio.run(lambda: service.preview(_BINARY))
+        assert noop.action is McpRegistrationAction.NOOP
+        service.reconcile_applied_route(_BINARY, noop, _state=state)
+        assert (
+            anyio.run(
+                lambda: setup.integrate_mcp(
+                    "status",
+                    "codex",
+                    codex_path=None,
+                    codex_home=codex_home,
+                    accept=False,
+                    preview_digest=None,
+                    json_output=True,
+                    _state=state,
+                )
+            )
+            == 0
+        )
+        assert status["registered_profile"] == status["applied_profile"] == "policy"
+        assert status["isolation_binding"] == "isolated_exact"
+        route = anyio.run(
+            lambda: provider_status.mcp_route_observation(
+                project, codex_home=codex_home, _state=state
+            )
+        )
+        assert route["observed"] is True
+        assert route["registered_profile"] == route["applied_profile"] == "policy"
+        assert route["configured_profile"] == "policy"
+        assert route["ownership_state"] == "external"
+        assert route["drift_since_install"] is False
+        # Disabling review still derives strict; it never mutates the existing policy route.
+        config = config.model_copy(update={"verification": VerificationConfig(semantic="disabled")})
+        assert setup.configured_mcp_route_profile() == "strict"
+        assert anyio.run(lambda: service.observe(_BINARY)).route_profile == "policy"
+        removal = anyio.run(lambda: service.preview_unregistration(_BINARY))
+        anyio.run(
+            lambda: service.unregister(
+                _BINARY,
+                McpRegistrationConfirmation(removal.preview_digest, True, "noninteractive_flag"),
+                _state=state,
+            )
+        )
+        assert host.entry is None
+        assert read_applied_route(_state=state) is None
 
 
 def test_absolute_lifecycle_preserves_command_and_applied_route(launcher: Path) -> None:

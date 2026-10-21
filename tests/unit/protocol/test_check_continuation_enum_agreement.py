@@ -27,7 +27,7 @@ _SCHEMA = (
     Path(__file__).resolve().parents[3]
     / "schemas"
     / "operations"
-    / "check-result-1.5.0.schema.json"
+    / "check-result-1.6.0.schema.json"
 )
 _REF = "fnd_59000000-0000-4000-8000-000000000001"
 
@@ -47,6 +47,7 @@ def test_the_checklist_next_values_are_the_same_set_on_every_surface() -> None:
         {
             "decide_at_budget",
             "disclose_limitations",
+            "follow_overall_next",
             "request_receipt",
             "request_ruling",
             "work_open_findings",

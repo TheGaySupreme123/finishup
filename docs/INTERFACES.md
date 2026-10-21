@@ -3383,6 +3383,20 @@ the invoking client on exactly three surfaces: `finishup observe checks status` 
 issue #720's "report it in `finishup service status`"; the rationale and the Linux/WSL operator detail
 live in [`runbooks/linux-and-wsl.md`](runbooks/linux-and-wsl.md#approved-check-sandbox).
 
+Setup refuses home-folder project locators unless `setup run --allow-home-project` is explicit.
+The reviewed native launcher then carries `--home-project <absolute-home>` for later locator
+resolution; only exactly the current home is excepted, never the filesystem root or an unsafe
+path. Connection disclosure and report `status.home_project_allowed` name this choice, within the
+existing extensible status object (ADR-012, 2026-10-21). It grants no observation or disclosure
+authority. Status and disconnect do not require a new connect opt-in.
+
+Cursor shared-hook refreshes preserve that choice only with recorded HOME membership
+and a still-installed exact opted-in HOME project MCP entry; disclosure `shared_home_project`
+and `shared_home_project_registration` bind the retained path and registration identity/digest.
+The ordinary project's own launcher stays scoped to its project. A HOME disconnect with other
+members uses `update_shared_plugin` to remove the exception from kept hooks. Unreadable HOME
+permission evidence refuses a connect as `connection_home_project_permission_unknown`.
+
 The versioned ordinary-control hello may carry one optional trusted `workspace_locator` derived by
 the client itself: CLI/UI use their actual process working directory and the MCP bridge uses its
 configured/session working directory. It is never populated from an operation body or public
@@ -12066,7 +12080,9 @@ as `outcome_unknown` and is never resent. For it, `operation_max_retries` is `0`
 
 - `FindingKind.DECISION_NEEDED` / `decision_needed`: research-evidence, priority 3,
   `FINDING_KIND_TRAITS == (3, False)`, available on finding/finding-recorded 1.4.0 and active
-  provider-judgment 1.2.0 on the unreleased integration branch. Earlier versions refuse it.
+  provider-judgment 1.2.0 on the unreleased integration branch. Check-result projections admit
+  it from 1.6.0; historical check-result 1.4.0/1.5.0 bytes stay frozen and refuse it.
+  Earlier finding and provider-judgment versions refuse it.
   Generated status, check, receipt and child-dependency projections carry the kind. Its existing
   challenge fields carry both interpretations, their evidence, one discriminating check and the
   choice; `validate_semantic_judgment` forces `requested_next_step: answer_question`.

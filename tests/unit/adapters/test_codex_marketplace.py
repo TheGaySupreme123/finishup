@@ -1238,6 +1238,34 @@ def test_preview_and_apply_removal_of_managed_activation(tmp_path: Path) -> None
     assert replay.outcome is RemovalOutcome.ALREADY_ABSENT
 
 
+def test_explicit_home_project_activation_and_removal(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from finishup.config.home_project import home_project_scope
+
+    project = tmp_path / "home"
+    project.mkdir(mode=0o700)
+    monkeypatch.setenv("HOME", str(project))
+    codex_home = project / ".codex"
+    codex_home.mkdir(mode=0o700)
+    target = IntegrationTarget(IntegrationScope.TRUSTED_PROJECT, str(project))
+    with pytest.raises(IntegrationError):
+        _install(target)
+    with home_project_scope(project):
+        _install(target)
+        activation = preview_activation(target, codex_home=codex_home)
+        result = apply_activation(
+            target, codex_home=codex_home, approved_digest=activation.preview_digest
+        )
+        assert result.state is ActivationState.ACTIVE
+        removal = preview_removal(target, codex_home=codex_home)
+        result = apply_removal(
+            target, codex_home=codex_home, approved_digest=removal.preview_digest
+        )
+        assert result.outcome is RemovalOutcome.REMOVE
+        assert not (project / ".agents/plugins/marketplace.json").exists()
+
+
 @pytest.mark.parametrize("mode", [0o755, 0o1777], ids=["0755", "1777"])
 def test_removal_in_a_root_owned_project_completes_the_way_out(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mode: int

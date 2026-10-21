@@ -509,10 +509,21 @@ def test_parts_carried_are_counted_from_the_bounded_envelope(
     assert check_time_change_parts_carried(semantic) == admitted
     assert check_time_change_parts_carried(semantic, withheld_categories=("claim_text",)) == 7
 
-    # Primary material leads the case (n7 RC7, #1108), so bounding drops the timeline and the
-    # agent's account before any change part: the cap reaches excess parts but holds the floor.
+    # Mandatory questions and protected content cannot yield to an impossibly small cap.
     monkeypatch.setattr(semantic_case_module, "MAX_EGRESS_ENVELOPE_BYTES", 7_000)
+    with pytest.raises(
+        semantic_case_module.SemanticCaseTooLarge, match="semantic_case_envelope_too_large"
+    ):
+        check_time_change_parts_carried(semantic)
+
+    # A fitting cap drops ordinary bulk and excess parts, retaining the diff floor and latest
+    # verification. It still counts only the parts present in the provider-facing envelope.
+    floor = semantic_case_module.final_diff_floor(
+        semantic, semantic.review_selection, semantic_case_module.MAX_SEMANTIC_CASE_BYTES
+    )
+    monkeypatch.setattr(semantic_case_module, "MAX_EGRESS_ENVELOPE_BYTES", 7_500)
     carried = check_time_change_parts_carried(semantic)
+    assert semantic_case_module.check_time_change_floor_bytes_carried(semantic) >= floor > 0
     assert 0 < carried < admitted
     envelope = strict_json_parse(semantic_case_module.bounded_case_envelope(semantic))
     assert isinstance(envelope, dict)
@@ -520,6 +531,7 @@ def test_parts_carried_are_counted_from_the_bounded_envelope(
         cast(dict[str, object], row)["item_id"]
         for row in cast(list[object], envelope["item_catalog"])
     }
+    assert f"excerpt-{evd(1)}" in catalog
     # Every non-excerpt row went before the first change part did.
     sections = {item.item_id: item.section for item in semantic.items}
     assert {sections[cast(str, item_id)] for item_id in catalog} == {"excerpt"}

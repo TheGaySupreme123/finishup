@@ -3613,6 +3613,13 @@ def setup_run(
         typer.Option("--host-config-root", help="Configuration for each --host, in order."),
     ] = None,
     project: Annotated[Path | None, typer.Option("--project", help="Project to connect.")] = None,
+    allow_home_project: Annotated[
+        bool,
+        typer.Option(
+            "--allow-home-project",
+            help="Explicitly allow exactly your home folder as the project; never the filesystem root.",
+        ),
+    ] = False,
     request_value: Annotated[
         str | None,
         typer.Option("--request-id", help="Request identity returned by the connection preview."),
@@ -3647,6 +3654,7 @@ def setup_run(
                 host_path=selected_path,
                 host_config_root=selected_root,
                 project=project,
+                allow_home_project=allow_home_project,
                 request_value=request_value,
                 preview_digest=preview_digest,
             )
@@ -3656,6 +3664,7 @@ def setup_run(
 
 @setup_app.command("disconnect")
 def setup_disconnect(
+    context: typer.Context,
     host: Annotated[
         list[str], typer.Option("--host", help="Agent to disconnect; repeat or use all.")
     ],
@@ -3686,6 +3695,10 @@ def setup_disconnect(
 ) -> None:
     """Preview and remove the selected integration, preserving FinishUP data."""
     from finishup.cli.host_connection import run_host_connection
+    from finishup.config.home_project import home_project_scope
+
+    # Reversal never needs a new grant to connect the home folder.
+    context.with_resource(home_project_scope(project or Path.cwd()))
 
     selected, executable, config_root = _setup_targets(host, host_path, host_config_root)
     if batch and isinstance(selected, str):
@@ -3764,6 +3777,7 @@ def setup_vault(
 
 @setup_app.command("status")
 def setup_status(
+    context: typer.Context,
     json_output: _JSON = False,
     next_step: Annotated[bool, typer.Option("--next")] = False,
     operation: Annotated[
@@ -3778,6 +3792,9 @@ def setup_status(
     route_profile: _ROUTE_PROFILE = None,
 ) -> None:
     """Show read-only setup posture without mutating anything."""
+    from finishup.config.home_project import home_project_scope
+
+    context.with_resource(home_project_scope(project or Path.cwd()))
 
     if operation not in {"local", "review", "connection"}:
         raise typer.BadParameter("--operation must be local, review or connection")
@@ -5743,6 +5760,7 @@ def version_command(
 @app.callback()
 def root(
     context: typer.Context,
+    home_project: Annotated[Path | None, typer.Option("--home-project", hidden=True)] = None,
     version: Annotated[
         bool,
         typer.Option("--version", is_eager=True, help="Show the installed package version."),
@@ -5781,6 +5799,11 @@ def root(
         typer.Option("--model", help="Provider model identifier used with --set."),
     ] = None,
 ) -> None:
+    from finishup.config.home_project import allowed_home_project, home_project_scope
+
+    context.with_resource(home_project_scope(home_project))
+    if home_project is not None and allowed_home_project() is None:
+        raise typer.BadParameter("--home-project must name exactly your home folder, never root")
     if version:
         typer.echo(__version__)
         raise typer.Exit(0)

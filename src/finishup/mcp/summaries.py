@@ -123,6 +123,7 @@ _REVIEW_KINDS: Final = frozenset(
         "code_defect",
         "task_requirement_unmet",
         "agent_criterion_unmet",
+        "decision_needed",
     }
 )
 # A validation location pointer as ``finishup.mcp.errors`` builds it: at most eight frozen

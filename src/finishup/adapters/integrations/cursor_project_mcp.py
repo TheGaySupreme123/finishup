@@ -340,6 +340,49 @@ def inspect_project_mcp_registration(
     )
 
 
+def inspect_home_project_permission(
+    home: Path, *, isolation_root: str | None
+) -> tuple[tuple[str, ...], CursorProjectMcpRegistrationSnapshot] | None:
+    """Find a still-installed exact-home opt-in, never infer one from membership alone.
+
+    The caller separately requires this HOME in the configuration's connected-project record.
+    The project's own safe MCP entry is the durable permission evidence: shared plugin markers
+    can be replaced by another project's connect, including from a newer runtime. No process
+    locator permission is granted while inspecting it.
+    """
+
+    if home != Path.home() or home == Path(home.anchor):
+        return None
+    document = _document(_read(home / ".cursor" / "mcp.json"))
+    for name in (MCP_SERVER_NAME, LEGACY_MCP_SERVER_NAME):
+        entry = _entry(document, name)
+        if not isinstance(entry, Mapping):
+            continue
+        command, args = entry.get("command"), entry.get("args")
+        if type(command) is not str or not isinstance(args, list):
+            continue
+        # Only the console script or python -m entrypoint, each with one exact final HOME pair.
+        for prefix_size in (2, 4):
+            prefix = args[:prefix_size]
+            if prefix[-2:] != ["--home-project", str(home)]:
+                continue
+            launcher = recorded_launcher([command, *prefix])
+            if launcher is None:
+                continue
+            classified = _classify(entry, _owned_forms((launcher,), isolation_root, home))
+            if classified is None:
+                continue
+            route, binding = classified
+            return launcher, inspect_project_mcp_registration(
+                home,
+                launcher=launcher,
+                route_profile=route,
+                isolation_root=isolation_root,
+                project_binding=binding,
+            )
+    return None
+
+
 def _document(raw: bytes | None) -> dict[str, JsonValue]:
     if raw is None:
         return {}

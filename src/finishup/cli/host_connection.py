@@ -32,6 +32,7 @@ from finishup.application.host_connection import (
     prepare_connection,
 )
 from finishup.cli.setup_readiness import continuation
+from finishup.config.home_project import allowed_home_project, home_project_allowed
 from finishup.config.paths import ISOLATED_ROOT_ENV_NAMES, isolated_root
 from finishup.domain.values import request_id
 from finishup.ports.harness_mcp import MCP_LEGACY_SERVER_NAME, MCP_SERVER_NAME, McpRegistrationError
@@ -174,6 +175,7 @@ _CHANGE_WORDING: Final[Mapping[str, str]] = {
     "remove_legacy_plugin": "Remove the plugin installed under the earlier Yoetz name",
     "uninstall_plugin": "Uninstall the FinishUP plugin",
     "remove_plugin": "Remove the FinishUP plugin",
+    "update_shared_plugin": "Update the shared FinishUP hooks to remove home-folder permission",
     "remove_marketplace": "Remove FinishUP's local plugin marketplace",
     "remove_plugin_mcp": "Remove the plugin's MCP server registration",
     "remove_project_mcp": "Remove FinishUP's MCP server from this project",
@@ -202,6 +204,11 @@ def connection_summary(plan: ConnectionPlan) -> tuple[str, ...]:
     )
     return (
         f"Project: {body['project_root']}",
+        *(
+            ("Home folder: explicitly allowed as this project.",)
+            if body.get("home_project_allowed") is True
+            else ()
+        ),
         f"Configuration: {body['config_root']}",
         "Review: "
         + (
@@ -230,6 +237,10 @@ def _shared_summary(body: dict[str, JsonValue]) -> tuple[str, ...]:
     """Name the other projects that share this configuration's FinishUP pieces (#1058)."""
 
     lines: list[str] = []
+    if isinstance(body.get("shared_home_project"), str):
+        lines.append(
+            "Keep the existing home-folder permission in this configuration's shared hooks."
+        )
     if body.get("remove_shared") is True:
         # A home-wide disconnect is the one consent that ends FinishUP for other projects: say so
         # and name them before the approval (#1058 review P2-7).
@@ -438,6 +449,8 @@ def _rendered_status(status: dict[str, JsonValue]) -> dict[str, JsonValue]:
     """Render structural ``next_arguments`` through the pinned launcher continuation."""
 
     rendered = dict(status)
+    if allowed_home_project() is not None:
+        rendered["home_project_allowed"] = True
     for key in _PER_PROJECT_CONTINUATIONS:
         items = rendered.get(key)
         if isinstance(items, list):
@@ -1189,7 +1202,7 @@ def run_host_connection(
                 typer.echo(line)
             approved = typer.confirm("Apply this connection plan?", default=False)
         if plan.unchanged:
-            report.update({"outcome": "unchanged", "status": plan.status()})
+            report.update({"outcome": "unchanged", "status": _rendered_status(plan.status())})
             code = 0
         elif approved:
             report.update(
@@ -1445,6 +1458,11 @@ def connection_continuation(plan: ConnectionPlan) -> str:
         "--preview-digest",
         plan.digest,
         *(["--remove-shared"] if plan.disclosure.get("remove_shared") is True else []),
+        *(
+            ["--allow-home-project"]
+            if body["action"] == "connect" and home_project_allowed(Path(str(body["project_root"])))
+            else []
+        ),
         "--accept",
         "--non-interactive",
     ]

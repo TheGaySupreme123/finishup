@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import os
+import shlex
 import shutil
 from collections.abc import Mapping
 from dataclasses import dataclass
@@ -25,6 +26,7 @@ from finishup.adapters.integrations.codex_skill import (
     validated_managed_parent,
 )
 from finishup.config.foreign_write import project_root_admitted
+from finishup.config.home_project import allowed_home_project, home_project_allowed
 from finishup.domain.values import JsonValue as DomainJsonValue
 from finishup.ports.harness_mcp import (
     MCP_SERVE_COMMAND,
@@ -313,6 +315,17 @@ def _hooks_json(*, codex_version: str | None = None) -> bytes:
             ],
         },
     }
+    home_project = allowed_home_project()
+    if home_project is not None:
+        # Only an explicitly opted-in installation carries permission into future hooks.
+        prefix = shlex.join(("finishup", "--home-project", str(home_project)))
+        groups = cast(dict[str, list[dict[str, JsonValue]]], body["hooks"])
+        for entries in groups.values():
+            for entry in entries:
+                for handler in cast(list[dict[str, JsonValue]], entry["hooks"]):
+                    command = handler.get("command")
+                    if isinstance(command, str) and command.startswith("finishup "):
+                        handler["command"] = prefix + command[len("finishup") :]
     return canonical_encode(body) + b"\n"
 
 
@@ -447,7 +460,12 @@ def _validated_project(target: IntegrationTarget) -> Path:
     root = Path(target.project_root)
     if not root.is_absolute():
         root = Path.cwd() / root
-    if root == Path(root.anchor) or root == Path.home() or root.is_symlink() or not root.is_dir():
+    if (
+        root == Path(root.anchor)
+        or (root == Path.home() and not home_project_allowed(root))
+        or root.is_symlink()
+        or not root.is_dir()
+    ):
         raise _error(IntegrationReason.TARGET_UNTRUSTED)
     try:
         stat = root.stat()

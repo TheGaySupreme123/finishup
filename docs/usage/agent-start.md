@@ -203,6 +203,16 @@ authorize unseen changes. Keep executable/configuration details available when n
 make the user enter paths that discovery already found. Use explicit path overrides for another
 installation. Do not substitute a testing profile for the selected regular installation.
 
+Your home folder is refused as a project by default. If it is intentionally the whole task
+workspace (for example, a container working in `/root`), preview with
+`finishup setup run --host codex --project "$HOME" --allow-home-project --non-interactive --json`.
+The same flag works for Claude Code, Cursor, and multiple selected agents. Keep it in the
+preview's exact approval command; `--accept` alone never opts in. The filesystem root and
+symlinked or unsafe folders stay refused. This choice connects the folder; observation and
+AI-powered review still need their separate permissions. To reverse it, use
+`finishup setup disconnect --host codex --project "$HOME" --non-interactive --json` and approve
+its exact preview. Disconnect needs no home-folder opt-in and preserves FinishUP data.
+
 The same host choice works with `setup status --host ... --project ... --json` and
 `setup disconnect --host ... --project ...`. Disconnect previews before changing anything and
 preserves FinishUP data. It also removes the project's FinishUP tool-approval entry, so the agent still

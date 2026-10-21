@@ -24,6 +24,7 @@ from finishup.config.foreign_write import (
     superuser_checkout_marker,
     writable_by_others,
 )
+from finishup.config.home_project import home_project_allowed
 
 __all__ = [
     "MAX_WORKSPACE_LOCATOR_BYTES",
@@ -122,7 +123,7 @@ def _candidate_path(raw: object, *, cwd: Path, home: Path) -> Path | None:
         path = _absolute_lexical(text, cwd, home=home)
     except (OSError, RuntimeError, ValueError):
         return None
-    if path == Path(path.anchor) or path == home:
+    if path == Path(path.anchor) or (path == home and not home_project_allowed(path, home=home)):
         return None
     if not _path_components_are_safe(path):
         return None
@@ -175,12 +176,16 @@ def _git_toplevel(path: Path, *, home: Path) -> Path | None:
     """Find the nearest safe Git marker, bounded by home and filesystem root."""
 
     current = path
-    while current != Path(current.anchor) and current != home:
+    while current != Path(current.anchor) and (
+        current != home or home_project_allowed(current, home=home)
+    ):
         marker = _git_marker(current)
         if marker is None:
             return None
         if marker:
             return current
+        if current == home:
+            break
         parent = current.parent
         if parent == current:
             break

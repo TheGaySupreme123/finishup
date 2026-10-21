@@ -73,6 +73,18 @@ def mcp_command_profile(command: tuple[str, ...]) -> Literal["policy", "strict"]
     if type(command) is not tuple or not command or any(type(x) is not str for x in command):
         return None
     launcher = command[0]
+    if len(command) > 2 and command[1] == "--home-project":
+        home = PurePosixPath(command[2])
+        if (
+            not home.is_absolute()
+            or home == PurePosixPath("/")
+            or str(home) != command[2]
+            or ".." in home.parts
+            or len(command[2]) > _MAX_PATH_CHARS
+            or any(ord(c) < 32 or ord(c) == 127 for c in command[2])
+        ):
+            return None
+        command = (launcher, *command[3:])
     # A bare launcher is either spelling: registrations written before the rename name the
     # deprecated ``yoetz`` alias (ADR-048).
     if launcher not in LAUNCHER_NAMES and (

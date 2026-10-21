@@ -344,7 +344,11 @@ def proven_serve_command(serve_command: tuple[str, ...]) -> tuple[tuple[str, ...
 
     proof = installed_launcher()
     if proof is not None:
-        return (proof[0], *serve_command[1:]), proof[1]
+        from finishup.config.home_project import allowed_home_project
+
+        home_project = allowed_home_project()
+        prefix = () if home_project is None else ("--home-project", str(home_project))
+        return (proof[0], *prefix, *serve_command[1:]), proof[1]
     if invoking_launcher() is not None:
         raise McpRegistrationError(
             McpRegistrationReason.HARNESS_UNAVAILABLE, {"detail": "launcher_unproven"}

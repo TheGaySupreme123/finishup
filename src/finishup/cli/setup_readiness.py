@@ -13,6 +13,7 @@ import typer
 from finishup.adapters.integrations.launcher import invoking_launcher, resolve_finishup_launcher
 from finishup.cli.privacy_setup import configured_bindings, get_privacy_setup_snapshot
 from finishup.cli.service_installation import installation_folders, path_refusal_failure
+from finishup.config.home_project import allowed_home_project
 from finishup.config.paths import ISOLATED_ROOT_ENV_NAMES, PathSafetyError, isolated_root
 from finishup.protocol.canonical import JsonValue
 from finishup.protocol.setup_readiness import SetupReadiness, SetupReadinessReason
@@ -32,6 +33,12 @@ def continuation(arguments: list[str], *, project: Path | None = None) -> str:
         if invocation is not None
         else (sys.executable, "-m", "finishup")
     )
+    home_project = allowed_home_project()
+    if home_project is not None:
+        if "--home-project" not in launcher:
+            launcher = (*launcher, "--home-project", str(home_project))
+        if arguments[:2] == ["setup", "run"] and "--allow-home-project" not in arguments:
+            arguments = [*arguments, "--allow-home-project"]
     root = isolated_root()
     command = [*launcher, *arguments]
     if root is not None:

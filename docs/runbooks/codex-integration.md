@@ -825,6 +825,15 @@ lives in `mcp status` and `provider status`. An accepted install that had nothin
 (`action: noop`) still refreshes the record, so a deliberate re-registration of the route the
 host already serves never leaves an earlier entry behind to report as drift.
 
+For an explicitly allowed home-folder project (#1154), the record accepts and binds the full
+`--home-project <absolute-home>` argv through the same closed command classifier as the MCP
+adapter. Both policy and strict routes keep their applied profile; an accepted no-op refreshes
+it and verified removal clears it as usual. `configured_profile` is FinishUP's registration-time
+configuration fallback, including a bound Codex subscription runtime when review is enabled;
+it does not read another Codex configuration or override an existing registration. The
+`external` ownership label describes the effective Codex registration rather than a portable
+plugin-managed route; it alone is not evidence of a duplicate or foreign route.
+
 The MCP bridge (`finishup mcp serve --host codex`) is the sole emitter of the closed `registration_drift`
 hook diagnostic: at startup it compares its own serving argv against the applied record and
 records the mismatch under the `mcp_serve` event. The hook paths deliberately emit nothing.
@@ -3692,6 +3701,15 @@ applies on macOS, Linux and Windows through WSL 2.
   (local-only, or the provider's disclosure policy) and an API key's repository binding then use
   that folder; otherwise setup stops with `workspace_locator_invalid` and a next step (it used to
   fail as `internal_error` after every answer).
+  An intentional home-folder workspace (such as a container with `WORKDIR /root`) uses
+  `--project "$HOME" --allow-home-project`, also with `--non-interactive`; default setup still
+  refuses home, and `/`, symlinks, and unsafe ownership/writability remain refused. The same
+  choice reaches native hooks and MCP through the reviewed exact-home launcher argument.
+  JSON previews and results report `status.home_project_allowed` (inside each batch member).
+  `setup disconnect --host codex --project "$HOME" --non-interactive --json` previews
+  removal without a new home opt-in; approve that exact preview. Observation and disclosure
+  remain separate. Adapter tests cover the locator/renderer decisions; no additional native
+  host or OS certification is claimed (issue #1154).
 - **After a Codex-subscription sign-in.** The guided provider step reports the Codex-held credential
   (`external_runtime_oauth`) as ready instead of `Credential: unknown` with exit 20, shows the bound
   model and any fallback, asks no API-key verification question, and prints its own layer report

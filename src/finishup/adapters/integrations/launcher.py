@@ -23,6 +23,7 @@ from pathlib import Path
 from typing import Final, cast
 
 import finishup
+from finishup.config.home_project import allowed_home_project
 from finishup.legacy_names import LAUNCHER_NAME, LEGACY_LAUNCHER_NAME
 
 __all__ = [
@@ -100,6 +101,9 @@ def resolve_finishup_launcher(
         or any(ord(char) < 32 or ord(char) == 127 for char in str(resolved))
     ):
         raise ValueError("finishup_executable_unavailable")
+    home_project = allowed_home_project()
+    if home_project is not None and "--home-project" not in arguments:
+        arguments = (*arguments, "--home-project", str(home_project))
     launcher = (str(resolved), *arguments)
     if not valid_launcher(launcher):
         raise ValueError("finishup_executable_unavailable")

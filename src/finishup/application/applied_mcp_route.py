@@ -2,9 +2,9 @@
 
 The installer writes which FinishUP route (policy or strict) it applied and what the
 post-write observation saw, so later drift is attributable to either the install or a
-subsequent mutation. The record carries only structural tokens and digests — argv
-constants from ``finishup.ports.harness_mcp`` and SHA-256 digests — never raw paths,
-config bytes, or user text.
+subsequent mutation. The owner-only record carries validated FinishUP argv (including an
+absolute launcher and an explicit home-project prefix) and structural digests, never raw
+config bytes or arbitrary user text.
 """
 
 from __future__ import annotations
@@ -107,11 +107,11 @@ def _validate_command(value: object, *, allowed: tuple[tuple[str, ...], ...]) ->
             raise ValueError("applied_mcp_route_command_invalid")
         items.append(entry)
     command = tuple(items)
-    # The launcher token may be either bare spelling or an absolute path, so a record an earlier
-    # install wrote with the legacy ``yoetz`` argv keeps validating (ADR-048).
-    if mcp_command_profile(command) is None or not any(
-        command[1:] == template[1:] for template in allowed
-    ):
+    # Use the shared closed command classifier, including its exact-home prefix validation.
+    # Comparing raw tails rejects a valid --home-project command after the adapter accepts it,
+    # silently losing the applied record. Preserve the exact accepted argv in the digest.
+    profile = mcp_command_profile(command)
+    if profile is None or profile not in {mcp_command_profile(template) for template in allowed}:
         raise ValueError("applied_mcp_route_command_invalid")
     return items
 

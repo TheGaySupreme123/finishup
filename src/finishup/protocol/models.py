@@ -1394,6 +1394,7 @@ _CHILD_FINDING_TRAITS: Final[Mapping[str, tuple[int, bool]]] = MappingProxyType(
         "code_defect": (1, True),
         "task_requirement_unmet": (1, True),
         "agent_criterion_unmet": (2, True),
+        "decision_needed": (3, False),
     }
 )
 
@@ -1421,6 +1422,7 @@ class ChildFindingSnapshotModel(_ClosedModel):
         "code_defect",
         "task_requirement_unmet",
         "agent_criterion_unmet",
+        "decision_needed",
     ]
     origin: Literal["deterministic", "semantic_model_derived"]
     priority: Annotated[int, Field(ge=1, le=3)]
@@ -3476,6 +3478,7 @@ class CheckProjectedFindingModel(_ClosedModel):
         "code_defect",
         "task_requirement_unmet",
         "agent_criterion_unmet",
+        "decision_needed",
     ]
     origin: Literal["deterministic", "semantic_model_derived"]
     priority: Annotated[int, Field(ge=1, le=3)]

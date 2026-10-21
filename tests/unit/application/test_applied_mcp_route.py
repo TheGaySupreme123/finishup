@@ -6,7 +6,7 @@ import hashlib
 import json
 import stat
 from pathlib import Path
-from typing import Literal
+from typing import Literal, cast
 
 import anyio
 import pytest
@@ -31,7 +31,7 @@ from finishup.ports.harness_mcp import (
     McpRegistrationState,
 )
 from finishup.ports.integrations import HarnessId
-from finishup.protocol.canonical import canonical_digest, canonical_encode
+from finishup.protocol.canonical import JsonValue, canonical_digest, canonical_encode
 
 _DIGEST = "sha256:" + "a" * 64
 _OTHER_DIGEST = "sha256:" + "b" * 64
@@ -87,6 +87,37 @@ def test_record_with_unobserved_post_write_command(tmp_path: Path) -> None:
     assert record["observed_serve_command_post_write"] is None
     assert record["observation_digest"] == canonical_digest(None)
     assert read_applied_route(_state=tmp_path) == record
+
+
+@pytest.mark.parametrize("profile", ["policy", "strict"])
+@pytest.mark.parametrize("launcher", ["finishup", "yoetz", "/opt/instance/bin/finishup"])
+def test_home_project_command_roundtrips_exactly(
+    tmp_path: Path, profile: str, launcher: str
+) -> None:
+    template = MCP_STRICT_SERVE_COMMAND if profile == "strict" else MCP_SERVE_COMMAND
+    command = [launcher, "--home-project", "/workspace/home with spaces", *template[1:]]
+    record = record_applied_route(profile, command, command, _DIGEST, _state=tmp_path)
+    assert record["applied_serve_command"] == command
+    assert record["observed_serve_command_post_write"] == command
+    assert record["observation_digest"] == canonical_digest(cast(JsonValue, command))
+    assert read_applied_route(_state=tmp_path) == record
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        ["finishup", "--home-project", "/", *MCP_SERVE_COMMAND[1:]],
+        ["finishup", "--home-project", "/root/../root", *MCP_SERVE_COMMAND[1:]],
+        ["finishup", "--home-project", "/root", *MCP_STRICT_SERVE_COMMAND[1:]],
+        ["finishup", "--home-project", "/root", *MCP_SERVE_COMMAND[1:], "--extra"],
+    ],
+)
+def test_home_project_record_rejects_wrong_profile_or_command(
+    tmp_path: Path, command: list[str]
+) -> None:
+    with pytest.raises(ValueError, match="applied_mcp_route_command_invalid"):
+        record_applied_route("policy", command, command, _DIGEST, _state=tmp_path)
+    assert read_applied_route(_state=tmp_path) is None
 
 
 def test_missing_route_reads_as_none(tmp_path: Path) -> None:

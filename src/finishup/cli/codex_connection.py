@@ -49,6 +49,7 @@ from finishup.application.host_connection import (
     admission_revoke_arguments,
     plan_digest,
 )
+from finishup.config.home_project import home_project_allowed
 from finishup.domain.values import request_id
 from finishup.legacy_names import LEGACY_MCP_SERVER_NAME, MCP_SERVER_NAME
 from finishup.ports.harness_mcp import (
@@ -693,6 +694,8 @@ def prepare_codex_connection(
                 **admission.status(),
             }
 
+    if home_project_allowed(project):
+        admission.disclosure["home_project_allowed"] = True
     body["preview_digest"] = plan_digest(body, admission.disclosure)
     return ConnectionPlan(body, status, apply, admission.disclosure)
 

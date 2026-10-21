@@ -175,6 +175,10 @@ def batch_command(
             )
         )
     command.extend(("--project", str(project)))
+    from finishup.config.home_project import home_project_allowed
+
+    if action == "connect" and home_project_allowed(project):
+        command.append("--allow-home-project")
     if route is not None:
         command.extend(("--route-profile", route))
     if remove_shared:
