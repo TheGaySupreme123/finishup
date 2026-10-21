@@ -243,6 +243,15 @@ _ENCODED_ESCAPE: Final = re.compile(rb"\\")
 
 _LOG_FIELDS: Final = frozenset(
     {
+        "codex_event_wire_bytes",
+        "codex_event_control_count",
+        "codex_event_control_bytes",
+        "codex_event_telemetry_count",
+        "codex_event_telemetry_bytes",
+        "codex_event_delta_count",
+        "codex_event_delta_bytes",
+        "codex_event_intermediate_count",
+        "codex_event_intermediate_bytes",
         "timestamp",
         "level",
         "component",
@@ -403,6 +412,15 @@ _VERSION_FIELDS: Final = frozenset(
 )
 _INTEGER_FIELDS: Final = frozenset(
     {
+        "codex_event_wire_bytes",
+        "codex_event_control_count",
+        "codex_event_control_bytes",
+        "codex_event_telemetry_count",
+        "codex_event_telemetry_bytes",
+        "codex_event_delta_count",
+        "codex_event_delta_bytes",
+        "codex_event_intermediate_count",
+        "codex_event_intermediate_bytes",
         "duration_ms",
         "operation_count",
         "duration_bucket_ms",

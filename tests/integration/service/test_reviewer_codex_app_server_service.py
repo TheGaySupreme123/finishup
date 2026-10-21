@@ -52,7 +52,13 @@ from finishup.ports.privacy import (
 )
 from finishup.protocol.canonical import JsonValue, canonical_encode
 from finishup.protocol.ids import IdKind, new_id
-from finishup.protocol.models import CheckRequest, PublishWorkRequest, SemanticStatus, StartRequest
+from finishup.protocol.models import (
+    CheckRequest,
+    PublishWorkRequest,
+    SemanticReason,
+    SemanticStatus,
+    StartRequest,
+)
 
 pytestmark = pytest.mark.anyio
 
@@ -307,6 +313,36 @@ async def test_a_service_review_runs_on_one_codex_thread_through_the_real_evalua
     # The replayed 0.162.1 wire (``thread/settings/updated`` before the first ack, reasoning,
     # deltas, moderation metadata, usage) is admitted without any stage (#1118).
     assert "failure_stage" not in cast(dict[str, JsonValue], evidence)
+
+
+async def test_failed_final_held_session_cleanup_withholds_the_judgment(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # #1137: actually clean up the fake child, then simulate unconfirmed group termination.
+    close = codex._cleanup  # pyright: ignore[reportPrivateUsage]
+    closed: list[str] = []
+
+    async def failed(runtime: Any) -> str:
+        closed.append(await close(runtime))
+        return "failed"
+
+    monkeypatch.setattr(codex, "_cleanup", failed)
+    checked, wire, mcp_wire = await _review(tmp_path, monkeypatch, _encoded(_READ, _FINAL))
+    assert closed and all(result in {"terminated", "killed"} for result in closed)
+    assert getattr(checked, "semantic_status") is SemanticStatus.UNAVAILABLE
+    assert getattr(checked, "semantic_reason") is SemanticReason.OUTCOME_UNKNOWN
+    provenance = cast(dict[str, JsonValue], mcp_wire["semantic_provenance"])
+    assert provenance["failure_class"] == "transport"
+    evidence = cast(dict[str, JsonValue], provenance["runtime_evidence"])
+    assert (evidence["process_cleanup"], evidence["failure_stage"]) == (
+        "failed",
+        "cleanup_unconfirmed",
+    )
+    reviewer = cast(dict[str, JsonValue], mcp_wire["reviewer"])
+    assert reviewer["ended"] == "cleanup_unconfirmed" and reviewer["cleanup"] == "failed"
+    assert [m["method"] for m in wire].count("thread/start") == 1
+    assert [m["method"] for m in wire].count("turn/start") == 2
+    assert mcp_wire.get("review_summary") is None
 
 
 _MALFORMED = "not json"

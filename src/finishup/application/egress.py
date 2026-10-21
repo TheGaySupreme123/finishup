@@ -533,7 +533,7 @@ class SemanticEgressReply:
         )
 
     def outcome(
-        self, result: SemanticResultInvalid | SemanticResultTimeout
+        self, result: SemanticResultInvalid | SemanticResultTimeout | SemanticResultUnavailable
     ) -> SemanticEgressProviderOutcome:
         return SemanticEgressProviderOutcome(result=result, **self.fields)  # pyright: ignore[reportArgumentType]
 
@@ -593,6 +593,8 @@ class SemanticEgressBlocked:
     # #1118: a size refusal's ``(attempted, limit)`` bytes: the rendered disclosure that would have
     # been sent and the bound it exceeds. The receipt stays ``blocked_by_policy`` /
     # ``policy_denied``; the check reports ``case_capacity_exceeded`` from this. Never content.
+    # For an unsent read continuation (#1135), these are its minimum action-plus-envelope bytes
+    # and the remaining exchange allowance. Earlier exchanges may already have been sent.
     capacity: tuple[int, int] | None = None
     # #1118: what ``capacity`` counts: bytes, or estimated model tokens on a route sized to its
     # model's context.

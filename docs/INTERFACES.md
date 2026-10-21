@@ -10052,10 +10052,10 @@ follow-up loop is deleted.
 - Controller: `application.reviewer_loop.ReviewerLoop(model, broker, *, instruction, packet,
   deadline, history_admissible, final_reserve_seconds=30.0, clock=time.monotonic,
   resume_reserved=False).run() -> ReviewOutcome(status,
-  judgment, reason, history, model_turns, citable_refs, text_by_ref)`; the last two are the
-  citation union for `validate_semantic_judgment`. `ReviewerModel.complete(history, schema, *,
+  judgment, reason, history, model_turns, citable_refs, text_by_ref, capacity)`; the citation fields
+  hold the union for `validate_semantic_judgment`. `ReviewerModel.complete(history, schema, *,
   deadline) -> JsonValue` is the only model interface; a facade raises `ReviewerModelError(code)`.
-  Incomplete reasons: `format_invalid`, `read_limit`, `deadline`, `turn_limit`,
+  Incomplete reasons: `format_invalid`, `read_limit`, `case_capacity_exceeded`, `deadline`, `turn_limit`,
   `authorization_changed`, `interrupted`, `uncaptured_step`, `step_refused`, or the facade's code.
   The one repair covers `ReviewerReplyInvalid` from `complete` and from decoding alike; the turn is
   captured either way. With `resume_reserved`, a store whose `usage()` is exactly `(1, 1)` runs turn
@@ -10072,8 +10072,11 @@ follow-up loop is deleted.
   `(category, bytes, input_root)` tuples. `history_roots` lists every outside root the conversation
   holds bytes from. With `exchange_room` (#1118), `reads_allowed()` also needs `MIN_ROOM +
   READ_ACTION_ROOM` (2 KiB) of it; `execute` subtracts the `reply` turn's bytes and raises
-  `ReadExchangeFull` before reserving when less than `MIN_ROOM` is left (the loop ends
-  `read_limit`), and a result over its room keeps the longest head that fits, measured.
+  `ReadExchangeFull(required, available)` before reserving when less than `MIN_ROOM` is left.
+  The loop ends `case_capacity_exceeded`, carrying those minimum required and available exchange
+  bytes through `SemanticEgressBlocked.capacity` to the existing capacity outcome. It never
+  becomes `response_schema_invalid`; a read after the count cap still ends `read_limit`.
+  A result over its room keeps the longest head that fits, measured.
 - Steps: `ports.semantic.ReviewStepStore.reserve(kind, ordinal, selector)`, `capture(kind, ordinal,
   result)`, `usage() -> (steps, uncaptured)`; `ReviewStepRefused` on a repeated step or a lost lease.
   `SqliteLedger.review_steps(handle)` is the durable store (`semantic_review_steps`, ADR-003).
@@ -10082,7 +10085,13 @@ follow-up loop is deleted.
   roots, retained=())`.
   Reads: `task_input_read.read_text_beneath`, `list_beneath` (both take `expired` and raise
   `ReadDeadline`) and `clear_cut`; the broker raises `ReadDeadline` too when a read completes past
-  its local stop.
+  its local stop. `read_text_beneath` returns `(bytes, source_size)`; a native file over 1 MiB
+  returns no bytes, and the broker emits `partial` / `native_read_limit`, `truncated=true`, only
+  `data.source_bytes`, and no citations. `list_beneath` returns `(entries, truncated)` after at
+  most 128 native-entry inspections plus one uninspected lookahead. Hidden/refused entries spend
+  the inspection budget. An exhausted sample emits `partial` / `inspection_limit`, even with no
+  visible children. Cursors page the sampled entries only; the final sample page has no cursor
+  beyond it and still names the inspection limit. Neither result claims source completeness.
 
 ### Review dialogue record (issue #905)
 
@@ -11874,6 +11883,20 @@ cleaning up. A completed Codex turn reports `runtime_evidence.process_cleanup = 
 `ReviewerSession.aclose()` returns the closing cleanup outcome. The service replaces `retained` in
 the final exchange's evidence with that outcome before anything is persisted, so
 `runtime-attempt-evidence` 1.1.0 is unchanged and `retained` never reaches a stored record.
+If closing the held session reports `failed`, the final judgment is withheld: the result is
+`unavailable`, failure class `transport`, runtime stage and reviewer ending `cleanup_unconfirmed`.
+An acknowledged Codex turn maps to `outcome_unknown`, preserving the existing no-retry rule.
+
+Active Codex turns account for notifications by four closed families (`control`, `telemetry`,
+`delta`, `intermediate`). Each notification spends the largest of its re-encoded JSON byte size,
+newly received wire bytes, and 256 work units, with a 32 MiB total work bound and the shared deadline
+checked per event. Buffered events spend their re-encoded size as well, conservatively.
+Discarded telemetry and streamed deltas no longer exhaust a 4,096-event allowance. The existing
+`event_limit` stage names work exhaustion; an acknowledged turn without a completed answer remains
+`outcome_unknown`. `turn_notifications` owner diagnostics carry only `codex_event_<family>_count`,
+`codex_event_<family>_bytes` (re-encoded JSON), `codex_event_wire_bytes` (active-turn traffic including
+the turn acknowledgement), and attempt `duration_ms` including cleanup. Per-message,
+request-queue and pre-disclosure bounds and all event/tool allowlists still apply.
 
 `complete(history, schema, deadline=)` returns the reply object. It raises the decoder's
 `ReviewerReplyInvalid("output_not_json")` only for a completed answer that is not one JSON object

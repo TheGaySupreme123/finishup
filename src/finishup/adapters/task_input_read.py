@@ -707,7 +707,11 @@ def _reviewer_open(
 def read_text_beneath(
     root: str, relative: str, *, excluded: tuple[str, ...], expired: Callable[[], bool]
 ) -> tuple[bytes, int] | None:
-    """Up to 1 MiB of one trusted file beneath ``root`` and its size, or ``None``."""
+    """One trusted file and its size; withhold all bytes above 1 MiB.
+
+    A physical head cut cannot prove that a credential crossing it remains recognizable. Return
+    only the original size in that case, so the broker can disclose the limit without a fragment.
+    """
 
     opened = _reviewer_open(root, relative, excluded)
     if opened is None:
@@ -724,7 +728,9 @@ def read_text_beneath(
         )
     finally:
         os.close(descriptor)
-    return None if ends is None else (ends[0], ends[2])
+    if ends is None:
+        return None
+    return (b"" if ends[2] > len(ends[0]) else ends[0], ends[2])
 
 
 def list_beneath(
@@ -734,8 +740,12 @@ def list_beneath(
     excluded: tuple[str, ...],
     expired: Callable[[], bool],
     inspect: int = 128,
-) -> tuple[tuple[str, bool], ...] | None:
-    """``(name, is_directory)`` of the trusted, visible children among ``inspect`` examined."""
+) -> tuple[tuple[tuple[str, bool], ...], bool] | None:
+    """Visible trusted children and whether native entries remain beyond ``inspect``.
+
+    Hidden and refused entries spend the inspection budget too. One lookahead establishes
+    exhaustion without inspecting or returning that entry; this is a sample, not a full listing.
+    """
 
     opened_root = _reviewer_open(root, relative, excluded)
     if opened_root is None:
@@ -763,7 +773,10 @@ def list_beneath(
                     continue
                 if not hidden and (trust.file(facts) or trust.directory(facts)):
                     entries.append((entry.name, stat.S_ISDIR(facts.st_mode)))
-        return tuple(sorted(entries))
+            if expired():
+                raise ReadDeadline("reviewer_read_deadline")
+            truncated = next(found, None) is not None
+        return tuple(sorted(entries)), truncated
     except OSError:
         return None
     finally:
