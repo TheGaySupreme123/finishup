@@ -74,13 +74,24 @@ _LEDGER_VIEWS: Final = {
 
 # What admission sees of a result: each element's category, exact bytes and outside root.
 type ReadElement = tuple[DataCategory, bytes, str | None]
-type _Selected = tuple[str, list[_Piece], tuple[str, str, int] | None, int] | tuple[str, str]
+type _Selected = (
+    tuple[str, list[_Piece], tuple[str, str, int] | None, int] | tuple[str, str] | _WithheldRead
+)
+
+
+@dataclass(frozen=True, slots=True)
+class _WithheldRead:
+    size: int
 
 
 class ReadExchangeFull(Exception):
     """The read action alone left its exchange no room for even a result without data (#1118).
 
     Raised before the read is reserved; nothing is read and that exchange is never sent."""
+
+    def __init__(self, required: int, available: int) -> None:
+        super().__init__("reviewer_read_exchange_full")
+        self.capacity = (required, available)
 
 
 @dataclass(frozen=True, slots=True)
@@ -118,6 +129,7 @@ class _Piece:
     line: int | None = None
     root: str | None = None
     category: DataCategory = DataCategory.REPOSITORY_EXCERPT
+    truncation_reason: str | None = None
     end: int = field(init=False)
 
     def __post_init__(self) -> None:
@@ -185,9 +197,11 @@ class ReviewerBroker:
 
         left = self._exchange_room()
         if left is not None:
+            required = reviewer_message_bytes("assistant", reply) + MIN_ROOM
+            available = left
             left -= reviewer_message_bytes("assistant", reply)
             if left < MIN_ROOM:
-                raise ReadExchangeFull("reviewer_read_exchange_full")
+                raise ReadExchangeFull(required, available)
         ordinal = self.calls + 1
         await self.store.reserve("read", ordinal, canonical_encode(action.model_dump(mode="json")))
         self.calls, tool_ref, args = ordinal, f"{self._job}:read:{ordinal}", action.args
@@ -255,6 +269,9 @@ class ReviewerBroker:
                 size = len(encoded)
             return encoded
 
+        if isinstance(selected, _WithheldRead):
+            file = True
+            return envelope("partial", "native_read_limit", {"source_bytes": selected.size})
         if len(selected) == 2:
             return envelope(*selected)
         shape, pieces, page, left = selected
@@ -267,11 +284,12 @@ class ReviewerBroker:
         def fitted(pieces: list[_Piece]) -> bytes:
             nonlocal refs, cites, cursor
             more = left > 0 or len(pieces) < count
-            cut = more or any(piece.end < piece.stop for piece in pieces)
+            reason = next((p.truncation_reason for p in pieces if p.truncation_reason), None)
+            cut = more or reason is not None or any(piece.end < piece.stop for piece in pieces)
             data, cites = _data(shape, pieces)
             refs = sorted(cites)[:16]  # the citation is what the result advertises, nothing more
             cursor = f"c{ordinal}" if page is not None and more else None
-            return envelope("partial" if cut else "ok", None, data, refs, cursor)
+            return envelope("partial" if cut else "ok", reason, data, refs, cursor)
 
         while pieces := [piece for piece in pieces if piece.end > piece.start]:
             encoded = fitted(pieces)
@@ -404,21 +422,28 @@ class ReviewerBroker:
         if isinstance(args, ReadFileListArgsModel):
             below = f"{path}/" if path else ""
             if snap is None:
-                listed = list_beneath(root.path, path, excluded=root.excluded, expired=expired)
+                listing = list_beneath(root.path, path, excluded=root.excluded, expired=expired)
+                listed, truncated = listing if listing is not None else ((), False)
             else:
                 names = {m[len(below) :].split("/")[0] for m in kept if m.startswith(below)}
                 listed = tuple(sorted((n, f"{below}{n}" not in kept) for n in names))
+                truncated = False
             children = [(n, d) for n, d in listed or () if not self._refused(root, below + n)]
             selector = f"{root.alias}\x00{path}"
-            version = canonical_digest([[n, d] for n, d in children])
+            version = canonical_digest([[[n, d] for n, d in children], truncated])
             start = self._page(selector, version, args.cursor)
             if isinstance(start, tuple):
                 return start
             page = children[start : start + args.max_entries]
             if not page:
+                if truncated:
+                    return ("partial", "inspection_limit")
                 return ("unavailable", "not_recorded")
             kinds = [(n.encode(), "directory" if d else "file") for n, d in page]
             pieces = [_Piece(n, 0, len(n), refs, prov, k, None, root.input_root) for n, k in kinds]
+            if truncated:
+                for piece in pieces:
+                    piece.truncation_reason = "inspection_limit"
             return ("list", pieces, (selector, version, start), len(children) - start - len(page))
         if snap is not None:
             read = None if path not in kept else (kept[path], len(kept[path]))
@@ -427,6 +452,8 @@ class ReviewerBroker:
         if read is None:
             return ("unavailable", "not_recorded")
         data, size = read
+        if size > len(data):
+            return _WithheldRead(size)
         starts = [0, *(m.end() for m in re.finditer(b"\n", data))]
         first, last = args.start_line - 1, args.start_line - 1 + args.line_count
         if first >= len(starts) or starts[first] >= len(data):
