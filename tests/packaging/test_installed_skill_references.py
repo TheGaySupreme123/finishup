@@ -137,6 +137,22 @@ def test_installed_guidance_links_and_explicit_anchors_resolve(host: str, tmp_pa
     documents = {
         name: data.decode("utf-8") for name, data in members.items() if name.endswith(".md")
     }
+    # #1147 / #1132: every installed entrypoint must carry the finding and pacing rules,
+    # including Cursor's portable format; source-only checks miss renderer selection errors.
+    skills = [
+        " ".join(text.split())
+        for name, text in documents.items()
+        if name == "SKILL.md" or name.endswith("/SKILL.md")
+    ]
+    assert skills, f"{host}: missing installed skill"
+    for skill in skills:
+        assert "A finding is evidence, not an order" in skill
+        assert "literal task and supplied inputs" in skill
+        assert "`respond` `rejected` with reasons and evidence" in skill
+        assert "`check` with `final_review: true`" in skill
+        assert "No routine AI-powered review before there is a substantive change" in skill
+        assert "completion signal early, then keep improving" in skill
+        assert "Preserve required checks, review, and honest completion claims" in skill
     for name, text in documents.items():
         for target in _MARKDOWN_LINK.findall(text):
             if target.startswith(("http://", "https://", "finishup://", "mailto:")):

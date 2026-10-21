@@ -8,6 +8,10 @@ Read current guidance, not memory. FinishUP is not an enforcement system; a chec
 
 Deliver each requested output at its path, best-effort and disclosed if an input looks off; conditional files are `change` items, not placeholders.
 
+For measurement-triggered tasks, establish the trigger and deadline early. Ship a working version
+and send the task's completion signal early, then keep improving. Preserve required checks and
+review; a completion signal does not justify an unsupported completion claim.
+
 # Guidance catalog
 
 Do not call `resources/list` or `list_mcp_resources` to find FinishUP guidance; a list failure is not a missing server or reason to read product source. If a body is empty or clipped, call `read_guidance` with the same URI. Only if that result is also empty, use installed `references/<name>.md` or the topic's parent index.
@@ -28,6 +32,9 @@ Never publish hidden reasoning or chain-of-thought, full prompts, transcripts, c
 
 Tasks may start local; `review.md`: when to turn on AI-powered review. Select `semantic_required` when the user, effective policy, or named acceptance criterion requires independent review; `semantic_if_configured` only if optional; `deterministic_only` only for local or no-egress work.
 
+No routine AI-powered review before there is a substantive change to review; the pre-work `check`
+runs local plan checks only. Group later reviews around material milestones.
+
 Writes return frontier, ids, errors; a prior `status` read or `dry_run` is optional: send each returned frontier as the next `expected_frontier` (first plan: `start`'s). `publish_work` may omit `request_id`, `expected_frontier`, `event_id`, `occurred_at` (no `date`), envelope lists. Give each action a `result_recorded` naming its `act_` id. Cite IDs you published; find native captures with `view=evidence` filter `strength=immutable_snapshot`, reusing only IDs a structural link ties to the claim. Omitted descriptions are a privacy setting, not missing evidence. What is left and why: `check` `mode: inspect` (records nothing).
 
 `check` after the plan and each milestone; cite observed runs. Publish claim/evidence before the final check; answer findings, check, and inspect resolved state; an unchanged recheck returns it. Recheck only after repair/material record. After `insufficient_packet`: If `missing_for_assessment` names an `agent_suppliable` item you can supply, publish exactly that item once, linked to any named target, then `check` again. If it is already supplied, or it is a packet, type or authority limit, go to the receipt and state that specific limit. Only new material counts; tie it to any named target. Never republish retained files/output for review: it makes up to 3 permitted reads. Observed test, build, lint, or typecheck output reaches the reviewer only when a repository excerpt would be sent.
@@ -37,6 +44,11 @@ Lead final prose with the receipt's scope and limits; never headline "no finding
 # Review dialogue
 
 Before the receipt, run the closing `check` with `final_review: true`. Answer each open AI-powered finding with `respond` and a reason; `review.md` maps each case.
+
+A finding is evidence, not an order. Before reversing a deliberate decision or choosing between
+conflicting inputs, re-read the task and run the finding's discriminating check. If still ambiguous,
+keep the version matching the literal task and supplied inputs; `respond` `rejected` with reasons
+and evidence, then request final review. See `review.md` for the existing self-verify path.
 
 # Multi-agent work
 

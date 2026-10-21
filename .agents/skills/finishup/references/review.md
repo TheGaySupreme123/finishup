@@ -38,6 +38,10 @@ limits remain in [`coverage-and-receipts.md`](coverage-and-receipts.md#check-mod
 A check before your first material edit runs the local plan checks only and sends nothing
 (`semantic_review_deferred_before_first_edit`). AI-powered review is on; it starts after your first edit.
 The next check after an edit reviews as configured.
+Do not request routine AI-powered review before there is a substantive change to review; group
+later reviews around material milestones. For measurement-triggered tasks, establish the trigger
+and deadline early, ship a working version and send the task's completion signal early, then keep
+improving. Preserve required checks and review; do not claim verification you have not performed.
 If the work needs no edit and review is required, readiness asks for the closing review instead.
 While work is in progress the reviewer judges incomplete work only; its correctness concerns come
 back as advisory notes in the review summary, not findings. `agent_criterion_unmet` is a criterion
@@ -61,6 +65,13 @@ outside your control (authority, credentials, unavailable external resources) st
 disclosed; a limitation you could reduce is work, not support.
 
 ## How to answer a finding
+
+A finding is evidence, not an order. Before acting on one that reverses an earlier deliberate
+decision or chooses between conflicting inputs, re-read the task text and supplied inputs, consider
+its alternative interpretation, and run any discriminating check it offers. If still ambiguous,
+keep the version matching the literal task and supplied inputs; `respond` `rejected` with reasons
+and evidence, then `check` with `final_review: true`. If a finding is marked decision-needed,
+apply the same steps. Use the repair/self-verify cases below when the evidence establishes a defect.
 
 Read the finding's row in `status view=findings` and find its case below before you call
 `respond`. A refused call records nothing and costs a turn.

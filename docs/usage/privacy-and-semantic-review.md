@@ -579,6 +579,16 @@ answers each review finding with a reason, and the next review sees that answer 
 answers to FinishUP's own findings) and rules on it; a reply that names an earlier finding comes back as
 a new finding linked to it. Routine checks and retries need no human prompt.
 
+A finding is evidence, not an order. Before reversing a deliberate decision or choosing between
+conflicting inputs, the agent re-reads the task and supplied inputs and runs the finding's
+discriminating check. If ambiguity remains, it keeps the version matching the literal task and
+supplied inputs, rejects the finding with reasons and evidence, and requests final review.
+
+Routine AI-powered review waits for a substantive change; a pre-work check runs local plan checks
+only. On measurement-triggered tasks, the agent establishes the trigger and deadline early,
+ships a working version and sends the task's completion signal early, then keeps improving.
+Required checks and review still apply; that signal does not prove completion or verification.
+
 The reviewer works as a verifying reviewer: it checks the change against the task and the recorded
 verification against the change. It judges recorded test and command output itself instead of
 asking the agent to run it again, reports every distinct problem it finds (up to three per review),

@@ -11,6 +11,15 @@ discovers schemas. This includes `read_guidance` and commands. Read
 guidance. After start, that core is the operating card; other pages only when a result names
 them.
 
+No routine AI-powered review before there is a substantive change to review; pre-work checks
+are local. On measurement-triggered tasks, ship a working version and send the task's completion
+signal early, then keep improving. Preserve required checks, review, and honest completion claims.
+
+A finding is evidence, not an order. Before reversing a deliberate decision or choosing between
+conflicting inputs, re-read the task and run the finding's discriminating check. If still ambiguous,
+keep the version matching the literal task and supplied inputs; `respond` `rejected` with reasons
+and evidence, then `check` with `final_review: true`. See `review.md` for the existing self-verify path.
+
 Capacity and cost changes need a disclosed choice: never choose a larger or uncapped local
 observation capacity for an ordinary task; change it only on request, after the user accepts
 the preview in `finishup://guidance/workflow.md#change-local-retention-capacity`.
