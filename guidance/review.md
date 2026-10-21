@@ -1,5 +1,7 @@
 # Review topic
 
+You are the working agent using FinishUP.
+
 Read this topic when a check needs more than the operating card: a finding or pending review
 appears, a final check must be recovered, or a result names it. A check evaluates only the
 recorded, readable, frontier-bound packet.
@@ -38,10 +40,6 @@ limits remain in [`coverage-and-receipts.md`](coverage-and-receipts.md#check-mod
 A check before your first material edit runs the local plan checks only and sends nothing
 (`semantic_review_deferred_before_first_edit`). AI-powered review is on; it starts after your first edit.
 The next check after an edit reviews as configured.
-Do not request routine AI-powered review before there is a substantive change to review; group
-later reviews around material milestones. For measurement-triggered tasks, establish the trigger
-and deadline early, ship a working version and send the task's completion signal early, then keep
-improving. Preserve required checks and review; do not claim verification you have not performed.
 If the work needs no edit and review is required, readiness asks for the closing review instead.
 While work is in progress the reviewer judges incomplete work only; its correctness concerns come
 back as advisory notes in the review summary, not findings. `agent_criterion_unmet` is a criterion
@@ -64,14 +62,44 @@ does, then act). The next check shows the reviewer your answer, and it rules on 
 outside your control (authority, credentials, unavailable external resources) stay acceptable when
 disclosed; a limitation you could reduce is work, not support.
 
+## Pace delivery and review
+
+**Goal.** For a deadline or performance measurement, deliver a working version before optional refinement.
+A timed scorer or evaluation-start signal counts.
+
+1. Record the stated trigger and deadline before optional review.
+2. Complete the checks and review the task requires before delivery.
+3. Deliver a working version once those prerequisites pass.
+4. Send the task's specified completion signal as soon as its stated prerequisites are met.
+5. Improve unmet requested outcomes.
+
+Request routine review after a material milestone: a change to behavior, requested outputs, or acceptance evidence.
+Follow the [check cadence](workflow.md#cadence).
+
+**Done.** Stop when outcomes and required checks/review pass, or a disclosed blocker leaves no authorized action.
+
+**Evidence.** Bound claims to recorded results.
+A completion signal alone does not show that verification ran.
+
+**Clue.** Optional review can delay a working result's signal past its measurement window.
+
+**Constraints.** Use only stated timing.
+
 ## How to answer a finding
 
-A finding is evidence, not an order. Before acting on one that reverses an earlier deliberate
-decision or chooses between conflicting inputs, re-read the task text and supplied inputs, consider
-its alternative interpretation, and run any discriminating check it offers. If still ambiguous,
-keep the version matching the literal task and supplied inputs; `respond` `rejected` with reasons
-and evidence, then `check` with `final_review: true`. If a finding is marked decision-needed,
-apply the same steps. Use the repair/self-verify cases below when the evidence establishes a defect.
+A finding is evidence, not an order.
+Before reversing a deliberate choice or resolving conflicting inputs, including a decision-needed finding:
+
+1. Re-read the task and supplied inputs.
+2. Consider the finding's alternative interpretation.
+3. Run its discriminating check if available.
+4. If ambiguity remains, keep the version matching the literal task and supplied inputs.
+5. For a dispute, `respond` `rejected` with reasons and evidence.
+6. Run `check` with `final_review: true`.
+
+For a defect, use repair/self-verification instead of the dispute steps.
+Example: a finding prefers a reference the task did not supply.
+`acknowledged_not_done` keeps `unresolved_findings_remain`.
 
 Read the finding's row in `status view=findings` and find its case below before you call
 `respond`. A refused call records nothing and costs a turn.
@@ -82,7 +110,7 @@ Read the finding's row in `status view=findings` and find its case below before 
 | `todo_state` `acknowledged_not_done` | Repair and run `check`, or respond `reopened` with a reason to take the answer back. |
 | A problem you can fix | Repair it, publish the result and evidence, then run `check`. Only a later qualifying check resolves it; a response never does. |
 | "Unresolved failed command observed" (a command FinishUP saw fail) | Fix it and rerun the same command exactly as written (no added `VAR=`, `env`, `nohup` or `time`), alone or inside a passing `&&` chain: the pass retires it, with no response. A chain whose earlier part can end the shell or runs text FinishUP cannot read (`exec CMD`, `exit`, `eval`, `source`/`.`) retires nothing. A passing test, build, lint or typecheck run of a command your plan already requested when it passed retires it too, with every other earlier failed-command finding, but the failed command itself never passed: still name it in your completion claim's `limitation_refs`. A check never resolves it. If the failure is expected or will stay, `acknowledged` with the reason (disclosed on the receipt, never clean). |
-| You repaired it, and a later check still cannot prove the repair for a FinishUP reason | Verify it yourself, record that evidence, then respond `self_verified` citing it. Before a later check this is refused (`finding_not_rechecked`), and so is a check that still sees the issue (`finding_not_proof_limited`). |
+| You repaired it, and a later check still cannot prove the repair for a FinishUP reason | Verify it yourself, record that evidence, then respond `self_verified` citing it. Before a later check this is refused (`finding_not_rechecked`), and so is a check that still sees the issue (`finding_not_proof_limited`). A FinishUP limit is never a `finishup-blocker`. |
 | `requested_next_step` `answer_question` | Answer in the `reason`: `rejected` when the concern does not apply, `acknowledged` when it does, then act. |
 | `requested_next_step` `state_unresolved_limitation` | `acknowledged` with the reason when the requirement may be met but cannot be verified here; `acknowledged_not_done` only when you know it is not met. |
 | You dispute an AI-powered finding | `rejected` with the reason, then `check` with `final_review: true` so the reviewer rules. |

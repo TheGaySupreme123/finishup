@@ -180,10 +180,7 @@ admitted input, including clipping and privacy omissions.
 
 Under-publishing hides the work; over-publishing buries it. The test is whether an independent reader reviewing only the ledger would reach a different conclusion without the fact.
 
-No routine AI-powered review before there is a substantive change to review; the pre-work check
-above runs local plan checks only. For measurement-triggered tasks, establish the trigger and
-deadline early, ship a working version and send the task's completion signal early, then keep
-improving. Preserve required checks and review, and distinguish that signal from a completion claim.
+Follow the [delivery pacing and finding procedures](review.md) for timed work and disputed advice.
 
 A `publish_work` may omit `expected_frontier`: FinishUP guards the batch with the frontier it reads
 on admission, so a cooperative write that lands meanwhile is a conflict. For a `check`, `respond`
