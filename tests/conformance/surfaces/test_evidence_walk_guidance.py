@@ -101,9 +101,8 @@ def test_codex_skill_routes_evidence_first_closure_to_the_workflow_topic() -> No
     assert "that core is the operating card" in text
     assert "other pages only when a result names them" in text
     card = _collapsed(_GUIDANCE / "agent-instructions.md")
-    assert (
-        "on demand only: resume/recovery/delegation/capacity `finishup://guidance/workflow.md`"
-        in (card)
+    assert "On demand: resume/recovery/delegation/capacity `finishup://guidance/workflow.md`" in (
+        card
     )
     assert "\n## Evidence-first closure\n" in (_GUIDANCE / "workflow.md").read_text(
         encoding="utf-8"

@@ -7490,7 +7490,6 @@ _CHECK_STRUCTURAL_POINTERS: Final = (
     _COMMON_SUCCESS_LEAVES
     + (
         "/semantic_conclusion",
-        "/closure_readiness",
         "/semantic_provenance",
         "/semantic_reason",
         # Issue #986: a closed boolean the service writes from the route, never case content.
@@ -8768,7 +8767,7 @@ def _build_result_leaf_rules() -> tuple[_ResultLeafRule, ...]:
         ):
             raise RuntimeError("invalid_result_leaf_classification")
     if (
-        len(result) != 1773
+        len(result) != 1772
     ):  # ... #1017 +3, #1027 +5, tb4n3 LO +9, W2-A +46, LF +34 (fact_lineage), W2-B +2,
         # tb4n4 #1044 +7 (closure_readiness.undeclared_references), #1048 +38 (inspection),
         # #1047 +2 (follow_up_round), tb4n5 +3 (publish action_notices),
@@ -8779,7 +8778,7 @@ def _build_result_leaf_rules() -> tuple[_ResultLeafRule, ...]:
         # W5/D1 +2 (closure_readiness.acceptance_risk),
         # W6 +1 check (agent_next) / +15 status (operation check_outcome),
         # #1118 +18 check (reviewer), +1 check_recorded 1.6.0; #1139 +8 check/status delivery
-        # #1140 +84 check (shared readiness, including one repository-excerpt leaf),
+        # #1140 +83 check (shared readiness, including one repository-excerpt leaf),
         # #1144/#1149 +3 receipt (disproved ids and stopped status/reason)
         raise RuntimeError("incomplete_result_leaf_registry")
     return result

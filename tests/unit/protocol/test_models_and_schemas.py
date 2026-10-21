@@ -162,6 +162,7 @@ _EXPECTED_SEMANTIC_STATUS_REASONS = {
         "audit_reservation_unavailable",
         "receipt_persistence_unknown",
         "outcome_unknown",
+        "round_limit_unassessable",
     },
     "late": {"deadline_authority_lost", "lease_authority_lost"},
     "stale": {"frontier_changed", "dependency_changed"},
@@ -317,10 +318,13 @@ _EXPECTED_RESULT_PATTERN_COUNTS: dict[tuple[str, str | None], int] = {
     (
         "check",
         None,
-    ): 465,  # #1139 +4 review_delivery; #1118 +18 reviewer; tb4n2 LA: counts/disputed_after_rebuttal; W2-A +8; tb4n3 LF +17; #1048 +38 inspection;
+    ): 548,  # #1140 +83 shared readiness; #1139 +4 review_delivery; #1118 +18 reviewer; tb4n2 LA: counts/disputed_after_rebuttal; W2-A +8; tb4n3 LF +17; #1048 +38 inspection;
     # #1047 +1 follow_up_round; ADR-049 +4 review_mode; W6 #1107 +1 agent_next
     ("publish_work", None): 67,  # #1084 +3 server_filled
-    ("receipt", None): 301,  # tb4n2 LA: disputed_after_rebuttal_finding_ids; #1017 +3; W2-A +8
+    (
+        "receipt",
+        None,
+    ): 304,  # #1144/#1149 +3 disproved ids and stopped status/reason; tb4n2 LA: disputed_after_rebuttal_finding_ids; #1017 +3; W2-A +8
     ("respond", None): 56,  # +2 tb4n3 W2-B: closure_after
     ("start", None): 72,
     (
@@ -2314,10 +2318,10 @@ def test_check_recorded_schema_matches_final_semantic_provenance_identity() -> N
                 payload["semantic_provenance"] = _semantic_provenance_for(status, reason)
             else:
                 payload.pop("semantic_provenance", None)
-            if reason == "deferred_before_first_edit":
-                # n6 item 4: admitted only on check-recorded 1.5.0. This fixture is a
-                # 1.1 payload, so it cannot prove 1.5 admission; the canonical case and
-                # the pre-edit integration check do. 1.1 still rejects the new reason.
+            if reason in {"deferred_before_first_edit", "round_limit_unassessable"}:
+                # New reasons are versioned: deferred starts in 1.5, stopped review in 1.6.
+                # This historical 1.1 fixture must keep rejecting both. Current-version
+                # canonical and reviewer-check tests establish their newer admissions.
                 with pytest.raises(ProtocolValueError) as deferred_exc:
                     validate_schema_instance("check-recorded", "1.1.0", payload)
                 _assert_reason(deferred_exc, "schema_instance_invalid")
@@ -2600,8 +2604,8 @@ def test_result_leaf_registry_has_exhaustive_schema_parity() -> None:
 
     derived_patterns = _derived_result_success_patterns(catalog)
     assert (
-        len(derived_patterns) == 1657
-    )  # #1118 +18 check reviewer, +9 LO check_cause, W2-A +46 closure verdict, +34 LF fact_lineage, W2-B +2 closure_after,
+        len(derived_patterns) == 1743
+    )  # #1140/#1144/#1149 +86 readiness/receipt; #1139 +8 delivery; #1118 +18 check reviewer, +9 LO check_cause, W2-A +46 closure verdict, +34 LF fact_lineage, W2-B +2 closure_after,
     # W6 #1107 +1 check agent_next, +15 status operation check_outcome,
     # tb4n4 #1044 +7 closure_readiness.undeclared_references, #1048 +38 inspection, #1047 +2,
     # tb4n5 +3 publish action_notices, #1079 +2 admissible_verification,
@@ -2618,7 +2622,7 @@ def test_result_leaf_registry_has_exhaustive_schema_parity() -> None:
     assert type(rules) is tuple
     assert (
         len(rules)
-        == 1686  # #1139 +8 check/status review_delivery; #1118 +18 check reviewer, +1 check_recorded 1.6.0; n6 item 4: check_recorded 1.5.0; #1079 +2 admissible_verification;
+        == 1772  # #1140/#1144/#1149 +86 readiness and receipt; #1139 +8 check/status review_delivery; #1118 +18 check reviewer, +1 check_recorded 1.6.0; n6 item 4: check_recorded 1.5.0; #1079 +2 admissible_verification;
         # W6 #1107 +16 (check agent_next, status operation check_outcome);
         # +1 closing_material_frontier; #1084 +10 server_filled and brief status,
         # +1 history occurred_at_source (review R7), -2 replay_notice retired (round 2),
@@ -2635,8 +2639,8 @@ def test_result_leaf_registry_has_exhaustive_schema_parity() -> None:
 
     registry_patterns = {(rule.method, rule.status_view, rule.segments) for rule in rules}
     assert (
-        len(registry_patterns) == 1657
-    )  # #1118 +18 check reviewer, W6 #1107 +16, #1084 review R7 +1, #1027 +5, LO +9, W2-A +46, LF +34, W2-B +2, #1044 +7,
+        len(registry_patterns) == 1743
+    )  # #1140/#1144/#1149 +86 readiness/receipt; #1139 +8 delivery; #1118 +18 check reviewer, W6 #1107 +16, #1084 review R7 +1, #1027 +5, LO +9, W2-A +46, LF +34, W2-B +2, #1044 +7,
     # #1048 +38, #1047 +2, tb4n5 +3, ADR-049 +12 review_mode, #1079 +2 admissible_verification,
     # W5/D1 +2 closure_readiness.acceptance_risk
     assert registry_patterns == derived_patterns
@@ -3028,6 +3032,12 @@ def _expected_nonpublish_content_rules(
 
     rows: tuple[tuple[str, str | None, str, object], ...] = (
         ("check", None, "/review_delivery", finding_summary),
+        (
+            "check",
+            None,
+            "/closure_readiness/undeclared_references/*/paths/*",
+            repository_excerpt,
+        ),
         ("status", "findings", "/page/review_delivery", finding_summary),
         ("check", None, "/findings/*/detail", finding_summary),
         ("check", None, "/findings/*/summary", finding_summary),
@@ -3373,8 +3383,8 @@ def test_schema_catalog_record_shape_and_indexes_are_exact() -> None:
     # #1118: privacy-policy 1.3.0 (its 1.2.0 refs plus the 524,288 bound) and its control 2.9.0
     # admissions add 96.
     assert (
-        sum(_count_refs(document.json_schema) for document in catalog.documents) == 8_466
-    )  # #1119 +13: additive host-connection batch report references,
+        sum(_count_refs(document.json_schema) for document in catalog.documents) == 8_468
+    )  # #1140/#1144/#1149 +2 readiness/receipt references; #1119 +13: host-connection batch report,
     # #1118 +225 (check-result 1.6.0 and check-recorded 1.6.0, which carry the reviewer record),
     # #1118 unit 2 +27 (reviewer-reply 1.0.0), #1084 +55 (publish server_filled; status results_filter, brief_success, server_filled),
     # W6 #1107 +6 (status check_outcome and its overall_next/missing item defs),
