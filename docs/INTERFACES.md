@@ -11963,7 +11963,8 @@ Codex counts are the thread's cumulative `total` across the turn; a snapshot who
 more request, and that snapshot's `last` names the request (a repeated snapshot is not another one).
 Responses reads `usage.input_tokens`, `usage.input_tokens_details.cached_tokens` and
 `usage.output_tokens`; Chat Completions `prompt_tokens`, `prompt_tokens_details.cached_tokens` and
-`completion_tokens`. An answer without those counts records nothing. The local model route
+`completion_tokens`. An answer without those counts records nothing, nor does a Codex turn whose
+thread reported no usage before it (its starting counters are unknown). The local model route
 records nothing (FinishUP observes no provider prompt cache there), nor does the credential probe.
 
 `reviewer_cache_miss` is the first that applies: `compaction` (a `thread/compacted` notification or
