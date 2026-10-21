@@ -24,6 +24,7 @@ from finishup.adapters.memory.ledger import (
     quarantine_resume_object_invalid,
     semantic_case_follow_up_round,
 )
+from finishup.adapters.objects.check_resume import CHECK_RESUME_PAGE_MEDIA_TYPE
 from finishup.adapters.sqlite.observation import SqliteObservationStore
 from finishup.domain.events import (
     AcceptedEvent,
@@ -1402,6 +1403,14 @@ class SqliteLedger:
             raise _public_error(PublicErrorCode.STORAGE_CORRUPT)
 
     def _sync_runtime_state(self) -> None:
+        # Page roots and their checkpoint operation are inventoried in the same transaction.
+        # Unadmitted stages never enter this map and remain ordinary collectable orphans.
+        for ref in self._state.object_refs.values():
+            if (
+                ref.metadata.kind is ObjectKind.CHECK_RESUME
+                and ref.metadata.media_type == CHECK_RESUME_PAGE_MEDIA_TYPE
+            ):
+                self._inventory_object(ref)
         now = format_rfc3339_millis(
             self._clock.now_utc() if self._clock is not None else datetime.now(UTC)
         )
@@ -2358,6 +2367,15 @@ class SqliteLedger:
         merged = self._clone_state()
         merged.operations[operation_key] = admitted
         merged.frozen_cases[operation_key] = case
+        # Keep this acquisition's new page roots when merging over unrelated lifecycle motion.
+        for page_id, ref in staged.object_refs.items():
+            if page_id not in cast(dict[str, ObjectRef], object_refs_before):
+                if (
+                    ref.metadata.kind is not ObjectKind.CHECK_RESUME
+                    or ref.metadata.media_type != CHECK_RESUME_PAGE_MEDIA_TYPE
+                ):
+                    return None
+                merged.object_refs[page_id] = ref
         return merged
 
     async def _freeze_case_unrecorded(

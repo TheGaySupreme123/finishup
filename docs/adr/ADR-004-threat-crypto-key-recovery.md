@@ -90,6 +90,21 @@ ordinary UI content trusted.
    chunked in v0.1; only their digest and metadata may be recorded, with
    `evidence_immutability = content_digest` coverage.
 
+   **Amended 2026-10-21 (#1159):** internal `CHECK_RESUME` checkpoints may span up to 64
+   encrypted objects of at most 4 MiB each (256 MiB total), referenced by one encrypted
+   `yoetz.check-resume-pages/1` manifest. This exception preserves the complete frozen local
+   case; it does not permit larger captured artifacts, change retention or disclosure authority,
+   or enlarge a provider packet. The ordered manifest binds each page's object ID, envelope
+   digest, keyed commitment and exact size, plus the reconstructed bytes' digest and total size.
+   Page kind, media type, task and creation time must match before reconstruction; the original
+   canonical-case, dependency, frontier and request bindings are revalidated afterwards.
+   Children finalize before the manifest; SQLite inventories all pages with the admitted
+   operation in one transaction so backups and orphan sweeps retain them. Failed admission
+   leaves no page roots. Existing inline checkpoints remain readable. Aggregate overflow is
+   `LIMIT_EXCEEDED/check_resume_capacity_exceeded`; an oversized local-result checkpoint is
+   `LIMIT_EXCEEDED/check_result_capacity_exceeded`. Both carry `check_capacity_handoff`, never
+   provider repair or unchanged same/new-ID retry advice.
+
 Wrapped BMKs and encrypted objects are ciphertext, not an alternate plaintext key store. Plaintext
 IVKs, BMKs, derived keys (including installation MAC keys), DEKs, provider credentials, and
 decrypted payloads may exist only within

@@ -18,6 +18,7 @@ from typing import cast
 import apsw
 import pytest
 
+import finishup.adapters.objects.check_resume as resume_module
 import finishup.application.check as check_module
 import integration.service.test_semantic_non_dispatch as non_dispatch
 from builders.ledger_adapters import (
@@ -81,6 +82,7 @@ from finishup.ports.diagnostics import RuntimeCapability
 from finishup.ports.importer import ImporterPort
 from finishup.ports.keys import MacKeyPurpose
 from finishup.ports.ledger import CheckPolicyExecution, FrozenCase
+from finishup.ports.objects import ObjectKind
 from finishup.ports.privacy import (
     EffectivePrivacyPolicy,
     HumanAuthorityCapability,
@@ -521,11 +523,14 @@ async def test_withheld_statement_scope_remains_explicit_and_is_not_requested() 
 
 @pytest.mark.anyio
 @pytest.mark.parametrize("adapter", ("memory", "sqlite"))
+@pytest.mark.parametrize("paged", (False, True))
 async def test_durable_same_request_recovery_after_statement_event_refreshes_case(
-    adapter: str,
+    adapter: str, paged: bool, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """The durable check suspension refreshes after a statement-carrying session event."""
 
+    if paged:
+        monkeypatch.setattr(resume_module, "MAX_OBJECT_PLAINTEXT_BYTES", 512)
     start_application, original_runtime, clock, catalog = start_composition()
     start_runtime = _SharedStartRuntime(clock, original_runtime.ids, adapter)
     # The START facade only needs the catalog and runtime; use the test application's immutable
@@ -606,6 +611,12 @@ async def test_durable_same_request_recovery_after_statement_event_refreshes_cas
     assert operation is not None
     assert operation.state.value == "complete"
     assert operation.suspension_kind is None
+    if paged:
+        assert isinstance(_objects, MemoryObjects)
+        assert any(
+            ref.metadata.media_type == resume_module.CHECK_RESUME_PAGE_MEDIA_TYPE
+            for ref in _objects.refs_for_kind(ObjectKind.CHECK_RESUME)
+        )
 
 
 @pytest.mark.anyio

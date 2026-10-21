@@ -11,6 +11,7 @@ from datetime import UTC, datetime, timedelta
 from enum import StrEnum
 from typing import Any, Final, Literal, cast
 
+from finishup.adapters.objects.check_resume import open_check_resume, stage_check_resume
 from finishup.domain.events import (
     CHECK_EVENT_SCHEMA_VERSION,
     DEFERRED_CHECK_EVENT_SCHEMA_VERSION,
@@ -738,7 +739,7 @@ async def load_frozen_case_from_resume(
             or prior.commitment != pointer["commitment"]
         ):
             raise ValueError("deterministic_result_pointer_invalid")
-        raw = await _open_exact_object(objects, prior)
+        raw = await open_check_resume(objects, prior, await _open_exact_object(objects, prior))
         parsed = strict_json_parse(raw)
         if canonical_encode(parsed) != raw:
             raise ValueError("resume_object_noncanonical")
@@ -746,7 +747,11 @@ async def load_frozen_case_from_resume(
         expected_frontier = source["subject_frontier"]
         expected_dependency = source["dependency_digest"]
     elif current.metadata.kind is ObjectKind.CHECK_RESUME:
-        resume_source = source
+        raw = await open_check_resume(objects, current, raw)
+        parsed = strict_json_parse(raw)
+        if canonical_encode(parsed) != raw:
+            raise ValueError("resume_object_noncanonical")
+        resume_source = _strict_mapping(parsed, reason="resume_object_shape_invalid")
         expected_frontier = None
         expected_dependency = None
     else:
@@ -3202,8 +3207,9 @@ class MemoryLedgerAdapter:
 
         case, dependency, resume_bytes = await _run_blocking_joined(build)
         created_at = _now(self._clock)
-        staged_resume = await self._objects.stage(
-            ObjectSource(data=resume_bytes, declared_size=len(resume_bytes)),
+        resume_ref, resume_pages = await stage_check_resume(
+            self._objects,
+            resume_bytes,
             ObjectMetadata(
                 ObjectKind.CHECK_RESUME,
                 "application/vnd.yoetz.check-resume+json",
@@ -3211,7 +3217,6 @@ class MemoryLedgerAdapter:
                 created_at,
             ),
         )
-        resume_ref = await self._objects.finalize(staged_resume)
         async with self._lock:
             current = self._state.operations.get((writer_id, request_id))
             live_frontier = Frontier(
@@ -3226,6 +3231,7 @@ class MemoryLedgerAdapter:
             ):
                 raise check_admission_refused(CheckAdmissionStage.ACQUISITION_CONTENDED)
             self._state.frozen_cases[(writer_id, request_id)] = case
+            self._state.object_refs.update((ref.object_id, ref) for ref in resume_pages)
             self._remember_dependency_digest((writer_id, request_id), case, dependency)
             _, renewed = self._replace_pending_record(
                 prior_record,
@@ -3397,8 +3403,9 @@ class MemoryLedgerAdapter:
             self._remember_dependency_digest(key, case, dependency)
             assert self._objects is not None
             created_at = _now(self._clock)
-            staged = await self._objects.stage(
-                ObjectSource(data=case_bytes, declared_size=len(case_bytes)),
+            resume_ref, resume_pages = await stage_check_resume(
+                self._objects,
+                case_bytes,
                 ObjectMetadata(
                     ObjectKind.CHECK_RESUME,
                     "application/vnd.yoetz.check-resume+json",
@@ -3406,7 +3413,6 @@ class MemoryLedgerAdapter:
                     created_at,
                 ),
             )
-            resume_ref = await self._objects.finalize(staged)
             async with self._lock:
                 if key in self._state.operations:
                     # Another invocation admitted this exact key after this one's reservation
@@ -3454,6 +3460,7 @@ class MemoryLedgerAdapter:
                     None,
                 )
                 self._state.frozen_cases[key] = case
+                self._state.object_refs.update((ref.object_id, ref) for ref in resume_pages)
                 self._state.operations[key] = (operation, None)
                 return FrozenCase(case, self._lease_for(operation))
         finally:
