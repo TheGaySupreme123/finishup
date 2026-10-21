@@ -2938,6 +2938,12 @@ The leading packet view uses structural source references and character spans, w
 text remaining in its separately authorized task/obligation items. Human receipts show ordinal
 rows and structural facts; categorized JSON/status retain the criterion text and worst values.
 Unmanifested and unassessable criteria remain explicit limits rather than invented failures.
+A quote is admitted only as a whole-word occurrence that names the criterion, not only punctuation
+or common words. It maps the one candidate it identifies; a generic, cross-sentence or repeated
+quote never erases another criterion's gap. Task-statement rows rank before obligation sentences,
+so agent-written acceptance prose cannot push a user criterion past the display bound. Structural
+and Goal-aware packets omit the index because they do not select the task text or test excerpts
+it summarizes; offering it there is a separate disclosure decision.
 
 Test-quality scrutiny uses AI review only when that review is already in use. The reviewer asks
 whether the witness measures the quoted criterion and whether its source or expected values are

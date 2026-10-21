@@ -85,6 +85,7 @@ from finishup.domain.values import (
 from finishup.domain.values import (
     JsonValue as DomainJsonValue,
 )
+from finishup.domain.verification_coverage import criterion_quote_in_text
 from finishup.kernel.completion_scope import with_completion_scope_coverage
 from finishup.kernel.projections import PROJECTION_VERSION, ProjectionState
 from finishup.kernel.reducers import replay_extension
@@ -565,9 +566,10 @@ def _corrective_message(reason_code: str, schema_name: str | None) -> str | None
         return _PLACEHOLDER_CORRECTION
     if reason_code == "verification_criterion_not_in_task":
         return (
-            "The event batch is invalid. verification.criterion_quote must be a nonblank "
-            "verbatim substring of the current recorded task_statement. Record the user's "
-            "request before the result, then quote the stated criterion exactly."
+            "The event batch is invalid. verification.criterion_quote must be a verbatim "
+            "substring of the current recorded task_statement that starts and ends on whole "
+            "words and names the criterion, not only punctuation or common words. Record the "
+            "user's request before the result, then quote one stated criterion exactly."
         )
     set_order = _SET_ORDER_CORRECTIONS.get(reason_code)
     if set_order is not None:
@@ -1818,7 +1820,9 @@ def _validate_verification_quotes(
             if revised is not None:
                 text = revised
         if type(payload) is ResultRecordedPayload and payload.verification is not None:
-            if text is None or payload.verification.criterion_quote not in text:
+            if text is None or not criterion_quote_in_text(
+                payload.verification.criterion_quote, text
+            ):
                 raise _event_invalid(
                     "verification_criterion_not_in_task",
                     event_index=index,

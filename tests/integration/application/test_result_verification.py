@@ -102,6 +102,17 @@ async def test_non_task_quote_rejected_without_append_or_echo(dry_run: bool) -> 
     assert _records(app) == before
 
 
+@pytest.mark.parametrize("quote", [".", "the", "a", "eep known failing"])
+async def test_generic_or_partial_word_quote_rejected_even_though_it_occurs(quote: str) -> None:
+    app, started = await _started(11715)
+    before = _records(app)
+    with pytest.raises(PublicOperationError) as caught:
+        await app.publish_work(_request(started, 11716, [_result(11716, quote)]))
+    assert caught.value.code is PublicErrorCode.EVENT_INVALID
+    assert caught.value.safe_details["reason_code"] == "verification_criterion_not_in_task"
+    assert _records(app) == before
+
+
 async def test_quote_checked_at_its_position_in_dry_run_batch() -> None:
     app, started = await _started(11720)
     plan: dict[str, JsonValue] = {

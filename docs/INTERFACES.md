@@ -12187,7 +12187,11 @@ verification dependencies and generated-artifact roles remain an open design req
 64 characters; optional `tuned_on_these_cases` is a boolean. Optional `test_file`, `results_file`
 (nonblank paths of at most 1,024 characters) and `report_digest` (`sha256:` digest) travel together.
 The publication validator checks the quote against the current recorded task statement, including
-an earlier statement revision in the same atomic batch. Omitted frontiers acquire the admission
+an earlier statement revision in the same atomic batch. The quote must occur verbatim on whole-word
+boundaries (`1` inside `1.06` or `atio` inside `ratio` does not count) and name at least three
+word characters beyond punctuation, articles, modals and quantifiers
+(`domain.verification_coverage.criterion_quote_in_text`); otherwise publication fails with
+`verification_criterion_not_in_task`. Omitted frontiers acquire the admission
 frontier; explicit null remains forbidden for results. Replay of a committed operation precedes
 new admission validation. A later amended task does not inherit an obsolete quote's coverage.
 
@@ -12219,6 +12223,16 @@ pure, bounded advisory projection. Its candidate flags are `no_test`,
 It prefers a current independent witness without awarding volume, retains failures from unrelated
 checks, and exposes repeated unchanged work and registered checks on the same condition.
 Sentence matching only proposes stated criteria; it cannot establish test quality or completeness.
+Task sentences become candidates through a case- and inflection-tolerant condition-word list
+(`labels`, `returns`, `Outputs`, `written`); each obligation acceptance sentence is a candidate.
+A witness quote maps a candidate only when it equals that candidate or occurs, under the admission
+rule above, in exactly one candidate. A generic, cross-sentence or repeated quote stays its own
+row, and every candidate it does not identify remains `no_test`. Identical task and obligation
+text keeps the task source. Rows order failing first, then task-statement rows before obligation
+rows, then gaps before other rows; `omitted_criteria` counts every row past the 24-row bound.
+`public_only` (where the cases came from) and `own_or_tuned_only` (no witness free of the agent's
+own generation or tuning) are independent axes: public cases the agent tuned on carry both. Human
+renderings say "only task-public cases" and "only own-generated or tuned-on cases".
 Freshness reuses the shared service-proven unchanged-write exemption and workspace edit frontier;
 frozen packets pass both facts, while status/receipts derive them from authenticated records.
 Every surface labels this **agent-declared** and advisory, with no green `covered` state and no
@@ -12233,7 +12247,14 @@ legacy `human_text` category cannot export task text indirectly. JSON preserves 
 only when the selected receipt profile and disclosure policy admit it.
 
 The review packet leads with an internal `verification_coverage` section, referenced by optional
-`review_packet.verification_coverage_item_ids` (at most one). Its structural item contains closed
+`review_packet.verification_coverage_item_ids` (at most one). Only a selection that already includes
+task statement, obligations, deterministic assessments and evidence or test excerpts carries it:
+the Assisted and Expanded presets, or an equivalent custom selection. Structural never sends task
+text, from which every row's candidate and span derive (#908). Goal-aware approves task and
+obligation text but no test excerpts; its timeline still carries each manifest without the quote
+under command metadata. Adding the index to either profile would widen what they disclose and needs
+a separate privacy decision. Local status, TUI `/coverage` and receipts show the projection under
+every review profile. Its structural item contains closed
 flags, counts, result/action refs, and character spans pointing to separately authorized task or
 obligation text; it contains no criterion quote or worst-value prose. It uses the existing
 bounded-structural-metadata category under the existing selection and whole-packet byte limits;

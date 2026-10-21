@@ -613,7 +613,7 @@ Use `result_recorded/1.1.0` to add `verification` to the result payload above:
 }
 ```
 
-Replace the criterion with an exact quote from this task's recorded statement.
+Replace the criterion with an exact whole-word quote of one criterion from this task's recorded statement.
 For this failing example, set the result's `outcome` to `failure` and describe the six
 failing cases. Declare the actual data source: `task_public`, `own_generated`, `independent`,
 `held_out`, `stated_environment` or `unknown`. `worst` and `tuned_on_these_cases` are optional.

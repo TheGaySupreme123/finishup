@@ -88,8 +88,9 @@ The plan and its obligations are published together in the first plan batch: see
 ## Verification manifests
 
 For a material test result, optionally attach `verification` to `result_recorded/1.1.0`.
-Quote the criterion verbatim from the recorded task statement in
-`criterion_quote`; FinishUP checks the quote, not whether the test establishes it.
+Quote one criterion verbatim, as whole words, from the recorded task statement in
+`criterion_quote`; a quote of only punctuation or common words is refused.
+FinishUP checks the quote, not whether the test establishes it.
 Declare `data_source`, `cases` and `failing`; add `worst` and `tuned_on_these_cases` when useful.
 Keep known failing cases visible in the result's bounded summary or evidence.
 Follow [design verification](workflow.md#design-verification) before adding another test.

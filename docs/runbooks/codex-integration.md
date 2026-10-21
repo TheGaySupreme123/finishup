@@ -4098,4 +4098,4 @@ the reviewer scrutinizes circular tests and places a useful discriminating check
 See [the result recipe](../../guidance/request-templates.md#publish-work-result).
 
 This shared transport decision applies on macOS, Linux and Windows through WSL 2. Native host and
-platform execution is not established by the shared contract tests; issue #1170 owns that follow-up.
+platform execution is not established by the shared contract tests; issue #1182 owns that follow-up.

@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from dataclasses import replace
 
+import pytest
+
 from builders.policy_cases import (
     act,
     evt,
@@ -138,6 +140,23 @@ def test_task_quote_and_manifest_stay_out_when_task_section_is_not_selected() ->
     assert case.packet.verification_coverage_item_ids == ()
     assert not any(item.section == "verification_coverage" for item in case.items)
     assert not any(b"criterion_quote" in item.content for item in case.items)
+
+
+@pytest.mark.parametrize(
+    ("profile", "carried"),
+    [
+        (ReviewContextProfile.STRUCTURAL, False),
+        (ReviewContextProfile.GOAL_AWARE, False),
+        (ReviewContextProfile.ASSISTED, True),
+        (ReviewContextProfile.EXPANDED, True),
+    ],
+)
+def test_only_profiles_selecting_task_text_and_test_excerpts_carry_the_index(
+    profile: ReviewContextProfile, carried: bool
+) -> None:
+    case = _build(ReviewSelectionPolicy.for_profile(profile))
+    assert bool(case.packet.verification_coverage_item_ids) is carried
+    assert any(item.section == "verification_coverage" for item in case.items) is carried
 
 
 def test_category_filtering_keeps_criterion_text_out_of_structural_and_evidence_items() -> None:

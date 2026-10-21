@@ -25,6 +25,7 @@ from finishup.domain.verification_coverage import (
     VerificationCoverage,
     VerificationCriterion,
     VerificationWitness,
+    criterion_quote_in_text,
     verification_coverage_to_json,
 )
 from finishup.kernel.observed_failures import (
@@ -45,9 +46,13 @@ from finishup.kernel.task_facts import (
 
 __all__ = ["build_verification_coverage", "verification_coverage_to_json"]
 
+# Case- and inflection-tolerant: "Outputs", "returns", "labels" and "written" state conditions
+# as plainly as their base forms (#1170 pilot wording).
 _CONDITION: Final = re.compile(
     r"\b(?:must|shall|every|each|at least|at most|no more than|no less than|"
-    r"required|output|return|produce|deliver|write|save|label)\b|[≤≥]",
+    r"requir(?:e|es|ed|ing|ement|ements)|outputs?|output(?:ted|ting)|"
+    r"returns?|return(?:ed|ing)|produc(?:e|es|ed|ing)|deliver(?:s|ed|ing)?|"
+    r"writ(?:e|es|ing|ten)|wrote|sav(?:e|es|ed|ing)|label(?:s|ed|led|ing|ling)?)\b|[≤≥]",
     re.IGNORECASE,
 )
 _SENTENCE: Final = re.compile(r"(?<=[.!?])\s+|[\n;]+")
@@ -226,19 +231,26 @@ def build_verification_coverage(
             _Run(row, witness, identity, state, manifest.test_file)
         )
 
+    # The task statement is listed first, so identical text keeps the task source; the review
+    # packet's span resolves the same way.
     criteria: dict[str, CriterionSource] = {
         quote: next(source for text, source in sources if quote in text) for quote in runs_by_quote
     }
+    candidates: dict[str, CriterionSource] = {}
     for text, source in sources:
         for quote in _candidate_quotes(text, explicit=source == "obligation"):
-            matching = [known for known in runs_by_quote if known in quote or quote in known]
-            if matching:
-                # A cited clause maps its candidate sentence. Do not add a false no-test row
-                # merely because the task includes a longer sentence around the exact quote.
-                for known in matching:
-                    criteria[known] = source
-            else:
-                criteria.setdefault(quote, source)
+            candidates.setdefault(quote, source)
+    covered: set[str] = set()
+    for known in runs_by_quote:
+        # A cited clause maps the one candidate it identifies, so a longer sentence around the
+        # exact quote is not a false second gap. A generic or cross-sentence quote, or one that
+        # occurs in several candidates, identifies none and cannot erase another criterion.
+        equal = [quote for quote in candidates if quote.split() == known.split()]
+        within = [quote for quote in candidates if criterion_quote_in_text(known, quote)]
+        covered.update(equal or (within if len(within) == 1 else ()))
+    for quote, source in candidates.items():
+        if quote not in covered:
+            criteria.setdefault(quote, source)
 
     rows: list[VerificationCriterion] = []
     for quote, source in criteria.items():
@@ -319,11 +331,14 @@ def build_verification_coverage(
                 max(0, len(latest) - len(selected)),
             )
         )
-    # Gaps and retained failures stay visible before rows without candidate gaps. This is a
-    # display ordering, never an invitation to increase the number of tests.
+    # Retained failures lead. The user's task criteria then precede obligation acceptance
+    # prose, so agent-written sentences can never push a task gap past the display bound.
+    # Within a source, gaps precede rows without candidate gaps. This is a display ordering,
+    # never an invitation to increase the number of tests.
     rows.sort(
         key=lambda row: (
             "failing_cases" not in row.flags,
+            row.source == "obligation",
             "no_test" not in row.flags,
             not row.flags,
             row.criterion_quote.encode(),

@@ -7104,6 +7104,8 @@ def _build_semantic_case_once(
     recorded_statement = frozen_case.task_statement
     # This view combines task/obligation quotes with test-result prose. Every contributing
     # section must already be selected; no policy or disclosure authority is broadened.
+    # Structural selects no task text and Goal-aware no test excerpts, so neither carries it
+    # (docs/INTERFACES.md, issue #1170); local status and receipts still show the projection.
     if (
         {"task_statement", "obligations", "deterministic_assessments", "targeted_excerpts"}
         <= sections

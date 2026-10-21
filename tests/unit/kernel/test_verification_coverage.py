@@ -30,6 +30,7 @@ from finishup.domain.values import (
 )
 from finishup.domain.verification_coverage import (
     verification_coverage_from_json,
+    verification_coverage_lines,
     verification_coverage_to_json,
     verification_coverage_wire_lines,
 )
@@ -437,3 +438,135 @@ def test_projected_text_never_reappears_in_terminal_rendering() -> None:
     text = "\n".join(verification_coverage_wire_lines(wire))
     assert _QUOTE not in text and "105.61" not in text
     assert "criterion text withheld" in text and "worst value withheld" in text
+
+
+_TWO_CRITERIA = "The ratio must be at most 1.06. The labels must be saved."
+
+
+def _with_acceptance(projection: ProjectionState, text: str) -> ProjectionState:
+    row = projection.obligations[_OBLIGATION]
+    assert row.payload is not None
+    obligation = replace(row.payload, acceptance_criteria=text)
+    return replace(
+        projection,
+        obligations={
+            _OBLIGATION: replace(
+                row, payload=obligation, payload_digest=canonical_digest(encode_payload(obligation))
+            )
+        },
+    )
+
+
+@pytest.mark.parametrize("quote", [".", "a", "must", "must be", "at most 1"])
+def test_generic_quote_cannot_erase_other_criteria(quote: str) -> None:
+    view = build_verification_coverage(
+        _projection(_run(1, source="task_public", quote=quote), statement=_TWO_CRITERIA)
+    )
+    gaps = {row.criterion_quote for row in view.criteria if "no_test" in row.flags}
+    assert gaps == {"The ratio must be at most 1.06.", "The labels must be saved."}
+    assert view.omitted_criteria == 0
+    # The generic declaration remains visible as its own row; it maps no stated criterion.
+    assert [row.criterion_quote for row in view.criteria if row.witnesses] == [quote]
+
+
+@pytest.mark.parametrize(
+    "quote",
+    [
+        _TWO_CRITERIA,
+        "The ratio must be at most 1.06. The labels must be saved",
+        "at most 1.06. The labels",
+    ],
+)
+def test_cross_sentence_quote_keeps_the_second_criterion_gap(quote: str) -> None:
+    view = build_verification_coverage(
+        _projection(_run(1, source="task_public", quote=quote), statement=_TWO_CRITERIA)
+    )
+    assert ("The labels must be saved.", ("no_test",)) in [
+        (row.criterion_quote, row.flags) for row in view.criteria
+    ]
+    assert [row.criterion_quote for row in view.criteria if row.witnesses] == [quote]
+
+
+def test_specific_quote_maps_only_the_criterion_it_identifies() -> None:
+    view = build_verification_coverage(
+        _projection(
+            _run(1, source="task_public", quote="ratio must be at most 1.06"),
+            statement=_TWO_CRITERIA,
+        )
+    )
+    assert [(row.criterion_quote, row.flags) for row in view.criteria] == [
+        ("The labels must be saved.", ("no_test",)),
+        ("ratio must be at most 1.06", ("public_only",)),
+    ]
+    # A partial word or a number prefix is not an occurrence, so it maps nothing.
+    for partial in ("atio must be at most 1", "1.0"):
+        rows = build_verification_coverage(
+            _projection(_run(1, quote=partial), statement=_TWO_CRITERIA)
+        ).criteria
+        assert sum("no_test" in row.flags for row in rows) == 2
+    # A quote that occurs in two criteria identifies neither; both gaps remain.
+    repeated = "The ratio must be at most 1.06 on A. The ratio must be at most 1.10 on B."
+    rows = build_verification_coverage(
+        _projection(_run(1, quote="The ratio must be at most"), statement=repeated)
+    ).criteria
+    assert sum("no_test" in row.flags for row in rows) == 2
+
+
+@pytest.mark.parametrize(
+    "sentence",
+    [
+        "The inelastic labels are correct.",
+        "The function returns the ratio.",
+        "Outputs match the reference.",
+        "Each label is saved.",
+        "The report was written and labelled.",
+    ],
+)
+def test_inflected_condition_words_propose_a_criterion(sentence: str) -> None:
+    view = build_verification_coverage(_projection(statement=f"Background only here. {sentence}"))
+    assert [(row.criterion_quote, row.flags) for row in view.criteria] == [(sentence, ("no_test",))]
+
+
+def test_obligation_prose_cannot_evict_the_task_gap_from_the_display_bound() -> None:
+    notes = " ".join(f"Note {index} is background." for index in range(30))
+    view = build_verification_coverage(
+        _with_acceptance(_projection(statement="The ratio must be at most 1.06."), notes)
+    )
+    assert view.criteria[0].criterion_quote == "The ratio must be at most 1.06."
+    assert view.criteria[0].source == "task_statement"
+    assert len(view.criteria) == 24 and view.omitted_criteria == 7
+    # A failing obligation-backed row still leads; a task witness is not hidden by notes.
+    tested = build_verification_coverage(
+        _with_acceptance(
+            _projection(
+                _run(1, source="task_public", quote="The ratio must be at most 1.06."),
+                statement="The ratio must be at most 1.06. The labels must be saved.",
+            ),
+            notes,
+        )
+    )
+    assert [row.criterion_quote for row in tested.criteria[:2]] == [
+        "The labels must be saved.",
+        "The ratio must be at most 1.06.",
+    ]
+    assert tested.omitted_criteria == 8
+
+
+def test_quote_in_task_and_obligation_keeps_the_task_source() -> None:
+    view = build_verification_coverage(_with_acceptance(_projection(_run(1)), _QUOTE))
+    assert [(row.criterion_quote, row.source) for row in view.criteria] == [
+        (_QUOTE, "task_statement")
+    ]
+    wire = verification_coverage_to_json(view)
+    rows = wire["criteria"]
+    assert isinstance(rows, list) and isinstance(rows[0], dict)
+    assert rows[0]["task_criterion_quote"] == _QUOTE
+
+
+def test_tuned_public_cases_render_as_two_independent_axes() -> None:
+    view = build_verification_coverage(_projection(_run(1, source="task_public", tuned=True)))
+    text = "\n".join(verification_coverage_lines(view))
+    assert "only own-generated or tuned-on cases, only task-public cases" in text
+    assert "tuned on these cases" in text
+    wire_text = "\n".join(verification_coverage_wire_lines(verification_coverage_to_json(view)))
+    assert "only own-generated or tuned-on cases, only task-public cases" in wire_text

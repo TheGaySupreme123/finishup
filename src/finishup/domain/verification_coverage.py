@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Final, Literal, cast
@@ -12,6 +13,74 @@ from finishup.protocol.errors import ProtocolValueError
 
 MAX_COVERAGE_CRITERIA: Final = 24
 MAX_CRITERION_WITNESSES: Final = 3
+# A quote must name something beyond punctuation, articles, modals and quantifiers, or it
+# would match every stated criterion at once (#1170 review). Numbers such as 1.06 count.
+MIN_CRITERION_CONTENT_CHARACTERS: Final = 3
+_QUOTE_TOKEN: Final = re.compile(r"\w+(?:[.,']\w+)*")
+_QUOTE_STOPWORDS: Final = frozenset(
+    {
+        "a",
+        "all",
+        "an",
+        "and",
+        "any",
+        "are",
+        "as",
+        "at",
+        "be",
+        "been",
+        "being",
+        "by",
+        "can",
+        "could",
+        "did",
+        "do",
+        "does",
+        "each",
+        "every",
+        "for",
+        "from",
+        "had",
+        "has",
+        "have",
+        "if",
+        "in",
+        "is",
+        "it",
+        "its",
+        "least",
+        "less",
+        "may",
+        "might",
+        "more",
+        "most",
+        "must",
+        "no",
+        "none",
+        "not",
+        "of",
+        "on",
+        "or",
+        "shall",
+        "should",
+        "some",
+        "than",
+        "that",
+        "the",
+        "then",
+        "these",
+        "this",
+        "those",
+        "to",
+        "was",
+        "were",
+        "when",
+        "which",
+        "will",
+        "with",
+        "would",
+    }
+)
 CoverageFlag = Literal[
     "no_test",
     "failing_cases",
@@ -39,6 +108,48 @@ VERIFICATION_DATA_SOURCES: Final = (
     "stated_environment",
     "unknown",
 )
+# Human labels. Data scope and tuning are independent axes: public cases the agent tuned on
+# carry both ``public_only`` and ``own_or_tuned_only``, and the labels say so plainly.
+_FLAG_LABELS: Final[Mapping[str, str]] = {
+    "no_test": "no test",
+    "failing_cases": "failing cases",
+    "own_or_tuned_only": "only own-generated or tuned-on cases",
+    "public_only": "only task-public cases",
+    "stale": "stale",
+    "repeated_run": "candidate repeat on same recorded work",
+    "redundant_tests": "candidate redundant tests",
+}
+
+
+def criterion_quote_is_specific(quote: str) -> bool:
+    """Whether ``quote`` names more than punctuation and common function words."""
+
+    return (
+        sum(
+            len(re.sub(r"\W", "", token))
+            for token in _QUOTE_TOKEN.findall(quote)
+            if token.casefold() not in _QUOTE_STOPWORDS
+        )
+        >= MIN_CRITERION_CONTENT_CHARACTERS
+    )
+
+
+def criterion_quote_in_text(quote: str, text: str) -> bool:
+    """Whether a specific ``quote`` occurs verbatim in ``text`` at word boundaries.
+
+    ``1`` inside ``1.06`` or ``atio`` inside ``ratio`` is not an occurrence. This is the
+    admission rule and the only way a witness quote can map a longer candidate criterion.
+    """
+
+    if not quote or not criterion_quote_is_specific(quote):
+        return False
+    start = r"(?<!\w)(?<!\d[.,])" if re.match(r"\w", quote[0]) else ""
+    end = r"(?!\w)(?![.,]\d)" if re.match(r"\w", quote[-1]) else ""
+    return re.search(start + re.escape(quote) + end, text) is not None
+
+
+def coverage_flag_label(flag: str) -> str:
+    return _FLAG_LABELS.get(flag, flag.replace("_", " "))
 
 
 @dataclass(frozen=True, slots=True)
@@ -257,17 +368,7 @@ def verification_coverage_lines(
             if include_content
             else f"Criterion {index}; text omitted from this rendering"
         )
-        flags = (
-            ", ".join(
-                "candidate repeat on same recorded work"
-                if flag == "repeated_run"
-                else "candidate redundant tests"
-                if flag == "redundant_tests"
-                else flag.replace("_", " ")
-                for flag in row.flags
-            )
-            or "witness recorded"
-        )
+        flags = ", ".join(coverage_flag_label(flag) for flag in row.flags) or "witness recorded"
         lines.append(f'Criterion: "{quote}" ({row.source.replace("_", " ")}); {flags}.')
         for witness in row.witnesses:
             detail = f"{witness.result_id}: {witness.data_source}; {witness.failing}/{witness.cases} failing"
@@ -307,7 +408,7 @@ def verification_coverage_wire_lines(value: Mapping[str, object]) -> tuple[str, 
         flags = row.get("flags", ())
         labels = (
             ", ".join(
-                flag.replace("_", " ")
+                coverage_flag_label(flag)
                 for flag in cast(Sequence[object], flags)
                 if isinstance(flag, str) and flag in VERIFICATION_COVERAGE_FLAGS
             )
