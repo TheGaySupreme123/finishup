@@ -2691,6 +2691,11 @@ item below applies on macOS, Linux and Windows through WSL 2.
   `--project "$HOME" --allow-home-project`, also with `--non-interactive`; default setup still
   refuses home, and `/`, symlinks, and unsafe ownership/writability remain refused. The same
   choice reaches native hooks and MCP through the reviewed exact-home launcher argument.
+  Connecting another project keeps that existing choice in the shared hooks only while HOME
+  remains recorded as connected with its exact opted-in project MCP entry. The new project's
+  own MCP command gains no home permission. Disconnecting HOME removes the exception from
+  shared hooks even when other projects keep using the plugin; unreadable HOME permission
+  evidence stops a later connect with `connection_home_project_permission_unknown`.
   JSON previews and results report `status.home_project_allowed` (inside each batch member).
   `setup disconnect --host cursor-cli --project "$HOME" --non-interactive --json` previews
   removal without a new home opt-in; approve that exact preview. Observation and disclosure

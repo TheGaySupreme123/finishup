@@ -28,7 +28,7 @@ from finishup.adapters.integrations.host_projects import (
     same_directory,
     write_connected_projects,
 )
-from finishup.config.home_project import home_project_allowed
+from finishup.config.home_project import home_project_allowed, home_project_scope
 from finishup.domain.values import RequestId
 from finishup.ports.plugin_artifacts import (
     ArtifactAuthority,
@@ -620,18 +620,57 @@ def prepare_connection(
         config_existed = installation.config_root.exists()
         project_identity = (project.stat().st_dev, project.stat().st_ino)
         cursor_target = cursor.CursorPluginTarget(str(installation.config_root))
-        cursor_artifact = cursor.render_cursor_plugin(
-            PluginFormatProfile.CURSOR_PLUGIN_NATIVE,
-            mcp_ownership=McpOwnership.EXTERNAL_REGISTRATION,
-            finishup_launcher=launcher,
-            startup_mode=cursor.installed_cursor_startup_mode(cursor_target) or "optional",
+        home = Path.home()
+        plugin_home = home if action == "connect" and home_project_allowed(project) else None
+        recorded_home_launcher: tuple[str, ...] | None = None
+        if config_existed and (action == "connect" or project == home):
+            try:
+                members = load_connected_projects(installation.config_root)
+                approved_home = (
+                    mcp.inspect_home_project_permission(home, isolation_root=isolation_root)
+                    if str(home) in members.projects
+                    else None
+                )
+            except HostProjectsError as error:
+                raise ConnectionError("connection_projects_record_invalid") from error
+            except mcp.CursorProjectMcpError as error:
+                raise ConnectionError("connection_home_project_permission_unknown") from error
+            if approved_home is not None:
+                recorded_home_launcher, permission = approved_home
+                if action == "connect" and project != home:
+                    plugin_home = home
+                    admission.disclosure["shared_home_project"] = str(home)
+                    admission.disclosure["shared_home_project_registration"] = canonical_digest(
+                        {
+                            "project_identity": [str(item) for item in permission.project_identity],
+                            "directory_identity": [
+                                str(item) for item in permission.config_directory_identity
+                            ],
+                            "config_identity": [str(item) for item in permission.config_identity],
+                            "config_digest": permission.config_digest,
+                        }
+                    )
+        # This permission belongs only to shared hooks. An ordinary project's own MCP command
+        # and setup locator keep their original launcher and require no home opt-in.
+        plugin_launcher = (
+            launcher[:-2] if launcher[-2:] == ("--home-project", str(home)) else launcher
         )
+        with home_project_scope(plugin_home):
+            cursor_artifact = cursor.render_cursor_plugin(
+                PluginFormatProfile.CURSOR_PLUGIN_NATIVE,
+                mcp_ownership=McpOwnership.EXTERNAL_REGISTRATION,
+                finishup_launcher=plugin_launcher,
+                startup_mode=cursor.installed_cursor_startup_mode(cursor_target) or "optional",
+            )
         project_target = mcp.CursorProjectMcpTarget(
             project,
             installation.config_root,
             "registered-project" if installation.host == "cursor-cli" else "mcp-roots",
         )
-        observed = cursor.status_cursor_plugin(cursor_target, cursor_artifact, project_root=project)
+        # The shared hook launcher can carry HOME's exception while this ordinary project's
+        # MCP launcher does not. Inspect shared MCP sources here; the project MCP adapter below
+        # independently validates and binds every selected-project source in the complete plan.
+        observed = cursor.status_cursor_plugin(cursor_target, cursor_artifact)
         if observed.state is PluginArtifactState.MODIFIED and not observed.marker_valid:
             raise ConnectionError("connection_modified_plugin")
         # The user plugin (hooks, skill) serves every project under this config root; only the
@@ -647,8 +686,18 @@ def prepare_connection(
             shared_present=observed.state is not PluginArtifactState.ABSENT
             or observed.legacy_installation in _OWNED_LEGACY,
         )
+        # HOME's disconnect must revoke its locator exception even when another project keeps
+        # the shared plugin. Ordinary disconnects still leave that plugin untouched.
+        refresh_shared_plugin = (
+            action == "disconnect"
+            and project == home
+            and shared.keeps_shared
+            and observed.state is not PluginArtifactState.ABSENT
+        )
         cursor_action = (
-            PluginArtifactAction.REMOVE
+            PluginArtifactAction.REPLACE
+            if refresh_shared_plugin
+            else PluginArtifactAction.REMOVE
             if action == "disconnect"
             else PluginArtifactAction.INSTALL
             if observed.state is PluginArtifactState.ABSENT
@@ -663,15 +712,19 @@ def prepare_connection(
                 (observed.state is PluginArtifactState.ABSENT and not cursor_legacy_owned)
                 # Other projects still use the user plugin; a Yoetz-era user tree is shared the
                 # same way and stays with it until the last project leaves (ADR-048, #1058).
-                or shared.keeps_shared
+                or (shared.keeps_shared and not refresh_shared_plugin)
             )
             else cursor.preview_cursor_plugin(
-                request, cursor_target, cursor_action, cursor_artifact, project_root=project
+                request, cursor_target, cursor_action, cursor_artifact
             )
         )
         mcp_action = "install" if action == "connect" else "remove"
         # Launchers the plugin markers recorded now, before any step can migrate them (ADR-048).
         recorded = mcp.recorded_cursor_launchers(installation.config_root)
+        if recorded_home_launcher is not None and recorded_home_launcher not in recorded:
+            recorded = (*recorded, recorded_home_launcher)
+        if plugin_launcher != launcher and plugin_launcher not in recorded:
+            recorded = (*recorded, plugin_launcher)
         mcp_preview = mcp.preview_cursor_project_mcp(
             project_target,
             action=mcp_action,
@@ -687,7 +740,9 @@ def prepare_connection(
                 changes.append(
                     "migrate_legacy_plugin" if action == "connect" else "remove_legacy_plugin"
                 )
-            if action == "connect" or observed.state is not PluginArtifactState.ABSENT:
+            if refresh_shared_plugin:
+                changes.append("update_shared_plugin")
+            elif action == "connect" or observed.state is not PluginArtifactState.ABSENT:
                 changes.append("install_plugin" if action == "connect" else "remove_plugin")
         if mcp_preview["action"] != "noop":
             changes.append("register_project_mcp" if action == "connect" else "remove_project_mcp")
@@ -711,9 +766,7 @@ def prepare_connection(
         sweep_admission = admission.plan(body, "cursor", action)
 
         def status() -> dict[str, JsonValue]:
-            current = cursor.status_cursor_plugin(
-                cursor_target, cursor_artifact, project_root=project
-            )
+            current = cursor.status_cursor_plugin(cursor_target, cursor_artifact)
             registration = mcp.status_cursor_project_mcp(
                 project_target,
                 launcher=launcher,
@@ -758,9 +811,8 @@ def prepare_connection(
                     accepted_preview_digest=cursor_preview.preview_digest,
                     authority=ArtifactAuthority("setup_composition", cursor_preview.preview_digest),
                     review=_ReviewedStep(cursor_preview.preview_digest),
-                    project_root=project,
                 )
-                if action == "connect"
+                if cursor_action is not PluginArtifactAction.REMOVE
                 else cursor.remove_cursor_plugin(
                     request,
                     cursor_target,
@@ -768,7 +820,6 @@ def prepare_connection(
                     accepted_preview_digest=cursor_preview.preview_digest,
                     authority=ArtifactAuthority("setup_composition", cursor_preview.preview_digest),
                     review=_ReviewedStep(cursor_preview.preview_digest),
-                    project_root=project,
                 )
             )
             if result.operation_state is not PluginOperationState.COMPLETED:

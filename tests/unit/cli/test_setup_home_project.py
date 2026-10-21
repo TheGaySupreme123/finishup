@@ -16,6 +16,7 @@ from finishup.adapters.integrations.claude_code_integration import render_claude
 from finishup.adapters.integrations.cursor_integration import render_cursor_plugin
 from finishup.adapters.integrations.host_discovery import HostInstallation
 from finishup.adapters.integrations.launcher import resolve_finishup_launcher
+from finishup.adapters.integrations.legacy_launchers import launcher_aliases, recorded_launcher
 from finishup.adapters.workspace_binding import (
     canonical_workspace_locator,
     resolve_workspace_locator,
@@ -206,15 +207,11 @@ def test_codex_skill_home_opt_in_is_required(home: Path) -> None:
     assert preview.file_changes
 
 
-@pytest.mark.parametrize("host", ["cursor-ide", "cursor-cli"])
-@pytest.mark.parametrize("batch", [False, True])
-def test_home_connection_preview_apply_and_disconnect(
+def _cursor_runner(
     monkeypatch: pytest.MonkeyPatch,
-    home: Path,
     tmp_path: Path,
     host: Literal["cursor-ide", "cursor-cli"],
-    batch: bool,
-) -> None:
+) -> tuple[CliRunner, Path, Path]:
     launcher = tmp_path / "finishup"
     launcher.write_text("#!/bin/sh\nexit 0\n")
     launcher.chmod(0o700)
@@ -253,7 +250,19 @@ def test_home_connection_preview_apply_and_disconnect(
         )
 
     monkeypatch.setattr(host_connection, "apply_selected", apply)
-    runner = CliRunner()
+    return CliRunner(), launcher, installation.config_root
+
+
+@pytest.mark.parametrize("host", ["cursor-ide", "cursor-cli"])
+@pytest.mark.parametrize("batch", [False, True])
+def test_home_connection_preview_apply_and_disconnect(
+    monkeypatch: pytest.MonkeyPatch,
+    home: Path,
+    tmp_path: Path,
+    host: Literal["cursor-ide", "cursor-cli"],
+    batch: bool,
+) -> None:
+    runner, _, _ = _cursor_runner(monkeypatch, tmp_path, host)
     arguments = [
         "setup",
         "run",
@@ -318,6 +327,247 @@ def test_home_connection_preview_apply_and_disconnect(
     row = report["members"][0] if batch else report
     assert row["status"]["configured"] is False
     assert "finishup" not in (home / ".cursor/mcp.json").read_text()
+
+
+def _cursor_setup(
+    runner: CliRunner,
+    host: Literal["cursor-ide", "cursor-cli"],
+    project: Path,
+    *,
+    disconnect: bool = False,
+    allow_home: bool = False,
+) -> dict[str, Any]:
+    arguments = [
+        "setup",
+        "disconnect" if disconnect else "run",
+        "--host",
+        host,
+        "--project",
+        str(project),
+        "--non-interactive",
+        "--json",
+    ]
+    if allow_home:
+        arguments.append("--allow-home-project")
+    preview = runner.invoke(app, arguments)
+    assert preview.exit_code == 0, preview.output
+    report = json.loads(preview.stdout)
+    if report["outcome"] == "unchanged":
+        return report
+    accepted = shlex.split(report["next_step"])[1:]
+    if "--json" not in accepted:
+        accepted.append("--json")
+    connected = runner.invoke(app, accepted)
+    assert connected.exit_code == 0, connected.output
+    return json.loads(connected.stdout)
+
+
+def _cursor_hook_commands(config: Path) -> list[list[str]]:
+    hooks = json.loads((config / "plugins/local/finishup/hooks/hooks.json").read_text())["hooks"]
+    return [
+        shlex.split(handler["command"])
+        for entries in hooks.values()
+        for entry in entries
+        for handler in entry.get("hooks", [entry])
+    ]
+
+
+@pytest.mark.parametrize("host", ["cursor-ide", "cursor-cli"])
+def test_cursor_shared_hooks_keep_only_the_still_connected_home_permission(
+    monkeypatch: pytest.MonkeyPatch,
+    home: Path,
+    tmp_path: Path,
+    host: Literal["cursor-ide", "cursor-cli"],
+) -> None:
+    runner, _, config = _cursor_runner(monkeypatch, tmp_path, host)
+    project = tmp_path / "ordinary-project"
+    project.mkdir(mode=0o700)
+    _cursor_setup(runner, host, home, allow_home=True)
+    home_mcp = (home / ".cursor/mcp.json").read_bytes()
+
+    connected = _cursor_setup(runner, host, project)
+    assert connected["status"].get("home_project_allowed") is not True
+    assert str(home) in connected["status"]["connected_projects_observed"]
+    assert all(
+        command[1:3] == ["--home-project", str(home)] for command in _cursor_hook_commands(config)
+    )
+    ordinary_mcp = (project / ".cursor/mcp.json").read_bytes()
+    assert "--home-project" not in ordinary_mcp.decode()
+    assert (home / ".cursor/mcp.json").read_bytes() == home_mcp
+    assert canonical_workspace_locator(home) is None
+
+    # Rebuilding and disconnecting another project's pieces keep the exact HOME permission.
+    _cursor_setup(runner, host, project)
+    _cursor_setup(runner, host, project, disconnect=True)
+    assert all("--home-project" in command for command in _cursor_hook_commands(config))
+    _cursor_setup(runner, host, project)
+    removed = _cursor_setup(runner, host, home, disconnect=True)
+    assert "update_shared_plugin" in removed["plan"]["changes"]
+    assert str(project) in removed["status"]["connected_projects_observed"]
+    assert all("--home-project" not in command for command in _cursor_hook_commands(config))
+    assert (project / ".cursor/mcp.json").read_bytes() == ordinary_mcp
+    _cursor_setup(runner, host, project)
+    assert all("--home-project" not in command for command in _cursor_hook_commands(config))
+    # A prior connection never authorizes a fresh HOME setup without its explicit flag.
+    refused = runner.invoke(
+        app, ["setup", "run", "--host", host, "--project", str(home), "--non-interactive", "--json"]
+    )
+    assert refused.exit_code == 1
+    assert json.loads(refused.stdout)["reason"] == "workspace_locator_invalid"
+
+
+@pytest.mark.parametrize("evidence", ["none", "missing", "foreign", "unflagged", "unrecorded"])
+def test_cursor_shared_hooks_do_not_infer_home_permission(
+    monkeypatch: pytest.MonkeyPatch,
+    home: Path,
+    tmp_path: Path,
+    evidence: str,
+) -> None:
+    from finishup.adapters.integrations.host_projects import CONNECTED_PROJECTS_FILE
+
+    runner, _, config = _cursor_runner(monkeypatch, tmp_path, "cursor-cli")
+    if evidence != "none":
+        _cursor_setup(runner, "cursor-cli", home, allow_home=True)
+        path = home / ".cursor/mcp.json"
+        if evidence == "missing":
+            path.unlink()
+        elif evidence == "unrecorded":
+            (config / CONNECTED_PROJECTS_FILE).write_text('{"projects": []}')
+        else:
+            document = json.loads(path.read_text())
+            entry = document["mcpServers"]["finishup"]
+            if evidence == "foreign":
+                entry["command"] = str(tmp_path / "unrelated")
+            else:
+                del entry["args"][:2]
+            path.write_text(json.dumps(document))
+    project = tmp_path / "ordinary-project"
+    project.mkdir(mode=0o700)
+    _cursor_setup(runner, "cursor-cli", project)
+    assert all("--home-project" not in command for command in _cursor_hook_commands(config))
+    assert canonical_workspace_locator(home) is None
+
+
+@pytest.mark.parametrize("host", ["cursor-ide", "cursor-cli"])
+def test_cursor_home_permission_survives_consecutive_launcher_updates(
+    monkeypatch: pytest.MonkeyPatch,
+    home: Path,
+    tmp_path: Path,
+    host: Literal["cursor-ide", "cursor-cli"],
+) -> None:
+    runner, launcher, config = _cursor_runner(monkeypatch, tmp_path, host)
+    _cursor_setup(runner, host, home, allow_home=True)
+    home_mcp = (home / ".cursor/mcp.json").read_bytes()
+    for number in range(2):
+        runtime = tmp_path / f"runtime-{number}"
+        runtime.mkdir(mode=0o700)
+        updated = runtime / "finishup"
+        updated.write_bytes(launcher.read_bytes())
+        updated.chmod(0o700)
+        monkeypatch.setattr(host_connection, "invoking_launcher", lambda: str(updated))
+        project = tmp_path / f"project-{number}"
+        project.mkdir(mode=0o700)
+        connected = _cursor_setup(runner, host, project)
+        assert str(home) in connected["status"]["connected_projects_observed"]
+        assert all(
+            command[:3] == [str(updated), "--home-project", str(home)]
+            for command in _cursor_hook_commands(config)
+        )
+        assert "--home-project" not in (project / ".cursor/mcp.json").read_text()
+    assert (home / ".cursor/mcp.json").read_bytes() == home_mcp
+    # The original HOME launcher is still the ownership proof for its reverse path.
+    removed = _cursor_setup(runner, host, home, disconnect=True)
+    assert removed["status"]["configured"] is False
+    assert all("--home-project" not in command for command in _cursor_hook_commands(config))
+
+
+def test_cursor_home_permission_change_invalidates_the_ordinary_project_preview(
+    monkeypatch: pytest.MonkeyPatch,
+    home: Path,
+    tmp_path: Path,
+) -> None:
+    runner, _, config = _cursor_runner(monkeypatch, tmp_path, "cursor-cli")
+    _cursor_setup(runner, "cursor-cli", home, allow_home=True)
+    project = tmp_path / "ordinary-project"
+    project.mkdir(mode=0o700)
+    preview = runner.invoke(
+        app,
+        [
+            "setup",
+            "run",
+            "--host",
+            "cursor-cli",
+            "--project",
+            str(project),
+            "--non-interactive",
+            "--json",
+        ],
+    )
+    assert preview.exit_code == 0, preview.output
+    report = json.loads(preview.stdout)
+    assert report["status"]["shared_home_project"] == str(home)
+    path = home / ".cursor/mcp.json"
+    document = json.loads(path.read_text())
+    document["mcpServers"]["finishup"]["args"].extend(["--semantic", "off"])
+    path.write_text(json.dumps(document))
+    accepted = shlex.split(report["next_step"])[1:]
+    if "--json" not in accepted:
+        accepted.append("--json")
+    stale = runner.invoke(app, accepted)
+    assert stale.exit_code == 1, stale.output
+    assert json.loads(stale.stdout)["reason"] == "connection_preview_stale"
+    assert not (project / ".cursor").exists()
+    assert all("--home-project" in command for command in _cursor_hook_commands(config))
+
+
+@pytest.mark.parametrize("unsafe", ["symlink", "writable"])
+def test_cursor_unreadable_home_permission_stops_before_shared_hooks_change(
+    monkeypatch: pytest.MonkeyPatch, home: Path, tmp_path: Path, unsafe: str
+) -> None:
+    runner, _, config = _cursor_runner(monkeypatch, tmp_path, "cursor-cli")
+    _cursor_setup(runner, "cursor-cli", home, allow_home=True)
+    path = home / ".cursor/mcp.json"
+    if unsafe == "symlink":
+        saved = home / ".cursor/saved-mcp.json"
+        path.rename(saved)
+        path.symlink_to(saved)
+    else:
+        path.chmod(0o666)
+    project = tmp_path / "ordinary-project"
+    project.mkdir(mode=0o700)
+    refused = runner.invoke(
+        app,
+        [
+            "setup",
+            "run",
+            "--host",
+            "cursor-cli",
+            "--project",
+            str(project),
+            "--non-interactive",
+            "--json",
+        ],
+    )
+    assert refused.exit_code == 1, refused.output
+    assert json.loads(refused.stdout)["reason"] == "connection_home_project_permission_unknown"
+    assert not (project / ".cursor").exists()
+    assert all("--home-project" in command for command in _cursor_hook_commands(config))
+
+
+@pytest.mark.parametrize("base", [("/opt/bin/finishup",), ("/opt/bin/python", "-m", "finishup")])
+def test_recorded_home_launchers_keep_exact_permission_and_rename_aliases(
+    home: Path, base: tuple[str, ...]
+) -> None:
+    launcher = (*base, "--home-project", str(home))
+    assert recorded_launcher(list(launcher)) == launcher
+    alias = ("/opt/bin/yoetz",) if len(base) == 1 else (base[0], "-m", "yoetz")
+    assert launcher_aliases(launcher) == (launcher, (*alias, "--home-project", str(home)))
+    for suffix in (
+        ("--home-project", "/"),
+        ("--home-project", str(home / "other")),
+        ("--home-project", str(home), "--unexpected"),
+    ):
+        assert recorded_launcher([*base, *suffix]) is None
 
 
 def test_setup_help_explains_the_opt_in() -> None:

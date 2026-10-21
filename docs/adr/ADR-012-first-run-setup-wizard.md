@@ -871,6 +871,17 @@ classifier, and cached MCP entry honor the same choice; Claude Code and Cursor c
 their shared launcher renderer. Exact preview approval and separate observation, provider, and
 disclosure permissions remain required. No hook, MCP operation, or receipt wire shape changes.
 
+Cursor's user plugin is shared by its connected projects. Connecting an ordinary project keeps
+an existing HOME choice in those shared hooks only when the connected-project record still
+names the current HOME and its safely read project MCP entry still carries the exact-home
+opt-in through a FinishUP launcher. The entry remains the evidence when later connections
+replace the shared marker or use a newer runtime; the selected ordinary project's own MCP
+command and setup locator do not acquire the exception. The complete preview binds the HOME
+registration's bytes and filesystem identity and discloses the retained choice. Missing
+membership or permission never grants it; unreadable permission evidence stops the connect.
+Disconnecting HOME updates kept shared hooks to remove the exception while other projects
+retain their own connections. An ordinary project's disconnect keeps HOME's existing hooks.
+
 Connection plans bind `home_project_allowed: true` in the existing disclosure, and JSON reports
 expose it in `status` (per member for batches); an invalid-folder report says `false` and names
 the flag in `next_step`. The legacy Codex-only wizard report carries the same field at its top

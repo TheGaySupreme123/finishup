@@ -23,6 +23,16 @@ __all__ = ["launcher_aliases", "recorded_launcher"]
 _ALIASES: Final = {LAUNCHER_NAME: LEGACY_LAUNCHER_NAME, LEGACY_LAUNCHER_NAME: LAUNCHER_NAME}
 
 
+def _without_home_project(launcher: tuple[str, ...]) -> tuple[tuple[str, ...], tuple[str, ...]]:
+    """Separate the exact current-home choice from a native launcher, without granting it."""
+
+    if len(launcher) > 2 and launcher[-2:] == ("--home-project", str(Path.home())):
+        home = Path(launcher[-1])
+        if home != Path(home.anchor):
+            return launcher[:-2], launcher[-2:]
+    return launcher, ()
+
+
 def launcher_aliases(launcher: tuple[str, ...]) -> tuple[tuple[str, ...], ...]:
     """Return ``launcher`` followed by the other spelling of the same installation, if any.
 
@@ -31,11 +41,12 @@ def launcher_aliases(launcher: tuple[str, ...]) -> tuple[tuple[str, ...], ...]:
     no alias. ``launcher`` must already be a valid rendered launcher.
     """
 
-    executable = Path(launcher[0])
-    if len(launcher) == 1 and executable.name in _ALIASES:
-        return launcher, (str(executable.with_name(_ALIASES[executable.name])),)
-    if len(launcher) == 3 and launcher[1] == "-m" and launcher[2] in _ALIASES:
-        return launcher, (launcher[0], "-m", _ALIASES[launcher[2]])
+    base, home_project = _without_home_project(launcher)
+    executable = Path(base[0])
+    if len(base) == 1 and executable.name in _ALIASES:
+        return launcher, (str(executable.with_name(_ALIASES[executable.name])), *home_project)
+    if len(base) == 3 and base[1] == "-m" and base[2] in _ALIASES:
+        return launcher, (base[0], "-m", _ALIASES[base[2]], *home_project)
     return (launcher,)
 
 
@@ -44,6 +55,7 @@ def recorded_launcher(value: object) -> tuple[str, ...] | None:
 
     ``value`` is the JSON list a self-consistent managed marker holds under ``yoetz_launcher``.
     The executable's name (or the module after ``-m``) must be ``finishup`` or ``yoetz``.
+    The only additional arguments accepted are the exact current non-root home's opt-in.
     """
 
     if type(value) is not list:
@@ -52,8 +64,9 @@ def recorded_launcher(value: object) -> tuple[str, ...] | None:
     if not valid_launcher(launcher):
         return None
     parts = cast(tuple[str, ...], launcher)
-    if len(parts) == 1 and Path(parts[0]).name in LAUNCHER_NAMES:
+    base, _ = _without_home_project(parts)
+    if len(base) == 1 and Path(base[0]).name in LAUNCHER_NAMES:
         return parts
-    if len(parts) == 3 and parts[1] == "-m" and parts[2] in LAUNCHER_NAMES:
+    if len(base) == 3 and base[1] == "-m" and base[2] in LAUNCHER_NAMES:
         return parts
     return None

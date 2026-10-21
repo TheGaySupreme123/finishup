@@ -175,6 +175,7 @@ _CHANGE_WORDING: Final[Mapping[str, str]] = {
     "remove_legacy_plugin": "Remove the plugin installed under the earlier Yoetz name",
     "uninstall_plugin": "Uninstall the FinishUP plugin",
     "remove_plugin": "Remove the FinishUP plugin",
+    "update_shared_plugin": "Update the shared FinishUP hooks to remove home-folder permission",
     "remove_marketplace": "Remove FinishUP's local plugin marketplace",
     "remove_plugin_mcp": "Remove the plugin's MCP server registration",
     "remove_project_mcp": "Remove FinishUP's MCP server from this project",
@@ -236,6 +237,10 @@ def _shared_summary(body: dict[str, JsonValue]) -> tuple[str, ...]:
     """Name the other projects that share this configuration's FinishUP pieces (#1058)."""
 
     lines: list[str] = []
+    if isinstance(body.get("shared_home_project"), str):
+        lines.append(
+            "Keep the existing home-folder permission in this configuration's shared hooks."
+        )
     if body.get("remove_shared") is True:
         # A home-wide disconnect is the one consent that ends FinishUP for other projects: say so
         # and name them before the approval (#1058 review P2-7).
