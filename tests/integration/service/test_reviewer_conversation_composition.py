@@ -25,6 +25,7 @@ from finishup.adapters.privacy.local_enforcer import LocalPrivacyEnforcer
 from finishup.adapters.providers.reviewer_reply import REVIEWER_REPLY_SCHEMAS
 from finishup.application.check import FinalSemanticEvaluation
 from finishup.application.egress import PrivacyCoordinator
+from finishup.application.reviewer_loop import FINAL_TURN
 from finishup.domain.findings import SamplingParams
 from finishup.domain.privacy import (
     ApprovedOutboundCase,
@@ -308,7 +309,11 @@ async def test_a_fourth_read_ends_the_review_incomplete_without_a_judgment(
     result, gateway, _runtime = await _run(tmp_path, monkeypatch, *([_read_file("calc.py")] * 4))
     assert result.status is SemanticStatus.INVALID and result.judgment is None
     assert len(gateway.exchanges) == 4
-    assert gateway.exchanges[-1][0] == "application/vnd.finishup.reviewer-final+json"
+    # #1172: every exchange keeps the review's one reply schema; the final one says reads ended.
+    assert {media for media, _history in gateway.exchanges} == {
+        "application/vnd.finishup.reviewer-turn+json"
+    }
+    assert gateway.exchanges[-1][1][-1] == ("user", FINAL_TURN)
     assert result.reviewer is not None and result.reviewer.ended == "read_limit"
     assert len(result.reviewer.reads) == 3
 

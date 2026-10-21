@@ -37,6 +37,7 @@ from finishup.application.privacy_policy import (
     decide_privacy_policy,
     privacy_propose_policy,
 )
+from finishup.application.reviewer_loop import FINAL_TURN
 from finishup.application.service import ClientProjectionContext, ProjectionRenderMode
 from finishup.cli.render import render_human_check
 from finishup.config.models import FinishUpConfig
@@ -352,7 +353,9 @@ async def test_one_review_reads_three_times_then_concludes_on_every_surface(
         assert getattr(checked, "semantic_status") is SemanticStatus.SUCCEEDED
 
         # Four exchanges, each admitted on its own; the packet and read catalog lead every one.
-        assert [len(history) for _, history in exchanges] == [3, 5, 7, 9]
+        # The last also carries the no-reads-left notice instead of a narrower schema (#1172).
+        assert [len(history) for _, history in exchanges] == [3, 5, 7, 10]
+        assert exchanges[-1][1][-1] == ("user", FINAL_TURN)
         last = exchanges[-1][1]
         assert "reviewer_catalog" in last[2][1]
         first_read, second_read, listing = (json.loads(last[i][1]) for i in (4, 6, 8))

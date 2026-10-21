@@ -2137,9 +2137,9 @@ REVIEWER_EXCHANGE_MEDIA_TYPES: Final = {
     "turn": "application/vnd.finishup.reviewer-turn+json",
     "final": "application/vnd.finishup.reviewer-final+json",
 }
-# System, packet, three action/observation pairs, and one format-repair notice (plus, at most,
-# the malformed turn's own pair when a route keeps it).
-_MAX_REVIEWER_MESSAGES: Final = 12
+# System, packet, read catalog, three action/observation pairs, the no-reads-left notice (#1172)
+# and one format-repair notice (plus, at most, the malformed turn's own pair when a route keeps it).
+_MAX_REVIEWER_MESSAGES: Final = 13
 
 
 def encode_reviewer_exchange(history: tuple[ReviewerMessage, ...]) -> bytes:

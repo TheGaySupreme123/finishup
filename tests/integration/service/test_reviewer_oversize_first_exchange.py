@@ -26,6 +26,7 @@ import finishup.cli.privacy_setup as privacy_setup_module
 import finishup.service.ready_composition as ready_composition_module
 from builders.privacy_policies import minimal_external_policy
 from finishup.adapters.privacy.local_enforcer import estimated_token_count
+from finishup.application.reviewer_loop import FINAL_TURN
 from finishup.application.reviewer_run import reviewer_first_exchange
 from finishup.application.semantic_case import (
     check_time_change_bytes_carried,
@@ -476,6 +477,51 @@ async def test_a_backslash_read_after_a_full_first_exchange_fits_the_cap(
     assert len(_legacy_read_exchange(first, second, source[: 32 * 101])) > UNSIZED_EXCHANGE_BYTES
     assert len(_encoded(second)) <= UNSIZED_EXCHANGE_BYTES
     assert json.loads(second[-1][1])["data"] is not None  # fitted, not dropped
+
+
+@pytest.mark.anyio
+async def test_the_no_reads_left_notice_fits_beside_a_read_that_filled_its_room(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """#1172: the reply schema no longer narrows after the last read, so the loop appends its one
+    no-reads-left notice instead. Every read leaves room for it beside the one format repair: after
+    a third read that filled what a near-cap conversation left, the exchange carrying the notice,
+    and the repair after it, still fit the cap, under the same reply schema throughout."""
+
+    _composed(monkeypatch, diff=_code_diff(8, 203), outputs=0)
+
+    def read(lines: int) -> Callable[..., object]:
+        def reply(_case: object, provenance: Any) -> object:  # noqa: ANN401
+            (tmp_path / "work" / "calc.py").write_text(("\\" * 100 + "\n") * 150)
+            action = _read_file("calc.py")
+            cast(dict[str, dict[str, JsonValue]], action["reply"])["args"]["line_count"] = lines
+            return SemanticResultReply(action, provenance)
+
+        return reply
+
+    rejected: dict[str, JsonValue] = {"reply": {}}  # the decoder refuses it: one repair
+    result, gateway, _runtime = await _run(
+        tmp_path,
+        monkeypatch,
+        read(1),
+        read(1),
+        read(150),
+        rejected,
+        _FINAL,
+        policy=_expanded_policy(),
+    )
+    assert result.status is SemanticStatus.SUCCEEDED, (result.status, result.reason)
+    exchanges = [history for _media, history in gateway.exchanges]
+    assert len(exchanges) == 5 and exchanges[3][-1] == ("user", FINAL_TURN)
+    assert exchanges[4][-2:][0] == ("user", FINAL_TURN)
+    assert exchanges[4][-1][1].startswith("format_error: action_invalid.")
+    assert json.loads(exchanges[3][-2][1])["status"] == "partial"  # the read filled its room
+    for history in exchanges:
+        assert len(_encoded(history)) <= UNSIZED_EXCHANGE_BYTES
+    assert len(_encoded(exchanges[-1])) > UNSIZED_EXCHANGE_BYTES - 1024  # a real boundary
+    assert {media for media, _history in gateway.exchanges} == {
+        "application/vnd.finishup.reviewer-turn+json"
+    }
 
 
 # #1118 token budget: the Codex subscription route running the pinned reviewer model is sized to

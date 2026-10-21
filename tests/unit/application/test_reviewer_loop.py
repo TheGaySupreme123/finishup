@@ -35,7 +35,7 @@ from finishup.adapters.task_input_read import (
 from finishup.application.check import validate_semantic_judgment
 from finishup.application.egress import PrivacyCoordinator, reviewer_history_admissible
 from finishup.application.reviewer_broker import ReadElement, ReadRoot, ReviewerBroker
-from finishup.application.reviewer_loop import ReviewerLoop, ReviewerModelError, Turn
+from finishup.application.reviewer_loop import FINAL_TURN, ReviewerLoop, ReviewerModelError, Turn
 from finishup.domain.privacy import AuthorizationScope, AuthorizationScopeKind, PrivacyPolicy
 from finishup.ports.change_capture import SnapshotFile, TaskInputSnapshotSet
 from finishup.ports.privacy import (
@@ -50,6 +50,7 @@ from finishup.ports.semantic import (
     ReviewStepRefused,
     SemanticCase,
     SemanticJudgment,
+    encode_reviewer_exchange,
 )
 from finishup.protocol.canonical import JsonValue, canonical_encode
 from finishup.protocol.models import ReadLedgerArgsModel, ReviewerLedgerActionModel
@@ -462,7 +463,7 @@ async def test_no_read_review_is_one_completion() -> None:
 
 
 @pytest.mark.anyio
-async def test_reads_append_observations_then_only_final_is_offered() -> None:
+async def test_reads_append_observations_then_the_final_turn_is_announced() -> None:
     steps = _Steps()
     loop, _broker, model, _ = _setup(_PACKET_READ, _LEDGER_READ, _LEDGER_READ, _FINAL, steps=steps)
     outcome = await loop.run()
@@ -473,7 +474,11 @@ async def test_reads_append_observations_then_only_final_is_offered() -> None:
     records = cast(list[dict[str, str]], _data(second)["records"])
     assert records[0]["ref"].startswith("claim-")
     assert third["calls_remaining"] == 0
-    assert model.calls[-1][1] == reviewer_reply_schema(reads_allowed=False, strict=True)
+    # #1172: the schema never narrows after the last read (the provider caches it with the
+    # conversation); the final turn is announced by one appended notice instead.
+    turn_schema = reviewer_reply_schema(reads_allowed=True, strict=True)
+    assert all(schema is turn_schema for _history, schema in model.calls)
+    assert model.calls[-1][0][-1] == Turn("user", FINAL_TURN)
     for sent in (first, second, third):
         assert sent["result_utf8_bytes"] == len(canonical_encode(sent)) <= 8192
         assert sent["status"] != "ok" or sent["truncated"] is False  # m1
@@ -491,6 +496,58 @@ async def test_a_read_after_the_cap_executes_nothing_and_ends_incomplete() -> No
     outcome = await loop.run()
     assert (outcome.status, outcome.reason) == ("incomplete", "read_limit")
     assert len(_observations(outcome.history)) == 3 and broker.reads_allowed() is False
+    # The read was asked for after the notice: the decoder rule is unchanged (#1172).
+    assert Turn("user", FINAL_TURN) in outcome.history
+
+
+@pytest.mark.anyio
+async def test_every_turn_resends_the_last_byte_for_byte_and_only_appends() -> None:
+    """#1172: a provider serves an unchanged prefix from its prompt cache, so each completion
+    carries the previous one exactly (the same schema, the same messages) and appends only the
+    reply and the new user messages. The no-reads-left notice adds no model turn."""
+
+    loop, _broker, model, _ = _setup(_PACKET_READ, _LEDGER_READ, _LEDGER_READ, _FINAL)
+    outcome = await loop.run()
+    assert outcome.status == "final"
+    assert len(model.calls) == 4  # one completion per read plus the final: none added
+    assert len({id(schema) for _history, schema in model.calls}) == 1
+    sent = [
+        encode_reviewer_exchange(tuple((turn.role, turn.content) for turn in history))
+        for history, _schema in model.calls
+    ]
+    for before, after in zip(sent, sent[1:], strict=False):
+        assert after.startswith(before[:-1] + b",")  # the earlier array, then only more items
+    assert [turn.role for turn in model.calls[-1][0][-3:]] == ["assistant", "user", "user"]
+
+
+@pytest.mark.anyio
+async def test_the_notice_is_sent_once_and_stays_before_the_format_repair() -> None:
+    loop, _broker, model, _ = _setup(
+        _LEDGER_READ, _LEDGER_READ, _LEDGER_READ, {"reply": {}}, _FINAL
+    )
+    outcome = await loop.run()
+    assert (outcome.status, outcome.model_turns) == ("final", 5)
+    assert [turn.content for turn in outcome.history].count(FINAL_TURN) == 1
+    repair, notice = model.calls[-1][0][-1], model.calls[-1][0][-2]
+    assert (
+        repair.content.startswith("format_error: action_invalid.") and notice.content == FINAL_TURN
+    )
+    assert len({id(schema) for _history, schema in model.calls}) == 1
+
+
+@pytest.mark.anyio
+async def test_a_review_that_offers_no_read_keeps_the_final_only_schema() -> None:
+    """A first turn without reads (an ask-every-time policy, or no time for one) keeps the narrow
+    schema it always had, for the repair too, and needs no notice: its approval resumes by the
+    same exchange bytes."""
+
+    loop, _broker, model, _ = _setup("not json", _FINAL)
+    loop.reserve = 10_000.0  # the whole deadline is final reserve: no read is offered
+    outcome = await loop.run()
+    assert outcome.status == "final"
+    final_only = reviewer_reply_schema(reads_allowed=False, strict=True)
+    assert [schema for _history, schema in model.calls] == [final_only, final_only]
+    assert FINAL_TURN not in [turn.content for turn in outcome.history]
 
 
 @pytest.mark.anyio

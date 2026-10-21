@@ -12,6 +12,8 @@ each reviewer exchange that reports usage writes one content-free `exchange_cach
 diagnostic, read with `finishup service diagnostics --request-id`. It depends on the review
 provider, not the agent host, adds no request or egress, and never changes a review outcome.
 See [the exchange contract](../INTERFACES.md#reviewer-completion-exchanges-issue-1118-unit-3-adr-006).
+The reviewer also keeps one reply schema per review and announces its last turn with a short
+appended notice, so the provider can reuse the conversation from its cache; no host change.
 
 MCP input advertisements use the same compact schema as Codex and Cursor, targeting 4,800 bytes
 per tool. Required fields, enums and event envelopes remain inline; payload variants, conditional

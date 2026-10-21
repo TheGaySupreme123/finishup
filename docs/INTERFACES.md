@@ -10084,6 +10084,15 @@ follow-up loop is deleted.
   The one repair covers `ReviewerReplyInvalid` from `complete` and from decoding alike; the turn is
   captured either way. With `resume_reserved`, a store whose `usage()` is exactly `(1, 1)` runs turn
   1 again without reserving it; any other prior usage ends `interrupted` or `uncaptured_step`.
+- One reply schema per review (#1172): the loop passes `complete` the schema its first turn chose
+  (`reads_allowed` as that turn offered reads) on every turn, the repair included. When a review
+  whose schema offers reads stops offering them (count cap, read room or final reserve), the loop
+  appends `FINAL_TURN` once as its own user message (`"no_reads_left: Reply with final_judgment
+  only; a read action now ends the review incomplete."`) and offers no read after it; a read
+  action then still ends `read_limit` with no observation. A review whose first turn offers no read
+  keeps the final-only schema and gets no notice, so an owner-approved first exchange resumes by
+  the same bytes. Every read leaves exchange room for that notice beside the one format-repair
+  notice (`reviewer_run._NOTICE_ROOM_BYTES`/`_TOKENS`).
 - Broker: `application.reviewer_broker.ReviewerBroker(*, job_id, case, roots, store, admit,
   packet_refs, packet_text, max_reads, exchange_room)`; `execute(action, expired, reply="") -> str`
   returns the round-1 result envelope
@@ -11877,10 +11886,12 @@ One reviewer-loop completion is one ordinary gateway dispatch with its own admis
 scan, root fence, consume, owed receipt and one-use credential or runtime authority. Its approved
 payload is the canonical history `encode_reviewer_exchange(history)`: a JSON array of
 `{"content", "role"}` messages, `system` first, then `user` and `assistant` turns ending with
-`user`, at most 12 messages. A user turn may follow a user turn (the loop's format-repair notice
-never echoes the malformed reply); an assistant turn may not follow an assistant turn. `ApprovedOutboundCase.media_type` (or the local case's media type)
+`user`, at most 13 messages. A user turn may follow a user turn (the loop's no-reads-left notice
+follows a read result; its format-repair notice never echoes the malformed reply); an assistant
+turn may not follow an assistant turn. `ApprovedOutboundCase.media_type` (or the local case's media type)
 selects the reply schema: `application/vnd.finishup.reviewer-turn+json` (every reply branch) or
-`application/vnd.finishup.reviewer-final+json` (final judgment only). Composition installs both
+`application/vnd.finishup.reviewer-final+json` (final judgment only; since #1172 only a review
+whose first turn offers no read uses it, on every turn). Composition installs both
 provider-wire schemas as `ReviewerReplySchemas` (`REVIEWER_REPLY_SCHEMAS`, the strict
 `findings/reviewer-reply-1.0.0` forms); without them a route refuses the exchange.
 
@@ -11889,7 +11900,7 @@ provider-wire schemas as `ReviewerReplySchemas` (`REVIEWER_REPLY_SCHEMAS`, the s
 | Responses | `input` is the payload verbatim, `text.format` the reply schema, `store:false` kept, no tools | no schemas installed |
 | Chat Completions | `messages` is the payload verbatim, strict `response_format`, no functions or tool calls; the SDK posts the canonical rendered body itself, so the exact-body guard sees the audited bytes | `prompt_only` endpoints (unavailable, never relabelled) |
 | Local model | one frame `{"messages", "protocol": "finishup-reviewer-completion-1", "reply_schema"}` | a profile naming any other protocol (and a completion profile receiving a one-shot case) |
-| Codex subscription | one ephemeral thread per review, held in its `ReviewerSession`; the first turn sends every user message after the instruction (the packet, then the read catalog) as its text inputs, each later turn sends only the new user message, with `outputSchema` every turn | releases outside `REVIEWER_LOOP_REVIEWED_RELEASES` (`0.162.1`), no or a closed session, a continuation that does not extend the held thread (`case_invalid`), plan/compaction/tool/request/warning events |
+| Codex subscription | one ephemeral thread per review, held in its `ReviewerSession`; the first turn sends every user message after the instruction (the packet, then the read catalog) as its text inputs, each later turn sends only the user messages after the longest history the thread holds (a read result or repair notice, and before the final turn the no-reads-left notice as a separate input), with the same `outputSchema`, effort and model every turn | releases outside `REVIEWER_LOOP_REVIEWED_RELEASES` (`0.162.1`), no or a closed session, a continuation that does not extend the held thread (`case_invalid`), plan/compaction/tool/request/warning events |
 
 A completed turn returns `SemanticResultReply(reply, provenance)`: the parsed reply object, not
 yet decoded. `reviewer_exchange(media_type, payload, schemas)` computes the exchange's history,

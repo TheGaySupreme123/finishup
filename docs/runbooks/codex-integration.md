@@ -13,6 +13,8 @@ exchange that reports usage writes one content-free `exchange_cache` owner diagn
 cached, cache-write where reported and output tokens, and a closed miss label), read with
 `finishup service diagnostics --request-id`. It does not depend on the agent host, adds no
 request or egress, and never changes a review outcome. See [the exchange contract](../INTERFACES.md#reviewer-completion-exchanges-issue-1118-unit-3-adr-006).
+The reviewer also keeps one reply schema per review and announces its last turn with a short
+appended notice, so the provider can reuse the conversation from its cache; no host change.
 
 For setup prerequisites, use `finishup setup status --next --host codex` with the same
 executable, configuration root and project. `--operation connection` inspects installation without

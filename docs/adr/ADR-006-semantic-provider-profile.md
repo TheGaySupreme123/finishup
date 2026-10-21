@@ -2406,7 +2406,8 @@ FinishUP owns a small verifying loop. Each model turn returns exactly one reply 
 broker inputs, as JSON text FinishUP interprets, never provider tool registrations), or
 `final_judgment`, the existing provider judgment validated by `normalize_judgment(...,
 require_part2=True)`. The root is an object wrapper; with no read allowance left the same root
-offers only `FinalReply`. Strict wire form comes from `strict_output_schema`; the decoder still
+offers only `FinalReply`. (*Amended 2026-10-21, #1172: a review keeps the schema its first turn
+chose; see "one reply schema per review".*) Strict wire form comes from `strict_output_schema`; the decoder still
 enforces what it drops, and reads a strict null as the field's default.
 
 The loop allows at most three reads, 8 KiB per complete result and 24 KiB in all. Every model turn
@@ -2511,7 +2512,9 @@ must carry `ThreadStartParams.environments`. `features.stable_environment_tools`
 releases below 0.162.1 do not define it under `--strict-config`; with no environment it has nothing
 to expose. A reviewer session keeps one ephemeral thread; its first turn sends every admitted user
 message after the instruction (the packet, then the read catalog), each later turn only the new one,
-and it sends the reply `outputSchema` on every turn. A repair continues on that same thread: an
+and it sends the reply `outputSchema` on every turn. (*Amended 2026-10-21, #1172: the same schema
+on every turn of a review, and a continuation may add several user messages; see "one reply schema
+per review".*) A repair continues on that same thread: an
 empty answer is judged only after its turn completes, so the thread is kept, and a review whose
 thread is gone ends incomplete rather than opening a second one and resending the packet.
 Plan or compaction events, server requests, native
@@ -2936,3 +2939,51 @@ change it will attribute is the final-only reply schema after the third read: th
 show a three-read review caching its two middle turns and nothing of its final turn (189,056 of
 381,293 input tokens). Phase 2 (reusing a thread across reviews) stays undecided until these
 records show what is left to gain.
+
+## Amendment — 2026-10-21: one reply schema per review (#1172)
+
+**Why.** The reply schema is part of the request prefix a provider's prompt cache keys on: OpenAI
+caches a structured-output schema as a prefix to the system message, and Codex sends it with every
+turn as `outputSchema`. After the last read the loop switched to the final-only schema, so the
+provider read the whole conversation again, uncached. In the TB-Science pilot a three-read review
+cached its two middle turns and none of its final turn (189,056 of 381,293 input tokens).
+
+**Decision.** The loop chooses the reply schema once, from whether its first turn offers reads, and
+sends that schema on every turn, the format repair included. When a review whose schema offers reads
+stops offering them (count cap, read room or final reserve), the loop appends `FINAL_TURN` once as
+its own user message ("no_reads_left: Reply with final_judgment only; a read action now ends the
+review incomplete.") and offers no read after it. The decoder rule is unchanged: a read action after
+that ends the review `read_limit` with no observation, no extra turn and no retry. A review whose
+first turn offers no read (an ask-every-time policy, or no time left for one) keeps the final-only
+schema and its media type on every turn and gets no notice, so an owner-approved first exchange
+still resumes by its exact bytes. The media types keep their meaning; the final one now appears only
+in such reviews.
+
+**Append-only.** A Codex continuation may add more than one user message after the longest history
+its thread holds, each as its own text input. A history that does not extend what the thread holds
+still fails closed. The notice is never merged into a read result, so a result's bytes and digest
+are unchanged. An exchange history admits 13 messages (one more, for the notice).
+
+**Size guard.** Every read leaves exchange room, in bytes and estimated tokens, for the notice
+beside the one format-repair notice. The exchange that carries the notice, and a repair after it,
+therefore still fits the cap. An exchange that outgrows the cap is still refused whole, never
+trimmed. The reviewer path still refuses Codex compaction (it would replace history FinishUP
+inspected and disclosed). The exchange budget keeps every exchange below Codex's auto-compact
+threshold with its estimation margin, and the #1172 telemetry labels a compaction if one ever
+occurs.
+
+**Constant within a review.** The model is constant because one profile serves a session, the
+effort because one budget profile serves a check, and the tools because Codex registers none and
+the APIs send none. The schema is now constant too. The telemetry's settings digest flags any
+change.
+
+**Trade-off.** The final turn's schema no longer forbids a read. The instruction already says only
+`final_judgment` is accepted after the last read, each read result reports `calls_remaining`, and
+the notice says it again. A model that still asks for a read ends the review `read_limit`, as a read
+after the cap always has; `ReviewerRecord.ended` and the reviewer record show it. If that happens
+materially, the follow-up is to treat such a read as the review's one format repair.
+
+**Effect.** A review whose reads end before its last turn now reuses that turn's whole prefix: a
+three-read review moves from about 50% to about 74% of its input cached. No turn, request or wait is
+added; the notice is about 25 tokens. No wire schema, decoder, privacy rule or egress changes:
+every exchange is still admitted whole.

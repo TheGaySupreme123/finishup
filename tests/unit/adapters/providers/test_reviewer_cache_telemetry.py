@@ -25,6 +25,7 @@ from finishup.ports.semantic import (
     CURRENT_REVIEWER_SESSION,
     ExternalRuntimeAuthority,
     ReviewerMessage,
+    ReviewerReplySchemas,
     ReviewerSession,
     SemanticResult,
     SemanticResultReply,
@@ -105,6 +106,7 @@ async def _exchange(
     history: tuple[ReviewerMessage, ...],
     request_id: str,
     mode: str = "turn",
+    schemas: ReviewerReplySchemas = _SCHEMAS,
 ) -> SemanticResult:
     async def launch(profile: object) -> _CodexRuntime:
         return runtime
@@ -128,7 +130,7 @@ async def _exchange(
         auth.dispatch_id, digest, "hmac-sha256:" + "a" * 64, 1, 30.0
     )
     evaluator = codex.CodexAppServerEvaluator(
-        runtime.profile, auth, authority, _Clock(), None, reply_schemas=_SCHEMAS
+        runtime.profile, auth, authority, _Clock(), None, reply_schemas=schemas
     )
     token = CURRENT_REVIEWER_SESSION.set(session)
     try:

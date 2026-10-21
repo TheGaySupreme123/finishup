@@ -2543,16 +2543,28 @@ class CodexAppServerEvaluator:
                 held_any = None if session is None else session.held
                 held = held_any if isinstance(held_any, _ReviewerThread) else None
                 # A new thread takes every user message after the instruction (the packet, then
-                # the read catalog); a continuation adds exactly the one new user message.
-                sent = exchange.history[1:] if held is None else exchange.history[-1:]
+                # the read catalog). A continuation adds the user messages after the longest
+                # history the thread holds: the new read result or repair notice, and before the
+                # final turn the loop's no-reads-left notice (#1172), each its own text input.
+                prefix = (
+                    None
+                    if held is None
+                    else max(
+                        (p for p in held.prefixes if exchange.history[: len(p)] == p),
+                        key=len,
+                        default=None,
+                    )
+                )
+                sent = exchange.history[1:] if prefix is None else exchange.history[len(prefix) :]
                 if (
                     session is None
                     or session.closed
                     or session.deadline != deadline
                     or held is not held_any
+                    or not sent
                     or any(role != "user" for role, _ in sent)
                     or (held is not None and held.profile != self.profile)
-                    or (held is not None and exchange.history[:-1] not in held.prefixes)
+                    or (held is not None and prefix is None)
                     # A review opens exactly one thread: once its thread is gone, a repair or
                     # continuation must never reopen the conversation and resend the packet.
                     or (held is None and session.opened)

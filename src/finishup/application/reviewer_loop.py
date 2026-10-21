@@ -32,6 +32,11 @@ after the cap, a revoked binding, a lost lease or the deadline ends the review i
 model turn, the repair and every read is a durable job step, reserved before it runs; a job that
 already holds steps is not resumed, except the one first turn that waited for the owner before
 anything was sent (``resume_reserved``). A failed turn is never retried.
+
+The reply schema is chosen once, at the first turn, and kept for the whole review (#1172): the
+provider caches the schema with the conversation, so switching it after the last read would make
+the provider read the whole conversation again. When reads end, the loop appends ``FINAL_TURN`` as
+its own user message instead; a read after that still ends the review ``read_limit``.
 """
 
 from __future__ import annotations
@@ -60,6 +65,10 @@ LOCAL_READ_SECONDS: Final = 5.0
 FORMAT_ERROR: Final = (
     "format_error: {code}. Reply with exactly one read action or final_judgment that matches the "
     "schema."
+)
+# The one notice a review whose schema still offers reads gets when they end (#1172).
+FINAL_TURN: Final = (
+    "no_reads_left: Reply with final_judgment only; a read action now ends the review incomplete."
 )
 
 
@@ -121,6 +130,10 @@ class ReviewerLoop:
         self.resume_reserved = resume_reserved
         self.messages: list[Turn] = []
         self.n_calls = 0
+        # The review's one reply schema, whether it offers reads, and whether ``FINAL_TURN`` was
+        # appended (after which no read is offered again).
+        self.schema: dict[str, JsonValue] | None = None
+        self.offers_reads = self.final_noticed = False
 
     async def run(self) -> ReviewOutcome:
         """Query the model and run its one read until the final judgment or an exit."""
@@ -140,12 +153,26 @@ class ReviewerLoop:
                 # Revocation wins: every binding the history holds is rechecked before each turn.
                 if not await self.history_admissible(frozenset(self.broker.history_roots)):
                     return self.exit("authorization_changed")
-                reads = self.broker.reads_allowed() and self.remaining() > self.reserve
+                reads = (
+                    not self.final_noticed
+                    and self.broker.reads_allowed()
+                    and self.remaining() > self.reserve
+                )
                 self.n_calls = turn = self.n_calls + 1
                 if not (resumed and turn == 1):
                     await self.store.reserve("turn", turn, b"turn" if reads else b"final")
                 self.remaining()
-                schema = reviewer_reply_schema(reads_allowed=reads, strict=True)
+                if self.schema is None:
+                    # One schema for the whole review: the provider caches it with the
+                    # conversation, so it never changes after the first turn (#1172).
+                    self.schema = reviewer_reply_schema(reads_allowed=reads, strict=True)
+                    self.offers_reads = reads
+                if self.offers_reads and not reads and not self.final_noticed:
+                    # Reads ended under a schema that still offers them: say so, appended as its
+                    # own message, so everything sent before stays byte-identical.
+                    self.messages.append(Turn("user", FINAL_TURN))
+                    self.final_noticed = True
+                schema = self.schema
                 invalid: ReviewerReplyInvalid | None = None
                 try:
                     parsed = await self.model.complete(

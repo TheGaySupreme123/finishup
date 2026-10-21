@@ -35,6 +35,7 @@ from finishup.application.reviewer_broker import (
 )
 from finishup.application.reviewer_exchange import ReviewerExchangeModel
 from finishup.application.reviewer_loop import (
+    FINAL_TURN,
     FORMAT_ERROR,
     ReviewerLoop,
     ReviewerModelError,
@@ -83,9 +84,14 @@ PACKET_TURN: Final = "[FinishUP review packet]"
 _INVALID_ENDINGS: Final = frozenset({"format_invalid", "read_limit", "turn_limit"})
 _SOURCE_DOMAIN: Final = b"finishup/reviewer-read-source/v1\x00"
 # The one format-repair notice a conversation may still add after any exchange (its codes are the
-# service's own short names); every read leaves this room so that exchange fits the cap (#1118).
-_REPAIR_NOTE_BYTES: Final = reviewer_message_bytes("user", FORMAT_ERROR.format(code="x" * 64))
-_REPAIR_NOTE_TOKENS: Final = reviewer_message_tokens(FORMAT_ERROR.format(code="x" * 64))
+# service's own short names), and the one no-reads-left notice before its final turn (#1172):
+# every read leaves room for both, so the exchange that appends them still fits the cap (#1118).
+_NOTICE_ROOM_BYTES: Final = reviewer_message_bytes(
+    "user", FORMAT_ERROR.format(code="x" * 64)
+) + reviewer_message_bytes("user", FINAL_TURN)
+_NOTICE_ROOM_TOKENS: Final = reviewer_message_tokens(
+    FORMAT_ERROR.format(code="x" * 64)
+) + reviewer_message_tokens(FINAL_TURN)
 
 
 @dataclass(frozen=True, slots=True)
@@ -180,9 +186,9 @@ async def run_reviewer(
         if exchange_budget is None or not sent:
             return None
         size, tokens = sent[-1]
-        room = exchange_budget.byte_limit - size - _REPAIR_NOTE_BYTES
+        room = exchange_budget.byte_limit - size - _NOTICE_ROOM_BYTES
         if exchange_budget.token_limit is not None:
-            room = min(room, exchange_budget.token_limit - tokens - _REPAIR_NOTE_TOKENS)
+            room = min(room, exchange_budget.token_limit - tokens - _NOTICE_ROOM_TOKENS)
         return room
 
     broker = ReviewerBroker(
