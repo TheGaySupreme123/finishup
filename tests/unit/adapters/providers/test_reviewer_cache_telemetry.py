@@ -268,6 +268,21 @@ async def test_a_refused_compaction_is_still_recorded_and_labelled(
     assert [(r["outcome"], _miss(r)) for r in records] == [("incomplete", "compaction")]
 
 
+async def test_a_turn_after_unreported_usage_records_no_cumulative_counts(
+    monkeypatch: pytest.MonkeyPatch, records: list[dict[str, object]]
+) -> None:
+    # The first turn's request is never reported, so the thread's later total includes it.
+    runtime = _UsageRuntime([_ACTION, _FINAL], [[], [(92_000, 89_984, 50)]])
+    session = ReviewerSession("review-a", _DEADLINE)
+    await _exchange(monkeypatch, runtime, session, _FIRST, _REQUESTS[0])
+    runtime.total = (90_000, 0, 50)
+    result = await _exchange(monkeypatch, runtime, session, _SECOND, _REQUESTS[1])
+    assert type(result) is SemanticResultReply
+    await session.aclose()
+    # Neither turn has a known start: no record claims the thread's total as one exchange's.
+    assert records == []
+
+
 async def test_telemetry_that_fails_never_changes_the_exchange(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
