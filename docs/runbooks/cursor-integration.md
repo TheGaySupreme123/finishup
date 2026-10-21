@@ -2704,6 +2704,13 @@ item below applies on macOS, Linux and Windows through WSL 2.
   shared hooks even when other projects keep using the plugin; unreadable HOME permission
   evidence stops a later connect with `connection_home_project_permission_unknown`.
   JSON previews and results report `status.home_project_allowed` (inside each batch member).
+  After that opt-in, ordinary HOME project files support reviewer reads, check-time changes
+  and requested-output verification through the same service path as other projects (#1161).
+  Reviewer paths are relative to the issued root alias; absolute paths and hidden components
+  remain refused. Credential files, host state such as `.codex/`, `.claude/`, `.cursor/`,
+  `.ssh/`, home config/cache/state trees and FinishUP-owned `.agents` trees stay excluded,
+  including tracked files. Excluded outputs remain unverified; this adds no observation
+  grant or disclosure authority. See [ADR-012](../adr/ADR-012-first-run-setup-wizard.md#home-review-and-observation-parity-1161).
   `setup disconnect --host cursor-cli --project "$HOME" --non-interactive --json` previews
   removal without a new home opt-in; approve that exact preview. Observation and disclosure
   remain separate. Adapter tests cover the locator/renderer decisions; no additional native

@@ -38,6 +38,13 @@ content-returning read needed its own decision. This is that decision, for exact
 
 ## Decisions
 
+**HOME projects (#1161, 2026-10-21).** The explicit-home selection in ADR-012 applies to this
+capture and its requested-output/ignore probes as well as setup. The service admits only its
+authenticated selected HOME locator, with all existing root/Git safety checks and the shared
+home-state exclusions described there. Those exclusions apply to tracked and untracked paths
+before content reads, and do not change any disclosure or network authority. Filesystem root
+remains refused. The same seam supplies CLI, MCP, hook-triggered checks, TUI and receipts.
+
 1. **One object per check, captured by the service.** When a check's AI-powered review recipe
    selects diff excerpts (`targeted_excerpts`, a positive excerpt count and the `diff` kind), the
    service renders the change from the task base to the working tree: committed, staged and

@@ -62,3 +62,18 @@ def credential_named_path(path: str) -> bool:
     if type(path) is not str or "\x00" in path:
         return False
     return credential_named_bytes(path.replace("\\", "/").encode("utf-8", errors="surrogateescape"))
+
+
+def credential_name_patterns() -> tuple[str, ...]:
+    """The same final-component heuristic as glob patterns, for pre-read selection."""
+
+    return tuple(
+        sorted(
+            name.decode("ascii")
+            for name in (
+                *_CREDENTIAL_NAMES,
+                *(prefix + b"*" for prefix in _CREDENTIAL_PREFIXES),
+                *(b"*" + suffix for suffix in _CREDENTIAL_SUFFIXES),
+            )
+        )
+    )

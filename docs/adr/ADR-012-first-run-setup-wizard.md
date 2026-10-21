@@ -888,3 +888,29 @@ the flag in `next_step`. The legacy Codex-only wizard report carries the same fi
 level. Status and disconnect may inspect/remove a home-folder connection
 without a new connect opt-in; disconnect keeps its exact preview approval and retained-data
 rules. This is not native-session or platform certification.
+
+#### HOME review and observation parity (#1161)
+
+The exact-home exception also reaches the Git root validator used by subject-state capture,
+check-time changes, reviewer ignore probes and requested-output verification. The service uses
+its authenticated, repository-bound locator (or an observation-granted stored locator), because
+it does not inherit the native launcher's process-local choice. Its internal
+`admitted_home_project` option admits only the selected HOME root; change capture must not
+discover HOME above a different selected directory and silently grant the exception. Default
+host locator/setup selection still requires the opt-in above. Filesystem-root, owner, writable
+directory, link, Git metadata, task-route and consent fences remain in force.
+Reviewer roots also require the current connection's HOME locator and repository commitment
+to match the task route; a HOME path claimed in task history alone supplies no read authority.
+
+HOME selection does not turn personal host state into project evidence. A shared lexical,
+case-insensitive read exclusion removes host/config/cache/credential trees (including `.codex`,
+`.claude`, `.cursor`, their testing variants, `.ssh`, `.config`, `.local`, `.cache`, `.t3`,
+`Library` and `AppData`), FinishUP-owned `.agents/plugins/{finishup,yoetz}` and
+`.agents/skills/{finishup,yoetz}`, local authentication files, and the existing ADR-031
+credential-name patterns. Git excludes these paths before producing tracked patches, counts,
+untracked inventories or structural hashes; direct task-input/reviewer reads and output probes
+apply the same exclusions. Excluded outputs remain unverified. Ordinary project content retains
+the normal Git ignore, descriptor-safe read, budget and redaction rules. Reviewer selectors
+remain relative to their issued root alias and continue refusing hidden components and absolute
+paths. Observation grants, review recipes, privacy minimization, never-send scanning and egress
+admission are unchanged for Codex, Claude Code and Cursor.
