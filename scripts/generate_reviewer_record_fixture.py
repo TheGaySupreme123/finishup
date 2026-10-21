@@ -46,6 +46,18 @@ def _result_delivery_vector() -> dict[str, JsonValue]:
                 },
             }
         ],
+        # Each page carries its own read's disclosure receipt beside the items (never paged).
+        "privacy_projection": {
+            "sink": "agent_context",
+            "local_disclosure_receipt_id": "egr_00000000-0000-4000-8000-000000000006",
+            "policy_id": "pvy_00000000-0000-4000-8000-000000000007",
+            "policy_version": "1",
+            "policy_digest": _DIGEST,
+            "included_categories": ["finding_summary"],
+            "blocked_categories": [],
+            "omitted_pointers": [],
+            "projection_commitment": "hmac-sha256:" + "b" * 64,
+        },
     }
     page = page_result(
         source,

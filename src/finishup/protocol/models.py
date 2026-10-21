@@ -4563,6 +4563,9 @@ class DeliveryPageModel(_ClosedModel):
     next_cursor: (
         Annotated[str, Field(min_length=1, max_length=4096, pattern=r"^[A-Za-z0-9_.-]+$")] | None
     )
+    # This read's own local disclosure receipt. Never paged as items: each continuation is a
+    # fresh disclosure, and reconstruction carries the final page's projection.
+    privacy_projection: PrivacyProjectionModel
 
 
 class CheckSuccessModel(_ClosedModel):

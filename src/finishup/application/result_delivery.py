@@ -25,6 +25,10 @@ from finishup.protocol.errors import PublicErrorCode, PublicOperationError
 
 _CURSOR_DOMAIN: Final = b"finishup.result-delivery/1\0"
 _ATOM_BYTES: Final = 1_400
+# Each page carries its read's whole privacy projection beside the items. Past this canonical
+# size its omitted pointers coalesce to containing fields (ADR-009's rule past the 512-pointer
+# bound), so a long omission list still leaves room for full-size atoms.
+_PROJECTION_BYTES: Final = 1_024
 _ACTION_KEYS: Final = (
     "finding_id",
     "kind",
@@ -191,10 +195,26 @@ def _atoms(path: str, value: JsonValue, limit: int = _ATOM_BYTES) -> list[dict[s
     raise ValueError("result_delivery_atom_invalid")
 
 
+def _page_projection(projection: Mapping[str, JsonValue]) -> dict[str, JsonValue]:
+    """This read's disclosure receipt, whole; only an over-long pointer list coalesces."""
+    from finishup.application.receipt_projection import bounded_omitted_pointers
+
+    pointers = tuple(cast(Sequence[str], projection["omitted_pointers"]))
+    carried = dict(projection)
+    count = len(pointers)
+    while len(canonical_encode(carried)) > _PROJECTION_BYTES and count > 1:
+        count //= 2
+        carried["omitted_pointers"] = list(bounded_omitted_pointers(pointers, limit=count))
+    return carried
+
+
 def _delivery_groups(
-    source: Mapping[str, JsonValue], limit: int = _ATOM_BYTES
+    source: Mapping[str, JsonValue], limit: int = _ATOM_BYTES, *, top: bool = True
 ) -> tuple[list[dict[str, JsonValue]], int]:
-    """Action and counterinterpretation precede every excerpt and provenance inventory."""
+    """Action and counterinterpretation precede every excerpt and provenance inventory.
+
+    The top-level privacy projection is never an item: each page carries its own read's copy.
+    """
     primary: list[dict[str, JsonValue]] = []
     bulk: list[dict[str, JsonValue]] = []
 
@@ -226,12 +246,12 @@ def _delivery_groups(
     handled = {atom["path"].split("/")[1] for atom in primary if isinstance(atom["path"], str)}
     for key in sorted(source, key=str.encode):
         value = source[key]
-        if key in handled or key == "review_delivery":
+        if key in handled or key == "review_delivery" or (top and key == "privacy_projection"):
             continue
         path = "/" + _pointer(key)
         if key == "document" and isinstance(value, Mapping):
             primary.append({"path": path, "value": None, "container": "object"})
-            nested, count = _delivery_groups(value, limit)
+            nested, count = _delivery_groups(value, limit, top=False)
             for atom in nested:
                 atom["path"] = path + cast(str, atom["path"])
             primary.extend(nested[:count])
@@ -319,7 +339,8 @@ def page_result(
             source = {**source, **dict(snapshot)}
         else:
             raise invalid_cursor()
-    # A fresh local disclosure receipt is attached to each read, outside content identity.
+    # Each read attaches a fresh local disclosure receipt to its own page, outside the items and
+    # the content identity.
     content = {
         k: v for k, v in source.items() if k not in {"privacy_projection", "review_delivery"}
     }
@@ -372,6 +393,9 @@ def page_result(
         ),
         "items": [],
         "next_cursor": None,
+        "privacy_projection": _page_projection(
+            cast(Mapping[str, JsonValue], source["privacy_projection"])
+        ),
     }
     source_page = source.get("page")
     if method == "status" and isinstance(source_page, Mapping) and source_page.get("next_cursor"):

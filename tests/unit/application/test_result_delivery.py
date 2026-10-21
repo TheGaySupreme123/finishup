@@ -26,6 +26,21 @@ _SESSION = "ses_00000000-0000-4000-8000-000000000001"
 _WRITER = "wri_00000000-0000-4000-8000-000000000002"
 
 
+def _projection(read: int = 1, omitted: tuple[str, ...] = ()) -> dict[str, Any]:
+    """One read's local disclosure receipt; each continuation read gets a fresh one."""
+    return {
+        "sink": "agent_context",
+        "local_disclosure_receipt_id": f"egr_00000000-0000-4000-8000-{read:012x}",
+        "policy_id": "pvy_00000000-0000-4000-8000-000000000005",
+        "policy_version": "1",
+        "policy_digest": "sha256:" + "b" * 64,
+        "included_categories": ["evidence_excerpt", "finding_summary"],
+        "blocked_categories": ["repository_excerpt"],
+        "omitted_pointers": sorted(set(omitted), key=str.encode),
+        "projection_commitment": f"hmac-sha256:{read:064x}",
+    }
+
+
 def _source() -> dict[str, Any]:
     return {
         "protocol_version": "0.1",
@@ -59,6 +74,7 @@ def _source() -> dict[str, Any]:
             }
             for i in range(1, 21)
         ],
+        "privacy_projection": _projection(),
     }
 
 
@@ -300,6 +316,67 @@ def test_inventory_and_delivery_cursors_share_the_actual_envelope_budget() -> No
     assert reassemble_delivery(pages) == source
 
 
+def test_each_page_carries_its_own_read_disclosure_and_never_pages_it() -> None:
+    """A projection too large for one atom is never split across reads with different receipts."""
+    source = _source()
+    omitted = tuple(f"/findings/{i}/provenance/refs/{j}" for i in range(20) for j in range(20))
+    pages: list[dict[str, Any]] = []
+    position, digest = 0, None
+    while True:
+        # Every continuation reapplies disclosure: a fresh receipt and commitment per read.
+        source["privacy_projection"] = _projection(len(pages) + 1, omitted)
+        page: dict[str, Any] = page_result(
+            source,
+            key=_KEY,
+            method="check",
+            selector={"request_id": source["request_id"]},
+            writer_id=_WRITER,
+            sink="agent_context",
+            position=position,
+            expected_digest=digest,
+        )
+        CheckResultModel.model_validate(page)
+        assert mcp_delivery_bytes(page) <= HOST_RESULT_BUDGET_BYTES
+        assert not any(item["path"].startswith("/privacy_projection") for item in page["items"])
+        carried = page["privacy_projection"]
+        read = source["privacy_projection"]
+        assert {k: v for k, v in carried.items() if k != "omitted_pointers"} == {
+            k: v for k, v in read.items() if k != "omitted_pointers"
+        }
+        # Past the page's projection bound, pointers coalesce to containing fields (ADR-009).
+        assert len(canonical_encode(carried)) < len(canonical_encode(read))
+        for pointer in omitted:
+            assert any(
+                pointer == kept or pointer.startswith(kept + "/")
+                for kept in carried["omitted_pointers"]
+            )
+        pages.append(page)
+        if page["complete"]:
+            break
+        cursor = decode_cursor(_KEY, page["next_cursor"], _SESSION, _WRITER)
+        position, digest = cursor["position"], cursor["digest"]
+    assert len({page["privacy_projection"]["local_disclosure_receipt_id"] for page in pages}) > 1
+    rebuilt = reassemble_delivery(pages)
+    assert rebuilt["privacy_projection"] == pages[-1]["privacy_projection"]
+    assert {k: v for k, v in rebuilt.items() if k != "privacy_projection"} == {
+        k: v for k, v in source.items() if k != "privacy_projection"
+    }
+    mixed = copy.deepcopy(pages)
+    mixed[0]["privacy_projection"]["sink"] = "local_human_view"
+    with pytest.raises(ValueError, match="result_delivery_invalid"):
+        reassemble_delivery(mixed)
+    # Disclosure metadata assembled from items cannot stand in for the final read's receipt.
+    paged_projection = {
+        **pages[-1],
+        "offset": 0,
+        "total_items": 1,
+        "source_digest": canonical_digest({}),
+        "items": [{"path": "/privacy_projection", "value": _projection(99)}],
+    }
+    with pytest.raises(ValueError, match="result_delivery_invalid"):
+        reassemble_delivery([paged_projection])
+
+
 @pytest.mark.parametrize("host", ["codex", "claude", "cursor", "generic"])
 def test_small_check_text_also_contains_complete_action_fields(host: McpHostProfile) -> None:
     from tests.unit.protocol.test_models_and_schemas import (
@@ -312,6 +389,42 @@ def test_small_check_text_also_contains_complete_action_fields(host: McpHostProf
     result = result_from_public_model(CheckResultModel.model_validate(wire), host_profile=host)
     assert result.content[0].type == "text"
     assert wire["findings"][0]["detail"] in result.content[0].text
+    assert mcp_delivery_bytes(wire, text=result.content[0].text) <= HOST_RESULT_BUDGET_BYTES
+
+
+@pytest.mark.parametrize("host", ["codex", "claude", "generic"])
+def test_canonical_text_fallback_never_enlarges_an_unpaged_result(host: McpHostProfile) -> None:
+    """The service never pages publish results; a long structured body keeps its short prose."""
+    from tests.unit.protocol.test_models_and_schemas import (
+        _publish_result_wire,  # pyright: ignore[reportPrivateUsage]
+    )
+
+    from finishup.mcp.server import _result_text  # pyright: ignore[reportPrivateUsage]
+    from finishup.protocol.models import PublishWorkResultModel
+
+    wire = cast(dict[str, Any], _publish_result_wire())
+    event = wire["accepted_events"][0]
+    wire["accepted_events"] = [
+        {
+            **event,
+            "event_id": f"evt_00000000-0000-4000-8000-{i:012x}",
+            "writer_sequence": str(i + 1),
+            "ingestion_sequence": str(i + 1),
+        }
+        for i in range(20)
+    ]
+    model = PublishWorkResultModel.model_validate(wire)
+    prose = _result_text(wire, host_profile=host)
+    canonical = canonical_encode(wire).decode()
+    assert mcp_delivery_bytes(wire, text=prose) > HOST_RESULT_BUDGET_BYTES
+    assert len(canonical.encode()) > len(prose.encode())
+    result = result_from_public_model(model, host_profile=host)
+    assert result.structuredContent == wire
+    assert result.content[0].type == "text"
+    assert result.content[0].text == prose
+    assert mcp_delivery_bytes(wire, text=result.content[0].text) == mcp_delivery_bytes(
+        wire, text=prose
+    )
 
 
 def test_delivery_read_is_an_explicit_unambiguous_status_selector(
@@ -416,7 +529,11 @@ async def test_real_disclosure_and_recorded_source_continuation_do_not_repeat_wo
         pages.append(page)
         seed += 2
     assert len(seen) == first["total_items"]
+    # Each read is its own disclosure; the reconstruction carries the final read's receipt.
+    receipts = {page["privacy_projection"]["local_disclosure_receipt_id"] for page in pages}
+    assert len(receipts) == len(pages)
     reconstructed = reassemble_delivery(pages)
+    assert reconstructed["privacy_projection"] == pages[-1]["privacy_projection"]
     expected = dict(await project_case(workflow.app, case, seed + 10))
     assert {k: v for k, v in reconstructed.items() if k != "privacy_projection"} == {
         k: v for k, v in expected.items() if k != "privacy_projection"
@@ -693,6 +810,55 @@ def test_delivery_page_survives_catalog_and_control_boundaries(
     )
     decoded = parse_control_result(decode_control_frame(encode_control_frame(result)))
     assert decoded.body == result.body
+
+
+@pytest.mark.parametrize(
+    "operation,version", [("check", "1.7.0"), ("status", "1.5.0"), ("receipt", "1.4.0")]
+)
+@pytest.mark.parametrize(
+    "field,malformed",
+    [
+        ("request_id", "req_not-a-request"),
+        ("source_request_id", "tsk_00000000-0000-4000-8000-000000000004"),
+        ("task_id", "tsk_x"),
+        ("session_id", "ses_x"),
+        ("writer_id", "wri_x"),
+        ("source_digest", "sha256:short"),
+        ("result_frontier", {"sequence": "-1", "head_digest": "sha256:short"}),
+        ("fragment_digest", "sha256:short"),
+        ("privacy_projection", {"sink": "agent_context"}),
+    ],
+)
+def test_delivery_page_schema_keeps_the_model_wire_constraints(
+    operation: str,
+    version: str,
+    field: str,
+    malformed: Any,
+) -> None:
+    from pydantic import ValidationError
+
+    from finishup.protocol.models import ReceiptResultModel, StatusResultModel
+    from finishup.protocol.schemas import SchemaInstanceInvalid, validate_schema_instance
+
+    source = _source()
+    source["findings"] = []
+    source["review_summary"] = "A long qualification. " * 400
+    page: dict[str, Any] = {**_pages(source)[0], "source_operation": operation}
+    validate_schema_instance(f"{operation}-result", version, page)
+    fragment = next(item for item in page["items"] if "fragment" in item)
+    bad: dict[str, Any] = copy.deepcopy(page)
+    if field == "fragment_digest":
+        next(item for item in bad["items"] if "fragment" in item)["fragment"]["digest"] = malformed
+    else:
+        bad[field] = malformed
+    assert fragment["fragment"]["digest"] == canonical_digest(source["review_summary"])
+    model = {"check": CheckResultModel, "status": StatusResultModel, "receipt": ReceiptResultModel}[
+        operation
+    ]
+    with pytest.raises(ValidationError):
+        model.model_validate(bad)
+    with pytest.raises(SchemaInstanceInvalid):
+        validate_schema_instance(f"{operation}-result", version, bad)
 
 
 def test_result_delivery_matches_owned_canonical_vector() -> None:

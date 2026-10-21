@@ -1073,7 +1073,7 @@ def _result_text(
     if (
         wire.get("state") == "delivery_page"
         or "receipt_id" in wire
-        or "page" in wire
+        or wire.get("view") == "findings"
         or host_profile == "cursor"
     ):
         try:
@@ -1142,8 +1142,13 @@ def result_from_public_model(
     )
     # The service budgets canonical text plus structured content. A small result's prose can
     # repeat several fields more often: fall back to that complete canonical text if needed.
-    if mcp_delivery_bytes(wire, text=rendered) > HOST_RESULT_BUDGET_BYTES:
-        rendered = canonical_encode(wire).decode("utf-8")
+    # The service never pages some results (start, publish, respond, a paused check); for those
+    # the canonical copy can be the longer channel, and a fallback must never enlarge a result.
+    rendered_bytes = mcp_delivery_bytes(wire, text=rendered)
+    if rendered_bytes > HOST_RESULT_BUDGET_BYTES:
+        canonical = canonical_encode(wire).decode("utf-8")
+        if mcp_delivery_bytes(wire, text=canonical) < rendered_bytes:
+            rendered = canonical
     return types.CallToolResult(
         content=[
             types.TextContent(

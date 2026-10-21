@@ -12797,8 +12797,43 @@ def _result_delivery_schema(entry: _RegistryEntry) -> dict[str, JsonValue]:
         from finishup.protocol.models import DeliveryPageModel
 
         page = DeliveryPageModel.model_json_schema()
+        page_defs = cast(dict[str, JsonValue], page.pop("$defs", {}))
+        # Pydantic emits plain strings for BeforeValidator-backed wire types. Point the page's
+        # identities, digests, frontier and disclosure receipt at the shared definitions the
+        # sibling branches use, so the schema rejects what DeliveryPageModel rejects.
+        for name in ("DataCategory", "FrontierModel", "PrivacyProjectionModel"):
+            del page_defs[name]
         defs = cast(dict[str, JsonValue], document["$defs"])
-        defs.update(cast(dict[str, JsonValue], page.pop("$defs", {})))
+        if any(name in defs for name in page_defs) or not {
+            "digest",
+            "request_id",
+            "session_id",
+            "task_id",
+        } <= set(defs):
+            raise SchemaGenerationError(
+                "delivery_page_definitions_invalid", entries=(entry.relative_path,)
+            )
+        defs.update(page_defs)
+        defs.setdefault("writer_id", _control_id_schema("writer_id"))
+        properties = cast(dict[str, JsonValue], page["properties"])
+        for name, target in (
+            ("request_id", "request_id"),
+            ("source_request_id", "request_id"),
+            ("task_id", "task_id"),
+            ("session_id", "session_id"),
+            ("writer_id", "writer_id"),
+            ("source_digest", "digest"),
+        ):
+            properties[name] = {"$ref": "#/$defs/" + target}
+        properties["result_frontier"] = {
+            "$ref": SCHEMA_NAMESPACE + "common/frontier-1.0.0.schema.json"
+        }
+        properties["privacy_projection"] = {
+            "$ref": SCHEMA_NAMESPACE + "common/operation-result-1.0.0.schema.json"
+            "#/$defs/privacy_projection"
+        }
+        fragment = cast(dict[str, JsonValue], defs["DeliveryFragmentModel"])
+        cast(dict[str, JsonValue], fragment["properties"])["digest"] = {"$ref": "#/$defs/digest"}
         defs["delivery_page"] = cast(JsonValue, page)
         cast(list[JsonValue], document["oneOf"]).append({"$ref": "#/$defs/delivery_page"})
     return document

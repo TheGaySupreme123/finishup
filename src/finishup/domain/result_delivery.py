@@ -39,7 +39,10 @@ def mcp_delivery_bytes(wire: Mapping[str, JsonValue], *, text: str | None = None
 
 
 def reassemble_delivery(pages: Sequence[Mapping[str, Any]]) -> dict[str, JsonValue]:
-    """Reconstruct typed containers and verify all scalar fragments and the source digest."""
+    """Reconstruct typed containers and verify all scalar fragments and the source digest.
+
+    Each page carries its own read's privacy projection; the result takes the final page's.
+    """
     result: dict[str, Any] = {}
     fragments: dict[str, tuple[dict[str, Any], str]] = {}
     seen: set[str] = set()
@@ -86,9 +89,15 @@ def reassemble_delivery(pages: Sequence[Mapping[str, Any]]) -> dict[str, JsonVal
                 )
             ):
                 raise ValueError("result_delivery_invalid")
+            if page["privacy_projection"]["sink"] != identity["privacy_projection"]["sink"]:
+                raise ValueError("result_delivery_invalid")
             for item in page["items"]:
                 path, value = item["path"], item["value"]
-                if not path.startswith("/") or path in seen:
+                if (
+                    not path.startswith("/")
+                    or path in seen
+                    or path.split("/")[1] == "privacy_projection"
+                ):
                     raise ValueError("result_delivery_invalid")
                 fragment = item.get("fragment")
                 container = item.get("container")
@@ -139,6 +148,7 @@ def reassemble_delivery(pages: Sequence[Mapping[str, Any]]) -> dict[str, JsonVal
             != identity["source_digest"]
         ):
             raise ValueError("result_delivery_invalid")
+        result["privacy_projection"] = dict(pages[-1]["privacy_projection"])
         return cast(dict[str, JsonValue], result)
     except (KeyError, IndexError, TypeError, ValueError) as exc:
         raise ValueError("result_delivery_invalid") from exc

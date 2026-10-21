@@ -4096,7 +4096,8 @@ explicit scalar fragments require
 reconstruction by offsets and digest before use. Read until `actionable_complete`; then bulk pages
 are optional. Follow `inventory_read` for the complete findings inventory. `complete` closes this result's
 pages only; follow the source findings inventory cursor or suppressed-count instruction separately. Reads
-reapply disclosure and never rerun review. CLI JSON/text use these same pages; hooks retain their
+reapply disclosure and never rerun review, so each page carries its own read's `privacy_projection`
+(never paged as items); reconstruct with the final page's. CLI JSON/text use these same pages; hooks retain their
 bounded structural status instructions. Native TUI and exact-request authenticated owner exports
 keep the full local view. Restart expires cursors; recover through current status/findings without
 starting a new review. A revoked route, changed sink/content, or expired retained source also

@@ -79,6 +79,7 @@ from finishup.protocol.models import (
     ChildDependencySnapshotModel,
     ChildFindingSnapshotModel,
     DataCategory,
+    DeliveryItemModel,
     FactLineageModel,
     ProjectTextRefModel,
     PublicErrorModel,
@@ -436,6 +437,8 @@ _RESULT_OPTIONAL_NON_NULL: tuple[tuple[type[BaseModel], frozenset[str]], ...] = 
     (CheckVerifiedItemModel, frozenset({"requirement_or_claim", "snippet"})),
     (StatusCompactItemModel, frozenset({"latest_check_test_edits", "latest_check"})),
     (StatusFindingsPageModel, frozenset({"attempt_budget"})),
+    # Issue #1139: a whole delivered value carries neither a fragment nor a container marker.
+    (DeliveryItemModel, frozenset({"fragment", "container"})),
     # Issue #1084 (review R7): a service-recorded event time is labelled on the history row.
     (StatusHistoryItemV14Model, frozenset({"review_input_manifest", "occurred_at_source"})),
     (
@@ -912,9 +915,11 @@ async def test_obligation_acceptance_criteria_policy_omission_is_distinct(view: 
                 "method": ControlMethod.STATUS.value,
                 "service_instance_id": service_instance_id,
                 "service_generation": "1",
+                "body": status_body,
             }
         ),
     )
+    # The complete projected field, before result-delivery paging (#1139) of an oversized read.
     projected = public_model_to_wire(
         await app.project_result_for_client(
             ClientProjectionContext(
@@ -922,6 +927,7 @@ async def test_obligation_acceptance_criteria_policy_omission_is_distinct(view: 
             ),
             binding,
             status,
+            _paginate=False,
         )
     )
     assert projected["ok"] is True
@@ -1830,6 +1836,18 @@ def test_result_optional_non_null_inventory_is_complete() -> None:
     )
 
 
+def test_whole_delivery_item_omits_fragment_and_container() -> None:
+    """Issue #1139: a whole value is neither a fragment nor a container, and null is refused."""
+
+    item = {"path": "/findings/0/detail", "value": "Measure the second mode."}
+    assert (
+        DeliveryItemModel.model_validate(item).model_dump(mode="json", exclude_unset=True) == item
+    )
+    for field in ("fragment", "container"):
+        with pytest.raises(ValidationError, match="optional_field_must_not_be_null"):
+            DeliveryItemModel.model_validate({**item, field: None})
+
+
 def test_every_result_optional_non_null_field_has_an_unset_projection_case() -> None:
     """Each inventoried field is covered by at least one end-to-end unset projection case.
 
@@ -1998,6 +2016,10 @@ def test_every_result_optional_non_null_field_has_an_unset_projection_case() -> 
             "test_blocked_obligation_omits_an_unset_confirmation"
         )
     covered["StatusCheckCauseModel", "tool"] = "test_check_cause_omits_an_unset_tool"
+    for field in ("fragment", "container"):
+        covered["DeliveryItemModel", field] = (
+            "test_whole_delivery_item_omits_fragment_and_container"
+        )
     for field in ("remaining_ms", "terminal_outcome", "terminal_reason"):
         # The sampling case omits the terminal pair; the terminal case omits remaining_ms.
         covered["StatusSemanticProgressModel", field] = (

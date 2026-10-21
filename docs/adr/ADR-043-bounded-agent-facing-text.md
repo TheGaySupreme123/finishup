@@ -262,9 +262,20 @@ original read. Like existing status cursors, a service restart expires it: recov
 status/findings, without starting a new review. Fresh disclosure audit metadata is outside the
 source content digest. There is no plaintext response cache, extra retention capacity, or new network authority.
 
+Because every read is its own disclosure, `privacy_projection` is never paged as `items`: each page
+carries its own read's whole local disclosure receipt, and reconstruction attaches the final page's
+projection (pages that disagree on the sink, or that page the projection, are refused). A
+projection whose canonical encoding passes 1,024 bytes coalesces its `omitted_pointers` on the page
+to containing fields, by ADR-009's rule past the 512-pointer bound and never past a top-level
+field; the omitted values still carry their inline omission markers and the local audit keeps
+each decision. The delivery-page schema branches carry the same request, task, session, writer,
+digest, frontier and projection constraints as the sibling result branches.
+
 MCP uses canonical JSON for delivery pages, including text-only hosts. Small checks carry complete
 JSON alongside their coverage-bounded prose; when that prose would exceed the result budget, the
-complete JSON is the text channel. Repeated required page reads never acquire a status write nudge.
+complete JSON is the text channel if it is the smaller one. Results the service never pages (start,
+publish, respond, a paused or inspected check) keep their shorter prose: the fallback never
+enlarges a result. Repeated required page reads never acquire a status write nudge.
 CLI JSON and terminal text carry the same pages and explicit read instruction. Native TUI views retain their complete local
 presentation; their finding renderer now includes every delivered finding and all challenge fields.
 Authenticated owner exports retain their full local view, because their exact-request approval

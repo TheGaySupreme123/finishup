@@ -12190,7 +12190,10 @@ and writer and a fresh request ID, without other selectors, filter, frontier or 
 A cursor binds source selection, writer, session, sink, position and authorized content digest.
 Keep the same MCP channel or CLI JSON/terminal mode when continuing.
 The original complete operation is read without running it again, and disclosure runs again for
-the current reader. Service restart expires these cursors, as it does existing status cursors;
+the current reader. Every page therefore carries its own read's `privacy_projection`, never paged
+as `items` and outside the content digest; reconstruction uses the final page's projection. Past
+1,024 canonical bytes a page's `omitted_pointers` coalesce to containing fields, as past the
+512-pointer wire bound. Service restart expires these cursors, as it does existing status cursors;
 recover through current status/findings without creating a new review. Missing source, altered
 binding or changed authorized content is a bounded `INVALID_REQUEST`; it does not authorize a new review or downgrade required review.
 
