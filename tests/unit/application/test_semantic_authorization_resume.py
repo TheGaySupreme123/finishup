@@ -617,6 +617,16 @@ async def test_resume_rechecks_the_current_limits_before_dispatch(
     assert result.outcome is PrivacyOutcome.BLOCKED_BY_POLICY
     assert result.reason is PrivacyReason.POLICY_DENIED
     assert dispatched == []
+    assert result.capacity is not None
+    if "items" in prepared.decode():
+        assert result.capacity == (17, 16)
+        assert (result.capacity_scope, result.capacity_unit) == ("excerpt", "excerpts")
+    elif max_bytes == 1_024:
+        assert result.capacity == (len(prepared), max_bytes)
+        assert result.capacity_unit == "bytes"
+    else:
+        assert result.capacity == (proposal.max_tokens, max_tokens)
+        assert result.capacity_unit == "tokens"
 
 
 @pytest.mark.anyio

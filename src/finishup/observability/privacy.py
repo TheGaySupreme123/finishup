@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import ast
 import bisect
+import json
 import re
 from collections.abc import Iterator, Mapping
 from dataclasses import dataclass
@@ -109,7 +110,7 @@ _UNQUOTED_VALUE_CHAR = rb"[^\s,'\";}{]"
 # A quoted value inside an encoded JSON string: ``\"...\"``. Inside it an encoded escaped quote
 # (three backslashes and a quote) and an encoded backslash (two) are part of the value.
 _ESCAPED_QUOTED_VALUE = rb'\\"(?:\\\\\\"|\\\\\\\\|(?!\\")[^\r\n]){1,512}\\"'
-_TRAILING_ENCODED_SPACE: Final = re.compile(rb"(?:\\[nrt])+$")
+_JSON_STRING_TOKEN: Final = re.compile(rb'"(?:[^"\\]|\\.)*"')
 # Python/JS string-literal prefixes (``b"..."``, ``r'...'``, ``f"..."``) belong to the quoted value.
 _STRING_PREFIX_RE: Final = rb"(?:[bBrRuUfF]{1,2}(?=[\"']))?"
 _STRING_PREFIX: Final = re.compile(rb"[bBrRuUfF]{1,2}(?=[\"'])")
@@ -303,6 +304,12 @@ _LOG_FIELDS: Final = frozenset(
         "semantic_disclosure_limit_bytes",
         "semantic_disclosure_attempted_tokens",
         "semantic_disclosure_limit_tokens",
+        "semantic_excerpt_attempted_bytes",
+        "semantic_excerpt_limit_bytes",
+        "semantic_excerpt_attempted_excerpts",
+        "semantic_excerpt_limit_excerpts",
+        "semantic_excerpt_total_attempted_bytes",
+        "semantic_excerpt_total_limit_bytes",
         "semantic_check_change_parts_selected",
         "semantic_edit_evidence_in_case",
         # Issue #1102: task-input pilot counters (integers only, never a path).
@@ -448,6 +455,12 @@ _INTEGER_FIELDS: Final = frozenset(
         "semantic_disclosure_limit_bytes",
         "semantic_disclosure_attempted_tokens",
         "semantic_disclosure_limit_tokens",
+        "semantic_excerpt_attempted_bytes",
+        "semantic_excerpt_limit_bytes",
+        "semantic_excerpt_attempted_excerpts",
+        "semantic_excerpt_limit_excerpts",
+        "semantic_excerpt_total_attempted_bytes",
+        "semantic_excerpt_total_limit_bytes",
         "semantic_check_change_parts_selected",
         "semantic_edit_evidence_in_case",
         # Issue #1102: task-input pilot counters (integers only, never a path).
@@ -660,6 +673,8 @@ def _assignment_value_is_code(
     match: re.Match[bytes],
     *,
     preceding: bytes = b"",
+    following: bytes = b"",
+    encoded_data: bytes | None = None,
     absolute_start: int | None = None,
     python_attribute_spans: tuple[tuple[int, int], ...] = (),
 ) -> bool:
@@ -679,7 +694,12 @@ def _assignment_value_is_code(
         marker_value = value[1:-1] if value.endswith(value[:1]) else value[1:]
     else:
         marker_value = value
-    if _TRAILING_ENCODED_SPACE.sub(b"", marker_value) in _EXEMPT_REPLACEMENT_MARKERS:
+    encoded_context = (
+        None
+        if encoded_data is None or absolute_start is None
+        else (encoded_data, absolute_start + raw.index(marker_value))
+    )
+    if _is_replacement_marker(marker_value, following=following, encoded_context=encoded_context):
         return True
     # Quoted values are literals even when their text resembles source code. Keep them in the
     # heuristic class so a value such as ``TOKEN='nextToken(parser)'`` is still withheld.
@@ -719,6 +739,61 @@ def _assignment_value_is_code(
             or (separator.group(0).startswith(b":") and lhs_name == b"token")
         )
     return False
+
+
+def _is_replacement_marker(
+    value: bytes, *, following: bytes, encoded_context: tuple[bytes, int] | None
+) -> bool:
+    """Match only a fixed marker and its JSON framing, at the rendered encoding depth.
+
+    At each encoding a newline's backslashes double, while the closing quote has one fewer
+    backslash. Checking both counts keeps a literal backslash suffix (possibly secret content)
+    distinct from encoded whitespace. The assignment match is already bounded to 512 bytes.
+    """
+
+    closing_slashes = len(value) - len(value.rstrip(b"\\"))
+    width = closing_slashes + 1
+    if closing_slashes and (following[:1] != b'"' or width & (width - 1)):
+        return False
+    for marker in _EXEMPT_REPLACEMENT_MARKERS:
+        if not value.startswith(marker):
+            continue
+        suffix = value[len(marker) : len(value) - closing_slashes if closing_slashes else None]
+        encoded_space = b"\\" * width
+        while suffix.startswith(encoded_space) and suffix[width : width + 1] in (b"n", b"r", b"t"):
+            suffix = suffix[width + 1 :]
+        if not suffix and (not closing_slashes or _marker_has_json_framing(encoded_context, width)):
+            return True
+    return False
+
+
+def _marker_has_json_framing(context: tuple[bytes, int] | None, width: int) -> bool:
+    """Prove the nesting, rather than mistaking a literal escaped quote for JSON framing."""
+
+    if context is None:
+        return False
+    data, offset = context
+    while width > 1:
+        token = next(
+            (
+                match
+                for match in _JSON_STRING_TOKEN.finditer(data)
+                if match.start() < offset < match.end()
+            ),
+            None,
+        )
+        if token is None:
+            return False
+        try:
+            # The marker has no escapes. Decoding its prefix maps this exact occurrence into
+            # the next string without confusing it with another marker elsewhere in the case.
+            prefix = json.loads(data[token.start() : offset] + b'"')
+            decoded = json.loads(token.group())
+            offset, data = len(prefix.encode("utf-8")), decoded.encode("utf-8")
+        except (ValueError, UnicodeError):
+            return False
+        width //= 2
+    return True
 
 
 def _assignment_value_cannot_be_credential(match: re.Match[bytes], *, token_family: bool) -> bool:
@@ -884,6 +959,8 @@ def scan_for_sensitive_content(
                 if _assignment_value_is_code(
                     match,
                     preceding=data[max(0, absolute_start - 1024) : absolute_start],
+                    following=data[chunk_start + match.end() : chunk_start + match.end() + 1],
+                    encoded_data=data,
                     absolute_start=absolute_start,
                     python_attribute_spans=python_attribute_spans,
                 ) or _assignment_value_cannot_be_credential(

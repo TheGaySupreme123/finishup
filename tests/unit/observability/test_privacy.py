@@ -523,6 +523,58 @@ def test_redacted_line_stays_clean_after_json_encoding(line: bytes) -> None:
     assert redact_heuristic_spans(encoded) == (encoded, 0)
 
 
+@pytest.mark.parametrize("depth", range(7))
+@pytest.mark.parametrize("marker", (b"[REDACTED]", EGRESS_CREDENTIAL_PLACEHOLDER))
+@pytest.mark.parametrize("ending", (b"", b"\n", b"\r\n\t"))
+def test_exact_replacement_marker_is_stable_in_nested_json(
+    depth: int, marker: bytes, ending: bytes
+) -> None:
+    encoded = b"API_KEY=" + marker + ending
+    for _ in range(depth):
+        encoded = canonical_encode({"content": encoded.decode()})
+    assert scan_for_sensitive_content(encoded) == ()
+    assert redact_heuristic_spans(encoded) == (encoded, 0)
+
+
+@pytest.mark.parametrize("depth", range(5))
+@pytest.mark.parametrize(
+    "value",
+    (
+        EGRESS_CREDENTIAL_PLACEHOLDER + b"realsecret",
+        EGRESS_CREDENTIAL_PLACEHOLDER + b"\\",
+        EGRESS_CREDENTIAL_PLACEHOLDER + b"\\nsecret",
+        EGRESS_CREDENTIAL_PLACEHOLDER + b'\\"secret42',
+        EGRESS_CREDENTIAL_PLACEHOLDER + b'\\"}',
+        b"hunter2",
+        b"sk-" + b"a1" * 20,
+    ),
+)
+def test_marker_lookalikes_and_secrets_are_not_exempted(depth: int, value: bytes) -> None:
+    encoded = b"password=" + value + b"\n"
+    for _ in range(depth):
+        encoded = canonical_encode({"content": encoded.decode()})
+    assert scan_for_sensitive_content(encoded)
+    with pytest.raises(PrivacyFenceError):
+        assert_plaintext_safe(encoded, "synthetic_secret")
+
+
+def test_nested_marker_framing_keeps_unicode_offsets_and_scan_chunk_boundaries() -> None:
+    line = "é" * 32_760 + "\npassword=" + EGRESS_CREDENTIAL_PLACEHOLDER.decode() + "\n"
+    packet = canonical_encode({"content": line})
+    exchange = canonical_encode({"packet": packet.decode()})
+    assert scan_for_sensitive_content(exchange) == ()
+
+
+def test_a_clean_marker_elsewhere_does_not_exempt_a_secret_suffix() -> None:
+    packet = canonical_encode(
+        {
+            "clean": "password=" + EGRESS_CREDENTIAL_PLACEHOLDER.decode() + "\n",
+            "secret": "password=" + EGRESS_CREDENTIAL_PLACEHOLDER.decode() + '\\"secret42',
+        }
+    )
+    assert scan_for_sensitive_content(canonical_encode({"packet": packet.decode()}))
+
+
 @pytest.mark.parametrize(
     ("encoded", "secret"),
     (
