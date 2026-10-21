@@ -32,6 +32,11 @@ names what the receipt will disclose.
 
 ## Decisions
 
+Recovered check results and operation outcomes derive readiness from the check's recorded result
+frontier, including the task's review-mode switches at that frontier. A later switch changes the
+next check's mode; it never rewrites an earlier check's continuation. A complete projection at
+that requested frontier is not stale merely because the ledger head has advanced.
+
 1. **Readiness is a checklist.** Every `status` view carries, beside the unchanged
    `blocking_conditions`, a `state` and three groups:
    - `agent_actionable`: what the agent can still do — `obligations_open`, `findings_unanswered`,

@@ -439,12 +439,15 @@ async def _task_review_mode(
     app: object,
     runtime: TaskRuntime,
     route_profile: Literal["policy", "strict"] | None,
+    *,
+    projection: ProjectionState | None = None,
 ) -> tuple[ConversationReviewMode, ConversationReviewContext] | None:
-    """The task's review mode at the head on this route (ADR-049); ``None`` when unreadable.
+    """The task's review mode on this route (ADR-049); ``None`` when unreadable.
 
     Read-only: the owner's setting and review availability from the application's reader, and
-    the switches from the head projection (status reads the head, never ``at_frontier``). A read
-    failure leaves status readable.
+    the switches from the supplied exact projection, or the head for current status. A recovered
+    check supplies its result projection so later switches cannot change its continuation. A
+    read failure leaves status readable.
     """
 
     reader = getattr(app, "conversation_review_context", None)
@@ -456,15 +459,17 @@ async def _task_review_mode(
         )(runtime)
         if type(context) is not ConversationReviewContext:
             return None
-        # The full head projection: the compact view's items carry no decisions.
-        stored = await runtime.ledger.load_projection(
-            runtime.session_id, ProjectionView.CANDIDATE_FINDINGS
-        )
-        switches = (
-            review_mode_switches(stored.state)
-            if stored is not None and type(stored.state) is ProjectionState
-            else ()
-        )
+        if projection is None:
+            # The full head projection: the compact view's items carry no decisions.
+            stored = await runtime.ledger.load_projection(
+                runtime.session_id, ProjectionView.CANDIDATE_FINDINGS
+            )
+            projection = (
+                stored.state
+                if stored is not None and type(stored.state) is ProjectionState
+                else None
+            )
+        switches = review_mode_switches(projection) if projection is not None else ()
     except Exception as exc:
         record_unexpected_exception_without_raising(
             exc, component="status", operation="conversation_review_read_failed"
@@ -1989,7 +1994,9 @@ async def _closure_readiness(
         receipt_blocking_findings = int(item.receipt_blocking_finding_count)
         has_plan = item.current_plan_event_id is not None
         no_obligations_reason = item.no_obligations_reason
-        stale = page.rebuild_state != "current" or bool(page.lag)
+        # A pinned earlier prefix is complete at its requested frontier even when the head has
+        # advanced. Only a projection that did not reach this request is stale here.
+        stale = page.rebuild_state != "current" or page.effective_frontier != frontier
         # Recorded gaps (the ones a receipt folds) are classified; live lineage tokens that no
         # recorded evaluation carries yet cannot be promised as receipt disclosures (#913).
         gap_markers = tuple(page.gaps)
@@ -2319,6 +2326,11 @@ async def closure_readiness_at(
     head's facts with an earlier check result or claim readiness from findings alone.
     """
 
+    if (
+        loaded is None
+        or Frontier(loaded.projection.frontier, loaded.projection.head_digest) != frontier
+    ):
+        loaded = await load_closure_basis(runtime, frontier)
     lineage_gaps, lineage_self_verified = await _lineage_readiness_gaps(
         app, runtime, frontier, request_id
     )
@@ -2330,7 +2342,9 @@ async def closure_readiness_at(
         lineage_gaps=lineage_gaps,
         lineage_self_verified=lineage_self_verified,
         semantic_review_required=_semantic_review_required(app, route_profile)
-        and not _task_local_by_choice(await _task_review_mode(app, runtime, route_profile)),
+        and not _task_local_by_choice(
+            await _task_review_mode(app, runtime, route_profile, projection=loaded.projection)
+        ),
         check_in_flight=check_in_flight,
         follow_head=False,
         _preloaded=loaded,

@@ -1434,6 +1434,25 @@ def workspace_verification_edits(
     return tuple(sorted(edits))
 
 
+def _verification_input_not_fingerprinted(
+    value: str, *, directory: bool, workspace_root: str | None
+) -> bool:
+    """Normalize declared inputs before asking whether the workspace comparison covers them."""
+
+    path = posixpath.normpath(value.replace("\\", "/"))
+    if path.startswith("/"):
+        path = "/" + path.lstrip("/")
+        if workspace_root is None or not (
+            path == workspace_root or path.startswith(workspace_root.rstrip("/") + "/")
+        ):
+            return True
+    elif path == ".." or path.startswith("../"):
+        return True
+    return path_beyond_workspace_fingerprint(
+        path, directory=directory, workspace_root=workspace_root
+    )
+
+
 def verification_unchanged_actions(
     projection: ProjectionState,
     records: Iterable[LedgerRecord],
@@ -1456,17 +1475,10 @@ def verification_unchanged_actions(
         or any(
             item.role is RequestedItemRole.INPUT
             and item.item_kind in _DECLARED_OUTPUT_KINDS
-            and (
-                path_beyond_workspace_fingerprint(
-                    item.value,
-                    directory=item.item_kind is RequestedItemKind.DIRECTORY,
-                    workspace_root=root,
-                )
-                or item.value.startswith("../")
-                or (
-                    item.value.startswith("/")
-                    and (root is None or not item.value.startswith(root.rstrip("/") + "/"))
-                )
+            and _verification_input_not_fingerprinted(
+                item.value,
+                directory=item.item_kind is RequestedItemKind.DIRECTORY,
+                workspace_root=root,
             )
             for item in row.payload.requested_items
         )
