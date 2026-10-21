@@ -407,6 +407,7 @@ class SemanticReason(str, Enum):  # noqa: UP042 - exact public wire enum base
     # Pre-edit deferral (#1046). Distinct from DETERMINISTIC_MODE so a reader does not
     # treat an AI-powered setting as ignored. Admitted on check-result / check-recorded 1.5.0.
     DEFERRED_BEFORE_FIRST_EDIT = "deferred_before_first_edit"
+    ROUND_LIMIT_UNASSESSABLE = "round_limit_unassessable"
     NO_MATERIAL_SEMANTIC_CASE = "no_material_semantic_case"
     PROVIDER_NOT_CONFIGURED = "provider_not_configured"
     LOCAL_MODEL_NOT_CONFIGURED = "local_model_not_configured"
@@ -514,6 +515,7 @@ VALID_SEMANTIC_REASONS: Final[Mapping[SemanticStatus, frozenset[SemanticReason]]
             ),
             SemanticStatus.UNAVAILABLE: frozenset(
                 {
+                    SemanticReason.ROUND_LIMIT_UNASSESSABLE,
                     SemanticReason.CREDENTIAL_UNAVAILABLE,
                     SemanticReason.ENDPOINT_PROFILE_UNAVAILABLE,
                     SemanticReason.TRANSPORT_UNAVAILABLE,
@@ -571,6 +573,7 @@ _REQUIRED_UNAVAILABLE_PROVENANCE_REASONS: Final[frozenset[SemanticReason]] = fro
 )
 _FORBIDDEN_UNAVAILABLE_PROVENANCE_REASONS: Final[frozenset[SemanticReason]] = frozenset(
     {
+        SemanticReason.ROUND_LIMIT_UNASSESSABLE,
         SemanticReason.CREDENTIAL_UNAVAILABLE,
         SemanticReason.ENDPOINT_PROFILE_UNAVAILABLE,
         SemanticReason.RETRY_BUDGET_EXHAUSTED,
@@ -4011,6 +4014,7 @@ class CheckFindingChecklistModel(_ClosedModel):
     counts: CheckChecklistCountsModel
     items: tuple[CheckChecklistItemModel, ...]
     next: Literal[
+        "follow_overall_next",
         "decide_at_budget",
         "disclose_limitations",
         "request_receipt",
@@ -4508,6 +4512,7 @@ class CheckSuccessModel(_ClosedModel):
             "advisory_notes",
             "missing_for_assessment",
             "finding_checklist",
+            "closure_readiness",
             "overall_next",
             "semantic_withheld_items",
             "semantic_redacted_values",
@@ -4559,6 +4564,7 @@ class CheckSuccessModel(_ClosedModel):
     children: CheckChildrenPreviewModel | None = None
     advisory_notes: tuple[CheckAdvisoryNoteModel, ...] = ()
     finding_checklist: CheckFindingChecklistModel | None = None
+    closure_readiness: StatusClosureReadinessModel | None = None
     semantic_withheld_items: tuple[SemanticWithheldItemModel, ...] = ()
     # PL2-1: item refs and line numbers of values the external reviewer did not see.
     semantic_redacted_values: tuple[SemanticRedactedValueModel, ...] = ()
@@ -7475,6 +7481,7 @@ _CHECK_STRUCTURAL_POINTERS: Final = (
     _COMMON_SUCCESS_LEAVES
     + (
         "/semantic_conclusion",
+        "/closure_readiness",
         "/semantic_provenance",
         "/semantic_reason",
         # Issue #986: a closed boolean the service writes from the route, never case content.
@@ -8406,6 +8413,9 @@ _RECEIPT_STRUCTURAL_POINTERS: Final = (
             "rejection_accepted_finding_ids/*",
             "schema_version",
             "self_verified_finding_ids/*",
+            "disproved_self_verified_finding_ids/*",
+            "semantic_status",
+            "semantic_reason",
             "disputed_after_rebuttal_finding_ids/*",
             # ADR-046: ids, closed codes and counters only.
             "limitation_disclosed_finding_ids/*",
@@ -8649,6 +8659,16 @@ def _build_result_leaf_rules() -> tuple[_ResultLeafRule, ...]:
     add_structural("status", _STATUS_PROJECT_STRUCTURAL_POINTERS, status_view="project")
     add_structural("status", _STATUS_VERSIONS_STRUCTURAL_POINTERS, status_view="versions")
     add_structural("receipt", _RECEIPT_STRUCTURAL_POINTERS)
+    # #1140: check embeds the same readiness model, under the same privacy categories. In
+    # particular its undeclared repository paths are content, never structural metadata.
+    add_structural(
+        "check",
+        tuple(
+            pointer
+            for pointer in _STATUS_COMMON_STRUCTURAL_POINTERS
+            if pointer.startswith("/closure_readiness/")
+        ),
+    )
 
     summary_pattern = "/accepted_events/*/summary"
     for selector, category in _PUBLISH_SUMMARY_CATEGORY.items():
@@ -8686,6 +8706,8 @@ def _build_result_leaf_rules() -> tuple[_ResultLeafRule, ...]:
         rules.append(_leaf_rule("status", pointer, category, status_view=view))
     for pointer, category in _STATUS_COMMON_CONTENT_RULES:
         rules.append(_leaf_rule("status", pointer, category))
+        if pointer.startswith("/closure_readiness/"):
+            rules.append(_leaf_rule("check", pointer, category))
     for pointer, category in _RECEIPT_CONTENT_RULES:
         rules.append(_leaf_rule("receipt", pointer, category))
 
@@ -8733,7 +8755,7 @@ def _build_result_leaf_rules() -> tuple[_ResultLeafRule, ...]:
         ):
             raise RuntimeError("invalid_result_leaf_classification")
     if (
-        len(result) != 1678
+        len(result) != 1765
     ):  # ... #1017 +3, #1027 +5, tb4n3 LO +9, W2-A +46, LF +34 (fact_lineage), W2-B +2,
         # tb4n4 #1044 +7 (closure_readiness.undeclared_references), #1048 +38 (inspection),
         # #1047 +2 (follow_up_round), tb4n5 +3 (publish action_notices),
@@ -8744,6 +8766,8 @@ def _build_result_leaf_rules() -> tuple[_ResultLeafRule, ...]:
         # W5/D1 +2 (closure_readiness.acceptance_risk),
         # W6 +1 check (agent_next) / +15 status (operation check_outcome),
         # #1118 +18 check (reviewer), +1 check_recorded 1.6.0
+        # #1140 +84 check (shared readiness, including one repository-excerpt leaf),
+        # #1144/#1149 +3 receipt (disproved ids and stopped status/reason)
         raise RuntimeError("incomplete_result_leaf_registry")
     return result
 

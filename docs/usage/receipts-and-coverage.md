@@ -524,3 +524,14 @@ requested item has an exact `attempted_items` entry on the `action_recorded` eve
 it — `attempted_items` belongs to that family alone, never a claim, and each entry copies the
 obligation's `requested_items` `value` string exactly — that every claim has linked evidence, and
 that every open obligation is either resolved or deliberately left open with a stated reason.
+
+A review can have been requested and then stopped because repeated rounds could not assess the
+available evidence. Its result is `unavailable / round_limit_unassessable`. Receipts retain that
+reason in JSON, markdown and text; required review remains incomplete. A self-verified finding
+records the agent's own verification and its limits. Concerns the agent rejected and reports
+disproved appear separately; that wording does not assert that the implementation was repaired.
+
+Keep incidental evidence reports and logs outside your project and its output directories, then
+publish references through the ledger. Required reports remain deliverables. FinishUP can preserve
+verification after a byte-identical shell rewrite when its trusted workspace comparison proves
+no bytes changed; a new or changed report may still make earlier verification stale.

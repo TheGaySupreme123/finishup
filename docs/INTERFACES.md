@@ -12061,3 +12061,43 @@ as `outcome_unknown` and is never resent. For it, `operation_max_retries` is `0`
   `FinalSemanticEvaluation.reviewer` carry it in process; `FinalSemanticEvaluation`
   `reviewer_citable_refs` and `reviewer_paths` stay in process and in the encrypted
   `yoetz.semantic-response/1` object (`reviewer`, `reviewer_paths`).
+
+### Closure honesty follow-ups (#1140, #1143, #1144, #1149)
+
+`check-result` 1.6.0 optionally carries `closure_readiness`, the exact status readiness model
+at its committed result frontier, including lineage and verification currency. Its finding list
+is finding work, `missing_for_assessment` is assessment-input work, and readiness's
+`standing_limitations` are disclosures. An empty finding list cannot authorize a receipt while
+that shared readiness is `action_required`: `overall_next` is `review_recorded_work`, and a
+finding checklist that otherwise offered a receipt says `follow_overall_next`. CLI, MCP and the
+terminal interface consume these shared results; Codex, Claude Code and Cursor Stop adapters
+continue consuming the same status readiness. Receipt prediction still comes from the receipt
+basis at that frontier. Unknown readiness never grants closure.
+
+An output request targeted at an event of the wrong type, a retained-only row, or a known path
+outside the available workspace root is `structurally_unavailable_on_this_host`, rather than
+`agent_suppliable`. This classification never authorizes copying input across a root boundary.
+Packet-room and unsupported-type classifications remain distinct. Root availability here is
+conservative: the classification context lacks a complete manifest of outside-root authority.
+
+A requested AI-powered review stopped by the existing repeated-unassessability cap is
+`semantic_status: unavailable`, `semantic_reason: round_limit_unassessable`. No new provider
+attempt or provenance is fabricated. This pair is admitted on check-result/check-recorded 1.6.0
+and the status operation's `check_outcome`; older check schemas keep their bytes and reject it.
+The 1.6.0 event can carry this pair without `reviewer`. Receipt-document 1.3.0 optionally carries
+the same two fields, together, for this stopped outcome; JSON, markdown, text and compact receipts
+name the stop. Required review remains incomplete and never becomes a local-only success.
+
+A self-verified concern is not necessarily a repair. A retained reasoned rejection makes its
+resolution explanation say the agent checked it and reports it does not hold. Otherwise the text
+says only that the agent recorded its own verification. Receipt-document 1.3.0 optionally carries
+`disproved_self_verified_finding_ids`, a sorted subset of `self_verified_finding_ids`, and human
+receipts identify those concerns separately. No row becomes independently resolved or clean.
+
+For freshness, a service-stamped, complete workspace fingerprint proving an in-workspace shell
+write byte-identical does not advance the verification edit frontier. The same trusted action set
+is frozen as `verification_unchanged_action_ids` in the internal deterministic case and used by
+work-integrity. Contradictory or unavailable observations, outside writes, and declared paths the
+fingerprint cannot compare retain conservative freshness. This is the bounded #1143 mitigation;
+new report files and changed report bytes still invalidate freshness. General per-command
+verification dependencies and generated-artifact roles remain an open design requirement.

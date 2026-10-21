@@ -32,6 +32,11 @@ names what the receipt will disclose.
 
 ## Decisions
 
+Recovered check results and operation outcomes derive readiness from the check's recorded result
+frontier, including the task's review-mode switches at that frontier. A later switch changes the
+next check's mode; it never rewrites an earlier check's continuation. A complete projection at
+that requested frontier is not stale merely because the ledger head has advanced.
+
 1. **Readiness is a checklist.** Every `status` view carries, beside the unchanged
    `blocking_conditions`, a `state` and three groups:
    - `agent_actionable`: what the agent can still do — `obligations_open`, `findings_unanswered`,
@@ -447,3 +452,15 @@ the requirement is not met, so it is `limitation_acknowledged_not_done`, an unme
 `unresolved_findings_remain`. When it is the only agent work left the check's next step is
 `disclose_limitations`. An `act` challenge never qualifies, and neither do the agent's own words.
 Details: ADR-046 section 1.
+
+## Amendment (2026-10-21): one readiness verdict for the check's continuation (#1140)
+
+The check's post-commit enrichment uses status's closure-readiness derivation at the exact result
+frontier and its already-loaded receipt basis, including live lineage. The result optionally
+carries that model on check-result 1.6.0. Finding work, missing assessment input and standing
+limitations remain separate lists. An empty finding list cannot offer the receipt while the task
+verdict requires action: its checklist says `follow_overall_next` and the task continuation names
+recorded work. Status, receipt prediction and Stop retain the same verdict. A wrong-type,
+retained-only or outside-root assessment target is a structural limit, not an instruction to
+republish or move private content. Outside-root classification remains conservative when the
+classification context cannot establish the owner's admitted roots.
