@@ -2944,14 +2944,18 @@ def build_receipt(
     ):
         # Export profiles already withhold task/obligation prose and raw evidence. Preserve
         # advisory counts and gaps without copying those values into a new receipt section.
-        redactions = (
-            *redactions,
-            ReceiptRedaction(
-                ReceiptRedactionCategory.OBLIGATION_TEXT,
-                ReceiptRedactionReason.POLICY_REDACTED,
-                len(declared_coverage.criteria),
-            ),
-        )
+        # Only obligation rows are obligation text; a withheld task quote has no redaction
+        # category of its own and is disclosed in its row ("Criterion text withheld ...").
+        obligation_rows = sum(row.source == "obligation" for row in declared_coverage.criteria)
+        if obligation_rows:
+            redactions = (
+                *redactions,
+                ReceiptRedaction(
+                    ReceiptRedactionCategory.OBLIGATION_TEXT,
+                    ReceiptRedactionReason.POLICY_REDACTED,
+                    obligation_rows,
+                ),
+            )
         declared_coverage = replace(
             declared_coverage,
             criteria=tuple(

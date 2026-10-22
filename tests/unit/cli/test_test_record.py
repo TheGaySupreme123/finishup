@@ -91,8 +91,15 @@ def test_ingests_exact_report_and_source_without_mutating_identity_or_running(
     assert result.verification.results_file == "results.json"
     assert result.verification.report_digest == "sha256:" + hashlib.sha256(raw).hexdigest()
     assert result.summary is not None
-    assert raw.decode() in result.summary
-    assert (tmp_path / "test.py").read_text() in result.summary
+    # #1170 review: the files are bound by digest; their text never enters the summary, which
+    # every detailed review timeline carries (Goal-aware included).
+    assert raw.decode() not in result.summary and "case-2" not in result.summary
+    assert "must never execute" not in result.summary
+    assert "sha256:" + hashlib.sha256(raw).hexdigest() in result.summary
+    assert (
+        "sha256:" + hashlib.sha256((tmp_path / "test.py").read_bytes()).hexdigest()
+        in result.summary
+    )
     assert "Original caller summary." in result.summary
     assert "Caller-asserted" in result.summary
     assert "execution and report origin are not observed" in result.summary
@@ -246,13 +253,14 @@ def test_rejects_ancestor_replacement_during_read(
         _prepare(root)
 
 
-def test_script_excerpt_is_utf8_bounded_and_explicitly_clipped(tmp_path: Path) -> None:
+def test_a_large_script_is_bound_by_digest_and_never_copied(tmp_path: Path) -> None:
     _files(tmp_path, b'{"cases":0,"failing":0}')
     script = ("# \u05d0\u05d1\u05d2\n" * 1_000).encode()
     (tmp_path / "test.py").write_bytes(script)
     prepared = _prepare(tmp_path)
     payload = prepared["event_drafts"][0]["payload"]
-    assert "(excerpt clipped)" in payload["summary"]
+    assert "\u05d0" not in payload["summary"]
+    assert f"{len(script)} bytes" in payload["summary"]
     assert "sha256:" + hashlib.sha256(script).hexdigest() in payload["summary"]
     assert len(payload["summary"].encode()) <= 8_192
     assert "worst" not in payload["verification"]

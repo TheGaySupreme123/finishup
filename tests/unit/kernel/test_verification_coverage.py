@@ -519,12 +519,98 @@ def test_specific_quote_maps_only_the_criterion_it_identifies() -> None:
         "The function returns the ratio.",
         "Outputs match the reference.",
         "Each label is saved.",
-        "The report was written and labelled.",
+        "Write and label the report.",
     ],
 )
 def test_inflected_condition_words_propose_a_criterion(sentence: str) -> None:
     view = build_verification_coverage(_projection(statement=f"Background only here. {sentence}"))
     assert [(row.criterion_quote, row.flags) for row in view.criteria] == [(sentence, ("no_test",))]
+
+
+def test_descriptive_past_tense_prose_proposes_no_criterion() -> None:
+    # #1170 review: a past tense or participle describes what happened; alone it is no gap.
+    statement = (
+        "The repository was written in Python. Dependencies are listed in requirements.txt. "
+        "The report was saved and labelled. The ratio must be at most 1.06."
+    )
+    view = build_verification_coverage(_projection(statement=statement))
+    assert [row.criterion_quote for row in view.criteria if row.source == "task_statement"] == [
+        "The ratio must be at most 1.06."
+    ]
+
+
+def test_a_partial_quote_keeps_the_rest_of_a_compound_sentence_visible() -> None:
+    # #1170 review: a ratio witness must not make the labels requirement in its sentence vanish.
+    statement = (
+        "Use the provided reactor data. "
+        "The labels must be saved to labels.csv and the ratio must be at most 1.06."
+    )
+    view = build_verification_coverage(
+        _projection(_run(1, quote="ratio must be at most 1.06"), statement=statement)
+    )
+    rows = {row.criterion_quote: row for row in view.criteria if row.source == "task_statement"}
+    sentence = "The labels must be saved to labels.csv and the ratio must be at most 1.06."
+    assert rows[sentence].flags == ("no_test",)
+    assert rows["ratio must be at most 1.06"].witnesses
+    # A second witness for the remaining clause retires the sentence; a bare quantifier left
+    # outside the quote ("For every input, ...") qualifies it and is not a further criterion.
+    both = build_verification_coverage(
+        _projection(
+            _run(1, quote="ratio must be at most 1.06"),
+            _run(2, quote="labels must be saved to labels.csv"),
+            statement=statement,
+        )
+    )
+    assert sentence not in {row.criterion_quote for row in both.criteria}
+
+
+def test_an_obligation_restating_a_task_criterion_is_the_same_criterion() -> None:
+    # #1170 review: the restatement must not turn the tested task criterion back into a gap,
+    # and an identical (recased, re-ended) restatement is one row with the task source.
+    statement = "The ratio must be at most 1.06. The labels must be saved."
+    restated = build_verification_coverage(
+        _with_acceptance(
+            _projection(_run(1, quote="ratio must be at most 1.06"), statement=statement),
+            "The ratio must be at most 1.06 for every scenario.",
+        )
+    )
+    gaps = {row.criterion_quote for row in restated.criteria if "no_test" in row.flags}
+    assert gaps == {"The labels must be saved."}
+    same = build_verification_coverage(
+        _with_acceptance(_projection(statement=statement), "the ratio must be at most 1.06")
+    )
+    assert [(row.criterion_quote, row.source) for row in same.criteria] == [
+        ("The labels must be saved.", "task_statement"),
+        ("The ratio must be at most 1.06.", "task_statement"),
+    ]
+
+
+def test_a_sentence_longer_than_a_quote_is_counted_not_dropped() -> None:
+    long = (
+        "The exported predictions file must contain one row per scenario with the scenario id, "
+        "the predicted ratio, the lower and upper bounds of the 95% interval, and the label "
+        "assigned by the classifier, and every predicted ratio must be within 6% of the "
+        "reference value."
+    )
+    assert len(long) > 240
+    view = build_verification_coverage(_projection(statement=f"{long} The labels must be saved."))
+    assert [row.criterion_quote for row in view.criteria if row.source == "task_statement"] == [
+        "The labels must be saved."
+    ]
+    assert view.omitted_criteria == 1
+
+
+def test_an_amended_task_does_not_keep_an_obsolete_quote_inside_a_longer_number() -> None:
+    view = build_verification_coverage(
+        _projection(
+            _run(1, quote="error must be at most 0.1"),
+            statement="Each error must be at most 0.15 mm.",
+        )
+    )
+    assert not any(row.witnesses for row in view.criteria)
+    assert [
+        (row.criterion_quote, row.flags) for row in view.criteria if row.source == "task_statement"
+    ] == [("Each error must be at most 0.15 mm.", ("no_test",))]
 
 
 def test_obligation_prose_cannot_evict_the_task_gap_from_the_display_bound() -> None:

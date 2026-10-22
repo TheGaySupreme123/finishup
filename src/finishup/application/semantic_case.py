@@ -131,7 +131,11 @@ from finishup.domain.values import (
 from finishup.domain.values import (
     result_id as validate_result_id,
 )
-from finishup.domain.verification_coverage import verification_coverage_to_json
+from finishup.domain.verification_coverage import (
+    criterion_quote_pattern,
+    criterion_quote_position,
+    verification_coverage_to_json,
+)
 from finishup.kernel.claims import effective_claim_items
 from finishup.kernel.delivered_set import declared_delivered_items
 from finishup.kernel.deterministic_checks import (
@@ -393,16 +397,17 @@ REVIEW_PHASE_QUESTIONS: Final[Mapping[SemanticBudgetProfile, str]] = MappingProx
         ),
     }
 )
-# Asked only when a readable result carries a test manifest, so reviews without one never pay
-# for these rules in every exchange (the #1173 minimal-policy read budget, ADR-006).
+# Asked only when the packet carries the agent-declared coverage index, so a review that cannot see
+# a manifest never pays for these rules in every exchange (the #1173 read budget, ADR-006).
 _TEST_QUALITY_QUESTION: Final = (
-    "When test manifests are present, judge whether each check measures its quoted criterion, "
-    "uses independent data and expectations, and ran on the shipped state; an agent-declared "
-    "manifest is not independent proof. Name circular, tuned, hard-coded or redundant checks and "
-    "any expected value copied from the answer; test volume is not evidence quality. If a useful "
-    "check remains, begin the summary with 'Discriminating check: ' and one concrete check; do "
-    "not invent a test when no useful discriminator exists. Do not request another unchanged run "
-    "or more tests merely to fill a gap."
+    "The coverage index lists agent-declared test manifests: judge whether each check measures "
+    "its quoted criterion, uses independent data and expectations, and ran on the shipped state; "
+    "an agent-declared manifest is not independent proof. Name circular, tuned, hard-coded or "
+    "redundant checks and any expected value copied from the answer; test volume is not evidence "
+    "quality. If a useful check remains, begin the first line of review_summary with "
+    "'Discriminating check: <one concrete check>'; do not invent a test when no useful "
+    "discriminator exists. Do not request another unchanged run or more tests merely to fill a "
+    "gap."
 )
 # Asked only when the frozen case records a verification with later changes (#1143): AI review
 # never blocks on staleness; it weighs the verification against those changes and asks.
@@ -567,7 +572,7 @@ def review_question_set(
     The final phase adds one blocker question when ``blockers`` (``recorded_blockers``) is not
     empty; the routine phase never judges blockers. ``freshness`` adds the advisory freshness
     question when a recorded verification has later changes (``verification_freshness_asked``);
-    ``test_manifests`` appends the test-quality question when a result carries a test manifest.
+    ``test_manifests`` appends the test-quality question when the packet carries the coverage index.
     """
 
     parsed = parse_semantic_budget_profile(phase)
@@ -2300,6 +2305,18 @@ def _task_statement_item(
 VERIFICATION_COVERAGE_ITEM_ID: Final = "verification-coverage"
 
 
+def _quote_start(quote: str, text: str) -> int:
+    """Where a criterion row's text occurs: the whole-word occurrence admission accepts.
+
+    ``0.1`` inside ``0.15`` is no occurrence (#1170 review); a generic legacy quote, which maps
+    no criterion, keeps the plain offset.
+    """
+
+    if criterion_quote_pattern(quote) is None:
+        return text.find(quote)
+    return criterion_quote_position(quote, text)
+
+
 def _verification_coverage_item(
     projection: ProjectionState,
     task_statement: str | None,
@@ -2328,7 +2345,7 @@ def _verification_coverage_item(
         quote = cast(
             str, row.pop("task_criterion_quote", row.pop("obligation_criterion_quote", ""))
         )
-        start = -1 if task_statement is None else task_statement.find(quote)
+        start = -1 if task_statement is None else _quote_start(quote, task_statement)
         if start >= 0:
             row["criterion_source_ref"] = task_source_ref
             row["criterion_span"] = [start, start + len(quote)]
@@ -2341,7 +2358,7 @@ def _verification_coverage_item(
                     and not obligation.redacted
                     and str(ref) in allowed
                 ):
-                    start = payload.acceptance_criteria.find(quote)
+                    start = _quote_start(quote, payload.acceptance_criteria)
                     if start >= 0:
                         row["criterion_source_ref"] = str(ref)
                         row["criterion_span"] = [start, start + len(quote)]
@@ -8836,9 +8853,11 @@ def _build_semantic_case_once(
         recorded_blockers(frozen_case.projection),
         acknowledged_obligation_rows(frozen_case.projection),
         freshness=verification_freshness_asked(frozen_case),
+        # Only a carried coverage index with a witness row lets the reviewer see a manifest
+        # (#1170): its subject refs are exactly the admitted witnesses' result and action ids.
         test_manifests=any(
-            row.payload is not None and row.payload.verification is not None and not row.redacted
-            for row in projection.results.values()
+            item.item_id in packet.verification_coverage_item_ids and item.linked_subject_refs
+            for item in items
         ),
     )
     # tb4n5: which excerpts supply the follow-up beyond the first packet, so the provider-bound

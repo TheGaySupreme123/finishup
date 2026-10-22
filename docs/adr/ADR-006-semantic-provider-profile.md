@@ -3308,8 +3308,10 @@ statement text verbatim and declares data source, case and failing counts, optio
 and whether the agent tuned on those cases. Exact quote matching binds the declaration to recorded
 text; it does not establish that the test measures the criterion. Older results remain valid.
 The local `record-test` CLI reads a test file and small JSON report immediately, binds their
-references and report digest, and publishes bounded prose through the existing publication path.
-It never executes the test. Direct MCP and CLI publication can carry the complete manifest.
+references and both digests, and publishes through the existing publication path. It never
+executes the test, and it copies neither file's text into the result: a result summary rides
+every detailed review timeline, Goal-aware included, so the source and failing-case names stay in
+the workspace (independent review of #1174). Direct MCP and CLI publication can carry the complete manifest.
 Parsed counts, data-source labels and coverage remain **agent-declared**. A digest is byte identity,
 not proof of execution, independence or correctness.
 
@@ -3324,22 +3326,30 @@ text remaining in its separately authorized task/obligation items. Human receipt
 rows and structural facts; categorized JSON/status retain the criterion text and worst values.
 Unmanifested and unassessable criteria remain explicit limits rather than invented failures.
 A quote is admitted only as a whole-word occurrence that names the criterion, not only punctuation
-or common words. It maps the one candidate it identifies; a generic, cross-sentence or repeated
-quote never erases another criterion's gap. Task-statement rows rank before obligation sentences,
+or common words, and the projection re-applies that rule after an amendment. It maps the one task
+sentence it identifies, with any obligation sentence restating it; a sentence is retired only when
+nothing outside its quotes states a further requirement, so a partial quote never hides the rest of
+a compound sentence, and a generic, cross-sentence or repeated quote never erases another
+criterion's gap. Sentences longer than a quote are counted as omitted. Task-statement rows rank before obligation sentences,
 so agent-written acceptance prose cannot push a user criterion past the display bound. Structural
 and Goal-aware packets omit the index because they do not select the task text or test excerpts
 it summarizes; offering it there is a separate disclosure decision.
 
-Test-quality scrutiny uses AI review only when that review is already in use. The reviewer asks
-whether the witness measures the quoted criterion and whether its source or expected values are
-circular. When a useful independent discriminator exists, the first summary line begins
+Test-quality scrutiny uses AI review only when that review is already in use, through one
+question asked only when the packet carries the coverage index with at least one admitted witness
+(Assisted, Expanded or an equivalent custom selection with a manifest). The reviewer asks whether
+the witness measures the quoted criterion and whether its source or expected values are circular.
+When a useful independent discriminator exists, the first summary line begins
 `Discriminating check: <one concrete check>`, so the practical suggestion survives a bounded
 preview. When none exists, the reviewer does not invent a pointless test. A missing witness alone
-is not a demonstrated defect, and the instruction does not require extra tests or review rounds.
-The reviewer instruction sent in every exchange carries only the one-sentence summary rule (95
-bytes, 7,639 to 7,734); the manifest rules ride the test-quality question, which a packet carries
-only when a readable result has a manifest. So reviews without manifests keep the #1173
-smallest-channel read counts above.
+is not a demonstrated defect, and the question does not require extra tests or review rounds.
+The always-sent reviewer instructions carry none of these rules (the loop instruction stays at
+7,639 bytes). Trade-off: at the minimal policy (4,096 tokens, a 16 KiB exchange) the question
+costs one of #1173's two content reads, so such a review fits one, before the index's own
+structural rows (at most 4 KiB) take further exchange room; the read it cannot afford takes the
+final-phase repair and the review still concludes (`test_the_test_quality_question_costs_one_content_read_at_the_minimal_policy`
+pins the question's cost). Every review whose packet carries no witness, including every
+Structural and Goal-aware review, keeps #1173's two content reads.
 
 Codex, Claude Code and Cursor share these publication and advisory semantics through MCP and CLI.
 The host runbooks record the same support decision and distinguish shared contract coverage from

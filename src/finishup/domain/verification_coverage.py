@@ -134,6 +134,16 @@ def criterion_quote_is_specific(quote: str) -> bool:
     )
 
 
+def criterion_quote_pattern(quote: str) -> re.Pattern[str] | None:
+    """The whole-word occurrence pattern of a specific ``quote``, or ``None`` if it is generic."""
+
+    if not quote or not criterion_quote_is_specific(quote):
+        return None
+    start = r"(?<!\w)(?<!\d[.,])" if re.match(r"\w", quote[0]) else ""
+    end = r"(?!\w)(?![.,]\d)" if re.match(r"\w", quote[-1]) else ""
+    return re.compile(start + re.escape(quote) + end)
+
+
 def criterion_quote_in_text(quote: str, text: str) -> bool:
     """Whether a specific ``quote`` occurs verbatim in ``text`` at word boundaries.
 
@@ -141,11 +151,16 @@ def criterion_quote_in_text(quote: str, text: str) -> bool:
     admission rule and the only way a witness quote can map a longer candidate criterion.
     """
 
-    if not quote or not criterion_quote_is_specific(quote):
-        return False
-    start = r"(?<!\w)(?<!\d[.,])" if re.match(r"\w", quote[0]) else ""
-    end = r"(?!\w)(?![.,]\d)" if re.match(r"\w", quote[-1]) else ""
-    return re.search(start + re.escape(quote) + end, text) is not None
+    pattern = criterion_quote_pattern(quote)
+    return pattern is not None and pattern.search(text) is not None
+
+
+def criterion_quote_position(quote: str, text: str) -> int:
+    """The offset of the first whole-word occurrence of ``quote`` in ``text``, or ``-1``."""
+
+    pattern = criterion_quote_pattern(quote)
+    match = None if pattern is None else pattern.search(text)
+    return -1 if match is None else match.start()
 
 
 def coverage_flag_label(flag: str) -> str:

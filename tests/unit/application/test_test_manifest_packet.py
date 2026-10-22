@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 from dataclasses import replace
+from pathlib import Path
+from typing import Any, cast
 
 import pytest
 
@@ -23,9 +25,11 @@ from finishup.application.semantic_case import (
     check_time_change_floor_bytes_carried,
     semantic_case_to_prepared_payload,
 )
+from finishup.cli.test_record import prepare_test_record
 from finishup.domain.events import (
     ActionKind,
     ActionRecordedPayload,
+    EventSchema,
     ObligationPublishedPayload,
     ObligationStatus,
     PlanPublishedPayload,
@@ -33,16 +37,21 @@ from finishup.domain.events import (
     ResultRecordedPayload,
     ResultVerification,
     VerificationDataSource,
+    decode_payload,
     encode_payload,
 )
 from finishup.domain.privacy import ReviewContextProfile, ReviewSelectionPolicy
 from finishup.domain.task_statement import RecordedTaskStatement
 from finishup.kernel.deterministic_checks import DeterministicCase, FrozenHistoryEvent
 from finishup.ports.semantic import SemanticCase
-from finishup.protocol.canonical import canonical_digest
+from finishup.protocol.canonical import JsonValue, canonical_digest
 from finishup.protocol.models import DataCategory
 from unit.application.test_semantic_case_check_change import (
     _change,  # pyright: ignore[reportPrivateUsage]
+)
+
+PROFILES = tuple(
+    profile for profile in ReviewContextProfile if profile is not ReviewContextProfile.CUSTOM
 )
 
 
@@ -129,18 +138,98 @@ def test_packet_leads_with_agent_declared_failures_and_keeps_the_script_result()
     assert prepared.find(b'"verification_coverage"') < prepared.find(b'"task_statement"')
 
 
-def test_only_a_manifest_bearing_review_asks_the_test_quality_question() -> None:
-    question = _build().question_set[-1]
-    assert question.startswith("When test manifests are present")
-    for rule in (
-        "an agent-declared manifest is not independent proof",
-        "any expected value copied from the answer",
-        "do not invent a test when no useful discriminator exists",
-        "Do not request another unchanged run",
-    ):
-        assert rule in question
-    plain = _build(frozen=_case(manifest=False)).question_set
-    assert not any("test manifests" in text for text in plain)
+@pytest.mark.parametrize("profile", PROFILES)
+def test_only_a_review_that_sees_the_coverage_index_asks_the_test_quality_question(
+    profile: ReviewContextProfile,
+) -> None:
+    # #1170 review: the question rides only a packet that carries a manifest the reviewer can
+    # see; Structural and Goal-aware carry no index, so they never pay for the question.
+    case = _build(ReviewSelectionPolicy.for_profile(profile))
+    asked = [text for text in case.question_set if "Discriminating check" in text]
+    if case.packet.verification_coverage_item_ids:
+        assert profile in {ReviewContextProfile.ASSISTED, ReviewContextProfile.EXPANDED}
+        (question,) = asked
+        for rule in (
+            "an agent-declared manifest is not independent proof",
+            "any expected value copied from the answer",
+            "do not invent a test when no useful discriminator exists",
+            "Do not request another unchanged run",
+        ):
+            assert rule in question
+    else:
+        assert profile in {ReviewContextProfile.STRUCTURAL, ReviewContextProfile.GOAL_AWARE}
+        assert asked == []
+    plain = _build(ReviewSelectionPolicy.for_profile(profile), frozen=_case(manifest=False))
+    assert not any("Discriminating check" in text for text in plain.question_set)
+
+
+@pytest.mark.parametrize("profile", PROFILES)
+def test_record_test_file_content_reaches_no_review_profile(
+    profile: ReviewContextProfile, tmp_path: Path
+) -> None:
+    """#1170 review: record-test binds its files by digest; no profile can send their text.
+
+    Goal-aware's detailed timeline carries result summaries, so the helper must not copy test
+    source or report content (failing-case names) into one.
+    """
+
+    (tmp_path / "check_bound.py").write_text(
+        "def test_secret_marker():\n    assert predict() < 20\n", encoding="utf-8"
+    )
+    report = b'{"cases":100,"failing":6,"worst":"105.61 mm","failing_cases":["case-secret-7"]}'
+    (tmp_path / "report.json").write_bytes(report)
+    request: dict[str, JsonValue] = {
+        "event_drafts": [
+            {
+                "schema": {"name": "result_recorded", "version": "1.0.0"},
+                "payload": {
+                    "result_id": str(res(1)),
+                    "action_id": str(act(1)),
+                    "outcome": "partial",
+                    "summary": "6/100 failing.",
+                    "verification": {
+                        "criterion_quote": "Every prediction must be within 20 mm.",
+                        "data_source": "own_generated",
+                    },
+                },
+            }
+        ]
+    }
+    prepared_request = prepare_test_record(
+        request, test_file="check_bound.py", results_file="report.json", workspace=tmp_path
+    )
+    draft = cast(list[dict[str, Any]], prepared_request["event_drafts"])[0]
+    result = decode_payload(EventSchema("result_recorded", "1.1.0"), draft["payload"])
+    assert isinstance(result, ResultRecordedPayload)
+    frozen = _case()
+    row = frozen.projection.results[res(1)]
+    encoded = encode_payload(result)
+    projection = replace(
+        frozen.projection,
+        results={res(1): replace(row, payload=result, payload_digest=canonical_digest(encoded))},
+    )
+    history = FrozenHistoryEvent(
+        evt(4),
+        "result_recorded",
+        "1.1.0",
+        4,
+        "2026-10-21T00:00:00.000Z",
+        None,
+        None,
+        canonical_digest(encoded),
+        "available",
+        encoded,
+    )
+    case = _build(
+        ReviewSelectionPolicy.for_profile(profile),
+        frozen=replace(
+            frozen, projection=projection, history=(history,), history_availability="available"
+        ),
+    )
+    payload = semantic_case_to_prepared_payload(case, frozenset(i.item_id for i in case.items))
+    assert b"test_secret_marker" not in payload and b"case-secret-7" not in payload
+    detailed = profile is not ReviewContextProfile.STRUCTURAL
+    assert (b"Report digest: sha256:" in payload) is detailed
 
 
 def test_task_quote_and_manifest_stay_out_when_task_section_is_not_selected() -> None:

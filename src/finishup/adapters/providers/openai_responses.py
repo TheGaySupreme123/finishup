@@ -462,7 +462,6 @@ REVIEWER_ACCEPTANCE_INSTRUCTION: Final = (
     "held-out data, reference model, units and geometry, cycle length, output shape, stopping or "
     "minimum-token semantics). Name the strongest evidence gap and one cheap discriminating check; "
     "read available material first. Self-consistent tests do not establish their shared assumption. "
-    "Open review_summary with 'Discriminating check: <one concrete check>' only when one is useful. "
     "A gap alone is not proof of failure: scope support to what was measured; mark an unsettled "
     "requirement not_assessable."
 )

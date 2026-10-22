@@ -210,6 +210,23 @@ read records nothing. An empty list means no rule fired at that frontier — it 
 Permitted after a candidate read: "I saw an unresolved attempt and went back to it."
 Forbidden after a candidate read: "I checked and found nothing."
 
+## Declared test coverage is advisory
+
+Your agent can attach a small test manifest to a result: a criterion quoted word for word from the
+task, where the test data came from, how many cases ran and failed, the worst value, and whether it
+tuned on those cases. `finishup record-test` builds one from a test script and a small JSON results
+file the agent already produced. It reads the two files, records their digests, and never runs the
+test; the files' text stays in your workspace.
+
+`status` with `view=coverage`, `/coverage` in the terminal interface, and the receipt's
+"Verification coverage (agent-declared)" section show the same advisory view. It lists each stated
+criterion with its witnesses, and flags criteria with no test, failing cases, only own-generated
+or tuned-on cases, only task-public cases, evidence that predates a later edit, repeated runs on
+the same recorded work, and redundant tests. A sentence that is only partly quoted stays listed as
+a gap beside its witness. Sentences too long to quote are counted, not shown. The view is labelled
+agent-declared: it never marks a criterion covered, never blocks closure, and never strengthens the
+receipt's conclusion. Fewer, better tests beat more runs of the same check.
+
 ## Things that do not strengthen coverage
 
 - Installing a harness integration.

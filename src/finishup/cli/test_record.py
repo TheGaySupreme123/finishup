@@ -13,7 +13,6 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import Final, cast
 
-from finishup.adapters.task_input_read import clear_cut
 from finishup.domain.events import ResultVerification, VerificationDataSource
 from finishup.domain.repository_excerpt import credential_named_path
 from finishup.protocol.canonical import JsonValue, strict_json_parse
@@ -21,7 +20,6 @@ from finishup.protocol.errors import ProtocolValueError
 
 MAX_TEST_FILE_BYTES: Final = 65_536
 MAX_RESULTS_FILE_BYTES: Final = 4_096
-MAX_SOURCE_EXCERPT_BYTES: Final = 2_048
 MAX_SUMMARY_BYTES: Final = 8_192
 _DIRECTORY_FLAGS: Final = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
 _FILE_FLAGS: Final = os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC
@@ -218,15 +216,14 @@ def prepare_test_record(
         raise TestRecordError("test_record_request_invalid") from None
     if b"\x00" in script:
         raise TestRecordError("test_record_file_unsafe")
-    cut = clear_cut(script, min(len(script), MAX_SOURCE_EXCERPT_BYTES), "head")
-    excerpt = script[:cut].decode("utf-8", errors="ignore")
-    clipped = len(excerpt.encode("utf-8")) < len(script)
     source_digest = "sha256:" + hashlib.sha256(script).hexdigest()
+    # Bind the files by digest only. Their text (test source, failing-case names) stays in the
+    # workspace: a result summary travels in every detailed review timeline, including profiles
+    # that select no test excerpts, so copying repository content here would widen disclosure.
     record = (
         "Caller-asserted test files; execution and report origin are not observed.\n"
         f"Test source digest: {source_digest}; {len(script)} bytes.\n"
-        f"Test source{' (excerpt clipped)' if clipped else ''}:\n{excerpt}\n"
-        f"Report digest: {report_digest}.\nFull report JSON:\n{raw_report.decode('utf-8')}"
+        f"Report digest: {report_digest}; {len(raw_report)} bytes."
     )
     combined = f"{summary}\n\n{record}" if summary else record
     try:

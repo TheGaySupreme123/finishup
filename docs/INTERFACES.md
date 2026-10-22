@@ -12497,11 +12497,13 @@ new admission validation. A later amended task does not inherit an obsolete quot
 `publish_work`. `cli.test_record.prepare_test_record` reads existing files; it runs no command.
 The strict UTF-8 JSON report contains integer `cases`, integer `failing`, optional string `worst`,
 and optional `failing_cases` (up to 64 distinct nonblank examples). Report bytes are limited to
-4,096; script bytes to 65,536; the source excerpt to 2,048; the combined result summary to
-8,192. The workspace-relative files must be regular single-link files beneath a symlink-free
-workspace; traversal, credential-named paths, special files and changed reads are refused.
-The summary retains the complete report, bounded source, both digests and explicit caller-asserted
-provenance. The manifest binds report bytes, without asserting that the script produced them.
+4,096; script bytes to 65,536; the combined result summary to 8,192. The workspace-relative files
+must be regular single-link files beneath a symlink-free workspace; traversal, credential-named
+paths, special files and changed reads are refused. The summary gains only explicit
+caller-asserted provenance and both digests with byte counts: the files' text (test source,
+failing-case names) stays in the workspace, because a result summary travels in every detailed
+review timeline, Goal-aware included. The manifest binds report bytes, without asserting that the
+script produced them.
 MCP accepts the same complete result payload; registering a filename authorizes no service file
 read. Unknown writes recover through `status view=operation`; re-reading changed files is not a
 replay of the original publication.
@@ -12520,13 +12522,23 @@ pure, bounded advisory projection. Its candidate flags are `no_test`,
 It prefers a current independent witness without awarding volume, retains failures from unrelated
 checks, and exposes repeated unchanged work and registered checks on the same condition.
 Sentence matching only proposes stated criteria; it cannot establish test quality or completeness.
-Task sentences become candidates through a case- and inflection-tolerant condition-word list
-(`labels`, `returns`, `Outputs`, `written`); each obligation acceptance sentence is a candidate.
-A witness quote maps a candidate only when it equals that candidate or occurs, under the admission
-rule above, in exactly one candidate. A generic, cross-sentence or repeated quote stays its own
-row, and every candidate it does not identify remains `no_test`. Identical task and obligation
-text keeps the task source. Rows order failing first, then task-statement rows before obligation
-rows, then gaps before other rows; `omitted_criteria` counts every row past the 24-row bound.
+Task sentences become candidates through a case-tolerant condition-word list with present-tense
+and plural forms (`labels`, `returns`, `Outputs`); a past tense or participle alone (`written`,
+`requirements.txt`) proposes nothing, though a plural noun can still propose a descriptive
+sentence. Each obligation acceptance sentence is a candidate; one whose text equals a task
+sentence up to case, spacing and final punctuation is that task criterion and keeps the task
+source. A witness quote maps a candidate when it equals it, or occurs under the admission rule
+above in exactly one task sentence (it then also maps every obligation sentence that contains it),
+or, outside every task sentence, in exactly one obligation sentence. A mapped sentence is retired
+only when the text outside its quotes holds no further requirement word (a bare quantifier such as
+"For every input" qualifies the quote); otherwise it stays a `no_test` row beside the witness row,
+so a partial quote never hides the rest of a compound sentence. A generic, cross-sentence or
+repeated quote stays its own row, and every candidate it does not identify remains `no_test`.
+The projection applies the admission rule's whole-word occurrence to recorded quotes too, so an
+amended task (`0.1` to `0.15`) drops the obsolete witness. Rows order failing first, then
+task-statement rows before obligation rows, then gaps before other rows; `omitted_criteria` counts
+every row past the 24-row bound and every candidate sentence longer than a 240-character quote,
+which cannot be shown.
 `public_only` (where the cases came from) and `own_or_tuned_only` (no witness free of the agent's
 own generation or tuning) are independent axes: public cases the agent tuned on carry both. Human
 renderings say "only task-public cases" and "only own-generated or tuned-on cases".
@@ -12564,10 +12576,11 @@ the reserved diff and decisive-verification excerpt budgets retain their origina
 The owning outbound-case generator includes the new section and optional member.
 Manifest-bearing result excerpts remain evidence excerpts and omit the task quote.
 When AI review already runs, the optional quality question challenges metric mismatch, circular
-data, tuning, hard-coded expectations and redundancy. It is asked only when a readable result
-carries a manifest; the always-sent reviewer instruction keeps just the summary rule: a useful
-single suggested check begins the review summary as `Discriminating check: ...`; it never requires
-another unchanged run.
+data, tuning, hard-coded expectations and redundancy, and asks that a useful single suggested
+check begin the review summary as `Discriminating check: ...`; it never requires another unchanged
+run. It is asked only when the packet carries the coverage index with at least one admitted
+witness, the only way the reviewer sees a manifest (`semantic_case.review_question_set(...,
+test_manifests=...)`). The always-sent reviewer instructions carry none of these rules.
 
 ## Lossless result delivery (issue #1139)
 

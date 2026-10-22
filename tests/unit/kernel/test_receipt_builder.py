@@ -448,6 +448,15 @@ def test_agent_declared_coverage_receipt_preserves_failure_without_closure_effec
         assert quote in str(wire) and "105.61 mm" in str(wire)
     else:
         assert quote not in str(wire) and "105.61 mm" not in str(wire)
+        # #1170 review: a withheld task quote is disclosed in its row, never tallied as
+        # obligation text; this receipt's only coverage row quotes the task statement.
+        assert [row.source for row in document.verification_coverage.criteria] == ["task_statement"]
+        # The one obligation-text redaction is the withheld obligation itself.
+        assert [
+            (redaction.reason, redaction.count)
+            for redaction in document.redactions
+            if redaction.category is ReceiptRedactionCategory.OBLIGATION_TEXT
+        ] == [(ReceiptRedactionReason.POLICY_REDACTED, 1)]
 
 
 def test_frontier_mismatch_is_rejected() -> None:

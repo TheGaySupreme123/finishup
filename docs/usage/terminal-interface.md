@@ -120,6 +120,7 @@ Type `/` to open the filtered command list.
 | `/status` | show setup, readiness, and current work |
 | `/work` | open a task by title to view claims, evidence, and findings |
 | `/findings` | show the open task's findings as a to-do list, each with its state |
+| `/coverage` | show advisory, agent-declared test witnesses and candidate gaps |
 | `/check` | run a verification check |
 | `/progress` | show the latest check's review phase and elapsed time |
 | `/receipt` | view or export an honest receipt |

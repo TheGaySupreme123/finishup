@@ -26,6 +26,7 @@ from finishup.domain.verification_coverage import (
     VerificationCriterion,
     VerificationWitness,
     criterion_quote_in_text,
+    criterion_quote_pattern,
     verification_coverage_to_json,
 )
 from finishup.kernel.observed_failures import (
@@ -46,15 +47,24 @@ from finishup.kernel.task_facts import (
 
 __all__ = ["build_verification_coverage", "verification_coverage_to_json"]
 
-# Case- and inflection-tolerant: "Outputs", "returns", "labels" and "written" state conditions
-# as plainly as their base forms (#1170 pilot wording).
-_CONDITION: Final = re.compile(
-    r"\b(?:must|shall|every|each|at least|at most|no more than|no less than|"
-    r"requir(?:e|es|ed|ing|ement|ements)|outputs?|output(?:ted|ting)|"
-    r"returns?|return(?:ed|ing)|produc(?:e|es|ed|ing)|deliver(?:s|ed|ing)?|"
-    r"writ(?:e|es|ing|ten)|wrote|sav(?:e|es|ed|ing)|label(?:s|ed|led|ing|ling)?)\b|[≤≥]",
-    re.IGNORECASE,
+# Case-tolerant, with present-tense and plural forms: "Outputs", "returns" and "labels" state
+# conditions as plainly as their base forms (#1170 pilot wording). Past tenses and participles
+# ("written", "produced", "required", "requirements.txt") usually describe what already
+# happened, so alone they propose no criterion; a stated requirement still matches through its
+# modal or quantifier. A plural noun ("The labels were produced by annotators.") can still
+# propose a descriptive sentence: a visible, bounded false gap rather than a hidden criterion.
+_REQUIREMENT_WORDS: Final = (
+    r"must|shall|requires?|requiring|outputs?|outputting|returns?|returning|produc(?:e|es|ing)|"
+    r"deliver(?:s|ing)?|writ(?:e|es|ing)|sav(?:e|es|ing)|labels?|label(?:l)?ing"
 )
+_QUANTIFIER_WORDS: Final = r"every|each|at least|at most|no more than|no less than"
+_CONDITION: Final = re.compile(
+    rf"\b(?:{_REQUIREMENT_WORDS}|{_QUANTIFIER_WORDS})\b|[≤≥]", re.IGNORECASE
+)
+# What a quote leaves of its sentence states another criterion only through a requirement word;
+# a bare quantifier ("For every input, ...") qualifies the quoted clause.
+_REQUIREMENT: Final = re.compile(rf"\b(?:{_REQUIREMENT_WORDS})\b", re.IGNORECASE)
+MAX_CRITERION_QUOTE_CHARACTERS: Final = 240
 _SENTENCE: Final = re.compile(r"(?<=[.!?])\s+|[\n;]+")
 _SOURCE_RANK: Final = {
     "independent": 4,
@@ -98,16 +108,37 @@ def _material_edits(projection: ProjectionState, unchanged: frozenset[ActionId])
     return tuple(sorted(edits))
 
 
-def _candidate_quotes(text: str, *, explicit: bool) -> tuple[str, ...]:
+def _candidate_sentences(text: str, *, explicit: bool) -> tuple[str, ...]:
     # Preserve verbatim substrings. A long sentence is not silently clipped into a different
-    # condition; only its bounded manifest quote can represent it.
+    # condition; it is counted as omitted, and only its bounded manifest quote can represent it.
     return tuple(
         quote
         for sentence in _SENTENCE.split(text)
-        if (quote := sentence.strip())
-        and len(quote) <= 240
-        and (explicit or _CONDITION.search(quote))
+        if (quote := sentence.strip()) and (explicit or _CONDITION.search(quote))
     )
+
+
+def _criterion_key(text: str) -> str:
+    """One criterion however it is cased, spaced or ended (a restated task sentence)."""
+
+    return " ".join(text.casefold().split()).rstrip(".!?;:")
+
+
+def _occurs(quote: str, text: str) -> bool:
+    """The admission rule's whole-word occurrence; a generic legacy quote keeps plain matching
+    so its own row, and any failures it declares, stay visible (it can map no criterion)."""
+
+    pattern = criterion_quote_pattern(quote)
+    return quote in text if pattern is None else pattern.search(text) is not None
+
+
+def _outside_quotes(candidate: str, quotes: Collection[str]) -> str:
+    remainder = candidate
+    for quote in sorted(quotes, key=len, reverse=True):
+        pattern = criterion_quote_pattern(quote)
+        if pattern is not None:
+            remainder = pattern.sub(" ", remainder)
+    return remainder
 
 
 def _strength(run: _Run) -> tuple[int, int, int, int]:
@@ -186,9 +217,9 @@ def build_verification_coverage(
         # obligation may remain a candidate, but cannot preserve a removed task's witness.
         # Legacy projections without task text can still use readable obligation criteria.
         valid_quote = (
-            manifest.criterion_quote in task_statement
+            _occurs(manifest.criterion_quote, task_statement)
             if task_statement is not None
-            else any(manifest.criterion_quote in text for text, _ in sources)
+            else any(_occurs(manifest.criterion_quote, text) for text, _ in sources)
         )
         if not valid_quote:
             continue
@@ -234,20 +265,48 @@ def build_verification_coverage(
     # The task statement is listed first, so identical text keeps the task source; the review
     # packet's span resolves the same way.
     criteria: dict[str, CriterionSource] = {
-        quote: next(source for text, source in sources if quote in text) for quote in runs_by_quote
+        quote: next(source for text, source in sources if _occurs(quote, text))
+        for quote in runs_by_quote
     }
+    # One candidate per criterion: a restated, recased or re-ended obligation sentence is the
+    # task sentence it repeats, and keeps the task source (the task statement is listed first).
     candidates: dict[str, CriterionSource] = {}
+    seen_keys: set[str] = set()
+    too_long: set[str] = set()
     for text, source in sources:
-        for quote in _candidate_quotes(text, explicit=source == "obligation"):
-            candidates.setdefault(quote, source)
-    covered: set[str] = set()
+        for sentence in _candidate_sentences(text, explicit=source == "obligation"):
+            key = _criterion_key(sentence)
+            if len(sentence) > MAX_CRITERION_QUOTE_CHARACTERS:
+                too_long.add(key)
+            elif key not in seen_keys:
+                seen_keys.add(key)
+                candidates[sentence] = source
+    mapped: dict[str, list[str]] = {}
     for known in runs_by_quote:
-        # A cited clause maps the one candidate it identifies, so a longer sentence around the
-        # exact quote is not a false second gap. A generic or cross-sentence quote, or one that
-        # occurs in several candidates, identifies none and cannot erase another criterion.
+        # A cited clause maps the one task candidate it identifies, and any obligation sentence
+        # that restates it, so a longer sentence around the exact quote is not a false second
+        # gap. A generic or cross-sentence quote, or one in several task candidates, identifies
+        # none and cannot erase another criterion.
         equal = [quote for quote in candidates if quote.split() == known.split()]
         within = [quote for quote in candidates if criterion_quote_in_text(known, quote)]
-        covered.update(equal or (within if len(within) == 1 else ()))
+        in_task = [quote for quote in within if candidates[quote] == "task_statement"]
+        targets = equal or (
+            [*in_task, *(quote for quote in within if candidates[quote] == "obligation")]
+            if len(in_task) == 1
+            else within
+            if not in_task and len(within) == 1
+            else []
+        )
+        for quote in targets:
+            mapped.setdefault(quote, []).append(known)
+    # A quote retires its sentence only when nothing outside the quoted text states another
+    # condition: in "The labels must be saved and the ratio must be at most 1.06." a ratio
+    # witness leaves the sentence visible as a gap beside the witness row.
+    covered = {
+        quote
+        for quote, quotes in mapped.items()
+        if not _REQUIREMENT.search(_outside_quotes(quote, quotes))
+    }
     for quote, source in candidates.items():
         if quote not in covered:
             criteria.setdefault(quote, source)
@@ -344,6 +403,8 @@ def build_verification_coverage(
             row.criterion_quote.encode(),
         )
     )
+    # Sentences longer than a manifest quote cannot be shown; they are counted, never dropped.
     return VerificationCoverage(
-        tuple(rows[:MAX_COVERAGE_CRITERIA]), max(0, len(rows) - MAX_COVERAGE_CRITERIA)
+        tuple(rows[:MAX_COVERAGE_CRITERIA]),
+        max(0, len(rows) - MAX_COVERAGE_CRITERIA) + len(too_long),
     )
