@@ -462,11 +462,7 @@ REVIEWER_ACCEPTANCE_INSTRUCTION: Final = (
     "held-out data, reference model, units and geometry, cycle length, output shape, stopping or "
     "minimum-token semantics). Name the strongest evidence gap and one cheap discriminating check; "
     "read available material first. Self-consistent tests do not establish their shared assumption. "
-    "If such a check would settle the gap, begin the first line of review_summary with "
-    "'Discriminating check: <one concrete check>'. Do not invent a test when no useful "
-    "discriminator exists, or ask for unchanged reruns or redundant tests. Judge whether each "
-    "witness measures its quoted criterion on independent data; name any circular witness or "
-    "expected value copied from the answer; an agent-declared manifest is not independent proof. "
+    "Open review_summary with 'Discriminating check: <one concrete check>' only when one is useful. "
     "A gap alone is not proof of failure: scope support to what was measured; mark an unsettled "
     "requirement not_assessable."
 )

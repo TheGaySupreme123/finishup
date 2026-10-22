@@ -393,12 +393,16 @@ REVIEW_PHASE_QUESTIONS: Final[Mapping[SemanticBudgetProfile, str]] = MappingProx
         ),
     }
 )
+# Asked only when a readable result carries a test manifest, so reviews without one never pay
+# for these rules in every exchange (the #1173 minimal-policy read budget, ADR-006).
 _TEST_QUALITY_QUESTION: Final = (
     "When test manifests are present, judge whether each check measures its quoted criterion, "
-    "uses independent data and expectations, and ran on the shipped state. Name circular, tuned, "
-    "hard-coded or redundant checks; test volume is not evidence quality. If a useful check "
-    "remains, begin the summary with 'Discriminating check: ' and one concrete check. Do not "
-    "request another unchanged run or more tests merely to fill a gap."
+    "uses independent data and expectations, and ran on the shipped state; an agent-declared "
+    "manifest is not independent proof. Name circular, tuned, hard-coded or redundant checks and "
+    "any expected value copied from the answer; test volume is not evidence quality. If a useful "
+    "check remains, begin the summary with 'Discriminating check: ' and one concrete check; do "
+    "not invent a test when no useful discriminator exists. Do not request another unchanged run "
+    "or more tests merely to fill a gap."
 )
 # Asked only when the frozen case records a verification with later changes (#1143): AI review
 # never blocks on staleness; it weighs the verification against those changes and asks.

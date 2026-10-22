@@ -12565,8 +12565,10 @@ the reserved diff and decisive-verification excerpt budgets retain their origina
 The owning outbound-case generator includes the new section and optional member.
 Manifest-bearing result excerpts remain evidence excerpts and omit the task quote.
 When AI review already runs, the optional quality question challenges metric mismatch, circular
-data, tuning, hard-coded expectations and redundancy. A useful single suggested check begins the
-review summary as `Discriminating check: ...`; it never requires another unchanged run.
+data, tuning, hard-coded expectations and redundancy. It is asked only when a readable result
+carries a manifest; the always-sent reviewer instruction keeps just the summary rule: a useful
+single suggested check begins the review summary as `Discriminating check: ...`; it never requires
+another unchanged run.
 
 ## Lossless result delivery (issue #1139)
 

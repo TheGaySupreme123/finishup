@@ -3237,6 +3237,10 @@ circular. When a useful independent discriminator exists, the first summary line
 `Discriminating check: <one concrete check>`, so the practical suggestion survives a bounded
 preview. When none exists, the reviewer does not invent a pointless test. A missing witness alone
 is not a demonstrated defect, and the instruction does not require extra tests or review rounds.
+The reviewer instruction sent in every exchange carries only the one-sentence summary rule (95
+bytes, 7,639 to 7,734); the manifest rules ride the test-quality question, which a packet carries
+only when a readable result has a manifest. So reviews without manifests keep the #1173
+smallest-channel read counts above.
 
 Codex, Claude Code and Cursor share these publication and advisory semantics through MCP and CLI.
 The host runbooks record the same support decision and distinguish shared contract coverage from

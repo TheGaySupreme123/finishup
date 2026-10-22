@@ -46,7 +46,7 @@ from unit.application.test_semantic_case_check_change import (
 )
 
 
-def _case() -> DeterministicCase:
+def _case(*, manifest: bool = True) -> DeterministicCase:
     criterion = "Every prediction must be within 20 mm."
     case = make_case(
         plans={1: plan_record(PlanPublishedPayload(1, "Deliver predictions", (obl(1),)), 1)},
@@ -75,7 +75,9 @@ def _case() -> DeterministicCase:
                     summary="6/100 failing; worst 105.61 mm; failure examples retained.",
                     verification=ResultVerification(
                         criterion, VerificationDataSource.OWN_GENERATED, 100, 6, worst="105.61 mm"
-                    ),
+                    )
+                    if manifest
+                    else None,
                 ),
                 4,
             )
@@ -125,6 +127,20 @@ def test_packet_leads_with_agent_declared_failures_and_keeps_the_script_result()
         case, frozenset(item.item_id for item in case.items)
     )
     assert prepared.find(b'"verification_coverage"') < prepared.find(b'"task_statement"')
+
+
+def test_only_a_manifest_bearing_review_asks_the_test_quality_question() -> None:
+    question = _build().question_set[-1]
+    assert question.startswith("When test manifests are present")
+    for rule in (
+        "an agent-declared manifest is not independent proof",
+        "any expected value copied from the answer",
+        "do not invent a test when no useful discriminator exists",
+        "Do not request another unchanged run",
+    ):
+        assert rule in question
+    plain = _build(frozen=_case(manifest=False)).question_set
+    assert not any("test manifests" in text for text in plain)
 
 
 def test_task_quote_and_manifest_stay_out_when_task_section_is_not_selected() -> None:
