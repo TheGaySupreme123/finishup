@@ -7,6 +7,8 @@ test_reviewer_steps_upgrade_preserves_reservations_and_admits_bounded_correction
 
 from __future__ import annotations
 
+import re
+
 import apsw
 import pytest
 
@@ -67,3 +69,25 @@ def test_v18_step_rows_still_enforce_the_review_limits(
     db.execute(_INSERT, (_JOB, "turn", 7, "k", "c", 0))
     with pytest.raises(apsw.ConstraintError):
         db.execute(_INSERT, (_JOB, kind, ordinal, "k", capture, size))
+
+
+def test_0018_drops_the_step_table_only_after_copying_every_row() -> None:
+    # The one destructive statement is a reviewed rebuild: an unfiltered copy, then the drop,
+    # then the rename (tests/packaging's DDL gate applies the same rule to the shipped file).
+    migration = BUNDLE_MIGRATIONS[17]
+    assert migration.version == "0018"
+    ddl = re.sub(r"--[^\n]*", "", migration.ddl.decode()).upper()
+    copy = "INSERT INTO SEMANTIC_REVIEW_STEPS_V18 SELECT * FROM SEMANTIC_REVIEW_STEPS;"
+    drop = "DROP TABLE SEMANTIC_REVIEW_STEPS;"
+    rename = "ALTER TABLE SEMANTIC_REVIEW_STEPS_V18 RENAME TO SEMANTIC_REVIEW_STEPS;"
+    assert ddl.count(copy) == ddl.count(drop) == ddl.count(rename) == 1
+    assert ddl.index(copy) < ddl.index(drop) < ddl.index(rename)
+    rest = ddl.replace(drop, "", 1)
+    for forbidden in (
+        r"DROP\s+TABLE",
+        r"DELETE\s+FROM",
+        r"\bUPDATE\b",
+        r"\bTRUNCATE\b",
+        r"\bWHERE\b",
+    ):
+        assert re.search(forbidden, rest) is None, forbidden

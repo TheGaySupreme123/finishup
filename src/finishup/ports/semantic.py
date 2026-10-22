@@ -2129,8 +2129,9 @@ class SemanticResultUnavailable:
 # canonical linear history: a JSON array of ``{"content", "role"}`` messages, a system message
 # first, then user and assistant turns ending with user. Two user turns may follow each other (the
 # loop's format-repair notice never echoes the malformed reply); two assistant turns may not. The
-# case media type names the phase; both phases use the same provider-wire reply schema. The
-# controller enforces the read limit and appends the final-phase notice.
+# case media type names the reply schema the provider must enforce: every branch, or the final
+# judgment only. A review keeps the one its first turn chose (#1173): after its reads end, a review
+# that started with reads keeps every branch and the controller enforces the limit.
 type ReviewerMessage = tuple[Literal["system", "user", "assistant"], str]
 REVIEWER_EXCHANGE_MEDIA_TYPES: Final = {
     "turn": "application/vnd.finishup.reviewer-turn+json",

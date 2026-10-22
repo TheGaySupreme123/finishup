@@ -272,8 +272,11 @@ class ReviewerBroker:
             usage["reason"] = "deadline"
             raise ReadDeadline("reviewer_read_deadline")
         room = min(MAX_RESULT_BYTES, args.max_bytes, self.total - self.used)
-        encoded = await self._result(tool_ref, ordinal, selected, room, left, action)
-        if expired():  # admission of a correction/result also shares the local read stop
+        refusal = not isinstance(selected, _WithheldRead) and len(selected) == 2
+        encoded = await self._result(tool_ref, ordinal, selected, room, left, action, expired)
+        # A result's admission shares the local read stop. A refusal's correction that crosses it
+        # is dropped instead (the bare refusal is sent), so a hint never ends the review.
+        if expired() and not refusal:
             usage["reason"] = "deadline"
             raise ReadDeadline("reviewer_read_deadline")
         from finishup.protocol.canonical import strict_json_parse
@@ -292,6 +295,7 @@ class ReviewerBroker:
         room: int,
         exchange_left: int | None = None,
         action: ReviewerActionModel | None = None,
+        expired: Callable[[], bool] = lambda: False,
     ) -> bytes:
         """Fit the selection into ``room``, admit exactly what fits, and record what was sent.
 
@@ -370,6 +374,10 @@ class ReviewerBroker:
                 ):
                     correction = {}
                     encoded = envelope(status, reason)
+            if correction and expired():
+                # Admitted after the local read stop: send the bare refusal, never a late hint.
+                correction, elements = {}, ()
+                encoded = envelope(status, reason)
             self.history_roots.update(
                 root for _category, _data, root in elements if root is not None
             )

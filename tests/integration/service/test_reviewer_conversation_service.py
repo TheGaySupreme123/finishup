@@ -714,23 +714,34 @@ async def test_an_approved_first_exchange_resumes_once_and_concludes(
         assert len(review.payloads) == 1
 
 
-async def test_an_approved_first_exchange_that_asks_for_a_read_ends_without_another_approval(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+@pytest.mark.parametrize("reads_anyway", [False, True])
+async def test_an_ask_every_time_exchange_offers_no_read_on_the_wire(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, reads_anyway: bool
 ) -> None:
-    """#1173: the wire schema offers reads even when the review offers none, but ask-every-time
-    must not turn a read into a repair: that would be a second exchange needing its own
-    approval, which nothing resumes. The read ends the review on the one approved exchange."""
+    """#1173: a review that offers no read sends the read-free reply schema on the wire, with no
+    final-phase notice, so a schema-enforcing route cannot end the one approved exchange on a
+    read. A route that returns one anyway ends ``read_limit`` there: a repair would be a second
+    exchange needing its own approval, which nothing resumes."""
 
     runs = _capture_evaluations(monkeypatch)
-    replies = (_read_file("calc.py"), _FINAL_REPLY)
+    replies = (_read_file("calc.py"), _FINAL_REPLY) if reads_anyway else (_FINAL_REPLY,)
     async with _reviewing(tmp_path, monkeypatch, replies, policy=_ASK) as review:
         proposal = await _owner_decides(review, approved=True)
         resumed = await _reenter(runs)
-        assert resumed.status is SemanticStatus.INVALID, (resumed.status, resumed.reason)
         assert review.payloads == [proposal.prepared_bytes]  # nothing sent but the approved bytes
+        ((media, history),) = review.exchanges
+        exchange = reviewer_exchange(media, proposal.prepared_bytes, REVIEWER_REPLY_SCHEMAS)
+        assert exchange is not None and exchange.schema == REVIEWER_REPLY_SCHEMAS.final
+        reply = cast(dict[str, dict[str, Any]], exchange.schema)["properties"]["reply"]
+        assert json.dumps(reply) == '{"anyOf": [{"$ref": "#/$defs/FinalReply"}]}'
+        assert all(text != FINAL_PHASE for _role, text in history)
         assert resumed.reviewer is not None
         assert (resumed.reviewer.exchanges, resumed.reviewer.reads) == (1, ())
-        assert resumed.reviewer.ended == "read_limit"
+        if reads_anyway:
+            assert resumed.status is SemanticStatus.INVALID
+            assert resumed.reviewer.ended == "read_limit"
+        else:
+            assert resumed.status is SemanticStatus.SUCCEEDED, (resumed.status, resumed.reason)
 
 
 async def _owner_decides_on(review: _Review, proposal: Any, *, approved: bool) -> None:

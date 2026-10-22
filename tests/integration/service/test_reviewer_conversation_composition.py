@@ -71,6 +71,11 @@ _FINAL: dict[str, JsonValue] = {
 }
 
 
+# The full five-attempt path needs channel room for its whole history and instruction; tests
+# of it pass this policy. The fixture default stays the minimal policy (4,096 tokens).
+_ROOMY = with_llm(minimal_external_policy(), max_tokens=16_384)
+
+
 def _read_file(path: str) -> dict[str, JsonValue]:
     args: dict[str, JsonValue] = {
         "root_id": "w1",
@@ -209,9 +214,7 @@ async def _run(
     command = append_command()
     adapter = sqlite_adapter(command)
     frozen, runtime = await non_dispatch._durable_semantic_case(adapter)  # pyright: ignore[reportPrivateUsage]
-    # Exercise the full five-attempt path with room for its history and instruction. Capacity
-    # tests pass their own tight policy; no runtime limit is widened by this scripted fixture.
-    policy = policy or with_llm(minimal_external_policy(), max_tokens=16_384)
+    policy = policy or minimal_external_policy()
     effective = EffectivePrivacyPolicy(policy, 1, policy.policy_digest)
     store = non_dispatch._PolicyStore(effective, repository_granted=True)  # pyright: ignore[reportPrivateUsage]
     gateway = _ScriptedGateway(*replies)
@@ -308,13 +311,14 @@ async def test_a_review_job_runs_reads_then_the_final_judgment(
 async def test_a_fourth_read_gets_the_final_phase_repair_before_any_read_limit(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    # #1173: both phases send the same wire schema (#1172), so a schema-valid fourth read is the
-    # final phase's format error: the one repair asks for the judgment and the review succeeds.
+    # #1173: a review that started with reads keeps that schema on every turn (#1172), so a
+    # schema-valid fourth read is the final phase's format error: the one repair asks for the
+    # judgment and the review succeeds.
     reads = [_read_file("calc.py")] * 4
-    result, gateway, runtime = await _run(tmp_path, monkeypatch, *reads, _FINAL)
+    result, gateway, runtime = await _run(tmp_path, monkeypatch, *reads, _FINAL, policy=_ROOMY)
     assert result.status is SemanticStatus.SUCCEEDED and result.judgment is not None
-    final = "application/vnd.finishup.reviewer-final+json"
-    assert [media == final for media, _ in gateway.exchanges] == [False] * 3 + [True] * 2
+    turn = "application/vnd.finishup.reviewer-turn+json"
+    assert [media for media, _ in gateway.exchanges] == [turn] * 5
     notice, repair = (history[-1][1] for _, history in gateway.exchanges[3:])
     assert notice.startswith("FinishUP: read allowance")
     assert repair.startswith("format_error: read_in_final_phase.") and "read action" not in repair
@@ -329,13 +333,35 @@ async def test_a_fourth_read_gets_the_final_phase_repair_before_any_read_limit(
 async def test_a_read_after_the_final_phase_repair_ends_the_review_incomplete(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    result, gateway, _runtime = await _run(tmp_path, monkeypatch, *([_read_file("calc.py")] * 5))
+    replies = [_read_file("calc.py")] * 5
+    result, gateway, _runtime = await _run(tmp_path, monkeypatch, *replies, policy=_ROOMY)
     assert result.status is SemanticStatus.INVALID and result.judgment is None
     assert len(gateway.exchanges) == 5
-    assert gateway.exchanges[-1][0] == "application/vnd.finishup.reviewer-final+json"
+    assert gateway.exchanges[-1][0] == "application/vnd.finishup.reviewer-turn+json"
     assert result.reviewer is not None and result.reviewer.ended == "read_limit"
     assert len(result.reviewer.reads) == 3
 
 
 def frozen_request() -> str:
     return cast(str, non_dispatch._REQUEST)  # pyright: ignore[reportPrivateUsage]
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    ("refused", "content_reads"),
+    [pytest.param(0, 2, id="three-reads"), pytest.param(1, 1, id="refusal-then-two-reads")],
+)
+async def test_the_smallest_channel_limits_leave_room_for_fewer_content_reads(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, refused: int, content_reads: int
+) -> None:
+    """#1173 trade-off (ADR-006): at the minimal policy's 4,096 tokens the longer instruction and
+    the final-phase notice room leave two content reads, not three; a refusal's bytes still
+    count. The review still concludes: the read it can no longer afford takes the repair."""
+
+    reads = [_read_file("calc.py")] * (3 - refused)
+    replies = [*([_read_file("/absolute/calc.py")] * refused), *reads]
+    result, gateway, _runtime = await _run(tmp_path, monkeypatch, *replies, _FINAL)
+    assert result.status is SemanticStatus.SUCCEEDED and result.reviewer is not None
+    assert result.reviewer.as_wire()["reads_used"] == str(content_reads)
+    assert len(result.reviewer.reads) == refused + content_reads
+    assert gateway.exchanges[-1][1][-1][1].startswith("format_error: read_in_final_phase.")

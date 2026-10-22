@@ -44,7 +44,12 @@ async def test_two_corrections_preserve_three_reads_and_export_only_selector_usa
         *([_read_file("calc.py")] * 3),
         _FINAL,
     ]
-    result, gateway, runtime = await c._run(tmp_path, monkeypatch, *replies)  # pyright: ignore[reportPrivateUsage]
+    result, gateway, runtime = await c._run(  # pyright: ignore[reportPrivateUsage]
+        tmp_path,
+        monkeypatch,
+        *replies,
+        policy=c._ROOMY,  # pyright: ignore[reportPrivateUsage]
+    )
     assert result.status is SemanticStatus.SUCCEEDED
     assert len(gateway.exchanges) == 7
     record = result.reviewer
@@ -109,6 +114,7 @@ async def test_incomplete_review_keeps_five_failed_attempts_for_metrics(
         tmp_path,
         monkeypatch,
         *([_read_file("/wrong")] * 7),
+        policy=c._ROOMY,  # pyright: ignore[reportPrivateUsage]
     )
     # The sixth read gets the final phase's one repair; the seventh ends the review.
     assert result.status is SemanticStatus.INVALID and len(gateway.exchanges) == 7

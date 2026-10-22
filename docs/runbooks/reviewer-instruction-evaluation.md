@@ -131,7 +131,10 @@ uv run pytest tests/unit/application/test_reviewer_loop.py \
 The loop permits three content reads, at most five attempts and seven completions including
 one format repair. Every attempt and response byte stays spent; retries share the original
 deadline. A read returned after the reads end executes nothing and takes that one repair, which
-asks for `final_judgment` only; a read after the repair ends `read_limit`. Refusal corrections are
+asks for `final_judgment` only, unless the repair was already used; then, or after the repair, it
+ends `read_limit`. A review whose first turn offers no read (ask-every-time, or a first turn inside
+the final reserve) keeps the read-free reply schema, so a schema-enforcing route cannot return a
+read there; one returned anyway ends `read_limit`. Refusal corrections are
 fixed text per cause and never repeat the refused path; the instruction's file example uses the
 placeholder `<relative-path>` and says a `path=.` listing that returns names spends a content
 read. Paths are relative to issued aliases. Packet reads use exact catalog `item_id`;

@@ -614,8 +614,10 @@ refusals still leave three content reads, and each further refusal uses up one o
 explain the allowed path or frozen-record selector where policy permits, without repeating the
 refused path. Their bytes still count. If the reviewer asks for another read after its reads are
 used up, nothing more is read: FinishUP asks it once for its judgment, unless it already had its
-one chance to correct a reply or you approve each exchange yourself; then, or if it asks again,
-the review ends without a judgment.
+one chance to correct a reply; then, or if it asks again, the review ends without a judgment. When
+you approve each exchange yourself, the reviewer is offered no reads at all. With the smallest
+channel limits the longer read guidance leaves room for two reads that return content rather than
+three.
 Each further turn of the conversation is sent with its own privacy
 check and receipt, and the whole conversation, packet and reads included, must fit your channel
 limits: with tight limits the reviewer gets fewer reads or none. If the packet cannot be made to

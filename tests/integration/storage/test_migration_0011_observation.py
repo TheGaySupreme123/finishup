@@ -182,7 +182,16 @@ def test_schema_ten_upgrade_preserves_rows_and_installs_capture_ticket_shape() -
     assert report.from_version == 10
     current = current_schema_version(BUNDLE_MIGRATIONS)
     assert report.to_version == current
-    assert report.applied_versions == ("0011", "0012", "0013", "0014", "0015", "0016", "0017")
+    assert report.applied_versions == (
+        "0011",
+        "0012",
+        "0013",
+        "0014",
+        "0015",
+        "0016",
+        "0017",
+        "0018",
+    )
     assert db.execute("PRAGMA user_version").fetchone() == (current,)
     assert verify_schema_identity(db).state == "current"
     assert db.execute(

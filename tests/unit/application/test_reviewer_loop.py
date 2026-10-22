@@ -35,7 +35,12 @@ from finishup.adapters.task_input_read import (
 from finishup.application.check import validate_semantic_judgment
 from finishup.application.egress import PrivacyCoordinator, reviewer_history_admissible
 from finishup.application.reviewer_broker import ReadElement, ReadRoot, ReviewerBroker
-from finishup.application.reviewer_loop import ReviewerLoop, ReviewerModelError, Turn
+from finishup.application.reviewer_loop import (
+    FINAL_PHASE,
+    ReviewerLoop,
+    ReviewerModelError,
+    Turn,
+)
 from finishup.application.reviewer_telemetry import read_usage_from_wire
 from finishup.domain.privacy import AuthorizationScope, AuthorizationScopeKind, PrivacyPolicy
 from finishup.ports.change_capture import SnapshotFile, TaskInputSnapshotSet
@@ -473,7 +478,7 @@ async def test_no_read_review_is_one_completion() -> None:
 
 
 @pytest.mark.anyio
-async def test_reads_append_observations_then_only_final_is_offered() -> None:
+async def test_reads_append_observations_then_the_final_phase_is_announced() -> None:
     steps = _Steps()
     loop, _broker, model, _ = _setup(_PACKET_READ, _LEDGER_READ, _LEDGER_READ, _FINAL, steps=steps)
     outcome = await loop.run()
@@ -484,7 +489,11 @@ async def test_reads_append_observations_then_only_final_is_offered() -> None:
     records = cast(list[dict[str, str]], _data(second)["records"])
     assert records[0]["ref"].startswith("claim-")
     assert third["calls_remaining"] == 0
-    assert model.calls[-1][1] == reviewer_reply_schema(reads_allowed=False, strict=True)
+    # One reply schema for the whole review (#1172): the final turn is announced, not narrowed.
+    assert {canonical_encode(schema) for _history, schema in model.calls} == {
+        canonical_encode(reviewer_reply_schema(reads_allowed=True, strict=True))
+    }
+    assert model.calls[-1][0][-1] == Turn("user", FINAL_PHASE)
     for sent in (first, second, third):
         assert sent["result_utf8_bytes"] == len(canonical_encode(sent)) <= 8192
         assert sent["status"] != "ok" or sent["truncated"] is False  # m1
@@ -1148,7 +1157,9 @@ async def test_retry_attempts_share_the_original_deadline_and_final_reserve(
 
 @pytest.mark.anyio
 async def test_a_correction_admitted_after_the_local_stop_is_not_sent() -> None:
-    loop, broker, model, _ = _setup(_text("w1", "/wrong"))
+    # #1173: a hint admitted past the local read stop is dropped, never sent late; the bare
+    # refusal is sent and the review goes on (it no longer ends the review ``deadline``).
+    loop, broker, model, _ = _setup(_text("w1", "/wrong"), _FINAL)
     now = [1.0]
     loop.clock = lambda: now[0]
 
@@ -1157,12 +1168,36 @@ async def test_a_correction_admitted_after_the_local_stop_is_not_sent() -> None:
 
     broker._admit = late  # pyright: ignore[reportPrivateUsage]
     outcome = await loop.run()
-    assert outcome.reason == "deadline" and len(model.calls) == 1
-    assert _observations(outcome.history) == []
-    assert broker.read_usage[0]["reason"] == "deadline"
+    assert outcome.status == "final" and len(model.calls) == 2
+    (refused,) = _observations(outcome.history)
+    assert (refused["status"], refused["reason"]) == ("denied", "forbidden_path")
+    assert "continuation" not in refused and "allowed_root_ids" not in refused
+    assert broker.read_usage[0]["reason"] == "forbidden_path" and broker.content_reads == 0
 
 
-def test_the_provider_wire_schema_is_identical_in_both_phases() -> None:
+@pytest.mark.anyio
+@pytest.mark.parametrize("why", ["ask_every_time", "first_turn_in_reserve"])
+async def test_a_review_that_never_offers_a_read_keeps_the_read_free_schema(why: str) -> None:
+    # #1173: only a review that started with reads keeps the full schema after its reads end.
+    # One that offers none (each exchange needs the owner's approval, or the first turn is
+    # already inside the final reserve) sends the read-free schema on every turn, as before,
+    # and gets no final-phase notice: a strict route cannot return a read at all.
     from finishup.adapters.providers.reviewer_reply import REVIEWER_REPLY_SCHEMAS
 
-    assert REVIEWER_REPLY_SCHEMAS.turn == REVIEWER_REPLY_SCHEMAS.final
+    assert REVIEWER_REPLY_SCHEMAS.final == reviewer_reply_schema(reads_allowed=False, strict=True)
+    final_only = cast(dict[str, dict[str, JsonValue]], REVIEWER_REPLY_SCHEMAS.final)
+    assert "read_file" not in json.dumps(final_only["properties"]["reply"])
+    steps = _Steps()
+    loop, broker, model, _ = _setup("not json", _FINAL, steps=steps)
+    if why == "ask_every_time":
+        broker._max_reads = broker._max_attempts = 0  # pyright: ignore[reportPrivateUsage]
+    else:
+        loop.reserve = 1_000.0  # the whole deadline is inside the final reserve
+    outcome = await loop.run()
+    assert outcome.status == "final" and len(model.calls) == 2  # the repair still applies
+    assert {canonical_encode(schema) for _history, schema in model.calls} == {
+        canonical_encode(REVIEWER_REPLY_SCHEMAS.final)
+    }
+    assert all(t.content != FINAL_PHASE for t in outcome.history)
+    assert model.calls[1][0][-1].content.startswith("format_error: envelope_invalid. No reads")
+    assert steps.rows[("turn", 1)][0] == b"final"
