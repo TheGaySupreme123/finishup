@@ -246,7 +246,7 @@ _REQUEST_MODEL_SPECS: tuple[tuple[str, str], ...] = (
     ("PublishWorkRequestModel", "operations/publish-work-request-1.2.0.schema.json"),
     ("CheckRequestModel", "operations/check-request-1.1.0.schema.json"),
     ("RespondRequestModel", "operations/respond-request-1.1.0.schema.json"),
-    ("StatusRequestModel", "operations/status-request-1.2.0.schema.json"),
+    ("StatusRequestModel", "operations/status-request-1.3.0.schema.json"),
     ("ReceiptRequestModel", "operations/receipt-request-1.0.0.schema.json"),
 )
 
@@ -3296,7 +3296,7 @@ def test_schema_catalog_reports_complete_registry() -> None:
     assert SCHEMA_MANIFEST_VERSION == "1.0.0"
     # #1118: reviewer-reply 1.0.0, check-result/-recorded 1.6.0; #1119: host-connection batch
     # report and ai-status 1.0.0
-    assert SCHEMA_MEMBER_COUNT == 238  # #1118: + privacy-policy 1.3.0
+    assert SCHEMA_MEMBER_COUNT == 242  # #1139: four lossless result-delivery schemas
     assert len(catalog.documents) == SCHEMA_MEMBER_COUNT
 
     paths = tuple(document.relative_path for document in catalog.documents)
@@ -3383,8 +3383,9 @@ def test_schema_catalog_record_shape_and_indexes_are_exact() -> None:
     # #1118: privacy-policy 1.3.0 (its 1.2.0 refs plus the 524,288 bound) and its control 2.9.0
     # admissions add 96.
     assert (
-        sum(_count_refs(document.json_schema) for document in catalog.documents) == 8_468
-    )  # #1140/#1144/#1149 +2 readiness/receipt references; #1119 +13: host-connection batch report,
+        sum(_count_refs(document.json_schema) for document in catalog.documents) == 9_170
+    )  # #1139 +678 result-delivery references, +24 delivery-page wire constraints;
+    # #1140/#1144/#1149 +2 readiness/receipt references; #1119 +13: host-connection batch report,
     # #1118 +225 (check-result 1.6.0 and check-recorded 1.6.0, which carry the reviewer record),
     # #1118 unit 2 +27 (reviewer-reply 1.0.0), #1084 +55 (publish server_filled; status results_filter, brief_success, server_filled),
     # W6 #1107 +6 (status check_outcome and its overall_next/missing item defs),
@@ -3419,7 +3420,8 @@ def test_schema_name_derivation_and_version_maps_are_exact() -> None:
         "2.9.0",
         "7.0.0",
         "1.4.0",
-        "1.6.0",
+        "1.5.0",
+        "1.7.0",
     }
     assert set(event_versions.values()) == {"1.0.0", "1.1.0", "1.2.0", "1.4.0", "1.6.0"}
     assert event_versions["action_recorded"] == "1.0.0"

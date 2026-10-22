@@ -132,7 +132,7 @@ from finishup.kernel.closure_class import (
     is_bookkeeping_finding,
     obligation_closures,
 )
-from finishup.kernel.closure_readiness import premise_disputed_finding_ids
+from finishup.kernel.closure_readiness import freshness_review_used, premise_disputed_finding_ids
 from finishup.kernel.command_attempts import command_attempts
 from finishup.kernel.completion_scope import (
     SCOPE_REPAIR,
@@ -1409,6 +1409,10 @@ def _gap_context(context: ReceiptBuildContext, historical: frozenset[str]) -> Ga
         ),
         earlier_frontier_bounds=bounds,
         historical=historical,
+        # #1143: the route the applicable check judged freshness on: its recorded route required
+        # review, or a review was used before it (``freshness_review_used``).
+        freshness_advisory=(check is not None and check.semantic_route_required is None)
+        or freshness_review_used(context.records),
     )
 
 

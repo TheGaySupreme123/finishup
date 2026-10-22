@@ -16,6 +16,7 @@ from finishup.domain.events import (
     decode_payload,
     obligation_schema_version,
 )
+from finishup.domain.result_delivery import collect_status_delivery
 from finishup.domain.values import freeze_json
 from finishup.protocol.canonical import JsonValue
 from finishup.protocol.ids import IdKind, new_id
@@ -151,6 +152,18 @@ async def prepare_closure(
         client_kind=client_kind,
         integration=integration,
     )
+
+    async def snapshot(request: StatusRequest) -> StatusResult:
+        try:
+            return await collect_status_delivery(status, request)
+        except ValueError as exc:
+            reason = (
+                "closure_inventory_limit"
+                if str(exc) == "result_delivery_limit"
+                else "closure_snapshot_unavailable"
+            )
+            raise ValueError(reason) from exc
+
     compact_request = StatusRequest.model_validate(
         {
             **base,
@@ -160,7 +173,7 @@ async def prepare_closure(
             "cursor": None,
         }
     )
-    compact = (await status(compact_request)).root
+    compact = (await snapshot(compact_request)).root
     if not isinstance(compact, StatusSuccessModel):
         raise ValueError("closure_status_unavailable")
     frontier = compact.subject_frontier.model_dump(mode="json")
@@ -182,7 +195,7 @@ async def prepare_closure(
                 query["filter"] = {"include_resolved": True}
             elif view == "evidence":
                 query["filter"] = {"include_unavailable": True}
-            wrapped = await status(StatusRequest.model_validate(query))
+            wrapped = await snapshot(StatusRequest.model_validate(query))
             result = wrapped.root
             if (
                 not isinstance(result, StatusSuccessModel)

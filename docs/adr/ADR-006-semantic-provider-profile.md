@@ -2860,11 +2860,12 @@ specified in [ADR-040's judgment amendment](ADR-040-reviewer-disagreement-and-ro
 
 ## Amendment — 2026-10-21: finding delivery and frozen review context (#1139, #1126, #1148)
 
-**Read the full finding before answering.** Treat `review_delivery` as a bounded advisory preview.
-When it reports truncation, follow its findings-status continuation.
-Read the action, alternative interpretation and uncertainty together before deciding.
-For example, a large result can retain the instruction while its alternative falls outside the
-host's head/tail window.
+**Read the full finding before answering.** The residual delivery fix supersedes #1152's
+bounded `review_delivery` preview with lossless `delivery_page` results (ADR-043's result-delivery
+amendment). Read action, alternative interpretation and uncertainty together before deciding.
+Follow action pages until `actionable_complete`, reconstruct explicit scalar fragments, and
+follow `inventory_read` for the complete open-finding inventory. Remaining result pages contain
+optional bulk provenance. A shortened lead is never a substitute for the complete finding.
 
 **Keep the question beside the work.** Reserve bounded prior dialogue before ordinary narrative
 and bulk excerpts.
@@ -2888,21 +2889,21 @@ A later check can freeze the requested content only if retention and disclosure 
 File-read absence keeps its existing reason.
 CLI, MCP, TUI and receipt review-read renderings carry the recorded reason.
 
-**Delivery contract.** Codex receives optional `review_delivery` before the full check-result
-fields in unreleased check-result 1.6.0, extended in place.
-The advisory also precedes the findings-status items in status-result 1.4.0.
-It uses only privacy-projected fields.
-A bounded review summary leads.
-Each of up to three challenges keeps its summary, requested action, alternative interpretation and
-uncertainty together within separate JSON-encoded byte budgets.
-The continuation marks the preview truncated and names `status view=findings`, `detail=full`,
-`limit=1` and the returned cursor.
-Full authorized fields remain unchanged.
-A `full_local` receipt carries the recorded review summary under the existing export policy.
-Evidence, snippets, manifests and provenance follow the advisory.
-The generic/Claude text channel uses the same lead ahead of evidence.
-Cursor retains its canonical full JSON copy.
-The bounded lead does not establish that a host delivered the full record.
+**Delivery contract.** Check-result 1.7.0, status-result 1.5.0 and receipt-result 1.4.0 add a
+`delivery_page` presentation after ordinary privacy projection, for an agent's oversized MCP check,
+receipt or opted-in (`delivery=paged`) status read only. Status-request 1.3.0 adds that opt-in and
+reads the signed `delivery_cursor`. The budget is Codex's 12,000-byte structured window, the
+tightest recorded host limit, for the larger channel a host reads plus a 64-byte header allowance,
+never both channels together (ADR-043). Whole action fields precede excerpts and
+provenance. An individually oversized scalar has
+explicit offsets, length and a digest for lossless reconstruction; no actionable preview is cut.
+`truncated`, `actionable_complete`, `complete`, `next_cursor` and `inventory_read` make deferred
+content and further inventory reads machine-readable. Read continuations reapply disclosure and
+read the recorded source, without dispatching review or writing a new check or receipt. CLI
+output, the native TUI and authenticated owner exports are never paged and keep their full local
+view, as do the bridge's own closure and recovery reads. Hooks carry bounded structural instructions to read status. Source retention,
+privacy and receipt inventory limits still apply. Neither emission nor a complete page proves
+native host delivery or consumer reconstruction.
 
 **Packing bounds.** The prior-finding section retains its existing 16-finding, 112-item and
 96 KiB bounds and category policy.
@@ -3040,11 +3041,11 @@ reused, and one closed miss label: `compaction`, `first_turn`, `none`,
 providers' minimum cacheable prefix. A count the provider does not report (Chat Completions may
 omit the cached count) is left out, never recorded as zero. A compaction is recorded, by its index
 and label alone, even when it comes before any usage report. A Codex turn whose previous turn
-reported no usage starts at the total before its own first reported request, so it records only
-its own requests; a turn that had a usage snapshot refused records no counts. Every exchange of a
-review names the review's first provider request id, so the records join the attempt row; the
-owner reads them with `finishup service diagnostics --request-id`, and an exporter that copies the
-diagnostics ring carries them.
+reported no usage starts at the total before its own first reported request, so it records its
+own requests (unless a repeated snapshot arrives first, #1192); a turn that had a usage snapshot
+refused records no counts. Every exchange of a review names the review's first provider request
+id, so the records join the attempt row; the owner reads them with `finishup service diagnostics
+--request-id`, and an exporter that copies the diagnostics ring carries them.
 
 The record holds integers, one closed token and that request id. It never holds content, a
 content digest or a provider identifier. Between a review's exchanges, the `ReviewerSession` keeps
@@ -3101,8 +3102,11 @@ digest are unchanged. An exchange history admits 17 messages (#1173).
 beside the longer of the two repair texts. The exchange that carries the notice, and a repair after
 it, therefore still fit the cap. Ceiling planning keeps an 8 KiB frame in the first exchange, but a
 first exchange it could not plan may sit inside the room the notices need. In that rare case the
-loop leaves the notice out and sends the read-free schema instead: a cache miss on that turn,
-never a refused review. An exchange that outgrows the cap is still refused whole, never trimmed.
+loop leaves the notice out, so the notice never pushes that exchange over the cap. Only a
+malformed first answer reaches that state, so the repair note already asks for the judgment and
+the turn is read-free because the repair is spent. A first exchange that leaves less room than the
+repair note itself still ends `case_capacity_exceeded`, as before. An exchange that outgrows the
+cap is still refused whole, never trimmed.
 The reviewer path still refuses Codex compaction (it would replace history FinishUP inspected and
 disclosed). The exchange budget keeps every exchange below Codex's auto-compact threshold with its
 estimation margin, and the #1172 telemetry labels a compaction if one ever occurs.
@@ -3112,12 +3116,15 @@ effort because one budget profile serves a check, and the tools because Codex re
 the APIs send none. The schema is constant too, except on the last exchange above. The telemetry's
 settings digest flags any change.
 
-**Effect.** A three-read review whose final turn needs no repair now reuses that turn's whole
-prefix: projected from the pilot, with linear turn growth, about 74% of its input cached instead of
-about 50%. A review that spends its repair in the final phase still misses its last exchange, as
-every final turn did before; the per-exchange records show how often. No turn, request or wait is
-added; the notice is a few dozen tokens. No wire schema, decoder, privacy rule or egress changes:
-every exchange is still admitted whole.
+**Effect.** A three-read review that spends no repair now reuses its final turn's whole prefix:
+projected from the pilot, with linear turn growth, about 74% of its input cached instead of about
+50%. A review that spends its repair sends the read-free schema on its final-phase turns, so the
+repair turn, or a final turn after an earlier repair, misses the cache. Before #1173 only a final
+turn forced by the end of reads was read-free; a judgment given while reads remained kept the full
+schema. A model that answers the final turn with its judgment adds no turn, request or wait. A
+late read there costs one extra exchange, its repair, uncached because its schema changes; the
+per-exchange records show how often. The notice is a few dozen tokens. No wire schema, decoder,
+privacy rule or egress changes: every exchange is still admitted whole.
 
 ## Amendment — 2026-10-21: packet order and cross-review reuse stay as they are (#1172 phase 2)
 

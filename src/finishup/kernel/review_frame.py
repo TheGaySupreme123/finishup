@@ -80,6 +80,7 @@ __all__ = [
 # observed, went stale after an edit, cannot be observed, or ran with an unknown outcome.
 PLANNED_VERIFICATION_DOUBT_GAPS: Final = frozenset(
     {
+        "verification_rerun_question",
         PLANNED_VERIFICATION_FAILED_GAP,
         PLANNED_VERIFICATION_NOT_OBSERVED_GAP,
         PLANNED_VERIFICATION_STALE_GAP,

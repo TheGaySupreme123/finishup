@@ -371,20 +371,27 @@ def _truncation_marker(omitted: int) -> str:
     return f" [receipt text truncated after withholding: {omitted} characters not shown]"
 
 
-def bounded_omitted_pointers(pointers: Sequence[str]) -> tuple[str, ...]:
+def bounded_omitted_pointers(
+    pointers: Sequence[str], *, limit: int = MAX_PROJECTION_CONTENT_LEAVES
+) -> tuple[str, ...]:
     """Sorted, unique omitted pointers within the wire bound; never drops an omission.
 
-    Past ``MAX_PROJECTION_CONTENT_LEAVES`` the parent with the most omitted children replaces
-    them (and anything else beneath it), until the list fits. A coalesced pointer still covers
-    every omission it replaced; the local disclosure audit keeps each individual decision.
+    Past ``limit`` (the 512-pointer wire bound unless a delivery page needs fewer) the parent
+    with the most omitted children replaces them (and anything else beneath it), until the list
+    fits. A coalesced pointer still covers every omission it replaced; the local disclosure audit
+    keeps each individual decision. Coalescing stops at top-level fields: the empty pointer is
+    not a valid wire pointer.
     """
 
     current = set(pointers)
-    while len(current) > MAX_PROJECTION_CONTENT_LEAVES:
+    while len(current) > limit:
         groups: dict[str, int] = {}
         for pointer in current:
             parent = pointer.rsplit("/", 1)[0]
-            groups[parent] = groups.get(parent, 0) + 1
+            if parent:
+                groups[parent] = groups.get(parent, 0) + 1
+        if not groups:
+            break
         parent = min(groups.items(), key=lambda row: (-row[1], row[0].encode()))[0]
         prefix = parent + "/"
         covered = any(parent.startswith(other + "/") for other in current)

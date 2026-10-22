@@ -26,7 +26,7 @@ import finishup.cli.privacy_setup as privacy_setup_module
 import finishup.service.ready_composition as ready_composition_module
 from builders.privacy_policies import minimal_external_policy
 from finishup.adapters.privacy.local_enforcer import estimated_token_count
-from finishup.application.reviewer_loop import FINAL_PHASE
+from finishup.application.reviewer_loop import FINAL_FORMAT_ERROR, FINAL_PHASE
 from finishup.application.reviewer_run import reviewer_first_exchange
 from finishup.application.semantic_case import (
     check_time_change_bytes_carried,
@@ -51,6 +51,7 @@ from finishup.ports.semantic import (
     SemanticResultReply,
     encode_reviewer_exchange,
     reviewer_exchange_tokens,
+    reviewer_message_bytes,
 )
 from finishup.protocol.canonical import JsonValue, canonical_digest, canonical_encode
 from finishup.protocol.models import SemanticReason, SemanticStatus
@@ -521,6 +522,55 @@ async def test_the_final_phase_notice_fits_beside_a_read_that_filled_its_room(
     assert len(_encoded(exchanges[-1])) > UNSIZED_EXCHANGE_BYTES - 1024  # a real boundary
     turn, final = (f"application/vnd.finishup.reviewer-{m}+json" for m in ("turn", "final"))
     assert [media for media, _history in gateway.exchanges] == [turn] * 4 + [final]
+    # Each exchange is the previous one's bytes plus appended items, as admitted and sent (#1172).
+    sent = [_encoded(history) for history in exchanges]
+    for before, after in zip(sent, sent[1:], strict=False):
+        assert after.startswith(before[:-1] + b",")
+
+
+@pytest.mark.anyio
+async def test_a_notice_without_room_is_left_out_and_the_review_concludes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """#1172: a first exchange that ceiling planning could not keep its frame under leaves room
+    for the repair note but not for the final-phase notice beside it. After a malformed first
+    answer the loop leaves the notice out, so the repair exchange fits the cap and the review
+    concludes; with the notice it would outgrow the cap and end ``case_capacity_exceeded``."""
+
+    import finishup.service.semantic_ceiling as semantic_ceiling_module
+
+    monkeypatch.setattr(semantic_ceiling_module, "REVIEWER_FRAME_BYTES", 0)  # no frame kept
+    _composed(monkeypatch, diff=_code_diff(8, 203), outputs=0)
+    (tmp_path / "probe").mkdir(mode=0o700)
+    _probe, measured, _runtime = await _run(
+        tmp_path / "probe", monkeypatch, _FINAL, policy=_expanded_policy()
+    )
+    first = len(_encoded(measured.exchanges[0][1]))
+    repair = FINAL_FORMAT_ERROR.format(code="action_invalid")
+    notice = reviewer_message_bytes("user", FINAL_PHASE)
+    cap = first + reviewer_message_bytes("user", repair) + notice - 1
+    assert cap < UNSIZED_EXCHANGE_BYTES  # the owner's ceiling, not the route bound, binds
+    channels = tuple(
+        replace(channel, max_bytes=cap, max_tokens=estimated_token_count(cap))
+        if channel.channel is EgressChannel.LLM_INFERENCE
+        else channel
+        for channel in _expanded_policy().channel_policies
+    )
+    (tmp_path / "review").mkdir(mode=0o700)
+    result, gateway, _runtime = await _run(
+        tmp_path / "review",
+        monkeypatch,
+        {"reply": {}},  # the decoder refuses it: the one repair
+        _FINAL,
+        policy=replace(_expanded_policy(), channel_policies=channels),
+    )
+    assert result.status is SemanticStatus.SUCCEEDED, (result.status, result.reason)
+    exchanges = [history for _media, history in gateway.exchanges]
+    assert len(_encoded(exchanges[0])) == first and len(exchanges) == 2
+    assert exchanges[1][-1] == ("user", repair) and ("user", FINAL_PHASE) not in exchanges[1]
+    assert len(_encoded(exchanges[1])) <= cap < len(_encoded(exchanges[1])) + notice
+    turn, final = (f"application/vnd.finishup.reviewer-{m}+json" for m in ("turn", "final"))
+    assert [media for media, _history in gateway.exchanges] == [turn, final]
 
 
 # #1118 token budget: the Codex subscription route running the pinned reviewer model is sized to
