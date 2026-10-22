@@ -115,6 +115,33 @@ def _common_payload_hints() -> dict[str, JsonValue]:
         properties = cast(Mapping[str, JsonValue], document["properties"])
         for field in fields:
             hints[field] = shape(cast(Mapping[str, JsonValue], properties[field]))
+    # The manifest is optional; expose its spelling even in compact host schemas. Full event
+    # schemas and server validation own its bounds and relational rules.
+    hints["verification"] = {
+        "type": "object",
+        "properties": {
+            "criterion_quote": {"type": "string"},
+            "data_source": {
+                "type": "string",
+                "enum": [
+                    "task_public",
+                    "own_generated",
+                    "independent",
+                    "held_out",
+                    "stated_environment",
+                    "unknown",
+                ],
+            },
+            "cases": {"type": "integer"},
+            "failing": {"type": "integer"},
+            "worst": {"type": "string"},
+            "tuned_on_these_cases": {"type": "boolean"},
+            "test_file": {"type": "string"},
+            "results_file": {"type": "string"},
+            "report_digest": {"type": "string"},
+        },
+        "required": ["criterion_quote", "data_source", "cases", "failing"],
+    }
     return hints
 
 

@@ -304,6 +304,7 @@ _STATUS_PAGE_DEF_BY_VIEW_FOR_TEST: tuple[tuple[str, str], ...] = (
     ("assignment", "assignment_page"),
     ("candidate_findings", "candidate_findings_page"),
     ("compact", "compact_page"),
+    ("coverage", "coverage_page"),
     ("evidence", "evidence_page"),
     ("findings", "findings_page"),
     ("history", "history_page"),
@@ -324,7 +325,7 @@ _EXPECTED_RESULT_PATTERN_COUNTS: dict[tuple[str, str | None], int] = {
     (
         "receipt",
         None,
-    ): 310,  # #1162 +6 structural advisory counts; #1144/#1149 +3 disproved ids and stopped status/reason; tb4n2 LA: disputed_after_rebuttal_finding_ids; #1017 +3; W2-A +8
+    ): 338,  # #1170 +28 agent-declared coverage leaves; #1162 +6 structural advisory counts; #1144/#1149 +3 disproved ids and stopped status/reason; tb4n2 LA: disputed_after_rebuttal_finding_ids; #1017 +3; W2-A +8
     ("respond", None): 56,  # +2 tb4n3 W2-B: closure_after
     ("start", None): 72,
     (
@@ -338,6 +339,7 @@ _EXPECTED_RESULT_PATTERN_COUNTS: dict[tuple[str, str | None], int] = {
     ("status", "assignment"): 6,
     ("status", "candidate_findings"): 32,
     ("status", "compact"): 61,  # #1027: latest_check +4
+    ("status", "coverage"): 29,
     ("status", "evidence"): 19,
     (
         "status",
@@ -2611,7 +2613,7 @@ def test_result_leaf_registry_has_exhaustive_schema_parity() -> None:
 
     derived_patterns = _derived_result_success_patterns(catalog)
     assert (
-        len(derived_patterns) == 1838
+        len(derived_patterns) == 1895
     )  # #1140/#1144/#1149 +86 readiness/receipt; #1139 +8 delivery; #1118 +18 check reviewer, +9 LO check_cause, W2-A +46 closure verdict, +34 LF fact_lineage, W2-B +2 closure_after,
     # W6 #1107 +1 check agent_next, +15 status operation check_outcome,
     # tb4n4 #1044 +7 closure_readiness.undeclared_references, #1048 +38 inspection, #1047 +2,
@@ -2629,7 +2631,7 @@ def test_result_leaf_registry_has_exhaustive_schema_parity() -> None:
     assert type(rules) is tuple
     assert (
         len(rules)
-        == 1868  # #1162 +95 advisory history and readiness leaves, +1 model-opaque advisory_provenance container; #1140/#1144/#1149 +86 readiness and receipt; #1139 +8 check/status review_delivery; #1118 +18 check reviewer, +1 check_recorded 1.6.0; n6 item 4: check_recorded 1.5.0; #1079 +2 admissible_verification;
+        == 1926  # #1170 +58 coverage and manifest-summary privacy leaves; #1162 +95 advisory history and readiness leaves, +1 model-opaque advisory_provenance container; #1140/#1144/#1149 +86 readiness and receipt; #1139 +8 check/status review_delivery; #1118 +18 check reviewer, +1 check_recorded 1.6.0; n6 item 4: check_recorded 1.5.0; #1079 +2 admissible_verification;
         # W6 #1107 +16 (check agent_next, status operation check_outcome);
         # +1 closing_material_frontier; #1084 +10 server_filled and brief status,
         # +1 history occurred_at_source (review R7), -2 replay_notice retired (round 2),
@@ -2646,8 +2648,8 @@ def test_result_leaf_registry_has_exhaustive_schema_parity() -> None:
 
     registry_patterns = {(rule.method, rule.status_view, rule.segments) for rule in rules}
     assert (
-        len(registry_patterns) == 1839
-    )  # #1162 +1 model-opaque container; #1140/#1144/#1149 +86 readiness/receipt; #1139 +8 delivery; #1118 +18 check reviewer, W6 #1107 +16, #1084 review R7 +1, #1027 +5, LO +9, W2-A +46, LF +34, W2-B +2, #1044 +7,
+        len(registry_patterns) == 1896
+    )  # #1170 +57 coverage and manifest-summary leaves; #1162 +1 model-opaque container; #1140/#1144/#1149 +86 readiness/receipt; #1139 +8 delivery; #1118 +18 check reviewer, W6 #1107 +16, #1084 review R7 +1, #1027 +5, LO +9, W2-A +46, LF +34, W2-B +2, #1044 +7,
     # #1048 +38, #1047 +2, tb4n5 +3, ADR-049 +12 review_mode, #1079 +2 admissible_verification,
     # W5/D1 +2 closure_readiness.acceptance_risk
     # Every schema leaf has a rule, and the registry adds only the named containers of fields the
@@ -2666,7 +2668,7 @@ def test_result_leaf_registry_has_exhaustive_schema_parity() -> None:
         for rule in rules
         if rule.method == "publish_work" and rule.segments == publish_summary_segments
     )
-    assert len(publish_summary_rules) == 30  # n6 item 4: check_recorded 1.5.0; #1118: 1.6.0
+    assert len(publish_summary_rules) == 31  # #1170: result_recorded 1.1.0
     assert all(rule.status_view is None for rule in publish_summary_rules)
 
     expected_publish = _expected_publish_summary_rules(models)
@@ -3041,8 +3043,45 @@ def _expected_nonpublish_content_rules(
     obligation_text = models.DataCategory.OBLIGATION_TEXT
     task_description = models.DataCategory.TASK_DESCRIPTION
     repository_excerpt = models.DataCategory.REPOSITORY_EXCERPT
+    command_metadata = models.DataCategory.COMMAND_METADATA
 
     rows: tuple[tuple[str, str | None, str, object], ...] = (
+        (
+            "status",
+            "coverage",
+            "/page/verification_coverage/criteria/*/task_criterion_quote",
+            task_description,
+        ),
+        (
+            "status",
+            "coverage",
+            "/page/verification_coverage/criteria/*/obligation_criterion_quote",
+            obligation_text,
+        ),
+        (
+            "status",
+            "coverage",
+            "/page/verification_coverage/criteria/*/witnesses/*/worst",
+            command_metadata,
+        ),
+        (
+            "receipt",
+            None,
+            "/document/verification_coverage/criteria/*/task_criterion_quote",
+            task_description,
+        ),
+        (
+            "receipt",
+            None,
+            "/document/verification_coverage/criteria/*/obligation_criterion_quote",
+            obligation_text,
+        ),
+        (
+            "receipt",
+            None,
+            "/document/verification_coverage/criteria/*/witnesses/*/worst",
+            command_metadata,
+        ),
         ("check", None, "/review_delivery", finding_summary),
         (
             "check",
@@ -3217,6 +3256,7 @@ def _expected_publish_summary_rules(models: Any) -> dict[object, object]:
         ("redaction_recorded", "1.0.0"): "public_structural",
         ("response_recorded", "1.0.0"): models.DataCategory.FINDING_SUMMARY,
         ("result_recorded", "1.0.0"): models.DataCategory.COMMAND_METADATA,
+        ("result_recorded", "1.1.0"): models.DataCategory.COMMAND_METADATA,
         ("session_opened", "1.0.0"): "public_structural",
         ("session_resumed", "1.0.0"): "public_structural",
     }
@@ -3311,7 +3351,8 @@ def test_schema_catalog_reports_complete_registry() -> None:
     assert SCHEMA_MANIFEST_VERSION == "1.0.0"
     # #1118: reviewer-reply 1.0.0, check-result/-recorded 1.6.0; #1119: host-connection batch
     # report and ai-status 1.0.0
-    assert SCHEMA_MEMBER_COUNT == 242  # #1139: four lossless result-delivery schemas
+    # #1139: four lossless result-delivery schemas; #1170: + result-recorded 1.1.0
+    assert SCHEMA_MEMBER_COUNT == 243
     assert len(catalog.documents) == SCHEMA_MEMBER_COUNT
 
     paths = tuple(document.relative_path for document in catalog.documents)
@@ -3398,8 +3439,9 @@ def test_schema_catalog_record_shape_and_indexes_are_exact() -> None:
     # #1118: privacy-policy 1.3.0 (its 1.2.0 refs plus the 524,288 bound) and its control 2.9.0
     # admissions add 96.
     assert (
-        sum(_count_refs(document.json_schema) for document in catalog.documents) == 9_184
-    )  # #1162 +14 advisory references (respond request/result +1 each, status-result 1.4.0 +6
+        sum(_count_refs(document.json_schema) for document in catalog.documents) == 9_206
+    )  # #1170 +15 coverage/result-verification references, +7 inherited by status-result 1.5.0;
+    # #1162 +14 advisory references (respond request/result +1 each, status-result 1.4.0 +6
     # and the same +6 in status-result 1.5.0, which #1139 derives from it);
     # #1139 +678 result-delivery references, +24 delivery-page wire constraints;
     # #1140/#1144/#1149 +2 readiness/receipt references; #1119 +13: host-connection batch report,

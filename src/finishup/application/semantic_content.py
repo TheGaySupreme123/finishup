@@ -54,6 +54,7 @@ from finishup.domain.values import validate_sha256_digest
 from finishup.kernel.claims import effective_claim_items
 from finishup.kernel.observed_failures import observed_command_field
 from finishup.kernel.projections import EvidenceProjectionRecord, ProjectionState
+from finishup.kernel.verification_capture import verification_capture_command
 from finishup.ports.ledger import FrozenCase
 from finishup.ports.objects import ObjectKind, ObjectRef
 from finishup.ports.runtime import TaskRuntime
@@ -1226,6 +1227,39 @@ async def resolve_captured_semantic_content(
                             if type(command) is str:
                                 command_context[phase_identity] = (command, identity)
                     continue
+                # Custom scripts and inline programs have no globally recognized runner
+                # name, so their hook need not retain an extra copy of the command input.
+                # Recover only exact declared text whose installation-keyed commitment
+                # matches this authenticated post phase. All consent, object, source,
+                # correlation and completeness checks above remain mandatory.
+                if (
+                    phase_identity not in command_context
+                    and parsed.content_kind is ObservationContentKind.TOOL_OUTPUT
+                    and envelope.event_kind == "PostToolUse"
+                    and not (
+                        set(envelope.gap_codes)
+                        - {ObservationGapCode.COMPOUND_OUTCOME_UNAVAILABLE.value}
+                    )
+                    and not parsed.redacted
+                ):
+                    commitment = envelope.structural_payload.get("command_commitment")
+                    if type(commitment) is str:
+                        command = verification_capture_command(frozen.case.projection, commitment)
+                        if command is not None:
+                            segments = envelope.structural_payload.get(
+                                "command_segment_commitments"
+                            )
+                            composition = envelope.structural_payload.get("command_composition")
+                            command_context[phase_identity] = (
+                                command,
+                                observed_command_field(
+                                    commitment,
+                                    cast(tuple[str, ...], segments)
+                                    if type(segments) is tuple
+                                    else None,
+                                    composition if type(composition) is str else None,
+                                ),
+                            )
                 opened.append(
                     CapturedSemanticContent(
                         object_ref=resolved,

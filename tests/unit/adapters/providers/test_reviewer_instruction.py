@@ -869,8 +869,9 @@ def test_the_packet_order_sentence_names_primary_material_first() -> None:
     instruction says so in the order the case builder and the port enforce."""
 
     sentence = (
-        "Items come primary material first: the task statement; then excerpts (the check-time "
-        "change, task inputs, observed output and the other recorded excerpts); then FinishUP's "
+        "Items come primary material first, after any agent-declared coverage index: the task "
+        "statement; then excerpts (the check-time change, task inputs, observed output and the "
+        "other recorded excerpts); then FinishUP's "
         "deterministic findings; then the agent's own account (plan, obligations, claims, "
         "decisions and the agent-disclosures row); then earlier findings and the timeline. Read "
         "the work before the agent's account of it."
@@ -879,6 +880,8 @@ def test_the_packet_order_sentence_names_primary_material_first() -> None:
     assert "Items are listed in recorded order;" not in _TEXT
     # Each named group, in the order the sentence names it, is the port's section order.
     named = {
+        # #1170: the structural coverage index leads; it points at the task text, never repeats it.
+        "verification_coverage": "after any agent-declared coverage index",
         "task_statement": "the task statement",
         "excerpt": "then excerpts",
         "deterministic_summary": "then FinishUP's deterministic findings",

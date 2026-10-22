@@ -42,6 +42,7 @@ SLASH_COMMANDS: Final[tuple[SlashCommand, ...]] = (
     SlashCommand("progress", "show the latest check's review phase and elapsed time"),
     SlashCommand("receipt", "view or export an honest receipt"),
     SlashCommand("connect", "connect or repair an agent integration"),
+    SlashCommand("coverage", "show advisory, agent-declared test witnesses and candidate gaps"),
     SlashCommand("disconnect", "remove an agent integration and retain FinishUP data"),
     SlashCommand("privacy", "choose what may leave this computer"),
     SlashCommand("provider", "configure optional deeper review"),

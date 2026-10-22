@@ -608,6 +608,51 @@ equivalence.
 }
 ```
 
+### Optional verification manifest
+
+Use `result_recorded/1.1.0` to add `verification` to the result payload above:
+
+```jsonc
+{
+  "criterion_quote": "Every exported value differs by at most 0.01",
+  "data_source": "independent",
+  "cases": 100,
+  "failing": 6,
+  "worst": "0.03",
+  "tuned_on_these_cases": false
+}
+```
+
+Replace the criterion with an exact whole-word quote of one criterion from this task's recorded statement.
+For this failing example, set the result's `outcome` to `failure` and describe the six
+failing cases. Declare the actual data source: `task_public`, `own_generated`, `independent`,
+`held_out`, `stated_environment` or `unknown`. `worst` and `tuned_on_these_cases` are optional.
+Counts and data-source labels remain agent-declared, including counts read from a digested file.
+
+For a test you already ran, save a small UTF-8 JSON results file such as
+`{"cases":100,"failing":6,"worst":"0.03"}`; an optional `failing_cases` array names up to
+64 failing cases. Put the ordinary `publish_work` request in
+`publication.json` with one `result_recorded/1.1.0` event whose `verification` declares
+`criterion_quote` and `data_source`, then run:
+
+```text
+finishup record-test --input publication.json --test-file checks/export.py --results-file checks/results.json
+```
+
+The helper reads the script and report immediately, fills the manifest's counts and optional
+worst value, binds `test_file`, `results_file` and `report_digest` together, and publishes bounded
+script/report prose. It does not run the script or independently validate the counts.
+Include a readable command action, or tie the run to an exact planned command; a test filename
+alone cannot recover an earlier hook's omitted command text.
+Use workspace-relative regular files: the script is limited to 65,536 bytes and the report to
+4,096 bytes; linked paths are refused, and the source excerpt can be clipped.
+Direct MCP `publish_work` or CLI `publish-work` publication accepts the complete manifest without
+the helper; omit the three file-binding fields together when no report is bound.
+After an unknown publication outcome, recover `status view=operation` with the returned request id.
+Replay the helper only with byte-identical files and summary; changed files describe a new result.
+Keep failing cases in the bounded result summary or evidence, and re-run affected checks on the
+shipped revision. Neither repeated unchanged runs nor redundant tests add coverage.
+
 ## `publish_work`: evidence
 
 ```json

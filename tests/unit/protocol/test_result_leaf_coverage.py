@@ -32,6 +32,7 @@ _STATUS_VIEW_BY_PAGE_MODEL = {
     "StatusVersionsPageModel": "versions",
     "StatusLineagePageModel": "lineage",
     "StatusProjectPageModel": "project",
+    "StatusCoveragePageModel": "coverage",
 }
 
 

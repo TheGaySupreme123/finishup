@@ -13,6 +13,7 @@ def test_the_documented_commands_are_all_present_with_descriptions() -> None:
         "lineage",
         "project",
         "findings",
+        "coverage",
         "check",
         "receipt",
         "connect",

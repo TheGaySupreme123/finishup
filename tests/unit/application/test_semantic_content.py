@@ -12,7 +12,16 @@ from typing import cast
 
 import pytest
 
-from builders.policy_cases import claim_record, clm, evd, make_case
+from builders.observed_runs import INSTALLATION_KEY
+from builders.policy_cases import (
+    claim_record,
+    clm,
+    evd,
+    make_case,
+    obl,
+    obligation_record,
+    plan_record,
+)
 from finishup.adapters.integrations.observation_local import LocalObservationStore
 from finishup.application.observation_materialize import (
     MATERIALIZATION_MAPPING_VERSION,
@@ -34,6 +43,11 @@ from finishup.domain.events import (
     EvidenceImmutability,
     EvidenceKind,
     EvidenceRecordedPayload,
+    ObligationPublishedPayload,
+    ObligationStatus,
+    PlanPublishedPayload,
+    RequestedItem,
+    RequestedItemKind,
     ResultOutcome,
     ResultRecordedPayload,
     encode_payload,
@@ -46,12 +60,15 @@ from finishup.domain.observation import (
     ObservationEnvelope,
     ObservationRevokeCommand,
     ObservationSource,
+    observed_command_commitment,
 )
 from finishup.domain.observation_profiles import (
     CLAUDE_CODE_ORDINARY_HOOK_MAPPING_VERSION,
     CLAUDE_CODE_ORDINARY_OBSERVATION_PROFILE_ID,
+    CURSOR_ORDINARY_HOOK_MAPPING_VERSION,
     CURSOR_ORDINARY_OBSERVATION_PROFILE_ID,
 )
+from finishup.domain.observation_selection import compound_verification_gap_required
 from finishup.domain.privacy import ReviewContextProfile, ReviewSelectionPolicy
 from finishup.domain.values import (
     EvidenceId,
@@ -62,6 +79,7 @@ from finishup.domain.values import (
     timestamp_from_string,
 )
 from finishup.kernel.projections import EvidenceProjectionRecord
+from finishup.kernel.task_facts import register_command_identity_key
 from finishup.ports.diagnostics import RuntimeCapability
 from finishup.ports.importer import ImporterPort
 from finishup.ports.ledger import CheckPhase, FrozenCase, LedgerPort, OperationLease
@@ -347,6 +365,113 @@ def _codex_profileless_fixture() -> tuple[FrozenCase, TaskRuntime, _Objects, _Ob
         objects,
         observation,
     )
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    "source",
+    (
+        ObservationSource.CODEX_HOOK,
+        ObservationSource.CLAUDE_HOOK,
+        ObservationSource.CURSOR_HOOK,
+    ),
+)
+@pytest.mark.parametrize("command", ("python stress.py", "python - <<'PY'\nassert 2 + 2 == 4\nPY"))
+async def test_custom_output_recovers_only_exact_declared_command(
+    tmp_path: Path,
+    source: ObservationSource,
+    command: str,
+) -> None:
+    if source is ObservationSource.CODEX_HOOK:
+        frozen, runtime, _objects, observation = _codex_profileless_fixture()
+    else:
+        frozen, runtime, _objects, observation, _envelope = _fixture()
+    commitment = observed_command_commitment(INSTALLATION_KEY, command)
+    fields = dict(observation.envelope.structural_payload)
+    fields["command_commitment"] = commitment
+    profiles = observation.profiles
+    if source is ObservationSource.CURSOR_HOOK:
+        profiles = (CURSOR_ORDINARY_OBSERVATION_PROFILE_ID,)
+        fields.update(
+            capability_profile_id=profiles[0], mapping_hint=CURSOR_ORDINARY_HOOK_MAPPING_VERSION
+        )
+        observation.profiles = profiles
+    # Use the real mapper's outcome-gap rule: an inline program's newline is
+    # compound-shaped even though its full command identity is known exactly.
+    gaps = (
+        ("compound_outcome_unavailable",)
+        if compound_verification_gap_required(
+            {"tool_name": "Bash", "tool_input": {"command": command}}
+        )
+        else ()
+    )
+    observation.envelope = replace(
+        observation.envelope, source=source, structural_payload=JsonObject(fields), gap_codes=gaps
+    )
+    obligation = ObligationPublishedPayload(
+        obl(1),
+        "Check the result",
+        "A discriminating check",
+        ObligationStatus.OPEN,
+        requested_items=(RequestedItem(RequestedItemKind.COMMAND, command),),
+    )
+    projection = replace(
+        frozen.case.projection,
+        plans={1: plan_record(PlanPublishedPayload(1, "Plan", (obl(1),)), 2)},
+        obligations={obl(1): obligation_record(obligation, 1)},
+    )
+    frozen = replace(frozen, case=replace(frozen.case, projection=projection))
+    local = LocalObservationStore(_state=tmp_path / "local-state")
+    local.grant_consent(
+        _WORKSPACE,
+        timestamp_from_string("2026-07-01T00:00:00.000Z"),
+        content_capture_profiles=profiles,
+    )
+    register_command_identity_key(INSTALLATION_KEY)
+    try:
+        resolved = await resolve_captured_semantic_content(
+            runtime=runtime,
+            frozen=frozen,
+            workspace_commitment=_WORKSPACE,
+            local_observation=local,
+        )
+        assert len(resolved.content) == 1
+        assert resolved.content[0].observed_command == command
+        assert resolved.content[0].observed_command_identity == "omitted:" + commitment
+        observation.envelope = replace(
+            observation.envelope,
+            structural_payload=JsonObject(
+                {
+                    **fields,
+                    "command_commitment": observed_command_commitment(
+                        INSTALLATION_KEY, command + " --other"
+                    ),
+                }
+            ),
+        )
+        unmatched = await resolve_captured_semantic_content(
+            runtime=runtime,
+            frozen=frozen,
+            workspace_commitment=_WORKSPACE,
+            local_observation=local,
+        )
+        assert len(unmatched.content) == 1
+        assert unmatched.content[0].observed_command is None
+        observation.envelope = replace(
+            observation.envelope,
+            structural_payload=JsonObject(fields),
+            gap_codes=("truncated_payload",),
+        )
+        truncated = await resolve_captured_semantic_content(
+            runtime=runtime,
+            frozen=frozen,
+            workspace_commitment=_WORKSPACE,
+            local_observation=local,
+        )
+        assert len(truncated.content) == 1
+        assert truncated.content[0].observed_command is None
+    finally:
+        register_command_identity_key(None)
 
 
 def _multipart_fixture() -> tuple[FrozenCase, TaskRuntime, _Objects]:
