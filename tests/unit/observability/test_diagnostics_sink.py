@@ -398,6 +398,14 @@ def test_bounded_event_context_is_fenced_and_reaches_the_ring(
         "codex_event_delta_bytes",
         "codex_event_intermediate_count",
         "codex_event_intermediate_bytes",
+        "reviewer_exchange_index",
+        "reviewer_model_requests",
+        "reviewer_input_tokens",
+        "reviewer_cached_input_tokens",
+        "reviewer_cache_write_input_tokens",
+        "reviewer_output_tokens",
+        "reviewer_prefix_tokens",
+        "reviewer_prefix_cached_tokens",
     ),
 )
 def test_packet_composition_diagnostics_admit_counts_but_not_content(

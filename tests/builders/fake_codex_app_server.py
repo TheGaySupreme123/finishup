@@ -103,14 +103,24 @@ def _turn_events(
             }
         )
     events.append({"id": rid, "result": {"turn": {"id": turn, "status": "inProgress"}}})
-    usage = {
-        "inputTokens": 900 * number,
-        "cachedInputTokens": 0,
-        "cacheWriteInputTokens": 0,
-        "outputTokens": 60 * number,
-        "reasoningOutputTokens": 20 * number,
-        "totalTokens": 960 * number,
-    }
+
+    # One model request per turn, reading the whole thread so far: ``last`` is that request,
+    # ``total`` the thread's running sum. A later turn reads the previous request's input from the
+    # cache in whole 128-token blocks, as an unchanged prefix does on real Codex.
+    def request(turn_number: int) -> dict[str, int]:
+        read = 2_000 + 400 * (turn_number - 1)
+        cached = (2_000 + 400 * (turn_number - 2)) // 128 * 128 if turn_number > 1 else 0
+        return {
+            "inputTokens": read,
+            "cachedInputTokens": cached,
+            "cacheWriteInputTokens": 0,
+            "outputTokens": 60,
+            "reasoningOutputTokens": 20,
+            "totalTokens": read + 60,
+        }
+
+    last = request(number)
+    usage = {name: sum(request(earlier)[name] for earlier in range(1, number + 1)) for name in last}
     for method, item in (
         ("item/started", {"type": "userMessage", "id": "u"}),
         ("item/completed", {"type": "userMessage", "id": "u"}),
@@ -133,7 +143,7 @@ def _turn_events(
         {"method": "item/completed", "params": {**ids, "item": final}},
         {
             "method": "thread/tokenUsage/updated",
-            "params": {**ids, "tokenUsage": {"last": usage, "total": usage}},
+            "params": {**ids, "tokenUsage": {"last": last, "total": usage}},
         },
         {"method": "thread/status/changed", "params": {"threadId": thread, "status": {}}},
         {"method": "turn/completed", "params": {"threadId": thread, "turn": done}},

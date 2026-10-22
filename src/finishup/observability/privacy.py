@@ -256,6 +256,17 @@ _LOG_FIELDS: Final = frozenset(
         "codex_event_delta_bytes",
         "codex_event_intermediate_count",
         "codex_event_intermediate_bytes",
+        # #1172: per-exchange prompt-cache telemetry (provider-reported token counts and one
+        # closed miss label, never content).
+        "reviewer_exchange_index",
+        "reviewer_model_requests",
+        "reviewer_input_tokens",
+        "reviewer_cached_input_tokens",
+        "reviewer_cache_write_input_tokens",
+        "reviewer_output_tokens",
+        "reviewer_prefix_tokens",
+        "reviewer_prefix_cached_tokens",
+        "reviewer_cache_miss",
         "timestamp",
         "level",
         "component",
@@ -402,6 +413,8 @@ _TOKEN_FIELDS: Final = frozenset(
         "semantic_conclusion",
         "control_method",
         "client_kind",
+        # #1172: the closed per-exchange prompt-cache miss label.
+        "reviewer_cache_miss",
     }
 )
 _VERSION_FIELDS: Final = frozenset(
@@ -431,6 +444,15 @@ _INTEGER_FIELDS: Final = frozenset(
         "codex_event_delta_bytes",
         "codex_event_intermediate_count",
         "codex_event_intermediate_bytes",
+        # #1172: per-exchange prompt-cache token counts.
+        "reviewer_exchange_index",
+        "reviewer_model_requests",
+        "reviewer_input_tokens",
+        "reviewer_cached_input_tokens",
+        "reviewer_cache_write_input_tokens",
+        "reviewer_output_tokens",
+        "reviewer_prefix_tokens",
+        "reviewer_prefix_cached_tokens",
         "duration_ms",
         "operation_count",
         "duration_bucket_ms",

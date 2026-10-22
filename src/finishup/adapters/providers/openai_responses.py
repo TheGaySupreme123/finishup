@@ -24,6 +24,10 @@ from typing import Any, Final, Literal, Protocol, cast
 import httpx
 from pydantic import TypeAdapter, ValidationError
 
+from finishup.adapters.providers.reviewer_cache_telemetry import (
+    api_exchange_usage,
+    record_exchange_cache,
+)
 from finishup.domain.findings import FindingKind, SamplingParams, SemanticFailureClass
 from finishup.domain.privacy import (
     ApprovedOutboundCase,
@@ -34,6 +38,7 @@ from finishup.domain.values import validate_sha256_digest
 from finishup.ports.clock import ClockPort
 from finishup.ports.secret_memory import ProviderAttemptAuthBinding, ProviderCredentialHandle
 from finishup.ports.semantic import (
+    CURRENT_REVIEWER_SESSION,
     Deadline,
     MissingForAssessment,
     PriorFindingVerdict,
@@ -2436,6 +2441,21 @@ class OpenAIResponsesEvaluator:
             await http_client.aclose()
 
         finished = self._clock.monotonic_seconds()
+        if case.purpose != "credential-probe":
+            record_exchange_cache(
+                component="openai_responses",
+                request_id=case.request_id,
+                session=CURRENT_REVIEWER_SESSION.get(),
+                exchange=exchange,
+                settings={key: value for key, value in body_object.items() if key != "input"},
+                usage=api_exchange_usage(
+                    getattr(response, "usage", None),
+                    input_name="input_tokens",
+                    details_name="input_tokens_details",
+                    output_name="output_tokens",
+                ),
+                completed=getattr(response, "status", None) == "completed",
+            )
         return normalize_response(
             response,
             self._profile,
