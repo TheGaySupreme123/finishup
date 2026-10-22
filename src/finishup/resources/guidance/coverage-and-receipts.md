@@ -533,6 +533,14 @@ cancellation, stale authority, or an incomplete ceremony remains a no dispatch o
 
 ## Recovery
 
+`LIMIT_EXCEEDED` with `check_resume_capacity_exceeded` or `check_result_capacity_exceeded`
+is a local checkpoint limit, not a provider, privacy or network failure. Its continuation is
+`check_capacity_handoff`: retain this task and disclose the missing check. Do not retry an
+unchanged check under the same or a new ID, delete history, or weaken privacy to fit it. Continue
+only through an explicitly scoped follow-up task; its receipt does not close this task or inherit
+its evidence. The ordinary frozen checkpoint is paged automatically, so reaching the 4 MiB
+per-object boundary alone does not require this handoff.
+
 For an explicit activation mismatch (`full_restart_required`), do not mint a fresh AI-powered check
 against the stale process. Follow the current host's reported recovery; recovery never authorizes
 egress or a privacy change. A live strict route remains a terminal ceiling. Cursor-specific full

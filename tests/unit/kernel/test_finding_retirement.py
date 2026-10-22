@@ -101,6 +101,32 @@ def test_a_later_pass_retires_the_observed_failed_command_finding() -> None:
     _assert_retired(ledger, finding, _result_event(ledger, passing))
 
 
+def test_receipts_keep_the_original_trigger_beside_the_retirement_basis() -> None:
+    from finishup.domain.receipts import receipt_document_to_json
+
+    ledger = ObservedLedger()
+    failed = ledger.fail(_PYTEST)
+    finding = _finding_for(ledger, failed)
+    ledger.passes(_PYTEST)
+    receipt = observed_receipt(ledger)
+    section = next(
+        section
+        for section in receipt.sections
+        if section.key is ReceiptSectionKey.FINDINGS_AND_DISPOSITIONS
+    )
+    trigger = " / ".join(ledger.events_of(failed))
+    for rendering in (
+        str(receipt_document_to_json(receipt)),
+        render_receipt_human(receipt, markdown=True),
+        render_receipt_human(receipt, markdown=False),
+    ):
+        assert f"Original failed-command trigger: {trigger}" in rendering
+        assert "finding first recorded at frontier 3" in rendering
+        assert str(finding) in rendering
+        assert "retired" in rendering
+    assert section.body.count("Original failed-command trigger:") == 1
+
+
 def test_a_passing_and_chain_containing_the_failed_command_retires_it() -> None:
     ledger = ObservedLedger()
     finding = _finding_for(ledger, ledger.fail(_PYTEST))

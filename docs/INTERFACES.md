@@ -1320,6 +1320,20 @@ compares is folded with it). The same command wins when one run is both.
 `finding_resolution.retired_failed_command_finding_ids(state)` names the retired, resolved
 observed failed-command findings; the status advice view drops their `failed_command_unresolved`
 items.
+`application.observation_advice.bind_failed_command_advice` binds advice to one accepted
+action/result event pair before the coordinator writes a finding or publishes its snapshot
+(#1160, ADR-022 decision 7). Fresh IDs are task-scoped over that pair; an existing readable
+observation-authored finding supplies its recorded ID and original reason instead. Only rows
+`kernel.finding_resolution.current_finding_records` selects (the newest per `issue_key`, the
+selection `current_receipt_findings` uses) are eligible, so advice and the receipt name the same
+ID; among eligible rows for one pair the earliest recorded wins. The coordinator's in-process
+binding cache reuses an ID only while that row stays current and readable, ignores advice-only
+rows, recomputes on any mismatch, and evicts the least recently used entry.
+Repeated envelopes update snapshot context and do not append another finding. Missing or
+ambiguous pairs do not coalesce; command commitments alone are not finding identities. Original
+findings, responses, historical duplicate IDs and retirement facts remain intact. JSON, markdown
+and text receipt sections name the original trigger and first-recorded frontier beside the
+resolution explanation, using existing fields.
 `FindingProjectionRecord` gains `observed_failed_command`, `failed_run_result_id`,
 `retired_by_event_id`, `retired_frontier` (set together with the event id) and
 `retired_by_planned_verification` (only with a retirement), each emitted into
@@ -2390,6 +2404,32 @@ oracle state, while a successful copy-on-write commit adopts the clone into the 
 so an in-flight oracle's final revalidation observes every durable concurrent append.
 `awaiting_human` and retryable ownership conflicts remain pending and never use this terminalization
 path.
+
+`adapters/objects/check_resume.py` owns the internal paged checkpoint codec (#1159). Inline
+`CHECK_RESUME` objects retain their existing bytes. Above 4 MiB, the root retains media type
+`application/vnd.yoetz.check-resume+json` and carries the exact manifest fields `schema`
+(`yoetz.check-resume-pages/1`), `size`, `digest` (SHA-256 of reconstructed bytes), and `pages`.
+Each ordered page descriptor is exactly `{object_id, envelope_digest, commitment, size}`.
+Pages use kind `CHECK_RESUME`, media type `application/vnd.yoetz.check-resume-page`, and the
+root's task and creation time. Every non-final page is exactly 4 MiB; the final page is nonempty.
+At most 64 unique pages reconstruct at most 256 MiB; nested manifests are forbidden. Manifest
+shape and total size are checked before page reads; each descriptor, authenticated content,
+aggregate digest and original frozen-case binding is verified before use. Page inventory and
+operation admission commit atomically, including input-refresh and lifecycle-motion paths.
+No history, projection, availability or integrity evidence is discarded to fit the object port.
+
+The shared error reasons `check_resume_capacity_exceeded` and `check_result_capacity_exceeded`
+use `LIMIT_EXCEEDED`, `retryable=false`, structural byte `count`/`limit`, and continuation
+`check_capacity_handoff`. The latter limit remains 4 MiB for the local deterministic-result
+checkpoint. A pre-admission resume overflow records no operation. A post-admission result
+overflow terminalizes that exact operation with the stored typed error. So does a resume
+overflow while the parked review-input case of an admitted check is rebuilt, but only when the
+overflow was computed from the operation's current inputs; otherwise the refusal is the retryable
+`check_admission_contended`. CLI, MCP (Codex, Claude Code and Cursor), hooks and TUI share this
+error/continuation contract. No check verdict or reviewer result is fabricated; a receipt retains
+the missing-check coverage. An explicitly scoped follow-up may continue work but cannot close the
+original task by substitution.
+
 `ports/ledger.py` owns the shared closed enums: `OperationKind` is
 `start|publish_work|check|respond|receipt`; `OperationState` is `pending|complete|quarantined`;
 `CheckPhase` is `reserved|local_ready|semantic_wait|ready_to_finalize|terminal`;
@@ -3389,6 +3429,26 @@ resolution; only exactly the current home is excepted, never the filesystem root
 path. Connection disclosure and report `status.home_project_allowed` name this choice, within the
 existing extensible status object (ADR-012, 2026-10-21). It grants no observation or disclosure
 authority. Status and disconnect do not require a new connect opt-in.
+
+The Git adapter's internal `admitted_home_project` option carries an already-selected,
+authenticated HOME locator across the host/service process boundary (#1161). The local
+`home_project_scope` also admits that exact root in `open_local_workspace`. Neither admits `/`;
+change capture cannot use the service option to discover HOME above another selected directory.
+HOME reviewer roots additionally require a matching `CheckWorkspaceSource` workspace and task
+repository commitment; a session's public workspace selector alone cannot grant the exception.
+The handshake does not carry the launcher's opt-in, so the service admits HOME for any
+authenticated same-user locator; binding it to a recorded opt-in is design-gated #1181.
+`adapters/home_project_reads.py` shares one home-state exclusion across Git pathspec selection,
+structural tree walks, direct reads, listings and requested-output probes (ADR-012): every path
+with a dot-named component at any depth, the top-level `Library`, `AppData` and `snap` trees
+(case-insensitive), copies named exactly `Library` or `AppData` at any depth, local
+authentication files (including `token.json` and `kubeconfig`) and the ADR-031 credential names
+at any depth.
+Tracked host state is excluded too; excluded outputs have unknown existence/ignore facts.
+Structural capture reports a link outside the exclusions as `symlink_unsupported` in every root,
+never following it. Reviewer root aliases, relative-only selectors, hidden-component refusals,
+Git ignores, observation consent and outbound admission retain their existing contracts. No wire
+field changes.
 
 Cursor shared-hook refreshes preserve that choice only with recorded HOME membership
 and a still-installed exact opted-in HOME project MCP entry; disclosure `shared_home_project`
@@ -11955,25 +12015,32 @@ names its own. Fields, all integers but the last:
 |---|---|
 | `reviewer_exchange_index` | 1-based exchange of the review (a one-shot case is 1) |
 | `reviewer_model_requests` | model requests the exchange made |
-| `reviewer_input_tokens`, `reviewer_cached_input_tokens`, `reviewer_output_tokens` | provider-reported, summed over those requests |
-| `reviewer_cache_write_input_tokens` | Codex only; neither API reports cache writes, so it is absent there |
-| `reviewer_prefix_tokens` | input of the previous exchange's last request: what this exchange could reuse (0 when it opened the conversation; absent when the previous exchange reported no usage) |
-| `reviewer_prefix_cached_tokens` | cached input of this exchange's first request |
-| `reviewer_cache_miss` | closed label, below; absent when the prefix is unknown |
+| `reviewer_input_tokens`, `reviewer_cached_input_tokens`, `reviewer_output_tokens` | provider-reported, summed over those requests; the cached count is absent when the provider did not report one |
+| `reviewer_cache_write_input_tokens` | provider-reported cache writes, absent where the provider did not report them |
+| `reviewer_prefix_tokens` | input of the previous exchange's last request: what this exchange could reuse (0 when it opened the conversation; absent when the previous exchange's requests are unknown) |
+| `reviewer_prefix_cached_tokens` | cached input of this exchange's first request (absent with the cached count) |
+| `reviewer_cache_miss` | closed label, below; absent when the prefix or the cached input is unknown |
 
 Codex counts are the thread's cumulative `total` across the turn; a snapshot whose input grew is one
 more request, and that snapshot's `last` names the request (a repeated snapshot is not another one).
-Responses reads `usage.input_tokens`, `usage.input_tokens_details.cached_tokens` and
-`usage.output_tokens`; Chat Completions `prompt_tokens`, `prompt_tokens_details.cached_tokens` and
-`completion_tokens`. An answer without those counts records nothing, nor does a Codex turn whose
-previous turn reported no usage or had a usage snapshot refused (its starting counters are
-unknown). A compaction is still recorded then, by its index and label alone. The local model route
-records nothing (FinishUP observes no provider prompt cache there), nor does the credential probe.
+A turn starts at the total its previous turn left. When that turn reported no usage or had a usage
+snapshot refused, the turn starts instead at the total before its own first reported request (that
+snapshot's `total` less its `last`), so it records only its own requests, never the thread's
+earlier ones. A turn that had a usage snapshot refused records no counts (it may be missing a
+request) and leaves the next prefix unknown. Responses reads `usage.input_tokens`,
+`usage.output_tokens` and, in `usage.input_tokens_details`, `cached_tokens` and
+`cache_write_tokens`; Chat Completions `prompt_tokens`, `completion_tokens` and the same two in
+`prompt_tokens_details`, which may be absent. A count the answer omits is left out, never recorded
+as zero. An answer without input and output counts records nothing. A compaction is still
+recorded then, by its index and label alone. The local model route records nothing (FinishUP
+observes no provider prompt cache there), nor does the credential probe.
 
 `reviewer_cache_miss` is the first that applies: `compaction` (a `thread/compacted` notification or
 `contextCompaction` item in the turn, recorded even where the reviewer then refuses it);
 `first_turn` (the exchange opened the review's conversation; every one-shot case); `none` (the
-first request's cached input is within 1,024 tokens of the prefix, one minimum cache block);
+first request's cached input falls short of the prefix by at most 1,024 tokens, the providers'
+minimum cacheable prefix; they cache whole 128-token blocks from there, so a prefix that short is
+`none` even when nothing of it was cached);
 `schema_or_settings_change` (the digest of what the route sends beside the messages differs from
 the previous exchange's: the Codex `turn/start` parameters except `input` and `threadId`, or the API
 body except `input`/`messages`); `retry` (the history does not carry the previous answer, so this

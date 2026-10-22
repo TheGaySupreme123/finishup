@@ -2917,17 +2917,19 @@ About half of the reviewer's input is served from the provider's prompt cache (4
 TB-Science pilot trials), and input is nearly all of its cost. Until now only each attempt's
 cumulative usage was kept, so a miss could not be attributed. Every provider exchange that
 reports usage now writes one `exchange_cache` owner diagnostic: its input, cached input,
-cache-write (Codex only) and output tokens, how many model requests it made, the prefix it could
-reuse from the review's previous exchange, how much of that its first request reused, and one
-closed miss label: `compaction`, `first_turn`, `none`, `schema_or_settings_change`, `retry` or
-`unexplained`, the first that applies (see INTERFACES, "Per-exchange prompt-cache telemetry").
-`none` allows a 1,024-token shortfall, one minimum cache block. A compaction is recorded, by its
-index and label alone, even when it comes before any usage report. A Codex turn whose previous turn
-reported no usage records no counts, because its starting total is unknown. Every exchange of a
-review names
-the review's first provider request id, so the records join the attempt row; the owner reads them
-with `finishup service diagnostics --request-id`, and an exporter that copies the diagnostics ring
-carries them.
+cache-write (where the provider reports it) and output tokens, how many model requests it made,
+the prefix it could reuse from the review's previous exchange, how much of that its first request
+reused, and one closed miss label: `compaction`, `first_turn`, `none`,
+`schema_or_settings_change`, `retry` or `unexplained`, the first that applies (see INTERFACES,
+"Per-exchange prompt-cache telemetry"). `none` allows a shortfall of up to 1,024 tokens, the
+providers' minimum cacheable prefix. A count the provider does not report (Chat Completions may
+omit the cached count) is left out, never recorded as zero. A compaction is recorded, by its index
+and label alone, even when it comes before any usage report. A Codex turn whose previous turn
+reported no usage starts at the total before its own first reported request, so it records only
+its own requests; a turn that had a usage snapshot refused records no counts. Every exchange of a
+review names the review's first provider request id, so the records join the attempt row; the
+owner reads them with `finishup service diagnostics --request-id`, and an exporter that copies the
+diagnostics ring carries them.
 
 The record holds integers, one closed token and that request id. It never holds content, a
 content digest or a provider identifier. Between a review's exchanges, the `ReviewerSession` keeps
