@@ -36,12 +36,13 @@ from finishup.application.reviewer_broker import (
 from finishup.application.reviewer_exchange import ReviewerExchangeModel
 from finishup.application.reviewer_loop import (
     FINAL_FORMAT_ERROR,
-    FINAL_TURN,
+    FINAL_PHASE,
     FORMAT_ERROR,
     ReviewerLoop,
     ReviewerModelError,
     ReviewOutcome,
 )
+from finishup.application.reviewer_telemetry import read_usage_from_wire
 from finishup.domain.findings import SemanticFailureClass
 from finishup.domain.privacy import (
     AuthorizationScope,
@@ -52,6 +53,7 @@ from finishup.domain.privacy import (
 )
 from finishup.domain.reviewer_context import ReviewerExchangeBudget
 from finishup.domain.reviewer_reads import ReviewerRead, ReviewerRecord
+from finishup.observability.logging import record_bounded_counts_without_raising
 from finishup.ports.semantic import (
     Deadline,
     ReviewerSession,
@@ -68,7 +70,7 @@ from finishup.ports.semantic import (
     reviewer_message_bytes,
     reviewer_message_tokens,
 )
-from finishup.protocol.canonical import canonical_encode
+from finishup.protocol.canonical import JsonValue, canonical_encode
 from finishup.protocol.models import SemanticStatus
 
 __all__ = [
@@ -85,16 +87,13 @@ PACKET_TURN: Final = "[FinishUP review packet]"
 _INVALID_ENDINGS: Final = frozenset({"format_invalid", "read_limit", "turn_limit"})
 _SOURCE_DOMAIN: Final = b"finishup/reviewer-read-source/v1\x00"
 # The one format-repair notice a conversation may still add after any exchange (its codes are the
-# service's own short names; the final phase's repair has its own wording, so the room is the
-# longer of the two), and the one no-reads-left notice before its final turn (#1172): every read
-# leaves room for both, so the exchange that appends them still fits the cap (#1118).
+# service's own short names); every read leaves this room so that exchange fits the cap (#1118).
+# The final phase's repair notice has its own wording (#1173); the room is the longer of the two.
 _REPAIR_NOTES: Final = tuple(t.format(code="x" * 64) for t in (FORMAT_ERROR, FINAL_FORMAT_ERROR))
-_NOTICE_ROOM_BYTES: Final = max(
-    reviewer_message_bytes("user", note) for note in _REPAIR_NOTES
-) + reviewer_message_bytes("user", FINAL_TURN)
-_NOTICE_ROOM_TOKENS: Final = max(
-    reviewer_message_tokens(note) for note in _REPAIR_NOTES
-) + reviewer_message_tokens(FINAL_TURN)
+_REPAIR_NOTE_BYTES: Final = max(reviewer_message_bytes("user", note) for note in _REPAIR_NOTES)
+_REPAIR_NOTE_TOKENS: Final = max(reviewer_message_tokens(note) for note in _REPAIR_NOTES)
+_FINAL_NOTE_BYTES: Final = reviewer_message_bytes("user", FINAL_PHASE)
+_FINAL_NOTE_TOKENS: Final = reviewer_message_tokens(FINAL_PHASE)
 
 
 @dataclass(frozen=True, slots=True)
@@ -111,6 +110,7 @@ class ReviewerRun:
     citable_refs: frozenset[str]
     text_by_ref: Mapping[str, tuple[str, ...]]
     paths: Mapping[int, str]
+    read_usage: tuple[Mapping[str, JsonValue], ...] = ()
 
 
 def reviewer_catalog(roots: Sequence[ReadRoot], reads: int) -> str:
@@ -189,9 +189,12 @@ async def run_reviewer(
         if exchange_budget is None or not sent:
             return None
         size, tokens = sent[-1]
-        room = exchange_budget.byte_limit - size - _NOTICE_ROOM_BYTES
+        room = exchange_budget.byte_limit - size - _REPAIR_NOTE_BYTES - _FINAL_NOTE_BYTES
         if exchange_budget.token_limit is not None:
-            room = min(room, exchange_budget.token_limit - tokens - _NOTICE_ROOM_TOKENS)
+            room = min(
+                room,
+                exchange_budget.token_limit - tokens - _REPAIR_NOTE_TOKENS - _FINAL_NOTE_TOKENS,
+            )
         return room
 
     broker = ReviewerBroker(
@@ -268,6 +271,14 @@ async def run_reviewer(
     if cleanup == "failed" and outcome.status == "final":
         outcome = replace(outcome, status="incomplete", judgment=None, reason="cleanup_unconfirmed")
     record, paths = _record(outcome, results, carried, cleanup)
+    for usage in broker.read_usage:
+        record_bounded_counts_without_raising(
+            component="reviewer_reads",
+            operation=f"reviewer_{usage['action']}",
+            outcome=cast(str, usage["reason"] or usage["status"]),
+            request_id=first_request_id,
+            counts={"operation_count": usage["call"]},
+        )
     sources: dict[int, str] = {}
     for call, path in paths.items():
         keyed = await source_commitment(_SOURCE_DOMAIN + f"{job_id}\x00{path}".encode())
@@ -285,6 +296,7 @@ async def run_reviewer(
         outcome.citable_refs,
         outcome.text_by_ref,
         paths,
+        read_usage_from_wire(broker.read_usage) or (),
     )
 
 

@@ -25,6 +25,8 @@ __all__ = [
 ]
 
 MAX_REVIEWER_READS: Final = 3
+MAX_REVIEWER_READ_ATTEMPTS: Final = MAX_REVIEWER_READS + 2
+MAX_REVIEWER_EXCHANGES: Final = MAX_REVIEWER_READ_ATTEMPTS + 2  # final judgment and one repair
 _ACTIONS: Final = frozenset({"read_packet_section", "read_ledger", "read_file"})
 _STATUSES: Final = frozenset({"ok", "partial", "unavailable", "denied", "stale"})
 _STANDINGS: Final = frozenset(
@@ -67,7 +69,7 @@ class ReviewerRead:
     def __post_init__(self) -> None:
         if (
             type(self.call) is not int
-            or not 1 <= self.call <= MAX_REVIEWER_READS
+            or not 1 <= self.call <= MAX_REVIEWER_READ_ATTEMPTS
             or self.action not in _ACTIONS
             or self.status not in _STATUSES
             or not _optional(self.reason, _TOKEN)
@@ -105,6 +107,11 @@ class ReviewerRead:
             "disclosure": self.disclosure,
         }
 
+    @property
+    def budget_used(self) -> bool:
+        """Only an admitted result bearing text/entries has content provenance."""
+        return self.status in {"ok", "partial"} and self.standing is not None
+
 
 @dataclass(frozen=True, slots=True)
 class ReviewerRecord:
@@ -123,10 +130,11 @@ class ReviewerRecord:
     def __post_init__(self) -> None:
         if (
             type(self.exchanges) is not int
-            or not 0 <= self.exchanges <= 5
+            or not 0 <= self.exchanges <= MAX_REVIEWER_EXCHANGES
             or type(self.reads) is not tuple
-            or len(self.reads) > MAX_REVIEWER_READS
+            or len(self.reads) > MAX_REVIEWER_READ_ATTEMPTS
             or any(type(read) is not ReviewerRead for read in self.reads)
+            or sum(read.budget_used for read in self.reads) > MAX_REVIEWER_READS
             or [read.call for read in self.reads] != list(range(1, len(self.reads) + 1))
             or not _optional(self.ended, _TOKEN)
             or not _optional(self.cleanup, _TOKEN)
@@ -138,7 +146,7 @@ class ReviewerRecord:
 
         return {
             "exchanges": str(self.exchanges),
-            "reads_used": str(len(self.reads)),
+            "reads_used": str(sum(read.budget_used for read in self.reads)),
             "read_bytes": str(sum(read.result_bytes for read in self.reads)),
             "reads": [read.as_wire() for read in self.reads],
             "ended": self.ended,
@@ -200,12 +208,14 @@ def render_reviewer_lines(record: ReviewerRecord | None) -> tuple[str, ...]:
 
     if record is None:
         return ()
-    used = len(record.reads)
+    used = sum(read.budget_used for read in record.reads)
     total = sum(read.result_bytes for read in record.reads)
     head = (
         f"Reviewer reads: {used} of {MAX_REVIEWER_READS}, {total} bytes, "
         f"{record.exchanges} model exchange{'s' if record.exchanges != 1 else ''}"
     )
+    if used != len(record.reads):
+        head += f"; {len(record.reads)} of {MAX_REVIEWER_READ_ATTEMPTS} read attempts"
     if record.ended is not None:
         head += f"; ended early: {record.ended}"
     lines = [head]
