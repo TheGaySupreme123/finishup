@@ -20,6 +20,7 @@ import pytest
 import finishup.service.ready_composition as ready_composition_module
 from builders.ledger_adapters import FixedClock, append_command, sqlite_adapter
 from builders.privacy_policies import minimal_external_policy
+from builders.privacy_widenings import with_llm
 from finishup.adapters.memory.privacy import MemoryPrivacyAudit, MemoryPrivacyCatalogState
 from finishup.adapters.privacy.local_enforcer import LocalPrivacyEnforcer
 from finishup.adapters.providers.reviewer_reply import REVIEWER_REPLY_SCHEMAS
@@ -68,6 +69,11 @@ _FINAL: dict[str, JsonValue] = {
         }
     }
 }
+
+
+# The full five-attempt path needs channel room for its whole history and instruction; tests
+# of it pass this policy. The fixture default stays the minimal policy (4,096 tokens).
+_ROOMY = with_llm(minimal_external_policy(), max_tokens=16_384)
 
 
 def _read_file(path: str) -> dict[str, JsonValue]:
@@ -302,12 +308,37 @@ async def test_a_review_job_runs_reads_then_the_final_judgment(
 
 
 @pytest.mark.anyio
-async def test_a_fourth_read_ends_the_review_incomplete_without_a_judgment(
+async def test_a_fourth_read_gets_the_final_phase_repair_before_any_read_limit(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    result, gateway, _runtime = await _run(tmp_path, monkeypatch, *([_read_file("calc.py")] * 4))
+    # #1173: a review that started with reads keeps that schema on every turn (#1172), so a
+    # schema-valid fourth read is the final phase's format error: the one repair asks for the
+    # judgment and the review succeeds.
+    reads = [_read_file("calc.py")] * 4
+    result, gateway, runtime = await _run(tmp_path, monkeypatch, *reads, _FINAL, policy=_ROOMY)
+    assert result.status is SemanticStatus.SUCCEEDED and result.judgment is not None
+    turn, final = (f"application/vnd.finishup.reviewer-{m}+json" for m in ("turn", "final"))
+    # The normal final turn keeps the full schema (a cache hit); the repair turn is read-free.
+    assert [media for media, _ in gateway.exchanges] == [turn] * 4 + [final]
+    notice, repair = (history[-1][1] for _, history in gateway.exchanges[3:])
+    assert notice.startswith("FinishUP: read allowance")
+    assert repair.startswith("format_error: read_in_final_phase.") and "read action" not in repair
+    assert result.reviewer is not None and result.reviewer.ended is None
+    assert len(result.reviewer.reads) == 3 and result.reviewer.exchanges == 5
+    job = await runtime.ledger.load_semantic_job(runtime.writer_id or "", frozen_request())
+    assert job is not None  # five turns, three reads and the repair, every one captured
+    assert await cast(Any, runtime.ledger).review_step_usage(job.job_id) == (9, 0)
+
+
+@pytest.mark.anyio
+async def test_a_read_after_the_final_phase_repair_ends_the_review_incomplete(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    replies = [_read_file("calc.py")] * 5
+    result, gateway, _runtime = await _run(tmp_path, monkeypatch, *replies, policy=_ROOMY)
     assert result.status is SemanticStatus.INVALID and result.judgment is None
-    assert len(gateway.exchanges) == 4
+    assert len(gateway.exchanges) == 5
+    # The repair turn was read-free: only a route that ignores the schema returns this read.
     assert gateway.exchanges[-1][0] == "application/vnd.finishup.reviewer-final+json"
     assert result.reviewer is not None and result.reviewer.ended == "read_limit"
     assert len(result.reviewer.reads) == 3
@@ -315,3 +346,61 @@ async def test_a_fourth_read_ends_the_review_incomplete_without_a_judgment(
 
 def frozen_request() -> str:
     return cast(str, non_dispatch._REQUEST)  # pyright: ignore[reportPrivateUsage]
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    ("refused", "content_reads"),
+    [pytest.param(0, 2, id="three-reads"), pytest.param(1, 1, id="refusal-then-two-reads")],
+)
+async def test_the_smallest_channel_limits_leave_room_for_fewer_content_reads(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, refused: int, content_reads: int
+) -> None:
+    """#1173 trade-off (ADR-006): at the minimal policy's 4,096 tokens the longer instruction and
+    the final-phase notice room leave two content reads, not three; a refusal's bytes still
+    count. The review still concludes: the read it can no longer afford takes the repair."""
+
+    reads = [_read_file("calc.py")] * (3 - refused)
+    replies = [*([_read_file("/absolute/calc.py")] * refused), *reads]
+    result, gateway, _runtime = await _run(tmp_path, monkeypatch, *replies, _FINAL)
+    assert result.status is SemanticStatus.SUCCEEDED and result.reviewer is not None
+    assert result.reviewer.as_wire()["reads_used"] == str(content_reads)
+    assert len(result.reviewer.reads) == refused + content_reads
+    assert gateway.exchanges[-1][1][-1][1].startswith("format_error: read_in_final_phase.")
+
+
+def _honours_the_schema(
+    case: ApprovedOutboundCase, provenance: ProviderAttemptProvenance
+) -> object:
+    """A route that enforces the reply schema, with a model that reads whenever it may."""
+
+    exchange = reviewer_exchange(case.media_type, case.payload, REVIEWER_REPLY_SCHEMAS)
+    assert exchange is not None
+    properties = cast(dict[str, dict[str, dict[str, list[JsonValue]]]], exchange.schema)
+    reads = len(properties["properties"]["reply"]["anyOf"]) > 1
+    return SemanticResultReply(_read_file("calc.py") if reads else _FINAL, provenance)
+
+
+_REJECTED: dict[str, JsonValue] = {"reply": {}}  # decodes as neither an action nor a judgment
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    "first", [pytest.param((), id="always-reads"), pytest.param((_REJECTED,), id="malformed")]
+)
+async def test_a_schema_enforcing_route_ends_a_read_hungry_review_with_a_judgment(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, first: tuple[dict[str, JsonValue], ...]
+) -> None:
+    """#1173 round 2: once the review's one repair is spent, its final phase (the repair turn
+    included) sends the read-free schema, so a model that keeps reading, or reads after a
+    malformed answer, still returns the judgment. Only that last exchange changes schema."""
+
+    replies: tuple[dict[str, JsonValue] | Callable[..., object], ...] = (
+        *first,
+        *([_honours_the_schema] * 6),
+    )
+    result, gateway, _runtime = await _run(tmp_path, monkeypatch, *replies, policy=_ROOMY)
+    assert result.status is SemanticStatus.SUCCEEDED, (result.status, result.reason)
+    assert result.reviewer is not None and result.reviewer.as_wire()["reads_used"] == "3"
+    turn, final = (f"application/vnd.finishup.reviewer-{m}+json" for m in ("turn", "final"))
+    assert [media for media, _ in gateway.exchanges] == [turn] * 4 + [final]

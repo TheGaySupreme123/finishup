@@ -37,13 +37,14 @@ __all__ = [
 ]
 
 _ACTION_ADAPTER: Final[TypeAdapter[ReviewerActionModel]] = TypeAdapter(ReviewerActionModel)
-# Tool descriptions, as terse as pi's.
+# Descriptions share the selector vocabulary of the frozen catalog.
 _ACTION_DESCRIPTIONS: Final = {
     "ReviewerPacketAction": "Read one packet item from a byte offset, including what the packet "
-    "cut. Bytes FinishUP never kept are not_retained.",
-    "ReviewerLedgerAction": "Read up to 8 recorded task records linked to up to 4 refs.",
+    "cut. item_ref is the exact catalog item_id, not source_ref. Bytes FinishUP never kept are not_retained.",
+    "ReviewerLedgerAction": "Read up to 8 frozen-case records linked to up to 4 source_ref or "
+    "linked_subject_refs, not item_ids. Absence from this case is not proof of non-recording.",
     "ReviewerFileAction": "Read lines of a file, or list a directory, beneath a root_id from the "
-    "packet's catalog.",
+    "packet's catalog. Paths must be relative to that alias; never an absolute filesystem path.",
 }
 
 
@@ -97,6 +98,8 @@ def reviewer_reply_schema(*, reads_allowed: bool, strict: bool = False) -> dict[
 # The provider-wire reply schemas every route's factory installs (#1118).
 REVIEWER_REPLY_SCHEMAS: Final = ReviewerReplySchemas(
     turn=reviewer_reply_schema(reads_allowed=True, strict=True),
+    # A review that offers no read sends this read-free schema on every turn; one that started
+    # with reads sends ``turn`` until its one repair is spent in the final phase (#1172, #1173).
     final=reviewer_reply_schema(reads_allowed=False, strict=True),
 )
 
@@ -133,6 +136,19 @@ agent's plan, claims, checks and explanations are what you test, never the stand
 accept a premise (a test covers a requirement, a file is unchanged, a limit is real, a blocker is \
 outside the agent's control), find the material that shows it.
 
+## Procedure
+Choose a material gap, read once, then assess the result. Use only catalog selectors:
+- read_file: root_id is an issued alias; path is relative to it, never absolute. Prefer a path the \
+packet names; a path=. listing that returns names spends a content read. Example args: \
+{"root_id":"w1","path":"<relative-path>","mode":"text","start_line":1,"line_count":20}.
+- read_packet_section: item_ref is the exact item_id, not source_ref. Use section=excerpts for \
+catalog excerpt; agent_account for goal/obligation/claim/decision; deterministic_findings for \
+deterministic_summary/detail. Example args: {"section":"agent_account","item_ref":"goal-1","offset":0}.
+- read_ledger: refs are source_ref or linked_subject_refs, not item_id; view selects record kind \
+within this frozen case. Example args: {"view":"claims","refs":["clm_<catalog-id>"],"cursor":null}.
+On refusal, use the correction/catalog to change the selector. Do not repeat a failed request. \
+When calls_remaining=0 or FinishUP requests the final phase, return final_judgment.
+
 ## Done
 A final_judgment whose every verdict rests on material you hold: the packet or a read result. It \
 fails if a row rests on something you did not read, or if you conclude insufficient_packet while \
@@ -167,7 +183,8 @@ definitions; files, network or versions the work needs that neither it nor the t
 input or service the task supplies is no risk.
 
 ## Constraints
-- Up to 3 reads, 8 KiB each and 24 KiB in all; a denied or empty read still spends one. After the \
+- Up to 3 content reads, at most 5 attempts, 8 KiB each and 24 KiB in all. Refused/empty reads \
+spend attempts and bytes, not content reads; at most 2 extra attempts, on the same deadline. After the \
 last read only final_judgment is accepted. Read only what bears on a requirement you cannot \
 otherwise settle.
 - Up to 3 distinct challenges. For decision_needed, present a choice, never a repair. Otherwise \
