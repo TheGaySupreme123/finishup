@@ -28,7 +28,6 @@ Conditional files are `change` items.
    `dry_run` is optional: send each returned frontier as the next `expected_frontier` (first plan: `start`'s).
 4. `check` after the plan and each milestone that changes behavior, outputs or acceptance evidence.
    Tasks may start local; `review.md`: when to turn on AI-powered review.
-   Deadlines/signals: [delivery pacing](review.md).
    Select `semantic_required` when the user, effective policy, or named acceptance criterion
    requires independent review.
 5. Publish claim/evidence before the final check; answer findings, check, and inspect resolved
@@ -64,8 +63,9 @@ build, lint, or typecheck output reaches the reviewer only when a repository exc
 
 ## Read more
 
-Focused topics by trigger: failure `recovery.md`; batch `publication.md`; finding `review.md`;
-closing `receipt.md`; resume/plan `startup.md`; setup `consent.md`; clipped page `page-delivery.md`.
+Focused topics by trigger: failure `recovery.md`; batch `publication.md`; finding, deadline,
+`delivery_page` or `not_in_frozen_case` `review.md`; closing `receipt.md`; resume/plan `startup.md`;
+setup `consent.md`; clipped page `page-delivery.md`.
 On demand: resume/recovery/delegation/capacity `finishup://guidance/workflow.md`; field rules
 `finishup://guidance/publication-policy.md`; coverage `finishup://guidance/coverage-and-receipts.md`;
 publish `finishup://guidance/request-templates.md#publish-shapes`; setup: same page.

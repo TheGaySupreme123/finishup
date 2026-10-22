@@ -44,6 +44,12 @@ re-request `markdown` or `text`, or widen agent-context policy from a local term
 human format cannot project those sections, the result names the omission; it does not return
 an accepted receipt with an empty body and no pointer.
 
+The `finishup receipt` command and every terminal command print the whole result. Through an
+agent's MCP tools, a result too large for the host's window (a `json` receipt, often) arrives as
+numbered `state=delivery_page` parts. Keep reading with `status`, `view=compact` and the returned
+`delivery_cursor` until `complete` is true, and rebuild the result before relying on it; reading
+the parts never repeats the review or creates another receipt.
+
 **The durable receipt is recorded even when projection is blocked.** A projection failure is a
 disclosure decision, not a lost receipt.
 
@@ -185,10 +191,12 @@ Two findings stop a completion from reading clean until the agent answers them:
   only that link, not that every requirement was captured. Repeating your unchanged request when a
   session resumes does not count as a new request.
 - `claim_without_admissible_evidence` (observed-verification form) — the hooks saw the agent edit
-  or run checks, but the completion claim cites no observed verification run after the last edit.
-  A documentation-only edit (a README, a changelog) is not the last edit here unless the task
-  declares that file or an output directory. The agent reruns its verification and cites that
-  observed run.
+  or run checks, but the completion claim cites no observed verification run, or cites one that a
+  later change made stale: a recorded input changed, or an edit FinishUP could not place (such as
+  one made with the agent's file-edit tool) followed it. A change a shell command made that only
+  may touch the run's inputs asks a non-blocking rerun question instead, and under AI-powered
+  review a stale verification is such a question too. The agent reruns its verification and cites
+  that observed run.
 
 Running the check again without changing the record returns the same finding. Neither finding
 means the work is wrong, and clearing them does not prove it right.
@@ -540,4 +548,9 @@ disproved appear separately; that wording does not assert that the implementatio
 Keep incidental evidence reports and logs outside your project and its output directories, then
 publish references through the ledger. Required reports remain deliverables. FinishUP can preserve
 verification after a byte-identical shell rewrite when its trusted workspace comparison proves
-no bytes changed; a new or changed report may still make earlier verification stale.
+no bytes changed. A report a shell command writes makes earlier verification stale only when it is
+one of that verification's recorded inputs; when FinishUP cannot tell, it asks whether a rerun is
+needed instead of demanding one. A report the verification itself wrote, declared as its output,
+is not a reason to rerun. A report you write with your coding agent's file-edit tool records no
+file path, so it still makes earlier verification stale unless it is documentation or notes; write
+incidental reports outside the project instead.

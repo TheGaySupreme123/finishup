@@ -169,6 +169,7 @@ from finishup.application.projects import (
 from finishup.application.recommendations import evaluate_recommendation_context, refresh_pending
 from finishup.application.reviewer_broker import MAX_READS, ReadRoot
 from finishup.application.reviewer_run import ReviewerRun, reviewer_catalog, run_reviewer
+from finishup.application.reviewer_telemetry import read_usage_from_wire
 from finishup.application.semantic_attempts import (
     SemanticAttemptAccounting,
     SemanticEndpointPlan,
@@ -4242,6 +4243,11 @@ async def _publish_semantic_response_object(
         body["reviewer_paths"] = {
             str(call): path for call, path in sorted((evaluation.reviewer_paths or {}).items())
         }
+    if evaluation.reviewer_read_usage is not None:
+        usage = read_usage_from_wire(evaluation.reviewer_read_usage)
+        if usage is None:
+            raise ValueError("reviewer_read_usage_invalid")
+        body["reviewer_read_usage"] = cast(CanonicalJsonValue, [dict(row) for row in usage])
     payload = canonical_encode(cast(CanonicalJsonValue, body))
     staged = await runtime.objects.stage(
         ObjectSource(data=payload, declared_size=len(payload)),
@@ -4449,6 +4455,7 @@ async def _recover_response_evaluation(
         case_content_gaps=case_content_gaps,
         reviewer=reviewer_record_from_wire(body.get("reviewer")),
         reviewer_paths=_reviewer_paths(body.get("reviewer_paths")),
+        reviewer_read_usage=read_usage_from_wire(body.get("reviewer_read_usage")),
     )
 
 
@@ -4936,6 +4943,7 @@ def _with_reviewer(final: FinalSemanticEvaluation, run: ReviewerRun) -> FinalSem
         reviewer=run.record,
         reviewer_citable_refs=run.citable_refs,
         reviewer_paths=MappingProxyType(dict(run.paths)),
+        reviewer_read_usage=run.read_usage,
         provider_input_text_by_ref=texts,
     )
 
@@ -6191,9 +6199,11 @@ def _privacy_gated_semantic_evaluator(
                 provider_input_text_by_ref = None
                 evaluation_content_gaps: tuple[str, ...] = ()
                 reviewer = reviewer_paths = None
+                reviewer_read_usage = None
                 reviewer_refs: frozenset[str] = frozenset()
                 if type(evaluation) is FinalSemanticEvaluation:
                     reviewer, reviewer_paths = evaluation.reviewer, evaluation.reviewer_paths
+                    reviewer_read_usage = evaluation.reviewer_read_usage
                     reviewer_refs = evaluation.reviewer_citable_refs
                     semantic_withheld_item_ids = evaluation.semantic_withheld_item_ids
                     semantic_redacted_values = evaluation.semantic_redacted_values
@@ -6276,6 +6286,7 @@ def _privacy_gated_semantic_evaluator(
                     reviewer=reviewer,
                     reviewer_citable_refs=reviewer_refs,
                     reviewer_paths=reviewer_paths,
+                    reviewer_read_usage=reviewer_read_usage,
                     review_input_manifest=input_manifest,
                     # Recovery reads the same provider-bound manifest from the durable response.
                     case_excerpt_refs=sent_excerpt_content_refs(semantic_case, provider_manifest),

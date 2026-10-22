@@ -10130,9 +10130,12 @@ follow-up loop is deleted.
   `protocol.models.ReviewerActionModel` (`ReviewerPacketActionModel`, `ReviewerLedgerActionModel`,
   `ReviewerFileActionModel` over `Read*ArgsModel`; `max_bytes` 1,024–8,192) and the provider
   judgment `$defs`. Root `{"reply": PacketAction | LedgerAction | FileAction | FinalReply}`; with
-  `reads_allowed=False` only `FinalReply`. `decode_reviewer_reply(parsed) -> ReviewerActionModel |
+  `reads_allowed=False` only `FinalReply`. A review whose first turn offers no read sends the
+  read-free one on every turn; one that starts with reads sends the full union until its one
+  repair is spent in the final phase, then the read-free one (#1173, below). `decode_reviewer_reply(parsed) -> ReviewerActionModel |
   SemanticJudgment` raises `ReviewerReplyInvalid(code)` (`envelope_invalid`, `action_invalid`,
-  `judgment_<stage>`). `REVIEWER_LOOP_INSTRUCTION` is the loop's one system text.
+  `judgment_<stage>`); the loop adds `read_in_final_phase` for a read in the final phase (#1173).
+  `REVIEWER_LOOP_INSTRUCTION` is the loop's one system text.
 - Controller: `application.reviewer_loop.ReviewerLoop(model, broker, *, instruction, packet,
   deadline, history_admissible, final_reserve_seconds=30.0, clock=time.monotonic,
   resume_reserved=False).run() -> ReviewOutcome(status,
@@ -10144,6 +10147,15 @@ follow-up loop is deleted.
   The one repair covers `ReviewerReplyInvalid` from `complete` and from decoding alike; the turn is
   captured either way. With `resume_reserved`, a store whose `usage()` is exactly `(1, 1)` runs turn
   1 again without reserving it; any other prior usage ends `interrupted` or `uncaptured_step`.
+- One reply schema per review (#1172): the provider caches the reply schema with the
+  conversation, so a review keeps the schema its first turn chose, except on the final-phase
+  repair turn and any final turn after the review's one repair is spent (the per-turn rule,
+  `FINAL_PHASE` and the late-read repair are under #1173 below). When the next exchange has no
+  room left for the `FINAL_PHASE` notice (`ReviewerBroker.notice_fits()` is false: only a first
+  exchange admitted inside the frame the notices need), the loop leaves the notice out, so the
+  notice never pushes that exchange over the cap. Only a malformed first answer reaches that
+  state, so the repair note already asks for the judgment and the turn is read-free. A first
+  exchange that leaves less room than the repair note itself still ends `case_capacity_exceeded`.
 - Broker: `application.reviewer_broker.ReviewerBroker(*, job_id, case, roots, store, admit,
   packet_refs, packet_text, max_reads, exchange_room)`; `execute(action, expired, reply="") -> str`
   returns the round-1 result envelope
@@ -10159,7 +10171,8 @@ follow-up loop is deleted.
   `ReadExchangeFull(required, available)` before reserving when less than `MIN_ROOM` is left.
   The loop ends `case_capacity_exceeded`, carrying those minimum required and available exchange
   bytes through `SemanticEgressBlocked.capacity` to the existing capacity outcome. It never
-  becomes `response_schema_invalid`; a read after the count cap still ends `read_limit`.
+  becomes `response_schema_invalid`; a read after the count cap takes the one format repair
+  (#1173) and, after that repair, ends `read_limit`.
   A result over its room keeps the longest head that fits, measured.
 - Steps: `ports.semantic.ReviewStepStore.reserve(kind, ordinal, selector)`, `capture(kind, ordinal,
   result)`, `usage() -> (steps, uncaptured)`; `ReviewStepRefused` on a repeated step or a lost lease.
@@ -11937,10 +11950,13 @@ One reviewer-loop completion is one ordinary gateway dispatch with its own admis
 scan, root fence, consume, owed receipt and one-use credential or runtime authority. Its approved
 payload is the canonical history `encode_reviewer_exchange(history)`: a JSON array of
 `{"content", "role"}` messages, `system` first, then `user` and `assistant` turns ending with
-`user`, at most 12 messages. A user turn may follow a user turn (the loop's format-repair notice
-never echoes the malformed reply); an assistant turn may not follow an assistant turn. `ApprovedOutboundCase.media_type` (or the local case's media type)
+`user`, at most 17 messages (#1173). A user turn may follow a user turn (the loop's final-phase
+notice follows a read result; its format-repair notice never echoes the malformed reply); an
+assistant turn may not follow an assistant turn. `ApprovedOutboundCase.media_type` (or the local case's media type)
 selects the reply schema: `application/vnd.finishup.reviewer-turn+json` (every reply branch) or
-`application/vnd.finishup.reviewer-final+json` (final judgment only). Composition installs both
+`application/vnd.finishup.reviewer-final+json` (final judgment only; since #1173 a review whose
+first turn offers no read uses it on every turn, and a review that started with reads uses it only
+for its final-phase repair turn and any final turn after its one repair is spent). Composition installs both
 provider-wire schemas as `ReviewerReplySchemas` (`REVIEWER_REPLY_SCHEMAS`, the strict
 `findings/reviewer-reply-1.0.0` forms); without them a route refuses the exchange.
 
@@ -11949,7 +11965,7 @@ provider-wire schemas as `ReviewerReplySchemas` (`REVIEWER_REPLY_SCHEMAS`, the s
 | Responses | `input` is the payload verbatim, `text.format` the reply schema, `store:false` kept, no tools | no schemas installed |
 | Chat Completions | `messages` is the payload verbatim, strict `response_format`, no functions or tool calls; the SDK posts the canonical rendered body itself, so the exact-body guard sees the audited bytes | `prompt_only` endpoints (unavailable, never relabelled) |
 | Local model | one frame `{"messages", "protocol": "finishup-reviewer-completion-1", "reply_schema"}` | a profile naming any other protocol (and a completion profile receiving a one-shot case) |
-| Codex subscription | one ephemeral thread per review, held in its `ReviewerSession`; the first turn sends every user message after the instruction (the packet, then the read catalog) as its text inputs, each later turn sends only the new user message, with `outputSchema` every turn | releases outside `REVIEWER_LOOP_REVIEWED_RELEASES` (`0.162.1`), no or a closed session, a continuation that does not extend the held thread (`case_invalid`), plan/compaction/tool/request/warning events |
+| Codex subscription | one ephemeral thread per review, held in its `ReviewerSession`; the first turn sends every user message after the instruction (the packet, then the read catalog) as its text inputs, each later turn sends only the user messages after the longest history the thread holds (a read result or repair notice, then, when reads end, the final-phase notice; at most two, #1173), with the same effort and model every turn and the same `outputSchema` except on the final-phase repair turn and any final turn after the review's one repair is spent (#1172, #1173) | releases outside `REVIEWER_LOOP_REVIEWED_RELEASES` (`0.162.1`), no or a closed session, a continuation that does not extend the held thread (`case_invalid`), plan/compaction/tool/request/warning events |
 
 A completed turn returns `SemanticResultReply(reply, provenance)`: the parsed reply object, not
 yet decoded. `reviewer_exchange(media_type, payload, schemas)` computes the exchange's history,
@@ -11990,6 +12006,53 @@ Discarded telemetry and streamed deltas no longer exhaust a 4,096-event allowanc
 `codex_event_<family>_bytes` (re-encoded JSON), `codex_event_wire_bytes` (active-turn traffic including
 the turn acknowledgement), and attempt `duration_ms` including cleanup. Per-message,
 request-queue and pre-disclosure bounds and all event/tool allowlists still apply.
+
+**Per-exchange prompt-cache telemetry (issue #1172).** Every provider exchange that reports usage
+writes one `exchange_cache` owner diagnostic (component `codex_app_server`, `openai_responses` or
+`openai_chat_completions`; reason `completed`, or `incomplete` when the Codex turn did not complete,
+the Responses status is not `completed` or the Chat Completions `finish_reason` is not `stop`). Its
+`request_id` is the review's first provider request id, the attempt row's `provider_request_id`, so
+every exchange of one review shares it and `finishup service diagnostics --request-id <id>`
+returns them all; a one-shot case names its own. Fields, all integers but the last:
+
+| Field | Meaning |
+|---|---|
+| `reviewer_exchange_index` | 1-based exchange of the review (a one-shot case is 1) |
+| `reviewer_model_requests` | model requests the exchange made |
+| `reviewer_input_tokens`, `reviewer_cached_input_tokens`, `reviewer_output_tokens` | provider-reported, summed over those requests; the cached count is absent when the provider did not report one |
+| `reviewer_cache_write_input_tokens` | provider-reported cache writes, absent where the provider did not report them |
+| `reviewer_prefix_tokens` | input of the previous exchange's last request: what this exchange could reuse (0 when it opened the conversation; absent when the previous exchange's requests are unknown) |
+| `reviewer_prefix_cached_tokens` | cached input of this exchange's first request (absent with the cached count) |
+| `reviewer_cache_miss` | closed label, below; `first_turn` and `compaction` are always recorded, and a later exchange has none when its prefix or cached input is unknown |
+
+Codex counts are the thread's cumulative `total` across the turn; a snapshot whose input grew is one
+more request, and that snapshot's `last` names the request (a repeated snapshot is not another one).
+A turn starts at the total its previous turn left. When that turn reported no usage or had a usage
+snapshot refused, the turn starts instead at the total before its own first reported request (that
+snapshot's `total` less its `last`), so it records its own requests, not the thread's earlier
+ones, unless a repeated snapshot of the thread's total arrives first, which it would count as its
+own (#1192). A turn that had a usage snapshot refused records no counts (it may be missing a
+request) and leaves the next prefix unknown. Responses reads `usage.input_tokens`,
+`usage.output_tokens` and, in `usage.input_tokens_details`, `cached_tokens` and
+`cache_write_tokens`; Chat Completions `prompt_tokens`, `completion_tokens` and the same two in
+`prompt_tokens_details`, which may be absent. A count the answer omits is left out, never recorded
+as zero. An answer without input and output counts records nothing. A compaction is still
+recorded then, by its index and label alone. The local model route records nothing (FinishUP
+observes no provider prompt cache there), nor does the credential probe.
+
+`reviewer_cache_miss` is the first that applies: `compaction` (a `thread/compacted` notification or
+`contextCompaction` item in the turn, recorded even where the reviewer then refuses it);
+`first_turn` (the exchange opened the review's conversation; every one-shot case); `none` (the
+first request's cached input falls short of the prefix by at most 1,024 tokens, the providers'
+minimum cacheable prefix; they cache whole 128-token blocks from there, so a prefix that short is
+`none` even when nothing of it was cached);
+`schema_or_settings_change` (the digest of what the route sends beside the messages differs from
+the previous exchange's: the Codex `turn/start` parameters except `input` and `threadId`, or the API
+body except `input`/`messages`); `retry` (the history does not carry the previous answer, so this
+is the loop's one format repair); `unexplained`. The state between a review's exchanges is
+`ReviewerSession.cache` (`domain.reviewer_cache.ReviewerCacheState`): counts, the last history's
+message count and that settings digest, never content. Recording never changes an outcome: any
+failure in it is dropped. A record is at most 656 bytes, inside the ring's 1,024-byte line cap.
 
 `complete(history, schema, deadline=)` returns the reply object. It raises the decoder's
 `ReviewerReplyInvalid("output_not_json")` only for a completed answer that is not one JSON object
@@ -12166,16 +12229,11 @@ as `outcome_unknown` and is never resent. For it, `operation_max_retries` is `0`
 
 ### Bounded advisory delivery and frozen ledger misses (#1139, #1126, #1148)
 
-ADR-006's 2026-10-21 amendment owns this behavior. MCP Codex check results may carry
-`review_delivery` (check-result 1.6.0, optional finding-summary text or an omission), inserted first.
-Findings status pages may carry the same optional member before `items` (status-result 1.4.0).
-The bridge derives it after privacy projection. It carries at most three complete bounded groups:
-summary → requested action → alternative interpretation → uncertainty. The review-summary budget
-is 420 JSON-encoded bytes and each challenge field's is 180, including escaping. Labels, ids and
-an explicit truncated-preview continuation remain within 3,600 encoded bytes. Full findings,
-review summary, evidence and provenance are retained. Generic and Claude text lead with this
-advisory before evidence. Cursor's canonical full-copy contract is unchanged. CLI, TUI, hooks and
-receipts keep their existing full-field and privacy contracts. They do not receive a new judgment.
+ADR-006's 2026-10-21 amendment and ADR-043's residual result-delivery amendment own this behavior.
+The optional `review_delivery` field remains accepted for older 1.6.0/1.4.0 records, but current
+bridges no longer synthesize shortened previews. Oversized checks, findings status and receipts
+use the lossless `delivery_page` branch described below. Read all action fields and required
+inventory continuations before answering; excerpts and provenance follow through optional pages.
 Native-host delivery is not established by the offline clipping simulation.
 
 Prior dialogue is reserved before aggregate case fitting, and channel fallback preserves the
@@ -12229,9 +12287,230 @@ says only that the agent recorded its own verification. Receipt-document 1.3.0 o
 receipts identify those concerns separately. No row becomes independently resolved or clean.
 
 For freshness, a service-stamped, complete workspace fingerprint proving an in-workspace shell
-write byte-identical does not advance the verification edit frontier. The same trusted action set
-is frozen as `verification_unchanged_action_ids` in the internal deterministic case and used by
+write byte-identical is not a later change. The same trusted action set is frozen as
+`verification_unchanged_action_ids` in the internal deterministic case and used by
 work-integrity. Contradictory or unavailable observations, outside writes, and declared paths the
-fingerprint cannot compare retain conservative freshness. This is the bounded #1143 mitigation;
-new report files and changed report bytes still invalidate freshness. General per-command
-verification dependencies and generated-artifact roles remain an open design requirement.
+fingerprint cannot compare never borrow that proof. Which later changes make a verification stale
+or raise a question is defined once, in the next section.
+
+
+### Intelligent verification freshness (#1143, ADR-042)
+
+`kernel.verification_freshness.VerificationFreshness(run_ref, state, changes, change_refs, basis,
+label)` is a prefix-derived, frozen per-run fact. `state` is `stale` (a recorded input changed, or a
+counting change FinishUP cannot place), `unknown` (a placed change may touch an input FinishUP
+cannot rule out) or `current`; a `current` row exists only to disclose a change set aside on a
+caller-asserted complete declaration.
+`basis` is `undeclared|requested|declared|complete` and `label` is the requested command the run
+matched, if any. `changes` are bounded, already quoted summaries: a named path, a count of
+keyed-only identities the record does not name, or, for changes FinishUP cannot place, their kind
+and count (an edit names its host tool) with the statement that FinishUP cannot tell whether they
+touched the verification's inputs. `verification_freshness(projection, records)`
+combines service-stamped workspace comparisons with requested input files and directories and the
+versioned, caller-asserted evidence convention
+`reference=finishup-verification-inputs/v1:<res_ id>`,
+`description={"inputs":["source.py","config.json"],"outputs":["evidence.json"],"complete":true}`.
+Only exact file inputs are declared; arbitrary shell process reads are not observed by any host.
+A value ending in `/` (or the workspace root `.`) names a directory; a bare name is read as a
+file. An input directory makes the declaration partial and the run asks about any change it may
+hold. An output directory covers only files the run's own trusted comparison wrote whose recorded
+name (a declared or requested file, or an agent evidence reference) lies under it; a write whose
+location the record does not name is not covered, and the workspace root (`./`) covers nothing.
+It leaves the declaration as complete as it was.
+An input takes precedence over an evidence output. A placed change (a trusted comparison's keyed
+changed-entry identities) whose input relationship is unknown asks, never demands a rerun.
+A counting change FinishUP cannot place keeps the pre-#1143 rule and makes the verification stale:
+host-native edit-tool edits (not fingerprinted, `fingerprinted_tool`, so they carry no
+changed-entry identity), shell writes without a trusted comparison, unavailable or incomplete
+comparisons, and a no-op proof that cannot cover an input outside the comparison. Exempt classes
+never make it stale. Decision recorded in ADR-042 (controller, 2026-10-22, under the #1143
+direction); keyed edit-target identities for host edit tools are follow-up #1188.
+
+Input scopes are per verification: a requested input belongs to the runs of its obligation's
+command; a command-less obligation's inputs apply to runs without their own complete declaration.
+An input outside the fingerprint's coverage makes its runs ask about every later write; a
+requested in-workspace directory rules out only named changed paths outside it. An output is
+exempt only when the run's own trusted comparison wrote it. A `complete: true` declaration with no
+inputs is not complete. A complete declaration that omits a later-edited file keeps the run
+current and raises the standing disclosure `verification_inputs_caller_asserted` (G4d); the
+disclosure appears only when a placed change was actually set aside on that assertion
+(`VerificationFreshness.set_aside`, derived and not persisted), never for an unplaceable change.
+
+`domain.workspace_effect.workspace_path_identity(key, relative)` reuses the fingerprint's keyed
+path identity. `WorkspaceEffectReading.changed_entries` and the optional active-control structural
+`workspace_changed_entries` carry a complete sorted set of at most 128 32-hex identities; omission
+means unknown (root replacement, overflow, unavailable or legacy comparison). Result/annotation
+suffixes preserve it alongside effect and write classes. Raw paths stay in admitted encrypted
+payloads; names come only from requested files, declarations and the bounded latest
+agent-published evidence references, by exact keyed match. Old control schemas stay frozen; the
+unreleased active 2.9.0 envelope admits the field.
+
+`DeterministicCase.verification_freshness` is absent on old frozen cases, which retain their legacy
+replay semantics. New cases persist the derived rows. `verification_advisory` is a per-evaluation
+AI-route flag. One predicate decides it on one state: the policy route requires AI-powered
+review, or a review was used before the check that judged freshness. `check` asks it of its
+frozen prefix; status and Stop (`ClosureFacts.freshness_review_used`) and receipts
+(`GapContext.freshness_advisory`: the applicable check's recorded route required review, or
+`closure_readiness.freshness_review_used`) ask it of the records before the latest check. So the
+first AI-powered review never turns the check that ran it advisory after the fact, and the
+requested mode never sets it: a check with no configured reviewer, on the strict route, under a
+disabled policy or with a failed review keeps the local rule. "The policy route requires review"
+uses the effective policy: the owner's explicit local conversation setting or switch
+(`_task_local_by_choice`; the check's resolved policy) relaxes `required` for check, status and
+Stop alike. Receipts cannot see the serving route and read the check's recorded route bit
+(`semantic_route_required` omitted means required); that bit also counts a check that explicitly
+asked for `semantic_required` on an optional policy, where the check itself used the local rule.
+Both answers bound the receipt (actionable versus standing), so the conclusion is the same. Known
+input changes and unplaceable counting changes produce `planned_verification_stale` /
+`edited_after_last_verification` only on the affected runs; the stale finding's detail names the
+verification and the changes. A run whose result never arrived (pending or unreadable) has
+nothing to judge and keeps the pre-#1143 last-edit rule; on the AI route the check asks about it
+(`DeterministicCase.verification_unjudged_stale`, its action and change events). A completion
+claim's cited run that freshness judges (`DeterministicCase.verification_tracked_runs`: a
+test/lint/typecheck/build or requested run with a readable result) is judged exactly as the task
+facts judge it: a stale row rejects it, no row means it is current. Every other cited ref (the
+agent's own `test_result`/`command_output` evidence, a run of an untracked class) keeps the
+latest-edit frontier, where the run's own trusted write at its own result frontier never counts
+against it. Unknown relationships of placed changes use the standing
+`verification_rerun_question` code and a non-blocking `ledger_stale_or_incomplete` question whose
+subjects bind the observed run event and subsequent change events. `respond acknowledged` with a
+nonempty reason records a no-rerun decision for that exact set under the generic respond contract;
+it does not rewrite the evidence or prove freshness. A later qualifying check observes the answer.
+AI-route freshness is never agent work or a Stop item; on receipts a stale verification is then a
+standing limit (G0f spec `V`, `GapContext.freshness_advisory`), like the question, and a
+caller-asserted reliance is disclosed for any retained run (the latest of its command or one the
+account cites); failures and missing checks retain their existing rules.
+
+CLI/MCP check/status and TUI consume shared task-fact sentences. Encrypted finding details name the
+verification (result id and requested command), state how its inputs are known, and list named
+paths and short change summaries; keyed-only changes are counted and never described as declared.
+The semantic packet includes those local questions through its existing selected/scanned finding
+content, alongside verification evidence and diffs. Its finding detail is the name-free form
+(`kernel.verification_freshness.name_free_finding_detail`): the requested command and named
+paths come from obligation and evidence text, so they leave only through those privacy
+categories, never as `finding_summary` prose, and the detail counts them instead; `semantic_case.review_question_set(...,
+freshness=verification_freshness_asked(case))` adds `FRESHNESS_REVIEW_QUESTION` only when the frozen
+case records a verification with later changes, so other review packets are unchanged. Receipt JSON, markdown and text retain the
+same question, response, caller-assertion disclosure and coverage limitations. There is no new
+permission, provider, capture or execution authority.
+
+The semantic fence routes a reviewer's `stale_evidence_for_changed_state` concern to
+`decision_needed` / `answer_question` only when it cites an observed verification run; the
+reviewer's summary is kept at the start of the detail. Other stale-evidence concerns keep their
+kind and text. Durable local-result checkpoint validation reproduces named freshness details from
+the frozen case before comparing text; restart does not lose the question or trigger an unchanged
+recomputation solely because the finding names paths.
+
+
+### Reviewer read recovery and private metrics (#1173)
+
+- `ReviewerBroker.calls` counts attempts (maximum five), `content_reads` counts admitted
+  content-bearing results (maximum three), and `used` counts every envelope byte (maximum
+  24 KiB). `reads_allowed()` checks all three, the configured allowance and exchange room;
+  `execute` enforces it before reserving. `calls_remaining` takes the smaller remaining
+  content/attempt allowance. Refused/empty reads never refund steps or bytes. The cap is exact:
+  two refusals leave three content reads (`calls_remaining` 3, 3), a third leaves two, and five
+  refusals end the reads with none.
+- Bundle migration `0018` preserves the step table while widening its ordinal checks to read
+  1–5 / turn 1–7. READY upgrade target is 18, supported sources 12–17.
+- `MAX_REVIEWER_READS=3`, `MAX_REVIEWER_READ_ATTEMPTS=5`,
+  `MAX_REVIEWER_EXCHANGES=7` are in `domain.reviewer_reads`. `ReviewerRead.budget_used` is true
+  for ok/partial results with content provenance. `ReviewerRecord.reads_used` sums it, while
+  `reads` contains up to five completed attempts. The unreleased 1.6.0 schemas widen these
+  bounds; prior schema versions stay frozen. Shared text surfaces report differing attempt counts.
+- Refusal envelopes may carry `continuation`, `allowed_root_ids` or `alternatives` (at most two
+  rows with `item_id`, `sections`, `views`, `source_ref`). `forbidden_path` and `outside_scope`
+  carry `allowed_root_ids` (the requested alias, or for an unknown one up to four, workspace
+  first) and fixed text per cause (unknown alias, absolute path,
+  hidden/empty/traversing component, ignored or unprobeable path, outside the declared paths),
+  never the refused path or a concrete example path. Alternatives are fitted whole and
+  admitted/scanned under their original category/root, with no content or citation. When a row
+  is withheld or none fits (an empty `alternatives` is never sent), the rows are dropped and the static #1148 frozen-case continuation
+  stays, rescanned in its exact envelope; only if that fails too is the correction omitted.
+- `ReviewerLoop.run` reply schema per turn: `offered` is whether the first turn offered a read.
+  It sends `reviewer_reply_schema(reads_allowed=offered and (reads or not repaired))`: a review
+  whose first turn offers none (ask-every-time, or a first turn inside `final_reserve_seconds`)
+  sends the read-free schema (`final` media type) on every turn and gets no `FINAL_PHASE` notice;
+  a review that started with reads sends the full schema (`turn`) on read turns, read-phase
+  repair turns and its normal final turn, and the read-free one on its final-phase repair turn
+  and any final turn after its repair is spent (at most one change, one cache miss, on the last
+  exchange). A repair note uses `FINAL_FORMAT_ERROR` whenever the next turn is final. The step
+  selector still records `turn`/`final` per turn.
+- `reviewer_loop.FINAL_PHASE` is a user notice appended once, only in a review that started with
+  reads, when reads end and the next exchange has room for it (otherwise it is left out, #1172
+  above). The conversation leaves room for it
+  and one format repair (the longer of `FORMAT_ERROR` and `FINAL_FORMAT_ERROR`). The exchange
+  codec accepts at most 17 messages, including catalog, five action/observation pairs and
+  notices. The shared deadline and history fences remain unchanged.
+- In the final phase (no read offered) a decoded read action executes nothing and raises
+  `ReviewerReplyInvalid(reviewer_loop.FINAL_PHASE_READ)` (`read_in_final_phase`): it takes the
+  review's one repair, whose note is `FINAL_FORMAT_ERROR` ("No reads remain. Reply with
+  final_judgment only"), as is any other final-phase repair. A read after a repair, or one a
+  route returns against the read-free schema of a review that never offered a read
+  (ask-every-time: a repair would need another approved exchange), ends `read_limit`. The read
+  action is not echoed into the history.
+- Admission never ends a review on the local read stop: a content result admitted after the
+  stop is still sent (the read finished before it), and a refusal's correction admitted after it
+  is dropped and the bare refusal is sent.
+- `run_durable_semantic_attempts` writes a failed attempt's response object when it holds
+  omission identities or `reviewer_read_usage`. When read usage is the only reason, the write is
+  best effort: a failure is logged (`semantic_attempt_read_usage_persistence_failed`) and the
+  attempt keeps its outcome, evaluation and retry.
+- Codex subscription continuations send the user messages after the longest history the held
+  thread holds (`_ReviewerThread.prefixes`), at most two (a read result or repair notice, then
+  `FINAL_PHASE`); an empty, longer or non-user suffix, or one that extends no held history, is
+  `case_invalid`.
+- `ReviewerRun.read_usage` and `FinalSemanticEvaluation.reviewer_read_usage` hold private
+  selector/result rows. `application.reviewer_telemetry.read_usage_from_wire(value)` validates
+  the five-row bound and the closed action args; it returns null for absent/invalid telemetry.
+  `reviewer_read_usage` is persisted only in the encrypted semantic response and recovered
+  with it; it never enters the public reviewer record or result-leaf registry.
+- `application.reviewer_telemetry.export_reviewer_read_metrics(attempts, objects)` accepts
+  physical `SemanticAttemptRecord` rows and an already-authorized unlocked `ObjectStorePort`.
+  It returns `attempt_usages` rows keyed by attempt id/ordinal with `reviewer_reads` (call,
+  action, args, status, reason), or null for unavailable telemetry. It checks response identity
+  and revalidates args; it never exports read/packet/judgment content. Diagnostics use
+  `reviewer_reads` / `reviewer_<action>`, `outcome`=result code and `operation_count`=call ordinal.
+  No raw selector/path enters a structural log or public export.
+
+## Lossless result delivery (issue #1139)
+
+`check-result` 1.7.0, `status-result` 1.5.0 and `receipt-result` 1.4.0 add the closed
+`state=delivery_page` presentation branch. It is a page of an already-authorized result, not a
+verdict or a fresh workflow operation. Each `items` entry identifies an original JSON Pointer and
+its complete `value`. A `container` marker initializes an object or array before its child
+paths; its `value=null` is a marker, not the original field value. An optional `fragment` identifies an oversized scalar's Unicode scalar
+offsets (`unit=unicode_scalar`), original length, digest and final fragment. Reconstruct it before acting; a fragment is never a preview.
+`truncated=true` reports deferred source content; `complete=true` and `next_cursor=null` mark the
+last emitted page of this source result. `actionable_complete` ends its action fields; remaining
+result pages are optional provenance. `inventory_read`, when present, names the required separate
+findings read or next inventory page. Inspect the original `suppressed_count`, receipt inventory
+limits, and `/page/next_cursor` separately: result delivery does not erase inventory pagination.
+
+`status-request` 1.3.0 adds `delivery` (`complete` or `paged`) and `delivery_cursor`. Only a
+`delivery=paged` status read may come back as pages; absent or `complete` returns the whole result,
+as 1.2.0 did. The MCP `status` tool sends `paged` unless the agent names `delivery`; the bridge's
+closure inventory and write-recovery probes send none. An agent's MCP check and receipt may page;
+CLI output, the native TUI, owner exports and `view=operation` never do. Send `delivery_cursor`
+only with `view=compact`, the held session and writer and a fresh request ID, without other
+selectors, filter, frontier or inventory cursor. A cursor binds source selection, writer, session
+(by its signature), sink, position and authorized content digest, and freezes the status read's
+live fields (head frontier, projection lag and version, rebuild state, import status, credential
+heuristic, review mode), presence included, so an append between page reads leaves a brief or full
+read continuable.
+The original complete operation is read without running it again, and disclosure runs again for
+the current reader. Every page therefore carries its own read's `privacy_projection`, never paged
+as `items` and outside the content digest; reconstruction uses the final page's projection. Past
+1,024 canonical bytes a page's `omitted_pointers` coalesce to containing fields, as past the
+512-pointer wire bound. Service restart expires these cursors, as it does existing status cursors;
+recover through current status/findings without creating a new review. Missing source, altered
+binding or changed authorized content is a bounded `INVALID_REQUEST`; it does not authorize a new review or downgrade required review.
+
+The service creates these pages before MCP rendering. The budget is 12,000 bytes, Codex's
+structured window and the tightest recorded host limit, for the larger channel a host reads (the
+structured JSON or the text) plus a 64-byte header allowance, never the sum of both;
+`budget_bytes` on each page names it. Action fields precede bulk
+provenance. No field is cut silently. The retained original operation and receipt document keep
+their identity and existing retention/redaction policy. The native TUI retains its full local
+view, as do authenticated owner exports bound to their exact approved request. Hook text points
+to status instead of duplicating review prose. ADR-043 records the measured Codex fallback, conservative host decisions and consumer reconstruction requirements.

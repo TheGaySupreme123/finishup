@@ -257,22 +257,46 @@ Closure is a checklist. `closure_readiness.state` names the next move:
 - `ready`: nothing further to do and nothing to disclose; request the receipt.
 - `unknown`: read `status` again once the projection is readable.
 
-After a script or tool changes source, rerun the affected tests and any requested verification.
-FinishUP uses observed workspace changes even when the command itself names no file write.
-Documentation and conventional notes, scratch, logs, caches and build output leave verification
-current only when their classes are exempt and the task's declared outputs do not override that
-exemption. If FinishUP cannot classify or verify the workspace effect, it treats earlier
-verification as stale. For `edited_after_last_verification` or `planned_verification_stale`, rerun
-the tests or requested command after the change, then check again; a FinishUP check alone does not
-rerun them.
+A change FinishUP can place (a shell command's workspace comparison records which files changed)
+makes a verification stale only when it touches a recorded input. Evidence/report/log outputs that
+verification wrote, byte-identical writes and unrelated placed changes do not demand a rerun. If a
+placed change may touch an input FinishUP cannot rule out, `verification_rerun_question` asks for a
+decision without blocking closure: inspect the recorded verification and subsequent paths/change
+summaries, then rerun or `respond` with `acknowledged` and a reasoned explanation that a rerun is
+not needed. A later change asks again. An edit made with your host's file-edit tool records no
+file path, so FinishUP cannot place it: it may be a source edit, so the verification is stale until
+you rerun it. A stale finding names the verification and the changed input, or the edit tool and
+count. A FinishUP check records the decision; it does not run tests for you.
+
+To declare a verification's exact file inputs and evidence outputs, publish an ordinary evidence
+row with reference `finishup-verification-inputs/v1:<observed res_ id>` and a JSON description:
+`{"inputs":["source.py","config.json"],"outputs":["evidence.json"],"complete":true}`.
+Use `complete:false` when this is only a partial input list. The declaration is your assertion;
+FinishUP does not observe arbitrary file reads inside a shell command. Inputs take precedence over
+outputs, and an output is exempt only when that run itself wrote it. A `complete:true` list with
+no inputs is not complete. A complete list that leaves out a file you later edit keeps the
+verification current, and FinishUP discloses `verification_inputs_caller_asserted`, so list every
+file the check reads. Name a directory with a trailing slash; a bare name is read as a file. An
+input directory (`src/`) makes the list partial, so a change inside it asks; an output directory
+(`reports/`) covers files that run itself wrote there once the record names them (list the file, or
+cite it as evidence), and `./` covers nothing. Directories and
+outside-workspace inputs remain unknown; a change whose comparison was unavailable cannot be placed
+and stays stale. Each new observed run needs its own declaration.
+
+For AI-powered review, freshness is always advisory: consider the verification together with what
+changed after it and answer the non-blocking rerun question. Actual failed checks and missing
+required verification still require their existing action.
 
 If you stop while `agent_actionable` still names open obligations, an unrepaired
 finding, a finding you rejected that still awaits the reviewer's ruling
 (`finding_rejection_awaiting_ruling`: run `check` with `final_review: true` so the reviewer rules;
-do not acknowledge a finding you dispute), a planned verification that was not observed, failed, or ran before your last edit, an
-edit to the work after your last test, lint, typecheck or build run (`edited_after_last_verification`;
+do not acknowledge a finding you dispute), a planned verification that was not observed or failed, or a known input change
+or an edit FinishUP cannot place (such as one through your file-edit tool) after a local-only
+verification (`edited_after_last_verification`;
 exempt scratch and FinishUP receipt files do not count, and documentation such as a README
-or changelog does not stale verification unless the task's declared outputs override the exemption; run each verification in the
+or changelog does not stale verification unless the task declares it, or an output directory, as
+an output (a documentation edit through your file-edit tool may still ask the rerun question when
+the verification has recorded inputs); run each verification in the
 foreground, in one tool call: a job you start in the background (`&`, `nohup`, or your host's
 run-in-background option) and poll from a later call is recorded when it starts, not when it
 finishes), a git-ignored requested output, or a declared deliverable you deleted or renamed away

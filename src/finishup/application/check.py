@@ -186,6 +186,7 @@ from finishup.kernel.limitation import limitation_standing
 from finishup.kernel.lineage import LineageEvaluation, evaluate_recorded_lineage
 from finishup.kernel.observed_failures import (
     ObservedFailureState,
+    observed_action_runner_class,
     observed_event_ids_from_coverage,
     observed_failure_exempt,
     observed_failure_states,
@@ -235,6 +236,7 @@ from finishup.kernel.task_facts import (
     task_fact_signals,
 )
 from finishup.kernel.test_edit_visibility import PreExistingTestEdits, preexisting_test_edits
+from finishup.kernel.verification_freshness import freshness_detail, freshness_rows_for
 from finishup.observability.logging import (
     record_bounded_counts_without_raising,
     record_unexpected_exception_without_raising,
@@ -2329,6 +2331,8 @@ class FinalSemanticEvaluation:
     reviewer_citable_refs: frozenset[str] = frozenset()
     # Each file read's ``alias:path`` by call, kept only in the encrypted review response.
     reviewer_paths: Mapping[int, str] | None = None
+    # Selector-only diagnostics; private payload in the encrypted attempt response, never public.
+    reviewer_read_usage: tuple[Mapping[str, JsonValue], ...] | None = None
 
     def __post_init__(self) -> None:
         if (
@@ -2711,24 +2715,13 @@ async def _load_deterministic_result(
                 basis.coverage_gaps,
                 basis.observed_facts,
             )
-            if (finding.summary, finding.detail) != rendered_text:
+            template_candidate = replace(
+                candidate, summary=rendered_text[0], detail=rendered_text[1]
+            )
+            expected = _freshness_candidate(template_candidate, frozen.case)
+            if (finding.summary, finding.detail) != (expected.summary, expected.detail):
                 checkpoint_superseded = True
-                # Validate the local assessment against the current rendering while
-                # preserving the stored finding's structural fields for Finding validation.
-                candidate = CandidateFinding(
-                    finding.kind,
-                    finding.origin,
-                    finding.priority,
-                    rendered_text[0],
-                    rendered_text[1],
-                    finding.subject_refs,
-                    finding.policy_id,
-                    finding.policy_version,
-                    finding.subject_frontier,
-                    finding.coverage,
-                    finding.provenance,
-                )
-            DeterministicAssessment(candidate, basis)
+            DeterministicAssessment(template_candidate, basis)
             findings.append(finding)
         if len({item.finding_id for item in findings}) != len(findings):
             raise ValueError("deterministic_result_finding_invalid")
@@ -3092,6 +3085,20 @@ async def _attach_replayed_fact_lineage(
     return replace(result, fact_lineage=lineage)
 
 
+def _route_requires_ai_review(
+    policy_semantic: Literal["disabled", "optional", "required"],
+    route_profile: Literal["policy", "strict"],
+) -> bool:
+    """The serving route's own answer under the effective policy (#1143, PR #1167 review).
+
+    ``policy_semantic`` is the policy this check runs with (``_check_review_mode``): an owner's
+    local conversation setting or switch already relaxed ``required`` to ``optional``, exactly as
+    status computes it (``_semantic_review_required`` and not ``_task_local_by_choice``).
+    """
+
+    return route_profile == "policy" and policy_semantic == "required"
+
+
 async def _read_declared_outputs(
     runtime: TaskRuntime,
     request: CheckRequest,
@@ -3099,6 +3106,8 @@ async def _read_declared_outputs(
     capture: CheckChangeMetadata | None,
     source: CheckWorkspaceSource | None,
     port: object | None,
+    policy_semantic: Literal["disabled", "optional", "required"],
+    route_profile: Literal["policy", "strict"],
 ) -> tuple[
     _PolicyEvaluator,
     tuple[str, ...],
@@ -3112,13 +3121,27 @@ async def _read_declared_outputs(
     Returns the work evaluator, the task-fact gaps, whether an output is absent, the deliverable
     states to record, the in-process file names the commit classifies by type, and the frozen
     prefix's records (for the lineage the result carries).
+
+    Freshness is AI-advisory (#1143) only on the AI route, judged at the check's input frontier
+    with the predicate status and Stop use (``derive_closure_readiness``): the serving route
+    requires AI-powered review (``_route_requires_ai_review``), or the task already used one.
+    The requested mode never decides it: no configured reviewer, the strict route, a disabled
+    policy or a failed review keep the local rule, and a local-only check on an AI-route task
+    stays advisory, so check, status and Stop agree.
     """
 
     records = await _frozen_prefix_records(runtime, request, frozen)
     outputs = await _requested_output_inputs(
         frozen.case, capture, source, port, request.request_id, deliverable_history(records)
     )
-    return outputs.evaluator, outputs.gaps, outputs.absent, outputs.states, outputs.files, records
+    advisory = _route_requires_ai_review(policy_semantic, route_profile) or semantic_review_used(
+        records
+    )
+
+    def evaluate(case: DeterministicCase) -> tuple[DeterministicAssessment, ...]:
+        return outputs.evaluator(replace(case, verification_advisory=advisory))
+
+    return evaluate, outputs.gaps, outputs.absent, outputs.states, outputs.files, records
 
 
 async def _frozen_prefix_records(
@@ -3322,17 +3345,47 @@ def _with_undeclared_references(
     return tuple(recorded)
 
 
+def _freshness_candidate(candidate: CandidateFinding, case: DeterministicCase) -> CandidateFinding:
+    """Name the affected verification, how its inputs are known, and the later changes (#1143).
+
+    Only a local ledger-stale finding about a run (the rerun question, or a known input change)
+    carries this detail. Each verification is identified by its result id and, when it matched
+    one, the requested command, so the agent knows what to rerun. Paths are named only where the
+    record names them; keyed-only identities are counted, never guessed. The review packet
+    carries the name-free form (``kernel.verification_freshness.freshness_detail``).
+    """
+
+    if candidate.kind is not FindingKind.LEDGER_STALE_OR_INCOMPLETE:
+        return candidate
+    rows = freshness_rows_for(case, candidate.subject_refs, candidate.coverage.known_gaps)
+    if not rows:
+        return candidate
+    return replace(
+        candidate, detail=candidate.detail + freshness_detail(rows, len(candidate.detail))
+    )
+
+
+def _freshness_candidates(
+    assessments: tuple[DeterministicAssessment, ...],
+    case: DeterministicCase,
+) -> tuple[CandidateFinding, ...]:
+    return tuple(_freshness_candidate(item.candidate, case) for item in assessments)
+
+
 def run_deterministic_policies(
     case: DeterministicCase,
     scope: CheckScope,
     packs: tuple[str, ...],
     *,
     evaluators: dict[str, _PolicyEvaluator] | None = None,
+    verification_advisory: bool = False,
 ) -> tuple[tuple[DeterministicAssessment, ...], tuple[CheckPolicyExecution, ...]]:
     """Run the selected built-ins with application-owned scope and execution accounting."""
 
     if type(case) is not DeterministicCase or type(scope) is not CheckScope:
         raise _invalid()
+    if verification_advisory:
+        case = replace(case, verification_advisory=True)
     registered: dict[str, _PolicyEvaluator] = {
         _RESEARCH_PACK: research_evidence_findings,
         _WORK_PACK: work_integrity_findings,
@@ -4581,10 +4634,8 @@ def validate_semantic_judgment(
     observed = observed_event_ids_from_coverage(case.coverage_by_ref)
     case_gap_codes = frozenset(gap.code for gap in case.gaps)
     blocked = confirmed_blocked_obligation_ids((gap.code, gap.subject_refs) for gap in case.gaps)
+    verification_runs: frozenset[str] | None = None
     for challenge in judgment.challenges:
-        if challenge.finding_kind is FindingKind.DECISION_NEEDED:
-            # #1146: a choice can never become a repair directive, even if the model asks for act.
-            challenge = replace(challenge, requested_next_step="answer_question")
         resolution = _resolve_challenge_refs(case, deterministic, challenge)
         if resolution is None:
             rejections[SEMANTIC_REJECTED_REF_OUTSIDE_CASE] = (
@@ -4592,6 +4643,17 @@ def validate_semantic_judgment(
             )
             continue
         refs = resolution.subject_refs
+        if challenge.finding_kind is FindingKind.STALE_EVIDENCE_FOR_CHANGED_STATE:
+            if verification_runs is None:
+                verification_runs = _verification_run_events(case, agent_linked_runs)
+            if verification_runs.intersection(refs):
+                # #1143: a concern that a recorded verification run predates later changes asks
+                # for a rerun decision, never a repair gate. The reviewer's own summary stays in
+                # the detail; any other stale-evidence concern keeps its kind and text.
+                challenge = _verification_rerun_challenge(challenge)
+        if challenge.finding_kind is FindingKind.DECISION_NEEDED:
+            # #1146: a choice can never become a repair directive, even if the model asks for act.
+            challenge = replace(challenge, requested_next_step="answer_question")
         if len(refs) > _MAX_CHALLENGE_SUBJECT_REFS:
             rejections[SEMANTIC_REJECTED_SUBJECTS_OVER_LIMIT] = (
                 rejections.get(SEMANTIC_REJECTED_SUBJECTS_OVER_LIMIT, 0) + 1
@@ -4842,6 +4904,58 @@ def validate_semantic_judgment(
         fence.refs_reduced,
         advisory_notes=len(advisory),
         agent_criteria=agent_criteria,
+    )
+
+
+_VERIFICATION_RERUN_SUMMARY: Final = "Is a verification rerun needed after these changes?"
+
+
+def _verification_run_events(
+    case: DeterministicCase, agent_linked: frozenset[EventId] | None
+) -> frozenset[str]:
+    """The action and result events of observed verification runs (#1143).
+
+    A test, lint, typecheck or build run, a run the agent linked to a requested command, or a run
+    the frozen freshness rows track. A reviewer concern citing one of these is about rerunning a
+    verification; a concern citing anything else is about other evidence.
+    """
+
+    observed = observed_event_ids_from_coverage(case.coverage_by_ref)
+    tracked = {row.run_ref for row in case.verification_freshness or ()}
+    events: set[str] = set()
+    for ref, row in case.projection.results.items():
+        result = row.payload
+        if result is None or row.source_event_id not in observed:
+            continue
+        action = case.projection.actions.get(result.action_id)
+        if (
+            action is None
+            or action.payload is None
+            or action.payload.action_kind is not ActionKind.COMMAND
+        ):
+            continue
+        if (
+            ref in tracked
+            or action.source_event_id in (agent_linked or ())
+            or observed_action_runner_class(action.payload.description)
+            in {"test", "lint", "typecheck", "build"}
+        ):
+            events.update((str(row.source_event_id), str(action.source_event_id)))
+    return frozenset(events)
+
+
+def _verification_rerun_challenge(challenge: ReviewerChallenge) -> ReviewerChallenge:
+    """Route a verification staleness concern to the rerun question, keeping the reviewer's words."""
+
+    message = _bounded_review_text(
+        f"Reviewer observation: {challenge.summary} {challenge.message_to_main_agent}"
+    )
+    return replace(
+        challenge,
+        finding_kind=FindingKind.DECISION_NEEDED,
+        summary=_VERIFICATION_RERUN_SUMMARY,
+        message_to_main_agent=message,
+        requested_next_step="answer_question",
     )
 
 
@@ -6173,11 +6287,21 @@ async def execute_check_commit(
             output_files,
             prefix_records,
         ) = await _read_declared_outputs(
-            runtime, request, frozen, structural_capture, structural_source, change_capture
+            runtime,
+            request,
+            frozen,
+            structural_capture,
+            structural_source,
+            change_capture,
+            policy_semantic,
+            route_profile,
         )
         if frozen.lease.phase is CheckPhase.RESERVED:
             assessments, executions = run_deterministic_policies(
-                frozen.case, scope, packs, evaluators={_WORK_PACK: work_evaluator}
+                frozen.case,
+                scope,
+                packs,
+                evaluators={_WORK_PACK: work_evaluator},
             )
             assessments = assessments + await _coordination_assessments_for_frozen_case(
                 app,
@@ -6195,7 +6319,7 @@ async def execute_check_commit(
             )
             deterministic = allocate_findings(
                 app.ids,
-                tuple(item.candidate for item in assessments),
+                _freshness_candidates(assessments, frozen.case),
                 prior_finding_ids(frozen.case.projection),
             )
             frozen = await _publish_deterministic_result(
@@ -6230,7 +6354,10 @@ async def execute_check_commit(
                     counts={"superseded_checkpoints": 1},
                 )
                 assessments, executions = run_deterministic_policies(
-                    frozen.case, scope, packs, evaluators={_WORK_PACK: work_evaluator}
+                    frozen.case,
+                    scope,
+                    packs,
+                    evaluators={_WORK_PACK: work_evaluator},
                 )
                 assessments = assessments + await _coordination_assessments_for_frozen_case(
                     app,
@@ -6248,7 +6375,7 @@ async def execute_check_commit(
                 )
                 deterministic = allocate_findings(
                     app.ids,
-                    tuple(item.candidate for item in assessments),
+                    _freshness_candidates(assessments, frozen.case),
                     prior_finding_ids(frozen.case.projection),
                 )
             else:

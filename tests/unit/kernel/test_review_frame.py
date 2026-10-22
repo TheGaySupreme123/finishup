@@ -24,9 +24,11 @@ from finishup.domain.events import (
     PlanPublishedPayload,
     RequestedItem,
     RequestedItemKind,
+    ResultOutcome,
 )
 from finishup.domain.findings import FindingKind
 from finishup.domain.values import EventId, ObligationId, ResultId, action_id, obligation_id
+from finishup.domain.workspace_effect import workspace_path_identity
 from finishup.kernel.deterministic_checks import CaseAvailabilityFacts, build_deterministic_case
 from finishup.kernel.observed_failures import (
     observed_action_description,
@@ -389,13 +391,31 @@ def test_an_edit_among_the_cited_work_keeps_the_task_requirement() -> None:
     assert not agent_probe_only(
         state, kind, (stress_event, edited), observed=observed, case_gap_codes=gaps
     )
-    # A later edit makes the declared verification stale, so it no longer holds on the record.
+    # A later edit FinishUP cannot place makes the declared verification stale, so it no longer
+    # holds on the record.
     ledger.edit()
     later_state, later_observed = _state(ledger)
     later_gaps = _case_gaps(ledger)
     assert "planned_verification_stale" in later_gaps
     assert not agent_probe_only(
         later_state, kind, (stress_event,), observed=later_observed, case_gap_codes=later_gaps
+    )
+    # A placed change outside any recorded input only asks (#1143); that doubt is enough too.
+    asked, _edited, _sample, asked_stress = _vigenere()
+    asked.run(
+        "python report.py",
+        ResultOutcome.SUCCESS,
+        runner="other",
+        workspace_effect="changed",
+        workspace_write_scopes=("workspace",),
+        workspace_changed_entries=(workspace_path_identity(INSTALLATION_KEY, "report.json"),),
+    )
+    asked_state, asked_observed = _state(asked)
+    asked_gaps = _case_gaps(asked)
+    assert "verification_rerun_question" in asked_gaps
+    assert "planned_verification_stale" not in asked_gaps
+    assert not agent_probe_only(
+        asked_state, kind, (asked_stress,), observed=asked_observed, case_gap_codes=asked_gaps
     )
     # A challenge that cites no run at all rests on nothing the agent ran.
     assert not agent_probe_only(

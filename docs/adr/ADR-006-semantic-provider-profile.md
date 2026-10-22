@@ -2405,22 +2405,35 @@ FinishUP owns a small verifying loop. Each model turn returns exactly one reply 
 `findings/reviewer-reply-1.0.0`: `read_packet_section`, `read_ledger` or `read_file` (the round-1
 broker inputs, as JSON text FinishUP interprets, never provider tool registrations), or
 `final_judgment`, the existing provider judgment validated by `normalize_judgment(...,
-require_part2=True)`. The root is an object wrapper; with no read allowance left the same root
-offers only `FinalReply`. Strict wire form comes from `strict_output_schema`; the decoder still
+require_part2=True)`. The root is an object wrapper. A review that starts with reads sends the
+full union while a read can still be offered or repaired (#1173): when no read allowance remains
+the controller appends a final-phase notice and accepts only `FinalReply`, and the repair turn and
+any final turn after the review's one repair is spent send the read-free root (only
+`FinalReply`). A review whose first turn offers no read sends the read-free root on every turn. Strict wire form comes from `strict_output_schema`; the decoder still
 enforces what it drops, and reads a strict null as the field's default.
 
-The loop allows at most three reads, 8 KiB per complete result and 24 KiB in all. Every model turn
-(at most five), the one format repair and every read is a durable step of the review job
-(ADR-003, migration `0017`), reserved before it runs and never refunded; a denied or empty read
-spends its read. A job that already holds steps is not resumed: its review ends incomplete
+The loop allows at most three content-bearing reads and five attempts, 8 KiB per complete result
+and 24 KiB in all (#1173). Every model turn (at most seven, including the final judgment and one
+format repair), the repair and every attempt is a durable step of the review job (ADR-003,
+migration `0017`, bounds widened by `0018`), reserved before it runs and never refunded. Refused and empty results spend
+attempts and bytes, but no content read; at most two extra attempts are available. A partial
+result containing text or listed entries spends a content read; metadata-only native-limit
+refusals do not. The existing shared deadline, five-second local read limit and final reserve
+do not change. A job that already holds steps is not resumed: its review ends incomplete
 (`interrupted`, or `uncaptured_step` when a reserved step has no captured result). The one
 exception is a first turn that waited for the owner before anything was sent, which runs once more
 in its own reservation (see "Owner approval" under "Service wiring and delivery"). After the cap
-only the final judgment is offered, and a read anyway ends the review incomplete with no
-observation. One format repair is allowed per review, for a completed answer that is not one JSON
-object as for one the decoder rejects, and the malformed text is not echoed back. A
-second malformed reply, a failed or uncertain model turn, a lost lease, or a binding that no longer
-holds ends the review incomplete. The shared deadline is checked after every await: a reply that
+only the final judgment is accepted. Since #1173 a review that started with reads keeps the read
+branches on its normal final turn, so a read then is the final phase's format error: it executes
+nothing and takes the review's one repair, which asks for `final_judgment` only and is sent with
+the read-free schema. Once the repair is spent (there, or earlier on a malformed answer), every
+final turn is read-free, so a route that enforces the schema can only return the judgment. A
+review that never offered a read keeps the read-free schema throughout. Only a route that does not
+enforce the schema can still return a read there; it ends the review `read_limit` with no
+observation (on ask-every-time a repair would be another exchange needing its own approval). One format repair is allowed per review, for a
+completed answer that is not one JSON object as for one the decoder rejects, and the malformed text
+is not echoed back. A second malformed reply, a failed or uncertain model turn, a lost lease, or a
+binding that no longer holds ends the review incomplete. The shared deadline is checked after every await: a reply that
 arrives late is not used, a read is not started inside the final reserve, and a local read stops at
 five seconds or the reserve, whichever is first: a read in progress checks it per chunk and per
 listed entry, and again when it completes, so a read that completes late is discarded, never sent
@@ -2510,7 +2523,8 @@ protocol subset is generated with `--experimental` and
 must carry `ThreadStartParams.environments`. `features.stable_environment_tools` is not set, because
 releases below 0.162.1 do not define it under `--strict-config`; with no environment it has nothing
 to expose. A reviewer session keeps one ephemeral thread; its first turn sends every admitted user
-message after the instruction (the packet, then the read catalog), each later turn only the new one,
+message after the instruction (the packet, then the read catalog), each later turn only the new one
+(since #1173 at most two: a read result or repair notice, then the final-phase notice),
 and it sends the reply `outputSchema` on every turn. A repair continues on that same thread: an
 empty answer is judged only after its turn completes, so the thread is kept, and a review whose
 thread is gone ends incomplete rather than opening a second one and resending the packet.
@@ -2846,11 +2860,12 @@ specified in [ADR-040's judgment amendment](ADR-040-reviewer-disagreement-and-ro
 
 ## Amendment — 2026-10-21: finding delivery and frozen review context (#1139, #1126, #1148)
 
-**Read the full finding before answering.** Treat `review_delivery` as a bounded advisory preview.
-When it reports truncation, follow its findings-status continuation.
-Read the action, alternative interpretation and uncertainty together before deciding.
-For example, a large result can retain the instruction while its alternative falls outside the
-host's head/tail window.
+**Read the full finding before answering.** The residual delivery fix supersedes #1152's
+bounded `review_delivery` preview with lossless `delivery_page` results (ADR-043's result-delivery
+amendment). Read action, alternative interpretation and uncertainty together before deciding.
+Follow action pages until `actionable_complete`, reconstruct explicit scalar fragments, and
+follow `inventory_read` for the complete open-finding inventory. Remaining result pages contain
+optional bulk provenance. A shortened lead is never a substitute for the complete finding.
 
 **Keep the question beside the work.** Reserve bounded prior dialogue before ordinary narrative
 and bulk excerpts.
@@ -2874,21 +2889,21 @@ A later check can freeze the requested content only if retention and disclosure 
 File-read absence keeps its existing reason.
 CLI, MCP, TUI and receipt review-read renderings carry the recorded reason.
 
-**Delivery contract.** Codex receives optional `review_delivery` before the full check-result
-fields in unreleased check-result 1.6.0, extended in place.
-The advisory also precedes the findings-status items in status-result 1.4.0.
-It uses only privacy-projected fields.
-A bounded review summary leads.
-Each of up to three challenges keeps its summary, requested action, alternative interpretation and
-uncertainty together within separate JSON-encoded byte budgets.
-The continuation marks the preview truncated and names `status view=findings`, `detail=full`,
-`limit=1` and the returned cursor.
-Full authorized fields remain unchanged.
-A `full_local` receipt carries the recorded review summary under the existing export policy.
-Evidence, snippets, manifests and provenance follow the advisory.
-The generic/Claude text channel uses the same lead ahead of evidence.
-Cursor retains its canonical full JSON copy.
-The bounded lead does not establish that a host delivered the full record.
+**Delivery contract.** Check-result 1.7.0, status-result 1.5.0 and receipt-result 1.4.0 add a
+`delivery_page` presentation after ordinary privacy projection, for an agent's oversized MCP check,
+receipt or opted-in (`delivery=paged`) status read only. Status-request 1.3.0 adds that opt-in and
+reads the signed `delivery_cursor`. The budget is Codex's 12,000-byte structured window, the
+tightest recorded host limit, for the larger channel a host reads plus a 64-byte header allowance,
+never both channels together (ADR-043). Whole action fields precede excerpts and
+provenance. An individually oversized scalar has
+explicit offsets, length and a digest for lossless reconstruction; no actionable preview is cut.
+`truncated`, `actionable_complete`, `complete`, `next_cursor` and `inventory_read` make deferred
+content and further inventory reads machine-readable. Read continuations reapply disclosure and
+read the recorded source, without dispatching review or writing a new check or receipt. CLI
+output, the native TUI and authenticated owner exports are never paged and keep their full local
+view, as do the bridge's own closure and recovery reads. Hooks carry bounded structural instructions to read status. Source retention,
+privacy and receipt inventory limits still apply. Neither emission nor a complete page proves
+native host delivery or consumer reconstruction.
 
 **Packing bounds.** The prior-finding section retains its existing 16-finding, 112-item and
 96 KiB bounds and category policy.
@@ -2907,3 +2922,272 @@ Maintainer acknowledgement: the explicit scoped implementation request and owner
 #1139/#1126 authorize these delivery, packing and label changes.
 They do not change reviewer judgment, disclosure authority, or the design-gated #905 todo-list
 convergence.
+
+## Amendment — 2026-10-21: bounded reviewer read recovery (#1173)
+
+Maintainer acknowledgement: the explicit scoped request on issue #1173 approves all four parts.
+Bundle migration `0018` widens the durable step ordinal bounds without altering existing rows
+(ADR-003); READY upgrades v17 bundles through the existing backup/fenced path.
+The procedure above retains every reservation and every response byte, including refusals, with
+three content reads and a hard five-attempt/seven-completion limit. `calls_remaining` is the
+smaller of content reads remaining and attempts remaining, using the configured allowance
+(zero reads also means zero retries). The cap is exact, not "always three content reads": two
+refusals still leave three content reads (`calls_remaining` 3, 3), a third leaves two, and a
+model whose every selector is refused stops after five refusals with no content read. Existing
+history and category/root revocation checks apply to every extra turn. No failed transport is
+retried and a prior job's steps never refill.
+
+Which reply schema each turn sends (#1172 keeps the conversation prefix stable for prompt
+caching; #1173 keeps every enforced path ending with a judgment):
+
+- a review whose first turn offers no read (ask-every-time, where every exchange needs the owner's
+  approval, or a first turn already inside the 30-second final reserve): the read-free
+  `REVIEWER_REPLY_SCHEMAS.final` on every turn, with no final-phase notice;
+- a review that starts with reads: the full union on every read turn, on a read-phase repair turn,
+  and on the normal final turn (the one after the loop appends `FINAL_PHASE`), so a well-behaved
+  model's last exchange is still a cache hit;
+- the same review once its one repair is spent: the repair turn itself, and every final turn after
+  a repair (including one spent on an earlier malformed answer), send the read-free schema.
+
+The trade-off is at most one schema change per review, on its last exchange, which that exchange
+pays as a prompt-cache miss; in return a route that enforces the schema (Responses `strict`, Chat
+Completions `provider_enforced`, Codex `outputSchema`) can never end a review on a read. A read
+returned on the normal final turn executes nothing and is the final phase's format error
+(`read_in_final_phase`). A repair whose next turn is final uses `FINAL_FORMAT_ERROR`, which asks
+for `final_judgment` only, never "a read action or final_judgment", so the repair note never
+contradicts the notice that follows it. Only a route that does not enforce the schema can still
+return a read after the repair, or against a zero-read review's read-free schema; that ends
+`read_limit` (on ask-every-time a repair would be a second exchange needing its own owner
+approval, which nothing resumes). The
+turn budget is unchanged: five read turns, the final turn and the one repair. The repair room
+every read leaves is the longer of the two repair texts. On the Codex subscription route the
+final-phase notice follows the last read result as a second new user message on the held thread;
+the continuation guard admits the user messages after the longest history the thread holds, at
+most two, and still refuses an empty, longer or non-user suffix and any history that does not
+extend the thread.
+
+A `forbidden_path` or `outside_scope` correction names only issued aliases (the requested one, or
+for an unknown alias up to four, the workspace first) and fixed service text for its cause, never the rejected path or a concrete example path a model could copy: an unknown
+alias, an absolute path, a hidden/empty/traversing component, an ignored path (or one whose ignore
+state cannot be checked) and a path outside the root's declared paths each get their own advice.
+Only the alias and absolute-path corrections suggest the relative form, and they say that a
+`path=.` listing that returns names spends a content read. `not_retained` and
+`not_in_frozen_case` offer at most two nearest catalog rows: exact item/ref matches first, then
+matching section/view, then item-id order. These contain only item ids, source refs and valid
+action sections/views. Each row is admitted under its item's category and outside root, and the
+complete envelope is scanned; rows are dropped whole to fit the existing result/exchange bounds.
+When privacy withholds a row, or none fits, every row is dropped but the static #1148 continuation
+(no catalog metadata) stays, itself scanned in the exact envelope that is sent; only if that is
+withheld too, or cannot fit, is the correction omitted. Hints add no citations or content-read
+credit. `not_recorded` describes unavailable
+file/snapshot/line/listing material; frozen lookup absence never establishes non-recording
+(#1148). Unavailable material can be requested through `missing_for_assessment` with kind and
+`target_refs`, for a later check to freeze; this creates no live-ledger query or disclosure grant.
+
+The instruction gains only the read procedure and the changed budget rule. Its role, goal, done,
+evidence, clues, acceptance and calibration rules keep their existing order. Read-field
+descriptions distinguish relative file paths, packet `item_id`, and ledger `source_ref` or
+`linked_subject_refs` plus view, with examples; the file example's path is the placeholder
+`<relative-path>`, and a `path=.` listing is described as spending a content read.
+
+Trade-off at the smallest channel limits: the instruction grows from 6,496 to 7,639 bytes and is
+in every exchange, and every read leaves room for the final-phase notice beside the repair note.
+At the minimal policy (4,096 tokens, a 16 KiB exchange) a review therefore fits two content reads
+where it fitted three, and a refusal plus one content read where it fitted a refusal plus two; the
+read it can no longer afford takes the final-phase repair and the review still concludes. The
+existing #1118 rule that a read action leaving its exchange no room for even an empty result ends
+the review `case_capacity_exceeded` is also reached sooner there: a long absolute-path action
+after a corrected refusal can now hit it (the read offer is still measured from the last sent
+exchange, not the one the action will travel in). The shipped default ceilings are unaffected.
+Refusals keep their bytes counted. This is accepted for the clearer selectors;
+`test_the_smallest_channel_limits_leave_room_for_fewer_content_reads` pins the read count.
+
+Admission never ends a review on the local read stop: the read itself must finish before its
+stop, but a content result whose admission completes after it is still sent (as before #1173),
+and a refusal's correction admitted after it is dropped and the bare refusal is sent. The next
+turn's reserve check decides whether another read is offered. The private
+`reviewer_read_usage` object write for a failed attempt is best effort: when that telemetry is the
+only reason to write, a failed write is logged and the attempt keeps its own outcome, evaluation
+and retry.
+
+The unreleased check 1.6.0 record now permits five attempt entries and seven exchanges.
+`reads_used` counts content reads; `reads` retains every completed attempt and `read_bytes`
+counts every envelope. CLI/MCP/TUI/receipt text includes the attempt count when it differs from
+content reads. Earlier 1.4.0/1.5.0 documents stay byte-identical.
+
+For attribution, each attempt's encrypted `yoetz.semantic-response/1` object gains optional
+`reviewer_read_usage`: at most five rows with call, action, validated args, status and reason.
+Arguments are selector/path fields only; no returned text, hints, packet or judgment is copied.
+This private payload survives response recovery and includes failed reviews. Structural
+diagnostics contain the action/result code, request id and ordinal only; raw selectors/paths
+remain excluded from logs, SQLite structural tables, public records and ordinary exports.
+`application.reviewer_telemetry.export_reviewer_read_metrics` joins physical attempt rows with
+their encrypted response for an already-authorized owner-local metrics collector. It exports
+`attempt_usages[].reviewer_reads` without read content; missing/old/invalid telemetry is null.
+It adds no CLI/MCP/host route and no network channel. Codex, Claude Code and Cursor continue to
+share this controller and the existing result projection.
+
+## Amendment — 2026-10-21: per-exchange prompt-cache telemetry (#1172)
+
+About half of the reviewer's input is served from the provider's prompt cache (49.8% over 27
+TB-Science pilot trials), and input is nearly all of its cost. Until now only each attempt's
+cumulative usage was kept, so a miss could not be attributed. Every provider exchange that
+reports usage now writes one `exchange_cache` owner diagnostic: its input, cached input,
+cache-write (where the provider reports it) and output tokens, how many model requests it made,
+the prefix it could reuse from the review's previous exchange, how much of that its first request
+reused, and one closed miss label: `compaction`, `first_turn`, `none`,
+`schema_or_settings_change`, `retry` or `unexplained`, the first that applies (see INTERFACES,
+"Per-exchange prompt-cache telemetry"). `none` allows a shortfall of up to 1,024 tokens, the
+providers' minimum cacheable prefix. A count the provider does not report (Chat Completions may
+omit the cached count) is left out, never recorded as zero. A compaction is recorded, by its index
+and label alone, even when it comes before any usage report. A Codex turn whose previous turn
+reported no usage starts at the total before its own first reported request, so it records its
+own requests (unless a repeated snapshot arrives first, #1192); a turn that had a usage snapshot
+refused records no counts. Every exchange of a review names the review's first provider request
+id, so the records join the attempt row; the owner reads them with `finishup service diagnostics
+--request-id`, and an exporter that copies the diagnostics ring carries them.
+
+The record holds integers, one closed token and that request id. It never holds content, a
+content digest or a provider identifier. Between a review's exchanges, the `ReviewerSession` keeps
+counts, the last history's message count and a digest of the settings the route sent beside the
+messages, to notice a changed schema, model or effort. The usage arrives on the responses FinishUP
+already reads (Codex `thread/tokenUsage/updated`; the Responses and Chat Completions `usage`
+object), so no request, egress or retention changes. Recording never changes an outcome. The
+local model route and the credential probe record nothing.
+
+This is phase 1's measurement. It changes no prompt, schema, thread or packet. The TB-Science
+rows, from before the reviewer kept its final turn's schema (#1173, above), show a three-read
+review caching its two middle turns and nothing of its final turn (189,056 of 381,293 input
+tokens). The one schema change left, the read-free schema on a final-phase repair and on a final
+turn after a spent repair, is labelled `schema_or_settings_change`, so these records show how
+often a review pays it. Phase 2 (reusing a thread across reviews) waits until these records show
+what is left to gain; the proposed amendment "packet order and cross-review reuse stay as they
+are" below records why it is not adopted now.
+
+## Amendment — 2026-10-21: one reply schema per review (#1172)
+
+**Why.** The reply schema is part of the request prefix a provider's prompt cache keys on: OpenAI
+caches a structured-output schema as a prefix to the system message, and Codex sends it with every
+turn as `outputSchema`. The loop used to switch to the final-only schema after the last read, so the
+provider read the whole conversation again, uncached. In the TB-Science pilot a three-read review
+cached its two middle turns and none of its final turn (189,056 of 381,293 input tokens).
+
+**Decision.** The per-turn rule is the one the read-recovery amendment (#1173, above) records. A
+review that starts with reads sends the full reply schema on every read turn, every read-phase
+repair and its normal final turn. The loop announces that final turn by appending `FINAL_PHASE`
+once, as its own user message, so everything sent before stays byte-identical and the final turn
+can reuse the whole prefix. A review whose first turn offers no read (an ask-every-time policy, or
+no time left for one) sends the read-free schema on every turn and gets no notice, so an
+owner-approved first exchange still resumes by its exact bytes. One schema change is left, on the
+last exchange: the final-phase repair turn, and any final turn after the review's one repair is
+spent, send the read-free schema, so a route that enforces it can only return the judgment. That
+exchange pays a cache miss, which the per-exchange telemetry labels `schema_or_settings_change`.
+
+**A late read.** The normal final turn's schema still allows a read. The instruction, each read
+result's `calls_remaining` and the notice all say only `final_judgment` is accepted. A read there
+executes nothing and is the final phase's format error (`read_in_final_phase`, #1173): it takes the
+review's one repair, whose note asks for `final_judgment` only and whose turn is read-free.
+
+**Append-only.** A Codex continuation may add up to two user messages after the longest history
+its thread holds (a read result or repair notice, then `FINAL_PHASE`), each as its own text input.
+An empty, longer or non-user suffix, or a history that does not extend what the thread holds,
+still fails closed. After an answer that parsed as a JSON object the thread holds its history both
+with that answer and without it, because only the loop's decoder knows whether the answer was
+accepted or will be replaced by the repair notice; the thread never reads content to tell. Keeping
+every accepted answer is therefore the loop's rule, and a test pins that every exchange extends the
+previous one byte for byte. The notice is never merged into a read result, so a result's bytes and
+digest are unchanged. An exchange history admits 17 messages (#1173).
+
+**Size guard.** Every read leaves exchange room, in bytes and estimated tokens, for the notice
+beside the longer of the two repair texts. The exchange that carries the notice, and a repair after
+it, therefore still fit the cap. Ceiling planning keeps an 8 KiB frame in the first exchange, but a
+first exchange it could not plan may sit inside the room the notices need. In that rare case the
+loop leaves the notice out, so the notice never pushes that exchange over the cap. Only a
+malformed first answer reaches that state, so the repair note already asks for the judgment and
+the turn is read-free because the repair is spent. A first exchange that leaves less room than the
+repair note itself still ends `case_capacity_exceeded`, as before. An exchange that outgrows the
+cap is still refused whole, never trimmed.
+The reviewer path still refuses Codex compaction (it would replace history FinishUP inspected and
+disclosed). The exchange budget keeps every exchange below Codex's auto-compact threshold with its
+estimation margin, and the #1172 telemetry labels a compaction if one ever occurs.
+
+**Constant within a review.** The model is constant because one profile serves a session, the
+effort because one budget profile serves a check, and the tools because Codex registers none and
+the APIs send none. The schema is constant too, except on the last exchange above. The telemetry's
+settings digest flags any change.
+
+**Effect.** A three-read review that spends no repair now reuses its final turn's whole prefix:
+projected from the pilot, with linear turn growth, about 74% of its input cached instead of about
+50%. A review that spends its repair sends the read-free schema on its final-phase turns, so the
+repair turn, or a final turn after an earlier repair, misses the cache. Before #1173 only a final
+turn forced by the end of reads was read-free; a judgment given while reads remained kept the full
+schema. A model that answers the final turn with its judgment adds no turn, request or wait. A
+late read there costs one extra exchange, its repair, uncached because its schema changes; the
+per-exchange records show how often. The notice is a few dozen tokens. No wire schema, decoder,
+privacy rule or egress changes: every exchange is still admitted whole.
+
+## Amendment — 2026-10-21: packet order and cross-review reuse stay as they are (#1172 phase 2)
+
+Status: proposed for maintainer acceptance. No behavior changes.
+
+**Packet order is unchanged.** Within a review the packet leads every exchange (Codex sends it once,
+on the review's thread; the stateless routes resend it with the whole conversation), and every
+later turn can reuse it whole as part of the cached prefix. The exception, a final-phase turn after
+a spent repair (the repair turn itself, or a final turn after an earlier repair), changes the
+schema ("one reply schema per review", above) and misses it whatever its order. So the packet's
+internal order cannot change caching inside a review.
+It would matter only where a later review's request can reuse an earlier review's prefix. On the
+Codex route that does not happen today: Codex 0.162.1 keys a fresh root thread's prompt cache on its
+session id, which is its thread id, and every review opens a fresh ephemeral thread. The Responses
+and Chat Completions routes send no `prompt_cache_key`, so there the provider's automatic prompt
+caching may already serve a prefix two reviews share; the `first_turn` records of the per-exchange
+telemetry above (`reviewer_prefix_cached_tokens`) show any such reuse.
+
+What two reviews' packets share is short whatever the item order. The packet
+(`yoetz.review-packet-case/2`) is canonical JSON, so its keys sort and `case_digest`, a digest of
+this review's case, comes first: two packets differ from that digest on, at the start of the
+message, even when every item matches. (Inside, items follow section priority, the task statement
+before excerpts before the agent's account, and ledger order within a section.) Moving that digest
+or reordering items would change the canonical document that the prepared-payload path and the
+privacy enforcer must render identically and that fixtures pin, and with it every route's
+disclosed bytes, background advice included, for no measured gain.
+
+**Cross-review reuse is not adopted now.** #1172 allows it in principle (one reviewer thread per
+task, or a fork from a warmed base) if it stays small, adds no noticeable slowdown and never
+crosses a changed task, authority, consent or input identity, and it asks for the decision after
+phase 1's telemetry. On what is known now, none of the three ways meets those conditions:
+
+- *Continue one Codex thread across a task's reviews.* The cache key stays the same, but the next
+  review's first exchange carries the earlier review's whole conversation plus a new packet. The
+  sized route's exchange budget is 169,144 *estimated* tokens ("Exchange budget sized to the
+  reviewer model's context", above), and the estimate is at least the `o200k_base` count measured
+  on reviewer packets (`domain.reviewer_context`; the reviewer model's own tokenizer is not
+  published). One-exchange reviews in the TB-Science pilot averaged about 92,500 provider input
+  tokens (#1177), so two such first exchanges, about 177,000 tokens without Codex's own turn
+  framing, exceed the budget even counted one for one. The thread would need compaction (refused here: it replaces history FinishUP inspected) or a smaller
+  packet. The model would also review with its earlier conversation in context, which changes what
+  an independent review is.
+- *Fork from a warmed base thread* (`thread/fork`). In Codex 0.162.1 an ephemeral fork of a root
+  thread takes its parent's session id as its `prompt_cache_key` ("ephemeral forks reuse cache
+  routing", `core/src/session/session.rs`), so a fork can reach the base's cached prefix. The
+  obstacle is elsewhere: `thread/fork` reads its source thread from Codex's thread store, and an
+  ephemeral thread is never persisted, so an ephemeral warmed base may not be forkable at all, and
+  a persisted one is the retention change below. Warming the base is itself a cold request, and
+  what every review could share from it is the instruction: the packet differs from its leading
+  `case_digest` on.
+- *Resume a persisted thread in a later process* (`thread/resume`). Thread state at rest is a
+  retention change under ADR-009 and the vault, while reviewer threads are ephemeral by design.
+
+All three keep a runtime process or thread alive beyond one review. That brings lifecycle work
+(service restart, upgrade, crash recovery, cleanup) and concurrency between tasks, which is more
+than the small change #1172 allows before its telemetry shows the gain. On the Responses and Chat
+Completions routes, a stable `prompt_cache_key` per task is a separate lever; it would send the
+provider an identifier that links a task's reviews, so it needs a privacy decision first.
+
+**When to revisit.** Revisit once the per-exchange records (#1172 phase 1) show that `first_turn`
+input is still the largest uncached share and that consecutive packets of one task share long
+prefixes. Any reuse must key on the whole review identity and open a fresh thread whenever any part
+changes: the task, writer authority, consent and repository grant, the effective privacy policy
+digest and generation, the provider binding (endpoint, model, effort, reply schema), the runtime
+version and isolated configuration, and the review's input roots and read catalog. Reuse never
+crosses tasks.

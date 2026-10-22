@@ -47,7 +47,7 @@ def test_schema_fourteen_upgrade_adds_only_an_empty_progress_table() -> None:
 
     current = current_schema_version(BUNDLE_MIGRATIONS)
     assert (report.from_version, report.to_version) == (14, current)
-    assert report.applied_versions == ("0015", "0016", "0017")
+    assert report.applied_versions == ("0015", "0016", "0017", "0018")
     assert db.execute("PRAGMA user_version").fetchone() == (current,)
     assert db.execute(
         "SELECT value FROM bundle_meta WHERE key='storage_schema_version'"

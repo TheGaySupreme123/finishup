@@ -36,7 +36,11 @@ from finishup.adapters.providers.openai_responses import (
     owner_declared_data_use_profile,
 )
 from finishup.adapters.providers.openai_responses import render_case as render_responses
-from finishup.adapters.providers.reviewer_reply import ReviewerReplyInvalid, decode_reviewer_reply
+from finishup.adapters.providers.reviewer_reply import (
+    ReviewerReplyInvalid,
+    decode_reviewer_reply,
+    reviewer_reply_schema,
+)
 from finishup.application.reviewer_exchange import REVIEWER_REPLY_SCHEMAS, ReviewerExchangeModel
 from finishup.application.reviewer_loop import (
     ReviewerLoop,
@@ -418,6 +422,52 @@ async def test_codex_continuation_without_its_session_fails_before_disclosure(
     assert evidence.failure_stage == "case_invalid"
 
 
+@pytest.mark.parametrize(
+    ("suffix", "accepted"),
+    [
+        pytest.param((("user", "observation"), ("user", "final phase")), True, id="result+notice"),
+        pytest.param((), False, id="nothing-new"),
+        pytest.param(tuple(("user", f"m{n}") for n in range(3)), False, id="three-new"),
+    ],
+)
+async def test_codex_continuation_takes_at_most_two_new_user_messages(
+    monkeypatch: pytest.MonkeyPatch, suffix: tuple[ReviewerMessage, ...], accepted: bool
+) -> None:
+    """#1173: the final-phase notice follows the last read result, two new user messages on the
+    held thread; anything else that does not extend the thread is still refused before sending."""
+
+    runtime = _CodexRuntime(
+        profile_for(record_for(b"c", b"h", version="0.162.1")), [_ACTION, _FINAL, _FINAL]
+    )
+    session = ReviewerSession("review-a", _DEADLINE)
+    cleanups: list[object] = []
+    await _codex_exchange(monkeypatch, runtime, session, _FIRST, cleanups)
+    # The answer the thread holds, then the suffix; and a history that rewrote the packet.
+    held: tuple[ReviewerMessage, ...] = (*_FIRST, ("assistant", _ACTION))
+    rewritten: tuple[ReviewerMessage, ...] = (
+        ("system", "Review it."),
+        ("user", "another packet"),
+        *held[2:],
+        *suffix,
+    )
+    cases: list[tuple[tuple[ReviewerMessage, ...], bool]] = (
+        [((*held, *suffix), accepted), (rewritten, False)] if suffix else [(_FIRST, False)]
+    )
+    for history, ok in cases:
+        runtime.requests.clear()
+        result = await _codex_exchange(monkeypatch, runtime, session, history, cleanups)
+        if ok:
+            assert type(result) is SemanticResultReply
+            (turn,) = [params for method, params in runtime.requests if method == "turn/start"]
+            assert turn["input"] == [{"type": "text", "text": t} for _, t in suffix]
+            await session.aclose()
+            return
+        assert type(result) is SemanticResultUnavailable and runtime.requests == []
+        evidence = result.provenance.runtime_evidence
+        assert evidence is not None and evidence.failure_stage == "case_invalid"
+    await session.aclose()
+
+
 async def test_codex_first_turn_carries_the_packet_and_the_read_catalog(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -530,7 +580,7 @@ async def test_facade_refuses_a_reply_from_another_route() -> None:
     model = ReviewerExchangeModel(binding, dispatch, ReviewerSession("review-a", _DEADLINE))
     deadline = _DEADLINE
     turns = [Turn(role, text) for role, text in _FIRST]
-    final_schema = REVIEWER_REPLY_SCHEMAS.final
+    final_schema = reviewer_reply_schema(reads_allowed=False, strict=True)
     with pytest.raises(ReviewerModelError, match="reviewer_exchange_route_mismatch"):
         await model.complete(turns, final_schema, deadline=deadline)
     assert seen == [REVIEWER_EXCHANGE_MEDIA_TYPES["final"]]

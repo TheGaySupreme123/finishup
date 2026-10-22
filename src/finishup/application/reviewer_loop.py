@@ -26,12 +26,22 @@
 # SOFTWARE.
 """The reviewer loop: a linear history, one read or the final judgment per turn (#1118 unit 2).
 
-At most three reads, then only the final judgment. One format repair for the whole review, for a
-completed answer that is not one JSON object or not a valid reply; a second malformed reply, a read
-after the cap, a revoked binding, a lost lease or the deadline ends the review incomplete. Every
-model turn, the repair and every read is a durable job step, reserved before it runs; a job that
-already holds steps is not resumed, except the one first turn that waited for the owner before
-anything was sent (``resume_reserved``). A failed turn is never retried.
+At most three content-bearing reads, five read attempts, then only the final judgment. One format
+repair for the whole review, for a completed answer that is not one JSON object or not a valid
+reply, or for a read in the final phase of a review that started with reads. Such a review keeps
+the full reply schema while a read can still be offered or repaired (#1172: the normal final turn
+stays a cache hit), so after its reads end the loop appends ``FINAL_PHASE`` once; the repair turn,
+and any final-phase turn after the review's one repair is spent, send the read-free schema, so a
+route that enforces it can only return the judgment. A repair note never offers a read when the
+next turn is final. A review whose first turn offers no read sends the read-free schema on every
+turn and gets no notice. When the next exchange has no room left for the notice (only a first
+exchange admitted inside the frame the notices need), the loop leaves it out. A second
+malformed reply, a read after the repair or in a review that never offered one (only a route that
+does not enforce the schema returns one), a revoked binding, a lost lease or the deadline ends the
+review incomplete. Every model turn, the repair and every read is a durable job step, reserved
+before it runs; a job that already holds steps is not resumed, except the one first turn that
+waited for the owner before anything was sent (``resume_reserved``). A failed turn is never
+retried.
 """
 
 from __future__ import annotations
@@ -49,18 +59,26 @@ from finishup.adapters.providers.reviewer_reply import (
 )
 from finishup.adapters.task_input_read import ReadDeadline
 from finishup.application.reviewer_broker import ReadExchangeFull, ReviewerBroker
+from finishup.domain.reviewer_reads import MAX_REVIEWER_EXCHANGES
 from finishup.ports.semantic import Deadline, ReviewStepRefused, SemanticJudgment
 from finishup.protocol.canonical import JsonValue, canonical_encode
 
 __all__ = ["ReviewOutcome", "ReviewerLoop", "ReviewerModel", "ReviewerModelError", "Turn"]
 
-# Four normal completions (the first plus one per read) and the one format repair.
-MAX_MODEL_TURNS: Final = 5
+# Five read attempts, the final judgment and one format repair, on the original deadline.
+MAX_MODEL_TURNS: Final = MAX_REVIEWER_EXCHANGES
 LOCAL_READ_SECONDS: Final = 5.0
 FORMAT_ERROR: Final = (
     "format_error: {code}. Reply with exactly one read action or final_judgment that matches the "
     "schema."
 )
+# The repair in the final phase never invites a read: none would be executed (#1173).
+FINAL_FORMAT_ERROR: Final = (
+    "format_error: {code}. No reads remain. Reply with final_judgment only, matching the schema."
+)
+# A read action returned in the final phase: the wire schema allows it, the controller does not.
+FINAL_PHASE_READ: Final = "read_in_final_phase"
+FINAL_PHASE: Final = "FinishUP: read allowance or time reserve reached. Return final_judgment now."
 
 
 @dataclass(frozen=True, slots=True)
@@ -126,6 +144,8 @@ class ReviewerLoop:
         """Query the model and run its one read until the final judgment or an exit."""
         self.messages = [Turn("system", self.instruction), Turn("user", self.packet)]
         repaired = False
+        final_phase = False
+        offered: bool | None = None
         try:
             usage = await self.store.usage()
             # The caller proved the one reserved first turn waited for the owner and sent nothing;
@@ -141,11 +161,29 @@ class ReviewerLoop:
                 if not await self.history_admissible(frozenset(self.broker.history_roots)):
                     return self.exit("authorization_changed")
                 reads = self.broker.reads_allowed() and self.remaining() > self.reserve
+                if offered is None:
+                    # A review that never offers a read (ask-every-time, or a first turn already
+                    # inside the final reserve) keeps the read-free schema on every turn.
+                    offered = reads
+                # The provider caches the schema with the conversation (#1172), so a review that
+                # started with reads keeps the full one while a late read can still be repaired.
+                # Once its one repair is spent (the repair turn itself included), the final phase
+                # sends the read-free schema: one cache miss, never a review ended by a read.
+                schema = reviewer_reply_schema(
+                    reads_allowed=offered and (reads or not repaired), strict=True
+                )
+                if offered and not reads and not final_phase:
+                    # No room left for the notice (a first exchange admitted inside the frame the
+                    # notices need) leaves it out, so it never pushes that exchange over the cap
+                    # (#1172). That state is reached only after a malformed first answer, so the
+                    # repair note already asks for the judgment and the turn is read-free.
+                    if self.broker.notice_fits():
+                        self.messages.append(Turn("user", FINAL_PHASE))
+                    final_phase = True
                 self.n_calls = turn = self.n_calls + 1
                 if not (resumed and turn == 1):
                     await self.store.reserve("turn", turn, b"turn" if reads else b"final")
                 self.remaining()
-                schema = reviewer_reply_schema(reads_allowed=reads, strict=True)
                 invalid: ReviewerReplyInvalid | None = None
                 try:
                     parsed = await self.model.complete(
@@ -162,10 +200,25 @@ class ReviewerLoop:
                     if invalid is not None:
                         raise invalid
                     reply = decode_reviewer_reply(parsed)
+                    if not reads and not isinstance(reply, SemanticJudgment):
+                        # A review that started with reads keeps offering them on the wire, so a
+                        # read in its final phase is that phase's format error: the one repair
+                        # asks for the judgment. A read after the repair executes nothing and ends
+                        # it, as does one a route returned against the read-free schema of a
+                        # review that never offered one (there, ask-every-time, a repair would
+                        # be another exchange needing its own approval).
+                        if repaired or not offered:
+                            return self.exit("read_limit")
+                        raise ReviewerReplyInvalid(FINAL_PHASE_READ)
                 except ReviewerReplyInvalid as e:
                     if repaired:
                         return self.exit("format_invalid")
-                    repaired, note = True, FORMAT_ERROR.format(code=e.code)
+                    # The note matches the next turn: never "a read action" before a final one.
+                    reads_next = (
+                        reads and self.broker.reads_allowed() and self.remaining() > self.reserve
+                    )
+                    template = FORMAT_ERROR if reads_next else FINAL_FORMAT_ERROR
+                    repaired, note = True, template.format(code=e.code)
                     await self.store.reserve("repair", 1, e.code.encode())
                     await self.store.capture("repair", 1, note.encode())
                     self.messages.append(Turn("user", note))  # the malformed text is not echoed
@@ -175,8 +228,6 @@ class ReviewerLoop:
                 self.messages.append(Turn("assistant", canonical_encode(parsed).decode()))
                 if isinstance(reply, SemanticJudgment):
                     return self.exit(None, reply)
-                if not reads:
-                    return self.exit("read_limit")  # no observation, no extra budget
                 left = self.remaining() - self.reserve
                 if left <= 0:
                     return self.exit("deadline")  # the model's turn spent the read's time

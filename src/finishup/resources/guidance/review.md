@@ -80,11 +80,12 @@ reason with `respond acknowledged` or `respond rejected`; it stays advisory hist
 A `Destructive change:` label names what removal or replacement would lose; consider it before
 changing work matching the task, supplied inputs or an earlier passing check.
 
-**Read before answering.** Treat `review_delivery` as a bounded advisory preview.
-If it says the preview is truncated, read `status view=findings` with `detail=full` and `limit=1`.
-Follow the returned cursor until the finding you will answer carries its requested action,
-alternative interpretation and uncertainty, or explicitly labels them withheld.
-For example, a large check can keep an instruction while its alternative falls outside the preview.
+**Read before answering.** A large result can arrive as `state=delivery_page` parts.
+Until `actionable_complete` is true, call `status` with `view=compact` and
+`delivery_cursor` set to the returned `next_cursor`.
+Rebuild marked containers and fragments by path, offsets and digest, then follow `inventory_read`.
+Answer a finding only once it carries its requested action, alternative interpretation and
+uncertainty, or explicitly labels them withheld.
 
 **Respect the frozen case.** Treat a reviewer read marked `not_in_frozen_case` as unavailable in
 that check.

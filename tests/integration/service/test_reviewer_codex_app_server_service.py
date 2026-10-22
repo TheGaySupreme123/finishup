@@ -30,6 +30,7 @@ from builders.privacy_widenings import with_llm
 from builders.projection_workflow import ProjectionCase, project_case
 from finishup.adapters.integrations.observation_local import LocalObservationStore
 from finishup.adapters.providers import codex_app_server as codex
+from finishup.adapters.providers import reviewer_cache_telemetry as telemetry
 from finishup.adapters.providers.codex_app_server import codex_binding_from_config
 from finishup.adapters.providers.codex_capability import host_codex_platform
 from finishup.adapters.providers.reviewer_reply import REVIEWER_LOOP_INSTRUCTION
@@ -41,6 +42,7 @@ from finishup.application.privacy_policy import (
     decide_privacy_policy,
     privacy_propose_policy,
 )
+from finishup.application.reviewer_loop import FINAL_PHASE
 from finishup.config.models import FinishUpConfig
 from finishup.domain.privacy import AuthorizationScope, AuthorizationScopeKind, PrivacyPolicy
 from finishup.ports.control import ControlMethod, WorkspaceLocator
@@ -283,6 +285,13 @@ def _encoded(*replies: dict[str, JsonValue]) -> list[str]:
 async def test_a_service_review_runs_on_one_codex_thread_through_the_real_evaluator(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    cache_records: list[dict[str, Any]] = []
+
+    def record(**fields: Any) -> str:
+        cache_records.append(fields)
+        return new_id(IdKind.CORRELATION)
+
+    monkeypatch.setattr(telemetry, "record_bounded_counts_without_raising", record)
     checked, wire, mcp_wire = await _review(tmp_path, monkeypatch, _encoded(_READ, _FINAL))
     # Before the fix no child was ever launched: the case failed as ``case_invalid``.
     methods = [request["method"] for request in wire]
@@ -313,6 +322,19 @@ async def test_a_service_review_runs_on_one_codex_thread_through_the_real_evalua
     # The replayed 0.162.1 wire (``thread/settings/updated`` before the first ack, reasoning,
     # deltas, moderation metadata, usage) is admitted without any stage (#1118).
     assert "failure_stage" not in cast(dict[str, JsonValue], evidence)
+    # #1172: each exchange recorded its own usage, both under the review's first request id.
+    assert [(r["operation"], r["counts"]["reviewer_exchange_index"]) for r in cache_records] == [
+        ("exchange_cache", 1),
+        ("exchange_cache", 2),
+    ]
+    assert len({r["request_id"] for r in cache_records}) == 1
+    assert [r["counts"]["reviewer_cache_miss"] for r in cache_records] == ["first_turn", "none"]
+    assert [r["counts"]["reviewer_input_tokens"] for r in cache_records] == [2_000, 2_400]
+    # The second turn reused its whole 2,000-token prefix but the last partial cache block.
+    assert (
+        cache_records[1]["counts"]["reviewer_prefix_tokens"],
+        cache_records[1]["counts"]["reviewer_prefix_cached_tokens"],
+    ) == (2_000, 1_920)
 
 
 async def test_failed_final_held_session_cleanup_withholds_the_judgment(
@@ -382,3 +404,60 @@ async def test_every_repair_continues_on_the_held_codex_thread(
     # The turn after the bad answer carries only the loop's repair notice.
     (repair,) = cast(list[dict[str, str]], turns[repair_turn]["input"])
     assert repair["text"].startswith("format_error")
+
+
+@pytest.mark.parametrize(
+    "answers",
+    [
+        pytest.param(_encoded(_READ, _READ, _READ, _FINAL), id="cap-then-judgment"),
+        pytest.param(_encoded(_READ, _READ, _READ, _READ, _FINAL), id="final-phase-read-repaired"),
+    ],
+)
+async def test_the_final_phase_continues_on_the_held_codex_thread(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, answers: list[str]
+) -> None:
+    """#1173: after the third read the final-phase notice follows that read's result, two new
+    user messages on the held thread. Before the fix the Codex guard accepted exactly one, so
+    every review that reached the read cap ended unavailable with no judgment."""
+
+    checked, wire, mcp_wire = await _review(tmp_path, monkeypatch, answers)
+    methods = [request["method"] for request in wire]
+    provenance = getattr(checked, "semantic_provenance", None)
+    assert getattr(checked, "semantic_status") is SemanticStatus.SUCCEEDED, (provenance, methods)
+    assert methods.count("initialize") == 1 and methods.count("thread/start") == 1
+    turns = [request["params"] for request in wire if request["method"] == "turn/start"]
+    assert len(turns) == len(answers) and {turn["threadId"] for turn in turns} == {"thr-fake"}
+    inputs = [[item["text"] for item in cast(list[dict[str, str]], t["input"])] for t in turns]
+    assert [len(texts) for texts in inputs[1:4]] == [1, 1, 2] and inputs[3][1] == FINAL_PHASE
+    assert json.loads(inputs[3][0])["call_index"] == 3
+    if len(turns) == 5:  # the late read executes nothing; its one repair asks for the judgment
+        (repair,) = inputs[4]
+        assert repair.startswith("format_error: read_in_final_phase.")
+    reviewer = cast(dict[str, JsonValue], mcp_wire["reviewer"])
+    assert (reviewer["exchanges"], reviewer["reads_used"]) == (str(len(answers)), "3")
+
+
+@pytest.mark.parametrize(
+    "answers",
+    [
+        pytest.param(_encoded(_READ, _READ, _READ, _READ, _FINAL), id="always-reads"),
+        pytest.param([_MALFORMED, *_encoded(_READ, _READ, _READ, _FINAL)], id="malformed"),
+    ],
+)
+async def test_codex_gets_the_read_free_schema_once_the_repair_is_spent(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, answers: list[str]
+) -> None:
+    """#1173 round 2: Codex enforces ``outputSchema``. The read-offering turns keep one schema
+    (cache hits); once the review's one repair is spent, the final turn sends the read-free
+    schema, so the model can only return the judgment there."""
+
+    checked, wire, _mcp = await _review(tmp_path, monkeypatch, answers)
+    assert getattr(checked, "semantic_status") is SemanticStatus.SUCCEEDED
+    turns = [request["params"] for request in wire if request["method"] == "turn/start"]
+    schemas = [json.dumps(turn["outputSchema"], sort_keys=True) for turn in turns]
+    assert len(turns) == 5 and len(set(schemas[:4])) == 1 and schemas[4] != schemas[0]
+    branches = [
+        len(cast(dict[str, Any], turn["outputSchema"])["properties"]["reply"]["anyOf"])
+        for turn in turns
+    ]
+    assert branches == [4, 4, 4, 4, 1]  # three read actions and the judgment, then only it
