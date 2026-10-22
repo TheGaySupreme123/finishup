@@ -92,6 +92,8 @@ _PROTOCOL_REASON_CODE_VALUES: tuple[str, ...] = (
     "check_admission_import_pending",
     "check_admission_in_progress",
     "check_pipeline_failed",
+    "check_result_capacity_exceeded",
+    "check_resume_capacity_exceeded",
     "child_check_frontier_ahead_of_child",
     "child_check_frontier_missing",
     "child_check_frontier_without_check",
@@ -439,7 +441,7 @@ SERVICE_HANDSHAKE_PHASES: frozenset[str] = frozenset({"handshake", "handshake_gi
 # caller's start budget: still starting (a slow machine, or the first start after an install or
 # update), not a closed hello. ``phase`` on a retryable ``service_unavailable`` error.
 SERVICE_START_TIMEOUT_PHASE: str = "handshake_timeout"
-assert len(_PROTOCOL_REASON_CODE_VALUES) == 348  # #1084: publish_repeat_unconfirmed
+assert len(_PROTOCOL_REASON_CODE_VALUES) == 350  # #1159: local check checkpoint capacity
 assert len(_PROTOCOL_REASON_CODE_VALUES) == len(set(_PROTOCOL_REASON_CODE_VALUES))
 assert _PROTOCOL_REASON_CODE_VALUES == tuple(sorted(_PROTOCOL_REASON_CODE_VALUES, key=str.encode))
 assert all(_REASON_CODE_PATTERN.fullmatch(value) for value in _PROTOCOL_REASON_CODE_VALUES)
@@ -524,6 +526,7 @@ _BOOLEAN_DETAIL_KEYS = frozenset({"availability_inherited"})
 ADMITTED_CONTINUATION_TOKENS: frozenset[str] = frozenset(
     {
         "check_admission_same_identity",
+        "check_capacity_handoff",
         "consent_ceremony_required",
         "field_ownership_repair",
         "frontier_held_required",
@@ -612,6 +615,8 @@ REASON_CODE_CONTINUATIONS: Mapping[str, str] = MappingProxyType(
         "check_admission_contended": "check_admission_same_identity",
         "check_admission_import_pending": "check_admission_same_identity",
         "check_admission_in_progress": "check_admission_same_identity",
+        "check_result_capacity_exceeded": "check_capacity_handoff",
+        "check_resume_capacity_exceeded": "check_capacity_handoff",
         "duplicate_set_member": "sorted_set_required",
         "endpoint_unsafe": "storage_root_unsafe",
         # tb4n5 (#1048): a missing frontier is fixed with the one the caller holds, not a read.

@@ -24,6 +24,7 @@ from finishup.adapters.memory.ledger import (
     quarantine_resume_object_invalid,
     semantic_case_follow_up_round,
 )
+from finishup.adapters.objects.check_resume import CHECK_RESUME_PAGE_MEDIA_TYPE
 from finishup.adapters.sqlite.observation import SqliteObservationStore
 from finishup.domain.events import (
     AcceptedEvent,
@@ -1402,6 +1403,14 @@ class SqliteLedger:
             raise _public_error(PublicErrorCode.STORAGE_CORRUPT)
 
     def _sync_runtime_state(self) -> None:
+        # Page roots and their checkpoint operation are inventoried in the same transaction.
+        # Unadmitted stages never enter this map and remain ordinary collectable orphans.
+        for ref in self._state.object_refs.values():
+            if (
+                ref.metadata.kind is ObjectKind.CHECK_RESUME
+                and ref.metadata.media_type == CHECK_RESUME_PAGE_MEDIA_TYPE
+            ):
+                self._inventory_object(ref)
         now = format_rfc3339_millis(
             self._clock.now_utc() if self._clock is not None else datetime.now(UTC)
         )
@@ -2358,7 +2367,50 @@ class SqliteLedger:
         merged = self._clone_state()
         merged.operations[operation_key] = admitted
         merged.frozen_cases[operation_key] = case
+        # Keep this acquisition's new page roots when merging over unrelated lifecycle motion.
+        for page_id, ref in staged.object_refs.items():
+            if page_id not in cast(dict[str, ObjectRef], object_refs_before):
+                if (
+                    ref.metadata.kind is not ObjectKind.CHECK_RESUME
+                    or ref.metadata.media_type != CHECK_RESUME_PAGE_MEDIA_TYPE
+                ):
+                    return None
+                merged.object_refs[page_id] = ref
         return merged
+
+    def _persist_refresh_refusal_locked(
+        self,
+        baseline: tuple[object, ...],
+        staged: MemoryLedgerState,
+        operation_key: tuple[str, str],
+        failure: PublicOperationError,
+    ) -> None:
+        """Commit the oracle's stored refresh refusal for one admitted check (#1159).
+
+        The refused case was built from the baseline prefix, so only this key's terminal row and
+        stored error move, over any unrelated lifecycle motion. If the case inputs or this
+        operation changed meanwhile, nothing is stored and the same-identity retry rebuilds.
+        """
+
+        records, operations, writers, projection, *_rest = baseline
+        operations_before = cast(dict[tuple[str, str], object], operations)
+        current = self._state
+        terminal = staged.operations.get(operation_key)
+        if (
+            terminal is None
+            or terminal[0].state is not OperationState.COMPLETE
+            or current.records is not records
+            or current.projection is not projection
+            or current.writers != writers
+            or current.object_refs != baseline[11]
+            or current.operations.get(operation_key) is not operations_before.get(operation_key)
+            or operation_key in current.check_errors
+        ):
+            raise check_admission_refused(CheckAdmissionStage.ACQUISITION_CONTENDED) from failure
+        merged = self._clone_state()
+        merged.operations[operation_key] = terminal
+        merged.check_errors[operation_key] = failure
+        self._sync_clone_locked(current, merged)
 
     async def _freeze_case_unrecorded(
         self,
@@ -2415,9 +2467,22 @@ class SqliteLedger:
                 ids=self._ids,
                 objects=self._objects,
             )
-            result = await oracle.freeze_case(
-                session_id, writer_id, expected_frontier, request_id, request_digest
-            )
+            try:
+                result = await oracle.freeze_case(
+                    session_id, writer_id, expected_frontier, request_id, request_digest
+                )
+            except PublicOperationError as exc:
+                if (
+                    new_freeze
+                    or operation_key in cast(dict[tuple[str, str], object], baseline[6])
+                    or clone.check_errors.get(operation_key) is not exc
+                ):
+                    raise
+                # A review-input refresh outgrew the resume capacity and the oracle closed that
+                # admitted operation with the stored refusal (#1159). Persist exactly that row.
+                async with self._lock:
+                    self._persist_refresh_refusal_locked(baseline, clone, operation_key, exc)
+                raise
             async with self._lock:
                 current = self._state
                 reservations = cast(dict[tuple[str, str], object], current.check_reservations)

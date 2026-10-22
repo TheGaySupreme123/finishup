@@ -16,7 +16,7 @@ from finishup.kernel.deterministic_checks import (
     build_deterministic_case,
     healthy_storage_availability,
 )
-from finishup.kernel.finding_resolution import finding_is_resolved, issue_key
+from finishup.kernel.finding_resolution import current_finding_records, finding_is_resolved
 from finishup.kernel.projections import ProjectionState
 from finishup.kernel.reducers import (
     ReplayIndex,
@@ -54,16 +54,16 @@ def current_receipt_findings(projection: ProjectionState) -> tuple[Finding, ...]
 
     if type(projection) is not ProjectionState:
         raise ValueError("receipt_coverage_capacity_invalid")
-    newest: dict[tuple[object, ...], tuple[int, Finding]] = {}
-    for record in projection.findings.values():
-        if record.payload is None:
-            continue
-        key = issue_key(record.payload)
-        candidate = (record.source_frontier, record.payload)
-        prior = newest.get(key)
-        if prior is None or candidate[0] > prior[0]:
-            newest[key] = candidate
-    return tuple(sorted((item[1] for item in newest.values()), key=rank_key))
+    return tuple(
+        sorted(
+            (
+                record.payload
+                for record in current_finding_records(projection.findings.values())
+                if record.payload is not None
+            ),
+            key=rank_key,
+        )
+    )
 
 
 def receipt_blocking_finding_count(
