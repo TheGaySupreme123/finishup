@@ -194,6 +194,7 @@ def test_receipt_document_is_frozen_and_exactly_shaped() -> None:
         "premise_disputed_finding_ids",
         "limitation_disclosed_finding_ids",
         "conclusion_basis",
+        "verification_coverage",  # #1170: the optional agent-declared coverage projection
     )
     assert is_dataclass(document)
     assert ReceiptDocument.__slots__ == expected_fields

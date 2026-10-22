@@ -53,7 +53,13 @@ from finishup.domain.privacy import (
     ReceiptSecretScan,
     ReceiptTransformations,
 )
-from finishup.domain.values import Frontier, review_input_continuation
+from finishup.domain.values import Frontier, action_id, result_id, review_input_continuation
+from finishup.domain.verification_coverage import (
+    VerificationCoverage,
+    VerificationCriterion,
+    VerificationWitness,
+    verification_coverage_to_json,
+)
 from finishup.ports.control import ControlClientKind, ControlMethod
 from finishup.ports.ledger import CheckAwaitingHuman, CheckCommitResult, CheckVersionSlice
 from finishup.protocol.canonical import JsonValue, canonical_encode
@@ -105,6 +111,7 @@ from finishup.protocol.models import (
     StatusClosureStateModel,
     StatusCompactItemModel,
     StatusCompactObligationModel,
+    StatusCoveragePageModel,
     StatusEvidenceItemModel,
     StatusFindingItemModel,
     StatusFindingsPageModel,
@@ -122,6 +129,8 @@ from finishup.protocol.models import (
     StatusReviewModeModel,
     StatusSemanticProgressModel,
     StatusStructuralSubjectStateModel,
+    StatusVerificationCriterionModel,
+    StatusVerificationWitnessModel,
     StatusVersionSliceModel,
     public_model_to_wire,
 )
@@ -218,6 +227,13 @@ def _status_history_v14_payload() -> dict[str, object]:
 # A new result model that joins the set without a row in this table fails the inventory test.
 _RESULT_OPTIONAL_NON_NULL: tuple[tuple[type[BaseModel], frozenset[str]], ...] = (
     (CheckContinuationModel, frozenset({"pending_id", "expires_at"})),
+    # #1170: declared coverage rows carry only the quote their source owns and only the
+    # worst value / tuning answer the agent declared.
+    (StatusVerificationWitnessModel, frozenset({"worst", "tuned_on_these_cases"})),
+    (
+        StatusVerificationCriterionModel,
+        frozenset({"task_criterion_quote", "obligation_criterion_quote"}),
+    ),
     (RespondSuccessModel, frozenset({"closure_after"})),  # tb4n3 RC-7
     (RespondClosureAfterModel, frozenset({"limitation"})),
     (
@@ -1821,6 +1837,47 @@ def test_verified_item_refuses_null_reviewer_text() -> None:
             CheckVerifiedItemModel.model_validate({**payload, field: None})
 
 
+def test_declared_coverage_rows_omit_unset_fields_and_refuse_null() -> None:
+    """#1170: the shared projection omits an undeclared worst value or tuning answer and the
+    quote of the other source; the wire models refuse each of them as null."""
+
+    witness = VerificationWitness(
+        result_id(protocol_id("res_", 1170)),
+        action_id(protocol_id("act_", 1170)),
+        "independent",
+        4,
+        0,
+    )
+    coverage = VerificationCoverage(
+        (
+            VerificationCriterion("Every label is written", "task_statement", (), (witness,)),
+            VerificationCriterion("Outputs stay in range", "obligation", ("no_test",)),
+        ),
+        0,
+    )
+    page = StatusCoveragePageModel.model_validate(
+        {"verification_coverage": verification_coverage_to_json(coverage), "next_cursor": None}
+    )
+    wire = page.model_dump(mode="json", exclude_unset=True)
+    task_row, obligation_row = wire["verification_coverage"]["criteria"]
+    assert "obligation_criterion_quote" not in task_row
+    assert "task_criterion_quote" not in obligation_row
+    assert not {"worst", "tuned_on_these_cases"} & task_row["witnesses"][0].keys()
+    assert StatusCoveragePageModel.model_validate(wire) == page
+    for row, field in (
+        (task_row["witnesses"][0], "worst"),
+        (task_row["witnesses"][0], "tuned_on_these_cases"),
+    ):
+        with pytest.raises(ValidationError, match="optional_field_must_not_be_null"):
+            StatusVerificationWitnessModel.model_validate({**row, field: None})
+    for row, field in (
+        (task_row, "obligation_criterion_quote"),
+        (obligation_row, "task_criterion_quote"),
+    ):
+        with pytest.raises(ValidationError, match="optional_field_must_not_be_null"):
+            StatusVerificationCriterionModel.model_validate({**row, field: None})
+
+
 def test_result_optional_non_null_inventory_is_complete() -> None:
     """Every result model declaring optional_non_null_fields is listed in the inventory table."""
 
@@ -1881,6 +1938,15 @@ def test_every_result_optional_non_null_field_has_an_unset_projection_case() -> 
             "test_publish_accepted_events_omit_unset_summary"
         ),
         ("PublicErrorModel", "safe_details"): "test_public_error_omits_unset_safe_details",
+        **{
+            (model, field): "test_declared_coverage_rows_omit_unset_fields_and_refuse_null"
+            for model, field in (
+                ("StatusVerificationWitnessModel", "worst"),
+                ("StatusVerificationWitnessModel", "tuned_on_these_cases"),
+                ("StatusVerificationCriterionModel", "task_criterion_quote"),
+                ("StatusVerificationCriterionModel", "obligation_criterion_quote"),
+            )
+        },
         # Issue #1020: emitted only when non-zero.
         ("CheckChecklistCountsModel", "disputed_after_rebuttal"): (
             "test_checklist_counts_omit_an_unset_disputed_count"
