@@ -25,6 +25,7 @@ _CHECKOUT_TREES: Final = (
     ".agents/skills/finishup",
     "fixtures/agent-plugins",
     "fixtures/canonical",
+    "fixtures/observations",
     "fixtures/privacy",
     "fixtures/replay",
     "fixtures/receipts",
@@ -113,6 +114,9 @@ def _synthetic_checkout(root: Path, *, inventory_count: int, reviewed_count: int
     _write(root, "scripts/generate_deferred_review_fixture.py", "")
     _write(root, "scripts/generate_reviewer_record_fixture.py", "")
     _write(root, "scripts/generate_review_result_delivery_fixture.py", "")
+    _write(root, "scripts/generate_verification_freshness_fixture.py", "")
+    _write(root, "scripts/generate_result_verification_fixture.py", "")
+    _write(root, "scripts/generate_verification_coverage_fixture.py", "")
     _write(root, "schemas/state.txt", "stale\n")
     _write(root, "src/finishup/resources/manifest.json", "{}\n")
     _write(root, "skills/codex/finishup/manifest.json", "{}\n")

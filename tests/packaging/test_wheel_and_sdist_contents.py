@@ -63,8 +63,21 @@ def _is_test_edit_visibility_module(name: str) -> bool:
     }
 
 
+def _is_test_record_module(name: str) -> bool:
+    """The reviewed record-test runtime command is named for its verification subject."""
+
+    return name in {
+        "finishup/cli/test_record.py",
+        "src/finishup/cli/test_record.py",
+    }
+
+
 def _is_reviewed_name_exemption(name: str) -> bool:
-    return _is_attestation_schema_member(name) or _is_test_edit_visibility_module(name)
+    return (
+        _is_attestation_schema_member(name)
+        or _is_test_edit_visibility_module(name)
+        or _is_test_record_module(name)
+    )
 
 
 def _load_pyproject() -> dict[str, object]:
@@ -195,6 +208,13 @@ def _classify_wheel_member(name: str, *, dist_info_prefix: str) -> str:
     if name.startswith("finishup/") and name.endswith(".py"):
         return "package_python"
     return "unexpected"
+
+
+def test_record_module_name_exemption_is_exact() -> None:
+    assert _is_reviewed_name_exemption("finishup/cli/test_record.py")
+    assert _is_reviewed_name_exemption("src/finishup/cli/test_record.py")
+    assert not _is_reviewed_name_exemption("finishup/cli/test_record_extra.py")
+    assert not _is_reviewed_name_exemption("tests/unit/cli/test_record.py")
 
 
 def test_wheel_member_inventory_matches_the_exact_allowlist(candidate: Candidate) -> None:
