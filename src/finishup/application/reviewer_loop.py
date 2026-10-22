@@ -28,9 +28,10 @@
 
 At most three content-bearing reads, five read attempts, then only the final judgment. One format
 repair for the whole review, for a completed answer that is not one JSON object or not a valid
-reply, or for a read in the final phase (the provider-wire schema still offers reads, #1172): that
-repair asks for the final judgment only. A second malformed reply, a read after that repair, a
-revoked binding, a lost lease or the deadline ends the review incomplete. Every
+reply, or for a read in the final phase of a review that offered reads (the provider-wire schema
+still offers them, #1172): that repair asks for the final judgment only. A second malformed reply,
+a read after that repair or in a review that never offered one, a revoked binding, a lost lease or
+the deadline ends the review incomplete. Every
 model turn, the repair and every read is a durable job step, reserved before it runs; a job that
 already holds steps is not resumed, except the one first turn that waited for the owner before
 anything was sent (``resume_reserved``). A failed turn is never retried.
@@ -136,7 +137,7 @@ class ReviewerLoop:
         """Query the model and run its one read until the final judgment or an exit."""
         self.messages = [Turn("system", self.instruction), Turn("user", self.packet)]
         repaired = False
-        final_phase = False
+        final_phase = offered = False
         try:
             usage = await self.store.usage()
             # The caller proved the one reserved first turn waited for the owner and sent nothing;
@@ -152,6 +153,7 @@ class ReviewerLoop:
                 if not await self.history_admissible(frozenset(self.broker.history_roots)):
                     return self.exit("authorization_changed")
                 reads = self.broker.reads_allowed() and self.remaining() > self.reserve
+                offered = offered or reads
                 if not reads and not final_phase:
                     self.messages.append(Turn("user", FINAL_PHASE))
                     final_phase = True
@@ -179,8 +181,10 @@ class ReviewerLoop:
                     if not reads and not isinstance(reply, SemanticJudgment):
                         # The same wire schema offers reads in both phases (#1172), so a read in
                         # the final phase is that phase's format error: the one repair asks for
-                        # the judgment. A read after the repair executes nothing and ends it.
-                        if repaired:
+                        # the judgment. A read after the repair executes nothing and ends it, as
+                        # does one in a review that never offered a read: there (ask-every-time)
+                        # a repair would be another exchange needing its own approval.
+                        if repaired or not offered:
                             return self.exit("read_limit")
                         raise ReviewerReplyInvalid(FINAL_PHASE_READ)
                 except ReviewerReplyInvalid as e:

@@ -517,6 +517,14 @@ async def test_a_read_in_the_final_phase_gets_the_one_repair_asking_for_the_judg
     outcome = await loop.run()
     assert (outcome.status, outcome.reason, outcome.model_turns) == ("incomplete", "read_limit", 5)
     assert broker.calls == 3 and broker.reads_allowed() is False
+    # A review that never offered a read (ask-every-time) gets no repair: that would be another
+    # exchange needing its own owner approval.
+    steps = _Steps()
+    loop, broker, model, _ = _setup(_LEDGER_READ, _FINAL, steps=steps)
+    broker._max_reads = broker._max_attempts = 0  # pyright: ignore[reportPrivateUsage]
+    outcome = await loop.run()
+    assert (outcome.reason, outcome.model_turns, broker.calls) == ("read_limit", 1, 0)
+    assert list(steps.rows) == [("turn", 1)]
 
 
 @pytest.mark.anyio
@@ -1000,7 +1008,13 @@ async def test_a_wrong_selector_recovers_without_spending_a_content_read(
         ("w1", "secret.txt", "forbidden_path", "ignore rules exclude this path", ["w1"]),
         ("w1", ".env", "forbidden_path", "Hidden (dot-prefixed)", ["w1"]),
         ("w1", "../w/calc.py", "forbidden_path", "traversing (..)", ["w1"]),
-        ("zz", "calc.py", "forbidden_path", "must be one of allowed_root_ids", ["o1", "w1"]),
+        (
+            "zz",
+            "calc.py",
+            "forbidden_path",
+            "alias from the catalog's read_file_roots",
+            ["w1", "o1"],
+        ),
         ("o1", "customer/notes.md", "outside_scope", "task-declared paths", ["o1"]),
     ],
 )

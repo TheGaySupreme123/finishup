@@ -2423,8 +2423,9 @@ exception is a first turn that waited for the owner before anything was sent, wh
 in its own reservation (see "Owner approval" under "Service wiring and delivery"). After the cap
 only the final judgment is accepted. Since #1173 the wire schema still offers reads, so a read
 then is the final phase's format error: it executes nothing and takes the review's one repair,
-which asks for `final_judgment` only; a read after that repair, or after an earlier repair, ends
-the review `read_limit` with no observation. One format repair is allowed per review, for a
+which asks for `final_judgment` only; a read after that repair, or after an earlier repair, or in
+a review that never offered a read (ask-every-time, where a repair would be another exchange
+needing its own approval), ends the review `read_limit` with no observation. One format repair is allowed per review, for a
 completed answer that is not one JSON object as for one the decoder rejects, and the malformed text
 is not echoed back. A second malformed reply, a failed or uncertain model turn, a lost lease, or a
 binding that no longer holds ends the review incomplete. The shared deadline is checked after every await: a reply that
@@ -2936,7 +2937,11 @@ read is offered the loop appends the final-phase notice (`FINAL_PHASE`) once. A 
 after that executes nothing and is the final phase's format error (`read_in_final_phase`). A
 repair in the final phase, for that or any other format error, uses `FINAL_FORMAT_ERROR`, which
 asks for `final_judgment` only, never "a read action or final_judgment". A read after that repair,
-or after an earlier repair, ends `read_limit`. The
+or after an earlier repair, ends `read_limit`, and so does a read in a review that never offered
+one: on the ask-every-time route the repair would be a second exchange needing its own owner
+approval, which nothing resumes. Because the wire schema is identical, such a zero-read review is
+still offered the read branches; the catalog's `reads_allowed: 0` and the notice say none is
+available. The
 turn budget is unchanged: five read turns, the final turn and the one repair. The repair room
 every read leaves is the longer of the two repair texts. On the Codex subscription route the
 final-phase notice follows the last read result as a second new user message on the held thread;
@@ -2944,8 +2949,8 @@ the continuation guard admits the user messages after the longest history the th
 most two, and still refuses an empty, longer or non-user suffix and any history that does not
 extend the thread.
 
-A `forbidden_path` or `outside_scope` correction names only issued aliases and fixed service text
-for its cause, never the rejected path or a concrete example path a model could copy: an unknown
+A `forbidden_path` or `outside_scope` correction names only issued aliases (the requested one, or
+for an unknown alias up to four, the workspace first) and fixed service text for its cause, never the rejected path or a concrete example path a model could copy: an unknown
 alias, an absolute path, a hidden/empty/traversing component, an ignored path (or one whose ignore
 state cannot be checked) and a path outside the root's declared paths each get their own advice.
 Only the alias and absolute-path corrections suggest the relative form, and they say that a

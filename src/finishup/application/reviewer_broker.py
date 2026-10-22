@@ -81,16 +81,16 @@ _DISCOVER: Final = (
     " Prefer a path the packet names; a path=. listing that returns names spends a content read."
 )
 _PATH_CORRECTIONS: Final = {
-    "unknown_root": "root_id must be one of allowed_root_ids, the catalog's read_file_roots; no "
-    "other alias or filesystem root is readable." + _DISCOVER,
+    "unknown_root": "root_id must be an alias from the catalog's read_file_roots "
+    "(allowed_root_ids lists some); no other alias or filesystem root is readable." + _DISCOVER,
     "absolute": "Paths are relative to the root_id alias: drop the filesystem prefix and any "
     "leading / and name the file beneath that root (path=<relative-path>)." + _DISCOVER,
-    "component": "Hidden (dot-prefixed), empty, traversing (..) or control-character path "
-    "components are never readable, under any spelling. Choose another file.",
+    "component": "Hidden (dot-prefixed), empty or traversing (..) path components, and NUL "
+    "bytes, are never readable, under any spelling. Choose another file.",
     "ignored": "The repository's ignore rules exclude this path, or its ignore state could not "
     "be checked; no root serves it. Do not retry it; choose another file or judge without it.",
-    "outside_scope": "This root serves only the task-declared paths its catalog covers lists. "
-    "Choose a path from that list.",
+    "outside_scope": "This root serves only the task-declared paths listed in its catalog "
+    "covers. Choose a path from that list.",
 }
 _NO_ROOT: Final = (
     "No file root is available in this review. Use packet/ledger catalog selectors or "
@@ -356,7 +356,9 @@ class ReviewerBroker:
                 cast(list[JsonValue], correction["alternatives"]).pop()
                 encoded = envelope(status, reason)
             if correction and (
-                over_by(encoded) > 0 or await self._admit(elements, encoded) is not None
+                (correction.get("alternatives") == [])  # every row dropped to fit
+                or over_by(encoded) > 0
+                or await self._admit(elements, encoded) is not None
             ):
                 # No catalog metadata bypasses the ordinary privacy projection, but the static
                 # text carries none: it stays when every row is withheld (#1148), and is itself
@@ -437,7 +439,9 @@ class ReviewerBroker:
         if reason in {"forbidden_path", "outside_scope"}:
             args = action.args if isinstance(action, ReviewerFileActionModel) else None
             root = None if args is None else self._roots.get(args.root_id)
-            aliases = [root.alias] if root is not None else sorted(self._roots)[:2]
+            # The workspace first, then the outside roots: never only the outside ones.
+            issued = sorted(self._roots, key=lambda a: (self._roots[a].input_root is not None, a))
+            aliases = [root.alias] if root is not None else issued[:4]
             if not aliases:
                 fixed: dict[str, JsonValue] = {"continuation": _NO_ROOT, "allowed_root_ids": []}
                 return fixed, (), fixed

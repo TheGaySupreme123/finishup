@@ -12260,11 +12260,12 @@ verification dependencies and generated-artifact roles remain an open design req
   bounds; prior schema versions stay frozen. Shared text surfaces report differing attempt counts.
 - Refusal envelopes may carry `continuation`, `allowed_root_ids` or `alternatives` (at most two
   rows with `item_id`, `sections`, `views`, `source_ref`). `forbidden_path` and `outside_scope`
-  carry `allowed_root_ids` and fixed text per cause (unknown alias, absolute path,
+  carry `allowed_root_ids` (the requested alias, or for an unknown one up to four, workspace
+  first) and fixed text per cause (unknown alias, absolute path,
   hidden/empty/traversing component, ignored or unprobeable path, outside the declared paths),
   never the refused path or a concrete example path. Alternatives are fitted whole and
   admitted/scanned under their original category/root, with no content or citation. When a row
-  is withheld or none fits, the rows are dropped and the static #1148 frozen-case continuation
+  is withheld or none fits (an empty `alternatives` is never sent), the rows are dropped and the static #1148 frozen-case continuation
   stays, rescanned in its exact envelope; only if that fails too is the correction omitted.
 - `reviewer_loop.FINAL_PHASE` is an appended user notice. The conversation leaves room for it
   and one format repair (the longer of `FORMAT_ERROR` and `FINAL_FORMAT_ERROR`). The exchange
@@ -12273,8 +12274,9 @@ verification dependencies and generated-artifact roles remain an open design req
 - In the final phase (no read offered) a decoded read action executes nothing and raises
   `ReviewerReplyInvalid(reviewer_loop.FINAL_PHASE_READ)` (`read_in_final_phase`): it takes the
   review's one repair, whose note is `FINAL_FORMAT_ERROR` ("No reads remain. Reply with
-  final_judgment only"), as is any other final-phase repair. A read after a repair ends
-  `read_limit`. The read action is not echoed into the history.
+  final_judgment only"), as is any other final-phase repair. A read after a repair, or in a
+  review whose turns never offered a read (ask-every-time: a repair would need another approved
+  exchange), ends `read_limit`. The read action is not echoed into the history.
 - Codex subscription continuations send the user messages after the longest history the held
   thread holds (`_ReviewerThread.prefixes`), at most two (a read result or repair notice, then
   `FINAL_PHASE`); an empty, longer or non-user suffix, or one that extends no held history, is

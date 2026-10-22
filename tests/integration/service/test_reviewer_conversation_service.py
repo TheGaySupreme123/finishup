@@ -714,6 +714,25 @@ async def test_an_approved_first_exchange_resumes_once_and_concludes(
         assert len(review.payloads) == 1
 
 
+async def test_an_approved_first_exchange_that_asks_for_a_read_ends_without_another_approval(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """#1173: the wire schema offers reads even when the review offers none, but ask-every-time
+    must not turn a read into a repair: that would be a second exchange needing its own
+    approval, which nothing resumes. The read ends the review on the one approved exchange."""
+
+    runs = _capture_evaluations(monkeypatch)
+    replies = (_read_file("calc.py"), _FINAL_REPLY)
+    async with _reviewing(tmp_path, monkeypatch, replies, policy=_ASK) as review:
+        proposal = await _owner_decides(review, approved=True)
+        resumed = await _reenter(runs)
+        assert resumed.status is SemanticStatus.INVALID, (resumed.status, resumed.reason)
+        assert review.payloads == [proposal.prepared_bytes]  # nothing sent but the approved bytes
+        assert resumed.reviewer is not None
+        assert (resumed.reviewer.exchanges, resumed.reviewer.reads) == (1, ())
+        assert resumed.reviewer.ended == "read_limit"
+
+
 async def _owner_decides_on(review: _Review, proposal: Any, *, approved: bool) -> None:
     audit = review.service.app.privacy._audit  # pyright: ignore[reportPrivateUsage]
     await audit.record_human_decision(
