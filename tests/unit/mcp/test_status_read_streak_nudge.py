@@ -101,6 +101,7 @@ def test_streak_is_per_session_and_actor_and_skips_pages_and_operation_polls() -
     assert streaks.note_call("status", _status_args()) == 3
     # A continuation page and a running-check poll are how status is meant to be reread.
     assert streaks.note_call("status", _status_args(cursor="opaque-page-2")) == 0
+    assert streaks.note_call("status", _status_args(delivery_cursor="opaque-result-2")) == 0
     assert streaks.note_call("status", _status_args(view="operation")) == 0
     assert streaks.note_call("status", _status_args()) == 4
 

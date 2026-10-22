@@ -40,7 +40,7 @@ Lead final prose with the receipt's scope and limits; never headline "no finding
 
 # Review dialogue
 
-For `review_delivery` truncation or `not_in_frozen_case`, read `review.md`.
+For a `delivery_page` result or `not_in_frozen_case`, read `review.md`.
 
 Before the receipt, run the closing `check` with `final_review: true`. Answer each open AI-powered finding with `respond` and a reason.
 

@@ -848,6 +848,8 @@ def test_manifest_only_suffix_is_named_as_engine_derived_lineage() -> None:
     check_record = SimpleNamespace(
         event_id=_CHECK_EVENT_ID,
         schema=SimpleNamespace(name="check_recorded"),
+        # An unreadable payload: the receipt's AI-route test (#1143) reads recorded checks.
+        payload=None,
         ledger=SimpleNamespace(ingestion_sequence=2),
     )
     manifest_record = SimpleNamespace(

@@ -13,12 +13,71 @@ import json
 from pathlib import Path
 from typing import Final, cast
 
+from finishup.application.result_delivery import page_result
 from finishup.mcp.summaries import render_check_review_delivery
 from finishup.protocol.canonical import JsonValue, canonical_digest, canonical_encode
 
 _PATH: Final = "canonical/check-reviewer-record-1.6.0.case.json"
 _FIXTURE_ID: Final = "CHK-160"
 _DIGEST: Final = "sha256:" + "a" * 64
+
+
+def _result_delivery_vector() -> dict[str, JsonValue]:
+    source: dict[str, JsonValue] = {
+        "protocol_version": "0.1",
+        "schema_version": "1.0.0",
+        "ok": True,
+        "state": "complete",
+        "request_id": "req_00000000-0000-4000-8000-000000000001",
+        "task_id": "tsk_00000000-0000-4000-8000-000000000002",
+        "session_id": "ses_00000000-0000-4000-8000-000000000003",
+        "result_frontier": {"sequence": "42", "head_digest": _DIGEST},
+        "verdict": "action_required",
+        "agent_next": "Read the complete uncertainty before choosing an action.",
+        "review_summary": "Read the complete finding before deciding.",
+        "findings": [
+            {
+                "finding_id": "fnd_00000000-0000-4000-8000-000000000005",
+                "challenge": {
+                    "discrepancy": 'An alternative remains: "עברית 😀". ' * 80,
+                    "requested_next_step": "answer_question",
+                    "alternative_interpretation": "The supplied reference may be intentional.",
+                    "uncertainty": "Verify its authority before changing it.",
+                },
+            }
+        ],
+        # Each page carries its own read's disclosure receipt beside the items (never paged).
+        "privacy_projection": {
+            "sink": "agent_context",
+            "local_disclosure_receipt_id": "egr_00000000-0000-4000-8000-000000000006",
+            "policy_id": "pvy_00000000-0000-4000-8000-000000000007",
+            "policy_version": "1",
+            "policy_digest": _DIGEST,
+            "included_categories": ["finding_summary"],
+            "blocked_categories": [],
+            "omitted_pointers": [],
+            "projection_commitment": "hmac-sha256:" + "b" * 64,
+        },
+    }
+    page = page_result(
+        source,
+        key=b"fixture-delivery-key-not-a-secret",
+        method="check",
+        selector={"request_id": source["request_id"]},
+        writer_id="wri_00000000-0000-4000-8000-000000000004",
+        sink="agent_context",
+    )
+    # Cursor authentication is round-tripped separately. Normalize this opaque value so the
+    # golden presentation bytes do not depend on a platform's compression-library version.
+    page["next_cursor"] = "fixture.cursor"
+    return {
+        "source": source,
+        "payload": page,
+        "canonical_hex": canonical_encode(page).hex(),
+        "digest": canonical_digest(page),
+        "cursor_normalization": "fixture.cursor",
+        "schema": "operations/check-result-1.7.0.schema.json",
+    }
 
 
 def _vectors() -> tuple[dict[str, JsonValue], ...]:
@@ -46,6 +105,35 @@ def _vectors() -> tuple[dict[str, JsonValue], ...]:
                 "read_bytes": "705",
                 "reads": [read],
                 "reads_used": "1",
+            },
+        ),
+        (
+            "final_after_two_refusals_and_three_content_reads",
+            {
+                "cleanup": "terminated",
+                "ended": None,
+                "exchanges": "7",
+                "read_bytes": "3525",
+                "reads_used": "3",
+                "reads": [
+                    {
+                        **read,
+                        "call": str(n),
+                        **(
+                            {
+                                "status": "denied",
+                                "reason": "forbidden_path",
+                                "standing": None,
+                                "root": None,
+                                "baseline": None,
+                                "lines": None,
+                            }
+                            if n in (1, 2)
+                            else {}
+                        ),
+                    }
+                    for n in range(1, 6)
+                ],
             },
         ),
         (
@@ -108,6 +196,7 @@ def document() -> dict[str, JsonValue]:
                 "canonical_hex": canonical_encode(delivery).hex(),
                 "digest": canonical_digest(delivery),
             },
+            "result_delivery": _result_delivery_vector(),
             "stopped_review": {
                 "semantic_status": "unavailable",
                 "semantic_reason": "round_limit_unassessable",

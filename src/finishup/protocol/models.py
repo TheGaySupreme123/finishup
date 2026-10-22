@@ -2041,7 +2041,16 @@ STATUS_DEFAULT_PAGE_LIMIT: Final = "20"
 
 class StatusRequestModel(PublicRequestModel):
     optional_non_null_fields = frozenset(
-        {"filter", "project_id", "task_id", "correlation_id", "detail", "limit"}
+        {
+            "filter",
+            "project_id",
+            "task_id",
+            "correlation_id",
+            "detail",
+            "limit",
+            "delivery",
+            "delivery_cursor",
+        }
     )
 
     session_id: SessionIdWire
@@ -2073,6 +2082,13 @@ class StatusRequestModel(PublicRequestModel):
     # earlier body. The MCP tool asks for ``brief`` unless the agent names a detail.
     detail: Literal["brief", "full"] | None = None
     cursor: CursorWire | None = None
+    # Issue #1139: ``paged`` lets the service return an oversized result as ``delivery_page``s;
+    # absent or ``complete`` returns it whole. The MCP tool asks for ``paged`` unless the agent
+    # names a delivery; the bridge's own recovery and closure reads keep the complete result.
+    delivery: Literal["complete", "paged"] | None = None
+    delivery_cursor: (
+        Annotated[str, Field(min_length=1, max_length=4096, pattern=r"^[A-Za-z0-9_.-]+$")] | None
+    ) = None
 
     @model_validator(mode="before")
     @classmethod
@@ -2093,6 +2109,16 @@ class StatusRequestModel(PublicRequestModel):
 
     @model_validator(mode="after")
     def _validate_status_request(self) -> StatusRequestModel:
+        if self.delivery_cursor is not None and (
+            self.view != "compact"
+            or self.cursor is not None
+            or self.filter is not None
+            or self.at_frontier is not None
+            or self.project_id is not None
+            or self.task_id is not None
+            or self.correlation_id is not None
+        ):
+            raise ValueError("delivery_cursor_selector_conflict")
         selectors = tuple(
             value
             for value in (self.project_id, self.task_id, self.correlation_id)
@@ -2700,16 +2726,34 @@ class ReadPacketSectionArgsModel(_ReviewerArgsModel):
         "agent_account",
         "prior_findings",
         "timeline",
-    ]
-    item_ref: _ReviewerRef
-    offset: Annotated[int, Field(ge=0, le=4_194_304)]
+    ] = Field(
+        description="Packet section: excerpt -> excerpts; goal/obligation/claim/decision -> "
+        "agent_account; deterministic_summary/detail -> deterministic_findings."
+    )
+    item_ref: _ReviewerRef = Field(
+        description="Exact catalog item_id, not source_ref. "
+        "Example: item_ref=goal-1, section=agent_account, offset=0."
+    )
+    offset: Annotated[int, Field(ge=0, le=4_194_304)] = Field(
+        description="UTF-8 byte offset into retained item content; start at 0."
+    )
 
 
 class ReadLedgerArgsModel(_ReviewerArgsModel):
-    view: Literal["findings", "observations", "claims", "plan", "obligations", "command_output"]
+    view: Literal["findings", "observations", "claims", "plan", "obligations", "command_output"] = (
+        Field(
+            description="Frozen record kind, not a live ledger query: plan=goal, command_output=command/test/failure."
+        )
+    )
     refs: Annotated[
         tuple[_ReviewerRef, ...],
-        Field(min_length=1, max_length=4, json_schema_extra={"uniqueItems": True}),
+        Field(
+            min_length=1,
+            max_length=4,
+            json_schema_extra={"uniqueItems": True},
+            description="Catalog source_ref or linked_subject_refs, not item_id. "
+            "Example: view=claims, refs=[a claim's catalog source_ref], cursor=null.",
+        ),
     ]
     cursor: _ReviewerCursor
 
@@ -2720,16 +2764,26 @@ class ReadLedgerArgsModel(_ReviewerArgsModel):
 
 
 class ReadFileTextArgsModel(_ReviewerArgsModel):
-    root_id: Annotated[str, Field(min_length=1, max_length=32)]
-    path: Annotated[str, Field(min_length=1, max_length=512)]
+    root_id: Annotated[str, Field(min_length=1, max_length=32)] = Field(
+        description="Service-issued read_file_roots alias, e.g. w1; never a filesystem root."
+    )
+    path: Annotated[str, Field(min_length=1, max_length=512)] = Field(
+        description="Relative path beneath root_id only, as the packet or a listing names it. "
+        "Absolute, hidden, ignored and traversing paths are refused."
+    )
     mode: Literal["text"]
     start_line: Annotated[int, Field(ge=1, le=1_000_000)]
     line_count: Annotated[int, Field(ge=1, le=200)]
 
 
 class ReadFileListArgsModel(_ReviewerArgsModel):
-    root_id: Annotated[str, Field(min_length=1, max_length=32)]
-    path: Annotated[str, Field(min_length=1, max_length=512)]
+    root_id: Annotated[str, Field(min_length=1, max_length=32)] = Field(
+        description="Service-issued read_file_roots alias, e.g. w1; never a filesystem root."
+    )
+    path: Annotated[str, Field(min_length=1, max_length=512)] = Field(
+        description="Relative directory beneath root_id; path=. lists the root. A listing that "
+        "returns names spends a content read. Example: root_id=w1, path=., mode=list, cursor=null."
+    )
     mode: Literal["list"]
     cursor: _ReviewerCursor
     max_entries: Annotated[int, Field(ge=1, le=32)] = 32
@@ -4263,7 +4317,7 @@ _ReviewerCountWire = Annotated[str, Field(max_length=6, pattern=r"^(0|[1-9][0-9]
 class ReviewerReadModel(_ClosedModel):
     """#1118: one read the reviewer asked for and what the service sent back. Never a path."""
 
-    call: Literal["1", "2", "3"]
+    call: Literal["1", "2", "3", "4", "5"]
     action: Literal["read_packet_section", "read_ledger", "read_file"]
     status: Literal["ok", "partial", "unavailable", "denied", "stale"]
     reason: _ReviewerTokenWire | None
@@ -4300,7 +4354,7 @@ class ReviewerRecordModel(_ClosedModel):
     exchanges: _ReviewerCountWire
     reads_used: Literal["0", "1", "2", "3"]
     read_bytes: _ReviewerCountWire
-    reads: tuple[ReviewerReadModel, ...] = Field(max_length=3)
+    reads: tuple[ReviewerReadModel, ...] = Field(max_length=5)
     ended: _ReviewerTokenWire | None
     cleanup: _ReviewerTokenWire | None
 
@@ -4510,6 +4564,54 @@ class CheckInspectionModel(_ClosedModel):
         return self
 
 
+class DeliveryFragmentModel(_ClosedModel):
+    unit: Literal["unicode_scalar"]
+    offset: Annotated[int, Field(ge=0)]
+    end: Annotated[int, Field(ge=1)]
+    length: Annotated[int, Field(ge=1)]
+    digest: Sha256Digest
+    complete: bool
+
+
+class DeliveryItemModel(_ClosedModel):
+    optional_non_null_fields = frozenset({"fragment", "container"})
+    path: Annotated[str, Field(min_length=1, max_length=4096)]
+    value: JsonValue
+    fragment: DeliveryFragmentModel | None = None
+    container: Literal["object", "array"] | None = None
+
+
+class DeliveryPageModel(_ClosedModel):
+    protocol_version: Literal["0.1"]
+    schema_version: Literal["1.0.0"]
+    ok: Literal[True]
+    state: Literal["delivery_page"]
+    request_id: RequestIdWire
+    source_request_id: RequestIdWire
+    source_operation: Literal["check", "receipt", "status"]
+    task_id: TaskIdWire
+    session_id: SessionIdWire
+    writer_id: WriterIdWire
+    result_frontier: FrontierModel
+    source_digest: Sha256Digest
+    offset: Annotated[int, Field(ge=0)]
+    total_items: Annotated[int, Field(ge=1)]
+    truncated: Literal[True]
+    complete: bool
+    # The serialized budget this page was cut to (ADR-043); a bounded integer, not a constant.
+    budget_bytes: Annotated[int, Field(ge=1_024, le=1_048_576)]
+    actionable_complete: bool
+    inventory_read: JsonValue | None
+    required_next_step: Annotated[str, Field(min_length=1, max_length=512)]
+    items: Annotated[tuple[DeliveryItemModel, ...], Field(min_length=1)]
+    next_cursor: (
+        Annotated[str, Field(min_length=1, max_length=4096, pattern=r"^[A-Za-z0-9_.-]+$")] | None
+    )
+    # This read's own local disclosure receipt. Never paged as items: each continuation is a
+    # fresh disclosure, and reconstruction carries the final page's projection.
+    privacy_projection: PrivacyProjectionModel
+
+
 class CheckSuccessModel(_ClosedModel):
     optional_non_null_fields = frozenset(
         {
@@ -4654,7 +4756,7 @@ class CheckSuccessModel(_ClosedModel):
 
 
 type CheckSuccessBranch = Annotated[
-    CheckSuccessModel | CheckAwaitingHumanModel | CheckInspectionModel,
+    CheckSuccessModel | CheckAwaitingHumanModel | CheckInspectionModel | DeliveryPageModel,
     Field(discriminator="state"),
 ]
 type CheckResultBranch = Annotated[
@@ -6993,16 +7095,22 @@ def _status_result_kind(value: object) -> str:
         source = cast(Mapping[object, object], value)
         if source.get("ok") is False:
             return "failure"
+        if source.get("state") == "delivery_page":
+            return "delivery"
         return "brief" if source.get("detail") == "brief" else "success"
     if getattr(value, "ok", None) is False:
         return "failure"
+    if getattr(value, "state", None) == "delivery_page":
+        return "delivery"
     return "brief" if getattr(value, "detail", None) == "brief" else "success"
 
 
 type StatusResultBranch = Annotated[
     Annotated[StatusSuccessModel, Tag("success")]
     | Annotated[StatusBriefSuccessModel, Tag("brief")]
+    | Annotated[DeliveryPageModel, Tag("delivery")]
     | Annotated[OperationFailureModel, Tag("failure")],
+    # Delivery pages are a transport presentation, never a new status/closure verdict.
     Discriminator(_status_result_kind),
 ]
 
@@ -7131,7 +7239,10 @@ class ReceiptSuccessModel(_ClosedModel):
 
 
 type ReceiptResultBranch = Annotated[
-    ReceiptSuccessModel | OperationFailureModel, Field(discriminator="ok")
+    Annotated[ReceiptSuccessModel, Tag("success")]
+    | Annotated[DeliveryPageModel, Tag("delivery")]
+    | Annotated[OperationFailureModel, Tag("failure")],
+    Discriminator(_status_result_kind),
 ]
 
 

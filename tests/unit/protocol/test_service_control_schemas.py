@@ -715,6 +715,8 @@ def test_v25_observation_wire_tracks_domain_structural_keys_without_rewriting_v2
             "workspace_effect",
             # And the closed write-scope classes of that change (#1100, c152c9972).
             "workspace_write_scopes",
+            # And the keyed changed-entry identities of that comparison (#1143).
+            "workspace_changed_entries",
         }
     )
     assert set(v25_properties) == expected_observation_keys
@@ -1367,8 +1369,8 @@ def _assert_v29_request_adds_only_command_commitment(
     v28: dict[str, Any], v29: dict[str, Any]
 ) -> None:
     """The 2.9 request adds the keyed command identity, the runner class, the closed runtime
-    facts (#909, #977), the workspace-effect fact (PR #1080) and its write-scope classes (#1100)
-    and nothing else."""
+    facts (#909, #977), the workspace-effect fact (PR #1080), its write-scope classes (#1100)
+    and its keyed changed-entry identities (#1143), and nothing else."""
 
     v28_fields = _structural_properties(v28)
     v29_fields = _structural_properties(v29)
@@ -1383,10 +1385,18 @@ def _assert_v29_request_adds_only_command_commitment(
         "command_composition",
         "workspace_effect",
         "workspace_write_scopes",
+        "workspace_changed_entries",
     }
     assert v29_fields["workspace_effect"] == {
         "enum": ["changed", "unavailable", "unchanged"],
         "type": "string",
+    }
+    # A complete, sorted set of installation-keyed path identities; omission means unknown.
+    assert v29_fields["workspace_changed_entries"] == {
+        "items": {"pattern": "^[a-f0-9]{32}$", "type": "string"},
+        "maxItems": 128,
+        "type": "array",
+        "uniqueItems": True,
     }
     assert v29_fields["command_segment_commitments"] == {
         "items": {
@@ -1450,6 +1460,7 @@ def _assert_v29_request_adds_only_command_commitment(
         "command_composition",
         "workspace_effect",
         "workspace_write_scopes",
+        "workspace_changed_entries",
     ):
         del _structural_properties(stripped)[added]
     assert {k: v for k, v in v28.items() if k != "$id"} == {

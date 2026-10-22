@@ -164,7 +164,8 @@ def _installed_manifest_agrees_with_schema(repo_root: Path) -> bool:
 
 def _check(repo_root: Path) -> bool:
     return (
-        _run(repo_root, "generate_advice_egress_fixture.py", "--check")
+        _run(repo_root, "generate_verification_freshness_fixture.py", "--check")
+        and _run(repo_root, "generate_advice_egress_fixture.py", "--check")
         and _run(repo_root, "generate_project_policy_fixture.py", "--check")
         and _run(repo_root, "generate_check_conclusion_fixture.py", "--check")
         and _run(repo_root, "generate_check_totals_fixture.py", "--check")
@@ -195,6 +196,7 @@ def _write_pass(repo_root: Path) -> bool:
         ):
             return False
     steps = (
+        ("generate_verification_freshness_fixture.py", "--write"),
         # Fixture builders validate public requests through the packaged schema catalog. Add
         # the new row contract and heal current builder-owned schemas before refreshing that
         # catalog. Mirroring a stale current schema first would make request validation fail
@@ -206,6 +208,14 @@ def _write_pass(repo_root: Path) -> bool:
             "--only",
             "privacy/review-packet-row-2.0.0.schema.json",
             "--only",
+            "operations/check-result-1.7.0.schema.json",
+            "--only",
+            "operations/receipt-result-1.4.0.schema.json",
+            "--only",
+            "operations/status-result-1.5.0.schema.json",
+            "--only",
+            "operations/status-request-1.3.0.schema.json",
+            "--only",
             "integrations/host-connection-batch-1.0.0.schema.json",
             "--only",
             "events/result-recorded-1.1.0.schema.json",
@@ -213,6 +223,7 @@ def _write_pass(repo_root: Path) -> bool:
         ("generate_result_verification_fixture.py", "--write"),
         ("generate_verification_coverage_fixture.py", "--write"),
         ("verify_resource_manifest.py", "--sync"),
+        ("sync_mcp_descriptor_digests.py", "--write"),
         ("generate_advice_egress_fixture.py", "--write"),
         ("generate_project_policy_fixture.py", "--write"),
         ("generate_check_conclusion_fixture.py", "--write"),
@@ -243,6 +254,14 @@ def _write_pass(repo_root: Path) -> bool:
             "findings/reviewer-reply-1.0.0.schema.json",
             "--only",
             "operations/check-result-1.4.0.schema.json",
+            "--only",
+            "operations/check-result-1.7.0.schema.json",
+            "--only",
+            "operations/receipt-result-1.4.0.schema.json",
+            "--only",
+            "operations/status-result-1.5.0.schema.json",
+            "--only",
+            "operations/status-request-1.3.0.schema.json",
             "--only",
             "operations/read-guidance-request-1.1.0.schema.json",
             "--only",

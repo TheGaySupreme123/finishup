@@ -63,6 +63,7 @@ from finishup.protocol.models import (
     PublishWorkRequest,
     ReceiptRequest,
     ReceiptResultModel,
+    ReceiptSuccessModel,
     RespondRequest,
     StatusRequest,
     StatusVersionsPageModel,
@@ -477,6 +478,7 @@ async def test_full_workflow_uses_one_final_client_projection(
 
     assert isinstance(projected, ReceiptResultModel)
     assert projected.root.ok is True
+    assert isinstance(projected.root, ReceiptSuccessModel)
     assert projected.root.receipt_id == receipt.receipt_id
     assert projected.root.privacy_projection.sink == "local_human_view"
     assert len(projection.candidates) == 1

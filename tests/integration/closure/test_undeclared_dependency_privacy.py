@@ -74,6 +74,7 @@ from finishup.protocol.models import (
     CheckRequest,
     PublishWorkRequest,
     ReceiptRequest,
+    ReceiptSuccessModel,
     StatusRequest,
     StatusResultModel,
 )
@@ -782,6 +783,7 @@ async def test_a_full_local_receipt_projected_to_an_agent_withholds_the_names(
     _assert_receipt_names_withheld(projected, fmt)
     model = ReceiptResult.model_validate(projected)
     assert model.root.ok is True
+    assert isinstance(model.root, ReceiptSuccessModel)
     for path in _MODELS:
         assert path not in summary_for_receipt(projected)
         assert path not in render_human_receipt(model.root)

@@ -23,6 +23,7 @@ from finishup.domain.findings import FindingKind, FindingOrigin
 from finishup.domain.observation_selection import command_runner_class
 from finishup.domain.receipts import UNRESOLVED_VERIFICATION_GAP
 from finishup.domain.values import (
+    ActionId,
     EventId,
     EvidenceId,
     ObligationId,
@@ -56,6 +57,7 @@ from finishup.kernel.deterministic_checks import (
 )
 from finishup.kernel.observed_failures import (
     ObservedFailureState,
+    command_identity,
     observed_action_runner_class,
     observed_edit_counts,
     observed_event_ids_from_coverage,
@@ -80,6 +82,7 @@ from finishup.kernel.task_facts import (
     stale_exempt_write_tokens,
     superseded_unnamed_outputs,
 )
+from finishup.kernel.verification_freshness import VerificationFreshness
 from finishup.protocol.policy_packs import WORK_INTEGRITY_POLICY_ID, WORK_INTEGRITY_POLICY_VERSION
 
 __all__ = [
@@ -120,6 +123,7 @@ WORK_INTEGRITY_FACT_CODES: Final = frozenset(
         "unknown_event_present",
         "redaction_gap_present",
         "freshness_gap_present",
+        "verification_freshness_question",
         "finding_response_present",
         "response_basis_insufficient",
         "response_state_stale",
@@ -669,7 +673,45 @@ def _uncorroborated_completion_findings(case: DeterministicCase) -> list[Determi
     if latest_edit is None and not verification_observed:
         return []
     observed = observed_event_ids_from_coverage(case.coverage_by_ref)
-    after = latest_edit or 0
+    # New cases judge every cited run freshness judges (and the evidence its result links) by its
+    # own inputs, exactly as the task facts do: no row means nothing later bears on it, so it is
+    # current (#1143, PR #1167 review). Every other cited ref (the agent's own
+    # test_result/command_output evidence, a cooperative result, an observed run of a class
+    # freshness does not judge) keeps the latest-edit frontier, where the run's own write is not
+    # a later edit against itself. Old frozen cases carry no rows and keep the frontier for every
+    # ref. On the AI route freshness is advisory throughout.
+    legacy = case.verification_freshness is None
+    tracked: dict[str, VerificationFreshness | None] = {}
+    for ref in case.verification_tracked_runs:
+        tracked[str(ref)] = None
+        result = case.projection.results[ref].payload
+        for evidence in () if result is None else result.evidence_refs:
+            tracked[str(evidence)] = None
+    for row in case.verification_freshness or ():
+        tracked[str(row.run_ref)] = row
+        result = case.projection.results[row.run_ref].payload
+        if result is not None:
+            for evidence in result.evidence_refs:
+                tracked[str(evidence)] = row
+
+    def corroborates(ref: str) -> bool:
+        if case.verification_advisory or ref in tracked:
+            row = tracked.get(ref)
+            return ref in runs and (
+                case.verification_advisory or row is None or row.state != "stale"
+            )
+        position = runs.get(ref, -1)
+        # An edit at the run's own result frontier is the run's own trusted workspace write.
+        return position > (latest_edit or 0) or not legacy and position == latest_edit
+
+    def self_published(claim: ClaimRecordedPayload, ref: str) -> bool:
+        if case.verification_advisory or ref in tracked:
+            row = tracked.get(ref)
+            return _self_published_verification_after(case, claim, ref, 0, observed) and (
+                case.verification_advisory or row is None or row.state != "stale"
+            )
+        return _self_published_verification_after(case, claim, ref, latest_edit or 0, observed)
+
     output: list[DeterministicAssessment] = []
     for claim_id, record in effective_claim_items(case.projection):
         claim = record.payload
@@ -682,11 +724,9 @@ def _uncorroborated_completion_findings(case: DeterministicCase) -> list[Determi
             obligation = case.projection.obligations.get(obligation_ref)
             if obligation is not None and obligation.payload is not None:
                 chain.update(obligation.payload.resolution_evidence_refs)
-        if any(runs.get(ref, -1) > after for ref in chain):
+        if any(corroborates(ref) for ref in chain):
             continue
-        if any(
-            _self_published_verification_after(case, claim, ref, after, observed) for ref in chain
-        ):
+        if any(self_published(claim, ref) for ref in chain):
             continue
         output.append(
             build_policy_assessment(
@@ -966,6 +1006,11 @@ def _ledger_finding(case: DeterministicCase) -> list[DeterministicAssessment]:
             # with a count, but no agent action can change it, so it never becomes a finding
             # subject whose growth would mint a new issue on every publication (issue #912).
             continue
+        if case.verification_advisory and gap.code in {
+            "planned_verification_stale",
+            "edited_after_last_verification",
+        }:
+            continue
         if gap.code in STANDING_TASK_FACT_GAPS:
             # A standing task fact (#977): an obligation a recorded blocker names, or a planned
             # verification whose outcome is unknown or unobservable. It is a disclosure classified
@@ -1020,6 +1065,100 @@ def _ledger_finding(case: DeterministicCase) -> list[DeterministicAssessment]:
             source_availability=availability,
         )
     ]
+
+
+def _verification_questions(case: DeterministicCase) -> list[DeterministicAssessment]:
+    if case.verification_freshness is None:
+        return []
+    questions: list[DeterministicAssessment] = []
+    latest_by_identity: dict[str, int] = {}
+    first_positions: dict[ActionId, int] = {}
+    for result in sorted(case.projection.results.values(), key=lambda row: row.source_frontier):
+        if result.payload is not None:
+            first_positions.setdefault(result.payload.action_id, result.source_frontier)
+    for result in case.projection.results.values():
+        action = (
+            None
+            if result.payload is None
+            else case.projection.actions.get(result.payload.action_id)
+        )
+        if (
+            result.payload is not None
+            and action is not None
+            and action.payload is not None
+            and action.payload.command is not None
+        ):
+            identity = command_identity(action.payload.command)
+            if identity is not None:
+                latest_by_identity[identity] = max(
+                    latest_by_identity.get(identity, 0), first_positions[result.payload.action_id]
+                )
+    for row in case.verification_freshness:
+        result = case.projection.results.get(row.run_ref)
+        action = (
+            None
+            if result is None or result.payload is None
+            else case.projection.actions.get(result.payload.action_id)
+        )
+        if (
+            result is not None
+            and result.payload is not None
+            and action is not None
+            and action.payload is not None
+        ):
+            identity = command_identity(action.payload.command)
+            if identity is not None and first_positions[
+                result.payload.action_id
+            ] < latest_by_identity.get(identity, 0):
+                continue
+        if row.state == "current" or (row.state == "stale" and not case.verification_advisory):
+            continue
+        if result is None:
+            continue
+        refs = _refs((result.source_event_id, *row.change_refs))
+        if not _question_answered(case, refs):
+            questions.append(_freshness_question(case, refs))
+    if case.verification_advisory and case.verification_unjudged_stale:
+        # A stale verdict on a run freshness could not judge (its result never arrived or is
+        # unreadable): on the AI route it is asked too, never a standing question with nothing to
+        # answer (#1167 review).
+        refs = _refs(case.verification_unjudged_stale)
+        if not _question_answered(case, refs):
+            questions.append(_freshness_question(case, refs))
+    return questions
+
+
+def _freshness_question(
+    case: DeterministicCase, refs: tuple[FindingBasisRef, ...]
+) -> DeterministicAssessment:
+    return build_policy_assessment(
+        case,
+        WORK_INTEGRITY_POLICY_PACK,
+        FindingKind.LEDGER_STALE_OR_INCOMPLETE,
+        refs,
+        (_fact("verification_freshness_question", *refs),),
+    )
+
+
+def _question_answered(case: DeterministicCase, refs: tuple[FindingBasisRef, ...]) -> bool:
+    """A reasoned ``acknowledged`` answer to the question about exactly ``refs`` (#1143)."""
+
+    for key, finding in case.projection.findings.items():
+        if finding.payload is None or finding.payload.subject_refs != refs:
+            continue
+        response = case.projection.responses.get(key)
+        if (
+            response is not None
+            and response.payload is not None
+            and response.payload.disposition.value == "acknowledged"
+            and response.payload.reason
+            and response.payload.reason.strip()
+            and response.source_frontier > finding.source_frontier
+            and response.payload.finding_frontier.sequence
+            >= finding.payload.subject_frontier.sequence
+        ):
+            return True
+    return False
 
 
 def _response_findings(case: DeterministicCase) -> list[DeterministicAssessment]:
@@ -1105,7 +1244,7 @@ def work_integrity_findings(
         _unresolved_action_findings(case),
         _stale_evidence_findings(case),
         _contradiction_findings(case),
-        _ledger_finding(case),
+        _ledger_finding(case) + _verification_questions(case),
         _response_findings(case),
     )
     if len(by_rule) != len(_RULE_ORDER):

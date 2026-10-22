@@ -26,7 +26,9 @@ _EXPECTED_SCHEMA_MANIFEST_SCHEMA = "yoetz.schema-manifest/1.0.0"
 _EXPECTED_SCHEMA_MANIFEST_VERSION = "1.0.0"
 # +1 each: the review-packet-row 2.0.0 provider contract (robust lane row contract).
 # ADR-049: +1 member, decision-recorded 1.1.0 (an event schema, not a request/result version).
-_EXPECTED_MEMBER_COUNT = 239  # #1170 +1 result-recorded 1.1.0; #1118 +1 reviewer-reply 1.0.0,
+_EXPECTED_MEMBER_COUNT = 243  # #1170 +1 result-recorded 1.1.0;
+# #1139 +4 lossless result-delivery schemas;
+# #1118 +1 reviewer-reply 1.0.0, +2 check-result/-recorded 1.6.0,
 # +1 privacy-policy 1.3.0;
 # #1119 +2 host-connection batch report and ai-status 1.0.0
 _EXPECTED_REQUEST_RESULT_VERSION_COUNT = 57  # #1118 reviewer-reply; #1119 batch, ai-status
@@ -249,6 +251,8 @@ def test_schema_registry_is_complete() -> None:
                 and path != "consent/chat-user-attestation-1.0.0.schema.json"
             )
             or path.endswith("-2.0.0.schema.json")
+            else "1.7.0"
+            if path.endswith("-1.7.0.schema.json")
             else "1.6.0"
             if path.endswith("-1.6.0.schema.json")
             else "1.5.0"
@@ -266,6 +270,7 @@ def test_schema_registry_is_complete() -> None:
                 "operations/receipt-result-1.3.0.schema.json",
                 "receipts/receipt-document-1.3.0.schema.json",
                 "operations/status-result-1.3.0.schema.json",
+                "operations/status-request-1.3.0.schema.json",
                 "privacy/privacy-policy-1.3.0.schema.json",
             }
             else "1.2.0"

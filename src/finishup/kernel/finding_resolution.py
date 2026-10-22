@@ -156,6 +156,7 @@ __all__ = [
     "apply_check_rulings",
     "check_change_limits_tolerated",
     "check_change_resolution_unverified",
+    "current_finding_records",
     "disclosing_response",
     "unverified_resolution_finding_ids",
     "finding_is_resolved",
@@ -615,6 +616,25 @@ def issue_key(finding: Finding) -> IssueKey:
         finding.kind,
         finding.subject_refs,
     )
+
+
+def current_finding_records[R: ProjectionRecord[Finding]](records: Iterable[R]) -> tuple[R, ...]:
+    """The newest readable record per ``issue_key``; a frontier tie keeps the first seen.
+
+    Receipts, status and check read findings through ``current_receipt_findings``, and the
+    failed-command advice binding (#1160) picks its live ID through this same selection, so
+    the hook never names a superseded row the receipt no longer shows.
+    """
+
+    newest: dict[IssueKey, R] = {}
+    for record in records:
+        if record.payload is None:
+            continue
+        key = issue_key(record.payload)
+        prior = newest.get(key)
+        if prior is None or record.source_frontier > prior.source_frontier:
+            newest[key] = record
+    return tuple(newest.values())
 
 
 def _scope_covers(check: CheckRecordedPayload, finding: Finding) -> bool:

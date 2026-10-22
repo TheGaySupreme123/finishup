@@ -38,10 +38,10 @@ def test_the_wire_form_round_trips_and_renders_without_paths() -> None:
         3, (_read(1), _read(2, status="denied", reason="forbidden_path", lines=None)), None, None
     )
     wire = record.as_wire()
-    assert wire["reads_used"] == "2" and wire["read_bytes"] == "600"
+    assert wire["reads_used"] == "1" and wire["read_bytes"] == "600"
     assert reviewer_record_from_wire(wire) == record
     lines = render_reviewer_lines(record)
-    assert lines[0] == "Reviewer reads: 2 of 3, 600 bytes, 3 model exchanges"
+    assert lines[0] == "Reviewer reads: 1 of 3, 600 bytes, 3 model exchanges; 2 of 5 read attempts"
     assert lines[1].startswith("- 1. read_file: ok [w1 src_") and "lines 1-2" in lines[1]
     assert "sent under receipt egr_1" in lines[1]
     assert lines[2].startswith("- 2. read_file: denied forbidden_path")

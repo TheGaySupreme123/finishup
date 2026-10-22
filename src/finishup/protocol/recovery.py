@@ -114,6 +114,16 @@ _PUBLICATION_SERVICE_FILLED: Final = (
 
 _DIRECTIVES: Final = (
     RecoveryDirective(
+        token="check_capacity_handoff",
+        directive=(
+            "Retain this task and report the local checkpoint limit. Do not retry unchanged "
+            "checks. Continue only with an explicitly scoped follow-up task; its receipt does "
+            "not close this task."
+        ),
+        guidance_uri="finishup://guidance/coverage-and-receipts.md#recovery",
+        nudge="Do not delete history, weaken privacy, or treat this as a provider failure.",
+    ),
+    RecoveryDirective(
         token="start_busy_same_identity",
         directive=(
             "The start reservation is retained and its lease was released. Replay the exact "

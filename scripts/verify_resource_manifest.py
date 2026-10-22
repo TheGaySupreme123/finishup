@@ -186,6 +186,30 @@ _INVENTORY_ENTRIES: Final[tuple[tuple[str, str, str, bool], ...]] = (
         True,
     ),
     (
+        "schemas/operations/check-result-1.7.0.schema.json",
+        "json_schema",
+        "application/schema+json",
+        True,
+    ),
+    (
+        "schemas/operations/receipt-result-1.4.0.schema.json",
+        "json_schema",
+        "application/schema+json",
+        True,
+    ),
+    (
+        "schemas/operations/status-request-1.3.0.schema.json",
+        "json_schema",
+        "application/schema+json",
+        True,
+    ),
+    (
+        "schemas/operations/status-result-1.5.0.schema.json",
+        "json_schema",
+        "application/schema+json",
+        True,
+    ),
+    (
         "schemas/privacy/review-packet-row-2.0.0.schema.json",
         "json_schema",
         "application/schema+json",
@@ -573,6 +597,7 @@ _INVENTORY_ENTRIES: Final[tuple[tuple[str, str, str, bool], ...]] = (
     ("migrations/bundle/0015.sql", "migration", "application/sql", True),
     ("migrations/bundle/0016.sql", "migration", "application/sql", True),
     ("migrations/bundle/0017.sql", "migration", "application/sql", True),
+    ("migrations/bundle/0018.sql", "migration", "application/sql", True),
     ("migrations/catalog/0001.sql", "migration", "application/sql", True),
     ("migrations/catalog/0002.sql", "migration", "application/sql", True),
     ("migrations/catalog/0003.sql", "migration", "application/sql", True),
