@@ -22,6 +22,7 @@ from finishup.domain.findings import (
     FindingOrigin,
     ResponseDisposition,
     WaiverScope,
+    finding_policy_identity,
 )
 from finishup.domain.values import Frontier, event_id, finding_id, timestamp_from_string
 from finishup.kernel.projections import (
@@ -45,27 +46,10 @@ _FINDING_ID = finding_id("fnd_00000000-0000-4000-8000-000000000911")
 _SOURCE_EVENT_ID = event_id("evt_00000000-0000-4000-8000-000000000911")
 
 
-_RESEARCH_EVIDENCE_KINDS = frozenset(
-    {
-        FindingKind.EVIDENCE_DOES_NOT_SUPPORT_CLAIM,
-        FindingKind.DIFF_DOES_NOT_MATCH_ACCOUNT,
-        FindingKind.MATERIAL_LIMITATION_OMITTED,
-        FindingKind.QUESTIONABLE_FINDING_REJECTION,
-        # The verifying-reviewer kinds (#906) are owned by the research-evidence pack identity.
-        FindingKind.CODE_DEFECT,
-        FindingKind.TASK_REQUIREMENT_UNMET,
-        FindingKind.AGENT_CRITERION_UNMET,
-    }
-)
-
-
-def _policy_id(kind: FindingKind) -> str:
-    if kind is FindingKind.COORDINATION_OVERLAP:
-        return "coordination"
-    return "research-evidence" if kind in _RESEARCH_EVIDENCE_KINDS else "work-integrity"
-
-
 def _finding(kind: FindingKind) -> Finding:
+    # #1185: the fixture carries the exact identity a newly raised finding of ``kind`` carries,
+    # so a kind added to (or moved between) policy packs cannot silently drift from a local copy.
+    policy_id, policy_version = finding_policy_identity(kind)
     return Finding(
         finding_id=_FINDING_ID,
         kind=kind,
@@ -74,8 +58,8 @@ def _finding(kind: FindingKind) -> Finding:
         summary="Observation coverage is incomplete or stale",
         detail="Source lag, mapping, or drain gaps prevent complete observation",
         subject_refs=(event_id("evt_00000000-0000-4000-8000-000000000001"),),
-        policy_id=_policy_id(kind),
-        policy_version="0.1.0",
+        policy_id=policy_id,
+        policy_version=policy_version,
         subject_frontier=Frontier(1, _DIGEST),
         coverage=Coverage(
             publication_channels=(PublicationChannel.ENGINE_DERIVED,),

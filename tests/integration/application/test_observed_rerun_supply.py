@@ -445,7 +445,11 @@ async def test_an_observed_rerun_answers_the_request_on_the_next_check() -> None
     third = await _check(app, started, supplied.result_frontier, _SEED + 70)
     # #1118 unit 4 (AIM-5): two insufficient reviews in a row with no edit since stop the round
     # for a required check too. Publishing the output does not re-arm it, so this check skips the
-    # unchanged redispatch and reads incomplete_check instead of asking a third time.
-    assert third.semantic_status is SemanticStatus.NOT_REQUESTED
+    # unchanged redispatch and reads incomplete_check instead of asking a third time. ADR-040's
+    # #1149 amendment: the requested review that stopped reads unavailable/round_limit_unassessable,
+    # never not_requested, and no provider attempt is asserted.
+    assert third.semantic_status is SemanticStatus.UNAVAILABLE
+    assert third.semantic_reason is SemanticReason.ROUND_LIMIT_UNASSESSABLE
+    assert third.semantic_provenance is None
     assert "semantic_review_skipped_insufficient_packet" in third.coverage.known_gaps
     assert third.verdict.value == "incomplete_check"
