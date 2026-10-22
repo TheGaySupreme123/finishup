@@ -28,8 +28,6 @@ Never publish hidden reasoning or chain-of-thought, full prompts, transcripts, c
 
 # Review and closure
 
-Use workflow.md#design-verification.
-
 Tasks may start local; `review.md`: when to turn on AI-powered review. Select `semantic_required` when the user, effective policy, or named acceptance criterion requires independent review; `semantic_if_configured` only if optional; `deterministic_only` only for local or no-egress work.
 
 Writes return frontier, ids, errors; a prior `status` read or `dry_run` is optional: send each returned frontier as the next `expected_frontier` (first plan: `start`'s). `publish_work` may omit `request_id`, `expected_frontier`, `event_id`, `occurred_at` (no `date`), envelope lists. Give each action a `result_recorded` naming its `act_` id. Cite IDs you published; find native captures with `view=evidence` filter `strength=immutable_snapshot`, reusing only IDs a structural link ties to the claim. Omitted descriptions are a privacy setting, not missing evidence. What is left and why: `check` `mode: inspect` (records nothing).
