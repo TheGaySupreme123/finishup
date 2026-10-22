@@ -309,8 +309,8 @@ def test_descriptor_text_is_frozen_and_honest() -> None:
     assert tuple(TOOL_DESCRIPTORS) == ("policy", "strict")
     assert tuple(TOOL_DESCRIPTOR_DIGESTS) == ("policy", "strict")
     assert TOOL_DESCRIPTOR_SET_DIGEST == {
-        "policy": "sha256:12a08bd99400025fd3c1087d6274a0b92d95b088ff9b27e63175ed7fcf2fe373",
-        "strict": "sha256:d751b46dafe150d27e1d9fa5e216960e17877cbeff3a7dcbc4892bc631ddbe71",
+        "policy": "sha256:e51bc3f3eca314bc40fd91ada60cd51e65ee9a98f7deaef1bca07a54e13c7b73",
+        "strict": "sha256:39a3422abaf937402ae55b400a967eb940ce4523fb3c15ce78b5edf23e4fa635",
     }
     for profile, descriptors in TOOL_DESCRIPTORS.items():
         assert tuple(item.name for item in descriptors) == _EXPECTED_TOOL_NAMES
@@ -809,6 +809,8 @@ def test_respond_agent_surface_names_every_admitted_disposition() -> None:
     assert admitted == (
         "acknowledged",
         "acknowledged_not_done",
+        "addressed",
+        "declined",
         "duplicate_of",
         "provenance_disputed",
         "rejected",

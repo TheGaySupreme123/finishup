@@ -138,6 +138,13 @@ from finishup.kernel.completion_scope import (
     SCOPE_REPAIR,
     completion_scope_differences,
 )
+from finishup.kernel.correctness_advisories import (
+    advisory_counts,
+    advisory_summary,
+    correctness_advisories,
+    correctness_advisory_index,
+    receipt_advisory_items,
+)
 from finishup.kernel.delivered_set import (
     ambiguous_reference_count,
     deliverable_lineage,
@@ -1105,6 +1112,11 @@ def _apply_profile(
         ReceiptRedactionProfile.DEFAULT_LOCAL_EXPORT,
         ReceiptRedactionProfile.REDACTED_SHARE,
     }:
+        notes = correctness_advisories(context.records)
+        if notes:
+            counts[
+                (ReceiptRedactionCategory.FINDING_DETAIL, ReceiptRedactionReason.POLICY_REDACTED)
+            ] += len(notes) + sum(note.response is not None for note in notes)
         if _reviewer_advisory_text(context.applicable_check) is not None:
             # #1118: the reviewer's summary is withheld from export views, with an explicit item.
             counts[
@@ -2251,6 +2263,9 @@ def _sections(
     semantic_usage_sentence: str = "",
     reviewer_sentence: str = "",
     reviewer_advisory: str | None = None,
+    correctness_advisory_summary: str = "",
+    correctness_advisory_items: tuple[str, ...] = (),
+    correctness_advisory_omitted: int = 0,
     task_statement_source_sentence: str = "",
     resolution_explanations: tuple[str, ...] = (),
     attempt_explanations: tuple[str, ...] = (),
@@ -2666,6 +2681,16 @@ def _sections(
             *items[ReceiptSectionKey.LIMITATIONS_AND_COVERAGE],
             reviewer_advisory,
         )
+    if correctness_advisory_summary:
+        key = ReceiptSectionKey.LIMITATIONS_AND_COVERAGE
+        room = max(0, _SECTION_ITEM_CAP - len(items[key]))
+        omitted = correctness_advisory_omitted + max(0, len(correctness_advisory_items) - room)
+        summary = correctness_advisory_summary
+        if omitted:
+            summary += f" {omitted} advisory rows omitted; retrieve history."
+        # Keep the count/retrieval continuation ahead of a potentially bounded coverage body.
+        bodies[key] = summary + " " + bodies[key]
+        items[key] += correctness_advisory_items[:room]
     finished = {key: _finish_section(bodies[key], items[key]) for key in _SECTION_KEYS[include]}
     return tuple(
         ReceiptSection(
@@ -2988,6 +3013,9 @@ def build_receipt(
     )
     # The export profiles clear gap details; the sections they keep never copy a path (#1044).
     name_paths = redaction_profile is ReceiptRedactionProfile.FULL_LOCAL
+    advisory_index = correctness_advisory_index(context.records)
+    notes = advisory_index.rows
+    advisory_render = receipt_advisory_items(notes, redaction_profile)
     sections = _sections(
         check_change_gap_texts={
             code: text
@@ -3049,6 +3077,13 @@ def build_receipt(
         ),
         reviewer_sentence=_reviewer_sentence(context.applicable_check),
         reviewer_advisory=_reviewer_advisory_item(context.applicable_check, redaction_profile),
+        correctness_advisory_summary=(
+            advisory_summary(notes, unmatched_withheld=advisory_index.unmatched_withheld)
+            if notes
+            else ""
+        ),
+        correctness_advisory_items=advisory_render[0],
+        correctness_advisory_omitted=advisory_render[1],
         attempt_explanations=tuple(
             f"{obligation.obligation_id} command item {attempt.requested_item_index}: {attempt.relation}. "
             "This relation concerns the attempt only, not command success."
@@ -3203,6 +3238,9 @@ def build_receipt(
         redactions=redactions,
         sections=sections,
         children=children,
+        correctness_advisory_counts=(
+            advisory_counts(advisory_index) if notes and terminal_sections else None
+        ),
         semantic_provenance=(
             None
             if context.applicable_check is None

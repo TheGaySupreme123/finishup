@@ -2455,6 +2455,7 @@ class LedgerPort(Protocol):
         semantic_redacted_values: tuple[SemanticRedactedValue, ...] = (),
         semantic_route_required: bool | None = None,
         deliverable_states: tuple[DeliverableState, ...] = (),
+        correctness_advisories: tuple[JsonObject, ...] = (),
         reviewer: JsonObject | None = None,
         review_mode: CheckReviewMode | None = None,
     ) -> CheckCommitResult: ...

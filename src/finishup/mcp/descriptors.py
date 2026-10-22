@@ -1453,27 +1453,27 @@ def _describe_presentation_schema(name: str, schema: dict[str, JsonValue]) -> No
         disposition = properties.get("disposition")
         if isinstance(disposition, dict):
             disposition["description"] = (
-                "Acknowledged accepts no waiver fields and, on an AI-powered review finding, "
-                "requires a reason the next review reads (for answer_question, the answer); on a "
-                "limitation request (requested_next_step state_unresolved_limitation) one "
-                "reasoned acknowledgement says the requirement may be met but cannot be confirmed "
-                "here and needs no repair attempt. "
+                "Acknowledged, on an AI-powered review finding, requires a reason the next review "
+                "reads (for answer_question, the answer); on a limitation request "
+                "(requested_next_step state_unresolved_limitation) one reasoned acknowledgement "
+                "says the requirement may be met but cannot be confirmed here and needs no repair "
+                "attempt. "
                 "Self_verified means you repaired it, FinishUP's later check still cannot confirm it "
                 "because of a FinishUP limit, and you checked it yourself: reason says how, and "
                 "evidence_refs (at least one) cite your recorded evidence; it is final. "
                 "Acknowledged_not_done means you will not or cannot do it and is the last resort "
-                "(on a limitation request it says the requirement is NOT met); "
-                "reopened (reason required) takes it back so the finding is open again, and a "
-                "later check that finds the issue absent after your answer resolves it by "
-                "itself. Duplicate_of is only for a restatement of the SAME issue (same origin "
-                "and kind) as an earlier finding you answered: name it in duplicate_of_finding_id; "
-                "reason and evidence are optional and it is not final. Linking never resolves the "
-                "new finding (its own check must); a later check that raises its issue again "
-                "breaks the link. Provenance_disputed contests the finding's authorship "
-                "or provenance premise rather than its conclusion. It, rejected, reopened and "
-                "acknowledged_not_done require reason and accept no waiver fields. Waived "
-                "requires reason and waiver_scope."
+                "(on a limitation request it says the requirement is NOT met); reopened takes it "
+                "back (open again); a later check that finds the issue absent after your answer "
+                "resolves it. Duplicate_of names duplicate_of_finding_id (reason and evidence "
+                "optional; not final) for a restatement of the SAME issue; its own check must "
+                "resolve it, and a later check that raises the issue again breaks the link. "
+                "Provenance_disputed, rejected, reopened and acknowledged_not_done require reason. "
+                "Only waived takes waiver fields: it requires reason and waiver_scope. Addressed "
+                "(reason, evidence_refs) and declined (reason) answer only a correctness advisory."
             )
+            # #1162: how to target a correctness advisory is in the respond tool description,
+            # which is never trimmed; this field description shares the advertised input-schema
+            # budget with the finding_frontier and duplicate_of_finding_id rules.
         duplicate_of = properties.get("duplicate_of_finding_id")
         if isinstance(duplicate_of, dict):
             duplicate_of["description"] = (
@@ -2078,6 +2078,10 @@ _POLICY_TOOL_DESCRIPTORS: Final = (
         "if the requirement may be met but cannot be confirmed here; acknowledged_not_done says it "
         "is not met. Only if a new finding restates the SAME issue as an earlier one you answered, respond "
         "duplicate_of with duplicate_of_finding_id; linking never resolves the new finding. "
+        "A correctness advisory needs no answer; to record one, put its check-event-id:ordinal "
+        "in finding_id and respond addressed (reason, and evidence_refs with at least one recorded "
+        "after the note's check) or declined (reason). That appends a non-blocking decision "
+        "record, not a finding response, and needs no recheck. "
         "This appends one "
         "finding-response record to the local FinishUP ledger; it does not publish to GitHub or run an "
         "AI-powered evaluation. It does not resolve other findings or establish that underlying work "
@@ -2248,7 +2252,7 @@ TOOL_DESCRIPTOR_DIGESTS: Final[Mapping[McpRouteProfile, Mapping[str, str]]] = Ma
                 "start": "sha256:4f0882901380efe04aa96f066a0bd56cd7511b091f0b5728d0efa02ef86a4499",
                 "publish_work": "sha256:0818149f507547dbdd4d3d0c37761e09978ad3c46b699df5a3c635093cdd6e2a",
                 "check": "sha256:48dfd8224c245f8af98e833046ae1e56f5c2e44b25b937c8ce1bf399fe230246",
-                "respond": "sha256:3696c9ecc9574038a50493ee75aede8ab8acc14fd17a93f7c4a9d78639ceb3e7",
+                "respond": "sha256:302f82a565c2a19dadfd0f59dcf237ef953636c7bb3008c93df7b01843e1a928",
                 "status": "sha256:b5b522c70143921055c1260c3e4a9bb35c8efd6208fc65cef55b84605519d5e4",
                 "receipt": "sha256:af7788b3708ecd6ff952a4debd7969547ca2b4396d4046df488567a2a51ba9f2",
                 "read_guidance": "sha256:dbcb10d90771cbf18e469e9646127d7966fd54771f360cdff77759d740efeb08",
@@ -2260,7 +2264,7 @@ TOOL_DESCRIPTOR_DIGESTS: Final[Mapping[McpRouteProfile, Mapping[str, str]]] = Ma
                 "start": "sha256:4f0882901380efe04aa96f066a0bd56cd7511b091f0b5728d0efa02ef86a4499",
                 "publish_work": "sha256:0818149f507547dbdd4d3d0c37761e09978ad3c46b699df5a3c635093cdd6e2a",
                 "check": "sha256:50a1fbc793d1b55f8cec40ff8408795ad8523ca3fb0eda9837606c3b6ec4b2df",
-                "respond": "sha256:3696c9ecc9574038a50493ee75aede8ab8acc14fd17a93f7c4a9d78639ceb3e7",
+                "respond": "sha256:302f82a565c2a19dadfd0f59dcf237ef953636c7bb3008c93df7b01843e1a928",
                 "status": "sha256:b5b522c70143921055c1260c3e4a9bb35c8efd6208fc65cef55b84605519d5e4",
                 "receipt": "sha256:af7788b3708ecd6ff952a4debd7969547ca2b4396d4046df488567a2a51ba9f2",
                 "read_guidance": "sha256:dbcb10d90771cbf18e469e9646127d7966fd54771f360cdff77759d740efeb08",
@@ -2271,8 +2275,8 @@ TOOL_DESCRIPTOR_DIGESTS: Final[Mapping[McpRouteProfile, Mapping[str, str]]] = Ma
 )
 TOOL_DESCRIPTOR_SET_DIGEST: Final[Mapping[McpRouteProfile, str]] = MappingProxyType(
     {
-        "policy": "sha256:12a08bd99400025fd3c1087d6274a0b92d95b088ff9b27e63175ed7fcf2fe373",
-        "strict": "sha256:d751b46dafe150d27e1d9fa5e216960e17877cbeff3a7dcbc4892bc631ddbe71",
+        "policy": "sha256:e51bc3f3eca314bc40fd91ada60cd51e65ee9a98f7deaef1bca07a54e13c7b73",
+        "strict": "sha256:39a3422abaf937402ae55b400a967eb940ce4523fb3c15ce78b5edf23e4fa635",
     }
 )
 

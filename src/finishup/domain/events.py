@@ -298,7 +298,7 @@ OBLIGATION_SCHEMA_VERSION: Final = "1.1.0"
 # ``decision_recorded`` 1.0.0 is released and frozen. 1.1.0 is an additive superset that admits
 # one optional ``review_mode`` (ADR-049): the conversation's switch between local checks only
 # (``local``) and AI-powered review (``ai_powered``). A decision rides 1.1.0 iff it carries the
-# switch, so every other decision keeps its released 1.0.0 bytes and old ledgers replay unchanged.
+# switch or a typed advisory_response (#1162); ordinary decisions keep released 1.0.0 bytes.
 DECISION_REVIEW_MODE_SCHEMA_VERSION: Final = "1.1.0"
 OBLIGATION_BASE_SCHEMA_VERSION: Final = "1.0.0"
 # 1.3.0 (unreleased on the 0.3 line) also carries the optional per-finding reviewer rulings of
@@ -2231,6 +2231,7 @@ class DecisionRecordedPayload:
     supersedes_event_id: EventId | None = None
     # ``decision_recorded`` 1.1.0 only (ADR-049): this conversation's review-mode switch.
     review_mode: ReviewMode | None = None
+    advisory_response: JsonObject | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "statement", _bounded_text(self.statement, MAX_TEXT_BYTES))
@@ -2256,6 +2257,23 @@ class DecisionRecordedPayload:
                 "supersedes_event_id",
                 event_id(self.supersedes_event_id),
             )
+        if self.advisory_response is not None:
+            from finishup.domain.correctness_advisories import (
+                ADVISORY_RESPONSE_STATEMENT,
+                validate_advisory_response,
+            )
+
+            validate_advisory_response(self.advisory_response)
+            if (
+                self.review_mode is not None
+                or not self.rationale.strip()
+                or len(self.rationale.encode("utf-8")) > 4096
+                or self.alternatives
+                or self.affected_obligation_ids
+                or self.supersedes_event_id is not None
+                or self.statement != ADVISORY_RESPONSE_STATEMENT
+            ):
+                raise ProtocolValueError("invalid_event_schema")
         if self.review_mode is not None:
             object.__setattr__(self, "review_mode", _exact_enum(self.review_mode, ReviewMode))
 
@@ -3362,6 +3380,7 @@ class CheckRecordedPayload:
     # publication; JsonObject keeps the event module independent from the provider adapter.
     review_summary: str | None = None
     verified: tuple[JsonObject, ...] = ()
+    correctness_advisories: tuple[JsonObject, ...] = ()
     # Admitted reviewer rulings on earlier AI-powered findings, ASCII-ascending by finding id.
     prior_finding_verdicts: tuple[PriorFindingVerdictRecord, ...] = ()
     # What an ``insufficient_packet`` review named as missing, classified by FinishUP (issue #907).
@@ -3550,6 +3569,9 @@ class CheckRecordedPayload:
             and type(self.review_input_manifest) is not JsonObject
         ):
             raise ProtocolValueError("invalid_event_value_type")
+        from finishup.domain.correctness_advisories import validate_advisories
+
+        validate_advisories(self.correctness_advisories)
         if self.reviewer is not None and (
             type(self.reviewer) is not JsonObject
             or reviewer_record_from_wire(self.reviewer) is None
@@ -4432,7 +4454,14 @@ _PAYLOAD_SHAPES: Final[Mapping[str, tuple[frozenset[str], frozenset[str]]]] = Ma
         ),
         "decision_recorded": (
             frozenset({"statement", "rationale", "authority"}),
-            frozenset({"alternatives", "affected_obligation_ids", "supersedes_event_id"}),
+            frozenset(
+                {
+                    "alternatives",
+                    "affected_obligation_ids",
+                    "supersedes_event_id",
+                    "advisory_response",
+                }
+            ),
         ),
         "action_recorded": (
             frozenset({"action_id", "action_kind", "description"}),
@@ -4530,6 +4559,7 @@ _PAYLOAD_SHAPES: Final[Mapping[str, tuple[frozenset[str], frozenset[str]]]] = Ma
                     "review_input_manifest",
                     "review_mode",
                     "reviewer",
+                    "correctness_advisories",
                     "totals",
                 }
             ),
@@ -4678,13 +4708,15 @@ def decode_payload(schema: EventSchema, payload: JsonValue) -> EventPayload:
     required, optional = _PAYLOAD_SHAPES[schema.name]
     if schema.name == "check_recorded" and schema.version != REVIEWER_CHECK_EVENT_SCHEMA_VERSION:
         # #1118: an older check version never carried the reviewer record; its reader refuses it.
-        optional = optional - {"reviewer"}
+        optional = optional - {"reviewer", "correctness_advisories"}
     if schema.name == "evidence_recorded" and schema.version != SCHEMA_VERSION:
         optional = frozenset({*optional, "digest_binding"})
     if schema == EventSchema("claim_recorded", CLAIM_SCHEMA_VERSION):
         required = frozenset({*required, "limitation_refs", "supersedes_claim_refs"})
     if schema == EventSchema("decision_recorded", DECISION_REVIEW_MODE_SCHEMA_VERSION):
-        required = frozenset({*required, "review_mode"})
+        optional = frozenset({*optional, "review_mode"})
+    elif schema.name == "decision_recorded":
+        optional = optional - {"advisory_response"}
     source = _closed_object(frozen, required=required, optional=optional)
 
     if schema.name == "child_dependencies_recorded":
@@ -4831,6 +4863,11 @@ def decode_payload(schema: EventSchema, payload: JsonValue) -> EventPayload:
             ),
             supersedes_event_id=None if supersedes is None else event_id(supersedes),
             review_mode=(None if review_mode is None else _enum_from_json(review_mode, ReviewMode)),
+            advisory_response=(
+                None
+                if (answer := _optional(source, "advisory_response")) is None
+                else cast(JsonObject, freeze_json(answer))
+            ),
         )
         _validate_event_schema_payload(schema, decision)
         return decision
@@ -5037,6 +5074,10 @@ def decode_payload(schema: EventSchema, payload: JsonValue) -> EventPayload:
             projection_version=cast(str, _field(source, "projection_version")),
             semantic_conclusion=cast(str | None, _optional(source, "semantic_conclusion")),
             review_summary=cast(str | None, _optional(source, "review_summary")),
+            correctness_advisories=tuple(
+                cast(JsonObject, freeze_json(item))
+                for item in _array(_optional(source, "correctness_advisories") or ())
+            ),
             verified=(
                 ()
                 if verified_value is None
@@ -5418,6 +5459,7 @@ def encode_payload(payload: EventPayload) -> JsonValue:
             cast(tuple[object, ...], value.affected_obligation_ids),
         )
         _optional_value(result, "supersedes_event_id", value.supersedes_event_id)
+        _optional_value(result, "advisory_response", value.advisory_response)
         _optional_value(
             result,
             "review_mode",
@@ -5593,6 +5635,7 @@ def encode_payload(payload: EventPayload) -> JsonValue:
         )
         _optional_value(result, "semantic_conclusion", value.semantic_conclusion)
         _optional_value(result, "review_summary", value.review_summary)
+        _optional_tuple(result, "correctness_advisories", value.correctness_advisories)
         _optional_tuple(result, "verified", cast(tuple[object, ...], value.verified))
         _optional_tuple(
             result,
@@ -5682,7 +5725,7 @@ def _validate_event_schema_payload(
 ) -> None:
     if type(payload) is DecisionRecordedPayload:
         # ADR-049: the review-mode switch is 1.1.0-only; 1.0.0 is released and frozen.
-        if (payload.review_mode is not None) != (
+        if (payload.review_mode is not None or payload.advisory_response is not None) != (
             schema.version == DECISION_REVIEW_MODE_SCHEMA_VERSION
         ):
             raise ProtocolValueError("invalid_event_schema")
@@ -5735,11 +5778,13 @@ def _validate_event_schema_payload(
         # totals, so that gate is next: those fields do not promote it to 1.4.0.
         if (
             payload.reviewer is not None
+            or payload.correctness_advisories
             or payload.semantic_reason is SemanticReason.ROUND_LIMIT_UNASSESSABLE
             or schema.version == REVIEWER_CHECK_EVENT_SCHEMA_VERSION
         ):
             if schema.version != REVIEWER_CHECK_EVENT_SCHEMA_VERSION or (
                 payload.reviewer is None
+                and not payload.correctness_advisories
                 and payload.semantic_reason is not SemanticReason.ROUND_LIMIT_UNASSESSABLE
             ):
                 raise ProtocolValueError("invalid_event_schema")
@@ -5837,10 +5882,17 @@ def _validate_envelope_ref_mirrors(
     artifact_refs: tuple[ObjectId, ...],
     evidence_refs: tuple[EvidenceId | ResultId, ...],
     locator: ProjectionLocator | None = None,
+    causal_parents: tuple[EventId, ...] = (),
 ) -> None:
     # The mismatched envelope field name is the whole repair, and it is a frozen schema name, not
     # a caller-supplied key. Carrying it lets the application layer point at the exact list instead
     # of leaving the caller to re-derive which of the two reference lists broke the mirror.
+    if isinstance(payload, DecisionRecordedPayload) and payload.advisory_response is not None:
+        if evidence_refs != payload.advisory_response["evidence_refs"]:
+            raise ProtocolValueError("ref_mirror_mismatch", field="evidence_refs")
+        target = str(payload.advisory_response["advisory_id"]).split(":")[0]
+        if causal_parents != (target,):
+            raise ProtocolValueError("ref_mirror_mismatch", field="causal_parents")
     if schema.name == "result_recorded":
         if (
             payload is not None
@@ -5939,6 +5991,7 @@ class EventDraft:
             typed_payload,
             self.artifact_refs,
             self.evidence_refs,
+            causal_parents=self.causal_parents,
         )
 
 
@@ -6095,6 +6148,7 @@ class AcceptedEvent:
             self.artifact_refs,
             self.evidence_refs,
             self.projection_locator,
+            causal_parents=self.causal_parents,
         )
         if type(typed_payload) is EvidenceRecordedPayload:
             evidence = typed_payload

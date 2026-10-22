@@ -53,8 +53,13 @@ def test_respond_keeps_disposition_and_finding_frontier_rules() -> None:
     descriptor = descriptor_for("respond")
     full = cast(dict[str, Any], descriptor.input_schema["properties"])
     fields = cast(dict[str, Any], descriptor.advertised_input_schema["properties"])
-    for field in ("disposition", "finding_frontier"):
+    for field in ("disposition", "finding_frontier", "duplicate_of_finding_id"):
         assert fields[field]["description"] == full[field]["description"]
+    # #1162: the advisory answers fit beside those rules; how to target an advisory is in the
+    # never-trimmed tool description rather than in the budgeted field descriptions.
+    assert {"addressed", "declined"} <= set(fields["disposition"]["enum"])
+    assert "Addressed (reason, evidence_refs)" in fields["disposition"]["description"]
+    assert "check-event-id:ordinal in finding_id" in descriptor.description
 
 
 @pytest.mark.parametrize("host", ("codex", "claude", "cursor"))

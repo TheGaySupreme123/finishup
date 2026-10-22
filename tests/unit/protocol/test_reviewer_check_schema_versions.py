@@ -206,3 +206,60 @@ def test_new_reviewer_schemas_use_the_product_name() -> None:
         document = json.loads((_ROOT / path).read_text(encoding="utf-8"))
         assert document["title"] == title
         assert document["$id"] == "https://schemas.yoetz.dev/0.1/" + path.removeprefix("schemas/")
+
+
+def test_correctness_advisory_rows_use_1_6_and_keep_original_concern() -> None:
+    fixture = json.loads(_FIXTURE.read_bytes())
+    concern = fixture["input"]["correctness_advisory"]
+    body = _event_body()
+    body["correctness_advisories"] = [concern]
+    validate_schema_instance("check-recorded", "1.6.0", body)
+    decoded = _decode("1.6.0", body)
+    assert (
+        json.loads(canonical_encode(encode_payload(decoded)))["correctness_advisories"][0]
+        == concern
+    )
+    malformed_ref: dict[str, Any] = {
+        **body,
+        "correctness_advisories": [{**concern, "subject_refs": ["evt_" + "a" * 36]}],
+    }
+    with pytest.raises(SchemaInstanceInvalid):
+        validate_schema_instance("check-recorded", "1.6.0", malformed_ref)
+    for version in ("1.4.0", "1.5.0"):
+        with pytest.raises(SchemaInstanceInvalid):
+            validate_schema_instance("check-recorded", version, body)
+        with pytest.raises(ProtocolValueError):
+            _decode(version, body)
+
+
+def test_advisory_decisions_are_typed_and_never_switch_review_mode() -> None:
+    from finishup.domain.events import EventSchema, decode_payload
+
+    fixture = json.loads(_FIXTURE.read_bytes())
+    body: Any = {
+        "statement": "Correctness advisory disposition (agent-reported; non-blocking).",
+        "rationale": "Retained the approximation with an explicit limitation.",
+        "authority": "harness:test",
+        "advisory_response": fixture["input"]["advisory_response"],
+    }
+    validate_schema_instance("decision-recorded", "1.1.0", body)
+    decision = decode_payload(EventSchema("decision_recorded", "1.1.0"), body)
+    assert decision.review_mode is None  # type: ignore[union-attr]
+    with pytest.raises(SchemaInstanceInvalid):
+        validate_schema_instance("decision-recorded", "1.0.0", body)
+    with pytest.raises(ProtocolValueError):
+        decode_payload(EventSchema("decision_recorded", "1.0.0"), body)
+    with pytest.raises(SchemaInstanceInvalid):
+        validate_schema_instance("decision-recorded", "1.1.0", {**body, "review_mode": "local"})
+    with pytest.raises(SchemaInstanceInvalid):
+        validate_schema_instance(
+            "decision-recorded",
+            "1.1.0",
+            {
+                **body,
+                "advisory_response": {
+                    **body["advisory_response"],
+                    "evidence_refs": ["evd_" + "a" * 36],
+                },
+            },
+        )

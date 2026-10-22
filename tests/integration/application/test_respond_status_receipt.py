@@ -9607,3 +9607,581 @@ async def test_the_receipt_catch_all_keeps_its_message_and_names_the_reason(
         "continuation": "lineage_integrity_review",
         "reason_code": "stored_result_shape_invalid",
     }
+
+
+def _routine_note(summary: str, cited: str) -> ReviewerChallenge:
+    return ReviewerChallenge(
+        FindingKind.CODE_DEFECT,
+        summary,
+        (cited,),
+        "The edit computes the footprint in world coordinates.",
+        "The receptacle may never be rotated in practice.",
+        "Transform the object origin into the receptacle frame; test a rotated receptacle.",
+        "act",
+        "No rotated-receptacle case is in the packet.",
+    )
+
+
+async def _routine_advisory_task(
+    app: Application, *, seed: int
+) -> tuple[StartInternalResult, CheckCommitResult, dict[str, str]]:
+    """Start, publish an open obligation and an edit with its result, then run a routine check.
+
+    No completion claim is recorded, so the review is routine and a ``code_defect`` stays an
+    advisory note. The reviewer is the app's scripted evaluator; the fence is production's.
+    """
+
+    refs = {
+        "obligation": protocol_id("obl_", seed + 1),
+        "action_event": protocol_id("evt_", seed + 2),
+        "action": protocol_id("act_", seed + 3),
+        "result_event": protocol_id("evt_", seed + 4),
+        "result": protocol_id("res_", seed + 5),
+    }
+    started = await app.start(start_request(seed, title="Advisory exercise", refs=True))
+    published = await app.publish_work(
+        PublishWorkRequest.model_validate(
+            {
+                **_request_base(protocol_id("req_", seed + 6)),
+                "session_id": started.session_id,
+                "writer_id": started.writer_id,
+                "expected_frontier": _frontier(started.frontier),
+                "event_drafts": [
+                    {
+                        "event_id": protocol_id("evt_", seed + 7),
+                        "schema": {"name": "obligation_published", "version": "1.0.0"},
+                        "occurred_at": "2026-07-19T12:00:00.000Z",
+                        "causal_parents": [],
+                        "payload": {
+                            "obligation_id": refs["obligation"],
+                            "description": "Place objects inside rotated receptacles.",
+                            "evidence_expectation": "A linked immutable result record.",
+                            "status": "open",
+                        },
+                        "artifact_refs": [],
+                        "evidence_refs": [],
+                    },
+                    {
+                        "event_id": refs["action_event"],
+                        "schema": {"name": "action_recorded", "version": "1.0.0"},
+                        "occurred_at": "2026-07-19T12:00:01.000Z",
+                        "causal_parents": [],
+                        "payload": {
+                            "action_id": refs["action"],
+                            "action_kind": "edit",
+                            "description": "Edit the placement geometry.",
+                        },
+                        "artifact_refs": [],
+                        "evidence_refs": [],
+                    },
+                    {
+                        "event_id": refs["result_event"],
+                        "schema": {"name": "result_recorded", "version": "1.0.0"},
+                        "occurred_at": "2026-07-19T12:00:02.000Z",
+                        "causal_parents": [refs["action_event"]],
+                        "payload": {
+                            "result_id": refs["result"],
+                            "action_id": refs["action"],
+                            "outcome": "success",
+                            "summary": "The placement geometry was edited.",
+                        },
+                        "artifact_refs": [],
+                        "evidence_refs": [],
+                    },
+                ],
+            }
+        )
+    )
+    checked = await app.check(
+        CheckRequest.model_validate(
+            {
+                **_request_base(protocol_id("req_", seed + 8)),
+                "session_id": started.session_id,
+                "writer_id": started.writer_id,
+                "expected_frontier": _frontier(published.result_frontier),
+                "mode": "semantic_required",
+            }
+        )
+    )
+    assert isinstance(checked, CheckCommitResult)
+    return started, checked, refs
+
+
+@pytest.mark.parametrize("backend", ["memory", "sqlite"])
+async def test_routine_notes_citing_a_result_and_an_action_reach_closing_with_the_review(
+    backend: Literal["memory", "sqlite"],
+) -> None:
+    """#1162 review blocker: ``res_``/``act_`` citations are legal for the fence; the stored note
+    keeps their resolved source events, and the review's other challenge is still committed."""
+
+    from finishup.kernel.correctness_advisories import correctness_advisories
+
+    seed = 216300
+
+    def round_one(_frozen: FrozenCase) -> tuple[ReviewerChallenge, ...]:
+        return (
+            _routine_note("Geometry uses world AABBs.", protocol_id("res_", seed + 5)),
+            _routine_note("Rotated receptacles are untested.", protocol_id("act_", seed + 3)),
+            ReviewerChallenge(
+                FindingKind.TASK_REQUIREMENT_UNMET,
+                "Placement inside rotated receptacles is not done.",
+                (protocol_id("obl_", seed + 1),),
+                "The obligation is open and no result covers rotated receptacles.",
+                "The work may be planned for later.",
+                "Implement rotated-receptacle placement and record the result.",
+                "act",
+                "The packet has no rotated-receptacle result.",
+            ),
+        )
+
+    app, runtime, _ = _build_app(
+        semantic="required",
+        ledger_backend=backend,
+        semantic_evaluator=_scripted_reviewer([round_one]),
+    )
+    started, checked, refs = await _routine_advisory_task(app, seed=seed)
+    # The review was admitted, not recorded as a rejected judgment.
+    assert checked.semantic_status is SemanticStatus.SUCCEEDED
+    assert [
+        item.kind
+        for item in checked.findings
+        if item.origin is FindingOrigin.SEMANTIC_MODEL_DERIVED
+    ] == [FindingKind.TASK_REQUIREMENT_UNMET]
+    ledger, _objects = runtime.resources[started.task_id]
+    records = tuple([r async for r in ledger.load_events(started.session_id)])
+    notes = correctness_advisories(records)
+    assert [note.concern["subject_refs"] for note in notes] == [
+        (refs["result_event"],),
+        (refs["action_event"],),
+    ]
+    assert notes[0].check.schema.version == "1.6.0"
+    receipt = await app.receipt(
+        ReceiptRequest.model_validate(
+            {
+                **_receipt_wire(
+                    request_seed=seed + 20,
+                    task_id=started.task_id,
+                    session=started.session_id,
+                    writer=started.writer_id,
+                    frontier=checked.result_frontier,
+                ),
+                "format": "text",
+                "include": "summary",
+            }
+        )
+    )
+    assert "Earlier correctness advisories: 2; no recorded response: 2" in str(receipt.as_json())
+
+
+@pytest.mark.parametrize("backend", ["memory", "sqlite"])
+async def test_history_never_shows_another_sessions_advisory_check(
+    backend: Literal["memory", "sqlite"],
+) -> None:
+    """#1162 review: history stays session-scoped; the receipt keeps the task-wide count."""
+
+    from finishup.protocol.models import StatusHistoryPageModel
+
+    seed = 216400
+
+    def round_one(_frozen: FrozenCase) -> tuple[ReviewerChallenge, ...]:
+        return (_routine_note("Geometry uses world AABBs.", protocol_id("res_", seed + 5)),)
+
+    app, _runtime, _ = _build_app(
+        semantic="required",
+        ledger_backend=backend,
+        semantic_evaluator=_scripted_reviewer([round_one]),
+    )
+    started, _checked, _refs = await _routine_advisory_task(app, seed=seed)
+    other = await app.start(start_request(seed + 30, title="Advisory exercise", refs=True))
+    assert other.task_id == started.task_id and other.session_id != started.session_id
+
+    async def history(session: str, writer: str, request_seed: int) -> StatusHistoryPageModel:
+        result = await app.status(
+            StatusRequest.model_validate(
+                {
+                    **_request_base(protocol_id("req_", request_seed)),
+                    "session_id": session,
+                    "writer_id": writer,
+                    "view": "history",
+                    "limit": "50",
+                }
+            )
+        )
+        assert isinstance(result.page, StatusHistoryPageModel)
+        return result.page
+
+    own = await history(started.session_id, started.writer_id, seed + 40)
+    noted = [item for item in own.items if getattr(item, "correctness_advisories", None)]
+    assert [item.schema_name for item in noted] == ["check_recorded"]
+    assert "world AABBs" in json.dumps([item.model_dump(mode="json") for item in noted])
+    foreign = await history(other.session_id, other.writer_id, seed + 41)
+    assert all(item.schema_name != "check_recorded" for item in foreign.items)
+    assert all(getattr(item, "correctness_advisories", None) is None for item in foreign.items)
+    assert all(getattr(item, "review_input_manifest", None) is None for item in foreign.items)
+    assert "world AABBs" not in json.dumps([item.model_dump(mode="json") for item in foreign.items])
+    # The receipt is task-wide and still counts the note for the other session.
+    receipt = await app.receipt(
+        ReceiptRequest.model_validate(
+            {
+                **_receipt_wire(
+                    request_seed=seed + 42,
+                    task_id=other.task_id,
+                    session=other.session_id,
+                    writer=other.writer_id,
+                    frontier=other.frontier,
+                ),
+                "format": "json",
+                "include": "summary",
+            }
+        )
+    )
+    assert "Earlier correctness advisories: 1; no recorded response: 1" in str(receipt.as_json())
+
+
+@pytest.mark.parametrize("backend", ["memory", "sqlite"])
+@pytest.mark.parametrize("disposition", [None, "declined", "addressed"])
+async def test_correctness_advisory_survives_check_response_and_receipt(
+    backend: Literal["memory", "sqlite"], disposition: str | None
+) -> None:
+    """TAMP-like: a note survives later clean review output; silence never reports repair.
+
+    The note comes from a scripted reviewer through the production fence (no patched validator).
+    """
+    from finishup.kernel.correctness_advisories import correctness_advisories
+    from finishup.protocol.models import StatusHistoryPageModel
+
+    def round_one(_frozen: FrozenCase) -> tuple[ReviewerChallenge, ...]:
+        return (
+            _routine_note(
+                "Geometry uses world AABBs instead of receptacle-frame footprints.",
+                protocol_id("res_", 216205),
+            ),
+        )
+
+    def clean_round(_frozen: FrozenCase) -> tuple[ReviewerChallenge, ...]:
+        return ()
+
+    app, runtime, _ = _build_app(
+        semantic="required",
+        ledger_backend=backend,
+        semantic_evaluator=_scripted_reviewer([round_one, clean_round]),
+    )
+
+    def advisory_versions(_runtime: object) -> ReceiptVersionSlice:
+        return replace(
+            _versions(), schema_versions=(SchemaVersionEntry("receipts/receipt-document", "1.3.0"),)
+        )
+
+    app = replace(app, receipt_version_resolver=advisory_versions)
+    started, checked, task_refs = await _routine_advisory_task(app, seed=216200)
+    ledger, _objects = runtime.resources[started.task_id]
+    records = tuple([r async for r in ledger.load_events(started.session_id)])
+    notes = correctness_advisories(records)
+    assert len(notes) == 1 and notes[0].response is None
+    assert notes[0].concern["subject_refs"] == (task_refs["result_event"],)
+    assert notes[0].check.schema.version == "1.6.0"
+    assert notes[0].check.payload.semantic_provenance is not None  # type: ignore[union-attr]
+    frontier = checked.result_frontier
+    # A second check returns no such note. Its silence cannot answer the earlier note.
+    later = await app.check(
+        CheckRequest.model_validate(
+            {
+                **_request_base(protocol_id("req_", 216210)),
+                "session_id": started.session_id,
+                "writer_id": started.writer_id,
+                "expected_frontier": _frontier(frontier),
+                "mode": "semantic_required",
+            }
+        )
+    )
+    assert isinstance(later, CheckCommitResult)
+    frontier = later.result_frontier
+    if disposition is not None:
+        # The linked result is an assertion's evidence, not independent proof of a repair.
+        refs: tuple[str, ...] = ()
+        if disposition == "addressed":
+            published = await app.publish_work(
+                PublishWorkRequest.model_validate(
+                    {
+                        **_request_base(protocol_id("req_", 216211)),
+                        "session_id": started.session_id,
+                        "writer_id": started.writer_id,
+                        "expected_frontier": _frontier(frontier),
+                        "event_drafts": [
+                            {
+                                "event_id": protocol_id("evt_", 216212),
+                                "schema": {"name": "action_recorded", "version": "1.0.0"},
+                                "occurred_at": "2026-07-19T12:00:02.000Z",
+                                "causal_parents": [],
+                                "payload": {
+                                    "action_id": protocol_id("act_", 216213),
+                                    "action_kind": "review",
+                                    "description": "Run the rotated-receptacle verification.",
+                                },
+                                "artifact_refs": [],
+                                "evidence_refs": [],
+                            },
+                            {
+                                "event_id": protocol_id("evt_", 216214),
+                                "schema": {"name": "result_recorded", "version": "1.0.0"},
+                                "occurred_at": "2026-07-19T12:00:03.000Z",
+                                "causal_parents": [protocol_id("evt_", 216212)],
+                                "payload": {
+                                    "result_id": protocol_id("res_", 216215),
+                                    "action_id": protocol_id("act_", 216213),
+                                    "outcome": "success",
+                                    "summary": "Local footprint test passed (agent-reported).",
+                                },
+                                "artifact_refs": [],
+                                "evidence_refs": [],
+                            },
+                        ],
+                    }
+                )
+            )
+            frontier = published.result_frontier
+            refs = (protocol_id("res_", 216215),)
+        body = {
+            **_request_base(protocol_id("req_", 216216)),
+            "session_id": started.session_id,
+            "writer_id": started.writer_id,
+            "expected_frontier": _frontier(frontier),
+            "finding_id": notes[0].advisory_id,
+            "finding_frontier": _frontier(checked.result_frontier),
+            "disposition": disposition,
+            "reason": "Kept the existing geometry with its limitation."
+            if disposition == "declined"
+            else "Changed to the local frame and checked the linked result.",
+            "evidence_refs": refs,
+        }
+        answered = await app.respond(RespondRequest.model_validate(body))
+        replayed = await app.respond(RespondRequest.model_validate(body))
+        assert answered.result_frontier == replayed.result_frontier
+        assert answered.response.disposition == disposition
+        frontier = answered.result_frontier
+    status = await app.status(
+        StatusRequest.model_validate(
+            {
+                **_request_base(protocol_id("req_", 216220)),
+                "session_id": started.session_id,
+                "writer_id": started.writer_id,
+                "view": "history",
+                "limit": "1",
+                "filter": {"schema_name": "check_recorded"},
+            }
+        )
+    )
+    assert isinstance(status.page, StatusHistoryPageModel)
+    row = status.page.items[0]
+    advisory = getattr(row, "correctness_advisories")[0]
+    assert advisory.disposition == (disposition or "no_recorded_response")
+    assert "world AABBs" in str(advisory.summary)
+    assert advisory.subject_refs == (task_refs["result_event"],)
+    assert (advisory.response_event_id is None) is (disposition is None)
+    assert getattr(row, "advisory_provenance") is not None
+    from builders.status_wire import compact_status
+    from finishup.cli.render import render_human_status
+    from finishup.protocol.models import StatusSuccessModel
+
+    history_text = render_human_status(
+        StatusSuccessModel.model_validate(
+            {
+                **status.as_json(),
+                "privacy_projection": cast(
+                    StatusSuccessModel, compact_status().result.root
+                ).privacy_projection.model_dump(mode="json"),
+            }
+        )
+    )
+    assert "world AABBs" in history_text and "AI-powered source:" in history_text
+    assert (
+        "no recorded response" in history_text
+        if disposition is None
+        else (
+            "declined with reason" in history_text
+            if disposition == "declined"
+            else "addressed (agent-reported, linked evidence)" in history_text
+        )
+    )
+    assert status.page.next_cursor is not None
+    # Following the cursor keeps the same bound frontier and omits the older check's note.
+    second = await app.status(
+        StatusRequest.model_validate(
+            {
+                **_request_base(protocol_id("req_", 216221)),
+                "session_id": started.session_id,
+                "writer_id": started.writer_id,
+                "view": "history",
+                "limit": "1",
+                "filter": {"schema_name": "check_recorded"},
+                "cursor": status.page.next_cursor,
+            }
+        )
+    )
+    assert second.subject_frontier == status.subject_frontier
+    assert isinstance(second.page, StatusHistoryPageModel)
+    assert getattr(second.page.items[0], "correctness_advisories", None) is None
+    # Readiness names what is still open: the summary stays while the note has no recorded
+    # response and leaves once it has one (the receipt below still lists the note).
+    assert (status.closure_readiness.correctness_advisory_summary is None) is (
+        disposition is not None
+    )
+    for offset, format_value in enumerate(("json", "markdown", "text")):
+        receipt = await app.receipt(
+            ReceiptRequest.model_validate(
+                {
+                    **_receipt_wire(
+                        request_seed=216230 + offset,
+                        task_id=started.task_id,
+                        session=started.session_id,
+                        writer=started.writer_id,
+                        frontier=frontier,
+                    ),
+                    "format": format_value,
+                    "include": "summary",
+                }
+            )
+        )
+        text = str(receipt.as_json())
+        assert "Earlier correctness advisories: 1" in text
+        assert "world AABBs" in text
+        # History is session-scoped, so the receipt names the session that recorded the check.
+        assert f"in session {started.session_id}" in text
+        assert f"with session_id {started.session_id}" in text
+        assert (
+            "no recorded response"
+            if disposition is None
+            else "declined with reason"
+            if disposition == "declined"
+            else "addressed (agent-reported, linked evidence)"
+        ) in text
+
+    if backend == "sqlite":
+        cold = SqliteLedger(
+            db=runtime.sqlite_connections[0],
+            task_id=started.task_id,
+            ownership_fence=ownership_fence(
+                generation=runtime.owners[(started.session_id, started.writer_id)]
+            ),
+            clock=runtime.clock,
+            ids=runtime.ids,
+            objects=_objects,
+        )
+        cold_records = tuple([record async for record in cold.load_events(started.session_id)])
+        retained = correctness_advisories(cold_records)
+        assert len(retained) == 1
+        assert retained[0].disposition == (disposition or "no recorded response")
+
+
+@pytest.mark.parametrize("backend", ["memory", "sqlite"])
+async def test_an_advisory_response_needs_respond_and_evidence_recorded_after_the_note(
+    backend: Literal["memory", "sqlite"],
+) -> None:
+    """#1162 review: publish_work cannot record an advisory response around respond's checks,
+    and addressed cannot cite only work the reviewer already had when it raised the note."""
+
+    from finishup.domain.correctness_advisories import ADVISORY_RESPONSE_STATEMENT
+    from finishup.kernel.correctness_advisories import correctness_advisories
+
+    def round_one(_frozen: FrozenCase) -> tuple[ReviewerChallenge, ...]:
+        return (
+            _routine_note(
+                "Geometry uses world AABBs instead of receptacle-frame footprints.",
+                protocol_id("res_", 216405),
+            ),
+        )
+
+    app, runtime, _ = _build_app(
+        semantic="required",
+        ledger_backend=backend,
+        semantic_evaluator=_scripted_reviewer([round_one]),
+    )
+    started, checked, task_refs = await _routine_advisory_task(app, seed=216400)
+    ledger, _objects = runtime.resources[started.task_id]
+    records = tuple([r async for r in ledger.load_events(started.session_id)])
+    (note,) = correctness_advisories(records)
+    with pytest.raises(PublicOperationError) as published:
+        await app.publish_work(
+            PublishWorkRequest.model_validate(
+                {
+                    **_request_base(protocol_id("req_", 216410)),
+                    "session_id": started.session_id,
+                    "writer_id": started.writer_id,
+                    "expected_frontier": _frontier(checked.result_frontier),
+                    "event_drafts": [
+                        {
+                            "event_id": protocol_id("evt_", 216411),
+                            "schema": {"name": "decision_recorded", "version": "1.1.0"},
+                            "occurred_at": "2026-07-19T12:00:05.000Z",
+                            "causal_parents": [str(note.check.event_id)],
+                            "payload": {
+                                "statement": ADVISORY_RESPONSE_STATEMENT,
+                                "rationale": "Published around respond.",
+                                "authority": "harness:test",
+                                "advisory_response": {
+                                    "advisory_id": note.advisory_id,
+                                    "disposition": "addressed",
+                                    "evidence_refs": [task_refs["result"]],
+                                },
+                            },
+                            "artifact_refs": [],
+                            "evidence_refs": [task_refs["result"]],
+                        }
+                    ],
+                }
+            )
+        )
+    assert published.value.safe_details is not None
+    assert published.value.safe_details["reason_code"] == "event_family_not_admitted"
+    assert published.value.safe_details["field"] == "/event_drafts/0/payload/advisory_response"
+    assert "only through respond" in str(published.value)
+    with pytest.raises(PublicOperationError) as early:
+        await app.respond(
+            RespondRequest.model_validate(
+                {
+                    **_request_base(protocol_id("req_", 216412)),
+                    "session_id": started.session_id,
+                    "writer_id": started.writer_id,
+                    "expected_frontier": _frontier(checked.result_frontier),
+                    "finding_id": note.advisory_id,
+                    "finding_frontier": _frontier(checked.result_frontier),
+                    "disposition": "addressed",
+                    "reason": "Cites only the edit the reviewer already read.",
+                    # The edit's own result, recorded before the check that raised the note.
+                    "evidence_refs": [task_refs["result"]],
+                }
+            )
+        )
+    assert early.value.safe_details is not None
+    assert early.value.safe_details["reason_code"] == "response_fields_invalid"
+    assert early.value.safe_details["field"] == "/evidence_refs"
+    # The history row's only frontier is the check's subject frontier, which precedes the check
+    # record (the #917 trap): the refusal names the frontier that works, with a reason code.
+    subject = cast(CheckRecordedPayload, note.check.payload).subject_frontier
+    with pytest.raises(PublicOperationError) as before_check:
+        await app.respond(
+            RespondRequest.model_validate(
+                {
+                    **_request_base(protocol_id("req_", 216413)),
+                    "session_id": started.session_id,
+                    "writer_id": started.writer_id,
+                    "expected_frontier": _frontier(checked.result_frontier),
+                    "finding_id": note.advisory_id,
+                    "finding_frontier": {
+                        "sequence": str(subject.sequence),
+                        "head_digest": subject.head_digest,
+                    },
+                    "disposition": "declined",
+                    "reason": "Kept the existing geometry.",
+                }
+            )
+        )
+    assert before_check.value.safe_details is not None
+    assert before_check.value.safe_details["reason_code"] == "invalid_frontier"
+    assert before_check.value.safe_details["field"] == "/finding_frontier"
+    message = str(before_check.value)
+    assert f"sequence {note.check.ledger.ingestion_sequence}" in message
+    assert "current status frontier" in message and "advisory_subject_frontier" in message
+    after = tuple([r async for r in ledger.load_events(started.session_id)])
+    assert len(after) == len(records)
+    assert correctness_advisories(after)[0].response is None

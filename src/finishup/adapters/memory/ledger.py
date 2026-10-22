@@ -251,6 +251,7 @@ from finishup.protocol.models import (
     StatusCompactObligationModel,
     StatusEvidenceItemModel,
     StatusFindingItemModel,
+    StatusHistoryCorrectnessAdvisoryModel,
     StatusHistoryItemModel,
     StatusHistoryItemV14Model,
     StatusLatestCheckModel,
@@ -1629,6 +1630,17 @@ def _projection_items(
     if view is ProjectionView.CANDIDATE_FINDINGS:
         return ()
     if view is ProjectionView.HISTORY:
+        from finishup.kernel.correctness_advisories import (
+            CorrectnessAdvisory,
+            correctness_advisories,
+        )
+
+        # The index is task-wide (a response may come from any session), but history stays
+        # session-scoped: another session's check row, its notes and its review-input manifest
+        # never appear here. The receipt carries the task-wide count and identities.
+        notes_by_check: dict[str, list[CorrectnessAdvisory]] = {}
+        for note in correctness_advisories(records):
+            notes_by_check.setdefault(str(note.check.event_id), []).append(note)
         result_history: list[StatusHistoryItemModel | StatusHistoryItemV14Model] = []
         for row in records:
             if row.session_id != session:
@@ -1652,13 +1664,49 @@ def _projection_items(
             history_extras: dict[str, object] = {}
             if manifest_model is not None:
                 history_extras["review_input_manifest"] = manifest_model
+            notes = tuple(notes_by_check.get(str(row.event_id), ()))
+            if notes:
+                note_rows: list[StatusHistoryCorrectnessAdvisoryModel] = []
+                for note in notes:
+                    entry = dict(note.concern.items())
+                    entry.update(
+                        {
+                            "advisory_id": note.advisory_id,
+                            "disposition": note.disposition.replace(" ", "_"),
+                        }
+                    )
+                    if note.response is not None:
+                        entry["response_event_id"] = note.response.event_id
+                    if note.response is not None and isinstance(
+                        note.response.payload, DecisionRecordedPayload
+                    ):
+                        answer = note.response.payload
+                        assert answer.advisory_response is not None
+                        entry.update(
+                            {
+                                "reason": answer.rationale,
+                                "evidence_refs": answer.advisory_response["evidence_refs"],
+                            }
+                        )
+                    note_rows.append(
+                        StatusHistoryCorrectnessAdvisoryModel.model_validate(
+                            _plain_mapping_for_model(
+                                cast(JsonValue, entry), reason="correctness_advisory_shape_invalid"
+                            )
+                        )
+                    )
+                history_extras["correctness_advisories"] = tuple(note_rows)
+                checked = cast(CheckRecordedPayload, row.payload)
+                history_extras["advisory_subject_frontier"] = dict(
+                    checked.subject_frontier.as_wire().items()
+                )
+                if checked.semantic_provenance is not None:
+                    history_extras["advisory_provenance"] = semantic_provenance_to_json(
+                        checked.semantic_provenance
+                    )
             if service_clock:
                 history_extras["occurred_at_source"] = "service_clock"
-            history_type = (
-                StatusHistoryItemV14Model
-                if manifest_model is not None or service_clock
-                else StatusHistoryItemModel
-            )
+            history_type = StatusHistoryItemV14Model if history_extras else StatusHistoryItemModel
             result_history.append(
                 history_type(
                     event_id=row.event_id,
@@ -4208,6 +4256,7 @@ class MemoryLedgerAdapter:
         semantic_route_required: bool | None = None,
         deliverable_states: tuple[DeliverableState, ...] = (),
         review_mode: CheckReviewMode | None = None,
+        correctness_advisories: tuple[JsonObject, ...] = (),
         reviewer: JsonObject | None = None,
     ) -> CheckCommitResult:
         key = (frozen.lease.writer_id, frozen.lease.operation_id)
@@ -4329,6 +4378,7 @@ class MemoryLedgerAdapter:
             review_mode=review_mode,
             deliverable_states=deliverable_states,
             review_input_manifest=review_input_manifest,
+            correctness_advisories=correctness_advisories,
             reviewer=reviewer,
             totals=(
                 build_check_totals(frozen.case, findings.findings, findings.suppressed_count)
@@ -4381,6 +4431,7 @@ class MemoryLedgerAdapter:
             check_schema_version = (
                 REVIEWER_CHECK_EVENT_SCHEMA_VERSION
                 if check_payload.reviewer is not None
+                or correctness_advisories
                 or check_payload.semantic_reason is SemanticReason.ROUND_LIMIT_UNASSESSABLE
                 else DEFERRED_CHECK_EVENT_SCHEMA_VERSION
                 if check_payload.semantic_reason is SemanticReason.DEFERRED_BEFORE_FIRST_EDIT

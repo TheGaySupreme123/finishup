@@ -2402,17 +2402,177 @@ def _check_recorded_v1_5_schema(entry: _RegistryEntry) -> dict[str, JsonValue]:
     return document
 
 
+def _correctness_advisories_schema(*, history: bool = False) -> dict[str, JsonValue]:
+    """#1162: routine correctness notes; subjects are the fence-resolved refs of the challenge.
+
+    The fence resolves an ``act_``/``res_``/``evd_`` citation to its source event and a cited
+    finding to its subjects, so a note carries at most the subjects a finding may name (64).
+    """
+
+    from finishup.domain.correctness_advisories import (
+        ADVISORY_ID_PATTERN,
+        MAX_ADVISORY_SUBJECT_REFS,
+    )
+
+    properties: dict[str, JsonValue] = {
+        "summary": {"type": "string", "minLength": 1, "maxLength": 8192},
+        "detail": {"type": "string", "minLength": 1, "maxLength": 8192},
+        "subject_refs": {
+            "type": "array",
+            "maxItems": MAX_ADVISORY_SUBJECT_REFS,
+            "uniqueItems": True,
+            "items": {
+                "type": "string",
+                "pattern": r"^(?:evt|obl|clm)_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+            },
+        },
+    }
+    required: list[JsonValue] = ["summary", "detail", "subject_refs"]
+    if history:
+        for key in ("summary", "detail"):
+            properties[key] = {"anyOf": [properties[key], {"$ref": "#/$defs/finding_omission"}]}
+        properties.update(
+            {
+                "advisory_id": {"type": "string", "pattern": ADVISORY_ID_PATTERN},
+                "disposition": {
+                    "enum": [
+                        "addressed",
+                        "declined",
+                        "no_recorded_response",
+                    ],
+                    "type": "string",
+                },
+                "reason": {
+                    "anyOf": [
+                        {"type": "string", "minLength": 1, "maxLength": 4096},
+                        {"$ref": "#/$defs/finding_omission"},
+                    ]
+                },
+                "response_event_id": {"$ref": "#/$defs/event_id"},
+                "evidence_refs": {
+                    "type": "array",
+                    "maxItems": 64,
+                    "uniqueItems": True,
+                    "items": {
+                        "type": "string",
+                        "pattern": r"^(?:evd|res)_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                    },
+                },
+            }
+        )
+        required += ["advisory_id", "disposition"]
+    return {
+        "type": "array",
+        "maxItems": 10,
+        "minItems": 1,
+        "items": {
+            "type": "object",
+            "additionalProperties": False,
+            "properties": properties,
+            "required": required,
+        },
+    }
+
+
+def _advisory_counts_schema() -> dict[str, JsonValue]:
+    fields = ("total", "no_recorded_response", "withheld_may_answer")
+    return {
+        "type": "object",
+        "additionalProperties": False,
+        "properties": {
+            key: {"type": "string", "pattern": r"^(?:0|[1-9][0-9]{0,18})$", "maxLength": 19}
+            for key in fields
+        },
+        "required": cast(list[JsonValue], list(fields)),
+    }
+
+
+def _advisory_response_schema() -> dict[str, JsonValue]:
+    from finishup.domain.correctness_advisories import ADVISORY_ID_PATTERN
+
+    return {
+        "type": "object",
+        "additionalProperties": False,
+        "properties": {
+            "advisory_id": {"type": "string", "pattern": ADVISORY_ID_PATTERN},
+            "disposition": {"type": "string", "enum": ["addressed", "declined"]},
+            "evidence_refs": {
+                "type": "array",
+                "maxItems": 64,
+                "uniqueItems": True,
+                "items": {
+                    "type": "string",
+                    "pattern": r"^(?:evd|res)_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                },
+            },
+        },
+        "required": ["advisory_id", "disposition", "evidence_refs"],
+        "allOf": [
+            {
+                "if": {"properties": {"disposition": {"const": "addressed"}}},
+                "then": {"properties": {"evidence_refs": {"minItems": 1}}},
+            }
+        ],
+    }
+
+
+def _admit_advisory_dispositions(
+    properties: dict[str, JsonValue], rules: list[JsonValue], *, evidence_field: str
+) -> None:
+    from finishup.domain.correctness_advisories import ADVISORY_ID_PATTERN
+
+    dispositions = cast(
+        list[JsonValue], cast(dict[str, JsonValue], properties["disposition"])["enum"]
+    )
+    dispositions.extend(["addressed", "declined"])
+    dispositions.sort(key=lambda value: str(value).encode("ascii"))
+    properties["finding_id"] = {
+        "anyOf": [properties["finding_id"], {"type": "string", "pattern": ADVISORY_ID_PATTERN}]
+    }
+    rules.append(
+        {
+            "if": {"properties": {"disposition": {"enum": ["addressed", "declined"]}}},
+            "then": {
+                **_no_waiver_fields(),
+                "required": ["reason"],
+                "properties": {"finding_id": {"pattern": ADVISORY_ID_PATTERN}},
+                "not": {
+                    "anyOf": [
+                        {"required": ["waiver_scope"]},
+                        {"required": ["waiver_expiry"]},
+                        {"required": ["duplicate_of_finding_id"]},
+                    ]
+                },
+            },
+            "else": {"properties": {"finding_id": {"$ref": "#/$defs/finding_id"}}},
+        }
+    )
+    rules.append(
+        {
+            "if": {"properties": {"disposition": {"const": "addressed"}}},
+            "then": {"required": [evidence_field], "properties": {evidence_field: {"minItems": 1}}},
+        }
+    )
+
+
 def _check_recorded_v1_6_schema(entry: _RegistryEntry) -> dict[str, JsonValue]:
     """#1118: check-recorded 1.6.0 is 1.5.0 plus the optional reviewer conversation record.
 
-    A new version, never an in-place amendment: a 1.4.0/1.5.0 reader keeps rejecting the field,
+    A new version relative to the released line: a 1.4.0/1.5.0 reader keeps rejecting the field,
     and an older build preserves a 1.6.0 event it does not know as an opaque unknown version.
+    #1162 adds the optional ``correctness_advisories`` in place. That follows the repository rule
+    for wire versions: an unreleased version on an integration line may be amended in place until
+    it ships in a release; a released version is never amended. 1.6.0 is on no release tag and on
+    neither ``main`` nor ``0.3``, so only builds of this unreleased line ever read it.
     """
 
     document = _check_recorded_v1_5_schema(entry)
     _admit_stopped_review(document)
     definitions = cast(dict[str, JsonValue], document["$defs"])
     _add_reviewer_definitions(definitions)
+    cast(dict[str, JsonValue], document["properties"])["correctness_advisories"] = (
+        _correctness_advisories_schema()
+    )
     cast(dict[str, JsonValue], document["properties"])["reviewer"] = {
         "$ref": "#/$defs/reviewer_record"
     }
@@ -4954,6 +5114,17 @@ def _status_result_v1_4_schema(entry: _RegistryEntry) -> dict[str, JsonValue]:
     history_item = cast(dict[str, JsonValue], definitions["history_item"])
     history_properties = cast(dict[str, JsonValue], history_item["properties"])
     history_properties["review_input_manifest"] = {"$ref": "#/$defs/review_input_manifest"}
+    history_properties["correctness_advisories"] = _correctness_advisories_schema(history=True)
+    history_properties["advisory_subject_frontier"] = {
+        "$ref": SCHEMA_NAMESPACE + "common/frontier-1.0.0.schema.json"
+    }
+    history_properties["advisory_provenance"] = {
+        "$ref": SCHEMA_NAMESPACE + "findings/semantic-provenance-1.2.0.schema.json"
+    }
+    cast(
+        dict[str, JsonValue],
+        cast(dict[str, JsonValue], definitions["closure_readiness"])["properties"],
+    )["correctness_advisory_summary"] = {"type": "string", "minLength": 1, "maxLength": 4096}
     # Issue #1084 (review R7), unreleased in-place addition: present only when the publish that
     # appended the event omitted occurred_at and the service recorded its own clock.
     history_properties["occurred_at_source"] = {
@@ -6559,6 +6730,7 @@ def _receipt_document_v1_3_schema(entry: _RegistryEntry) -> dict[str, JsonValue]
     )
     definitions = cast(dict[str, JsonValue], document["$defs"])
     receipt_properties = cast(dict[str, JsonValue], document["properties"])
+    receipt_properties["correctness_advisory_counts"] = _advisory_counts_schema()
     receipt_properties["semantic_status"] = {"const": "unavailable"}
     receipt_properties["semantic_reason"] = {"const": "round_limit_unassessable"}
     receipt_properties["disproved_self_verified_finding_ids"] = {
@@ -6848,6 +7020,11 @@ def _receipt_result_v1_3_schema(entry: _RegistryEntry) -> dict[str, JsonValue]:
         {"receipt-document-1.2.0": "receipt-document-1.3.0"},
     )
     _admit_current_receipt_package_name(cast(dict[str, JsonValue], document["$defs"]))
+    definitions = cast(dict[str, JsonValue], document["$defs"])
+    success = cast(dict[str, JsonValue], definitions["success"])
+    cast(dict[str, JsonValue], success["properties"])["correctness_advisory_counts"] = (
+        _advisory_counts_schema()
+    )
     return document
 
 
@@ -6867,18 +7044,45 @@ def _publish_work_request_v1_2_schema(entry: _RegistryEntry) -> dict[str, JsonVa
 
 
 def _decision_recorded_v1_1_schema(entry: _RegistryEntry) -> dict[str, JsonValue]:
-    """Add the required ``review_mode`` switch to the released decision shape (ADR-049).
+    """Add ``review_mode`` or ``advisory_response`` to the released decision shape.
 
     Derived from the frozen 1.0.0 bytes; every other field is unchanged. A decision rides 1.1.0
-    iff it switches the conversation's review mode, so 1.1.0 requires the field.
+    iff it switches the conversation's review mode (ADR-049) or records a non-blocking
+    correctness-advisory response (ADR-006, #1162), so 1.1.0 requires exactly one of the two.
+    1.1.0 is unreleased and amended in place under the same rule as check-recorded 1.6.0.
     """
 
     document = _load_versioned_template(entry, "events/decision-recorded-1.0.0.schema.json")
     properties = cast(dict[str, JsonValue], document["properties"])
     properties["review_mode"] = {"enum": ["ai_powered", "local"], "type": "string"}
-    required = cast(list[JsonValue], document.setdefault("required", []))
-    if "review_mode" not in required:
-        required.append("review_mode")
+    properties["advisory_response"] = _advisory_response_schema()
+    document["oneOf"] = [
+        {"required": ["review_mode"], "not": {"required": ["advisory_response"]}},
+        {"required": ["advisory_response"], "not": {"required": ["review_mode"]}},
+    ]
+    from finishup.domain.correctness_advisories import ADVISORY_RESPONSE_STATEMENT
+
+    document["allOf"] = [
+        {
+            "if": {"required": ["advisory_response"]},
+            "then": {
+                "properties": {
+                    "statement": {"const": ADVISORY_RESPONSE_STATEMENT},
+                    "rationale": {"minLength": 1, "maxLength": 4096},
+                },
+                "not": {
+                    "anyOf": [
+                        {"required": [key]}
+                        for key in (
+                            "alternatives",
+                            "affected_obligation_ids",
+                            "supersedes_event_id",
+                        )
+                    ]
+                },
+            },
+        }
+    ]
     document["title"] = f"Yoetz decision recorded {entry.schema_version}"
     return document
 
@@ -10006,6 +10210,7 @@ def _respond_request_v1_1_schema(entry: _RegistryEntry) -> dict[str, JsonValue]:
     link_rule = _admit_duplicate_of(properties, rules)
     assert link_rule is not None
     rules.append(link_rule)
+    _admit_advisory_dispositions(properties, rules, evidence_field="evidence_refs")
     document["$id"] = SCHEMA_NAMESPACE + entry.relative_path
     if "title" in document:
         document["title"] = f"Yoetz respond request {entry.schema_version}"
@@ -10033,6 +10238,7 @@ def _respond_result_v1_1_schema(entry: _RegistryEntry) -> dict[str, JsonValue]:
     link_rule = _admit_duplicate_of(properties, rules)
     assert link_rule is not None
     rules.append(link_rule)
+    _admit_advisory_dispositions(properties, rules, evidence_field="evidence")
     # tb4n3 RC-7 (#1030): where the finding stands once the answer is recorded.
     definitions["closure_after"] = {
         "additionalProperties": False,

@@ -22,6 +22,7 @@ from typing import Final, cast
 
 import pytest
 
+from finishup.domain.correctness_advisories import ADVISORY_ID_PATTERN
 from finishup.mcp import server as bridge
 from finishup.protocol.schemas import load_schema_catalog, schema_document_for
 
@@ -32,6 +33,7 @@ _NODE: Final = shutil.which("node")
 _SAMPLES: Final = 10_000
 # Every id prefix the section tells the agent to mint with the helper.
 _DRAFT_PREFIXES: Final = ("evt", "act", "res", "evd", "clm", "obl")
+_ADVISORY_ORDINAL_SUFFIX: Final = ":(?:[1-9]|10)$"
 _JS_BLOCK: Final = re.compile(r"^```js\n(.*?)^```$", re.MULTILINE | re.DOTALL)
 
 needs_node = pytest.mark.skipif(_NODE is None, reason="node is a contributor-only tool")
@@ -74,8 +76,16 @@ def _schema_id_pattern(prefix: str) -> re.Pattern[str]:
         for pattern in _walk_patterns(document.json_schema)
         if pattern.startswith(f"^{prefix}_")
     }
+    # #1162: a correctness-advisory identity is ``<check evt_ id>:<ordinal>``, a composite built on
+    # the event-id grammar rather than a second grammar for event ids. It must stay exactly that.
+    composite = {pattern for pattern in found if pattern.endswith(_ADVISORY_ORDINAL_SUFFIX)}
+    found -= composite
     assert len(found) == 1, (prefix, found)
-    return re.compile(found.pop())
+    grammar = found.pop()
+    assert composite <= {grammar.removesuffix("$") + _ADVISORY_ORDINAL_SUFFIX}, (prefix, composite)
+    if prefix == "evt":
+        assert composite == {ADVISORY_ID_PATTERN}
+    return re.compile(grammar)
 
 
 def _defs_pattern(name: str, version: str, key: str) -> re.Pattern[str]:

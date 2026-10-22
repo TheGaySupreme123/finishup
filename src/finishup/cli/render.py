@@ -58,6 +58,8 @@ from finishup.protocol.models import (
     StatusCompactPageModel,
     StatusEvidencePageModel,
     StatusFindingsPageModel,
+    StatusHistoryCorrectnessAdvisoryModel,
+    StatusHistoryPageModel,
     StatusLineagePageModel,
     StatusObligationsPageModel,
     StatusOperationPageModel,
@@ -735,6 +737,8 @@ def render_closure_readiness_lines(readiness: StatusClosureReadinessModel) -> tu
         lines.append(
             "Acknowledged, not done: " + listed + (f" (+{hidden} more)" if hidden > 0 else "")
         )
+    if readiness.correctness_advisory_summary:
+        lines.append(readiness.correctness_advisory_summary)
     return tuple(lines)
 
 
@@ -945,6 +949,42 @@ def render_human_status(result: StatusSuccessModel) -> str:
             lines.append(f"- {receipt.task_id}: {receipt.conclusion} ({receipt.receipt_id})")
         if page.next_cursor is not None:
             lines.append(f"Next page: {page.next_cursor}")
+    if isinstance(result.page, StatusHistoryPageModel):
+        for entry in result.page.items:
+            notes = getattr(entry, "correctness_advisories", None)
+            if notes:
+                checked = getattr(entry, "advisory_subject_frontier", None)
+                if checked is not None:
+                    lines.append(
+                        f"Advisory check {entry.event_id}; subject frontier {checked.sequence}."
+                    )
+                provenance = getattr(entry, "advisory_provenance", None)
+                if isinstance(provenance, Mapping):
+                    provenance = cast(Mapping[str, JsonValue], provenance)
+                    lines.append(
+                        f"AI-powered source: {provenance.get('provider')}, "
+                        f"model {provenance.get('model')}; "
+                        f"attempt {provenance.get('semantic_attempt_id')}."
+                    )
+                for note in cast(tuple[StatusHistoryCorrectnessAdvisoryModel, ...], notes):
+                    disposition = note.disposition.replace("_", " ")
+                    if disposition == "addressed":
+                        disposition = "addressed (agent-reported, linked evidence)"
+                    elif disposition == "declined":
+                        disposition = "declined with reason"
+                    lines.append(f"Correctness advisory {note.advisory_id}: {disposition}")
+                    lines.append("  Subjects: " + ", ".join(note.subject_refs))
+                    lines.append(
+                        "  " + _projected_text(note.summary) + "\n" + _projected_text(note.detail)
+                    )
+                    if note.reason is not None:
+                        lines.append(
+                            "  Agent response (self-reported): " + _projected_text(note.reason)
+                        )
+                    if note.response_event_id is not None:
+                        lines.append(f"  Response event: {note.response_event_id}")
+                    if note.evidence_refs:
+                        lines.append("  Linked evidence: " + ", ".join(note.evidence_refs))
     if isinstance(result.page, StatusEvidencePageModel):
         # One line per row: the ledger-recorded channel lets a reader tell cooperative evidence
         # from host-observed captures without reading any prose.

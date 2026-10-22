@@ -12401,7 +12401,6 @@ kind and text. Durable local-result checkpoint validation reproduces named fresh
 the frozen case before comparing text; restart does not lose the question or trigger an unchanged
 recomputation solely because the finding names paths.
 
-
 ### Reviewer read recovery and private metrics (#1173)
 
 - `ReviewerBroker.calls` counts attempts (maximum five), `content_reads` counts admitted
@@ -12514,3 +12513,36 @@ provenance. No field is cut silently. The retained original operation and receip
 their identity and existing retention/redaction policy. The native TUI retains its full local
 view, as do authenticated owner exports bound to their exact approved request. Hook text points
 to status instead of duplicating review prose. ADR-043 records the measured Codex fallback, conservative host decisions and consumer reconstruction requirements.
+
+### Correctness advisories (#1162)
+
+`correctness_advisories` is the bounded routine-review note list on check-recorded 1.6.0,
+independent of findings. A `CorrectnessAdvisory` identity is the originating check's `evt_` id,
+colon, and its one-based ordinal (1–10). Summary/detail and subject refs retain the concern; the
+subject refs are the challenge's fence-resolved `evt_`/`obl_`/`clm_` subjects (at most 64), never
+its raw `act_`/`res_`/`evd_` citations. A row that cannot be retained degrades to the review
+summary with a disclosure and never rejects the review. Subject frontier and semantic provenance
+belong to that check. `status view=history` filtered to `check_recorded` exposes the rows and
+their frontier-bound disposition with ordinary pagination; history stays session-scoped, so a
+note is retrieved in the session that recorded its check, while the receipt is task-wide. Each
+receipt row names its check's recording session, and the retrieval continuation names those
+`session_id`s.
+
+An optional `respond` targets this identity using the existing `finding_id`/`finding_frontier`
+keys. `addressed` means agent-reported with linked evidence, at least one ref recorded after the
+note's check (`response_fields_invalid` at `/evidence_refs` otherwise); `declined` records the
+reason; absence is `no_recorded_response`. `respond` is the only way in: `publish_work` refuses a
+decision draft carrying `advisory_response` (`event_family_not_admitted`). A withheld decision is
+never attached to a note: its envelope cannot show whether it is an advisory response or a
+review-mode switch, so it is counted in `correctness_advisory_counts.withheld_may_answer` as one
+that may answer a note, and it stales the check under the unreadable-record rule (follow-up
+#1190). Typed `decision_recorded` 1.1.0 `advisory_response` records carry the target,
+disposition and mirrored evidence refs; `rationale` carries the reason. They are independent of
+review-mode switches and never change finding state, check applicability, closure readiness or
+receipt conclusions. Closure readiness carries `correctness_advisory_summary` only while some note
+has no recorded response, and its text names only those notes, so it changes exactly when that
+set does. The Stop hooks compare its digest with the last one shown for the session and show a
+fixed owner-facing notice only when the set changed, never on a `stop_hook_active` re-entry. A
+`finding_frontier` before the note's check (such as the history row's
+`advisory_subject_frontier`) is refused with `invalid_frontier` at `/finding_frontier`, naming
+the check's sequence; an unknown identity is `response_fields_invalid` at `/finding_id`.
