@@ -227,6 +227,20 @@ so a renewal counts and an expired lease writes nothing even before another work
 resumed in v1; its review ends incomplete. The READY-boundary upgrade now targets `17` from sources
 `12`–`16`, with migration IDs `0013`–`0017` in its plan digest; a v16 bundle applies only `0017`.
 
+### Amendment — bounded reviewer corrections and the v18 target (2026-10-21, #1173)
+
+Bundle migration `0018` rebuilds only `semantic_review_steps` to permit `turn` 1–7 and `read`
+1–5; `repair` remains 1. It copies every existing row unchanged, including reservations without
+captures, and retains the same primary key, job foreign key, strict shape and commitment-only
+columns. Migration `0017` stays byte-identical. No read, model turn or byte budget is refilled.
+A prior job with steps still ends incomplete rather than being replayed.
+
+The READY-boundary upgrade targets `18` from supported sources `12`–`17`, binding migration IDs
+`0013`–`0018` in its plan digest; a v17 bundle applies only `0018`. Existing backup, owner/lease
+fences, replay verification and preservation comparison remain in force. Fresh bundles use v18;
+older binaries refuse the newer write schema. This migration creates no payload or selector
+columns: selector-only read diagnostics remain in encrypted semantic response objects (ADR-006).
+
 ## Consequences
 
 Platform wheels (not pure-Python) on macOS arm64 + manylinux_2_28 x86_64; FinishUP owns security

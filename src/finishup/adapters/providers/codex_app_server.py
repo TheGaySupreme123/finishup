@@ -2569,7 +2569,7 @@ class CodexAppServerEvaluator:
                 # A new thread takes every user message after the instruction (the packet, then
                 # the read catalog). A continuation adds the user messages after the longest
                 # history the thread holds: the new read result or repair notice, and before the
-                # final turn the loop's no-reads-left notice (#1172), each its own text input.
+                # final turn the loop's final-phase notice (#1172, #1173), each its own text input.
                 prefix = (
                     None
                     if held is None
@@ -2586,7 +2586,7 @@ class CodexAppServerEvaluator:
                     or session.deadline != deadline
                     or held is not held_any
                     or not sent
-                    # At most a read result or repair notice, then the no-reads-left notice.
+                    # At most a read result or repair notice, then the final-phase notice.
                     or (held is not None and len(sent) > 2)
                     or any(role != "user" for role, _ in sent)
                     or (held is not None and held.profile != self.profile)

@@ -161,9 +161,10 @@ def test_each_migration_family_has_contiguous_versions(installed: _Installed) ->
         "0015",
         "0016",
         "0017",
+        "0018",
     ]
     assert payload["catalog_current"] == 5
-    assert payload["bundle_current"] == 17
+    assert payload["bundle_current"] == 18
 
 
 def test_migration_ddl_contains_only_reviewed_table_rebuilds(installed: _Installed) -> None:
@@ -190,6 +191,8 @@ def test_migration_ddl_contains_only_reviewed_table_rebuilds(installed: _Install
                 # 0016 rebuilds the operations table and is reviewed by its own integration
                 # tests; 0017 (#1118 reviewer-loop steps) only creates a table.
                 "0017",
+                # 0018 (#1173) rebuilds that step table with wider ordinal bounds, below.
+                "0018",
             ),
         ),
     ):
@@ -220,6 +223,16 @@ def test_migration_ddl_contains_only_reviewed_table_rebuilds(installed: _Install
                 drop = "DROP TABLE EVENTS;"
                 rename = "ALTER TABLE EVENTS_V14_NEW RENAME TO EVENTS;"
                 assert upper.count(drop) == 1
+                assert upper.index(copy) < upper.index(drop) < upper.index(rename)
+                upper = upper.replace(drop, "", 1)
+            if (family, version) == ("bundle", "0018"):
+                # Every step row is copied, unfiltered, before the original is dropped; row
+                # preservation is exercised by test_migration_0018_review_steps.py and the
+                # ledger-port upgrade test.
+                copy = "INSERT INTO SEMANTIC_REVIEW_STEPS_V18 SELECT * FROM SEMANTIC_REVIEW_STEPS;"
+                drop = "DROP TABLE SEMANTIC_REVIEW_STEPS;"
+                rename = "ALTER TABLE SEMANTIC_REVIEW_STEPS_V18 RENAME TO SEMANTIC_REVIEW_STEPS;"
+                assert upper.count(copy) == upper.count(drop) == upper.count(rename) == 1
                 assert upper.index(copy) < upper.index(drop) < upper.index(rename)
                 upper = upper.replace(drop, "", 1)
             if (family, version) == ("catalog", "0004"):
@@ -274,7 +287,7 @@ def test_fresh_catalog_and_bundle_initialize_at_current_schema_version(
         "catalog_state": "current",
         "catalog_version": 5,
         "bundle_state": "current",
-        "bundle_version": 17,
+        "bundle_version": 18,
     }
 
 

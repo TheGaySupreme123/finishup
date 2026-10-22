@@ -1114,7 +1114,7 @@ async def run_durable_semantic_attempts(
     async def _publish_terminal_response(
         handle: SemanticAttemptHandle, evaluation: _AttemptEvaluation
     ) -> tuple[ObjectRef | None, bool]:
-        """Persist privacy omission identities for a non-success attempt.
+        """Persist privacy omission identities and private read usage for a non-success attempt.
 
         Successful attempts already publish their response object before selection. A blocked,
         exhausted, retryable, or otherwise non-success attempt is never selected, but its
@@ -1124,9 +1124,13 @@ async def run_durable_semantic_attempts(
         write is retryable or an explicit persistence-unknown terminal outcome.
         """
 
-        if not getattr(evaluation, "semantic_withheld_item_ids", ()) and not getattr(
-            evaluation, "semantic_redacted_values", ()
-        ):
+        # Omission identities are part of the public result; private read usage (#1173) is
+        # owner-local telemetry only, so losing it never changes the outcome or stops a retry.
+        public = bool(
+            getattr(evaluation, "semantic_withheld_item_ids", ())
+            or getattr(evaluation, "semantic_redacted_values", ())
+        )
+        if not public and not getattr(evaluation, "reviewer_read_usage", None):
             return None, False
         try:
             return await publish_success_response(handle, evaluation), False
@@ -1138,10 +1142,14 @@ async def run_durable_semantic_attempts(
             record_unexpected_exception_without_raising(
                 exc,
                 component="semantic_attempts",
-                operation="semantic_attempt_terminal_response_persistence_failed",
+                operation=(
+                    "semantic_attempt_terminal_response_persistence_failed"
+                    if public
+                    else "semantic_attempt_read_usage_persistence_failed"
+                ),
                 request_id=current_lease.operation_id,
             )
-            return None, True
+            return None, public
 
     async def _exhaustion_from_rows(
         last_status: SemanticStatus, last_reason: SemanticReason

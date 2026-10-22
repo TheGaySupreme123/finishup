@@ -26,7 +26,7 @@ import finishup.cli.privacy_setup as privacy_setup_module
 import finishup.service.ready_composition as ready_composition_module
 from builders.privacy_policies import minimal_external_policy
 from finishup.adapters.privacy.local_enforcer import estimated_token_count
-from finishup.application.reviewer_loop import FINAL_TURN
+from finishup.application.reviewer_loop import FINAL_PHASE
 from finishup.application.reviewer_run import reviewer_first_exchange
 from finishup.application.semantic_case import (
     check_time_change_bytes_carried,
@@ -480,13 +480,13 @@ async def test_a_backslash_read_after_a_full_first_exchange_fits_the_cap(
 
 
 @pytest.mark.anyio
-async def test_the_no_reads_left_notice_fits_beside_a_read_that_filled_its_room(
+async def test_the_final_phase_notice_fits_beside_a_read_that_filled_its_room(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """#1172: the reply schema no longer narrows after the last read, so the loop appends its one
-    no-reads-left notice instead. Every read leaves room for it beside the one format repair: after
+    """#1172: the reply schema does not narrow after the last read, so the loop appends its one
+    final-phase notice instead. Every read leaves room for it beside the one format repair: after
     a third read that filled what a near-cap conversation left, the exchange carrying the notice,
-    and the repair after it, still fit the cap, under the same reply schema throughout."""
+    and the repair after it, still fit the cap. Only the repair turn sends the read-free schema."""
 
     _composed(monkeypatch, diff=_code_diff(8, 203), outputs=0)
 
@@ -512,16 +512,15 @@ async def test_the_no_reads_left_notice_fits_beside_a_read_that_filled_its_room(
     )
     assert result.status is SemanticStatus.SUCCEEDED, (result.status, result.reason)
     exchanges = [history for _media, history in gateway.exchanges]
-    assert len(exchanges) == 5 and exchanges[3][-1] == ("user", FINAL_TURN)
-    assert exchanges[4][-2:][0] == ("user", FINAL_TURN)
-    assert exchanges[4][-1][1].startswith("format_error: action_invalid.")
+    assert len(exchanges) == 5 and exchanges[3][-1] == ("user", FINAL_PHASE)
+    assert exchanges[4][-2:][0] == ("user", FINAL_PHASE)
+    assert exchanges[4][-1][1].startswith("format_error: action_invalid. No reads remain.")
     assert json.loads(exchanges[3][-2][1])["status"] == "partial"  # the read filled its room
     for history in exchanges:
         assert len(_encoded(history)) <= UNSIZED_EXCHANGE_BYTES
     assert len(_encoded(exchanges[-1])) > UNSIZED_EXCHANGE_BYTES - 1024  # a real boundary
-    assert {media for media, _history in gateway.exchanges} == {
-        "application/vnd.finishup.reviewer-turn+json"
-    }
+    turn, final = (f"application/vnd.finishup.reviewer-{m}+json" for m in ("turn", "final"))
+    assert [media for media, _history in gateway.exchanges] == [turn] * 4 + [final]
 
 
 # #1118 token budget: the Codex subscription route running the pinned reviewer model is sized to

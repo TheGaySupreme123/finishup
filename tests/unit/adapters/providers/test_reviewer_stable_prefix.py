@@ -17,7 +17,7 @@ from finishup.adapters.providers import reviewer_cache_telemetry as telemetry
 from finishup.adapters.providers.openai_responses import OpenAIProfile, normalize_response
 from finishup.adapters.providers.openai_responses import render_case as render_responses
 from finishup.application.reviewer_exchange import REVIEWER_REPLY_SCHEMAS, ReviewerExchangeModel
-from finishup.application.reviewer_loop import FINAL_TURN, ReviewerLoop, ReviewOutcome
+from finishup.application.reviewer_loop import FINAL_PHASE, ReviewerLoop, ReviewOutcome
 from finishup.domain.privacy import ProviderBinding
 from finishup.ports.semantic import (
     REVIEWER_EXCHANGE_MEDIA_TYPES,
@@ -155,10 +155,10 @@ async def test_a_three_read_codex_review_keeps_every_turns_settings_byte_identic
     assert len(turns) == 4 and len(beside) == 1
     assert set(media) == {REVIEWER_EXCHANGE_MEDIA_TYPES["turn"]}
     # Each turn sends only what is new: the packet, each read result, and the last result with
-    # the no-reads-left notice as a separate input.
+    # the final-phase notice as a separate input.
     inputs = [[item["text"] for item in cast(list[dict[str, str]], t["input"])] for t in turns]
     assert inputs[0] == ["packet"]
-    assert [len(texts) for texts in inputs[1:]] == [1, 1, 2] and inputs[3][1] == FINAL_TURN
+    assert [len(texts) for texts in inputs[1:]] == [1, 1, 2] and inputs[3][1] == FINAL_PHASE
     # The final turn's scripted miss is unexplained, not a schema or settings change: the
     # telemetry's digest of what each turn sent beside its messages saw no change either.
     assert labels == ["first_turn", "none", "none", "unexplained"]
@@ -177,7 +177,7 @@ async def test_codex_refuses_a_continuation_that_rewrites_what_the_thread_holds(
         ("user", "another packet"),
         ("assistant", _READ),
         ("user", "observation"),
-        ("user", FINAL_TURN),
+        ("user", FINAL_PHASE),
     )
     result = await _exchange(monkeypatch, runtime, session, rewritten, request)
     assert type(result) is SemanticResultUnavailable and runtime.requests == []
@@ -213,7 +213,7 @@ async def test_responses_bodies_keep_one_schema_and_extend_the_previous_input() 
     inputs = [cast(list[JsonValue], body["input"]) for body in bodies]
     for before, after in zip(inputs, inputs[1:], strict=False):
         assert after[: len(before)] == before  # everything sent before, unchanged and first
-    assert cast(dict[str, JsonValue], inputs[-1][-1]) == {"content": FINAL_TURN, "role": "user"}
+    assert cast(dict[str, JsonValue], inputs[-1][-1]) == {"content": FINAL_PHASE, "role": "user"}
 
 
 async def test_codex_refuses_an_empty_or_three_message_continuation(
@@ -224,7 +224,7 @@ async def test_codex_refuses_an_empty_or_three_message_continuation(
         *_FIRST,
         ("assistant", _READ),
         ("user", "observation"),
-        ("user", FINAL_TURN),
+        ("user", FINAL_PHASE),
         ("user", "one more"),
     )
     for history in (_FIRST, too_long):  # nothing new; three new messages
@@ -242,7 +242,7 @@ async def test_codex_carries_a_repair_and_the_notice_as_two_inputs(
     monkeypatch: pytest.MonkeyPatch, answer: str
 ) -> None:
     """After an answer the loop rejected, reads can end too: the repair notice and the
-    no-reads-left notice follow the held thread, each its own input. A JSON object the loop's
+    final-phase notice follow the held thread, each its own input. A JSON object the loop's
     decoder rejected is held with and without it, and the repair extends the snapshot without it."""
 
     runtime = _UsageRuntime([answer, _FINAL], [[(90_000, 0, 50)], [(90_200, 89_984, 50)]])
@@ -251,12 +251,12 @@ async def test_codex_carries_a_repair_and_the_notice_as_two_inputs(
     await _exchange(monkeypatch, runtime, session, _FIRST, request)
     runtime.requests.clear()
     repair = "format_error: output_not_json. Reply with exactly one read action or final_judgment."
-    history: tuple[ReviewerMessage, ...] = (*_FIRST, ("user", repair), ("user", FINAL_TURN))
+    history: tuple[ReviewerMessage, ...] = (*_FIRST, ("user", repair), ("user", FINAL_PHASE))
     result = await _exchange(monkeypatch, runtime, session, history, request)
     assert type(result) is SemanticResultReply
     (turn,) = [params for method, params in runtime.requests if method == "turn/start"]
     assert [item["text"] for item in cast(list[dict[str, str]], turn["input"])] == [
         repair,
-        FINAL_TURN,
+        FINAL_PHASE,
     ]
     await session.aclose()

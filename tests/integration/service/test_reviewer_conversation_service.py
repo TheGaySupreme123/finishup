@@ -37,7 +37,7 @@ from finishup.application.privacy_policy import (
     decide_privacy_policy,
     privacy_propose_policy,
 )
-from finishup.application.reviewer_loop import FINAL_TURN
+from finishup.application.reviewer_loop import FINAL_PHASE
 from finishup.application.service import ClientProjectionContext, ProjectionRenderMode
 from finishup.cli.render import render_human_check
 from finishup.config.models import FinishUpConfig
@@ -353,10 +353,10 @@ async def test_one_review_reads_three_times_then_concludes_on_every_surface(
         assert getattr(checked, "semantic_status") is SemanticStatus.SUCCEEDED
 
         # Four exchanges, each admitted on its own; the packet and read catalog lead every one.
-        # The last also carries the no-reads-left notice instead of a narrower schema (#1172).
+        # The last ends with the final-phase notice after the third result (#1173).
         assert [len(history) for _, history in exchanges] == [3, 5, 7, 10]
-        assert exchanges[-1][1][-1] == ("user", FINAL_TURN)
         last = exchanges[-1][1]
+        assert last[-1] == ("user", FINAL_PHASE)
         assert "reviewer_catalog" in last[2][1]
         first_read, second_read, listing = (json.loads(last[i][1]) for i in (4, 6, 8))
         assert first_read["status"] == "ok" and "return a + b" in first_read["data"]["text"]
@@ -712,6 +712,36 @@ async def test_an_approved_first_exchange_resumes_once_and_concludes(
         # The same job entered again recovers its durable result: nothing more is sent.
         await _reenter(runs)
         assert len(review.payloads) == 1
+
+
+@pytest.mark.parametrize("reads_anyway", [False, True])
+async def test_an_ask_every_time_exchange_offers_no_read_on_the_wire(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, reads_anyway: bool
+) -> None:
+    """#1173: a review that offers no read sends the read-free reply schema on the wire, with no
+    final-phase notice, so a schema-enforcing route cannot end the one approved exchange on a
+    read. A route that returns one anyway ends ``read_limit`` there: a repair would be a second
+    exchange needing its own approval, which nothing resumes."""
+
+    runs = _capture_evaluations(monkeypatch)
+    replies = (_read_file("calc.py"), _FINAL_REPLY) if reads_anyway else (_FINAL_REPLY,)
+    async with _reviewing(tmp_path, monkeypatch, replies, policy=_ASK) as review:
+        proposal = await _owner_decides(review, approved=True)
+        resumed = await _reenter(runs)
+        assert review.payloads == [proposal.prepared_bytes]  # nothing sent but the approved bytes
+        ((media, history),) = review.exchanges
+        exchange = reviewer_exchange(media, proposal.prepared_bytes, REVIEWER_REPLY_SCHEMAS)
+        assert exchange is not None and exchange.schema == REVIEWER_REPLY_SCHEMAS.final
+        reply = cast(dict[str, dict[str, Any]], exchange.schema)["properties"]["reply"]
+        assert json.dumps(reply) == '{"anyOf": [{"$ref": "#/$defs/FinalReply"}]}'
+        assert all(text != FINAL_PHASE for _role, text in history)
+        assert resumed.reviewer is not None
+        assert (resumed.reviewer.exchanges, resumed.reviewer.reads) == (1, ())
+        if reads_anyway:
+            assert resumed.status is SemanticStatus.INVALID
+            assert resumed.reviewer.ended == "read_limit"
+        else:
+            assert resumed.status is SemanticStatus.SUCCEEDED, (resumed.status, resumed.reason)
 
 
 async def _owner_decides_on(review: _Review, proposal: Any, *, approved: bool) -> None:
