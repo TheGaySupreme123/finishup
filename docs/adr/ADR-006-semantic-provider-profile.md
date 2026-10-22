@@ -2876,16 +2876,18 @@ File-read absence keeps its existing reason.
 CLI, MCP, TUI and receipt review-read renderings carry the recorded reason.
 
 **Delivery contract.** Check-result 1.7.0, status-result 1.5.0 and receipt-result 1.4.0 add a
-`delivery_page` presentation after ordinary privacy projection. Status-request 1.3.0 reads its
-signed `delivery_cursor`. A 9,000-byte result budget counts both MCP channels, escaping and framing;
-Codex's measured fallback window is 12,000 bytes. Claude Code and Cursor use the same conservative
-budget. Whole action fields precede excerpts and provenance. An individually oversized scalar has
+`delivery_page` presentation after ordinary privacy projection, for an agent's oversized MCP check,
+receipt or opted-in (`delivery=paged`) status read only. Status-request 1.3.0 adds that opt-in and
+reads the signed `delivery_cursor`. The budget is Codex's 12,000-byte structured window, the
+tightest recorded host limit, for the larger channel a host reads plus a 64-byte header allowance,
+never both channels together (ADR-043). Whole action fields precede excerpts and
+provenance. An individually oversized scalar has
 explicit offsets, length and a digest for lossless reconstruction; no actionable preview is cut.
 `truncated`, `actionable_complete`, `complete`, `next_cursor` and `inventory_read` make deferred
 content and further inventory reads machine-readable. Read continuations reapply disclosure and
-read the recorded source, without dispatching review or writing a new check or receipt. CLI JSON
-and terminal text use these same pages; native TUI and authenticated owner exports retain their
-full local view. Hooks carry bounded structural instructions to read status. Source retention,
+read the recorded source, without dispatching review or writing a new check or receipt. CLI
+output, the native TUI and authenticated owner exports are never paged and keep their full local
+view, as do the bridge's own closure and recovery reads. Hooks carry bounded structural instructions to read status. Source retention,
 privacy and receipt inventory limits still apply. Neither emission nor a complete page proves
 native host delivery or consumer reconstruction.
 

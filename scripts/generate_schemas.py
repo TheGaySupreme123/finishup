@@ -12765,6 +12765,7 @@ def _result_delivery_schema(entry: _RegistryEntry) -> dict[str, JsonValue]:
     )
     if entry.schema_name == "status-request":
         properties = cast(dict[str, JsonValue], document["properties"])
+        properties["delivery"] = {"enum": ["complete", "paged"], "type": "string"}
         properties["delivery_cursor"] = {
             "type": "string",
             "minLength": 1,

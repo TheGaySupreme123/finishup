@@ -1071,7 +1071,6 @@ async def test_ready_same_request_recovery_after_statement_plan_amendment(
             ),
             binding,
             history,
-            _paginate=False,  # The complete projection; #1139 result-delivery paging has its own tests.
         )
         assert isinstance(projected, StatusResultModel)
         assert isinstance(projected.root.page, StatusHistoryPageModel)
@@ -1116,7 +1115,6 @@ async def _project(
         ),
         binding,
         value,
-        _paginate=False,  # The complete projection; #1139 result-delivery paging has its own tests.
     )
 
 

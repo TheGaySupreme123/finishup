@@ -14,7 +14,12 @@ from finishup.application.result_delivery import (
     mcp_delivery_bytes,
     page_result,
 )
-from finishup.domain.result_delivery import collect_status_delivery, reassemble_delivery
+from finishup.domain.result_delivery import (
+    CODEX_FALLBACK_WINDOW_BYTES,
+    HOST_FRAMING_BYTES,
+    collect_status_delivery,
+    reassemble_delivery,
+)
 from finishup.mcp.server import result_from_public_model
 from finishup.ports.control import McpHostProfile
 from finishup.protocol.canonical import canonical_digest, canonical_encode
@@ -24,6 +29,8 @@ from finishup.protocol.models import CheckResultModel, StatusRequest
 _KEY = b"delivery-test-key" * 2
 _SESSION = "ses_00000000-0000-4000-8000-000000000001"
 _WRITER = "wri_00000000-0000-4000-8000-000000000002"
+# What Codex 0.159 prefixes to the structured JSON it shows a model (test_codex_structured_head).
+_CODEX_HEADER = "Wall time: 0.0000 seconds\nOutput:\n"
 
 
 def _projection(read: int = 1, omitted: tuple[str, ...] = ()) -> dict[str, Any]:
@@ -139,11 +146,13 @@ def test_many_substantive_findings_are_whole_on_every_host(
     )
     for page in pages:
         result = result_from_public_model(CheckResultModel.model_validate(page), host_profile=host)
-        wire = result.model_dump(mode="json", by_alias=True, exclude_none=True)
-        assert (
-            len(canonical_encode({"jsonrpc": "2.0", "id": "x" * 128, "result": wire}))
-            <= HOST_RESULT_BUDGET_BYTES
-        )
+        # Each channel a host reads fits: Codex reads only the structured JSON behind its header,
+        # Cursor the canonical text copy, Claude Code both against a far larger limit.
+        structured = canonical_encode(cast(Any, result.structuredContent))
+        text = "".join(cast(Any, block).text for block in result.content).encode()
+        assert len(structured) + HOST_FRAMING_BYTES <= HOST_RESULT_BUDGET_BYTES
+        assert len(text) + HOST_FRAMING_BYTES <= HOST_RESULT_BUDGET_BYTES
+        assert len(_CODEX_HEADER) + len(structured) <= CODEX_FALLBACK_WINDOW_BYTES
         assert mcp_delivery_bytes(page) <= HOST_RESULT_BUDGET_BYTES
         assert page["truncated"] is True
         assert "delivery_cursor=next_cursor" in page["required_next_step"]
@@ -231,6 +240,7 @@ def test_status_continuation_freezes_watermarks_and_preserves_inventory_cursor()
         view="findings",
         head_frontier=source["result_frontier"],
         projection_lag="0",
+        import_status={"active_count": "1", "terminal_count": "0"},
         page={"items": source.pop("findings"), "next_cursor": "original-inventory-cursor"},
     )
     selector: dict[str, Any] = {
@@ -253,6 +263,8 @@ def test_status_continuation_freezes_watermarks_and_preserves_inventory_cursor()
     cursor = decode_cursor(_KEY, cast(str, first["next_cursor"]), _SESSION, _WRITER)
     source["head_frontier"] = {"sequence": "99", "head_digest": "sha256:" + "b" * 64}
     source["projection_lag"] = "57"
+    # Live fields a later read sees change: an import job finishing must not refuse the cursor.
+    source["import_status"] = {"active_count": "0", "terminal_count": "1"}
     continued = page_result(
         source,
         key=_KEY,
@@ -375,6 +387,10 @@ def test_each_page_carries_its_own_read_disclosure_and_never_pages_it() -> None:
     }
     with pytest.raises(ValueError, match="result_delivery_invalid"):
         reassemble_delivery([paged_projection])
+    # review_delivery is outside the content digest too: such an item could never be verified.
+    unverified = {**paged_projection, "items": [{"path": "/review_delivery", "value": "advice"}]}
+    with pytest.raises(ValueError, match="result_delivery_invalid"):
+        reassemble_delivery([unverified])
 
 
 @pytest.mark.parametrize("host", ["codex", "claude", "cursor", "generic"])
@@ -411,7 +427,7 @@ def test_canonical_text_fallback_never_enlarges_an_unpaged_result(host: McpHostP
             "writer_sequence": str(i + 1),
             "ingestion_sequence": str(i + 1),
         }
-        for i in range(20)
+        for i in range(30)
     ]
     model = PublishWorkResultModel.model_validate(wire)
     prose = _result_text(wire, host_profile=host)
@@ -469,7 +485,8 @@ async def test_real_disclosure_and_recorded_source_continuation_do_not_repeat_wo
     )
     from finishup.ports.control import ControlMethod
 
-    workflow = await run_projection_workflow(max_findings=10)
+    # Reviewer provenance and four findings make each source genuinely oversize (#1139).
+    workflow = await run_projection_workflow("optional", max_findings=10)
     disclosures = 0
     original_disclose = type(workflow.app.privacy).prepare_local_disclosure
 
@@ -487,6 +504,13 @@ async def test_real_disclosure_and_recorded_source_continuation_do_not_repeat_wo
 
     monkeypatch.setattr(type(workflow.app.privacy), "prepare_local_disclosure", disclose)
     case = workflow.case(label)
+    if case.method is ControlMethod.STATUS:
+        # The MCP status tool opts an agent's read into pages; internal reads stay complete.
+        unpaged = dict(await project_case(workflow.app, case, 8990, paginate=True))
+        assert "state" not in unpaged and unpaged["view"] == "findings"
+        case = ProjectionCase(
+            case.label, case.method, {**case.request_body, "delivery": "paged"}, case.internal
+        )
     first: dict[str, Any] = dict(await project_case(workflow.app, case, 9000, paginate=True))
     assert first["state"] == "delivery_page"
     seen: list[Any] = list(first["items"])
@@ -600,7 +624,8 @@ async def test_real_disclosure_and_recorded_source_continuation_do_not_repeat_wo
 
     assert isinstance(before, StatusInternalResult) and isinstance(after, StatusInternalResult)
     assert before.head_frontier == after.head_frontier
-    assert disclosures == 2 + (seed - 9100) // 2 + collected_reads
+    unpaged_reads = 1 if label.startswith("status") else 0
+    assert disclosures == 2 + unpaged_reads + (seed - 9100) // 2 + collected_reads
 
 
 @pytest.mark.anyio
@@ -885,3 +910,292 @@ def test_result_delivery_matches_owned_canonical_vector() -> None:
     assert canonical_encode(page).hex() == vector["canonical_hex"]
     assert canonical_digest(page) == vector["digest"]
     validate_schema_instance("check-result", "1.7.0", page)
+
+
+def _workflow_daemon(app: Any) -> Any:
+    """The real ServiceDaemon dispatch path in front of a real projection-workflow application."""
+    from finishup.service.daemon import ServiceComposition, ServiceDaemon
+    from finishup.service.lifecycle import ServiceLifecycle
+    from integration.service.test_daemon_clients import (
+        _INSTANCE_ID,  # pyright: ignore[reportPrivateUsage]
+        _Clock,  # pyright: ignore[reportPrivateUsage]
+        _GenerationStore,  # pyright: ignore[reportPrivateUsage]
+        _Listener,  # pyright: ignore[reportPrivateUsage]
+        _Monitor,  # pyright: ignore[reportPrivateUsage]
+        _Vault,  # pyright: ignore[reportPrivateUsage]
+    )
+
+    lifecycle = ServiceLifecycle(
+        _Clock(),
+        generation_store=_GenerationStore(),
+        process_start_identity_commitment="sha256:" + "1" * 64,
+        instance_id=_INSTANCE_ID,
+    )
+    return ServiceDaemon(
+        _composition=ServiceComposition(
+            lifecycle=lifecycle,
+            control_listener=cast(Any, _Listener()),
+            secret_ingress_listener=None,
+            human_control_listener=None,
+            human_control_service=None,
+            session_monitor=cast(Any, _Monitor()),
+            vault=_Vault(),
+            application=app,
+        )
+    )
+
+
+@pytest.mark.anyio
+async def test_ordinary_results_are_one_response_through_the_daemon() -> None:
+    """Review of #1139: ordinary agent reads and the bridge's own probes stay single responses.
+
+    Over MCP every status read is brief and opted into pages, as ``dispatch_status`` sends it.
+    Only a genuinely oversize result (the JSON owner-export receipt here) becomes pages.
+    """
+    from builders.projection_workflow import run_projection_workflow
+    from finishup.ports.control import ControlClientKind, ControlMethod
+    from finishup.protocol.models import (
+        CheckRequest,
+        PublishWorkRequest,
+        ReceiptRequest,
+        public_model_to_wire,
+    )
+    from integration.service.test_daemon_clients import (
+        _request,  # pyright: ignore[reportPrivateUsage]
+    )
+
+    workflow = await run_projection_workflow()
+    daemon = _workflow_daemon(workflow.app)
+    seed = iter(range(0x9100, 0x9200))
+
+    def fresh() -> str:
+        return f"req_00000000-0000-4000-8000-{next(seed):012x}"
+
+    async def dispatch(method: ControlMethod, model: Any, body: Any) -> dict[str, Any]:
+        result = await daemon.dispatch(
+            ControlClientKind.MCP_BRIDGE, _request(daemon, method, model.model_validate(body))
+        )
+        assert result.outcome == "ok", (method, body.get("view"), result.body)
+        return cast(dict[str, Any], public_model_to_wire(result.body))
+
+    await daemon.start()
+    try:
+        for view in ("compact", "findings", "history", "obligations", "evidence", "operation"):
+            case = workflow.case(f"status/{view}")
+            for detail in ("brief", "full"):
+                body = {**case.request_body, "request_id": fresh(), "detail": detail}
+                wire = await dispatch(
+                    ControlMethod.STATUS, StatusRequest, {**body, "delivery": "paged"}
+                )
+                assert wire.get("state") != "delivery_page", (view, detail)
+                assert wire["view"] == view
+        check = await dispatch(
+            ControlMethod.CHECK, CheckRequest, workflow.case("check").request_body
+        )
+        assert check["state"] == "complete"
+        receipt = workflow.case("receipt").request_body
+        for fmt in ("markdown", "text"):
+            wire = await dispatch(
+                ControlMethod.RECEIPT,
+                ReceiptRequest,
+                {**receipt, "request_id": fresh(), "format": fmt},
+            )
+            assert wire.get("state") != "delivery_page" and wire["format"] == fmt
+        publish = workflow.case("publish_work").request_body
+        assert "state" not in await dispatch(
+            ControlMethod.PUBLISH_WORK, PublishWorkRequest, publish
+        )
+        # The bridge's write-recovery probe (``_timeout_operation_state``) reads page.state.
+        envelope = {
+            k: publish[k]
+            for k in ("protocol_version", "schema_version", "actor", "client", "session_id")
+        }
+        probe = await dispatch(
+            ControlMethod.STATUS,
+            StatusRequest,
+            {
+                **envelope,
+                "writer_id": publish["writer_id"],
+                "request_id": fresh(),
+                "view": "operation",
+                "limit": "1",
+                "filter": {"operation_request_id": publish["request_id"]},
+            },
+        )
+        assert probe["page"]["state"] == "complete"
+        # A JSON owner-export receipt is past Codex's 12,000-byte window: pages, then whole.
+        first = await dispatch(
+            ControlMethod.RECEIPT, ReceiptRequest, {**receipt, "request_id": fresh()}
+        )
+        assert first["state"] == "delivery_page"
+        pages = [first]
+        while pages[-1]["next_cursor"] is not None:
+            pages.append(
+                await dispatch(
+                    ControlMethod.STATUS,
+                    StatusRequest,
+                    {
+                        **envelope,
+                        "writer_id": publish["writer_id"],
+                        "request_id": fresh(),
+                        "view": "compact",
+                        "delivery_cursor": pages[-1]["next_cursor"],
+                    },
+                )
+            )
+        assert len(pages) == 2  # the action page, then the rest of the receipt document
+        assert reassemble_delivery(pages)["format"] == "json"
+    finally:
+        await daemon.close()
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("view", ["compact", "findings", "history"])
+async def test_oversized_brief_status_pages_and_reassembles(
+    view: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A brief body omits requested_frontier; paging it pins result_frontier instead."""
+    import finishup.application.result_delivery as delivery_module
+    import finishup.application.service as service_module
+    from builders.projection_workflow import (
+        ProjectionCase,
+        project_case,
+        request_base,
+        run_projection_workflow,
+    )
+    from finishup.ports.control import ControlMethod
+
+    # A small budget makes these ordinary brief bodies oversize without a long ledger.
+    monkeypatch.setattr(service_module, "HOST_RESULT_BUDGET_BYTES", 4_000)
+    monkeypatch.setattr(delivery_module, "HOST_RESULT_BUDGET_BYTES", 4_000)
+    workflow = await run_projection_workflow()
+    source = workflow.case(f"status/{view}")
+    body = {**source.request_body, "detail": "brief"}
+    internal = await workflow.app.status(StatusRequest.model_validate(body))
+    complete = dict(
+        await project_case(
+            workflow.app, ProjectionCase(view, ControlMethod.STATUS, body, internal), 9300
+        )
+    )
+    assert "requested_frontier" not in complete
+    paged_case = ProjectionCase(view, ControlMethod.STATUS, {**body, "delivery": "paged"}, internal)
+    pages = [dict(await project_case(workflow.app, paged_case, 9310, paginate=True))]
+    assert pages[0]["state"] == "delivery_page"
+    seed = 9320
+    while pages[-1]["next_cursor"] is not None:
+        follow = {
+            **request_base(f"req_00000000-0000-4000-8000-{seed:012x}"),
+            "session_id": pages[0]["session_id"],
+            "writer_id": pages[0]["writer_id"],
+            "view": "compact",
+            "delivery_cursor": pages[-1]["next_cursor"],
+        }
+        read = await workflow.app.read_result_delivery(StatusRequest.model_validate(follow))
+        pages.append(
+            dict(
+                await project_case(
+                    workflow.app,
+                    ProjectionCase("delivery", ControlMethod.STATUS, follow, read),
+                    seed,
+                    paginate=True,
+                )
+            )
+        )
+        seed += 2
+    assert len(pages) > 1
+    rebuilt = reassemble_delivery(pages)
+    assert {k: v for k, v in rebuilt.items() if k != "privacy_projection"} == {
+        k: v for k, v in complete.items() if k != "privacy_projection"
+    }
+
+
+@pytest.mark.anyio
+async def test_terminals_bridge_reads_and_live_operation_reads_are_never_paged(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Only an agent's MCP check, receipt or ``delivery=paged`` status read can become pages."""
+    from builders.projection_workflow import ProjectionCase, project_case, run_projection_workflow
+    from finishup.application.service import ClientProjectionContext, ProjectionRenderMode
+    from finishup.ports.control import ControlClientKind, ControlMethod
+
+    workflow = await run_projection_workflow("optional", max_findings=10)
+    findings = workflow.case("status/findings")
+    paged_findings = ProjectionCase(
+        "findings",
+        ControlMethod.STATUS,
+        {**findings.request_body, "delivery": "paged"},
+        findings.internal,
+    )
+    receipt = workflow.case("receipt")
+    check = workflow.case("check")
+    for case in (paged_findings, receipt, check):
+        # Oversize for an agent's MCP read ...
+        agent = dict(await project_case(workflow.app, case, 9400, paginate=True))
+        assert agent["state"] == "delivery_page", case.label
+        # ... but a terminal has no host clip and no flag to continue: complete, in both modes.
+        for mode in (ProjectionRenderMode.HUMAN_READABLE, ProjectionRenderMode.MACHINE_READABLE):
+            context = ClientProjectionContext(
+                ControlClientKind.CLI, mode, mode is ProjectionRenderMode.HUMAN_READABLE
+            )
+            cli = dict(await project_case(workflow.app, case, 9410, context=context, paginate=True))
+            assert cli.get("state") != "delivery_page", (case.label, mode)
+    # The bridge's own closure inventory and recovery reads send no delivery=paged.
+    internal: dict[str, Any] = dict(await project_case(workflow.app, findings, 9420, paginate=True))
+    assert "state" not in internal and internal["view"] == "findings"
+    assert len(internal["page"]["items"]) == 4
+    operation = workflow.case("status/operation")
+    live = ProjectionCase(
+        "operation",
+        ControlMethod.STATUS,
+        {**operation.request_body, "delivery": "paged"},
+        operation.internal,
+    )
+    import finishup.application.service as service_module
+
+    monkeypatch.setattr(service_module, "HOST_RESULT_BUDGET_BYTES", 1_024)
+    # Its elapsed time changes on every read, so a cursor could never continue it.
+    assert "state" not in dict(await project_case(workflow.app, live, 9430, paginate=True))
+
+
+@pytest.mark.anyio
+async def test_bridge_opts_only_the_agents_status_reads_into_pages(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``dispatch_status`` asks for pages unless the agent names a delivery; probes never do."""
+    import finishup.mcp.server as server
+
+    sent: list[dict[str, Any]] = []
+
+    async def capture(arguments: Any, *_args: Any, **_kwargs: Any) -> Any:
+        sent.append(dict(arguments))
+        return None
+
+    monkeypatch.setattr(server, "_dispatch", capture)
+    await server.dispatch_status({"view": "compact"})
+    await server.dispatch_status({"view": "compact", "delivery": "complete"})
+    assert [arguments["delivery"] for arguments in sent] == ["paged", "complete"]
+
+    probes: list[StatusRequest] = []
+
+    async def invoke(_runtime: Any, request: Any, *_args: Any, **_kwargs: Any) -> Any:
+        from finishup.ports.control import ControlError
+
+        probes.append(request)
+        # Both probes treat a control failure as an unknown outcome, recording no diagnostic.
+        raise ControlError("frame_invalid")
+
+    monkeypatch.setattr(server, "_invoke_with_reconnect", invoke)
+    envelope = {
+        "protocol_version": "0.1",
+        "schema_version": "1.0.0",
+        "request_id": "req_00000000-0000-4000-8000-000000000071",
+        "session_id": _SESSION,
+        "writer_id": _WRITER,
+        "actor": {"actor_id": "test", "actor_type": "harness"},
+        "client": {"kind": "test_client", "version": "1", "integration": "cooperative_mcp"},
+    }
+    runtime = server.BRIDGE_RUNTIME
+    await server._timeout_operation_state(envelope, runtime, None)  # pyright: ignore[reportPrivateUsage]
+    await server._publish_recovery_from_envelope(envelope, runtime, None)  # pyright: ignore[reportPrivateUsage]
+    assert len(probes) == 2
+    assert all(probe.view == "operation" and probe.delivery is None for probe in probes)

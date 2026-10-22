@@ -181,8 +181,8 @@ class CodexStatusLedger:
     ) -> StatusResult:
         """The daemon's post-commit projection of one ``status`` result for an MCP bridge.
 
-        Measures the complete projected status, before result-delivery paging (#1139), whose
-        bounded pages ``tests/unit/application/test_result_delivery.py`` covers.
+        The frame carries the request body as the daemon's does. These closure-shaped reads send
+        no ``delivery=paged`` (#1139), so, like the bridge's own closure reads, they are not paged.
         """
 
         facts = await self.app.projection_binding_facts(ControlMethod.STATUS, body, internal)
@@ -211,7 +211,6 @@ class CodexStatusLedger:
             ),
             binding,
             internal,
-            _paginate=False,
         )
         assert type(projected) is StatusResult
         return projected

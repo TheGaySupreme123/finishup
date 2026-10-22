@@ -2041,7 +2041,16 @@ STATUS_DEFAULT_PAGE_LIMIT: Final = "20"
 
 class StatusRequestModel(PublicRequestModel):
     optional_non_null_fields = frozenset(
-        {"filter", "project_id", "task_id", "correlation_id", "detail", "limit", "delivery_cursor"}
+        {
+            "filter",
+            "project_id",
+            "task_id",
+            "correlation_id",
+            "detail",
+            "limit",
+            "delivery",
+            "delivery_cursor",
+        }
     )
 
     session_id: SessionIdWire
@@ -2072,6 +2081,10 @@ class StatusRequestModel(PublicRequestModel):
     # earlier body. The MCP tool asks for ``brief`` unless the agent names a detail.
     detail: Literal["brief", "full"] | None = None
     cursor: CursorWire | None = None
+    # Issue #1139: ``paged`` lets the service return an oversized result as ``delivery_page``s;
+    # absent or ``complete`` returns it whole. The MCP tool asks for ``paged`` unless the agent
+    # names a delivery; the bridge's own recovery and closure reads keep the complete result.
+    delivery: Literal["complete", "paged"] | None = None
     delivery_cursor: (
         Annotated[str, Field(min_length=1, max_length=4096, pattern=r"^[A-Za-z0-9_.-]+$")] | None
     ) = None
@@ -4555,7 +4568,8 @@ class DeliveryPageModel(_ClosedModel):
     total_items: Annotated[int, Field(ge=1)]
     truncated: Literal[True]
     complete: bool
-    budget_bytes: Literal[9000]
+    # The serialized budget this page was cut to (ADR-043); a bounded integer, not a constant.
+    budget_bytes: Annotated[int, Field(ge=1_024, le=1_048_576)]
     actionable_complete: bool
     inventory_read: JsonValue | None
     required_next_step: Annotated[str, Field(min_length=1, max_length=512)]

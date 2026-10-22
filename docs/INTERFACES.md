@@ -12245,10 +12245,15 @@ result pages are optional provenance. `inventory_read`, when present, names the 
 findings read or next inventory page. Inspect the original `suppressed_count`, receipt inventory
 limits, and `/page/next_cursor` separately: result delivery does not erase inventory pagination.
 
-`status-request` 1.3.0 adds `delivery_cursor`. Send it only with `view=compact`, the held session
-and writer and a fresh request ID, without other selectors, filter, frontier or inventory cursor.
-A cursor binds source selection, writer, session, sink, position and authorized content digest.
-Keep the same MCP channel or CLI JSON/terminal mode when continuing.
+`status-request` 1.3.0 adds `delivery` (`complete` or `paged`) and `delivery_cursor`. Only a
+`delivery=paged` status read may come back as pages; absent or `complete` returns the whole result,
+as 1.2.0 did. The MCP `status` tool sends `paged` unless the agent names `delivery`; the bridge's
+closure inventory and write-recovery probes send none. An agent's MCP check and receipt may page;
+CLI output, the native TUI, owner exports and `view=operation` never do. Send `delivery_cursor`
+only with `view=compact`, the held session and writer and a fresh request ID, without other
+selectors, filter, frontier or inventory cursor. A cursor binds source selection, writer, session
+(by its signature), sink, position and authorized content digest, and freezes the status read's
+live fields (head frontier, projection lag, import status, rebuild state, credential heuristic).
 The original complete operation is read without running it again, and disclosure runs again for
 the current reader. Every page therefore carries its own read's `privacy_projection`, never paged
 as `items` and outside the content digest; reconstruction uses the final page's projection. Past
@@ -12257,8 +12262,10 @@ as `items` and outside the content digest; reconstruction uses the final page's 
 recover through current status/findings without creating a new review. Missing source, altered
 binding or changed authorized content is a bounded `INVALID_REQUEST`; it does not authorize a new review or downgrade required review.
 
-The service creates these pages before MCP or CLI rendering. The shared 9,000-byte budget counts
-UTF-8 JSON, escaping, both MCP result channels and JSON-RPC framing. Action fields precede bulk
+The service creates these pages before MCP rendering. The budget is 12,000 bytes, Codex's
+structured window and the tightest recorded host limit, for the larger channel a host reads (the
+structured JSON or the text) plus a 64-byte header allowance, never the sum of both;
+`budget_bytes` on each page names it. Action fields precede bulk
 provenance. No field is cut silently. The retained original operation and receipt document keep
 their identity and existing retention/redaction policy. The native TUI retains its full local
 view, as do authenticated owner exports bound to their exact approved request. Hook text points

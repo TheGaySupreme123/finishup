@@ -29,6 +29,20 @@ _ATOM_BYTES: Final = 1_400
 # size its omitted pointers coalesce to containing fields (ADR-009's rule past the 512-pointer
 # bound), so a long omission list still leaves room for full-size atoms.
 _PROJECTION_BYTES: Final = 1_024
+# Live status fields a later page read would see change; the cursor freezes the first read's.
+_STATUS_LIVE_FIELDS: Final = (
+    "head_frontier",
+    "projection_lag",
+    "import_status",
+    "rebuild_state",
+    "credential_heuristic",
+)
+_REQUIRED_NEXT_STEP: Final = (
+    "Until actionable_complete=true, call status view=compact delivery_cursor=next_cursor with "
+    "the same session_id/writer_id. Rebuild containers and fragments (path, offsets, digest) "
+    "before acting; then follow agent_next and inventory_read. Later pages are optional "
+    "provenance. AI-powered review is advisory, not proof."
+)
 _ACTION_KEYS: Final = (
     "finding_id",
     "kind",
@@ -83,10 +97,22 @@ def _b64(value: bytes) -> str:
     return base64.urlsafe_b64encode(value).decode("ascii").rstrip("=")
 
 
+def _cursor_mac(key: bytes, data: bytes, position: bytes, session_id: str, writer_id: str) -> bytes:
+    # The held session and writer are bound by the signature, not repeated in the cursor body.
+    bound = b"\0".join((data, position, session_id.encode("ascii"), writer_id.encode("ascii")))
+    return hmac.new(key, _CURSOR_DOMAIN + bound, hashlib.sha256).digest()
+
+
 def encode_cursor(key: bytes, body: Mapping[str, JsonValue]) -> str:
     position = str(body["position"]).encode("ascii")
-    data = zlib.compress(canonical_encode({k: v for k, v in body.items() if k != "position"}))
-    signature = hmac.new(key, _CURSOR_DOMAIN + data + b"\0" + position, hashlib.sha256).digest()
+    data = zlib.compress(
+        canonical_encode(
+            {k: v for k, v in body.items() if k not in {"position", "session_id", "writer_id"}}
+        )
+    )
+    signature = _cursor_mac(
+        key, data, position, cast(str, body["session_id"]), cast(str, body["writer_id"])
+    )
     result = _b64(data) + "." + position.decode() + "." + _b64(signature)
     if len(key) < 32 or len(result) > 4096:
         raise ValueError("result_delivery_cursor_capacity")
@@ -106,10 +132,7 @@ def decode_cursor(key: bytes, cursor: str, session_id: str, writer_id: str) -> d
         data = base64.urlsafe_b64decode(body + "=" * (-len(body) % 4))
         signed = base64.urlsafe_b64decode(signature + "=" * (-len(signature) % 4))
         if len(key) < 32 or not hmac.compare_digest(
-            signed,
-            hmac.new(
-                key, _CURSOR_DOMAIN + data + b"\0" + position.encode(), hashlib.sha256
-            ).digest(),
+            signed, _cursor_mac(key, data, position.encode(), session_id, writer_id)
         ):
             raise ValueError("signature")
         decoder = zlib.decompressobj()
@@ -122,14 +145,15 @@ def decode_cursor(key: bytes, cursor: str, session_id: str, writer_id: str) -> d
         value["position"] = int(position)
         if (
             value.get("v") != "1"
-            or value.get("session_id") != session_id
-            or value.get("writer_id") != writer_id
+            or "session_id" in value
+            or "writer_id" in value
             or value.get("method") not in {"check", "receipt", "status"}
             or type(value.get("position")) is not int
             or value["position"] < 1
             or not isinstance(value.get("selector"), dict)
         ):
             raise ValueError("binding")
+        value["session_id"], value["writer_id"] = session_id, writer_id
         return value
     except (KeyError, TypeError, ValueError, zlib.error) as exc:
         raise invalid_cursor() from exc
@@ -329,13 +353,11 @@ def page_result(
         if snapshot is None:
             selector = {
                 **selector,
-                "_delivery_snapshot": {
-                    k: source[k] for k in ("head_frontier", "projection_lag") if k in source
-                },
+                "_delivery_snapshot": {k: source[k] for k in _STATUS_LIVE_FIELDS if k in source},
             }
         elif isinstance(snapshot, Mapping):
-            # The source is a frozen status result. A subsequent append must not replace its
-            # head watermark or lag while the cursor is still reading that original result.
+            # The source is a frozen status result. A subsequent append or a finished import must
+            # not replace its live watermarks while the cursor is still reading that result.
             source = {**source, **dict(snapshot)}
         else:
             raise invalid_cursor()
@@ -375,11 +397,7 @@ def page_result(
         "complete": False,
         "actionable_complete": False,
         "budget_bytes": HOST_RESULT_BUDGET_BYTES,
-        "required_next_step": "Until actionable_complete=true, call status view=compact with "
-        "delivery_cursor=next_cursor and the same session_id/writer_id. Rebuild marked containers; reassemble fragments "
-        "by path, offsets and digest before acting. Then follow agent_next/overall_next and "
-        "inventory_read if present. After actionable_complete, next_cursor reads optional bulk "
-        "provenance. AI-powered review fields are advisory, model-derived, not independent proof.",
+        "required_next_step": _REQUIRED_NEXT_STEP,
         "inventory_read": (
             {
                 "view": "findings",

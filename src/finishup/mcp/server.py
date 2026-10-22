@@ -3284,6 +3284,10 @@ async def dispatch_status(
     # and keep the full body.
     if "detail" not in arguments:
         arguments = {**arguments, "detail": "brief"}
+    # Issue #1139: an agent's read may arrive as delivery pages when it would pass the host's
+    # result budget; the bridge's own recovery and closure reads keep complete results.
+    if "delivery" not in arguments:
+        arguments = {**arguments, "delivery": "paged"}
     return await _dispatch(
         arguments,
         StatusRequest,
@@ -3976,10 +3980,15 @@ def _with_status_streak_nudge(
             # it stays first and the nudge follows it as its own block.
             content.append(types.TextContent(type="text", text=nudge))
         updated = result.model_copy(update={"content": content})
-        if (
-            _serialized_mcp_result_bytes(updated, transport_request_id="x" * 128)
-            > HOST_RESULT_BUDGET_BYTES
-        ):
+
+        def text_of(blocks: list[types.ContentBlock]) -> str:
+            return "\n".join(block.text for block in blocks if isinstance(block, types.TextContent))
+
+        structured = cast(Mapping[str, JsonValue], wire)
+        before = mcp_delivery_bytes(structured, text=text_of(list(result.content)))
+        after = mcp_delivery_bytes(structured, text=text_of(content))
+        if after > HOST_RESULT_BUDGET_BYTES and after > before:
+            # The advisory line never pushes the text channel past the result budget.
             return result
         return updated
     except Exception:  # noqa: BLE001 - the nudge is advisory text; the served result stands

@@ -3454,53 +3454,72 @@ class Application:
             ):
                 raise AssertionError("review_projection_identity_invalid")
         public = _public_model(method, complete)
-        # Hooks consume structural status and have their own bounded, typed
-        # continuation. The native TUI has no model context clip and retains its complete view.
+        body = self._result_delivery_body(context, binding, method, source) if _paginate else None
+        if body is None or mcp_delivery_bytes(complete) <= HOST_RESULT_BUDGET_BYTES:
+            return public
+        # The continuation request supplies the envelope and the held session and writer.
+        excluded = {
+            "actor",
+            "client",
+            "protocol_version",
+            "schema_version",
+            "session_id",
+            "writer_id",
+        }
+        selector = (
+            {"request_id": source["request_id"]}
+            if method is ControlMethod.CHECK
+            else {k: v for k, v in body.items() if k not in excluded}
+        )
+        if method is ControlMethod.STATUS:
+            # A brief body omits requested_frontier when it equals result_frontier.
+            requested = source.get("requested_frontier", source["result_frontier"])
+            selector["at_frontier"] = cast(dict[str, JsonValue], requested)["sequence"]
+        paged = page_result(
+            complete,
+            key=self.status_cursor_key,
+            method=method.value,
+            selector=selector,
+            writer_id=cast(str, body["writer_id"]),
+            sink=sink.value,
+        )
+        model = {
+            ControlMethod.CHECK: CheckResultModel,
+            ControlMethod.RECEIPT: ReceiptResultModel,
+            ControlMethod.STATUS: StatusResultModel,
+        }[method]
+        return model.model_validate(paged)
+
+    @staticmethod
+    def _result_delivery_body(
+        context: ClientProjectionContext,
+        binding: ControlProjectionBinding,
+        method: ControlMethod,
+        source: Mapping[str, JsonValue],
+    ) -> dict[str, JsonValue] | None:
+        """The request body of a result that may become pages, else ``None`` (#1139).
+
+        Only an agent's own MCP check, receipt, or ``delivery=paged`` status read is paged.
+        Terminals (CLI), the native TUI and owner exports have no model context clip. The
+        bridge's recovery probes and closure inventory read status without ``delivery=paged``
+        and keep the complete result, as does the live, structural ``view=operation`` read.
+        """
+        if context.client_kind is not ControlClientKind.MCP_BRIDGE or context.owner_view:
+            return None
+        control = strict_json_parse(binding.control_request_canonical)
+        body = control.get("body") if isinstance(control, dict) else None
+        if not isinstance(body, dict):
+            return None
         pageable = (
             method is ControlMethod.RECEIPT
-            or method is ControlMethod.CHECK
-            and source.get("state") == "complete"
-            or method is ControlMethod.STATUS
-            and (
-                context.client_kind is ControlClientKind.MCP_BRIDGE
-                or source.get("view") == "findings"
+            or (method is ControlMethod.CHECK and source.get("state") == "complete")
+            or (
+                method is ControlMethod.STATUS
+                and source.get("view") != "operation"
+                and body.get("delivery") == "paged"
             )
         )
-        if (
-            _paginate
-            and pageable
-            and context.client_kind is not ControlClientKind.UI
-            and not context.owner_view
-            and mcp_delivery_bytes(complete) > HOST_RESULT_BUDGET_BYTES
-        ):
-            control = strict_json_parse(binding.control_request_canonical)
-            body = cast(dict[str, JsonValue], cast(dict[str, JsonValue], control)["body"])
-            excluded = {"actor", "client", "protocol_version", "schema_version"}
-            selector = (
-                {"request_id": source["request_id"]}
-                if method is ControlMethod.CHECK
-                else {k: v for k, v in body.items() if k not in excluded}
-            )
-            if method is ControlMethod.STATUS:
-                selector["at_frontier"] = cast(dict[str, JsonValue], source["requested_frontier"])[
-                    "sequence"
-                ]
-            writer_id = cast(str, body["writer_id"])
-            paged = page_result(
-                complete,
-                key=self.status_cursor_key,
-                method=method.value,
-                selector=selector,
-                writer_id=writer_id,
-                sink=sink.value,
-            )
-            model = {
-                ControlMethod.CHECK: CheckResultModel,
-                ControlMethod.RECEIPT: ReceiptResultModel,
-                ControlMethod.STATUS: StatusResultModel,
-            }[method]
-            return model.model_validate(paged)
-        return public
+        return body if pageable else None
 
     async def close(self) -> None:
         async with self._close_lock:

@@ -919,7 +919,6 @@ async def test_obligation_acceptance_criteria_policy_omission_is_distinct(view: 
             }
         ),
     )
-    # The complete projected field, before result-delivery paging (#1139) of an oversized read.
     projected = public_model_to_wire(
         await app.project_result_for_client(
             ClientProjectionContext(
@@ -927,7 +926,6 @@ async def test_obligation_acceptance_criteria_policy_omission_is_distinct(view: 
             ),
             binding,
             status,
-            _paginate=False,
         )
     )
     assert projected["ok"] is True

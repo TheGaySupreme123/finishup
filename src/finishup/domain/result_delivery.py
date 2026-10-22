@@ -10,32 +10,23 @@ from finishup.protocol.canonical import JsonValue, canonical_digest, canonical_e
 if TYPE_CHECKING:
     from finishup.protocol.models import StatusRequest, StatusResult
 
-# Codex 0.159's fallback is bytes(10_000), with a 1.2 serialization allowance:
-# 12,000 bytes including its header (tests/unit/mcp/test_codex_structured_head.py).
-# Count BOTH MCP channels and their escaping, leaving at least 3,000 bytes of margin.
-HOST_RESULT_BUDGET_BYTES: Final = 9_000
+# Hosts read one channel each (ADR-043 result-delivery amendment). Codex 0.159 shows a model only
+# ``serde_json(structuredContent)`` behind a ``Wall time`` header, cut to a 12,000-byte head/tail
+# window for a slug missing from its bundled models.json (gpt-6.1-sol at that tag;
+# tests/unit/mcp/test_codex_structured_head.py). Cursor reads the canonical JSON text copy and has
+# no documented limit; Claude Code reads both channels and its MCP output limit is far above these
+# sizes. Budget the larger channel plus a header allowance, never the sum of channels: Codex's
+# "Wall time: N seconds\nOutput:\n" header is 35 bytes, and under 40 for any run below a day.
+CODEX_FALLBACK_WINDOW_BYTES: Final = 12_000
+HOST_FRAMING_BYTES: Final = 64
+HOST_RESULT_BUDGET_BYTES: Final = CODEX_FALLBACK_WINDOW_BYTES
 
 
 def mcp_delivery_bytes(wire: Mapping[str, JsonValue], *, text: str | None = None) -> int:
-    """Count canonical text plus structured content, or the actual supplied text channel."""
-    return len(
-        canonical_encode(
-            {
-                "jsonrpc": "2.0",
-                "id": "x" * 128,
-                "result": {
-                    "content": [
-                        {
-                            "type": "text",
-                            "text": canonical_encode(dict(wire)).decode() if text is None else text,
-                        }
-                    ],
-                    "structuredContent": dict(wire),
-                    "isError": False,
-                },
-            }
-        )
-    )
+    """The larger MCP channel a host reads (structured JSON or the text) plus framing."""
+    structured = len(canonical_encode(dict(wire)))
+    channel = structured if text is None else max(structured, len(text.encode("utf-8")))
+    return channel + HOST_FRAMING_BYTES
 
 
 def reassemble_delivery(pages: Sequence[Mapping[str, Any]]) -> dict[str, JsonValue]:
@@ -96,7 +87,8 @@ def reassemble_delivery(pages: Sequence[Mapping[str, Any]]) -> dict[str, JsonVal
                 if (
                     not path.startswith("/")
                     or path in seen
-                    or path.split("/")[1] == "privacy_projection"
+                    # Outside the content digest, so never verifiable as items.
+                    or path.split("/")[1] in {"privacy_projection", "review_delivery"}
                 ):
                     raise ValueError("result_delivery_invalid")
                 fragment = item.get("fragment")
