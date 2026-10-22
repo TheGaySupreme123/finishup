@@ -13,6 +13,7 @@ committing first (a call made alone), then read the task facts back.
 from __future__ import annotations
 
 import json
+from pathlib import Path
 from typing import cast
 
 import pytest
@@ -83,6 +84,12 @@ async def _facts(replay: Replay, *, workdir: object, row_first: bool) -> tuple[s
     _hook(replay, "PreToolUse")
     if not row_first:
         replay.append(_call_row(workdir))
+    # A successful write must change the actual workspace fingerprint, not only the trace.
+    directory = Path(workdir) if isinstance(workdir, str) else replay.workspace
+    if not directory.is_absolute():
+        directory = replay.workspace / directory
+    directory.mkdir(parents=True, exist_ok=True)
+    (directory / "README.md").write_text("# Usage\n")
     replay.append(_output_row())
     _hook(replay, "PostToolUse")
     replay.hook("Stop", stop_hook_active=False)

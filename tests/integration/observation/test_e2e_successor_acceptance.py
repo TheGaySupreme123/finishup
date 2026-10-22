@@ -613,8 +613,10 @@ async def test_advice_finding_materialization_passes_real_ledger_validation(tmp_
     )
     after_repeat = [row async for row in ledger.load_events(seed.session_id)]
 
-    assert len(after_repeat) == len(before_repeat)
-    assert sum(row.schema.name == "finding_recorded" for row in after_repeat) == 1
+    # The revision names a different failed call, so #1165 gives it a separate concern
+    # rather than reusing the earlier lifecycle-backed condition's finding identity.
+    assert len(after_repeat) == len(before_repeat) + 1
+    assert sum(row.schema.name == "finding_recorded" for row in after_repeat) == 2
 
 
 def test_untrusted_workspace_dot_does_not_bind_without_consent(

@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import json
 import os
+from pathlib import Path
 from typing import cast
 
 import pytest
@@ -264,6 +265,7 @@ async def _parallel_codes(
     prior: str | None,
     workdir: object = "/app",
     cwd: str | None = None,
+    writes: dict[str, Path] | None = None,
 ) -> tuple[tuple[str, ...], list[str]]:
     """Run parallel Codex calls in either order; the task facts and the shell action texts.
 
@@ -284,6 +286,9 @@ async def _parallel_codes(
         _command_hook(replay, "PreToolUse", call_id, command, cwd=cwd)
     if not stream_first:
         replay.append(*rows)
+    for path in (writes or {}).values():
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("x = 1\n")
     replay.append(
         *(
             _output_row(call_id, index, "Process exited with code 0")
@@ -393,6 +398,10 @@ async def test_a_stream_defined_call_carries_the_hooks_write_and_install_facts(
         (("call_n7_ls", "ls src"), ("call_n7_write", filled)),
         stream_first=stream_first,
         prior="pytest -q",
+        workdir=str(replay.workspace),
+        writes={"call_n7_write": replay.workspace / "src/x.py"}
+        if code == EDITED_AFTER_LAST_VERIFICATION_GAP
+        else None,
     )
     assert code in codes, codes
 
@@ -421,6 +430,7 @@ async def test_a_call_with_no_workdir_is_placed_in_the_session_cwd_in_either_ord
         prior="pytest -q",
         workdir=_NO_WORKDIR,
         cwd=str(cwd),
+        writes={"call_n7_readme": cwd / "README.md"},
     )
     if not stream_first:
         scope = "workspace"  # the hook fired before its row was written: unplaced
