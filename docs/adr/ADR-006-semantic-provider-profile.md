@@ -3101,8 +3101,11 @@ digest are unchanged. An exchange history admits 17 messages (#1173).
 beside the longer of the two repair texts. The exchange that carries the notice, and a repair after
 it, therefore still fit the cap. Ceiling planning keeps an 8 KiB frame in the first exchange, but a
 first exchange it could not plan may sit inside the room the notices need. In that rare case the
-loop leaves the notice out and sends the read-free schema instead: a cache miss on that turn,
-never a refused review. An exchange that outgrows the cap is still refused whole, never trimmed.
+loop leaves the notice out, so the notice never pushes that exchange over the cap. Only a
+malformed first answer reaches that state, so the repair note already asks for the judgment and
+the turn is read-free because the repair is spent. A first exchange that leaves less room than the
+repair note itself still ends `case_capacity_exceeded`, as before. An exchange that outgrows the
+cap is still refused whole, never trimmed.
 The reviewer path still refuses Codex compaction (it would replace history FinishUP inspected and
 disclosed). The exchange budget keeps every exchange below Codex's auto-compact threshold with its
 estimation margin, and the #1172 telemetry labels a compaction if one ever occurs.
@@ -3112,9 +3115,12 @@ effort because one budget profile serves a check, and the tools because Codex re
 the APIs send none. The schema is constant too, except on the last exchange above. The telemetry's
 settings digest flags any change.
 
-**Effect.** A three-read review whose final turn needs no repair now reuses that turn's whole
-prefix: projected from the pilot, with linear turn growth, about 74% of its input cached instead of
-about 50%. A review that spends its repair in the final phase still misses its last exchange, as
-every final turn did before; the per-exchange records show how often. No turn, request or wait is
-added; the notice is a few dozen tokens. No wire schema, decoder, privacy rule or egress changes:
-every exchange is still admitted whole.
+**Effect.** A three-read review that spends no repair now reuses its final turn's whole prefix:
+projected from the pilot, with linear turn growth, about 74% of its input cached instead of about
+50%. A review that spends its repair sends the read-free schema on its final-phase turns, so the
+repair turn, or a final turn after an earlier repair, misses the cache. Before #1173 only a final
+turn forced by the end of reads was read-free; a judgment given while reads remained kept the full
+schema. A model that answers the final turn with its judgment adds no turn, request or wait. A
+late read there costs one extra exchange, its repair, uncached because its schema changes; the
+per-exchange records show how often. The notice is a few dozen tokens. No wire schema, decoder,
+privacy rule or egress changes: every exchange is still admitted whole.

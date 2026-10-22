@@ -13,8 +13,9 @@ owner diagnostic, read with `finishup service diagnostics --request-id`. It depe
 review provider, not the agent host, adds no request or egress, and never changes a review
 outcome. See [the exchange contract](../INTERFACES.md#reviewer-completion-exchanges-issue-1118-unit-3-adr-006).
 The reviewer also keeps its reply schema through a review's normal final turn and announces that
-turn with a short appended notice, so the provider can reuse the conversation from its cache; only
-a final-phase repair turn changes the schema (one cache miss). No host change.
+turn with a short appended notice, so the provider can reuse the conversation from its cache. Only
+the final-phase repair turn, or a final turn after the review's one repair is spent, changes the
+schema (one cache miss). No host change.
 
 MCP input advertisements use the shared compact authoring schema, targeting 4,800 bytes per tool.
 Required fields, enums and event envelopes remain inline; read `read_guidance` at

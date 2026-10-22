@@ -617,9 +617,11 @@ async def test_the_notice_follows_when_the_read_room_runs_out() -> None:
 
 
 @pytest.mark.anyio
-async def test_a_notice_without_room_is_left_out_for_the_read_free_schema() -> None:
+async def test_a_notice_without_room_is_left_out() -> None:
     """A first exchange admitted inside the notices' frame leaves no room for one (#1172): the
-    read-free schema ends the reads instead, rather than an exchange that outgrows the cap."""
+    loop leaves it out, so it never pushes that exchange over the cap. Only a malformed first
+    answer reaches that state, so the repair note asks for the judgment and the turn is
+    read-free."""
 
     loop, broker, model, _ = _setup({"reply": {}}, _FINAL)
 

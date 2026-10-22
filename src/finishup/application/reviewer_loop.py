@@ -35,7 +35,7 @@ and any final-phase turn after the review's one repair is spent, send the read-f
 route that enforces it can only return the judgment. A repair note never offers a read when the
 next turn is final. A review whose first turn offers no read sends the read-free schema on every
 turn and gets no notice. When the next exchange has no room left for the notice (only a first
-exchange admitted inside the frame the notices need), the read-free schema replaces it. A second
+exchange admitted inside the frame the notices need), the loop leaves it out. A second
 malformed reply, a read after the repair or in a review that never offered one (only a route that
 does not enforce the schema returns one), a revoked binding, a lost lease or the deadline ends the
 review incomplete. Every model turn, the repair and every read is a durable job step, reserved
@@ -144,7 +144,7 @@ class ReviewerLoop:
         """Query the model and run its one read until the final judgment or an exit."""
         self.messages = [Turn("system", self.instruction), Turn("user", self.packet)]
         repaired = False
-        final_phase = narrowed = False
+        final_phase = False
         offered: bool | None = None
         try:
             usage = await self.store.usage()
@@ -165,22 +165,21 @@ class ReviewerLoop:
                     # A review that never offers a read (ask-every-time, or a first turn already
                     # inside the final reserve) keeps the read-free schema on every turn.
                     offered = reads
-                if offered and not reads and not final_phase:
-                    final_phase = True
-                    if self.broker.notice_fits():
-                        self.messages.append(Turn("user", FINAL_PHASE))
-                    else:
-                        # No room left for the notice (a first exchange admitted inside the frame
-                        # the notices need): the read-free schema says it instead, at the cost of
-                        # this turn's cache reuse, never of the review (#1172).
-                        narrowed = True
                 # The provider caches the schema with the conversation (#1172), so a review that
                 # started with reads keeps the full one while a late read can still be repaired.
                 # Once its one repair is spent (the repair turn itself included), the final phase
                 # sends the read-free schema: one cache miss, never a review ended by a read.
                 schema = reviewer_reply_schema(
-                    reads_allowed=offered and not narrowed and (reads or not repaired), strict=True
+                    reads_allowed=offered and (reads or not repaired), strict=True
                 )
+                if offered and not reads and not final_phase:
+                    # No room left for the notice (a first exchange admitted inside the frame the
+                    # notices need) leaves it out, so it never pushes that exchange over the cap
+                    # (#1172). That state is reached only after a malformed first answer, so the
+                    # repair note already asks for the judgment and the turn is read-free.
+                    if self.broker.notice_fits():
+                        self.messages.append(Turn("user", FINAL_PHASE))
+                    final_phase = True
                 self.n_calls = turn = self.n_calls + 1
                 if not (resumed and turn == 1):
                     await self.store.reserve("turn", turn, b"turn" if reads else b"final")
