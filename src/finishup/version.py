@@ -128,8 +128,9 @@ _RESOURCE_LIMIT: Final = 4_194_304
 # +1 canonical reviewer-record case (REV-001). #1122/#1123: +2 schemas (host-connection-batch
 # 1.0.0, ai-status 1.0.0) and +1 canonical host-connection-batch case. #1118: +1 runtime config
 # (the reviewer's derived Codex 0.162.1 model catalog), +1 schema (privacy-policy 1.3.0).
+# #1173: +1 bundle migration (0018, reviewer read-attempt bounds).
 # #1139: +4 lossless result-delivery schemas.
-REVIEWED_RESOURCE_COUNT: Final = 332
+REVIEWED_RESOURCE_COUNT: Final = 333
 _RESOURCE_KINDS: Final = frozenset(
     {
         "canonical_vector",

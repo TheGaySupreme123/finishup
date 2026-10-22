@@ -585,6 +585,7 @@ _INVENTORY_ENTRIES: Final[tuple[tuple[str, str, str, bool], ...]] = (
     ("migrations/bundle/0015.sql", "migration", "application/sql", True),
     ("migrations/bundle/0016.sql", "migration", "application/sql", True),
     ("migrations/bundle/0017.sql", "migration", "application/sql", True),
+    ("migrations/bundle/0018.sql", "migration", "application/sql", True),
     ("migrations/catalog/0001.sql", "migration", "application/sql", True),
     ("migrations/catalog/0002.sql", "migration", "application/sql", True),
     ("migrations/catalog/0003.sql", "migration", "application/sql", True),

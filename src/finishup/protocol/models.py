@@ -2725,16 +2725,34 @@ class ReadPacketSectionArgsModel(_ReviewerArgsModel):
         "agent_account",
         "prior_findings",
         "timeline",
-    ]
-    item_ref: _ReviewerRef
-    offset: Annotated[int, Field(ge=0, le=4_194_304)]
+    ] = Field(
+        description="Packet section: excerpt -> excerpts; goal/obligation/claim/decision -> "
+        "agent_account; deterministic_summary/detail -> deterministic_findings."
+    )
+    item_ref: _ReviewerRef = Field(
+        description="Exact catalog item_id, not source_ref. "
+        "Example: item_ref=goal-1, section=agent_account, offset=0."
+    )
+    offset: Annotated[int, Field(ge=0, le=4_194_304)] = Field(
+        description="UTF-8 byte offset into retained item content; start at 0."
+    )
 
 
 class ReadLedgerArgsModel(_ReviewerArgsModel):
-    view: Literal["findings", "observations", "claims", "plan", "obligations", "command_output"]
+    view: Literal["findings", "observations", "claims", "plan", "obligations", "command_output"] = (
+        Field(
+            description="Frozen record kind, not a live ledger query: plan=goal, command_output=command/test/failure."
+        )
+    )
     refs: Annotated[
         tuple[_ReviewerRef, ...],
-        Field(min_length=1, max_length=4, json_schema_extra={"uniqueItems": True}),
+        Field(
+            min_length=1,
+            max_length=4,
+            json_schema_extra={"uniqueItems": True},
+            description="Catalog source_ref or linked_subject_refs, not item_id. "
+            "Example: view=claims, refs=[a claim's catalog source_ref], cursor=null.",
+        ),
     ]
     cursor: _ReviewerCursor
 
@@ -2745,16 +2763,26 @@ class ReadLedgerArgsModel(_ReviewerArgsModel):
 
 
 class ReadFileTextArgsModel(_ReviewerArgsModel):
-    root_id: Annotated[str, Field(min_length=1, max_length=32)]
-    path: Annotated[str, Field(min_length=1, max_length=512)]
+    root_id: Annotated[str, Field(min_length=1, max_length=32)] = Field(
+        description="Service-issued read_file_roots alias, e.g. w1; never a filesystem root."
+    )
+    path: Annotated[str, Field(min_length=1, max_length=512)] = Field(
+        description="Relative path beneath root_id only, as the packet or a listing names it. "
+        "Absolute, hidden, ignored and traversing paths are refused."
+    )
     mode: Literal["text"]
     start_line: Annotated[int, Field(ge=1, le=1_000_000)]
     line_count: Annotated[int, Field(ge=1, le=200)]
 
 
 class ReadFileListArgsModel(_ReviewerArgsModel):
-    root_id: Annotated[str, Field(min_length=1, max_length=32)]
-    path: Annotated[str, Field(min_length=1, max_length=512)]
+    root_id: Annotated[str, Field(min_length=1, max_length=32)] = Field(
+        description="Service-issued read_file_roots alias, e.g. w1; never a filesystem root."
+    )
+    path: Annotated[str, Field(min_length=1, max_length=512)] = Field(
+        description="Relative directory beneath root_id; path=. lists the root. A listing that "
+        "returns names spends a content read. Example: root_id=w1, path=., mode=list, cursor=null."
+    )
     mode: Literal["list"]
     cursor: _ReviewerCursor
     max_entries: Annotated[int, Field(ge=1, le=32)] = 32
@@ -4287,7 +4315,7 @@ _ReviewerCountWire = Annotated[str, Field(max_length=6, pattern=r"^(0|[1-9][0-9]
 class ReviewerReadModel(_ClosedModel):
     """#1118: one read the reviewer asked for and what the service sent back. Never a path."""
 
-    call: Literal["1", "2", "3"]
+    call: Literal["1", "2", "3", "4", "5"]
     action: Literal["read_packet_section", "read_ledger", "read_file"]
     status: Literal["ok", "partial", "unavailable", "denied", "stale"]
     reason: _ReviewerTokenWire | None
@@ -4324,7 +4352,7 @@ class ReviewerRecordModel(_ClosedModel):
     exchanges: _ReviewerCountWire
     reads_used: Literal["0", "1", "2", "3"]
     read_bytes: _ReviewerCountWire
-    reads: tuple[ReviewerReadModel, ...] = Field(max_length=3)
+    reads: tuple[ReviewerReadModel, ...] = Field(max_length=5)
     ended: _ReviewerTokenWire | None
     cleanup: _ReviewerTokenWire | None
 

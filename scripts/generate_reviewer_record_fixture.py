@@ -108,6 +108,35 @@ def _vectors() -> tuple[dict[str, JsonValue], ...]:
             },
         ),
         (
+            "final_after_two_refusals_and_three_content_reads",
+            {
+                "cleanup": "terminated",
+                "ended": None,
+                "exchanges": "7",
+                "read_bytes": "3525",
+                "reads_used": "3",
+                "reads": [
+                    {
+                        **read,
+                        "call": str(n),
+                        **(
+                            {
+                                "status": "denied",
+                                "reason": "forbidden_path",
+                                "standing": None,
+                                "root": None,
+                                "baseline": None,
+                                "lines": None,
+                            }
+                            if n in (1, 2)
+                            else {}
+                        ),
+                    }
+                    for n in range(1, 6)
+                ],
+            },
+        ),
+        (
             "incomplete_without_reads",
             {
                 "cleanup": None,

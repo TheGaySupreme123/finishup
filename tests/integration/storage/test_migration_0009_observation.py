@@ -119,6 +119,7 @@ def test_schema_eight_upgrade_preserves_rows_and_admits_every_source() -> None:
         "0015",
         "0016",
         "0017",
+        "0018",
     )
     assert db.execute("PRAGMA user_version").fetchone() == (
         current_schema_version(BUNDLE_MIGRATIONS),
