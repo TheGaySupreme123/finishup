@@ -55,6 +55,7 @@ from finishup.adapters.providers.openai_responses import (
     JudgmentValidationError,
     normalize_judgment,
 )
+from finishup.adapters.providers.reviewer_cache_telemetry import record_exchange_cache
 from finishup.adapters.providers.reviewer_reply import REVIEWER_REPLY_SCHEMAS
 from finishup.config.models import (
     CODEX_FINAL_OUTPUT_LIMIT_DEFAULT,
@@ -77,6 +78,7 @@ from finishup.domain.privacy import (
     ProviderDataUseProfile,
     RequestCommitment,
 )
+from finishup.domain.reviewer_cache import ExchangeCacheUsage
 from finishup.observability.logging import (
     record_bounded_counts_without_raising,
     record_bounded_event_without_raising,
@@ -1961,10 +1963,12 @@ def _notification_item(
     )
 
 
-def _runtime_token_usage_from_notification(
+def _runtime_token_usages_from_notification(
     message: Mapping[str, object], *, thread_id: str, turn_id: str
-) -> RuntimeTokenUsage | None:
-    """Read one active-turn cumulative usage snapshot without retaining native payloads.
+) -> tuple[RuntimeTokenUsage, RuntimeTokenUsage] | None:
+    """Read one active-turn usage snapshot without retaining native payloads.
+
+    It returns the cumulative total, then the last model request's own breakdown.
 
     The app-server emits both ``last`` and cumulative ``total`` breakdowns. A fresh ephemeral
     reviewer thread has one active turn, and the cumulative snapshot is the only value that
@@ -2028,24 +2032,85 @@ def _runtime_token_usage_from_notification(
             raise ValueError("codex_app_server_token_usage_invalid")
         return parsed
 
-    # Validate both provider snapshots even though only the cumulative total is retained. This
-    # keeps the accepted event shape bounded while avoiding accidental use of ``last`` as a
-    # second aggregate that would double-count the same turn.
-    breakdown(usage["last"])
+    # Both provider snapshots are validated. Only the cumulative total is the attempt's usage;
+    # ``last`` is never a second aggregate (it would double-count the same turn). It is read only
+    # as the one model request that moved the total, for prompt-cache telemetry (#1172).
+    last = breakdown(usage["last"])
     total = breakdown(usage["total"])
     context_window = usage.get("modelContextWindow")
     if context_window is not None and (
         type(context_window) is not int or not 0 <= context_window <= 2**53 - 1
     ):
         raise ValueError("codex_app_server_token_usage_invalid")
-    return RuntimeTokenUsage(
-        input_tokens=total[0],
-        cached_input_tokens=total[1],
-        cache_write_input_tokens=total[2],
-        output_tokens=total[3],
-        reasoning_output_tokens=total[4],
-        total_tokens=total[5],
+
+    def usage_of(parsed: tuple[int, int, int, int, int, int]) -> RuntimeTokenUsage:
+        return RuntimeTokenUsage(
+            input_tokens=parsed[0],
+            cached_input_tokens=parsed[1],
+            cache_write_input_tokens=parsed[2],
+            output_tokens=parsed[3],
+            reasoning_output_tokens=parsed[4],
+            total_tokens=parsed[5],
+        )
+
+    return usage_of(total), usage_of(last)
+
+
+type _CacheCounters = tuple[int, int, int, int]  # input, cached input, cache-write input, output
+
+
+def _cache_counters(usage: RuntimeTokenUsage | None) -> _CacheCounters:
+    """A usage snapshot's prompt-cache counters; a thread that has reported nothing is at zero."""
+
+    if usage is None:
+        return (0, 0, 0, 0)
+    return (
+        usage.input_tokens,
+        usage.cached_input_tokens,
+        usage.cache_write_input_tokens,
+        usage.output_tokens,
     )
+
+
+def _start_before_request(
+    total: RuntimeTokenUsage, request: RuntimeTokenUsage
+) -> _CacheCounters | None:
+    """The thread's total before one reported request: its snapshot's ``total`` less its ``last``."""
+
+    end, own = _cache_counters(total), _cache_counters(request)
+    start = (end[0] - own[0], end[1] - own[1], end[2] - own[2], end[3] - own[3])
+    return start if min(start) >= 0 else None
+
+
+def _turn_cache_usage(
+    start: _CacheCounters | None,
+    after: RuntimeTokenUsage | None,
+    requests: int,
+    first_cached: int,
+    last_input: int,
+) -> ExchangeCacheUsage | None:
+    """One turn's usage: the thread's cumulative counters across it, or ``None`` if unknown.
+
+    ``start`` is the thread's total before the turn's requests, ``None`` when it is unknown.
+    ``first_cached`` and ``last_input`` come from the ``last`` breakdown of the snapshots whose
+    total grew, so a turn that made several model requests still names its first request's reuse.
+    """
+
+    if start is None or not requests or after is None:
+        return None
+    end = _cache_counters(after)
+    try:
+        return ExchangeCacheUsage(
+            input_tokens=end[0] - start[0],
+            cached_input_tokens=end[1] - start[1],
+            output_tokens=end[3] - start[3],
+            requests=requests,
+            first_cached_tokens=first_cached,
+            last_input_tokens=last_input,
+            cache_write_input_tokens=end[2] - start[2],
+        )
+    except ValueError:  # counters the runtime reported inconsistently are not recorded
+        return None
 
 
 class _CodexTurnFailure(Exception):
@@ -2400,6 +2465,9 @@ class _ReviewerThread:
     # The histories a next exchange may extend: the thread with its answer, and, after an answer
     # the loop's decoder rejected and left out of its history, the same thread before that answer.
     prefixes: tuple[tuple[ReviewerMessage, ...], ...]
+    # Whether ``token_usage`` is the thread's total after its last turn: that turn reported usage
+    # and none of it was refused. Only then can the next turn's own usage be told apart (#1172).
+    usage_current: bool
 
     async def aclose(self) -> str:
         return await _cleanup_guaranteed(self.runtime)
@@ -2472,6 +2540,15 @@ class CodexAppServerEvaluator:
         instructions = SEMANTIC_REVIEW_INSTRUCTION
         turn_texts: tuple[str, ...] | None = None
         turn_completed = False
+        # Prompt-cache telemetry (#1172): what this turn sent beside its messages, the model
+        # requests it made, the first one's cached input and the last one's input.
+        turn_settings: dict[str, JsonValue] | None = None
+        turn_start_usage: RuntimeTokenUsage | None = None
+        # The thread's total before this turn's first reported request: that snapshot's total less
+        # its own ``last``. It is the turn's start when the previous turn left no current total.
+        first_request_start: _CacheCounters | None = None
+        requests = first_cached = last_input = 0
+        compacted = usage_refused = False
         try:
             exchange = reviewer_exchange(case.media_type, case.payload, self.reply_schemas)
             if exchange is not None:
@@ -2567,21 +2644,27 @@ class CodexAppServerEvaluator:
                 else turn_texts
             )
             strict_json_parse(case.payload)
+            # Everything a turn sends beside its input. It stays the same on every turn of a
+            # review, so the provider can serve the thread's earlier context from its cache.
+            turn_settings = {
+                "approvalPolicy": "never",
+                "approvalsReviewer": "user",
+                "effort": budget.reasoning_effort,
+                "model": self.profile.model,
+                "outputSchema": output_schema,
+                "personality": "none",
+                "sandboxPolicy": {"type": "readOnly", "networkAccess": False},
+                "summary": "none",
+            }
+            turn_start_usage = token_usage
             case_disclosed = True
             events.wire_seen = getattr(runtime, "received_bytes", 0)
             turn_result = await runtime.request(
                 31 if exchange is None else 100 + len(exchange.history),
                 "turn/start",
                 {
-                    "approvalPolicy": "never",
-                    "approvalsReviewer": "user",
-                    "effort": budget.reasoning_effort,
+                    **turn_settings,
                     "input": [{"type": "text", "text": text} for text in case_texts],
-                    "model": self.profile.model,
-                    "outputSchema": output_schema,
-                    "personality": "none",
-                    "sandboxPolicy": {"type": "readOnly", "networkAccess": False},
-                    "summary": "none",
                     "threadId": thread_id,
                 },
                 _remaining(deadline, self.clock),
@@ -2609,6 +2692,8 @@ class CodexAppServerEvaluator:
                 if "method" in message and "id" in message:
                     _record_forbidden_event("codex_app_server_tool_request_forbidden", method)
                     raise ValueError("codex_app_server_tool_request_forbidden")
+                if method == "thread/compacted":
+                    compacted = True  # recorded even where the reviewer refuses it below
                 if (
                     type(method) is not str
                     or method not in _ALLOWED_NOTIFICATION_METHODS
@@ -2627,7 +2712,7 @@ class CodexAppServerEvaluator:
                     continue
                 if method == "thread/tokenUsage/updated":
                     try:
-                        observed_usage = _runtime_token_usage_from_notification(
+                        observed = _runtime_token_usages_from_notification(
                             message, thread_id=thread_id, turn_id=turn_id
                         )
                     except ValueError:
@@ -2635,8 +2720,12 @@ class CodexAppServerEvaluator:
                         # turn an otherwise valid AI-powered judgment into a provider failure, and
                         # it must not erase a valid earlier cumulative snapshot.
                         failure_stage = "token_usage_invalid"
+                        usage_refused = True
                     else:
-                        if observed_usage is not None:
+                        observed_usage, request_usage = (
+                            (None, None) if observed is None else observed
+                        )
+                        if observed_usage is not None and request_usage is not None:
                             # ``total`` is cumulative for the isolated thread. Replace the
                             # snapshot instead of summing repeated updates or adding ``last``.
                             if token_usage is not None and any(
@@ -2662,7 +2751,20 @@ class CodexAppServerEvaluator:
                                 )
                             ):
                                 failure_stage = "token_usage_invalid"
+                                usage_refused = True
                             else:
+                                if observed_usage.input_tokens > (
+                                    0 if token_usage is None else token_usage.input_tokens
+                                ):
+                                    # A total that grew is one more model request; a repeated
+                                    # snapshot (a rate-limit refresh) is not.
+                                    requests += 1
+                                    if requests == 1:
+                                        first_cached = request_usage.cached_input_tokens
+                                        first_request_start = _start_before_request(
+                                            observed_usage, request_usage
+                                        )
+                                    last_input = request_usage.input_tokens
                                 token_usage = observed_usage
                                 if _visible_output_tokens(token_usage) > budget.output_limit:
                                     # The app-server protocol has no per-turn output ceiling, so
@@ -2683,6 +2785,7 @@ class CodexAppServerEvaluator:
                     )
                 if method in {"item/started", "item/completed"}:
                     item_type, text, phase = _notification_item(message)
+                    compacted = compacted or item_type == "contextCompaction"
                     if item_type not in _ALLOWED_ITEM_TYPES:
                         _record_forbidden_event(
                             "codex_app_server_tool_event_forbidden", method, item_type
@@ -2760,7 +2863,14 @@ class CodexAppServerEvaluator:
                     answer = ("assistant", canonical_encode(reply).decode())
                     prefixes = ((*exchange.history, answer), exchange.history)
                 session.held = _ReviewerThread(
-                    self.profile, runtime, thread_id, auth_mode, plan_type, token_usage, prefixes
+                    self.profile,
+                    runtime,
+                    thread_id,
+                    auth_mode,
+                    plan_type,
+                    token_usage,
+                    prefixes,
+                    requests > 0 and not usage_refused,
                 )
                 cleanup = "retained"
             else:
@@ -2788,6 +2898,31 @@ class CodexAppServerEvaluator:
                 "duration_ms": max(0, int((self.clock.monotonic_seconds() - started) * 1000)),
             },
         )
+        if turn_settings is not None:
+            # A new thread starts at zero, and a continuation at the total its previous turn left.
+            # When that turn reported nothing or had a snapshot refused, that total is stale, so
+            # the turn starts at the total before its own first reported request: it still records
+            # its own requests, never the thread's earlier ones. A turn that had a snapshot refused
+            # may be missing a request, so it records no counts.
+            start = first_request_start
+            if held is None:
+                start = _cache_counters(None)
+            elif held.usage_current and turn_start_usage is not None:
+                start = _cache_counters(turn_start_usage)
+            record_exchange_cache(
+                component="codex_app_server",
+                request_id=case.request_id,
+                session=session,
+                exchange=exchange,
+                settings=turn_settings,
+                usage=(
+                    None
+                    if usage_refused
+                    else _turn_cache_usage(start, token_usage, requests, first_cached, last_input)
+                ),
+                completed=turn_completed,
+                compacted=compacted,
+            )
         if cleanup == "failed" and failure is None:
             failure = "post_ack_unknown" if turn_acknowledged else "unavailable"
             failure_class = SemanticFailureClass.TRANSPORT

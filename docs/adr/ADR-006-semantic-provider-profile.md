@@ -2923,7 +2923,6 @@ Maintainer acknowledgement: the explicit scoped implementation request and owner
 They do not change reviewer judgment, disclosure authority, or the design-gated #905 todo-list
 convergence.
 
-
 ## Amendment — 2026-10-21: bounded reviewer read recovery (#1173)
 
 Maintainer acknowledgement: the explicit scoped request on issue #1173 approves all four parts.
@@ -3027,3 +3026,39 @@ their encrypted response for an already-authorized owner-local metrics collector
 `attempt_usages[].reviewer_reads` without read content; missing/old/invalid telemetry is null.
 It adds no CLI/MCP/host route and no network channel. Codex, Claude Code and Cursor continue to
 share this controller and the existing result projection.
+
+## Amendment — 2026-10-21: per-exchange prompt-cache telemetry (#1172)
+
+About half of the reviewer's input is served from the provider's prompt cache (49.8% over 27
+TB-Science pilot trials), and input is nearly all of its cost. Until now only each attempt's
+cumulative usage was kept, so a miss could not be attributed. Every provider exchange that
+reports usage now writes one `exchange_cache` owner diagnostic: its input, cached input,
+cache-write (where the provider reports it) and output tokens, how many model requests it made,
+the prefix it could reuse from the review's previous exchange, how much of that its first request
+reused, and one closed miss label: `compaction`, `first_turn`, `none`,
+`schema_or_settings_change`, `retry` or `unexplained`, the first that applies (see INTERFACES,
+"Per-exchange prompt-cache telemetry"). `none` allows a shortfall of up to 1,024 tokens, the
+providers' minimum cacheable prefix. A count the provider does not report (Chat Completions may
+omit the cached count) is left out, never recorded as zero. A compaction is recorded, by its index
+and label alone, even when it comes before any usage report. A Codex turn whose previous turn
+reported no usage starts at the total before its own first reported request, so it records its
+own requests (unless a repeated snapshot arrives first, #1192); a turn that had a usage snapshot
+refused records no counts. Every exchange of a review names the review's first provider request
+id, so the records join the attempt row; the owner reads them with `finishup service diagnostics
+--request-id`, and an exporter that copies the diagnostics ring carries them.
+
+The record holds integers, one closed token and that request id. It never holds content, a
+content digest or a provider identifier. Between a review's exchanges, the `ReviewerSession` keeps
+counts, the last history's message count and a digest of the settings the route sent beside the
+messages, to notice a changed schema, model or effort. The usage arrives on the responses FinishUP
+already reads (Codex `thread/tokenUsage/updated`; the Responses and Chat Completions `usage`
+object), so no request, egress or retention changes. Recording never changes an outcome. The
+local model route and the credential probe record nothing.
+
+This is phase 1's measurement. It changes no prompt, schema, thread or packet. The TB-Science
+rows, from before the reviewer kept its final turn's schema (#1173, above), show a three-read
+review caching its two middle turns and nothing of its final turn (189,056 of 381,293 input
+tokens). The one schema change left, the read-free schema on a final-phase repair and on a final
+turn after a spent repair, is labelled `schema_or_settings_change`, so these records show how
+often a review pays it. Phase 2 (reusing a thread across reviews) stays undecided until these
+records show what is left to gain.
