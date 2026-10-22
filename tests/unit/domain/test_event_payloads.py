@@ -612,10 +612,16 @@ def test_exact_schema_pair_dispatch_and_unknown_boundary() -> None:
             "plan_published",
             "plan_revised",
             "response_recorded",
+            "result_recorded",
             "session_opened",
             "session_resumed",
         }
     )
+    # Issue #1170: 1.1.0 adds only the optional agent-declared test manifest.
+    assert {schema.version for schema in PAYLOAD_TYPES if schema.name == "result_recorded"} == {
+        SCHEMA_VERSION,
+        "1.1.0",
+    }
     # Issue #997: 1.1.0 admits the obligation-level ``acknowledged_not_done`` status.
     assert {
         schema.version for schema in PAYLOAD_TYPES if schema.name == "obligation_published"

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Awaitable, Callable, Mapping
+from collections.abc import Awaitable, Callable, Iterable, Mapping
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from types import MappingProxyType
@@ -61,6 +61,7 @@ from finishup.domain.events import (
     public_error_for_no_obligations_reason_mismatch,
     public_error_for_obligation_resolution_mismatch,
 )
+from finishup.domain.task_statement import current_task_statement
 from finishup.domain.values import (
     Actor,
     ActorType,
@@ -84,6 +85,7 @@ from finishup.domain.values import (
 from finishup.domain.values import (
     JsonValue as DomainJsonValue,
 )
+from finishup.domain.verification_coverage import criterion_quote_in_text
 from finishup.kernel.completion_scope import with_completion_scope_coverage
 from finishup.kernel.projections import PROJECTION_VERSION, ProjectionState
 from finishup.kernel.reducers import replay_extension
@@ -563,6 +565,13 @@ def _corrective_message(reason_code: str, schema_name: str | None) -> str | None
 
     if reason_code == "requested_command_placeholder":
         return _PLACEHOLDER_CORRECTION
+    if reason_code == "verification_criterion_not_in_task":
+        return (
+            "The event batch is invalid. verification.criterion_quote must be a verbatim "
+            "substring of the current recorded task_statement that starts and ends on whole "
+            "words and names the criterion, not only punctuation or common words. Record the "
+            "user's request before the result, then quote one stated criterion exactly."
+        )
     set_order = _SET_ORDER_CORRECTIONS.get(reason_code)
     if set_order is not None:
         return set_order
@@ -1661,6 +1670,8 @@ async def _preflight_dry_run_feasibility(
             writer_sequence = int(record.writer.sequence) + 1
             previous_writer_digest = record.entry_digest
 
+    _validate_verification_quotes(prepared, existing_records)
+
     # Ordinary publish passes only the integer sequence into AppendCommand; digest is not a gate.
     if request.expected_frontier is not None:
         expected_sequence = int(request.expected_frontier.sequence)
@@ -1804,6 +1815,46 @@ def _validate_new_completion_scope(
                 ClaimRevisionMismatch("obligation_refs", invariant, item.draft.event_id),
                 event_index=index,
             )
+
+
+def _validate_verification_quotes(
+    prepared: PreparedPublication, records: Iterable[LedgerRecord]
+) -> None:
+    """Check a new manifest against task text at its position, without rewriting old facts.
+
+    Completed-operation recovery deliberately precedes this admission check: later amendments or
+    redaction cannot invalidate an already accepted result. The append's frontier guard binds
+    the checked prefix, and a task revision earlier in this batch takes effect immediately.
+    """
+
+    statement = current_task_statement(records)
+    text = None if statement is None else statement.text
+    for index, item in enumerate(prepared.drafts):
+        payload = item.draft.payload
+        if type(payload) in {PlanPublishedPayload, PlanRevisedPayload}:
+            revised = cast(PlanPublishedPayload | PlanRevisedPayload, payload).task_statement
+            if revised is not None:
+                text = revised
+        if type(payload) is ResultRecordedPayload and payload.verification is not None:
+            if text is None or not criterion_quote_in_text(
+                payload.verification.criterion_quote, text
+            ):
+                raise _event_invalid(
+                    "verification_criterion_not_in_task",
+                    event_index=index,
+                    subfield="payload",
+                )
+
+
+async def _validate_new_verifications(runtime: TaskRuntime, prepared: PreparedPublication) -> None:
+    if not any(
+        type(item.draft.payload) is ResultRecordedPayload
+        and item.draft.payload.verification is not None
+        for item in prepared.drafts
+    ):
+        return
+    records = [record async for record in runtime.ledger.load_events(runtime.session_id)]
+    _validate_verification_quotes(prepared, records)
 
 
 class _DryRunNotices(TypedDict, total=False):
@@ -2015,6 +2066,7 @@ async def execute_publish_work(
             request, channel=channel, app=app, occurred_at=occurred_at, task_id=runtime.task_id
         )
         _validate_new_completion_scope(request, prepared)
+        await _validate_new_verifications(runtime, prepared)
         if input_capture is not None:
             # #1118 unit 1: a validated new batch, before its append; a replay returned above.
             await input_capture(runtime)

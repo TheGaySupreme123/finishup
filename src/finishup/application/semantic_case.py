@@ -108,6 +108,7 @@ from finishup.domain.task_statement import (
     TaskStatementSource,
 )
 from finishup.domain.values import (
+    ActionId,
     EventId,
     FindingId,
     JsonObject,
@@ -129,6 +130,11 @@ from finishup.domain.values import (
 )
 from finishup.domain.values import (
     result_id as validate_result_id,
+)
+from finishup.domain.verification_coverage import (
+    criterion_quote_pattern,
+    criterion_quote_position,
+    verification_coverage_to_json,
 )
 from finishup.kernel.claims import effective_claim_items
 from finishup.kernel.delivered_set import declared_delivered_items
@@ -169,6 +175,8 @@ from finishup.kernel.task_facts import (
     open_effective_obligations,
 )
 from finishup.kernel.test_edit_visibility import check_change_header_entries, check_change_sections
+from finishup.kernel.verification_capture import command_is_declared_verification
+from finishup.kernel.verification_coverage import build_verification_coverage
 from finishup.kernel.verification_freshness import name_free_finding_detail
 from finishup.legacy_names import LEGACY_PRODUCT_NAME, PRODUCT_NAME
 from finishup.observability.privacy import (
@@ -331,6 +339,7 @@ _PLANNING_RESERVE_BYTES: Final = 4_096
 _PREPARED_PAYLOAD_PLANNING_BYTES: Final = MAX_SEMANTIC_CASE_BYTES - _PLANNING_RESERVE_BYTES
 _PLANNING_GRANULARITY_BYTES: Final = 1_024
 _PACKET_ID_LIST_KEYS: Final = (
+    "verification_coverage_item_ids",
     "task_statement_item_ids",
     "goal_item_ids",
     "obligation_item_ids",
@@ -387,6 +396,18 @@ REVIEW_PHASE_QUESTIONS: Final[Mapping[SemanticBudgetProfile, str]] = MappingProx
             "decision_needed, not an unmet requirement."
         ),
     }
+)
+# Asked only when the packet carries the agent-declared coverage index, so a review that cannot see
+# a manifest never pays for these rules in every exchange (the #1173 read budget, ADR-006).
+_TEST_QUALITY_QUESTION: Final = (
+    "The coverage index lists agent-declared test manifests: judge whether each check measures "
+    "its quoted criterion, uses independent data and expectations, and ran on the shipped state; "
+    "an agent-declared manifest is not independent proof. Name circular, tuned, hard-coded or "
+    "redundant checks and any expected value copied from the answer; test volume is not evidence "
+    "quality. If a useful check remains, begin the first line of review_summary with "
+    "'Discriminating check: <one concrete check>'; do not invent a test when no useful "
+    "discriminator exists. Do not request another unchanged run or more tests merely to fill a "
+    "gap."
 )
 # Asked only when the frozen case records a verification with later changes (#1143): AI review
 # never blocks on staleness; it weighs the verification against those changes and asks.
@@ -544,12 +565,14 @@ def review_question_set(
     acknowledged: tuple[str, ...] = (),
     *,
     freshness: bool = False,
+    test_manifests: bool = False,
 ) -> tuple[str, ...]:
     """Return the closed question set for one review phase.
 
     The final phase adds one blocker question when ``blockers`` (``recorded_blockers``) is not
     empty; the routine phase never judges blockers. ``freshness`` adds the advisory freshness
-    question when a recorded verification has later changes (``verification_freshness_asked``).
+    question when a recorded verification has later changes (``verification_freshness_asked``);
+    ``test_manifests`` appends the test-quality question when the packet carries the coverage index.
     """
 
     parsed = parse_semantic_budget_profile(phase)
@@ -563,6 +586,7 @@ def review_question_set(
         *((FRESHNESS_REVIEW_QUESTION,) if freshness else ()),
         *_REVIEW_QUESTIONS,
         *extra,
+        *((_TEST_QUALITY_QUESTION,) if test_manifests else ()),
     )
 
 
@@ -577,6 +601,7 @@ def verification_freshness_asked(case: DeterministicCase) -> bool:
 
 
 type _Section = Literal[
+    "verification_coverage",
     "task_statement",
     "goal",
     "obligation",
@@ -609,6 +634,10 @@ type _ExcerptKind = Literal["evidence", "test", "failure", "diff", "command", "r
 # the agent's own summary; only the task statement is the user's request (issue #908). A plan item
 # is never labelled as the task statement, whatever its content.
 _SECTION_LABELS: Final[Mapping[str, str]] = {
+    "verification_coverage": (
+        "verification coverage (agent-declared): advisory candidates and witnesses, never proof "
+        "of correctness; repeated or redundant tests add no confidence"
+    ),
     TASK_STATEMENT_SECTION: (
         "task statement: what the user asked for; the source field says who supplied the text"
     ),
@@ -2273,6 +2302,110 @@ def _task_statement_item(
     )
 
 
+VERIFICATION_COVERAGE_ITEM_ID: Final = "verification-coverage"
+
+
+def _quote_start(quote: str, text: str) -> int:
+    """Where a criterion row's text occurs: the whole-word occurrence admission accepts.
+
+    ``0.1`` inside ``0.15`` is no occurrence (#1170 review); a generic legacy quote, which maps
+    no criterion, keeps the plain offset.
+    """
+
+    if criterion_quote_pattern(quote) is None:
+        return text.find(quote)
+    return criterion_quote_position(quote, text)
+
+
+def _verification_coverage_item(
+    projection: ProjectionState,
+    task_statement: str | None,
+    task_source_ref: str,
+    allowed: frozenset[str],
+    *,
+    limit: int,
+    unchanged_action_ids: tuple[ActionId, ...] = (),
+    workspace_verification_edit_frontier: int = 0,
+) -> SemanticCaseItem | None:
+    """A structural index; criterion text stays in its separately authorized source item."""
+
+    coverage = build_verification_coverage(
+        projection,
+        task_statement=task_statement,
+        unchanged_action_ids=unchanged_action_ids,
+        workspace_verification_edit_frontier=workspace_verification_edit_frontier,
+    )
+    if not coverage.criteria or limit < 256:
+        return None
+    body = verification_coverage_to_json(coverage)
+    rows = cast(list[JsonValue], body["criteria"])
+    # Never introduce a reference outside this frozen case's authority.
+    for value in rows:
+        row = cast(dict[str, JsonValue], value)
+        quote = cast(
+            str, row.pop("task_criterion_quote", row.pop("obligation_criterion_quote", ""))
+        )
+        start = -1 if task_statement is None else _quote_start(quote, task_statement)
+        if start >= 0:
+            row["criterion_source_ref"] = task_source_ref
+            row["criterion_span"] = [start, start + len(quote)]
+        else:
+            for ref, obligation in projection.obligations.items():
+                payload = obligation.payload
+                if (
+                    payload is not None
+                    and payload.acceptance_criteria is not None
+                    and not obligation.redacted
+                    and str(ref) in allowed
+                ):
+                    start = _quote_start(quote, payload.acceptance_criteria)
+                    if start >= 0:
+                        row["criterion_source_ref"] = str(ref)
+                        row["criterion_span"] = [start, start + len(quote)]
+                        break
+        witnesses = cast(list[JsonValue], row["witnesses"])
+        for witness in witnesses:
+            cast(dict[str, JsonValue], witness).pop("worst", None)
+        row["witnesses"] = [
+            witness
+            for witness in witnesses
+            if cast(dict[str, JsonValue], witness)["result_id"] in allowed
+            and cast(dict[str, JsonValue], witness)["action_id"] in allowed
+        ]
+        row["omitted_witnesses"] = cast(int, row["omitted_witnesses"]) + (
+            len(witnesses) - len(cast(list[JsonValue], row["witnesses"]))
+        )
+    while rows and len(canonical_encode(cast(JsonValue, body))) > limit:
+        rows.pop()
+        body["omitted_criteria"] = cast(int, body["omitted_criteria"]) + 1
+    if not rows:
+        return None
+    content = canonical_encode(cast(JsonValue, body))
+    linked = tuple(
+        sorted(
+            {
+                cast(str, cast(dict[str, JsonValue], witness)[key])
+                for value in rows
+                for witness in cast(list[JsonValue], cast(dict[str, JsonValue], value)["witnesses"])
+                for key in ("action_id", "result_id")
+            },
+            key=str.encode,
+        )
+    )[:MAX_SEMANTIC_ITEM_SUBJECT_REFS]
+    return SemanticCaseItem(
+        item_id=VERIFICATION_COVERAGE_ITEM_ID,
+        section="verification_coverage",
+        category=DataCategory.BOUNDED_STRUCTURAL_METADATA,
+        source_kind="test",
+        source_ref=VERIFICATION_COVERAGE_ITEM_ID,
+        linked_subject_refs=linked,
+        occurred_order=0,
+        content=content,
+        content_bytes=len(content),
+        content_digest="sha256:" + hashlib.sha256(content).hexdigest(),
+    )
+
+
 DECLARED_DELIVERABLES_ITEM_ID: Final = "declared-deliverables"
 # Frozen legacy identifier (ADR-048): protocol 0.1 tag, re-verified.
 _DECLARED_DELIVERABLES_SCHEMA: Final = "yoetz.declared-deliverables/1"
@@ -2791,6 +2924,26 @@ def _history_json(
         # own clock, so this time is not something the agent asserted about when the work happened.
         body["occurred_at_source"] = item.occurred_at_source
     reduced: dict[str, JsonValue] | None = None
+    if (
+        item.schema_name == "result_recorded"
+        and item.schema_version == "1.1.0"
+        and item.payload is None
+    ):
+        # An unavailable payload may contain a task quote; its original digest would confirm
+        # a guessed quote even though the separately authorized text was withheld.
+        body.pop("payload_digest", None)
+        body["payload_reduced"] = "verification_criterion_quote_withheld"
+    if item.schema_name == "result_recorded" and isinstance(item.payload, Mapping):
+        verification = item.payload.get("verification")
+        if isinstance(verification, Mapping):
+            reduced = dict(cast(Mapping[str, JsonValue], item.payload))
+            reduced["verification"] = {
+                key: value
+                for key, value in cast(Mapping[str, JsonValue], verification).items()
+                if key != "criterion_quote"
+            }
+            body["payload_digest"] = canonical_digest(cast(JsonValue, reduced))
+            body["payload_reduced"] = "verification_criterion_quote_withheld"
     if item.schema_name == "check_recorded":
         # A check's payload may record undeclared-reference names (#1044): repository-excerpt
         # content shown only to its own author and a ``full_local`` receipt (tb4n5, ADR-035
@@ -5069,6 +5222,7 @@ def _auto_supply_refusal(
     captured_command: str | None = None,
     captured_identity: str | None = None,
     capture_redacted: bool = False,
+    declared_verification: bool = False,
 ) -> _OmissionReason | None:
     """Why this capture must not be auto-supplied, or ``None`` when it may.
 
@@ -5093,7 +5247,7 @@ def _auto_supply_refusal(
     command = captured_command
     if not command.strip() or command.lstrip().startswith("omitted:"):
         return "withheld_by_policy"
-    if not command_is_verification(command):
+    if not command_is_verification(command) and not declared_verification:
         return "withheld_by_policy"
     if _command_dumps_environment(command) or _command_names_refused_path(
         command, workspace_root=workspace_root, check_time_change=check_time_change
@@ -5455,15 +5609,42 @@ def _select_targeted_excerpts(
         if "test" in selection.excerpt_kinds
         else None
     )
-    if supplied_refs and summary_kind is not None:
+    declared_results: frozenset[str] = (
+        frozenset(
+            str(ref)
+            for ref, row in projection.results.items()
+            if row.payload is not None and row.payload.verification is not None and not row.redacted
+        )
+        if "task_statement" in selection.sections
+        else frozenset()
+    )
+    if (supplied_refs or declared_results) and summary_kind is not None:
         present = {candidate.source_ref for candidate in candidates}
         for result_id, record in sorted(projection.results.items(), key=lambda pair: str(pair[0])):
             ref = str(result_id)
-            if ref not in supplied_refs or ref in present or ref not in allowed:
+            if (
+                ref not in (supplied_refs | declared_results)
+                or ref in present
+                or ref not in allowed
+            ):
                 continue
             if record.payload is None or record.redacted:
                 continue
             summary = record.payload.summary
+            if ref in declared_results:
+                summary = (
+                    "[FinishUP: agent-declared test record; file ingestion is not execution "
+                    "or independent reproduction]\n"
+                    + _structural_json(
+                        {
+                            key: value
+                            for key, value in cast(
+                                Mapping[str, JsonValue], encode_payload(record.payload)
+                            ).items()
+                            if key != "verification"
+                        }
+                    )
+                )
             if summary is None or not summary.strip():
                 continue
             linked = tuple(
@@ -5771,6 +5952,9 @@ def _select_targeted_excerpts(
                     captured_command=group.observed_command,
                     captured_identity=group.observed_command_identity,
                     capture_redacted=group.redacted,
+                    declared_verification=command_is_declared_verification(
+                        raw.verification_action, projection
+                    ),
                     workspace_root=workspace_root,
                     check_time_change=check_time_change,
                 )
@@ -6945,6 +7129,7 @@ def _build_semantic_case_once(
     truncated_item_ids: set[str] = set()
     omissions: list[ReviewOmission] = []
     task_statement_ids: list[str] = []
+    verification_coverage_ids: list[str] = []
     task_statement_gaps: set[str] = set()
     goal_ids: list[str] = []
     obligation_ids: list[str] = []
@@ -6962,6 +7147,29 @@ def _build_semantic_case_once(
     # stands in carries its own ``task_title_only`` source label, which is the disclosure; the
     # coverage gaps name only a withheld section or a task with neither statement nor title.
     recorded_statement = frozen_case.task_statement
+    # This view combines task/obligation quotes with test-result prose. Every contributing
+    # section must already be selected; no policy or disclosure authority is broadened.
+    # Structural selects no task text and Goal-aware no test excerpts, so neither carries it
+    # (docs/INTERFACES.md, issue #1170); local status and receipts still show the projection.
+    if (
+        {"task_statement", "obligations", "deterministic_assessments", "targeted_excerpts"}
+        <= sections
+        and recorded_statement is not None
+        and selection.max_excerpts > 0
+        and {"evidence", "test"} & set(selection.excerpt_kinds)
+    ):
+        coverage_item = _verification_coverage_item(
+            projection,
+            recorded_statement.text,
+            str(recorded_statement.source_event_id),
+            frozenset(allowed),
+            limit=min(4096, selection.max_excerpt_bytes, selection.max_total_excerpt_bytes),
+            unchanged_action_ids=frozen_case.verification_unchanged_action_ids,
+            workspace_verification_edit_frontier=frozen_case.workspace_verification_edit_frontier,
+        )
+        if coverage_item is not None:
+            items.append(coverage_item)
+            verification_coverage_ids.append(coverage_item.item_id)
     if TASK_STATEMENT_SECTION not in sections:
         task_statement_gaps.update(
             {TASK_STATEMENT_UNAVAILABLE_GAP, TASK_STATEMENT_NOT_AUTHORIZED_GAP}
@@ -8205,6 +8413,7 @@ def _build_semantic_case_once(
     # needs the discrepancy, alternative, response and newer-material refs as one question.
     # The existing diff floor and latest verification still protect what changed in the work.
     fixed_item_ids = {
+        *verification_coverage_ids,
         *task_statement_ids,
         *goal_ids,
         *obligation_ids,
@@ -8308,7 +8517,8 @@ def _build_semantic_case_once(
 
     # Keep only items that remain referenced after caps.
     keep_ids = (
-        set(task_statement_ids)
+        set(verification_coverage_ids)
+        | set(task_statement_ids)
         | set(goal_ids)
         | set(obligation_ids)
         | set(claim_ids)
@@ -8514,6 +8724,7 @@ def _build_semantic_case_once(
         ),
     )
     packet = ReviewPacket(
+        verification_coverage_item_ids=tuple(verification_coverage_ids),
         task_statement_item_ids=tuple(task_statement_ids),
         goal_item_ids=tuple(goal_ids),
         obligation_item_ids=tuple(obligation_ids),
@@ -8642,6 +8853,12 @@ def _build_semantic_case_once(
         recorded_blockers(frozen_case.projection),
         acknowledged_obligation_rows(frozen_case.projection),
         freshness=verification_freshness_asked(frozen_case),
+        # Only a carried coverage index with a witness row lets the reviewer see a manifest
+        # (#1170): its subject refs are exactly the admitted witnesses' result and action ids.
+        test_manifests=any(
+            item.item_id in packet.verification_coverage_item_ids and item.linked_subject_refs
+            for item in items
+        ),
     )
     # tb4n5: which excerpts supply the follow-up beyond the first packet, so the provider-bound
     # manifest recomputes ``supplied`` from the ones admission kept. Bound into the digest only for
@@ -8800,6 +9017,11 @@ def _packet_to_json(packet: ReviewPacket) -> dict[str, JsonValue]:
     return cast(
         dict[str, JsonValue],
         {
+            **(
+                {"verification_coverage_item_ids": list(packet.verification_coverage_item_ids)}
+                if packet.verification_coverage_item_ids
+                else {}
+            ),
             "change_observations": [
                 {
                     "claimed_change": item.claimed_change,
@@ -9632,6 +9854,8 @@ def assemble_filtered_review_packet(
         ]
 
     for key in _PACKET_ID_LIST_KEYS:
+        if key == "verification_coverage_item_ids" and key not in packet_obj:
+            continue
         packet_obj[key] = _filter_ids(packet_obj.get(key))
     _sync_prior_finding_refs(packet_obj)
 
@@ -10912,6 +11136,7 @@ def _protected_catalog_item_ids(case: SemanticCase) -> frozenset[str]:
     """Keep the task, the admitted diff floor and the reserved verification through bounding."""
 
     protected = set(case.packet.task_statement_item_ids)
+    protected.update(case.packet.verification_coverage_item_ids)
     protected.update(_primary_excerpt_item_ids(case.items, case.packet.targeted_excerpts))
     floor = final_diff_floor(case, case.review_selection, MAX_SEMANTIC_CASE_BYTES)
     carried = 0

@@ -1173,7 +1173,9 @@ Key payload fields (minimum; full shapes in `src/finishup/domain/events.py`):
 - `action_recorded`: `action_id`, `action_kind` (`command`|`edit`|`research`|`review`|`other`),
   `description`, optional `command`, `subject_state` (see SubjectStateRef below).
 - `result_recorded`: `result_id`, `action_id`, `outcome` (`success`|`failure`|`partial`|
-  `unknown`), optional `exit_status`, `subject_state`, `evidence_refs`.
+  `unknown`), optional `exit_status`, `subject_state`, `evidence_refs`. Optional test manifests
+  use additive `result_recorded/1.1.0` (issue #1170; see Test records and declared coverage below);
+  released `1.0.0` remains byte-identical and does not admit `verification`.
 - `evidence_recorded`: `evidence_id`, `strength` (mirrors `EvidenceImmutability`), `reference`
   (mutable ref) and/or `captured_object_id` + `content_digest`, `observed_at`, `evidence_kind`.
   New digest-bearing records require `digest_binding` with closed `subject`,
@@ -12291,7 +12293,8 @@ write byte-identical is not a later change. The same trusted action set is froze
 `verification_unchanged_action_ids` in the internal deterministic case and used by
 work-integrity. Contradictory or unavailable observations, outside writes, and declared paths the
 fingerprint cannot compare never borrow that proof. Which later changes make a verification stale
-or raise a question is defined once, in the next section.
+or raise a question is defined once, in the next section; the advisory #1170 coverage `stale`
+candidate is not that judgement.
 
 
 ### Intelligent verification freshness (#1143, ADR-042)
@@ -12471,6 +12474,114 @@ recomputation solely because the finding names paths.
   and revalidates args; it never exports read/packet/judgment content. Diagnostics use
   `reviewer_reads` / `reviewer_<action>`, `outcome`=result code and `operation_count`=call ordinal.
   No raw selector/path enters a structural log or public export.
+
+### Test records and declared coverage (issue #1170)
+
+`domain.events.ResultVerification` is the optional `verification` member of
+`result_recorded/1.1.0`: `criterion_quote` (nonblank, at most 240 characters), `data_source`
+(`task_public|own_generated|independent|held_out|stated_environment|unknown`), and integer
+`cases`/`failing` (0..2^53-1, `failing <= cases`). Optional `worst` is nonblank text of at most
+64 characters; optional `tuned_on_these_cases` is a boolean. Optional `test_file`, `results_file`
+(nonblank paths of at most 1,024 characters) and `report_digest` (`sha256:` digest) travel together.
+The publication validator checks the quote against the current recorded task statement, including
+an earlier statement revision in the same atomic batch. The quote must occur verbatim on whole-word
+boundaries (`1` inside `1.06` or `atio` inside `ratio` does not count) and name at least three
+word characters beyond punctuation, articles, modals and quantifiers
+(`domain.verification_coverage.criterion_quote_in_text`); otherwise publication fails with
+`verification_criterion_not_in_task`. Omitted frontiers acquire the admission
+frontier; explicit null remains forbidden for results. Replay of a committed operation precedes
+new admission validation. A later amended task does not inherit an obsolete quote's coverage.
+
+`finishup record-test --input <publish-request.json> --test-file <relative-script>
+--results-file <relative-report>` augments exactly one result draft, then uses ordinary
+`publish_work`. `cli.test_record.prepare_test_record` reads existing files; it runs no command.
+The strict UTF-8 JSON report contains integer `cases`, integer `failing`, optional string `worst`,
+and optional `failing_cases` (up to 64 distinct nonblank examples). Report bytes are limited to
+4,096; script bytes to 65,536; the combined result summary to 8,192. The workspace-relative files
+must be regular single-link files beneath a symlink-free workspace; traversal, credential-named
+paths, special files and changed reads are refused. The summary gains only explicit
+caller-asserted provenance and both digests with byte counts: the files' text (test source,
+failing-case names) stays in the workspace, because a result summary travels in every detailed
+review timeline, Goal-aware included. The manifest binds report bytes, without asserting that the
+script produced them.
+MCP accepts the same complete result payload; registering a filename authorizes no service file
+read. Unknown writes recover through `status view=operation`; re-reading changed files is not a
+replay of the original publication.
+
+`kernel.verification_capture` recovers missing captured command context only from a readable
+effective planned command or manifest-bearing command action whose whole installation-keyed
+commitment matches the authenticated hook output. Existing capture consent, source/session fences,
+content gaps, secret/path checks and disclosure policy still apply. This serves Codex, Claude Code
+and Cursor through the shared resolver; it does not widen global runner names or Stop rules.
+Native observed output and agent-declared file ingestion remain distinct evidence sources.
+
+`kernel.verification_coverage.build_verification_coverage(projection, records=(), *,
+task_statement=None, unchanged_action_ids=None, workspace_verification_edit_frontier=0)` is a
+pure, bounded advisory projection. Its candidate flags are `no_test`,
+`failing_cases`, `own_or_tuned_only`, `public_only`, `stale`, `repeated_run` and `redundant_tests`.
+It prefers a current independent witness without awarding volume, retains failures from unrelated
+checks, and exposes repeated unchanged work and registered checks on the same condition.
+Sentence matching only proposes stated criteria; it cannot establish test quality or completeness.
+Task sentences become candidates through a case-tolerant condition-word list with present-tense
+and plural forms (`labels`, `returns`, `Outputs`); a past tense or participle alone (`written`,
+`requirements.txt`) proposes nothing, though a plural noun can still propose a descriptive
+sentence. Each obligation acceptance sentence is a candidate; one whose text equals a task
+sentence up to case, spacing and final punctuation is that task criterion and keeps the task
+source. A witness quote maps a candidate when it equals it, or occurs under the admission rule
+above in exactly one task sentence (it then also maps every obligation sentence that contains it),
+or, outside every task sentence, in exactly one obligation sentence. A mapped sentence is retired
+only when the text outside its quotes holds no further condition word, quantifier or inequality
+(a bare quantifier immediately before a quote, or a simple context such as "For every input,"
+or "for every scenario.", qualifies the quote); otherwise it stays a `no_test` row beside the witness row,
+so a partial quote never hides the rest of a compound sentence. A generic, cross-sentence or
+repeated quote stays its own row, and every candidate it does not identify remains `no_test`.
+The projection applies the admission rule's whole-word occurrence to recorded quotes too, so an
+amended task (`0.1` to `0.15`) drops the obsolete witness. Rows order failing first, then
+task-statement rows before obligation rows, then gaps before other rows; `omitted_criteria` counts
+every row past the 24-row bound and every candidate sentence longer than a 240-character quote,
+which cannot be shown.
+`public_only` (where the cases came from) and `own_or_tuned_only` (no witness free of the agent's
+own generation or tuning) are independent axes: public cases the agent tuned on carry both. Human
+renderings say "only task-public cases" and "only own-generated or tuned-on cases".
+Its `stale` flag is a conservative candidate, not the #1143 freshness judgement above: any later
+counting material edit marks a witness, after the shared service-proven unchanged-write exemption
+and workspace edit frontier (frozen packets pass both facts; status/receipts derive them from
+authenticated records). It does not apply ADR-042's per-verification input rule, so a witness can
+show `stale` here while check, status and Stop judge its run current; only that rule raises
+freshness questions and findings. Alignment is follow-up #1194.
+Every surface labels this **agent-declared** and advisory, with no green `covered` state and no
+effect on findings, closure readiness or AI-review requirements.
+
+The unreleased `status-request/1.2.0` / `status-result/1.4.0` admit `view=coverage`, and their
+#1139 delivery successors `status-request/1.3.0` / `status-result/1.5.0` inherit it; receipt-document
+`1.3.0`, carried by receipt-result `1.3.0` and `1.4.0`, optionally carries `verification_coverage`. CLI status, TUI `/coverage`
+and receipt JSON/markdown/text share the projection. Wire quote leaves are separated into
+`task_criterion_quote` (`task_description`) and `obligation_criterion_quote` (`obligation_text`);
+`worst` uses command metadata. Human receipt prose carries ordinal/source/refs/counts so the
+legacy `human_text` category cannot export task text indirectly. JSON preserves categorized text
+only when the selected receipt profile and disclosure policy admit it.
+
+The review packet leads with an internal `verification_coverage` section, referenced by optional
+`review_packet.verification_coverage_item_ids` (at most one). Only a selection that already includes
+task statement, obligations, deterministic assessments and evidence or test excerpts carries it:
+the Assisted and Expanded presets, or an equivalent custom selection. Structural never sends task
+text, from which every row's candidate and span derive (#908). Goal-aware approves task and
+obligation text but no test excerpts; its timeline still carries each manifest without the quote
+under command metadata. Adding the index to either profile would widen what they disclose and needs
+a separate privacy decision. Local status, TUI `/coverage` and receipts show the projection under
+every review profile. Its structural item contains closed
+flags, counts, result/action refs, and character spans pointing to separately authorized task or
+obligation text; it contains no criterion quote or worst-value prose. It uses the existing
+bounded-structural-metadata category under the existing selection and whole-packet byte limits;
+the reserved diff and decisive-verification excerpt budgets retain their original floors.
+The owning outbound-case generator includes the new section and optional member.
+Manifest-bearing result excerpts remain evidence excerpts and omit the task quote.
+When AI review already runs, the optional quality question challenges metric mismatch, circular
+data, tuning, hard-coded expectations and redundancy, and asks that a useful single suggested
+check begin the review summary as `Discriminating check: ...`; it never requires another unchanged
+run. It is asked only when the packet carries the coverage index with at least one admitted
+witness, the only way the reviewer sees a manifest (`semantic_case.review_question_set(...,
+test_manifests=...)`). The always-sent reviewer instructions carry none of these rules.
 
 ## Lossless result delivery (issue #1139)
 

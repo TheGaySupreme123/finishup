@@ -85,6 +85,23 @@ The plan and its obligations are published together in the first plan batch: see
 ### Digest subjects and provenance
 
 
+## Verification manifests
+
+For a material test result, optionally attach `verification` to `result_recorded/1.1.0`.
+Quote one criterion verbatim, as whole words, from the recorded task statement in
+`criterion_quote`; a quote of only punctuation or common words is refused.
+FinishUP checks the quote, not whether the test establishes it.
+Declare `data_source`, `cases` and `failing`; add `worst` and `tuned_on_these_cases` when useful.
+Keep known failing cases visible in the result's bounded summary or evidence.
+Follow [design verification](workflow.md#design-verification) before adding another test.
+
+The manifest and parsed report counts remain **agent-declared**.
+A file digest binds bytes, not execution, independence or correctness.
+Coverage advice is non-blocking and never a green “covered” verdict.
+It does not require AI review; test-quality scrutiny applies only when AI review is already in use.
+Use the [result template](request-templates.md#optional-verification-manifest) for direct publication or the
+local result-file helper, which reads the files immediately without executing the test.
+
 ## Discover evidence before authoring replacements
 
 Before publishing evidence for a material claim, check what already exists instead of re-authoring

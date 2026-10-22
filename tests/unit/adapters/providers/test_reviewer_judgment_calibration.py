@@ -16,7 +16,7 @@ from finishup.adapters.providers.openai_responses import (
     normalize_judgment,
 )
 from finishup.adapters.providers.reviewer_reply import REVIEWER_LOOP_INSTRUCTION
-from finishup.application.semantic_case import REVIEW_PHASE_QUESTIONS
+from finishup.application.semantic_case import REVIEW_PHASE_QUESTIONS, review_question_set
 from finishup.domain.findings import FindingKind
 
 _FIXTURE = (
@@ -51,6 +51,24 @@ def test_input_root_instruction_preserves_owner_admission() -> None:
     assert "use those aliases and declared paths" in _TEXT
     assert "not permission to read another root" in _TEXT
     assert "ask the agent to copy it into scope" in _TEXT
+
+
+def test_test_quality_advice_preserves_optional_discriminating_checks() -> None:
+    # The always-sent instructions carry none of the #1170 rules (the #1173 read budget); the
+    # discriminating-check summary rule rides the test-quality question with the manifest rules.
+    assert REVIEWER_ACCEPTANCE_INSTRUCTION in REVIEWER_LOOP_INSTRUCTION
+    assert CHAT_COMPLETIONS_INSTRUCTION.startswith(SEMANTIC_REVIEW_INSTRUCTION)
+    for instruction in (REVIEWER_LOOP_INSTRUCTION, SEMANTIC_REVIEW_INSTRUCTION):
+        assert "Discriminating check" not in instruction
+        assert "agent-declared manifest" not in instruction
+    question = " ".join(review_question_set("final", test_manifests=True)[-1].split())
+    for rule in (
+        "begin the first line of review_summary with 'Discriminating check: <one concrete check>'",
+        "do not invent a test when no useful discriminator exists",
+        "an agent-declared manifest is not independent proof",
+        "any expected value copied from the answer",
+    ):
+        assert rule in question
 
 
 def test_active_challenge_rule_does_not_turn_an_advisory_choice_into_a_repair() -> None:

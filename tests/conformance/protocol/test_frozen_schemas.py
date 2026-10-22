@@ -26,7 +26,8 @@ _EXPECTED_SCHEMA_MANIFEST_SCHEMA = "yoetz.schema-manifest/1.0.0"
 _EXPECTED_SCHEMA_MANIFEST_VERSION = "1.0.0"
 # +1 each: the review-packet-row 2.0.0 provider contract (robust lane row contract).
 # ADR-049: +1 member, decision-recorded 1.1.0 (an event schema, not a request/result version).
-_EXPECTED_MEMBER_COUNT = 242  # #1139 +4 lossless result-delivery schemas;
+_EXPECTED_MEMBER_COUNT = 243  # #1170 +1 result-recorded 1.1.0;
+# #1139 +4 lossless result-delivery schemas;
 # #1118 +1 reviewer-reply 1.0.0, +2 check-result/-recorded 1.6.0,
 # +1 privacy-policy 1.3.0;
 # #1119 +2 host-connection batch report and ai-status 1.0.0
@@ -333,6 +334,7 @@ def test_schema_registry_is_complete() -> None:
                     "privacy/outbound-case-1.1.0.schema.json",
                     "findings/provider-judgment-1.1.0.schema.json",
                     "events/response-recorded-1.1.0.schema.json",
+                    "events/result-recorded-1.1.0.schema.json",
                     "events/obligation-published-1.1.0.schema.json",
                     "operations/respond-request-1.1.0.schema.json",
                     "operations/respond-result-1.1.0.schema.json",

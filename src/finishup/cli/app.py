@@ -768,7 +768,11 @@ def _read_task_statement_file(path: str) -> str:
 
 
 def _publish_work_request(
-    input_path: str | None, inline: str | None
+    input_path: str | None,
+    inline: str | None,
+    *,
+    test_file: str | None = None,
+    results_file: str | None = None,
 ) -> tuple[BaseModel, str | None]:
     """Parse one ``publish-work`` body, minting its request id when it omits one.
 
@@ -780,6 +784,17 @@ def _publish_work_request(
     """
 
     parsed = _bounded_input(input_path, inline)
+    if test_file is not None or results_file is not None:
+        from finishup.cli.test_record import prepare_test_record
+
+        if test_file is None or results_file is None or not isinstance(parsed, Mapping):
+            raise ProtocolValueError("invalid_event_value_type")
+        parsed = prepare_test_record(
+            cast(Mapping[str, JsonValue], parsed),
+            test_file=test_file,
+            results_file=results_file,
+            workspace=Path.cwd(),
+        )
     if not isinstance(parsed, Mapping) or "request_id" in parsed:
         return PublishWorkRequest.model_validate(parsed), None
     request_id = new_id(IdKind.REQUEST)
@@ -821,6 +836,8 @@ async def _call_workflow(
     await_observations: bool = False,
     owner_view: bool = False,
     use_passphrase: bool = False,
+    test_file: str | None = None,
+    results_file: str | None = None,
 ) -> int:
     # ADR-047: a ``check`` whose mode records nothing (``inspect``) fails as a read.
     check_mode: object = None
@@ -844,7 +861,9 @@ async def _call_workflow(
                 request_type.model_validate({"await_observations": True, **parsed}),
             )
         elif method == "publish_work":
-            parsed_request, minted = _publish_work_request(input_path, inline)
+            parsed_request, minted = _publish_work_request(
+                input_path, inline, test_file=test_file, results_file=results_file
+            )
             request = cast(WorkflowRequest, parsed_request)
         else:
             request = cast(WorkflowRequest, _request_model(request_type, input_path, inline))
@@ -1732,6 +1751,35 @@ def start_command(
 
 
 app.command("publish-work")(_workflow_command("publish_work", PublishWorkRequest))
+
+
+@app.command("record-test")
+def record_test_command(
+    test_file: Annotated[str, typer.Option("--test-file", help="Workspace-relative test script.")],
+    results_file: Annotated[
+        str, typer.Option("--results-file", help="Workspace-relative JSON written by that test.")
+    ],
+    input_path: _INPUT = None,
+    request: _INLINE = None,
+    json_output: _JSON = False,
+    deadline_ms: _DEADLINE = None,
+) -> None:
+    """Ingest one declared test and its results through ordinary publication."""
+
+    _finish(
+        run_async(
+            lambda: _call_workflow(
+                "publish_work",
+                PublishWorkRequest,
+                input_path,
+                request,
+                json_output,
+                deadline_ms,
+                test_file=test_file,
+                results_file=results_file,
+            )
+        )
+    )
 
 
 @app.command("check")

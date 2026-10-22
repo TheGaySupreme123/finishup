@@ -420,6 +420,7 @@ _PROTOCOL_REASON_CODE_VALUES: tuple[str, ...] = (
     "unsorted_set_field",
     "unsupported_json_type",
     "unsupported_payload_type",
+    "verification_criterion_not_in_task",
     "workspace_task_exists",
 )
 
@@ -441,7 +442,7 @@ SERVICE_HANDSHAKE_PHASES: frozenset[str] = frozenset({"handshake", "handshake_gi
 # caller's start budget: still starting (a slow machine, or the first start after an install or
 # update), not a closed hello. ``phase`` on a retryable ``service_unavailable`` error.
 SERVICE_START_TIMEOUT_PHASE: str = "handshake_timeout"
-assert len(_PROTOCOL_REASON_CODE_VALUES) == 350  # #1159: local check checkpoint capacity
+assert len(_PROTOCOL_REASON_CODE_VALUES) == 351  # #1170: verification_criterion_not_in_task
 assert len(_PROTOCOL_REASON_CODE_VALUES) == len(set(_PROTOCOL_REASON_CODE_VALUES))
 assert _PROTOCOL_REASON_CODE_VALUES == tuple(sorted(_PROTOCOL_REASON_CODE_VALUES, key=str.encode))
 assert all(_REASON_CODE_PATTERN.fullmatch(value) for value in _PROTOCOL_REASON_CODE_VALUES)

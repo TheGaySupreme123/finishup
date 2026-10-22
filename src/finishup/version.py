@@ -130,7 +130,9 @@ _RESOURCE_LIMIT: Final = 4_194_304
 # (the reviewer's derived Codex 0.162.1 model catalog), +1 schema (privacy-policy 1.3.0).
 # #1173: +1 bundle migration (0018, reviewer read-attempt bounds).
 # #1139: +4 lossless result-delivery schemas.
-REVIEWED_RESOURCE_COUNT: Final = 333
+# #1170: +1 schema (result-recorded 1.1.0), +2 canonical cases (result verification 1.1.0,
+# verification coverage).
+REVIEWED_RESOURCE_COUNT: Final = 336
 _RESOURCE_KINDS: Final = frozenset(
     {
         "canonical_vector",

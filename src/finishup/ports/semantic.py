@@ -147,6 +147,7 @@ __all__ = [
 ]
 
 type SemanticCaseSection = Literal[
+    "verification_coverage",
     "task_statement",
     "goal",
     "obligation",
@@ -296,6 +297,7 @@ _GAP_CODE_PATTERN: Final = re.compile(r"^[a-z][a-z0-9_]{0,127}$", re.ASCII)
 
 _SECTIONS: Final = frozenset(
     {
+        "verification_coverage",
         "task_statement",
         "goal",
         "obligation",
@@ -311,6 +313,7 @@ _SECTIONS: Final = frozenset(
 # The one order of a case's sections: items sort by it, the provider document lists them in it,
 # and envelope bounding drops catalog rows from its tail.
 SEMANTIC_CASE_SECTION_ORDER: Final = (
+    "verification_coverage",
     # The specification leads the case: the reviewer reads what the user asked for before the
     # agent's own plan, and envelope bounding drops it last (issue #908).
     "task_statement",
@@ -1322,8 +1325,14 @@ class ReviewPacket:
     task_statement_item_ids: tuple[str, ...] = ()
     # Metadata-only coverage for the exact input families considered by this check (#951).
     input_manifest: ReviewInputManifest | None = None
+    verification_coverage_item_ids: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
+        object.__setattr__(
+            self,
+            "verification_coverage_item_ids",
+            _validated_item_ids(self.verification_coverage_item_ids, maximum=1),
+        )
         object.__setattr__(
             self,
             "task_statement_item_ids",
@@ -1421,6 +1430,7 @@ class ReviewPacket:
             raise _invalid_case()
 
         referenced_ids = [
+            *self.verification_coverage_item_ids,
             *self.task_statement_item_ids,
             *self.goal_item_ids,
             *self.obligation_item_ids,
@@ -1563,6 +1573,7 @@ class SemanticCase:
 
         packet = self.packet
         expected_sections = (
+            (packet.verification_coverage_item_ids, "verification_coverage"),
             (packet.task_statement_item_ids, "task_statement"),
             (packet.goal_item_ids, "goal"),
             (packet.obligation_item_ids, "obligation"),
@@ -1645,6 +1656,7 @@ class SemanticCase:
             raise _invalid_case()
 
         referenced_ids = {
+            *packet.verification_coverage_item_ids,
             *packet.task_statement_item_ids,
             *packet.goal_item_ids,
             *packet.obligation_item_ids,

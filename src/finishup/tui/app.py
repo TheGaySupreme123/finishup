@@ -529,6 +529,7 @@ class FinishUpTui(App[int]):
             "lineage": self.command_lineage,
             "project": self.command_project,
             "findings": self.command_findings,
+            "coverage": self.command_coverage,
             "check": self.command_check,
             "progress": self.command_progress,
             "receipt": self.command_receipt,
@@ -2970,11 +2971,21 @@ class FinishUpTui(App[int]):
     async def command_findings(self) -> None:
         await self._command_task_view("findings")
 
-    async def _command_task_view(self, view: Literal["lineage", "project", "findings"]) -> None:
+    async def command_coverage(self) -> None:
+        await self._command_task_view("coverage")
+
+    async def _command_task_view(
+        self, view: Literal["lineage", "project", "findings", "coverage"]
+    ) -> None:
         title = await self._require_task()
         if title is None:
             return
-        heading = {"lineage": "Child tasks", "project": "Project", "findings": "Findings"}[view]
+        heading = {
+            "lineage": "Child tasks",
+            "project": "Project",
+            "findings": "Findings",
+            "coverage": "Verification coverage (agent-declared)",
+        }[view]
         cursor: str | None = None
         while True:
             page = await self.runtime.task_status(title, view, cursor=cursor)

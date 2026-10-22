@@ -192,6 +192,7 @@ from finishup.kernel.task_facts import (
     disclosure_declarations,
     task_fact_signals,
 )
+from finishup.kernel.verification_coverage import build_verification_coverage
 from finishup.protocol.coverage import LEDGER_FRESHNESS_ORDER, Coverage, PublicationChannel, weakest
 from finishup.protocol.models import (
     ReceiptInclude,
@@ -2911,6 +2912,17 @@ def build_receipt(
     claim_refs = _select_claim_refs(context, findings)
     evidence_refs = _select_evidence_refs(context, claim_refs, obligations, responses)
     gaps = _select_gaps(context, historical, gap_effects)
+    declared_coverage = (
+        build_verification_coverage(context.projection, context.records)
+        if settles_rejections
+        else None
+    )
+    if (
+        declared_coverage is not None
+        and not declared_coverage.criteria
+        and not declared_coverage.omitted_criteria
+    ):
+        declared_coverage = None
     children, omitted_child_findings = _receipt_children(context.lineage)
     (
         retained_findings,
@@ -2926,6 +2938,35 @@ def build_receipt(
         responses,
         gaps,
     )
+    if (
+        declared_coverage is not None
+        and redaction_profile is not ReceiptRedactionProfile.FULL_LOCAL
+    ):
+        # Export profiles already withhold task/obligation prose and raw evidence. Preserve
+        # advisory counts and gaps without copying those values into a new receipt section.
+        # Only obligation rows are obligation text; a withheld task quote has no redaction
+        # category of its own and is disclosed in its row ("Criterion text withheld ...").
+        obligation_rows = sum(row.source == "obligation" for row in declared_coverage.criteria)
+        if obligation_rows:
+            redactions = (
+                *redactions,
+                ReceiptRedaction(
+                    ReceiptRedactionCategory.OBLIGATION_TEXT,
+                    ReceiptRedactionReason.POLICY_REDACTED,
+                    obligation_rows,
+                ),
+            )
+        declared_coverage = replace(
+            declared_coverage,
+            criteria=tuple(
+                replace(
+                    row,
+                    criterion_quote="Criterion text withheld by export profile",
+                    witnesses=tuple(replace(witness, worst=None) for witness in row.witnesses),
+                )
+                for row in declared_coverage.criteria
+            ),
+        )
     # Past the document's row bounds the receipt keeps what matters most -- unresolved actionable
     # findings, the terminal states the document discloses by id, open obligations, live gaps --
     # and counts the rest in the summary (tb4n3 RC-2, A6).
@@ -3322,4 +3363,5 @@ def build_receipt(
             if context.applicable_check is None
             else context.applicable_check.semantic_redacted_values
         ),
+        verification_coverage=declared_coverage,
     )

@@ -4202,3 +4202,21 @@ diagnostics and live host/OS parity have not been established by unit hook-contr
 Follow-up owner for any richer non-continuing host channel: issue #1162.
 
 The non-continuing owner notice uses the documented common output field: [upstream hook reference](https://developers.openai.com/codex/hooks/).
+
+## Test manifests and verification quality (issue #1170)
+
+Host decision: supported through shared MCP `publish_work` and CLI `publish-work`, with the
+local `finishup record-test` helper for an already-run script and its small JSON results file.
+The optional result manifest quotes a recorded criterion and declares data source, counts,
+failures, optional worst value and tuning. The helper reads files and records their digests; it
+does not execute tests or copy the files' text into the result.
+Parsed counts and coverage remain agent-declared; a digest never proves execution or correctness.
+The shared guidance asks for one discriminating independent check per criterion, visible failures
+and a rerun of the shipped revision. Repeated unchanged runs and redundant tests add no coverage.
+Coverage advice is non-blocking and does not activate AI review. When AI review is already in use
+and its packet shows a declared witness (the Assisted and Expanded profiles), the reviewer
+scrutinizes circular tests and places a useful discriminating check first in its summary.
+See [the result recipe](../../guidance/request-templates.md#publish-work-result).
+
+This shared transport decision applies on macOS, Linux and Windows through WSL 2. Native host and
+platform execution is not established by the shared contract tests; issue #1182 owns that follow-up.

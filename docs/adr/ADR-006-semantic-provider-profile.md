@@ -3290,3 +3290,68 @@ from quoted reviewer or agent prose; source text cannot impersonate the advisory
 Older receipt artifacts keep their exact shape.
 
 Historical check summaries without typed advisory rows are not parsed or backfilled into identities.
+
+## Amendment: agent-declared test coverage and discriminating checks (2026-10-21, issue #1170)
+
+Maintainer acknowledgement: the explicit scoped request recorded on #1170 authorizes the additive
+result manifest, local report ingestion and advisory coverage projection. It grants no new
+network, credential, runtime or disclosure authority.
+
+The working-agent guidance uses a short role, goal, procedure, done, evidence, clues and constraints
+sequence. Its goal is fewer, better tests: one discriminating independent check per stated
+criterion, measuring that criterion's own metric, quantifier, conditions and environment. Known
+failures and the worst value remain visible. Evidence must refer to the shipped revision, with
+unreplayed changes disclosed. Redundant tests and unchanged reruns do not broaden coverage.
+
+`result_recorded/1.1.0` may carry an optional `verification` manifest. It quotes recorded task
+statement text verbatim and declares data source, case and failing counts, optional worst value
+and whether the agent tuned on those cases. Exact quote matching binds the declaration to recorded
+text; it does not establish that the test measures the criterion. Older results remain valid.
+The local `record-test` CLI reads a test file and small JSON report immediately, binds their
+references and both digests, and publishes through the existing publication path. It never
+executes the test, and it copies neither file's text into the result: a result summary rides
+every detailed review timeline, Goal-aware included, so the source and failing-case names stay in
+the workspace (independent review of #1174). Direct MCP and CLI publication can carry the complete manifest.
+Parsed counts, data-source labels and coverage remain **agent-declared**. A digest is byte identity,
+not proof of execution, independence or correctness.
+
+The deterministic coverage projection reports absent, failing, own-generated or tuned-only,
+stale, repeated and redundant witnesses within its recorded scope. It is advisory and
+non-blocking, never a green “covered” or correctness verdict. Its stale flag is the conservative
+latest-material-edit candidate, not ADR-042's per-verification freshness judgement, which alone
+raises freshness questions and findings (alignment: #1194). Quotes, file names, case names and
+worst values remain user content under the existing privacy and prose-rendering boundaries.
+The leading packet view uses structural source references and character spans, with criterion
+text remaining in its separately authorized task/obligation items. Human receipts show ordinal
+rows and structural facts; categorized JSON/status retain the criterion text and worst values.
+Unmanifested and unassessable criteria remain explicit limits rather than invented failures.
+A quote is admitted only as a whole-word occurrence that names the criterion, not only punctuation
+or common words, and the projection re-applies that rule after an amendment. It maps the one task
+sentence it identifies, with any obligation sentence restating it; a sentence is retired only when
+nothing outside its quotes states a further requirement, so a partial quote never hides the rest of
+a compound sentence, and a generic, cross-sentence or repeated quote never erases another
+criterion's gap. Sentences longer than a quote are counted as omitted. Task-statement rows rank before obligation sentences,
+so agent-written acceptance prose cannot push a user criterion past the display bound. Structural
+and Goal-aware packets omit the index because they do not select the task text or test excerpts
+it summarizes; offering it there is a separate disclosure decision.
+
+Test-quality scrutiny uses AI review only when that review is already in use, through one
+question asked only when the packet carries the coverage index with at least one admitted witness
+(Assisted, Expanded or an equivalent custom selection with a manifest). The reviewer asks whether
+the witness measures the quoted criterion and whether its source or expected values are circular.
+When a useful independent discriminator exists, the first summary line begins
+`Discriminating check: <one concrete check>`, so the practical suggestion survives a bounded
+preview. When none exists, the reviewer does not invent a pointless test. A missing witness alone
+is not a demonstrated defect, and the question does not require extra tests or review rounds.
+The always-sent reviewer instructions carry none of these rules (the loop instruction stays at
+7,639 bytes). Trade-off: at the minimal policy (4,096 tokens, a 16 KiB exchange) the question
+costs one of #1173's two content reads, so such a review fits one, before the index's own
+structural rows (at most 4 KiB) take further exchange room; the read it cannot afford takes the
+final-phase repair and the review still concludes (`test_the_test_quality_question_costs_one_content_read_at_the_minimal_policy`
+pins the question's cost). Every review whose packet carries no witness, including every
+Structural and Goal-aware review, keeps #1173's two content reads.
+
+Codex, Claude Code and Cursor share these publication and advisory semantics through MCP and CLI.
+The host runbooks record the same support decision and distinguish shared contract coverage from
+native host and platform execution. Coverage declarations change neither host-observed provenance
+nor the existing consent, packet-admission, receipt and closure boundaries.

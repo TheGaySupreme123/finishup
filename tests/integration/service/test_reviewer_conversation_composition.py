@@ -17,6 +17,7 @@ from typing import Any, cast
 
 import pytest
 
+import finishup.application.semantic_case as semantic_case_module
 import finishup.service.ready_composition as ready_composition_module
 from builders.ledger_adapters import FixedClock, append_command, sqlite_adapter
 from builders.privacy_policies import minimal_external_policy
@@ -366,6 +367,28 @@ async def test_the_smallest_channel_limits_leave_room_for_fewer_content_reads(
     assert result.status is SemanticStatus.SUCCEEDED and result.reviewer is not None
     assert result.reviewer.as_wire()["reads_used"] == str(content_reads)
     assert len(result.reviewer.reads) == refused + content_reads
+    assert gateway.exchanges[-1][1][-1][1].startswith("format_error: read_in_final_phase.")
+
+
+@pytest.mark.anyio
+async def test_the_test_quality_question_costs_one_content_read_at_the_minimal_policy(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """#1170 (ADR-006): a packet that carries the test-quality question fits one content read at
+    the minimal policy where #1173 fits two. Only a packet whose coverage index shows a witness
+    asks it, so every other review keeps both reads (the test above)."""
+
+    asked = semantic_case_module.review_question_set
+
+    def with_question(*args: Any, **kwargs: Any) -> tuple[str, ...]:
+        return asked(*args, **{**kwargs, "test_manifests": True})
+
+    monkeypatch.setattr(semantic_case_module, "review_question_set", with_question)
+    replies = [_read_file("calc.py")] * 2
+    result, gateway, _runtime = await _run(tmp_path, monkeypatch, *replies, _FINAL)
+    assert result.status is SemanticStatus.SUCCEEDED and result.reviewer is not None
+    # The second read is the final phase's format error; the review still concludes.
+    assert result.reviewer.as_wire()["reads_used"] == "1"
     assert gateway.exchanges[-1][1][-1][1].startswith("format_error: read_in_final_phase.")
 
 
