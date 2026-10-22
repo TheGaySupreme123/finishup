@@ -164,7 +164,7 @@ delegate's summary is a claim, not proof.
 | `status` | After resume, compaction, or delegate handoff, and before any completion claim. Not between routine tool calls. Never read it only for a frontier or an id a write already returned. The MCP tool answers `detail: brief` (one frontier, the page and the closure state) unless you ask for `full`; `limit` defaults to 20. |
 | `check` | Check the refined plan before editing, then changed behavior, outputs or acceptance evidence at useful milestones; [review.md](review.md) owns pacing and mode selection, [receipt.md](receipt.md) owns closure. Before the first material edit it runs local plan checks only (`semantic_review_deferred_before_first_edit`); a required closing review is never deferred. Change the work or supply the named new evidence before rechecking: a recheck with no new events returns the same finding. A check with no new events since the last one adds nothing. Track required review through `mode=semantic_required` and its reported status, never as an obligation to obtain the check. |
 | `respond` | Use [review.md](review.md)'s finding table once per unanswered defect; advisory choices are optional. Use the returned `finding_frontier` or current status frontier, never use the finding's `subject_frontier`. |
-| `receipt` | Once at the end; repeat only after material state changed. Follow [receipt.md](receipt.md) for the conditional lifecycle continuation; neither a receipt nor `work_closed` requires another check. |
+| `receipt` | Once at the end; repeat only after material state changed. Then publish `work_closed` if the work is complete ([receipt.md](receipt.md)); neither a receipt nor `work_closed` requires another check. |
 
 
 When `semantic_required` reports `state: "awaiting_input"` with `semantic_reason:
@@ -224,7 +224,8 @@ before reporting actionable-unresolved, unanswered, or resolved-history counts. 
 “no findings”, “zero actionable findings”, “clean”, or “verified” result; an empty finding set is
 bounded by the evidence and review scope that ran. Keep the final answer no stronger than the receipt.
 
-Follow [receipt.md](receipt.md) for the closing sequence and conditional `work_closed` continuation.
+A completion claim is an assertion, not a conclusion. Follow [receipt.md](receipt.md) for the
+closing sequence, including `work_closed`.
 Read [review.md](review.md) for finding decisions, including non-blocking `decision_needed` choices.
 Only a qualifying check resolves repaired defects; a response records a position. Failed-command
 retirement has its own [rule](coverage-and-receipts.md#findings-and-responses).
@@ -470,8 +471,9 @@ incorporating each child's work and verifying the combined result; a clean child
 not establish integration. Preserve contradictory claims until a recorded decision resolves them.
 
 Work state, session health, and receipt history are separate. A receipt never closes work:
-publish `work_closed` only when complete and its advertised lifecycle continuation permits it. Lost contact leaves work open during the
-documented recovery window; the service records abandonment only after it expires. Late evidence
+publish `work_closed` when the work is complete, from the task's active session while it is still
+`open`. Lost contact leaves work open during the documented recovery window; the service records
+abandonment only after it expires, and a later close is refused as `lineage_work_transition`. Late evidence
 remains visible with a gap. `delegation_cancelled` revokes the FinishUP capability, not the host
 process. `child_written_off` and cancellation preserve an accepted dependency and its incomplete
 outcome. Publish these lifecycle transitions through `publish_work`, using the request templates.
@@ -508,8 +510,8 @@ initialize instructions do not say it is a child. Each child's assignment carrie
 - its closure duties: in its own task, publish its plan and obligations, results and evidence,
   and completion claim; `check`; `respond` to each finding it returns, repairing and rechecking
   where the finding requires it; `receipt`; then `work_closed`, because a receipt never closes
-  work. Apply that sequence only to actionable defects; advisory choices need no answer or repair
-  review, and close only when the advertised lifecycle continuation permits it. It reports its task and receipt ids and limits back to the parent.
+  work. The respond-and-repair loop applies only to actionable defects; advisory choices need no
+  answer or repair review. It reports its task and receipt ids and limits back to the parent.
 
 For a self-registered child, the parent publishes `child_accepted` or `child_rejected` after the
 child reports its task id. A helper that gets neither selector does no FinishUP work of its own; its

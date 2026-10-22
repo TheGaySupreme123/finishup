@@ -56,6 +56,24 @@ def test_the_card_says_it_is_enough_and_names_the_inspection_check() -> None:
     assert "Before material evidence or a completion claim, read `status`" not in text
 
 
+def test_the_card_and_every_skill_follow_the_pstack_order() -> None:
+    """Issue #1163: role, goal, procedure, done, evidence, clues, constraints (ADR-006, ADR-047).
+
+    The card's start paragraph stays first: it is the `UserPromptSubmit` intake cue.
+    """
+
+    order = ("# Role", "# Goal", "# Procedure", "# Done", "# Evidence", "# Clues", "# Constraints")
+    entrypoints = [_CARD] + [
+        _REPO_ROOT / "skills" / host / "finishup" / "SKILL.md"
+        for host in ("claude-code", "codex", "cursor", "portable")
+    ]
+    for path in entrypoints:
+        headings = [line for line in path.read_text("utf-8").splitlines() if line.startswith("# ")]
+        positions = [headings.index(heading) for heading in order]
+        assert positions == sorted(positions), path
+    assert _CARD.read_text("utf-8").startswith("# When to use FinishUP\n\n")
+
+
 def test_the_startup_surface_reads_procedure_pages_only_on_demand() -> None:
     for initialize in (CLAUDE_CODE_INITIALIZE_INSTRUCTIONS, COMPACT_INITIALIZE_INSTRUCTIONS):
         collapsed = " ".join(initialize.split())

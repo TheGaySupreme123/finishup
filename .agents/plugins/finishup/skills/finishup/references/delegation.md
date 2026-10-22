@@ -9,10 +9,10 @@ Give each child one selector, a distinct actor id, bounded scope and write polic
 after `terminal_unavailable`, the `finishup_availability` block (a child treats a pre-rename
 `yoetz_availability` block the same way). The child uses its own returned task,
 session, writer, and frontier. It publishes its plan and obligations, results and evidence, and
-completion claim; `check`; `respond` to unanswered actionable defects, repairing and rechecking as required; `receipt`;
-then `work_closed` only when its advertised lifecycle continuation permits it. Advisory choices
-need no repair ruling; [receipt.md](receipt.md) owns closure, and a receipt never closes work. It reports task and
-receipt ids and limits back to the parent.
+completion claim; `check`; `respond` to unanswered actionable defects, repairing and rechecking
+as required; `receipt`; then `work_closed`, because a receipt never closes work. Advisory choices
+need no repair ruling; [receipt.md](receipt.md) owns closure. It reports task and receipt ids and
+limits back to the parent.
 
 A helper given neither a handle nor a parent session makes no FinishUP call and does no ledger work of
 its own. Tell it this in the assignment because initialize instructions otherwise tell it to call

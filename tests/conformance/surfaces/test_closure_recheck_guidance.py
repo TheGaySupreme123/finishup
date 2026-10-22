@@ -190,3 +190,29 @@ def test_every_host_skill_carries_the_same_closure_order(path: Path) -> None:
     card = _collapsed(_GUIDANCE / "agent-instructions.md")
     assert "Publish claim/evidence before the final check; answer findings, check, and " in card
     assert "Cadence: `start` once, `publish_work` per material transition; `receipt` last." in card
+
+
+def test_close_guidance_states_the_work_closed_rule_the_service_enforces() -> None:
+    """Review of #1169: no surface waits for a close permission that nothing advertises.
+
+    The service admits `work_closed` from the task's active session while work is `open`, and
+    refuses a task that already ended (for example abandoned after lost contact) as
+    `lineage_work_transition` (`tests/conformance/observation/test_lineage_recovery_public_workflow.py`).
+    No result advertises a lifecycle continuation that permits closing, so an agent told to wait
+    for one leaves open work open, and one told to "read lineage once" retries a terminal task.
+    """
+
+    surfaces = [*sorted(_GUIDANCE.glob("*.md")), *_SKILLS]
+    for path in surfaces:
+        text = _collapsed(path)
+        assert "lifecycle continuation" not in text, path.name
+        assert "close continuation" not in text, path.name
+    card = _collapsed(_GUIDANCE / "agent-instructions.md")
+    assert "Then publish `work_closed` if the work is complete; a receipt never closes it." in card
+    assert "`lineage_work_transition` means the task already ended: report it." in card
+    closing = _section(_GUIDANCE / "receipt.md", "## Closing sequence")
+    assert "publish `work_closed` from the task's active session; it needs no recheck." in closing
+    assert "Only `open` work closes: `lineage_work_transition` means the task already ended" in (
+        closing
+    )
+    assert "Do not retry the close or open a new task for it" in closing

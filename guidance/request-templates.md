@@ -1103,9 +1103,9 @@ a returned direct child ID; work events affect the publishing task. Accept and r
 only to a pending child. An accepted child cannot be rejected later. Cancellation revokes the
 FinishUP capability without claiming to stop a host process. Write-off retains the incomplete
 dependency. `work_closed` records closure explicitly; a receipt never does. These are shapes,
-not instructions to force a transition: follow [receipt.md](receipt.md) and the advertised
-lifecycle continuation. On `lineage_work_transition`, read lineage state once and follow only a
-supported continuation; do not repeat the close blindly or claim it succeeded.
+not instructions to force a transition; [receipt.md](receipt.md) says when to close. Only `open`
+work changes work state: `lineage_work_transition` means it already ended, so do not repeat the
+transition or claim it succeeded.
 
 Do not publish service-owned `delegation_declared`, `work_abandoned`,
 `child_dependencies_recorded`, or `coordination_context_recorded`.
@@ -1236,9 +1236,9 @@ Do not publish service-owned `delegation_declared`, `work_abandoned`,
 
 ### `work_closed`
 
-Send only when the task is complete and its advertised lifecycle continuation permits closure.
-Do not send for a task already cancelled, written off or otherwise terminal. A receipt and lifecycle
-state are separate facts; if no close is supported, report that boundary without inventing one.
+Send after the receipt from the task's active session, only when the work is complete and still
+`open`. A task already cancelled, written off or abandoned refuses it as `lineage_work_transition`;
+report that state instead of retrying. A receipt and lifecycle state are separate facts.
 
 ```json
 {

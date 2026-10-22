@@ -334,3 +334,26 @@ its 2,000-character hook bound.
 
 A protocol-level alternative (a typed `next_write` on the status result) was not taken: it would
 need a status-result schema change, and the text line carries the same instruction.
+
+## Amendment 2026-10-22 (issue #1163, PR #1169): pstack entrypoints and the enforced close rule
+
+The operating card and the four host skills follow the pstack order ADR-006 adopted for reviewer
+instructions: role, goal, numbered procedure, done, evidence, clues, constraints. The card keeps its
+catalogued section anchors (`when-to-use-finishup`, `start-contract`, `review-and-closure`,
+`read-more`, `guidance-catalog`, `essential-boundaries`, `multi-agent-work`). Its start paragraph
+stays first and unchanged: the `UserPromptSubmit` intake cue (the first 512 bytes through the last
+blank line) is byte-identical to the cue before this change. The skills keep the catalog
+description and start sentence quoted above.
+
+Closure is stated as the service enforces it. A receipt never closes work. After the receipt the
+agent publishes `work_closed` when the work is complete. The service admits it only from the task's
+active session while work is `open`. A task that already ended (cancelled, written off, or
+abandoned after lost contact outlasted the recovery window) refuses it as
+`lineage_work_transition`, whose continuation is `lineage_state_refresh`. The guidance says to
+report that state beside the receipt, not to retry or open a new task. No result advertises a
+lifecycle continuation that permits closing, so no surface tells the agent to wait for one.
+
+Mandatory surface (card, skill and the longest served initialize block; budget 8,192): Codex
+8,168, Cursor 8,182, portable 8,179, Claude Code 7,725 (before: 8,152, 8,125, 8,142, 7,668). MCP
+tool names, descriptors and their digests, and the Claude Code, Codex and Cursor initialize bodies
+are unchanged. The generic host's initialize text changes because it inlines the card.

@@ -145,8 +145,8 @@ Responses to the check's own findings, an acknowledgement of an observation-auth
 non-actionable finding, and `work_closed` need no recheck. A material-for-review change includes
 a recorded repair (it always gets at least one re-check), changed acceptance evidence or a
 response to an older defect; use [coverage attribution](#coverage-attribution) for exact classes.
-Request `receipt`, then publish `work_closed` only if complete and its advertised lifecycle
-continuation permits it; `work_closed` never requires another check. When `closure_readiness.state` is
+Request `receipt`, then publish `work_closed` if the work is complete and still `open`
+([receipt.md](receipt.md) covers a refusal); `work_closed` never requires another check. When `closure_readiness.state` is
 `ready_with_limitations`, request the receipt without another check. Report actionable and unanswered counts, checked frontier,
 review status/reason and coverage limits as the receipt states them.
 
@@ -544,7 +544,8 @@ quit instructions apply only to Cursor; use the current host's own continuation 
 
 <a id="recovery"></a>
 
-`awaiting_human` is nonterminal: preserve its exact continuation and required approval.
+`awaiting_human` is nonterminal: neither a gap to disclose nor a retry to spend. Preserve its exact
+continuation and required approval.
 [recovery.md](recovery.md) owns unknown-write, `OPERATION_PENDING` and admission recovery;
 [review.md](review.md) owns approval. A separate local-only check is permissible only when no
 required review or pending approval would be bypassed.
@@ -570,8 +571,8 @@ finding, verdict, or receipt. If the host requires FinishUP, stop at that host-o
 
 ### Startup failure precedence
 
-Apply these rules in order; a first-start failure does not bypass recovery or automatically permit
-continuing without FinishUP:
+Apply these rules in order: same-request recovery first, including a named one-time repair. A
+first-start failure does not bypass recovery or automatically permit continuing without FinishUP:
 
 1. Follow an exact typed continuation, including `vault_initialization_required`, with its existing
    consent and request identity. A pending approval remains pending; do not turn it into an outage
@@ -591,7 +592,8 @@ continuing without FinishUP:
 5. The exception to that handoff is optional FinishUP remaining unavailable after the named
    repair/retry reaches a terminal outcome. Only then, or after a previously successful startup,
    may ordinary authorized work continue with missing coverage disclosed, provided the user/host
-   permits it and no write or approval remains pending. Required review remains unmet.
+   permits it and no write or approval remains pending. A first non-retryable `start` failure alone
+   does not qualify. Required review remains unmet.
 
 These rules take precedence over general outage fallback language below.
 
@@ -644,8 +646,8 @@ clean verification; existing findings and coverage limitations remain.
 
 If `missing_for_assessment` names an `agent_suppliable` item you can supply, publish exactly that
 item once, linked to any named target, then `check` again. If it is already supplied, or it is a
-packet, type or authority limit, go to the receipt and state that specific limit.
-The item classes are `agent_suppliable`, `structurally_unavailable_on_this_host` and FinishUP
+packet, type or authority limit, go to the receipt and state that specific limit. Only new material
+counts; tie it to any named target. The item classes are `agent_suppliable`, `structurally_unavailable_on_this_host` and FinishUP
 limits (`semantic_missing_agent_suppliable`, `semantic_missing_structurally_unavailable`,
 `semantic_missing_yoetz_limit`). A `yoetz_limit_*` item is not repair work or a blocker.
 Never reshape a deliverable for review or use a `deterministic_only` fallback for

@@ -8,7 +8,7 @@ Follow [startup.md](startup.md) for the plan: after bounded exploration, before 
 edit, map each requirement to a testable obligation and refine the current plan with
 `plan_revised`. It owns versions, immutable meaning and statement-sourced obligations. Then publish
 material transitions, results, evidence and the completion claim, one transition per small batch.
-Use [receipt.md](receipt.md) for conditional lifecycle closure; a receipt never closes work. A `publish_work` body may omit `request_id`,
+Close with `work_closed` as [receipt.md](receipt.md) says; a receipt never closes work. A `publish_work` body may omit `request_id`,
 `expected_frontier`, each draft's `event_id`, `occurred_at`, `causal_parents`, `artifact_refs` and
 `evidence_refs`, and, on `claim_recorded/1.1.0`, an empty `limitation_refs` or
 `supersedes_claim_refs`, and a plan's empty `obligation_refs` beside `no_obligations_reason`.

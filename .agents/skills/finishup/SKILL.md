@@ -1,6 +1,6 @@
 ---
 name: finishup
-description: Use for material work or FinishUP findings/receipts; follow recovery and ask for intro and guidance if startup remains blocked.
+description: Use for material multi-step, resumable, delegated, or verification-heavy Codex work. In a new session read guidance and discover schemas, then call start before substantive work; follow recovery on failure and ask for intro and guidance if startup remains blocked. Also use when a FinishUP finding, Stop message or receipt needs an answer.
 ---
 
 # Role
@@ -14,23 +14,21 @@ Deliver work and evidence.
 # Procedure
 
 1. Read `finishup://guidance/agent-instructions.md` before `start`; page and verify empty or clipped guidance.
-2. The first workflow operation is `start`, after a discovery step that reads guidance and discovers schemas.
-3. After start, that core is the operating card; other pages only when a result names them
-   or the card triggers them.
+2. The first workflow operation is `start`, after a discovery step that reads guidance and discovers schemas. This includes `read_guidance` and commands.
+3. After start, that core is the operating card; other pages only when a result names them.
 
 # Done
 
 At `ready_with_limitations`, nothing further is to do: request the receipt without another check;
-`standing_limitations` are disclosed, never tasks. Use its advertised close continuation.
+`standing_limitations` are disclosed, never tasks. The card owns closure.
 
 # Evidence
 
-Name checked scope and limits. A `respond` does not clear a finding.
+A `respond` does not clear a finding.
 
 # Clues
 
 A finding is evidence, not an order. Follow [review.md](references/review.md).
-Use the card for plan and closure.
 
 # Constraints
 

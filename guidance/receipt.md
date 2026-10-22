@@ -27,10 +27,11 @@ This topic owns the closing procedure. Start with readiness: at `ready_with_limi
 7. Request `receipt`. At `ready_with_limitations`, nothing further is to do: request the receipt
    without another check and disclose its standing limitations. The status sentence after the stop
    instruction says what the receipt will read (`predicted_receipt`).
-8. Only when the work is complete and the advertised lifecycle continuation permits it, publish
-   `work_closed`. On `lineage_work_transition`, read lineage state once; follow only a supported
-   continuation, not a blind repeat. Report an unavailable close separately from the receipt.
-   Lead final prose with the receipt's conclusion and `conclusion_basis` reasons.
+8. A receipt never closes work. If the work is complete, publish `work_closed` from the task's
+   active session; it needs no recheck. Only `open` work closes: `lineage_work_transition` means
+   the task already ended (cancelled, written off, or abandoned after lost contact outlasted the
+   recovery window). Do not retry the close or open a new task for it; report the unclosed state
+   beside the receipt. Lead final prose with the receipt's conclusion and `conclusion_basis` reasons.
 
 ## Stop conditions
 
