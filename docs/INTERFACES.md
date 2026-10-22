@@ -12253,7 +12253,9 @@ CLI output, the native TUI, owner exports and `view=operation` never do. Send `d
 only with `view=compact`, the held session and writer and a fresh request ID, without other
 selectors, filter, frontier or inventory cursor. A cursor binds source selection, writer, session
 (by its signature), sink, position and authorized content digest, and freezes the status read's
-live fields (head frontier, projection lag, import status, rebuild state, credential heuristic).
+live fields (head frontier, projection lag and version, rebuild state, import status, credential
+heuristic, review mode), presence included, so an append between page reads leaves a brief or full
+read continuable.
 The original complete operation is read without running it again, and disclosure runs again for
 the current reader. Every page therefore carries its own read's `privacy_projection`, never paged
 as `items` and outside the content digest; reconstruction uses the final page's projection. Past

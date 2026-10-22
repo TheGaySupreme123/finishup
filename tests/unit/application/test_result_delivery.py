@@ -217,6 +217,10 @@ def test_cursor_rejects_tamper_other_writer_and_changed_authorized_content(
     cursor = first["next_cursor"]
     with pytest.raises(PublicOperationError):
         decode_cursor(_KEY, cursor, _SESSION, _WRITER[:-1] + "3")
+    # The session is bound by the signature only, not carried in the cursor body.
+    with pytest.raises(PublicOperationError):
+        decode_cursor(_KEY, cursor, _SESSION[:-1] + "9", _WRITER)
+    assert decode_cursor(_KEY, cursor, _SESSION, _WRITER)["session_id"] == _SESSION
     with pytest.raises(PublicOperationError):
         decode_cursor(_KEY, cursor[:-2] + "AB", _SESSION, _WRITER)
     changed = copy.deepcopy(source)
@@ -1199,3 +1203,92 @@ async def test_bridge_opts_only_the_agents_status_reads_into_pages(
     await server._publish_recovery_from_envelope(envelope, runtime, None)  # pyright: ignore[reportPrivateUsage]
     assert len(probes) == 2
     assert all(probe.view == "operation" and probe.delivery is None for probe in probes)
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("view", ["evidence", "history"])
+async def test_brief_status_pages_survive_an_append_between_reads(view: str) -> None:
+    """Second review of #1139: the MCP default (brief, paged) continues after the agent publishes.
+
+    A brief body omits live fields at their defaults; an append reveals them on the pinned
+    re-read. The cursor freezes their presence too, so the continuation still reassembles to
+    the first read's complete body. Natural sizes on the ~1,000-event #916 ledger.
+    """
+    from builders.projection_workflow import frontier_json, request_base
+    from builders.start_application import protocol_id
+    from builders.status_render_cost import build_codex_status_ledger
+    from finishup.ports.control import ControlClientKind, ControlMethod
+    from finishup.protocol.models import PublishWorkRequest, public_model_to_wire
+    from integration.service.test_daemon_clients import (
+        _request,  # pyright: ignore[reportPrivateUsage]
+    )
+
+    ledger = await build_codex_status_ledger()
+    daemon = _workflow_daemon(ledger.app)
+    seed = iter(range(0x7700, 0x7800))
+    held = {"session_id": ledger.started.session_id, "writer_id": ledger.started.writer_id}
+
+    async def dispatch(method: ControlMethod, model: Any, body: Any) -> dict[str, Any]:
+        result = await daemon.dispatch(
+            ControlClientKind.MCP_BRIDGE, _request(daemon, method, model.model_validate(body))
+        )
+        assert result.outcome == "ok", result.body
+        wire = cast(dict[str, Any], public_model_to_wire(result.body))
+        assert wire["ok"] is True, wire.get("error")
+        return wire
+
+    def status(**fields: Any) -> dict[str, Any]:
+        rid = f"req_00000000-0000-4000-8000-{next(seed):012x}"
+        return {**request_base(rid), **held, **fields}
+
+    read = {"view": view, "limit": "25", "detail": "brief"}
+    await daemon.start()
+    try:
+        complete = await dispatch(
+            ControlMethod.STATUS, StatusRequest, status(**read, delivery="complete")
+        )
+        pages = [
+            await dispatch(ControlMethod.STATUS, StatusRequest, status(**read, delivery="paged"))
+        ]
+        assert pages[0]["state"] == "delivery_page" and "head_frontier" not in complete
+        # The agent's own publish advances the head before it asks for the next page.
+        appended = await dispatch(
+            ControlMethod.PUBLISH_WORK,
+            PublishWorkRequest,
+            status(
+                expected_frontier=frontier_json(ledger.head),
+                event_drafts=[
+                    {
+                        "event_id": protocol_id("evt_", 77002),
+                        "schema": {"name": "obligation_published", "version": "1.0.0"},
+                        "occurred_at": "2026-07-28T12:00:00.000Z",
+                        "causal_parents": [],
+                        "payload": {
+                            "obligation_id": protocol_id("obl_", 77001),
+                            "description": "Appended between page reads.",
+                            "evidence_expectation": "A linked result.",
+                            "requested_items": [{"item_kind": "change", "value": "x"}],
+                            "status": "open",
+                        },
+                        "artifact_refs": [],
+                        "evidence_refs": [],
+                    }
+                ],
+            ),
+        )
+        assert int(appended["result_frontier"]["sequence"]) > ledger.head.sequence
+        while pages[-1]["next_cursor"] is not None:
+            pages.append(
+                await dispatch(
+                    ControlMethod.STATUS,
+                    StatusRequest,
+                    status(view="compact", delivery_cursor=pages[-1]["next_cursor"]),
+                )
+            )
+        assert len(pages) > 1
+        rebuilt = reassemble_delivery(pages)
+        assert {k: v for k, v in rebuilt.items() if k != "privacy_projection"} == {
+            k: v for k, v in complete.items() if k not in {"privacy_projection", "request_id"}
+        } | {"request_id": rebuilt["request_id"]}
+    finally:
+        await daemon.close()

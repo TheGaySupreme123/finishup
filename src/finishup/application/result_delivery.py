@@ -29,13 +29,16 @@ _ATOM_BYTES: Final = 1_400
 # size its omitted pointers coalesce to containing fields (ADR-009's rule past the 512-pointer
 # bound), so a long omission list still leaves room for full-size atoms.
 _PROJECTION_BYTES: Final = 1_024
-# Live status fields a later page read would see change; the cursor freezes the first read's.
+# Live status fields a later page read would see change; the cursor freezes the first read's,
+# presence included: a brief body omits each one at its default, and an append can reveal it.
 _STATUS_LIVE_FIELDS: Final = (
     "head_frontier",
     "projection_lag",
-    "import_status",
+    "projection_version",
     "rebuild_state",
+    "import_status",
     "credential_heuristic",
+    "review_mode",
 )
 _REQUIRED_NEXT_STEP: Final = (
     "Until actionable_complete=true, call status view=compact delivery_cursor=next_cursor with "
@@ -357,8 +360,11 @@ def page_result(
             }
         elif isinstance(snapshot, Mapping):
             # The source is a frozen status result. A subsequent append or a finished import must
-            # not replace its live watermarks while the cursor is still reading that result.
-            source = {**source, **dict(snapshot)}
+            # not replace its live watermarks while the cursor is still reading that result, nor
+            # add one a brief first read omitted at its default.
+            frozen = cast(Mapping[str, JsonValue], snapshot)
+            source = {k: v for k, v in source.items() if k not in _STATUS_LIVE_FIELDS}
+            source.update({k: frozen[k] for k in _STATUS_LIVE_FIELDS if k in frozen})
         else:
             raise invalid_cursor()
     # Each read attaches a fresh local disclosure receipt to its own page, outside the items and

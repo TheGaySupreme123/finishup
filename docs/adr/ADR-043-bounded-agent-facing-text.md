@@ -284,9 +284,11 @@ a fresh read request ID. These domain-separated authenticated cursors select a r
 operation or a status query pinned to its original frontier. Reads reapply the ordinary disclosure
 policy; they never dispatch review, append a check or create a receipt. A changed authorized
 content digest, changed sink, invalid binding, or missing retained source refuses continuation.
-The cursor freezes the status read's live fields (head frontier, projection lag, import status,
-rebuild state and credential heuristic), so an unrelated append or a finished import does not
-invalidate the original read. A brief status body omits `requested_frontier` when it equals
+The cursor freezes the status read's live fields (head frontier, projection lag and version,
+rebuild state, import status, credential heuristic and review mode), presence included: a brief
+body omits each at its default, and the continuation drops one the first read omitted. An
+unrelated append, the agent's own publish, a hook drain or a finished import therefore does not
+invalidate the original read, brief or full. A brief status body omits `requested_frontier` when it equals
 `result_frontier`; its pages pin `result_frontier`. The cursor body omits the held session and
 writer, which its signature binds. Like existing status cursors, a service restart expires it: recover with current
 status/findings, without starting a new review. Fresh disclosure audit metadata is outside the

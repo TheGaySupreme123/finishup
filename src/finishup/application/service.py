@@ -3506,20 +3506,20 @@ class Application:
         """
         if context.client_kind is not ControlClientKind.MCP_BRIDGE or context.owner_view:
             return None
+        # Decide from the result first; parse the request body only for a pageable method.
+        if not (
+            method is ControlMethod.RECEIPT
+            or (method is ControlMethod.CHECK and source.get("state") == "complete")
+            or (method is ControlMethod.STATUS and source.get("view") != "operation")
+        ):
+            return None
         control = strict_json_parse(binding.control_request_canonical)
         body = control.get("body") if isinstance(control, dict) else None
         if not isinstance(body, dict):
             return None
-        pageable = (
-            method is ControlMethod.RECEIPT
-            or (method is ControlMethod.CHECK and source.get("state") == "complete")
-            or (
-                method is ControlMethod.STATUS
-                and source.get("view") != "operation"
-                and body.get("delivery") == "paged"
-            )
-        )
-        return body if pageable else None
+        if method is ControlMethod.STATUS and body.get("delivery") != "paged":
+            return None
+        return body
 
     async def close(self) -> None:
         async with self._close_lock:
