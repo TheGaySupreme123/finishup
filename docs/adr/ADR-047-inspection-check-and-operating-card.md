@@ -282,7 +282,9 @@ Part of the freed budget pays for two routing changes. Each skill description, t
 selects skills by, ends "Also use when a FinishUP finding, Stop message or receipt needs an answer", so
 a host that picks skills by description loads the skill again at closure. The card's catalog line
 says a long page lists its `#anchor` sections on page 0 (the generated `sections` list, ADR-010
-amendment of the same date) and to read one section, not the page.
+amendment of the same date) and to read one section, not the page. (Superseded 2026-10-22, #1169:
+the card no longer carries that sentence; the page-0 section list itself says to read only the
+section needed.)
 
 Mandatory surface after the change (budget 8,192): Codex 7,766 (was 8,186), Cursor 7,694 (8,140),
 portable 7,711 (8,157), Claude Code 7,252 (7,744). No rule left any host's mandatory surface;
@@ -334,3 +336,31 @@ its 2,000-character hook bound.
 
 A protocol-level alternative (a typed `next_write` on the status result) was not taken: it would
 need a status-result schema change, and the text line carries the same instruction.
+
+## Amendment 2026-10-22 (issue #1163, PR #1169): pstack entrypoints and the enforced close rule
+
+The operating card and the four host skills follow the pstack order ADR-006 adopted for reviewer
+instructions: role, goal, numbered procedure, done, evidence, clues, constraints. The card keeps its
+catalogued section anchors (`when-to-use-finishup`, `start-contract`, `review-and-closure`,
+`read-more`, `guidance-catalog`, `essential-boundaries`, `multi-agent-work`). Its start paragraph
+stays first and unchanged: the `UserPromptSubmit` intake cue (the first 512 bytes through the last
+blank line) is byte-identical to the cue before this change. The skills keep the catalog
+description and start sentence quoted above.
+
+Closure is stated as the service enforces it. A receipt never closes work. After the receipt the
+agent publishes `work_closed` when the work is complete. The service admits it only from the task's
+active session while work is `open`. A task that already ended (cancelled, written off, or
+abandoned after lost contact outlasted the recovery window) refuses it as
+`lineage_work_transition`, whose continuation is `lineage_state_refresh`. The guidance says to
+report that state beside the receipt, not to retry or open a new task. No result advertises a
+lifecycle continuation that permits closing, so no surface tells the agent to wait for one. Each
+skill states the close itself ("Then `work_closed` if complete."), because a host may reload the
+skill at closure after the card has left its context.
+
+Mandatory surface (card, skill and the longest served initialize block; budget 8,192): Codex
+8,163, Cursor 8,177, portable 8,174, Claude Code 7,720 (base `12c7de6c2`: 8,148, 8,121, 8,138,
+7,664). MCP tool names, descriptors and their digests, and the Claude Code, Codex and Cursor
+initialize bodies are unchanged. The generic host's initialize text changes because it inlines the
+card. The `workflow.md#completion` topic, which #1167's freshness guidance had pushed to 17,255
+bytes, is 16,042 bytes again, inside the 16,384-byte one-page bound (#1193): its closing sequence
+now lives once in `receipt.md`.

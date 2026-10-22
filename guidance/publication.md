@@ -4,14 +4,11 @@ Read this topic when a result or error names it, or when deciding whether a tran
 evidence item, obligation, or claim belongs in the ledger. Publish the smallest material,
 state-bound facts needed for another participant to understand and check the work.
 
-Publish a bounded initial plan and its explicit obligations before substantive work. After bounded
-exploration and before the first material edit, publish one `plan_revised` refinement; map
-instruction requirements to testable obligations and carry, supersede, or waive earlier obligations
-explicitly. Each obligation's `source_refs` cites the task-statement event (see `startup.md`), and
-its `requested_items` name the files and commands the request names. `source_refs` cannot change on
-an existing obligation: to map a missed requirement, publish a new obligation. Then publish material
-transitions, results, evidence, and a completion claim. Keep one transition together in a small
-batch. `work_closed` closes work; a receipt never does. A `publish_work` body may omit `request_id`,
+Follow [startup.md](startup.md) for the plan: publish version 1 after `start` if none exists; after
+bounded exploration, before the first material edit, map each requirement to a testable obligation
+and refine that plan with `plan_revised`. It owns versions, immutable meaning and statement-sourced obligations. Then publish
+material transitions, results, evidence and the completion claim, one transition per small batch.
+Close with `work_closed` as [receipt.md](receipt.md) says; a receipt never closes work. A `publish_work` body may omit `request_id`,
 `expected_frontier`, each draft's `event_id`, `occurred_at`, `causal_parents`, `artifact_refs` and
 `evidence_refs`, and, on `claim_recorded/1.1.0`, an empty `limitation_refs` or
 `supersedes_claim_refs`, and a plan's empty `obligation_refs` beside `no_obligations_reason`.
