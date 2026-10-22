@@ -327,6 +327,28 @@ class TestNativeTextProjection:
 
 
 class TestCliProjection:
+    @pytest.mark.parametrize(
+        "reason", ("check_resume_capacity_exceeded", "check_result_capacity_exceeded")
+    )
+    def test_local_checkpoint_capacity_reaches_cli_and_mcp(self, reason: str) -> None:
+        error = PublicOperationError(
+            PublicErrorCode.LIMIT_EXCEEDED,
+            "The local check checkpoint exceeds its capacity.",
+            False,
+            correlation_id=_CORRELATION_ID,
+            safe_details={"reason_code": reason, "count": 5_000_000, "limit": 4_194_304},
+        )
+        wire = error.as_public_dict()
+        model = PublicErrorModel.model_validate(wire)
+        rendered = render_human_error(model)
+        summary = summary_for_public_error({"error": wire})
+        directive = RECOVERY_DIRECTIVES["check_capacity_handoff"].directive
+        for text in (rendered, summary):
+            assert "LIMIT_EXCEEDED" in text
+            assert "check_capacity_handoff" in text
+            assert directive in text
+        assert reason in summary
+
     def test_cli_renders_the_same_directive(self) -> None:
         model = PublicErrorModel.model_validate(
             {

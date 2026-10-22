@@ -55,6 +55,8 @@ check_admission_contended
 check_admission_import_pending
 check_admission_in_progress
 check_pipeline_failed
+check_result_capacity_exceeded
+check_resume_capacity_exceeded
 child_check_frontier_ahead_of_child
 child_check_frontier_missing
 child_check_frontier_without_check
@@ -548,7 +550,7 @@ def test_public_error_code_membership() -> None:
 def test_protocol_reason_registry_is_exact_and_import_order_independent() -> None:
     source_values = cast(tuple[str, ...], getattr(errors_module, "_PROTOCOL_REASON_CODE_VALUES"))
     assert source_values == _EXPECTED_REASON_CODES
-    assert len(source_values) == 348
+    assert len(source_values) == 350
     assert source_values == tuple(sorted(source_values, key=str.encode))
     assert len(source_values) == len(set(source_values))
     assert PROTOCOL_REASON_CODES == frozenset(_EXPECTED_REASON_CODES)
