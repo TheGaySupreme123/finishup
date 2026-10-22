@@ -17,10 +17,23 @@ or delegation. If work began first, call `start` now, publish a bounded plan nam
 prefix, and preserve that limit in the receipt. A read-only question or a helper whose assignment
 has neither a child handle nor parent selector has no startup task of its own.
 
-The plan has two stages: `start` records intent, delivery, and known constraints; after bounded
-exploration and before the first material edit, publish one `plan_revised` refinement. Map each
-instruction requirement to a testable obligation, and explicitly carry, supersede, or waive every
-earlier obligation with a visible reason. Do not make the material edit before that refinement.
+The plan follows the state returned by `start`, not a version guessed from the session:
+
+1. `start` records intent, delivery and known constraints. If no plan exists, use its first-plan
+   template: `plan_published` with `plan_version: 1` and the obligations in the same batch.
+2. After bounded exploration and before the first material edit, refine the existing plan with
+   `plan_revised`: if its current version is N, send `plan_version: N+1` and
+   `supersedes_plan_version: N`. For example, version 1 refines to 2 superseding 1; never revise
+   version 1 superseding 0. On attach, use the held version or the latest `plan_published`/`plan_revised` payload in
+   `status view=history`; if unavailable, follow the typed continuation, never guess a version.
+3. Map each instruction requirement to a testable obligation. Explicitly carry, supersede or
+   waive earlier obligations. A new obligation is `carried`, never `added` or `updated`.
+   Meaning changes need a new obligation id; supersede the old one with a reason and replacement
+   ids. Existing meaning fields stay immutable.
+
+Do not edit before this refinement and its plan check. Exact bodies:
+`finishup://guidance/request-templates.md#publish-work-plan-plus-obligation` and
+`finishup://guidance/request-templates.md#publish-work-revised-plan`.
 
 Decompose the user's request yourself: one obligation per stated requirement, reported symptom,
 constraint, or deliverable, including the ones that look hard or contradictory. Each obligation's
@@ -38,8 +51,8 @@ the statement, or a completion claim on no plan or an explicit empty scope, retu
 agent-actionable `task_requirement_unmet` finding naming the statement event id. When the request
 truly asks for no material work, answer it with a `decision_recorded` whose statement holds the
 exact line `finishup-no-material-work:<statement event id>` and a rationale; it counts only while no
-file changed. Then run `check` once on the plan before editing, and again after each material
-milestone.
+file changed. Then run `check` once on the refined plan before editing; subsequent checks follow
+[delivery and review pacing](review.md).
 
 If `start` fails, retain its exact request and correlation identity. Follow the typed continuation
 and same-request recovery, including a named one-time repair, before asking the user for intro and

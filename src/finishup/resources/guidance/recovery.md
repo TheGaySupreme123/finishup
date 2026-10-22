@@ -3,9 +3,12 @@
 Read this topic when a request fails, times out, returns a typed continuation, or a host reconnects.
 Recovery is a state lookup, not a guess from a message, local SQLite file, or product source.
 
-For a read-only timeout, retry with one fresh `request_id` after the bounded route retry. For any
-write with an unknown outcome, retain the original body and request id, then read
-`status view=operation` with `filter.operation_request_id` set to that exact id:
+This topic owns unknown-write recovery. For a read-only timeout, retry with one fresh
+`request_id` after the bounded route retry. For an unknown write, retain its original body/id.
+If a `start` response is lost before session/writer ids return, replay the exact original `start`
+body once with the same `request_id`; do not invent ids for status. A typed start
+`OPERATION_PENDING` with no route ids uses that same branch. Otherwise read `status view=operation`
+with `filter.operation_request_id` set to the exact write id and follow this table:
 
 | Stored state | Next action |
 | --- | --- |
@@ -14,6 +17,10 @@ write with an unknown outcome, retain the original body and request id, then rea
 | `pending` with a typed continuation | Follow that continuation and required approval, then replay the original body once. |
 | `pending` without a continuation | Retain and report pending; do not guess. |
 | `quarantined` or unknown | Retain and report the boundary; do not create a sibling. |
+
+A check refused before admission (`check_admission_same_identity`, or an `absent` operation
+with an `admission` stage) recorded nothing: wait its `retry_after_ms` and replay the exact body/id,
+at most three times; then retain/report "not admitted". Do not switch mode or mint a new request.
 
 `awaiting_human` is a nonterminal check result, neither a gap to disclose nor a retry to spend. Do
 not create a new check request. Recover the exact operation with `status view=operation`, show the
