@@ -656,3 +656,53 @@ def test_tuned_public_cases_render_as_two_independent_axes() -> None:
     assert "tuned on these cases" in text
     wire_text = "\n".join(verification_coverage_wire_lines(verification_coverage_to_json(view)))
     assert "only own-generated or tuned-on cases, only task-public cases" in wire_text
+
+
+@pytest.mark.parametrize(
+    ("sentence", "quote"),
+    [
+        (
+            "The ratio must be at most 1.06 and the error is at most 2 mm.",
+            "ratio must be at most 1.06",
+        ),
+        (
+            "The ratio must be at most 1.06 and the error is ≤ 2 mm.",
+            "ratio must be at most 1.06",
+        ),
+        (
+            "Every response includes a timestamp and each identifier is unique.",
+            "response includes a timestamp",
+        ),
+    ],
+)
+def test_partial_quote_keeps_unwitnessed_quantified_conditions(sentence: str, quote: str) -> None:
+    view = build_verification_coverage(_projection(_run(1, quote=quote), statement=sentence))
+    gaps = {row.criterion_quote for row in view.criteria if "no_test" in row.flags}
+    assert sentence in gaps
+    assert any(row.witnesses for row in view.criteria)
+
+
+@pytest.mark.parametrize(
+    "statement",
+    [
+        "For every input, the ratio must be at most 1.06.",
+        "Every ratio must be at most 1.06.",
+    ],
+)
+def test_quantified_context_of_a_witness_is_not_a_separate_gap(statement: str) -> None:
+    view = build_verification_coverage(
+        _projection(_run(1, quote="ratio must be at most 1.06"), statement=statement)
+    )
+    assert not any("no_test" in row.flags for row in view.criteria)
+
+
+def test_exact_task_quote_also_maps_its_longer_obligation_restatement() -> None:
+    statement = "The ratio must be at most 1.06"
+    view = build_verification_coverage(
+        _with_acceptance(
+            _projection(_run(1, quote=statement), statement=statement),
+            statement + " for every scenario.",
+        )
+    )
+    assert not any("no_test" in row.flags for row in view.criteria)
+    assert len(view.criteria) == 1

@@ -61,9 +61,6 @@ _QUANTIFIER_WORDS: Final = r"every|each|at least|at most|no more than|no less th
 _CONDITION: Final = re.compile(
     rf"\b(?:{_REQUIREMENT_WORDS}|{_QUANTIFIER_WORDS})\b|[≤≥]", re.IGNORECASE
 )
-# What a quote leaves of its sentence states another criterion only through a requirement word;
-# a bare quantifier ("For every input, ...") qualifies the quoted clause.
-_REQUIREMENT: Final = re.compile(rf"\b(?:{_REQUIREMENT_WORDS})\b", re.IGNORECASE)
 MAX_CRITERION_QUOTE_CHARACTERS: Final = 240
 _SENTENCE: Final = re.compile(r"(?<=[.!?])\s+|[\n;]+")
 _SOURCE_RANK: Final = {
@@ -137,8 +134,16 @@ def _outside_quotes(candidate: str, quotes: Collection[str]) -> str:
     for quote in sorted(quotes, key=len, reverse=True):
         pattern = criterion_quote_pattern(quote)
         if pattern is not None:
-            remainder = pattern.sub(" ", remainder)
-    return remainder
+            remainder = pattern.sub("\0", remainder)
+    # A simple quantified context qualifies the witnessed clause, rather than stating a
+    # second condition. Retain quantified predicates and numerical bounds outside it.
+    remainder = re.sub(
+        r"\b(?:for|on|over|across)\s+(?:every|each)\s+[\w-]+(?=\s*(?:[,;:.!?]|\x00|$))",
+        " ",
+        remainder,
+        flags=re.IGNORECASE,
+    )
+    return re.sub(r"\b(?:every|each)\s*(?=\x00)", " ", remainder, flags=re.IGNORECASE)
 
 
 def _strength(run: _Run) -> tuple[int, int, int, int]:
@@ -297,6 +302,12 @@ def build_verification_coverage(
             if not in_task and len(within) == 1
             else []
         )
+        if len(in_task) == 1:
+            targets = list(
+                dict.fromkeys(
+                    [*targets, *(quote for quote in within if candidates[quote] == "obligation")]
+                )
+            )
         for quote in targets:
             mapped.setdefault(quote, []).append(known)
     # A quote retires its sentence only when nothing outside the quoted text states another
@@ -305,7 +316,7 @@ def build_verification_coverage(
     covered = {
         quote
         for quote, quotes in mapped.items()
-        if not _REQUIREMENT.search(_outside_quotes(quote, quotes))
+        if not _CONDITION.search(_outside_quotes(quote, quotes))
     }
     for quote, source in candidates.items():
         if quote not in covered:

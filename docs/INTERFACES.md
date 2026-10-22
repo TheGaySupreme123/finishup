@@ -12530,8 +12530,9 @@ sentence up to case, spacing and final punctuation is that task criterion and ke
 source. A witness quote maps a candidate when it equals it, or occurs under the admission rule
 above in exactly one task sentence (it then also maps every obligation sentence that contains it),
 or, outside every task sentence, in exactly one obligation sentence. A mapped sentence is retired
-only when the text outside its quotes holds no further requirement word (a bare quantifier such as
-"For every input" qualifies the quote); otherwise it stays a `no_test` row beside the witness row,
+only when the text outside its quotes holds no further condition word, quantifier or inequality
+(a bare quantifier immediately before a quote, or a simple context such as "For every input,"
+or "for every scenario.", qualifies the quote); otherwise it stays a `no_test` row beside the witness row,
 so a partial quote never hides the rest of a compound sentence. A generic, cross-sentence or
 repeated quote stays its own row, and every candidate it does not identify remains `no_test`.
 The projection applies the admission rule's whole-word occurrence to recorded quotes too, so an
