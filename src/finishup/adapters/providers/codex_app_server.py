@@ -2056,40 +2056,58 @@ def _runtime_token_usages_from_notification(
     return usage_of(total), usage_of(last)
 
 
+type _CacheCounters = tuple[int, int, int, int]  # input, cached input, cache-write input, output
+
+
+def _cache_counters(usage: RuntimeTokenUsage | None) -> _CacheCounters:
+    """A usage snapshot's prompt-cache counters; a thread that has reported nothing is at zero."""
+
+    if usage is None:
+        return (0, 0, 0, 0)
+    return (
+        usage.input_tokens,
+        usage.cached_input_tokens,
+        usage.cache_write_input_tokens,
+        usage.output_tokens,
+    )
+
+
+def _start_before_request(
+    total: RuntimeTokenUsage, request: RuntimeTokenUsage
+) -> _CacheCounters | None:
+    """The thread's total before one reported request: its snapshot's ``total`` less its ``last``."""
+
+    end, own = _cache_counters(total), _cache_counters(request)
+    start = (end[0] - own[0], end[1] - own[1], end[2] - own[2], end[3] - own[3])
+    return start if min(start) >= 0 else None
+
+
 def _turn_cache_usage(
-    before: RuntimeTokenUsage | None,
+    start: _CacheCounters | None,
     after: RuntimeTokenUsage | None,
     requests: int,
     first_cached: int,
     last_input: int,
 ) -> ExchangeCacheUsage | None:
-    """One turn's usage: the thread's cumulative counters across it, or ``None`` if unreported.
+    """One turn's usage: the thread's cumulative counters across it, or ``None`` if unknown.
 
+    ``start`` is the thread's total before the turn's requests, ``None`` when it is unknown.
     ``first_cached`` and ``last_input`` come from the ``last`` breakdown of the snapshots whose
     total grew, so a turn that made several model requests still names its first request's reuse.
     """
 
-    if not requests or after is None:
+    if start is None or not requests or after is None:
         return None
-    start = (
-        (0, 0, 0, 0)
-        if before is None
-        else (
-            before.input_tokens,
-            before.cached_input_tokens,
-            before.cache_write_input_tokens,
-            before.output_tokens,
-        )
-    )
+    end = _cache_counters(after)
     try:
         return ExchangeCacheUsage(
-            input_tokens=after.input_tokens - start[0],
-            cached_input_tokens=after.cached_input_tokens - start[1],
-            output_tokens=after.output_tokens - start[3],
+            input_tokens=end[0] - start[0],
+            cached_input_tokens=end[1] - start[1],
+            output_tokens=end[3] - start[3],
             requests=requests,
             first_cached_tokens=first_cached,
             last_input_tokens=last_input,
-            cache_write_input_tokens=after.cache_write_input_tokens - start[2],
+            cache_write_input_tokens=end[2] - start[2],
         )
     except ValueError:  # counters the runtime reported inconsistently are not recorded
         return None
@@ -2526,6 +2544,9 @@ class CodexAppServerEvaluator:
         # requests it made, the first one's cached input and the last one's input.
         turn_settings: dict[str, JsonValue] | None = None
         turn_start_usage: RuntimeTokenUsage | None = None
+        # The thread's total before this turn's first reported request: that snapshot's total less
+        # its own ``last``. It is the turn's start when the previous turn left no current total.
+        first_request_start: _CacheCounters | None = None
         requests = first_cached = last_input = 0
         compacted = usage_refused = False
         try:
@@ -2726,6 +2747,9 @@ class CodexAppServerEvaluator:
                                     requests += 1
                                     if requests == 1:
                                         first_cached = request_usage.cached_input_tokens
+                                        first_request_start = _start_before_request(
+                                            observed_usage, request_usage
+                                        )
                                     last_input = request_usage.input_tokens
                                 token_usage = observed_usage
                                 if _visible_output_tokens(token_usage) > budget.output_limit:
@@ -2861,10 +2885,16 @@ class CodexAppServerEvaluator:
             },
         )
         if turn_settings is not None:
-            # A continuation measures from the thread's total after its last turn; when that turn
-            # reported nothing (or had a snapshot refused), the start is unknown and the thread's
-            # total is not this turn's, so it records no counts.
-            known = held is None or (held.usage_current and turn_start_usage is not None)
+            # A new thread starts at zero, and a continuation at the total its previous turn left.
+            # When that turn reported nothing or had a snapshot refused, that total is stale, so
+            # the turn starts at the total before its own first reported request: it still records
+            # its own requests, never the thread's earlier ones. A turn that had a snapshot refused
+            # may be missing a request, so it records no counts.
+            start = first_request_start
+            if held is None:
+                start = _cache_counters(None)
+            elif held.usage_current and turn_start_usage is not None:
+                start = _cache_counters(turn_start_usage)
             record_exchange_cache(
                 component="codex_app_server",
                 request_id=case.request_id,
@@ -2872,11 +2902,9 @@ class CodexAppServerEvaluator:
                 exchange=exchange,
                 settings=turn_settings,
                 usage=(
-                    _turn_cache_usage(
-                        turn_start_usage, token_usage, requests, first_cached, last_input
-                    )
-                    if known
-                    else None
+                    None
+                    if usage_refused
+                    else _turn_cache_usage(start, token_usage, requests, first_cached, last_input)
                 ),
                 completed=turn_completed,
                 compacted=compacted,

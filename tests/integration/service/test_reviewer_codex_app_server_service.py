@@ -328,8 +328,12 @@ async def test_a_service_review_runs_on_one_codex_thread_through_the_real_evalua
     ]
     assert len({r["request_id"] for r in cache_records}) == 1
     assert [r["counts"]["reviewer_cache_miss"] for r in cache_records] == ["first_turn", "none"]
-    assert [r["counts"]["reviewer_input_tokens"] for r in cache_records] == [900, 900]
-    assert cache_records[1]["counts"]["reviewer_prefix_tokens"] == 900
+    assert [r["counts"]["reviewer_input_tokens"] for r in cache_records] == [2_000, 2_400]
+    # The second turn reused its whole 2,000-token prefix but the last partial cache block.
+    assert (
+        cache_records[1]["counts"]["reviewer_prefix_tokens"],
+        cache_records[1]["counts"]["reviewer_prefix_cached_tokens"],
+    ) == (2_000, 1_920)
 
 
 async def test_failed_final_held_session_cleanup_withholds_the_judgment(

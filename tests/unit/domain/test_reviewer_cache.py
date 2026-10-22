@@ -66,7 +66,7 @@ def test_the_first_exchange_is_the_cold_start_and_names_the_review_request() -> 
     ("shortfall", "label"),
     [(CACHE_MISS_TOLERANCE_TOKENS, "none"), (CACHE_MISS_TOLERANCE_TOKENS + 1, "unexplained")],
 )
-def test_a_shortfall_within_one_minimum_cache_block_is_not_a_miss(
+def test_a_shortfall_within_the_minimum_cacheable_prefix_is_not_a_miss(
     shortfall: int, label: str
 ) -> None:
     state = ReviewerCacheState()
@@ -170,11 +170,12 @@ def test_cache_writes_are_recorded_only_where_the_provider_reports_them() -> Non
         (10, 11, 0, 1, 0, 10),  # cached input above input
         (10, 4, 0, 1, 5, 10),  # the first request's reuse above the exchange's
         (10, 0, 0, 1, 0, 11),  # the last request read more than the exchange
+        (10, None, 0, 1, 0, 10),  # a first request's reuse without the exchange's
         (10, 0, 0, 0, 0, 10),  # no model request
         (-1, 0, 0, 1, 0, 0),
         (True, 0, 0, 1, 0, 0),
     ],
 )
-def test_incoherent_usage_is_refused(fields: tuple[int, int, int, int, int, int]) -> None:
+def test_incoherent_usage_is_refused(fields: tuple[int, int | None, int, int, int, int]) -> None:
     with pytest.raises(ValueError, match="^reviewer_cache_usage_invalid$"):
         ExchangeCacheUsage(*fields)

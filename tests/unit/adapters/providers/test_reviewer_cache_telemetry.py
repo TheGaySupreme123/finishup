@@ -68,10 +68,11 @@ class _UsageRuntime(_CodexRuntime):
     """The scripted app-server, plus the cumulative usage snapshots each turn reports.
 
     ``turns`` lists, per ``turn/start``, the model requests that turn makes as ``last``
-    breakdowns; the runtime keeps the thread's cumulative total the way Codex does.
+    breakdowns; the runtime keeps the thread's cumulative total the way Codex does. ``None`` is
+    a snapshot the evaluator refuses as malformed.
     """
 
-    def __init__(self, answers: list[str], turns: list[list[_Usage]]) -> None:
+    def __init__(self, answers: list[str], turns: list[list[_Usage | None]]) -> None:
         super().__init__(profile_for(record_for(b"c", b"h", version="0.162.1")), answers)
         self.turns, self.total = turns, (0, 0, 0)
         self.tail: list[dict[str, object]] = []
@@ -82,12 +83,15 @@ class _UsageRuntime(_CodexRuntime):
             turn = cast(dict[str, Any], result)["turn"]["id"]
             snapshots: list[dict[str, object]] = []
             for last in self.turns.pop(0):
-                self.total = (
-                    self.total[0] + last[0],
-                    self.total[1] + last[1],
-                    self.total[2] + last[2],
-                )
-                usage = {"last": _breakdown(last), "total": _breakdown(self.total)}
+                if last is None:
+                    usage: dict[str, object] = {"last": {}, "total": _breakdown(self.total)}
+                else:
+                    self.total = (
+                        self.total[0] + last[0],
+                        self.total[1] + last[1],
+                        self.total[2] + last[2],
+                    )
+                    usage = {"last": _breakdown(last), "total": _breakdown(self.total)}
                 params = {"threadId": "thr1", "turnId": turn, "tokenUsage": usage}
                 notice: dict[str, object] = {
                     "method": "thread/tokenUsage/updated",
@@ -268,22 +272,41 @@ async def test_a_refused_compaction_is_still_recorded_and_labelled(
     assert [(r["outcome"], _miss(r)) for r in records] == [("incomplete", "compaction")]
 
 
-async def test_a_turn_after_unreported_usage_records_no_cumulative_counts(
+async def test_a_turn_after_a_silent_one_records_its_own_request_and_names_the_next_miss(
     monkeypatch: pytest.MonkeyPatch, records: list[dict[str, object]]
 ) -> None:
-    # The first turn's request is never reported, so the thread's later total includes it.
-    runtime = _UsageRuntime([_ACTION, _FINAL], [[], [(92_000, 89_984, 50)]])
+    # The first turn's request is never reported, so the thread's later totals include it.
+    runtime = _UsageRuntime(
+        [_ACTION, _ACTION, _FINAL], [[], [(92_000, 89_984, 50)], [(95_000, 0, 50)]]
+    )
     session = ReviewerSession("review-a", _DEADLINE)
     await _exchange(monkeypatch, runtime, session, _FIRST, _REQUESTS[0])
     runtime.total = (90_000, 0, 50)
-    result = await _exchange(monkeypatch, runtime, session, _SECOND, _REQUESTS[1])
+    await _exchange(monkeypatch, runtime, session, _SECOND, _REQUESTS[1])
+    # The last turn changes what it sends beside its messages and reuses nothing.
+    result = await _exchange(monkeypatch, runtime, session, _THIRD, _REQUESTS[2], "final")
     assert type(result) is SemanticResultReply
     await session.aclose()
-    # Neither turn has a known start: no record claims the thread's total as one exchange's.
-    assert records == []
+    second, third = (cast(dict[str, object], r["counts"]) for r in records)
+    # Turn 2 starts at its first snapshot's total less that request's own ``last``: it records
+    # its own request, never the thread's 182,000, and has no known prefix to label against.
+    assert second == {
+        "reviewer_exchange_index": 2,
+        "reviewer_model_requests": 1,
+        "reviewer_input_tokens": 92_000,
+        "reviewer_cached_input_tokens": 89_984,
+        "reviewer_output_tokens": 50,
+        "reviewer_prefix_cached_tokens": 89_984,
+        "reviewer_cache_write_input_tokens": 0,
+    }
+    # That request is the prefix turn 3 could reuse, so turn 3's miss is still named.
+    assert (third["reviewer_prefix_tokens"], third["reviewer_cache_miss"]) == (
+        92_000,
+        "schema_or_settings_change",
+    )
 
 
-async def test_a_turn_after_a_middle_turn_without_usage_records_no_counts(
+async def test_a_turn_after_a_middle_turn_without_usage_never_claims_the_threads_usage(
     monkeypatch: pytest.MonkeyPatch, records: list[dict[str, object]]
 ) -> None:
     # Turn 2's request is in the thread's total but never reported, so turn 3's start is unknown.
@@ -297,7 +320,25 @@ async def test_a_turn_after_a_middle_turn_without_usage_records_no_counts(
     result = await _exchange(monkeypatch, runtime, session, _THIRD, _REQUESTS[2])
     assert type(result) is SemanticResultReply
     await session.aclose()
-    # Only the first turn has known counts; nothing claims the thread's total as turn 3's.
+    # Turn 3 records its own 95,000 tokens, not the 187,000 the thread grew by since turn 1, and
+    # no label: turn 2 left no known prefix.
+    assert [
+        (counts["reviewer_exchange_index"], counts["reviewer_input_tokens"], _miss(record))
+        for record in records
+        for counts in (cast(dict[str, object], record["counts"]),)
+    ] == [(1, 90_000, "first_turn"), (3, 95_000, None)]
+
+
+async def test_a_turn_that_had_a_snapshot_refused_records_no_counts(
+    monkeypatch: pytest.MonkeyPatch, records: list[dict[str, object]]
+) -> None:
+    runtime = _UsageRuntime([_ACTION, _FINAL], [[(90_000, 0, 50)], [(92_000, 89_984, 50), None]])
+    session = ReviewerSession("review-a", _DEADLINE)
+    await _exchange(monkeypatch, runtime, session, _FIRST, _REQUESTS[0])
+    result = await _exchange(monkeypatch, runtime, session, _SECOND, _REQUESTS[1])
+    assert type(result) is SemanticResultReply  # usage is telemetry: the answer still counts
+    await session.aclose()
+    # The refused snapshot may have reported another request, so turn 2's counts are unknown.
     assert [cast(dict[str, object], r["counts"])["reviewer_exchange_index"] for r in records] == [1]
 
 
@@ -331,9 +372,13 @@ async def test_telemetry_that_fails_never_changes_the_exchange(
 
 
 class _UsageCapture(_Capture):
-    """The in-memory API provider, answering with the usage each request reports."""
+    """The in-memory API provider, answering with the usage each request reports.
 
-    def __init__(self, route: str, usages: list[_Usage]) -> None:
+    The input details report what was read from the cache and what was written to it (the rest of
+    the input); a Chat Completions answer whose cached count is ``None`` has no details at all.
+    """
+
+    def __init__(self, route: str, usages: list[tuple[int, int | None, int]]) -> None:
         super().__init__(route)
         self.usages = usages
 
@@ -341,10 +386,15 @@ class _UsageCapture(_Capture):
         response = await super().handle_async_request(request)
         payload = cast(dict[str, object], __import__("json").loads(response.content))
         used, cached, output = self.usages.pop(0)
+        details = (
+            None
+            if cached is None
+            else {"cached_tokens": cached, "cache_write_tokens": used - cached}
+        )
         payload["usage"] = (
             {
                 "input_tokens": used,
-                "input_tokens_details": {"cached_tokens": cached},
+                "input_tokens_details": details,
                 "output_tokens": output,
                 "output_tokens_details": {"reasoning_tokens": 0},
                 "total_tokens": used + output,
@@ -352,10 +402,10 @@ class _UsageCapture(_Capture):
             if self.route == "responses"
             else {
                 "prompt_tokens": used,
-                "prompt_tokens_details": {"cached_tokens": cached},
                 "completion_tokens": output,
                 "total_tokens": used + output,
             }
+            | ({} if details is None else {"prompt_tokens_details": details})
         )
         return httpx.Response(200, request=request, json=payload)
 
@@ -380,13 +430,43 @@ async def test_api_routes_record_each_exchange_from_the_reported_usage(
         (component, "exchange_cache", "first_turn"),
         (component, "exchange_cache", "none"),
     ]
-    second = cast(dict[str, object], records[1]["counts"])
+    first, second = (cast(dict[str, object], r["counts"]) for r in records)
     assert (second["reviewer_prefix_tokens"], second["reviewer_prefix_cached_tokens"]) == (
         2_000,
         1_920,
     )
-    # Neither API reports cache writes, so none is claimed.
-    assert "reviewer_cache_write_input_tokens" not in second
+    # Both APIs report cache writes in their input details (Responses always), so both record them.
+    assert [counts["reviewer_cache_write_input_tokens"] for counts in (first, second)] == [
+        2_000,
+        280,
+    ]
+
+
+async def test_a_chat_answer_without_a_cached_count_still_records_and_leaves_its_prefix(
+    records: list[dict[str, object]],
+) -> None:
+    session = ReviewerSession("review-a", _DEADLINE)
+    token = CURRENT_REVIEWER_SESSION.set(session)
+    try:
+        for history, usage in ((_FIRST, (2_000, None, 30)), (_SECOND, (2_200, 1_920, 30))):
+            result, *_rest = await _api_evaluate(
+                "chat", history, _UsageCapture("chat", [usage]), _Clock()
+            )
+            assert type(result) is SemanticResultReply
+    finally:
+        CURRENT_REVIEWER_SESSION.reset(token)
+    first, second = (cast(dict[str, object], r["counts"]) for r in records)
+    # The SDK types ``prompt_tokens_details`` as optional: an unreported cached count is left out,
+    # never recorded as zero, and the request's input is still the next exchange's prefix.
+    assert first == {
+        "reviewer_exchange_index": 1,
+        "reviewer_model_requests": 1,
+        "reviewer_input_tokens": 2_000,
+        "reviewer_output_tokens": 30,
+        "reviewer_prefix_tokens": 0,
+        "reviewer_cache_miss": "first_turn",
+    }
+    assert (second["reviewer_prefix_tokens"], second["reviewer_cache_miss"]) == (2_000, "none")
 
 
 async def test_an_api_answer_without_usage_records_nothing(

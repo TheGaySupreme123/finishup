@@ -27,8 +27,9 @@ type ReviewerCacheMiss = Literal[
 ]
 
 # OpenAI-family prompt caches reuse a prefix from 1,024 tokens on, in whole 128-token blocks, and
-# the framing before the next message may differ by a few tokens: a shortfall within one minimum
-# block is not a miss.
+# the framing before the next message may differ by a few tokens: a shortfall of at most that
+# 1,024-token minimum cacheable prefix is not a miss. A prefix that short is ``none`` even when
+# nothing was cached, because nothing of it could be.
 CACHE_MISS_TOLERANCE_TOKENS: Final = 1_024
 _MAX_COUNTER: Final = 2**53 - 1
 
@@ -39,34 +40,50 @@ class ExchangeCacheUsage:
 
     ``first_cached_tokens`` is what the exchange's first request read from the cache and
     ``last_input_tokens`` all that its last request read: the prefix the next exchange may reuse.
-    ``cache_write_input_tokens`` is ``None`` where the provider does not report cache writes.
+    The two cached counts are ``None`` together where the provider reported no cached input (Chat
+    Completions may omit it), and ``cache_write_input_tokens`` where it reported no cache writes:
+    an unreported count is never recorded as zero.
     """
 
     input_tokens: int
-    cached_input_tokens: int
+    cached_input_tokens: int | None
     output_tokens: int
     requests: int
-    first_cached_tokens: int
+    first_cached_tokens: int | None
     last_input_tokens: int
     cache_write_input_tokens: int | None = None
 
     def __post_init__(self) -> None:
         counters = (
             self.input_tokens,
-            self.cached_input_tokens,
             self.output_tokens,
             self.requests,
-            self.first_cached_tokens,
             self.last_input_tokens,
-            0 if self.cache_write_input_tokens is None else self.cache_write_input_tokens,
+            *(
+                value
+                for value in (
+                    self.cached_input_tokens,
+                    self.first_cached_tokens,
+                    self.cache_write_input_tokens,
+                )
+                if value is not None
+            ),
         )
         if any(type(value) is not int or not 0 <= value <= _MAX_COUNTER for value in counters):
             raise ValueError("reviewer_cache_usage_invalid")
+        if (self.cached_input_tokens is None) != (self.first_cached_tokens is None):
+            raise ValueError("reviewer_cache_usage_invalid")
         if (
             self.requests < 1
-            or self.cached_input_tokens > self.input_tokens
-            or self.first_cached_tokens > self.cached_input_tokens
             or self.last_input_tokens > self.input_tokens
+            or (
+                self.cached_input_tokens is not None
+                and self.first_cached_tokens is not None
+                and (
+                    self.cached_input_tokens > self.input_tokens
+                    or self.first_cached_tokens > self.cached_input_tokens
+                )
+            )
         ):
             raise ValueError("reviewer_cache_usage_invalid")
 
@@ -131,10 +148,11 @@ def exchange_cache_counts(
         "reviewer_exchange_index": index,
         "reviewer_model_requests": usage.requests,
         "reviewer_input_tokens": usage.input_tokens,
-        "reviewer_cached_input_tokens": usage.cached_input_tokens,
         "reviewer_output_tokens": usage.output_tokens,
-        "reviewer_prefix_cached_tokens": usage.first_cached_tokens,
     }
+    if usage.cached_input_tokens is not None and usage.first_cached_tokens is not None:
+        counts["reviewer_cached_input_tokens"] = usage.cached_input_tokens
+        counts["reviewer_prefix_cached_tokens"] = usage.first_cached_tokens
     if prefix is not None:
         counts["reviewer_prefix_tokens"] = prefix
     if usage.cache_write_input_tokens is not None:
@@ -157,7 +175,7 @@ def _miss(
     opened: bool,
     compacted: bool,
     prefix: int | None,
-    cached: int,
+    cached: int | None,
     changed: bool,
     repair: bool,
 ) -> ReviewerCacheMiss | None:
@@ -167,8 +185,8 @@ def _miss(
         return "compaction"  # the provider rewrote the history, whatever this request reused
     if opened:
         return "first_turn"  # nothing earlier in the review existed to reuse
-    if prefix is None:
-        return None  # the previous exchange reported no usage, so its prefix is unknown
+    if prefix is None or cached is None:
+        return None  # the prefix or this exchange's reuse went unreported, so no label is guessed
     if prefix - cached <= CACHE_MISS_TOLERANCE_TOKENS:
         return "none"
     if changed:
