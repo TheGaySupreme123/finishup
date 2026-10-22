@@ -3779,17 +3779,21 @@ async def test_reviewer_steps_upgrade_preserves_reservations_and_admits_bounded_
     await steps.reserve("turn", 1, b"turn")
     await steps.capture("turn", 1, b"captured")
     await steps.reserve("read", 1, b"private/path.py")
+    await steps.reserve("repair", 1, b"action_invalid")
+    await steps.capture("repair", 1, b"format_error")
     before = db.execute("SELECT * FROM semantic_review_steps ORDER BY kind,ordinal").fetchall()
     report = run_migrations(db, BUNDLE_MIGRATIONS, maintenance=None)
     assert report.applied_versions == ("0018",) and report.to_version == 18
     assert (
         db.execute("SELECT * FROM semantic_review_steps ORDER BY kind,ordinal").fetchall() == before
     )
-    assert await steps.usage() == (2, 1)
-    with pytest.raises(ReviewStepRefused):
-        await steps.reserve("read", 1, b"same spent attempt")
+    assert await steps.usage() == (3, 1)
+    for kind in ("read", "repair"):
+        with pytest.raises(ReviewStepRefused):  # a spent step is never refunded
+            await steps.reserve(kind, 1, b"same spent step")
     await steps.reserve("read", 4, b"corrected/path.py")
     await steps.reserve("read", 5, b"last attempt")
+    await steps.reserve("turn", 6, b"final judgment")
     await steps.reserve("turn", 7, b"last completion")
     for kind, ordinal in (("read", 6), ("turn", 8), ("repair", 2)):
         with pytest.raises(apsw.ConstraintError):

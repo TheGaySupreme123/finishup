@@ -26,9 +26,11 @@
 # SOFTWARE.
 """The reviewer loop: a linear history, one read or the final judgment per turn (#1118 unit 2).
 
-At most three content-bearing reads, five read attempts, then only the final judgment. One format repair for the whole review, for a
-completed answer that is not one JSON object or not a valid reply; a second malformed reply, a read
-after the cap, a revoked binding, a lost lease or the deadline ends the review incomplete. Every
+At most three content-bearing reads, five read attempts, then only the final judgment. One format
+repair for the whole review, for a completed answer that is not one JSON object or not a valid
+reply, or for a read in the final phase (the provider-wire schema still offers reads, #1172): that
+repair asks for the final judgment only. A second malformed reply, a read after that repair, a
+revoked binding, a lost lease or the deadline ends the review incomplete. Every
 model turn, the repair and every read is a durable job step, reserved before it runs; a job that
 already holds steps is not resumed, except the one first turn that waited for the owner before
 anything was sent (``resume_reserved``). A failed turn is never retried.
@@ -62,6 +64,12 @@ FORMAT_ERROR: Final = (
     "format_error: {code}. Reply with exactly one read action or final_judgment that matches the "
     "schema."
 )
+# The repair in the final phase never invites a read: none would be executed (#1173).
+FINAL_FORMAT_ERROR: Final = (
+    "format_error: {code}. No reads remain. Reply with final_judgment only, matching the schema."
+)
+# A read action returned in the final phase: the wire schema allows it, the controller does not.
+FINAL_PHASE_READ: Final = "read_in_final_phase"
 FINAL_PHASE: Final = "FinishUP: read allowance or time reserve reached. Return final_judgment now."
 
 
@@ -168,10 +176,18 @@ class ReviewerLoop:
                     if invalid is not None:
                         raise invalid
                     reply = decode_reviewer_reply(parsed)
+                    if not reads and not isinstance(reply, SemanticJudgment):
+                        # The same wire schema offers reads in both phases (#1172), so a read in
+                        # the final phase is that phase's format error: the one repair asks for
+                        # the judgment. A read after the repair executes nothing and ends it.
+                        if repaired:
+                            return self.exit("read_limit")
+                        raise ReviewerReplyInvalid(FINAL_PHASE_READ)
                 except ReviewerReplyInvalid as e:
                     if repaired:
                         return self.exit("format_invalid")
-                    repaired, note = True, FORMAT_ERROR.format(code=e.code)
+                    template = FORMAT_ERROR if reads else FINAL_FORMAT_ERROR
+                    repaired, note = True, template.format(code=e.code)
                     await self.store.reserve("repair", 1, e.code.encode())
                     await self.store.capture("repair", 1, note.encode())
                     self.messages.append(Turn("user", note))  # the malformed text is not echoed
@@ -181,8 +197,6 @@ class ReviewerLoop:
                 self.messages.append(Turn("assistant", canonical_encode(parsed).decode()))
                 if isinstance(reply, SemanticJudgment):
                     return self.exit(None, reply)
-                if not reads:
-                    return self.exit("read_limit")  # no observation, no extra budget
                 left = self.remaining() - self.reserve
                 if left <= 0:
                     return self.exit("deadline")  # the model's turn spent the read's time

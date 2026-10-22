@@ -10133,7 +10133,8 @@ follow-up loop is deleted.
   `reads_allowed=False` is the local final-phase signal; both provider-wire schemas retain the
   full union, and the controller enforces final-only replies. `decode_reviewer_reply(parsed) -> ReviewerActionModel |
   SemanticJudgment` raises `ReviewerReplyInvalid(code)` (`envelope_invalid`, `action_invalid`,
-  `judgment_<stage>`). `REVIEWER_LOOP_INSTRUCTION` is the loop's one system text.
+  `judgment_<stage>`); the loop adds `read_in_final_phase` for a read in the final phase (#1173).
+  `REVIEWER_LOOP_INSTRUCTION` is the loop's one system text.
 - Controller: `application.reviewer_loop.ReviewerLoop(model, broker, *, instruction, packet,
   deadline, history_admissible, final_reserve_seconds=30.0, clock=time.monotonic,
   resume_reserved=False).run() -> ReviewOutcome(status,
@@ -10160,7 +10161,8 @@ follow-up loop is deleted.
   `ReadExchangeFull(required, available)` before reserving when less than `MIN_ROOM` is left.
   The loop ends `case_capacity_exceeded`, carrying those minimum required and available exchange
   bytes through `SemanticEgressBlocked.capacity` to the existing capacity outcome. It never
-  becomes `response_schema_invalid`; a read after the count cap still ends `read_limit`.
+  becomes `response_schema_invalid`; a read after the count cap takes the one format repair
+  (#1173) and, after that repair, ends `read_limit`.
   A result over its room keeps the longest head that fits, measured.
 - Steps: `ports.semantic.ReviewStepStore.reserve(kind, ordinal, selector)`, `capture(kind, ordinal,
   result)`, `usage() -> (steps, uncaptured)`; `ReviewStepRefused` on a repeated step or a lost lease.
@@ -11938,10 +11940,12 @@ One reviewer-loop completion is one ordinary gateway dispatch with its own admis
 scan, root fence, consume, owed receipt and one-use credential or runtime authority. Its approved
 payload is the canonical history `encode_reviewer_exchange(history)`: a JSON array of
 `{"content", "role"}` messages, `system` first, then `user` and `assistant` turns ending with
-`user`, at most 12 messages. A user turn may follow a user turn (the loop's format-repair notice
-never echoes the malformed reply); an assistant turn may not follow an assistant turn. `ApprovedOutboundCase.media_type` (or the local case's media type)
+`user`, at most 17 messages (#1173). A user turn may follow a user turn (the loop's final-phase
+notice follows a read result; its format-repair notice never echoes the malformed reply); an
+assistant turn may not follow an assistant turn. `ApprovedOutboundCase.media_type` (or the local case's media type)
 selects the reply schema: `application/vnd.finishup.reviewer-turn+json` (every reply branch) or
-`application/vnd.finishup.reviewer-final+json` (final judgment only). Composition installs both
+`application/vnd.finishup.reviewer-final+json` (the final phase; since #1173 its provider-wire
+schema is the same full union and the controller enforces final-only replies). Composition installs both
 provider-wire schemas as `ReviewerReplySchemas` (`REVIEWER_REPLY_SCHEMAS`, the strict
 `findings/reviewer-reply-1.0.0` forms); without them a route refuses the exchange.
 
@@ -11950,7 +11954,7 @@ provider-wire schemas as `ReviewerReplySchemas` (`REVIEWER_REPLY_SCHEMAS`, the s
 | Responses | `input` is the payload verbatim, `text.format` the reply schema, `store:false` kept, no tools | no schemas installed |
 | Chat Completions | `messages` is the payload verbatim, strict `response_format`, no functions or tool calls; the SDK posts the canonical rendered body itself, so the exact-body guard sees the audited bytes | `prompt_only` endpoints (unavailable, never relabelled) |
 | Local model | one frame `{"messages", "protocol": "finishup-reviewer-completion-1", "reply_schema"}` | a profile naming any other protocol (and a completion profile receiving a one-shot case) |
-| Codex subscription | one ephemeral thread per review, held in its `ReviewerSession`; the first turn sends every user message after the instruction (the packet, then the read catalog) as its text inputs, each later turn sends only the new user message, with `outputSchema` every turn | releases outside `REVIEWER_LOOP_REVIEWED_RELEASES` (`0.162.1`), no or a closed session, a continuation that does not extend the held thread (`case_invalid`), plan/compaction/tool/request/warning events |
+| Codex subscription | one ephemeral thread per review, held in its `ReviewerSession`; the first turn sends every user message after the instruction (the packet, then the read catalog) as its text inputs, each later turn sends only the user messages after the longest history the thread holds (a read result or repair notice, then, when reads end, the final-phase notice; at most two, #1173), with `outputSchema` every turn | releases outside `REVIEWER_LOOP_REVIEWED_RELEASES` (`0.162.1`), no or a closed session, a continuation that does not extend the held thread (`case_invalid`), plan/compaction/tool/request/warning events |
 
 A completed turn returns `SemanticResultReply(reply, provenance)`: the parsed reply object, not
 yet decoded. `reviewer_exchange(media_type, payload, schemas)` computes the exchange's history,
@@ -12244,7 +12248,9 @@ verification dependencies and generated-artifact roles remain an open design req
   content-bearing results (maximum three), and `used` counts every envelope byte (maximum
   24 KiB). `reads_allowed()` checks all three, the configured allowance and exchange room;
   `execute` enforces it before reserving. `calls_remaining` takes the smaller remaining
-  content/attempt allowance. Refused/empty reads never refund steps or bytes.
+  content/attempt allowance. Refused/empty reads never refund steps or bytes. The cap is exact:
+  two refusals leave three content reads (`calls_remaining` 3, 3), a third leaves two, and five
+  refusals end the reads with none.
 - Bundle migration `0018` preserves the step table while widening its ordinal checks to read
   1–5 / turn 1–7. READY upgrade target is 18, supported sources 12–17.
 - `MAX_REVIEWER_READS=3`, `MAX_REVIEWER_READ_ATTEMPTS=5`,
@@ -12253,12 +12259,26 @@ verification dependencies and generated-artifact roles remain an open design req
   `reads` contains up to five completed attempts. The unreleased 1.6.0 schemas widen these
   bounds; prior schema versions stay frozen. Shared text surfaces report differing attempt counts.
 - Refusal envelopes may carry `continuation`, `allowed_root_ids` or `alternatives` (at most two
-  rows with `item_id`, `sections`, `views`, `source_ref`). Alternatives
-  are fitted whole and admitted/scanned under their original category/root, with no content or
-  citation. An unavailable correction is omitted. Existing #1148 frozen-case wording applies.
+  rows with `item_id`, `sections`, `views`, `source_ref`). `forbidden_path` and `outside_scope`
+  carry `allowed_root_ids` and fixed text per cause (unknown alias, absolute path,
+  hidden/empty/traversing component, ignored or unprobeable path, outside the declared paths),
+  never the refused path or a concrete example path. Alternatives are fitted whole and
+  admitted/scanned under their original category/root, with no content or citation. When a row
+  is withheld or none fits, the rows are dropped and the static #1148 frozen-case continuation
+  stays, rescanned in its exact envelope; only if that fails too is the correction omitted.
 - `reviewer_loop.FINAL_PHASE` is an appended user notice. The conversation leaves room for it
-  and one format repair. The exchange codec accepts at most 17 messages, including catalog, five
-  action/observation pairs and notices. The shared deadline and history fences remain unchanged.
+  and one format repair (the longer of `FORMAT_ERROR` and `FINAL_FORMAT_ERROR`). The exchange
+  codec accepts at most 17 messages, including catalog, five action/observation pairs and
+  notices. The shared deadline and history fences remain unchanged.
+- In the final phase (no read offered) a decoded read action executes nothing and raises
+  `ReviewerReplyInvalid(reviewer_loop.FINAL_PHASE_READ)` (`read_in_final_phase`): it takes the
+  review's one repair, whose note is `FINAL_FORMAT_ERROR` ("No reads remain. Reply with
+  final_judgment only"), as is any other final-phase repair. A read after a repair ends
+  `read_limit`. The read action is not echoed into the history.
+- Codex subscription continuations send the user messages after the longest history the held
+  thread holds (`_ReviewerThread.prefixes`), at most two (a read result or repair notice, then
+  `FINAL_PHASE`); an empty, longer or non-user suffix, or one that extends no held history, is
+  `case_invalid`.
 - `ReviewerRun.read_usage` and `FinalSemanticEvaluation.reviewer_read_usage` hold private
   selector/result rows. `application.reviewer_telemetry.read_usage_from_wire(value)` validates
   the five-row bound and the closed action args; it returns null for absent/invalid telemetry.

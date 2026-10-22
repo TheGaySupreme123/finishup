@@ -305,12 +305,33 @@ async def test_a_review_job_runs_reads_then_the_final_judgment(
 
 
 @pytest.mark.anyio
-async def test_a_fourth_read_ends_the_review_incomplete_without_a_judgment(
+async def test_a_fourth_read_gets_the_final_phase_repair_before_any_read_limit(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    result, gateway, _runtime = await _run(tmp_path, monkeypatch, *([_read_file("calc.py")] * 4))
+    # #1173: both phases send the same wire schema (#1172), so a schema-valid fourth read is the
+    # final phase's format error: the one repair asks for the judgment and the review succeeds.
+    reads = [_read_file("calc.py")] * 4
+    result, gateway, runtime = await _run(tmp_path, monkeypatch, *reads, _FINAL)
+    assert result.status is SemanticStatus.SUCCEEDED and result.judgment is not None
+    final = "application/vnd.finishup.reviewer-final+json"
+    assert [media == final for media, _ in gateway.exchanges] == [False] * 3 + [True] * 2
+    notice, repair = (history[-1][1] for _, history in gateway.exchanges[3:])
+    assert notice.startswith("FinishUP: read allowance")
+    assert repair.startswith("format_error: read_in_final_phase.") and "read action" not in repair
+    assert result.reviewer is not None and result.reviewer.ended is None
+    assert len(result.reviewer.reads) == 3 and result.reviewer.exchanges == 5
+    job = await runtime.ledger.load_semantic_job(runtime.writer_id or "", frozen_request())
+    assert job is not None  # five turns, three reads and the repair, every one captured
+    assert await cast(Any, runtime.ledger).review_step_usage(job.job_id) == (9, 0)
+
+
+@pytest.mark.anyio
+async def test_a_read_after_the_final_phase_repair_ends_the_review_incomplete(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    result, gateway, _runtime = await _run(tmp_path, monkeypatch, *([_read_file("calc.py")] * 5))
     assert result.status is SemanticStatus.INVALID and result.judgment is None
-    assert len(gateway.exchanges) == 4
+    assert len(gateway.exchanges) == 5
     assert gateway.exchanges[-1][0] == "application/vnd.finishup.reviewer-final+json"
     assert result.reviewer is not None and result.reviewer.ended == "read_limit"
     assert len(result.reviewer.reads) == 3

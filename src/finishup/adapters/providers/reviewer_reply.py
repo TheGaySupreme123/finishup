@@ -138,8 +138,9 @@ outside the agent's control), find the material that shows it.
 
 ## Procedure
 Choose a material gap, read once, then assess the result. Use only catalog selectors:
-- read_file: root_id is an issued alias; path is relative to it, never absolute. List path=. to \
-discover names. Example args: {"root_id":"w1","path":"src/main.py","mode":"text","start_line":1,"line_count":20}.
+- read_file: root_id is an issued alias; path is relative to it, never absolute. Prefer a path the \
+packet names; a path=. listing that returns names spends a content read. Example args: \
+{"root_id":"w1","path":"<relative-path>","mode":"text","start_line":1,"line_count":20}.
 - read_packet_section: item_ref is the exact item_id, not source_ref. Use section=excerpts for \
 catalog excerpt; agent_account for goal/obligation/claim/decision; deterministic_findings for \
 deterministic_summary/detail. Example args: {"section":"agent_account","item_ref":"goal-1","offset":0}.

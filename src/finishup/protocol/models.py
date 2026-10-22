@@ -2741,7 +2741,7 @@ class ReadFileTextArgsModel(_ReviewerArgsModel):
         description="Service-issued read_file_roots alias, e.g. w1; never a filesystem root."
     )
     path: Annotated[str, Field(min_length=1, max_length=512)] = Field(
-        description="Relative path beneath root_id only, e.g. src/main.py. "
+        description="Relative path beneath root_id only, as the packet or a listing names it. "
         "Absolute, hidden, ignored and traversing paths are refused."
     )
     mode: Literal["text"]
@@ -2754,8 +2754,8 @@ class ReadFileListArgsModel(_ReviewerArgsModel):
         description="Service-issued read_file_roots alias, e.g. w1; never a filesystem root."
     )
     path: Annotated[str, Field(min_length=1, max_length=512)] = Field(
-        description="Relative directory beneath root_id; path=. lists the root. "
-        "Example: root_id=w1, path=., mode=list, cursor=null."
+        description="Relative directory beneath root_id; path=. lists the root. A listing that "
+        "returns names spends a content read. Example: root_id=w1, path=., mode=list, cursor=null."
     )
     mode: Literal["list"]
     cursor: _ReviewerCursor

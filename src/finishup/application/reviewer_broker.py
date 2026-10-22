@@ -75,6 +75,44 @@ _LEDGER_VIEWS: Final = {
     "command_output": {"command", "test", "failure"},
 }
 
+# A refused file selector's correction, by cause (#1173): fixed service text that never echoes
+# the refused path and names no concrete path a model could copy as if it existed.
+_DISCOVER: Final = (
+    " Prefer a path the packet names; a path=. listing that returns names spends a content read."
+)
+_PATH_CORRECTIONS: Final = {
+    "unknown_root": "root_id must be one of allowed_root_ids, the catalog's read_file_roots; no "
+    "other alias or filesystem root is readable." + _DISCOVER,
+    "absolute": "Paths are relative to the root_id alias: drop the filesystem prefix and any "
+    "leading / and name the file beneath that root (path=<relative-path>)." + _DISCOVER,
+    "component": "Hidden (dot-prefixed), empty, traversing (..) or control-character path "
+    "components are never readable, under any spelling. Choose another file.",
+    "ignored": "The repository's ignore rules exclude this path, or its ignore state could not "
+    "be checked; no root serves it. Do not retry it; choose another file or judge without it.",
+    "outside_scope": "This root serves only the task-declared paths its catalog covers lists. "
+    "Choose a path from that list.",
+}
+_NO_ROOT: Final = (
+    "No file root is available in this review. Use packet/ledger catalog selectors or "
+    "final_judgment.missing_for_assessment for unavailable material; no path correction grants "
+    "a root."
+)
+_NOT_RECORDED: Final = (
+    "No readable file, retained snapshot entry, directory entry or requested line was available "
+    "through this root. This does not establish that a task record was never recorded. Correct "
+    "the relative path/line or list a permitted parent (a listing that returns names spends a "
+    "content read); request unavailable content in final_judgment.missing_for_assessment with "
+    "the appropriate kind and target_refs; a later check must freeze it."
+)
+# #1148: a frozen-case miss never claims non-recording. This static text carries no catalog
+# metadata, so it stays even when every alternative row is withheld or does not fit.
+_FROZEN_MISS: Final = (
+    "This frozen lookup does not establish that the item was never recorded. Request unavailable "
+    "content via final_judgment.missing_for_assessment (kind, target_refs); a later check must "
+    "freeze it."
+)
+_FROZEN_RETRY: Final = " Or retry a listed item_id/section (offset=0) or source_ref/view."
+
 # What admission sees of a result: each element's category, exact bytes and outside root.
 type ReadElement = tuple[DataCategory, bytes, str | None]
 type _Selected = (
@@ -309,7 +347,7 @@ class ReviewerBroker:
             return envelope("partial", "native_read_limit", {"source_bytes": selected.size})
         if len(selected) == 2:
             status, reason = selected
-            correction, elements = self._correction(reason, action)
+            correction, elements, static = self._correction(reason, action)
             encoded = envelope(status, reason)
             # Hints are metadata from the frozen catalog, admitted under their own categories
             # and roots. Drop whole rows to fit; never shorten an identity into a wrong selector.
@@ -317,16 +355,22 @@ class ReviewerBroker:
                 elements = elements[:-1]
                 cast(list[JsonValue], correction["alternatives"]).pop()
                 encoded = envelope(status, reason)
-            if over_by(encoded) > 0:
-                correction = {}
+            if correction and (
+                over_by(encoded) > 0 or await self._admit(elements, encoded) is not None
+            ):
+                # No catalog metadata bypasses the ordinary privacy projection, but the static
+                # text carries none: it stays when every row is withheld (#1148), and is itself
+                # scanned in the exact envelope it travels in.
+                correction, elements = ({} if static == correction else static), ()
                 encoded = envelope(status, reason)
-            if correction and await self._admit(elements, encoded) is not None:
-                correction = {}  # no catalog metadata bypasses the ordinary privacy projection
-                encoded = envelope(status, reason)
-            elif correction:
-                self.history_roots.update(
-                    root for _category, _data, root in elements if root is not None
-                )
+                if correction and (
+                    over_by(encoded) > 0 or await self._admit((), encoded) is not None
+                ):
+                    correction = {}
+                    encoded = envelope(status, reason)
+            self.history_roots.update(
+                root for _category, _data, root in elements if root is not None
+            )
             return encoded
         shape, pieces, page, left = selected
         count, file = len(pieces), pieces[0].prov["root_id"] is not None
@@ -383,45 +427,39 @@ class ReviewerBroker:
 
     def _correction(
         self, reason: str, action: ReviewerActionModel | None
-    ) -> tuple[dict[str, JsonValue], tuple[ReadElement, ...]]:
-        """Bounded replacement selectors, never content or absolute filesystem roots (#1173)."""
+    ) -> tuple[dict[str, JsonValue], tuple[ReadElement, ...], dict[str, JsonValue]]:
+        """Bounded replacement selectors, never content, the refused path or a filesystem root.
 
-        if reason == "forbidden_path":
-            aliases = (
-                [action.args.root_id]
-                if isinstance(action, ReviewerFileActionModel)
-                and action.args.root_id in self._roots
-                else sorted(self._roots)[:2]
-            )
+        Returns the correction, the catalog rows it carries for admission, and its static form
+        without those rows (#1173).
+        """
+
+        if reason in {"forbidden_path", "outside_scope"}:
+            args = action.args if isinstance(action, ReviewerFileActionModel) else None
+            root = None if args is None else self._roots.get(args.root_id)
+            aliases = [root.alias] if root is not None else sorted(self._roots)[:2]
             if not aliases:
-                return {
-                    "continuation": (
-                        "No file root is available in this review. Use packet/ledger catalog "
-                        "selectors or final_judgment.missing_for_assessment for unavailable "
-                        "material; no path correction grants a root."
-                    ),
-                    "allowed_root_ids": [],
-                }, ()
-            return {
-                "continuation": (
-                    "Use a catalog root_id and a path relative to that root, e.g. "
-                    "path=src/main.py; list path=. first. Absolute, hidden, ignored and "
-                    "traversing paths remain forbidden. No alias grants another root."
-                ),
+                fixed: dict[str, JsonValue] = {"continuation": _NO_ROOT, "allowed_root_ids": []}
+                return fixed, (), fixed
+            cause = (
+                "outside_scope"
+                if reason == "outside_scope"
+                else None
+                if args is None
+                else _path_refusal(root, _file_path(args.path))
+            )
+            # The only forbidden_path left after the selector's own shape is the ignore rule.
+            fixed = {
+                "continuation": _PATH_CORRECTIONS[cause or ("ignored" if root else "unknown_root")],
                 "allowed_root_ids": cast(list[JsonValue], aliases),
-            }, ()
+            }
+            return fixed, (), fixed
         if reason == "not_recorded":
-            return {
-                "continuation": (
-                    "No readable file, retained snapshot entry, directory entry or requested line "
-                    "was available through this root. This does not establish that a task record "
-                    "was never recorded. List a permitted parent or correct the relative path/line; "
-                    "request unavailable content in final_judgment.missing_for_assessment with "
-                    "the appropriate kind and target_refs; a later check must freeze it."
-                )
-            }, ()
+            fixed = {"continuation": _NOT_RECORDED}
+            return fixed, (), fixed
         if reason not in {"not_in_frozen_case", "not_retained"} or action is None:
-            return {}, ()
+            return {}, (), {}
+        static: dict[str, JsonValue] = {"continuation": _FROZEN_MISS}
         args = action.args
         requested = (
             {args.item_ref}
@@ -470,15 +508,13 @@ class ReviewerBroker:
             )
             if len(alternatives) == 2:
                 break
-        return {
-            "continuation": (
-                "This frozen lookup does not establish that the item was never recorded. "
-                "Retry listed item_id/section (offset=0) or source_ref/view. "
-                "Request unavailable content via final_judgment.missing_for_assessment "
-                "(kind, target_refs); a later check must freeze it."
-            ),
-            "alternatives": alternatives,
-        }, tuple(elements)
+        if not alternatives:
+            return static, (), static
+        return (
+            {"continuation": _FROZEN_MISS + _FROZEN_RETRY, "alternatives": alternatives},
+            tuple(elements),
+            static,
+        )
 
     def _page(self, selector: str, version: str, cursor: str | None) -> int | tuple[str, str]:
         """The offset a cursor this broker issued names; a forged or rebound one is refused."""
@@ -552,12 +588,9 @@ class ReviewerBroker:
         expired: Callable[[], bool],
         tool_ref: str,
     ) -> _Selected:
-        root, path = self._roots.get(args.root_id), args.path.removeprefix("./").rstrip("/")
-        path = "" if path == "." else path
-        if root is None or path.startswith("/") or "\0" in path:
+        root, path = self._roots.get(args.root_id), _file_path(args.path)
+        if root is None or _path_refusal(root, path) is not None:
             return ("denied", "forbidden_path")
-        if path and any(part[:1] in {"", "."} for part in path.split("/")):
-            return ("denied", "forbidden_path")  # hidden, empty or traversing components
         refused = self._refused(root, path)
         if refused is not None:
             return ("denied", refused)
@@ -623,6 +656,25 @@ class ReviewerBroker:
             return ("unavailable", "unsupported_type")
         piece = _Piece(data, starts[first], stop, refs, prov, "", args.start_line, root.input_root)
         return ("text", [piece], None, 0)
+
+
+def _file_path(path: str) -> str:
+    """A ``read_file`` path as the broker resolves it; ``.`` is the root itself."""
+
+    path = path.removeprefix("./").rstrip("/")
+    return "" if path == "." else path
+
+
+def _path_refusal(root: ReadRoot | None, path: str) -> str | None:
+    """Why a file selector is refused by its shape alone, before any filesystem or ignore probe."""
+
+    if root is None:
+        return "unknown_root"
+    if path.startswith("/"):
+        return "absolute"
+    if "\0" in path or (path and any(part[:1] in {"", "."} for part in path.split("/"))):
+        return "component"  # hidden, empty or traversing components, or a NUL byte
+    return None
 
 
 def _has_content(data: JsonValue) -> bool:

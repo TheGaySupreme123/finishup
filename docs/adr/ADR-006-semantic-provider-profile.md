@@ -2421,11 +2421,13 @@ do not change. A job that already holds steps is not resumed: its review ends in
 (`interrupted`, or `uncaptured_step` when a reserved step has no captured result). The one
 exception is a first turn that waited for the owner before anything was sent, which runs once more
 in its own reservation (see "Owner approval" under "Service wiring and delivery"). After the cap
-only the final judgment is offered, and a read anyway ends the review incomplete with no
-observation. One format repair is allowed per review, for a completed answer that is not one JSON
-object as for one the decoder rejects, and the malformed text is not echoed back. A
-second malformed reply, a failed or uncertain model turn, a lost lease, or a binding that no longer
-holds ends the review incomplete. The shared deadline is checked after every await: a reply that
+only the final judgment is accepted. Since #1173 the wire schema still offers reads, so a read
+then is the final phase's format error: it executes nothing and takes the review's one repair,
+which asks for `final_judgment` only; a read after that repair, or after an earlier repair, ends
+the review `read_limit` with no observation. One format repair is allowed per review, for a
+completed answer that is not one JSON object as for one the decoder rejects, and the malformed text
+is not echoed back. A second malformed reply, a failed or uncertain model turn, a lost lease, or a
+binding that no longer holds ends the review incomplete. The shared deadline is checked after every await: a reply that
 arrives late is not used, a read is not started inside the final reserve, and a local read stops at
 five seconds or the reserve, whichever is first: a read in progress checks it per chunk and per
 listed entry, and again when it completes, so a read that completes late is discarded, never sent
@@ -2515,7 +2517,8 @@ protocol subset is generated with `--experimental` and
 must carry `ThreadStartParams.environments`. `features.stable_environment_tools` is not set, because
 releases below 0.162.1 do not define it under `--strict-config`; with no environment it has nothing
 to expose. A reviewer session keeps one ephemeral thread; its first turn sends every admitted user
-message after the instruction (the packet, then the read catalog), each later turn only the new one,
+message after the instruction (the packet, then the read catalog), each later turn only the new one
+(since #1173 at most two: a read result or repair notice, then the final-phase notice),
 and it sends the reply `outputSchema` on every turn. A repair continues on that same thread: an
 empty answer is judged only after its turn completes, so the thread is kept, and a review whose
 thread is gone ends incomplete rather than opening a second one and resending the packet.
@@ -2922,16 +2925,39 @@ Bundle migration `0018` widens the durable step ordinal bounds without altering 
 The procedure above retains every reservation and every response byte, including refusals, with
 three content reads and a hard five-attempt/seven-completion limit. `calls_remaining` is the
 smaller of content reads remaining and attempts remaining, using the configured allowance
-(zero reads also means zero retries). Existing history and category/root revocation checks apply
-to every extra turn. No failed transport is retried and a prior job's steps never refill.
+(zero reads also means zero retries). The cap is exact, not "always three content reads": two
+refusals still leave three content reads (`calls_remaining` 3, 3), a third leaves two, and a
+model whose every selector is refused stops after five refusals with no content read. Existing
+history and category/root revocation checks apply to every extra turn. No failed transport is
+retried and a prior job's steps never refill.
 
-A `forbidden_path` correction names only issued aliases and the relative-path form, never an
-absolute root or the rejected path. `not_retained` and `not_in_frozen_case` offer at most two
-nearest catalog rows: exact item/ref matches first, then matching section/view, then item-id
-order. These contain only item ids, source refs and valid action sections/views. Each row
-is admitted under its item's category and outside root, and the complete envelope is scanned;
-rows are dropped whole to fit the existing result/exchange bounds. A withheld correction has no
-alternatives. Hints add no citations or content-read credit. `not_recorded` describes unavailable
+Both wire phases send the same reply schema (#1172), so the cap is the controller's alone. When no
+read is offered the loop appends the final-phase notice (`FINAL_PHASE`) once. A read returned
+after that executes nothing and is the final phase's format error (`read_in_final_phase`). A
+repair in the final phase, for that or any other format error, uses `FINAL_FORMAT_ERROR`, which
+asks for `final_judgment` only, never "a read action or final_judgment". A read after that repair,
+or after an earlier repair, ends `read_limit`. The
+turn budget is unchanged: five read turns, the final turn and the one repair. The repair room
+every read leaves is the longer of the two repair texts. On the Codex subscription route the
+final-phase notice follows the last read result as a second new user message on the held thread;
+the continuation guard admits the user messages after the longest history the thread holds, at
+most two, and still refuses an empty, longer or non-user suffix and any history that does not
+extend the thread.
+
+A `forbidden_path` or `outside_scope` correction names only issued aliases and fixed service text
+for its cause, never the rejected path or a concrete example path a model could copy: an unknown
+alias, an absolute path, a hidden/empty/traversing component, an ignored path (or one whose ignore
+state cannot be checked) and a path outside the root's declared paths each get their own advice.
+Only the alias and absolute-path corrections suggest the relative form, and they say that a
+`path=.` listing that returns names spends a content read. `not_retained` and
+`not_in_frozen_case` offer at most two nearest catalog rows: exact item/ref matches first, then
+matching section/view, then item-id order. These contain only item ids, source refs and valid
+action sections/views. Each row is admitted under its item's category and outside root, and the
+complete envelope is scanned; rows are dropped whole to fit the existing result/exchange bounds.
+When privacy withholds a row, or none fits, every row is dropped but the static #1148 continuation
+(no catalog metadata) stays, itself scanned in the exact envelope that is sent; only if that is
+withheld too, or cannot fit, is the correction omitted. Hints add no citations or content-read
+credit. `not_recorded` describes unavailable
 file/snapshot/line/listing material; frozen lookup absence never establishes non-recording
 (#1148). Unavailable material can be requested through `missing_for_assessment` with kind and
 `target_refs`, for a later check to freeze; this creates no live-ledger query or disclosure grant.
@@ -2939,7 +2965,8 @@ file/snapshot/line/listing material; frozen lookup absence never establishes non
 The instruction gains only the read procedure and the changed budget rule. Its role, goal, done,
 evidence, clues, acceptance and calibration rules keep their existing order. Read-field
 descriptions distinguish relative file paths, packet `item_id`, and ledger `source_ref` or
-`linked_subject_refs` plus view, with examples. The provider schema is the same in both phases;
+`linked_subject_refs` plus view, with examples; the file example's path is the placeholder
+`<relative-path>`, and a `path=.` listing is described as spending a content read. The provider schema is the same in both phases;
 the final-only local schema remains the controller/facade phase signal.
 
 The unreleased check 1.6.0 record now permits five attempt entries and seven exchanges.

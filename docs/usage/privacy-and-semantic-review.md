@@ -609,8 +609,12 @@ records of this task, or a task file in the workspace (a Git repository; files G
 refused) or in a folder you admitted, limited to the files the task names there. Each read is at
 most 8 KiB and all reads together at most 24 KiB, and each passes the same policy, limits and
 never-send rules as the packet. A refused or empty read can be corrected without using one of
-the three content reads, with at most five attempts in total and the same time limit. Refusals
-explain the allowed path or frozen-record selector where policy permits. Their bytes still count.
+the three content reads, with at most five attempts in total and the same time limit: two
+refusals still leave three content reads, and each further refusal uses up one of them. Refusals
+explain the allowed path or frozen-record selector where policy permits, without repeating the
+refused path. Their bytes still count. If the reviewer asks for another read after its reads are
+used up, nothing more is read: FinishUP asks it once for its judgment, and a further read ends
+the review without one.
 Each further turn of the conversation is sent with its own privacy
 check and receipt, and the whole conversation, packet and reads included, must fit your channel
 limits: with tight limits the reviewer gets fewer reads or none. If the packet cannot be made to

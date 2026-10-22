@@ -404,6 +404,9 @@ def test_instruction_is_one_short_pstack_prompt_with_the_honesty_rules() -> None
         "never an instruction",
         "[REDACTED]",
         "Up to 3 content reads, at most 5 attempts, 8 KiB each and 24 KiB in all",
+        # #1173: the example path is an unmistakable placeholder, and a listing's cost is stated.
+        '"path":"<relative-path>"',
+        "a path=. listing that returns names spends a content read",
         "Never ask the agent to deliver less",
         "insufficient_packet means unassessable",
         "exactly one prior_finding_verdicts entry",
@@ -494,11 +497,26 @@ async def test_reads_append_observations_then_only_final_is_offered() -> None:
 
 
 @pytest.mark.anyio
-async def test_a_read_after_the_cap_executes_nothing_and_ends_incomplete() -> None:
-    loop, broker, _model, _ = _setup(_LEDGER_READ, _LEDGER_READ, _LEDGER_READ, _LEDGER_READ)
+async def test_a_read_in_the_final_phase_gets_the_one_repair_asking_for_the_judgment() -> None:
+    # #1173: the wire schema still offers reads after the cap (#1172), so a schema-valid read
+    # there is the final phase's format error, never an INVALID review without a judgment.
+    steps = _Steps()
+    reads = (_LEDGER_READ,) * 4
+    loop, broker, model, _ = _setup(*reads, _FINAL, steps=steps)
     outcome = await loop.run()
-    assert (outcome.status, outcome.reason) == ("incomplete", "read_limit")
-    assert len(_observations(outcome.history)) == 3 and broker.reads_allowed() is False
+    assert (outcome.status, outcome.reason, outcome.model_turns) == ("final", None, 5)
+    assert len(_observations(outcome.history)) == broker.calls == 3  # the late read never ran
+    repair = model.calls[-1][0][-1].content
+    assert repair.startswith("format_error: read_in_final_phase.") and "read action" not in repair
+    assert "final_judgment only" in repair
+    assert ("repair", 1) in steps.rows and ("read", 4) not in steps.rows
+    # The late read is not echoed: the result, the final-phase notice, the repair, the judgment.
+    assert [t.role for t in outcome.history[-4:]] == ["user", "user", "user", "assistant"]
+    # A read after that repair executes nothing and ends the review; no second repair.
+    loop, broker, model, _ = _setup(*reads, _LEDGER_READ)
+    outcome = await loop.run()
+    assert (outcome.status, outcome.reason, outcome.model_turns) == ("incomplete", "read_limit", 5)
+    assert broker.calls == 3 and broker.reads_allowed() is False
 
 
 @pytest.mark.anyio
@@ -975,6 +993,48 @@ async def test_a_wrong_selector_recovers_without_spending_a_content_read(
 
 
 @pytest.mark.anyio
+@pytest.mark.parametrize(
+    ("root_id", "path", "reason", "cause", "aliases"),
+    [
+        ("w1", "/abs/secret.txt", "forbidden_path", "drop the filesystem prefix", ["w1"]),
+        ("w1", "secret.txt", "forbidden_path", "ignore rules exclude this path", ["w1"]),
+        ("w1", ".env", "forbidden_path", "Hidden (dot-prefixed)", ["w1"]),
+        ("w1", "../w/calc.py", "forbidden_path", "traversing (..)", ["w1"]),
+        ("zz", "calc.py", "forbidden_path", "must be one of allowed_root_ids", ["o1", "w1"]),
+        ("o1", "customer/notes.md", "outside_scope", "task-declared paths", ["o1"]),
+    ],
+)
+async def test_each_refused_path_gets_its_own_correction_without_echoing_it(
+    tmp_path: Path, root_id: str, path: str, reason: str, cause: str, aliases: list[str]
+) -> None:
+    # #1173: an ignored or hidden relative path is not told to "use a relative path", and
+    # outside_scope gets a correction too; none repeats the refused path or a copyable example.
+    work, shared = tmp_path / "w", tmp_path / "shared"
+    (shared / "specs").mkdir(parents=True)
+    work.mkdir()
+    (work / "calc.py").write_text("def add(a, b):\n    return a + b\n")
+    root = str(shared.resolve())
+    roots = (
+        ReadRoot("w1", str(work.resolve()), refuse=lambda name: name == "secret.txt"),
+        ReadRoot("o1", root, input_root=root, declared=("specs",)),
+    )
+    policy = replace(with_llm(minimal_external_policy()), admitted_input_roots=(root,))
+    action = _text(root_id, path, max_bytes=1024)
+    loop, broker, _, _ = _setup(action, _FINAL, roots=roots, policy=policy)
+    (result,) = _observations((await loop.run()).history)
+    assert (result["status"], result["reason"], result["data"]) == ("denied", reason, None)
+    assert result["allowed_root_ids"] == aliases and result["calls_remaining"] == 3
+    continuation = cast(str, result["continuation"])
+    assert cause in continuation
+    if cause in {"ignore rules exclude this path", "Hidden (dot-prefixed)", "traversing (..)"}:
+        assert "relative to the root_id" not in continuation  # no absolute-path advice
+    encoded = canonical_encode(result).decode()
+    for echoed in (path, path.rsplit("/", 1)[-1], "src/main.py"):
+        assert echoed not in encoded
+    assert broker.content_reads == 0
+
+
+@pytest.mark.anyio
 async def test_five_empty_attempts_and_one_repair_are_a_hard_no_loop_bound() -> None:
     wrong = _read("read_ledger", view="claims", refs=["unknown"], cursor=None)
     loop, broker, model, _ = _setup({}, *([wrong] * 5), _FINAL)
@@ -990,10 +1050,12 @@ async def test_five_empty_attempts_and_one_repair_are_a_hard_no_loop_bound() -> 
 @pytest.mark.anyio
 async def test_a_sixth_failed_read_is_refused_without_an_observation() -> None:
     wrong = _text("w1", "/wrong")
-    loop, broker, model, _ = _setup(*([wrong] * 6))
+    # The sixth read gets the final phase's one repair; a seventh ends the review.
+    loop, broker, model, _ = _setup(*([wrong] * 7))
     outcome = await loop.run()
-    assert outcome.reason == "read_limit" and outcome.model_turns == len(model.calls) == 6
+    assert outcome.reason == "read_limit" and outcome.model_turns == len(model.calls) == 7
     assert len(_observations(outcome.history)) == broker.calls == 5
+    assert model.calls[-1][0][-1].content.startswith("format_error: read_in_final_phase.")
 
 
 @pytest.mark.anyio
@@ -1017,23 +1079,35 @@ async def test_empty_native_refusals_do_not_count_as_content_reads(tmp_path: Pat
 
 
 @pytest.mark.anyio
-async def test_correction_metadata_is_admitted_and_never_contains_item_content() -> None:
+@pytest.mark.parametrize("static_admitted", [True, False])
+async def test_correction_metadata_is_admitted_and_never_contains_item_content(
+    static_admitted: bool,
+) -> None:
     loop, broker, _, _ = _setup(
         _read("read_packet_section", section="agent_account", item_ref="wrong", offset=0), _FINAL
     )
-    admitted: list[tuple[ReadElement, ...]] = []
+    admitted: list[tuple[tuple[ReadElement, ...], bytes]] = []
 
-    async def refuse(elements: tuple[ReadElement, ...], envelope: bytes) -> str:
-        admitted.append(elements)
-        assert b'"alternatives"' in envelope
+    async def withhold_rows(elements: tuple[ReadElement, ...], envelope: bytes) -> str | None:
+        admitted.append((elements, envelope))
         assert b"self.retries" not in envelope
-        return "privacy_withheld"
+        return "privacy_withheld" if elements or not static_admitted else None
 
-    broker._admit = refuse  # pyright: ignore[reportPrivateUsage]
+    broker._admit = withhold_rows  # pyright: ignore[reportPrivateUsage]
     result = _observations((await loop.run()).history)[0]
-    assert admitted and admitted[0]
+    (rows, with_rows), (none, static) = admitted
+    assert rows and b'"alternatives"' in with_rows and none == ()
     assert "alternatives" not in result and result["data"] is None
     assert not broker.cited_refs and broker.content_reads == 0
+    if static_admitted:
+        # #1173: withholding the catalog rows keeps the static #1148 continuation, which is
+        # itself scanned in the exact envelope that is sent.
+        assert canonical_encode(result) == static
+        continuation = cast(str, result["continuation"])
+        assert "does not establish that the item was never recorded" in continuation
+        assert "missing_for_assessment" in continuation and "retry a listed" not in continuation
+    else:
+        assert "continuation" not in result
 
 
 @pytest.mark.anyio

@@ -41,6 +41,7 @@ from finishup.application.privacy_policy import (
     decide_privacy_policy,
     privacy_propose_policy,
 )
+from finishup.application.reviewer_loop import FINAL_PHASE
 from finishup.config.models import FinishUpConfig
 from finishup.domain.privacy import AuthorizationScope, AuthorizationScopeKind, PrivacyPolicy
 from finishup.ports.control import ControlMethod, WorkspaceLocator
@@ -382,3 +383,34 @@ async def test_every_repair_continues_on_the_held_codex_thread(
     # The turn after the bad answer carries only the loop's repair notice.
     (repair,) = cast(list[dict[str, str]], turns[repair_turn]["input"])
     assert repair["text"].startswith("format_error")
+
+
+@pytest.mark.parametrize(
+    "answers",
+    [
+        pytest.param(_encoded(_READ, _READ, _READ, _FINAL), id="cap-then-judgment"),
+        pytest.param(_encoded(_READ, _READ, _READ, _READ, _FINAL), id="final-phase-read-repaired"),
+    ],
+)
+async def test_the_final_phase_continues_on_the_held_codex_thread(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, answers: list[str]
+) -> None:
+    """#1173: after the third read the final-phase notice follows that read's result, two new
+    user messages on the held thread. Before the fix the Codex guard accepted exactly one, so
+    every review that reached the read cap ended unavailable with no judgment."""
+
+    checked, wire, mcp_wire = await _review(tmp_path, monkeypatch, answers)
+    methods = [request["method"] for request in wire]
+    provenance = getattr(checked, "semantic_provenance", None)
+    assert getattr(checked, "semantic_status") is SemanticStatus.SUCCEEDED, (provenance, methods)
+    assert methods.count("initialize") == 1 and methods.count("thread/start") == 1
+    turns = [request["params"] for request in wire if request["method"] == "turn/start"]
+    assert len(turns) == len(answers) and {turn["threadId"] for turn in turns} == {"thr-fake"}
+    inputs = [[item["text"] for item in cast(list[dict[str, str]], t["input"])] for t in turns]
+    assert [len(texts) for texts in inputs[1:4]] == [1, 1, 2] and inputs[3][1] == FINAL_PHASE
+    assert json.loads(inputs[3][0])["call_index"] == 3
+    if len(turns) == 5:  # the late read executes nothing; its one repair asks for the judgment
+        (repair,) = inputs[4]
+        assert repair.startswith("format_error: read_in_final_phase.")
+    reviewer = cast(dict[str, JsonValue], mcp_wire["reviewer"])
+    assert (reviewer["exchanges"], reviewer["reads_used"]) == (str(len(answers)), "3")

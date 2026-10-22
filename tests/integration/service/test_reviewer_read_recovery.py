@@ -108,9 +108,11 @@ async def test_incomplete_review_keeps_five_failed_attempts_for_metrics(
     result, gateway, runtime = await c._run(  # pyright: ignore[reportPrivateUsage]
         tmp_path,
         monkeypatch,
-        *([_read_file("/wrong")] * 6),
+        *([_read_file("/wrong")] * 7),
     )
-    assert result.status is SemanticStatus.INVALID and len(gateway.exchanges) == 6
+    # The sixth read gets the final phase's one repair; the seventh ends the review.
+    assert result.status is SemanticStatus.INVALID and len(gateway.exchanges) == 7
+    assert result.reviewer is not None and result.reviewer.ended == "read_limit"
     assert result.reviewer is not None and result.reviewer.as_wire()["reads_used"] == "0"
     job = await runtime.ledger.load_semantic_job(runtime.writer_id or "", c.frozen_request())
     assert job is not None

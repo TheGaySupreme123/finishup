@@ -130,7 +130,11 @@ uv run pytest tests/unit/application/test_reviewer_loop.py \
 
 The loop permits three content reads, at most five attempts and seven completions including
 one format repair. Every attempt and response byte stays spent; retries share the original
-deadline. Paths are relative to issued aliases. Packet reads use exact catalog `item_id`;
+deadline. A read returned after the reads end executes nothing and takes that one repair, which
+asks for `final_judgment` only; a read after the repair ends `read_limit`. Refusal corrections are
+fixed text per cause and never repeat the refused path; the instruction's file example uses the
+placeholder `<relative-path>` and says a `path=.` listing that returns names spends a content
+read. Paths are relative to issued aliases. Packet reads use exact catalog `item_id`;
 ledger reads use `source_ref`/`linked_subject_refs` with the matching view in the frozen case.
 An absent frozen item does not prove it was never recorded.
 
