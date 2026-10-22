@@ -36,6 +36,7 @@ from finishup.application.check import validate_semantic_judgment
 from finishup.application.egress import PrivacyCoordinator, reviewer_history_admissible
 from finishup.application.reviewer_broker import ReadElement, ReadRoot, ReviewerBroker
 from finishup.application.reviewer_loop import (
+    FINAL_FORMAT_ERROR,
     FINAL_PHASE,
     ReviewerLoop,
     ReviewerModelError,
@@ -56,6 +57,7 @@ from finishup.ports.semantic import (
     ReviewStepRefused,
     SemanticCase,
     SemanticJudgment,
+    encode_reviewer_exchange,
 )
 from finishup.protocol.canonical import JsonValue, canonical_encode
 from finishup.protocol.models import ReadLedgerArgsModel, ReviewerLedgerActionModel
@@ -560,6 +562,78 @@ async def test_a_schema_enforcing_route_always_reaches_a_judgment(
         assert last == FINAL_PHASE
     else:  # 3 reads, the final turn (full) reads, and its repair turn is read-free
         assert last.startswith("format_error: read_in_final_phase. No reads remain.")
+
+
+@pytest.mark.anyio
+async def test_every_turn_resends_the_last_byte_for_byte_and_only_appends() -> None:
+    """#1172: a provider serves an unchanged prefix from its prompt cache, so each completion
+    carries the previous one exactly (the same schema, the same messages) and appends only the
+    reply and the new user messages. The final-phase notice adds no model turn."""
+
+    loop, _broker, model, _ = _setup(_PACKET_READ, _LEDGER_READ, _LEDGER_READ, _FINAL)
+    outcome = await loop.run()
+    assert outcome.status == "final"
+    assert len(model.calls) == 4  # one completion per read plus the final: none added
+    assert {canonical_encode(schema) for _history, schema in model.calls} == {
+        canonical_encode(_FULL)
+    }
+    sent = [
+        encode_reviewer_exchange(tuple((turn.role, turn.content) for turn in history))
+        for history, _schema in model.calls
+    ]
+    for before, after in zip(sent, sent[1:], strict=False):
+        assert after.startswith(before[:-1] + b",")  # the earlier array, then only more items
+    assert [turn.role for turn in model.calls[-1][0][-3:]] == ["assistant", "user", "user"]
+
+
+@pytest.mark.anyio
+async def test_the_notice_is_sent_once_and_stays_before_the_final_phase_repair() -> None:
+    loop, _broker, model, _ = _setup(
+        _LEDGER_READ, _LEDGER_READ, _LEDGER_READ, {"reply": {}}, _FINAL
+    )
+    outcome = await loop.run()
+    assert (outcome.status, outcome.model_turns) == ("final", 5)
+    assert [turn.content for turn in outcome.history].count(FINAL_PHASE) == 1
+    notice, repair = model.calls[-1][0][-2:]
+    # The normal final turn kept the full schema, so its repair must not invite a read; the repair
+    # turn itself is the review's one read-free (uncached) exchange.
+    assert repair.content == FINAL_FORMAT_ERROR.format(code="action_invalid")
+    assert notice.content == FINAL_PHASE
+    assert [schema for _history, schema in model.calls] == [_FULL] * 4 + [_FINAL_ONLY]
+
+
+@pytest.mark.anyio
+async def test_the_notice_follows_when_the_read_room_runs_out() -> None:
+    loop, broker, model, _ = _setup(_LEDGER_READ, _FINAL)
+
+    def little_room_after_the_first_turn() -> None:
+        broker._exchange_room = lambda: 1_500  # pyright: ignore[reportPrivateUsage]
+
+    model.after = little_room_after_the_first_turn
+    outcome = await loop.run()
+    assert outcome.status == "final"
+    assert model.calls[-1][0][-1] == Turn("user", FINAL_PHASE)
+    assert [schema for _history, schema in model.calls] == [_FULL, _FULL]
+
+
+@pytest.mark.anyio
+async def test_a_notice_without_room_is_left_out() -> None:
+    """A first exchange admitted inside the notices' frame leaves no room for one (#1172): the
+    loop leaves it out, so it never pushes that exchange over the cap. Only a malformed first
+    answer reaches that state, so the repair note asks for the judgment and the turn is
+    read-free."""
+
+    loop, broker, model, _ = _setup({"reply": {}}, _FINAL)
+
+    def no_room_after_the_first_turn() -> None:
+        broker._exchange_room = lambda: -1  # pyright: ignore[reportPrivateUsage]
+
+    model.after = no_room_after_the_first_turn
+    outcome = await loop.run()
+    assert outcome.status == "final"
+    assert [schema for _history, schema in model.calls] == [_FULL, _FINAL_ONLY]
+    assert FINAL_PHASE not in [turn.content for turn in outcome.history]
+    assert model.calls[-1][0][-1].content == FINAL_FORMAT_ERROR.format(code="action_invalid")
 
 
 @pytest.mark.anyio

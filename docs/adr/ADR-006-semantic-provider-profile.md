@@ -2923,7 +2923,6 @@ Maintainer acknowledgement: the explicit scoped implementation request and owner
 They do not change reviewer judgment, disclosure authority, or the design-gated #905 todo-list
 convergence.
 
-
 ## Amendment — 2026-10-21: bounded reviewer read recovery (#1173)
 
 Maintainer acknowledgement: the explicit scoped request on issue #1173 approves all four parts.
@@ -3027,3 +3026,168 @@ their encrypted response for an already-authorized owner-local metrics collector
 `attempt_usages[].reviewer_reads` without read content; missing/old/invalid telemetry is null.
 It adds no CLI/MCP/host route and no network channel. Codex, Claude Code and Cursor continue to
 share this controller and the existing result projection.
+
+## Amendment — 2026-10-21: per-exchange prompt-cache telemetry (#1172)
+
+About half of the reviewer's input is served from the provider's prompt cache (49.8% over 27
+TB-Science pilot trials), and input is nearly all of its cost. Until now only each attempt's
+cumulative usage was kept, so a miss could not be attributed. Every provider exchange that
+reports usage now writes one `exchange_cache` owner diagnostic: its input, cached input,
+cache-write (where the provider reports it) and output tokens, how many model requests it made,
+the prefix it could reuse from the review's previous exchange, how much of that its first request
+reused, and one closed miss label: `compaction`, `first_turn`, `none`,
+`schema_or_settings_change`, `retry` or `unexplained`, the first that applies (see INTERFACES,
+"Per-exchange prompt-cache telemetry"). `none` allows a shortfall of up to 1,024 tokens, the
+providers' minimum cacheable prefix. A count the provider does not report (Chat Completions may
+omit the cached count) is left out, never recorded as zero. A compaction is recorded, by its index
+and label alone, even when it comes before any usage report. A Codex turn whose previous turn
+reported no usage starts at the total before its own first reported request, so it records its
+own requests (unless a repeated snapshot arrives first, #1192); a turn that had a usage snapshot
+refused records no counts. Every exchange of a review names the review's first provider request
+id, so the records join the attempt row; the owner reads them with `finishup service diagnostics
+--request-id`, and an exporter that copies the diagnostics ring carries them.
+
+The record holds integers, one closed token and that request id. It never holds content, a
+content digest or a provider identifier. Between a review's exchanges, the `ReviewerSession` keeps
+counts, the last history's message count and a digest of the settings the route sent beside the
+messages, to notice a changed schema, model or effort. The usage arrives on the responses FinishUP
+already reads (Codex `thread/tokenUsage/updated`; the Responses and Chat Completions `usage`
+object), so no request, egress or retention changes. Recording never changes an outcome. The
+local model route and the credential probe record nothing.
+
+This is phase 1's measurement. It changes no prompt, schema, thread or packet. The TB-Science
+rows, from before the reviewer kept its final turn's schema (#1173, above), show a three-read
+review caching its two middle turns and nothing of its final turn (189,056 of 381,293 input
+tokens). The one schema change left, the read-free schema on a final-phase repair and on a final
+turn after a spent repair, is labelled `schema_or_settings_change`, so these records show how
+often a review pays it. Phase 2 (reusing a thread across reviews) waits until these records show
+what is left to gain; the proposed amendment "packet order and cross-review reuse stay as they
+are" below records why it is not adopted now.
+
+## Amendment — 2026-10-21: one reply schema per review (#1172)
+
+**Why.** The reply schema is part of the request prefix a provider's prompt cache keys on: OpenAI
+caches a structured-output schema as a prefix to the system message, and Codex sends it with every
+turn as `outputSchema`. The loop used to switch to the final-only schema after the last read, so the
+provider read the whole conversation again, uncached. In the TB-Science pilot a three-read review
+cached its two middle turns and none of its final turn (189,056 of 381,293 input tokens).
+
+**Decision.** The per-turn rule is the one the read-recovery amendment (#1173, above) records. A
+review that starts with reads sends the full reply schema on every read turn, every read-phase
+repair and its normal final turn. The loop announces that final turn by appending `FINAL_PHASE`
+once, as its own user message, so everything sent before stays byte-identical and the final turn
+can reuse the whole prefix. A review whose first turn offers no read (an ask-every-time policy, or
+no time left for one) sends the read-free schema on every turn and gets no notice, so an
+owner-approved first exchange still resumes by its exact bytes. One schema change is left, on the
+last exchange: the final-phase repair turn, and any final turn after the review's one repair is
+spent, send the read-free schema, so a route that enforces it can only return the judgment. That
+exchange pays a cache miss, which the per-exchange telemetry labels `schema_or_settings_change`.
+
+**A late read.** The normal final turn's schema still allows a read. The instruction, each read
+result's `calls_remaining` and the notice all say only `final_judgment` is accepted. A read there
+executes nothing and is the final phase's format error (`read_in_final_phase`, #1173): it takes the
+review's one repair, whose note asks for `final_judgment` only and whose turn is read-free.
+
+**Append-only.** A Codex continuation may add up to two user messages after the longest history
+its thread holds (a read result or repair notice, then `FINAL_PHASE`), each as its own text input.
+An empty, longer or non-user suffix, or a history that does not extend what the thread holds,
+still fails closed. After an answer that parsed as a JSON object the thread holds its history both
+with that answer and without it, because only the loop's decoder knows whether the answer was
+accepted or will be replaced by the repair notice; the thread never reads content to tell. Keeping
+every accepted answer is therefore the loop's rule, and a test pins that every exchange extends the
+previous one byte for byte. The notice is never merged into a read result, so a result's bytes and
+digest are unchanged. An exchange history admits 17 messages (#1173).
+
+**Size guard.** Every read leaves exchange room, in bytes and estimated tokens, for the notice
+beside the longer of the two repair texts. The exchange that carries the notice, and a repair after
+it, therefore still fit the cap. Ceiling planning keeps an 8 KiB frame in the first exchange, but a
+first exchange it could not plan may sit inside the room the notices need. In that rare case the
+loop leaves the notice out, so the notice never pushes that exchange over the cap. Only a
+malformed first answer reaches that state, so the repair note already asks for the judgment and
+the turn is read-free because the repair is spent. A first exchange that leaves less room than the
+repair note itself still ends `case_capacity_exceeded`, as before. An exchange that outgrows the
+cap is still refused whole, never trimmed.
+The reviewer path still refuses Codex compaction (it would replace history FinishUP inspected and
+disclosed). The exchange budget keeps every exchange below Codex's auto-compact threshold with its
+estimation margin, and the #1172 telemetry labels a compaction if one ever occurs.
+
+**Constant within a review.** The model is constant because one profile serves a session, the
+effort because one budget profile serves a check, and the tools because Codex registers none and
+the APIs send none. The schema is constant too, except on the last exchange above. The telemetry's
+settings digest flags any change.
+
+**Effect.** A three-read review that spends no repair now reuses its final turn's whole prefix:
+projected from the pilot, with linear turn growth, about 74% of its input cached instead of about
+50%. A review that spends its repair sends the read-free schema on its final-phase turns, so the
+repair turn, or a final turn after an earlier repair, misses the cache. Before #1173 only a final
+turn forced by the end of reads was read-free; a judgment given while reads remained kept the full
+schema. A model that answers the final turn with its judgment adds no turn, request or wait. A
+late read there costs one extra exchange, its repair, uncached because its schema changes; the
+per-exchange records show how often. The notice is a few dozen tokens. No wire schema, decoder,
+privacy rule or egress changes: every exchange is still admitted whole.
+
+## Amendment — 2026-10-21: packet order and cross-review reuse stay as they are (#1172 phase 2)
+
+Status: proposed for maintainer acceptance. No behavior changes.
+
+**Packet order is unchanged.** Within a review the packet leads every exchange (Codex sends it once,
+on the review's thread; the stateless routes resend it with the whole conversation), and every
+later turn can reuse it whole as part of the cached prefix. The exception, a final-phase turn after
+a spent repair (the repair turn itself, or a final turn after an earlier repair), changes the
+schema ("one reply schema per review", above) and misses it whatever its order. So the packet's
+internal order cannot change caching inside a review.
+It would matter only where a later review's request can reuse an earlier review's prefix. On the
+Codex route that does not happen today: Codex 0.162.1 keys a fresh root thread's prompt cache on its
+session id, which is its thread id, and every review opens a fresh ephemeral thread. The Responses
+and Chat Completions routes send no `prompt_cache_key`, so there the provider's automatic prompt
+caching may already serve a prefix two reviews share; the `first_turn` records of the per-exchange
+telemetry above (`reviewer_prefix_cached_tokens`) show any such reuse.
+
+What two reviews' packets share is short whatever the item order. The packet
+(`yoetz.review-packet-case/2`) is canonical JSON, so its keys sort and `case_digest`, a digest of
+this review's case, comes first: two packets differ from that digest on, at the start of the
+message, even when every item matches. (Inside, items follow section priority, the task statement
+before excerpts before the agent's account, and ledger order within a section.) Moving that digest
+or reordering items would change the canonical document that the prepared-payload path and the
+privacy enforcer must render identically and that fixtures pin, and with it every route's
+disclosed bytes, background advice included, for no measured gain.
+
+**Cross-review reuse is not adopted now.** #1172 allows it in principle (one reviewer thread per
+task, or a fork from a warmed base) if it stays small, adds no noticeable slowdown and never
+crosses a changed task, authority, consent or input identity, and it asks for the decision after
+phase 1's telemetry. On what is known now, none of the three ways meets those conditions:
+
+- *Continue one Codex thread across a task's reviews.* The cache key stays the same, but the next
+  review's first exchange carries the earlier review's whole conversation plus a new packet. The
+  sized route's exchange budget is 169,144 *estimated* tokens ("Exchange budget sized to the
+  reviewer model's context", above), and the estimate is at least the `o200k_base` count measured
+  on reviewer packets (`domain.reviewer_context`; the reviewer model's own tokenizer is not
+  published). One-exchange reviews in the TB-Science pilot averaged about 92,500 provider input
+  tokens (#1177), so two such first exchanges, about 177,000 tokens without Codex's own turn
+  framing, exceed the budget even counted one for one. The thread would need compaction (refused here: it replaces history FinishUP inspected) or a smaller
+  packet. The model would also review with its earlier conversation in context, which changes what
+  an independent review is.
+- *Fork from a warmed base thread* (`thread/fork`). In Codex 0.162.1 an ephemeral fork of a root
+  thread takes its parent's session id as its `prompt_cache_key` ("ephemeral forks reuse cache
+  routing", `core/src/session/session.rs`), so a fork can reach the base's cached prefix. The
+  obstacle is elsewhere: `thread/fork` reads its source thread from Codex's thread store, and an
+  ephemeral thread is never persisted, so an ephemeral warmed base may not be forkable at all, and
+  a persisted one is the retention change below. Warming the base is itself a cold request, and
+  what every review could share from it is the instruction: the packet differs from its leading
+  `case_digest` on.
+- *Resume a persisted thread in a later process* (`thread/resume`). Thread state at rest is a
+  retention change under ADR-009 and the vault, while reviewer threads are ephemeral by design.
+
+All three keep a runtime process or thread alive beyond one review. That brings lifecycle work
+(service restart, upgrade, crash recovery, cleanup) and concurrency between tasks, which is more
+than the small change #1172 allows before its telemetry shows the gain. On the Responses and Chat
+Completions routes, a stable `prompt_cache_key` per task is a separate lever; it would send the
+provider an identifier that links a task's reviews, so it needs a privacy decision first.
+
+**When to revisit.** Revisit once the per-exchange records (#1172 phase 1) show that `first_turn`
+input is still the largest uncached share and that consecutive packets of one task share long
+prefixes. Any reuse must key on the whole review identity and open a fresh thread whenever any part
+changes: the task, writer authority, consent and repository grant, the effective privacy policy
+digest and generation, the provider binding (endpoint, model, effort, reply schema), the runtime
+version and isolated configuration, and the review's input roots and read catalog. Reuse never
+crosses tasks.

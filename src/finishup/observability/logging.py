@@ -124,6 +124,17 @@ _FIELD_ORDER: Final = (
     "codex_event_delta_bytes",
     "codex_event_intermediate_count",
     "codex_event_intermediate_bytes",
+    # #1172: per-exchange prompt-cache telemetry (provider-reported token counts and one
+    # closed miss label, never content).
+    "reviewer_exchange_index",
+    "reviewer_model_requests",
+    "reviewer_input_tokens",
+    "reviewer_cached_input_tokens",
+    "reviewer_cache_write_input_tokens",
+    "reviewer_output_tokens",
+    "reviewer_prefix_tokens",
+    "reviewer_prefix_cached_tokens",
+    "reviewer_cache_miss",
     # Closed control-plane identity for a response write the peer abandoned (tb4n2 NEW-8).
     "control_method",
     "client_kind",
