@@ -12239,21 +12239,28 @@ or raise a question is defined once, in the next section.
 ### Intelligent verification freshness (#1143, ADR-042)
 
 `kernel.verification_freshness.VerificationFreshness(run_ref, state, changes, change_refs, basis,
-label)` is a prefix-derived, frozen per-run fact. `state` is `stale` (a recorded input changed),
-`unknown` (a later change may touch an input FinishUP cannot rule out) or `current`; a `current`
-row exists only to disclose a change set aside on a caller-asserted complete declaration.
+label)` is a prefix-derived, frozen per-run fact. `state` is `stale` (a recorded input changed, or a
+counting change FinishUP cannot place), `unknown` (a placed change may touch an input FinishUP
+cannot rule out) or `current`; a `current` row exists only to disclose a change set aside on a
+caller-asserted complete declaration.
 `basis` is `undeclared|requested|declared|complete` and `label` is the requested command the run
-matched, if any. `changes` are bounded, already quoted summaries: a named path, or a count of
-keyed-only identities the record does not name. `verification_freshness(projection, records)`
+matched, if any. `changes` are bounded, already quoted summaries: a named path, a count of
+keyed-only identities the record does not name, or, for changes FinishUP cannot place, their kind
+and count (an edit names its host tool) with the statement that FinishUP cannot tell whether they
+touched the verification's inputs. `verification_freshness(projection, records)`
 combines service-stamped workspace comparisons with requested input files and directories and the
 versioned, caller-asserted evidence convention
 `reference=finishup-verification-inputs/v1:<res_ id>`,
 `description={"inputs":["source.py","config.json"],"outputs":["evidence.json"],"complete":true}`.
 Only exact file inputs are declared; arbitrary shell process reads are not observed by any host.
-An input takes precedence over an evidence output. Unknown coverage asks, never demands a rerun.
-Host-native edit tools are not fingerprinted (`fingerprinted_tool`), so their edits carry no
-changed-entry identity: an edit through one after a verification asks the rerun question even when
-the edited file is a known input, and only a fingerprinted call establishes staleness.
+An input takes precedence over an evidence output. A placed change (a trusted comparison's keyed
+changed-entry identities) whose input relationship is unknown asks, never demands a rerun.
+A counting change FinishUP cannot place keeps the pre-#1143 rule and makes the verification stale:
+host-native edit-tool edits (not fingerprinted, `fingerprinted_tool`, so they carry no
+changed-entry identity), shell writes without a trusted comparison, unavailable or incomplete
+comparisons, and a no-op proof that cannot cover an input outside the comparison. Exempt classes
+never make it stale. Decision recorded in ADR-042 (controller, 2026-10-22, under the #1143
+direction); keyed edit-target identities for host edit tools are follow-up #1188.
 
 Input scopes are per verification: a requested input belongs to the runs of its obligation's
 command; a command-less obligation's inputs apply to runs without their own complete declaration.
@@ -12262,8 +12269,8 @@ requested in-workspace directory rules out only named changed paths outside it. 
 exempt only when the run's own trusted comparison wrote it. A `complete: true` declaration with no
 inputs is not complete. A complete declaration that omits a later-edited file keeps the run
 current and raises the standing disclosure `verification_inputs_caller_asserted` (G4d); the
-disclosure appears only when a keyed change was actually set aside on that assertion
-(`VerificationFreshness.set_aside`, derived and not persisted), never for an unplaced host edit.
+disclosure appears only when a placed change was actually set aside on that assertion
+(`VerificationFreshness.set_aside`, derived and not persisted), never for an unplaceable change.
 
 `domain.workspace_effect.workspace_path_identity(key, relative)` reuses the fingerprint's keyed
 path identity. `WorkspaceEffectReading.changed_entries` and the optional active-control structural
@@ -12276,8 +12283,10 @@ unreleased active 2.9.0 envelope admits the field.
 
 `DeterministicCase.verification_freshness` is absent on old frozen cases, which retain their legacy
 replay semantics. New cases persist the derived rows. `verification_advisory` is a per-evaluation
-AI-route flag. Known input changes produce `planned_verification_stale` /
-`edited_after_last_verification` only on the affected runs. Unknown relationships use the standing
+AI-route flag. Known input changes and unplaceable counting changes produce
+`planned_verification_stale` / `edited_after_last_verification` only on the affected runs; the
+stale finding's detail names the verification and the changes. Unknown relationships of placed
+changes use the standing
 `verification_rerun_question` code and a non-blocking `ledger_stale_or_incomplete` question whose
 subjects bind the observed run event and subsequent change events. `respond acknowledged` with a
 nonempty reason records a no-rerun decision for that exact set under the generic respond contract;
@@ -12289,7 +12298,9 @@ CLI/MCP check/status and TUI consume shared task-fact sentences. Encrypted findi
 verification (result id and requested command), state how its inputs are known, and list named
 paths and short change summaries; keyed-only changes are counted and never described as declared.
 The semantic packet includes those local questions through its existing selected/scanned finding
-content, alongside verification evidence and diffs. Receipt JSON, markdown and text retain the
+content, alongside verification evidence and diffs; `semantic_case.review_question_set(...,
+freshness=verification_freshness_asked(case))` adds `FRESHNESS_REVIEW_QUESTION` only when the frozen
+case records a verification with later changes, so other review packets are unchanged. Receipt JSON, markdown and text retain the
 same question, response, caller-assertion disclosure and coverage limitations. There is no new
 permission, provider, capture or execution authority.
 

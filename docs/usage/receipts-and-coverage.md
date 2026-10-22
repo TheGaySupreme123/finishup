@@ -540,7 +540,9 @@ disproved appear separately; that wording does not assert that the implementatio
 Keep incidental evidence reports and logs outside your project and its output directories, then
 publish references through the ledger. Required reports remain deliverables. FinishUP can preserve
 verification after a byte-identical shell rewrite when its trusted workspace comparison proves
-no bytes changed. A new or changed report makes earlier verification stale only when it is one of
-that verification's recorded inputs; when FinishUP cannot tell, it asks whether a rerun is needed
-instead of demanding one. A report the verification itself wrote, declared as its output, is not
-a reason to rerun.
+no bytes changed. A report a shell command writes makes earlier verification stale only when it is
+one of that verification's recorded inputs; when FinishUP cannot tell, it asks whether a rerun is
+needed instead of demanding one. A report the verification itself wrote, declared as its output,
+is not a reason to rerun. A report you write with your coding agent's file-edit tool records no
+file path, so it still makes earlier verification stale unless it is documentation or notes; write
+incidental reports outside the project instead.

@@ -268,15 +268,16 @@ Closure is a checklist. `closure_readiness.state` names the next move:
 - `ready`: nothing further to do and nothing to disclose; request the receipt.
 - `unknown`: read `status` again once the projection is readable.
 
-A verification becomes stale only when a recorded input changes. Evidence/report/log outputs
-that verification wrote, byte-identical writes and unrelated changes do not demand a rerun. A
-stale finding names the verification and changed input. If its dependencies or the later changes are unknown,
-`verification_rerun_question` asks for a decision without blocking closure: inspect the recorded
-verification and subsequent paths/change summaries, then rerun or `respond` with `acknowledged`
-and a reasoned explanation that a rerun is not needed. A later change asks again. An edit made
-with your host's file-edit tool records no file identity, so it can only ask, even for a recorded
-input: after changing anything a verification reads, rerun it. A FinishUP check records the
-decision; it does not run tests for you.
+A change FinishUP can place (a shell command's workspace comparison records which files changed)
+makes a verification stale only when it touches a recorded input. Evidence/report/log outputs that
+verification wrote, byte-identical writes and unrelated placed changes do not demand a rerun. If a
+placed change may touch an input FinishUP cannot rule out, `verification_rerun_question` asks for a
+decision without blocking closure: inspect the recorded verification and subsequent paths/change
+summaries, then rerun or `respond` with `acknowledged` and a reasoned explanation that a rerun is
+not needed. A later change asks again. An edit made with your host's file-edit tool records no
+file path, so FinishUP cannot place it: it may be a source edit, so the verification is stale until
+you rerun it. A stale finding names the verification and the changed input, or the edit tool and
+count. A FinishUP check records the decision; it does not run tests for you.
 
 To declare a verification's exact file inputs and evidence outputs, publish an ordinary evidence
 row with reference `finishup-verification-inputs/v1:<observed res_ id>` and a JSON description:
@@ -286,8 +287,9 @@ FinishUP does not observe arbitrary file reads inside a shell command. Inputs ta
 outputs, and an output is exempt only when that run itself wrote it. A `complete:true` list with
 no inputs is not complete. A complete list that leaves out a file you later edit keeps the
 verification current, and FinishUP discloses `verification_inputs_caller_asserted`, so list every
-file the check reads. Directories, outside-workspace inputs and unavailable comparisons remain
-unknown. Each new observed run needs its own declaration.
+file the check reads. Directories and outside-workspace inputs remain unknown; a change whose
+comparison was unavailable cannot be placed and stays stale. Each new observed run needs its own
+declaration.
 
 For AI-powered review, freshness is always advisory: consider the verification together with what
 changed after it and answer the non-blocking rerun question. Actual failed checks and missing
@@ -297,7 +299,8 @@ If you stop while `agent_actionable` still names open obligations, an unrepaired
 finding, a finding you rejected that still awaits the reviewer's ruling
 (`finding_rejection_awaiting_ruling`: run `check` with `final_review: true` so the reviewer rules;
 do not acknowledge a finding you dispute), a planned verification that was not observed or failed, or a known input change
-after a local-only verification (`edited_after_last_verification`;
+or an edit FinishUP cannot place (such as one through your file-edit tool) after a local-only
+verification (`edited_after_last_verification`;
 exempt scratch and FinishUP receipt files do not count, and documentation such as a README
 or changelog does not stale verification unless it is a recorded input; run each verification in the
 foreground, in one tool call: a job you start in the background (`&`, `nohup`, or your host's

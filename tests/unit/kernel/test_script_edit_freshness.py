@@ -49,19 +49,21 @@ def _declare_inputs(ledger: ObservedLedger, run: ResultId, *inputs: str) -> None
     )
 
 
-@pytest.mark.parametrize("declared", [False, True])
-def test_indirect_changed_workspace_cannot_keep_prior_test_fresh(declared: bool) -> None:
+@pytest.mark.parametrize("case", ["declared", "undeclared", "unplaced"])
+def test_indirect_changed_workspace_cannot_keep_prior_test_fresh(case: str) -> None:
     """An indirect change keeps an earlier test fresh only when it provably misses its inputs.
 
-    With the run's inputs declared and the changed path known, both freshness consumers agree the
-    test is stale. With unknown inputs, both ask instead: a question, never a staleness assertion.
+    The script changes ``app.py``. With the run's inputs declared and the change placed, both
+    freshness consumers agree the test is stale. Placed but with unknown inputs, both ask instead.
+    When the comparison names no path at all, FinishUP cannot place the change, which may be a
+    source edit: the test stays stale, as before #1143.
     """
 
     ledger = ObservedLedger()
     ledger.plan("python -m unittest -q")
     ledger.edit(write_scope="workspace")
     tested = ledger.passes("python -m unittest -q")
-    if declared:
+    if case == "declared":
         _declare_inputs(ledger, tested, "app.py")
     ledger.run(
         "python modify.py",
@@ -69,7 +71,7 @@ def test_indirect_changed_workspace_cannot_keep_prior_test_fresh(declared: bool)
         runner="other",
         workspace_effect="changed",
         workspace_changed_entries=(
-            (workspace_path_identity(INSTALLATION_KEY, "app.py"),) if declared else None
+            None if case == "unplaced" else (workspace_path_identity(INSTALLATION_KEY, "app.py"),)
         ),
     )
     ledger.append(
@@ -84,11 +86,12 @@ def test_indirect_changed_workspace_cannot_keep_prior_test_fresh(declared: bool)
     )
     state = replay(ledger.prefix)
     facts = task_fact_signals(state, ledger.prefix)
-    case = build_deterministic_case(state, ledger.prefix, CaseAvailabilityFacts())
-    assert ("verification_rerun_question" in facts.codes) is not declared
-    assert ("edited_after_last_verification" in facts.codes) is declared
-    assert ("planned_verification_stale" in facts.codes) is declared
-    assert len(_uncorroborated_completion_findings(case)) == (1 if declared else 0)
+    built = build_deterministic_case(state, ledger.prefix, CaseAvailabilityFacts())
+    stale = case != "undeclared"
+    assert ("verification_rerun_question" in facts.codes) is not stale
+    assert ("edited_after_last_verification" in facts.codes) is stale
+    assert ("planned_verification_stale" in facts.codes) is stale
+    assert len(_uncorroborated_completion_findings(built)) == (1 if stale else 0)
 
 
 @pytest.mark.parametrize(
@@ -141,17 +144,19 @@ def test_actual_workspace_classes_control_both_freshness_consumers(
     )
     state = replay(ledger.prefix)
     facts = task_fact_signals(state, ledger.prefix)
-    assert ("verification_rerun_question" in facts.codes) is stale
-    # No recorded input: the class decides whether to ask, never whether the test is stale.
-    assert not {"edited_after_last_verification", "planned_verification_stale"} & set(facts.codes)
+    # The comparison names no path, so FinishUP cannot place a counting change: the class alone
+    # decides, and a counting class keeps the test stale (never only a question, #1143).
+    assert ("edited_after_last_verification" in facts.codes) is stale
+    assert ("planned_verification_stale" in facts.codes) is stale
+    assert "verification_rerun_question" not in facts.codes
     case = build_deterministic_case(state, ledger.prefix, CaseAvailabilityFacts())
-    assert not _uncorroborated_completion_findings(case)
+    assert bool(_uncorroborated_completion_findings(case)) is stale
     restored = deterministic_case_from_json(deterministic_case_to_json(case))
     assert restored == case
-    assert not _uncorroborated_completion_findings(restored)
+    assert bool(_uncorroborated_completion_findings(restored)) is stale
     ledger.passes("python -m unittest -q")
     assert (
-        "verification_rerun_question"
+        "edited_after_last_verification"
         not in task_fact_signals(replay(ledger.prefix), ledger.prefix).codes
     )
 
@@ -170,7 +175,7 @@ def test_only_service_observation_can_stale_verification(observed: bool) -> None
         workspace_write_scopes=("workspace",),
     )
     facts = task_fact_signals(replay(ledger.prefix), ledger.prefix)
-    assert ("verification_rerun_question" in facts.codes) is observed
+    assert ("edited_after_last_verification" in facts.codes) is observed
 
 
 def test_code_change_wins_over_later_exempt_duplicate() -> None:
@@ -186,7 +191,7 @@ def test_code_change_wins_over_later_exempt_duplicate() -> None:
     )
     ledger.annotate_workspace_effect(result, "changed", scopes=("docs",))
     assert (
-        "verification_rerun_question"
+        "edited_after_last_verification"
         in task_fact_signals(replay(ledger.prefix), ledger.prefix).codes
     )
 
@@ -209,9 +214,10 @@ def test_declared_output_precedence_applies_to_actual_changed_classes(
     """A declared output overrides its class exemption; a declared input changed is stale.
 
     The change writes exactly *path*. As a declared output it still counts (no exempt class hides
-    a delivery) but is not a verification input, so it asks. As a requested input whose change is
-    named, it makes the verification stale. An input FinishUP cannot compare, or a change whose
-    paths are unknown, asks: an exempt class never hides a possible input change.
+    a delivery): placed, it is not a verification input, so it asks; unplaced (no path named), it
+    may be a source edit, so the verification is stale. As a requested input whose change is
+    placed, it makes the verification stale. An input FinishUP cannot compare, or an exempt-class
+    change whose paths are unknown, asks: an exempt class never hides a possible input change.
     """
 
     from finishup.domain.events import (
@@ -261,7 +267,7 @@ def test_declared_output_precedence_applies_to_actual_changed_classes(
         ),
     )
     codes = set(task_fact_signals(replay(ledger.prefix), ledger.prefix).codes)
-    stale = not output and named and not path.startswith("/")
+    stale = not output and named and not path.startswith("/") or output and not named
     assert ("planned_verification_stale" in codes) is stale
     assert ("edited_after_last_verification" in codes) is stale
     assert ("verification_rerun_question" in codes) is not stale

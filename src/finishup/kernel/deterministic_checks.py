@@ -613,8 +613,8 @@ def render_deterministic_finding_text(
             "Is a verification rerun needed after the recorded changes?",
             f"Subjects: {', '.join(refs)}. Review the verification and later changes. Rerun it"
             " or respond acknowledged with a reasoned explanation that a rerun is not needed."
-            " This question does not block closure: unknown inputs never demand a rerun, and on"
-            " AI review a known input change is asked about rather than blocked.",
+            " This question does not block closure: an unknown input relationship never demands a"
+            " rerun, and on AI review a stale verification is asked about rather than blocked.",
         )
     detail = f"Subjects: {', '.join(refs)}. Main agent: {template.next_action}"
     if kind is FindingKind.LEDGER_STALE_OR_INCOMPLETE and gap_codes:

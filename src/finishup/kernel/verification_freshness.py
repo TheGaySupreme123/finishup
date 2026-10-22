@@ -1,8 +1,13 @@
 """Input-aware freshness from recorded declarations and trusted workspace comparisons (#1143).
 
 An input declaration is evidence of what the agent says the check reads, not a syscall trace.
-Unrecorded dependencies, missing comparisons, opaque directories and old observations ask for a
-decision instead of asserting that a rerun is required. No command-text heuristic proves a read.
+A change the trusted comparison placed (keyed path identities) is judged against the recorded
+inputs: a changed input is stale and named, outputs and disjoint changes are quiet, and an
+unrecorded dependency or opaque directory asks for a decision. A counting change FinishUP cannot
+place (a host edit-tool edit, a shell write without a trusted comparison, an unavailable or
+incomplete comparison) may have edited a deliverable source, which is an input, so it keeps the
+verification stale (controller decision under the #1143 direction, ADR-042). No command-text
+heuristic proves a read.
 Every input scope is per verification: a requested input applies to the runs of the command its
 obligation requests, and a per-run declaration applies to that one run.
 """
@@ -11,8 +16,9 @@ from __future__ import annotations
 
 import json
 import posixpath
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
+from types import MappingProxyType
 from typing import Final, cast
 
 from finishup.domain.bounded_text import quoted_path
@@ -37,6 +43,7 @@ from finishup.domain.workspace_effect import (
 from finishup.kernel.observed_failures import (
     command_identity,
     observed_action_runner_class,
+    observed_action_tool,
     observed_edit_counts,
     observed_shell_write_counts,
     observed_write_stales_verification,
@@ -63,8 +70,8 @@ _MAX_NAME_CANDIDATES: Final = 512
 class VerificationFreshness:
     """One retained verification run and the later changes that bear on it.
 
-    ``state`` is ``stale`` (a recorded input changed), ``unknown`` (a later change may touch an
-    input FinishUP cannot rule out) or ``current``. A ``current`` row exists only to disclose that
+    ``state`` is ``stale`` (a recorded input changed, or a counting change FinishUP cannot place),
+    ``unknown`` (a placed change may touch an input FinishUP cannot rule out) or ``current``. A ``current`` row exists only to disclose that
     a later change was set aside on the caller's complete-declaration assertion. ``basis`` names
     how the run's inputs are known and ``label`` is the requested command it matched, if any.
     ``set_aside`` says that a later change was set aside on that assertion; it is derived with
@@ -167,6 +174,68 @@ def _may_hold_input(
         or any(_within(name, directory) for directory in directories)
         for identity in identities
     )
+
+
+# What is known about a later change that carries no keyed path identity: its kind and, for a
+# host edit-tool edit, the bounded tool token the hook recorded.
+_Unplaced = tuple[str, str | None]
+_NOOP_UNOBSERVABLE: Final[_Unplaced] = ("noop_unobservable", None)
+_UNPLACED_TEXT: Final[Mapping[str, str]] = MappingProxyType(
+    {
+        "edit": "later edit(s) through a host edit tool{tools}; edit tools record no file path",
+        "command": (
+            "later command(s) wrote workspace files without a trusted workspace comparison, so"
+            " no file path is recorded"
+        ),
+        "comparison_unavailable": (
+            "later call(s) had no available workspace comparison, so no file path is recorded"
+        ),
+        "comparison_incomplete": (
+            "later call(s) had an incomplete workspace comparison (too many changed paths, a"
+            " replaced workspace root or an older record), so no file path is recorded"
+        ),
+        "noop_unobservable": (
+            "later rewrite(s) left the compared workspace unchanged, but a verification input"
+            " lies outside what the comparison covers"
+        ),
+    }
+)
+_MAX_TOOLS_NAMED: Final = 3
+
+
+def _unplaced_action(kind: ActionKind, description: str) -> _Unplaced:
+    if kind is ActionKind.EDIT:
+        return ("edit", observed_action_tool(description))
+    return ("command", None)
+
+
+def _count_unplaced(counts: dict[str, tuple[int, frozenset[str]]], unplaced: _Unplaced) -> None:
+    count, tools = counts.get(unplaced[0], (0, frozenset[str]()))
+    counts[unplaced[0]] = (count + 1, tools | ({unplaced[1]} if unplaced[1] else set[str]()))
+
+
+def _unplaced_summaries(counts: Mapping[str, tuple[int, frozenset[str]]]) -> list[str]:
+    """One sentence per kind of change FinishUP cannot place, never claiming what it touched."""
+
+    lines: list[str] = []
+    for kind in _UNPLACED_TEXT:
+        if kind not in counts:
+            continue
+        count, tools = counts[kind]
+        named = sorted(tools)[:_MAX_TOOLS_NAMED]
+        listed = (
+            ""
+            if not named
+            else " ("
+            + ", ".join(quoted_path(tool) for tool in named)
+            + (f" and {len(tools) - len(named)} more" if len(tools) > len(named) else "")
+            + ")"
+        )
+        lines.append(
+            f"{count} {_UNPLACED_TEXT[kind].format(tools=listed)}; FinishUP cannot tell whether"
+            " that touched this verification's inputs"
+        )
+    return lines
 
 
 def verification_freshness(
@@ -329,7 +398,9 @@ def verification_freshness(
     # One change per host call at its result frontier, never the late annotation's frontier.
     # A trusted byte-identical shell write is kept as a no-op change: only a run with an input the
     # workspace comparison cannot see refuses the workspace-only proof.
-    changes: list[tuple[int, EventId, tuple[str, ...] | None, bool, bool]] = []
+    # (position, change event, keyed identities or None, exempt class, trusted no-op, what is
+    # known about a change without identities: its kind and, for an edit tool, the tool name).
+    changes: list[tuple[int, EventId, tuple[str, ...] | None, bool, bool, _Unplaced]] = []
     own_changes: dict[EventId, tuple[str, ...] | None] = {}
     completed: set[str] = set()
     runs: list[tuple[ResultId, int, EventId]] = []
@@ -391,7 +462,20 @@ def verification_freshness(
         if comparison_known or comparison_unknown:
             identities = None if comparison_unknown else tuple(sorted(entries))
             own_changes[action.source_event_id] = identities
-            changes.append((position, action.source_event_id, identities, exempt_change, False))
+            changes.append(
+                (
+                    position,
+                    action.source_event_id,
+                    identities,
+                    exempt_change,
+                    False,
+                    _Unplaced(
+                        "comparison_unavailable"
+                        if any(effect == "unavailable" for effect in effects)
+                        else "comparison_incomplete"
+                    ),
+                )
+            )
         else:
             description = action.payload.description
             writes = (
@@ -407,6 +491,7 @@ def verification_freshness(
                         None,
                         not observed_write_stales_verification(description, stale_exempt),
                         result.action_id in unchanged,
+                        _unplaced_action(action.payload.action_kind, description),
                     )
                 )
     for ref, row in projection.actions.items():
@@ -424,13 +509,16 @@ def verification_freshness(
                         None,
                         not observed_write_stales_verification(payload.description, stale_exempt),
                         False,
+                        _unplaced_action(payload.action_kind, payload.description),
                     )
                 )
 
     # An agent-published evidence reference can name a changed path only through an exact keyed
     # identity match. Hash the bounded, latest candidates only when an unnamed identity exists.
     if any(
-        identity not in names for _, _, identities, _, _ in changes for identity in identities or ()
+        identity not in names
+        for _, _, identities, _, _, _ in changes
+        for identity in identities or ()
     ):
         for _, reference in sorted(candidates)[-_MAX_NAME_CANDIDATES:]:
             if "://" in reference:
@@ -508,18 +596,26 @@ def verification_freshness(
         unknown_unnamed: set[str] = set()
         asserted_names: set[str] = set()
         asserted_unnamed: set[str] = set()
-        unobserved = False
-        noop_unobservable = False
+        unplaced_stale: dict[str, tuple[int, frozenset[str]]] = {}
+        unplaced_unknown: dict[str, tuple[int, frozenset[str]]] = {}
         opaque_reason = False
         refs: set[EventId] = set()
         state = "current"
-        for changed_at, event, identities, exempt_change, noop in changes:
+        for changed_at, event, identities, exempt_change, noop, unplaced in changes:
             if changed_at <= position or (noop and not unobservable):
                 continue
             hits = set(identities or ()) & known_inputs
             if hits:
                 state = "stale"
                 stale_names.update(names[identity] for identity in hits)
+            elif identities is None and not exempt_change:
+                # FinishUP cannot place this change: it has no trusted keyed identity set (a host
+                # edit-tool edit, a shell write without a trusted comparison, an unavailable or
+                # incomplete comparison, or a no-op proof that cannot cover an input outside the
+                # comparison). It may be a deliverable-source edit, which is an input, so the
+                # verification stays stale as before #1143; the summary says what is known.
+                state = "stale"
+                _count_unplaced(unplaced_stale, _NOOP_UNOBSERVABLE if noop else unplaced)
             else:
                 opaque = _may_hold_input(identities, names, directories, unobservable)
                 if not opaque and (
@@ -545,10 +641,7 @@ def verification_freshness(
                         else:
                             unknown_unnamed.add(identity)
                     if identities is None:
-                        if noop:
-                            noop_unobservable = True
-                        else:
-                            unobserved = True
+                        _count_unplaced(unplaced_unknown, _NOOP_UNOBSERVABLE if noop else unplaced)
             refs.add(event)
             refs.update(annotation_events.get(event, ()))
         if not refs:
@@ -558,6 +651,7 @@ def verification_freshness(
                 f"{quoted_path(name)} changed: a recorded verification input"
                 for name in sorted(stale_names)
             ),
+            *_unplaced_summaries(unplaced_stale),
             *(f"{quoted_path(name)} added, removed or modified" for name in sorted(unknown_names)),
             *(
                 [
@@ -567,19 +661,7 @@ def verification_freshness(
                 if unknown_unnamed
                 else []
             ),
-            *(
-                ["paths unavailable: a later workspace change was not fully observed"]
-                if unobserved
-                else []
-            ),
-            *(
-                [
-                    "the workspace comparison saw no change, but a verification input lies outside"
-                    " what it compares"
-                ]
-                if noop_unobservable
-                else []
-            ),
+            *_unplaced_summaries(unplaced_unknown),
             *(
                 [
                     (

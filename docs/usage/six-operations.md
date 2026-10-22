@@ -382,13 +382,14 @@ obligation's requested command) that was not matched to an observed run, failed 
 run, or had a recorded input change after it ran; a recorded input that changed after your last
 test, lint, typecheck or build run stops you once at Stop. A verification's inputs are recorded
 when the task requests them as input files or when you publish its per-run input declaration
-(see the workflow guidance). When FinishUP cannot tell whether a later change touched a
-verification's inputs, it asks whether a rerun is needed (`verification_rerun_question`) instead
-of demanding one: rerun it, or answer with `respond` and a reason a rerun is not needed. That
-question never blocks closure, and with AI-powered review freshness is always such a question.
-An edit made with the coding agent's own file-edit tool records no file identity, so after one
-FinishUP asks rather than stops you, even when the file is a recorded input; a change a shell
-command makes can be matched to a recorded input. Edits under a temporary directory outside your workspace and a
+(see the workflow guidance). FinishUP can tell which files a shell command changed. When such a
+change may touch a verification's inputs but FinishUP cannot tell, it asks whether a rerun is
+needed (`verification_rerun_question`) instead of demanding one: rerun it, or answer with
+`respond` and a reason a rerun is not needed. That question never blocks closure, and with
+AI-powered review freshness is always such a question. An edit made with the coding agent's own
+file-edit tool records no file path, so FinishUP cannot tell which file it changed; it may be a
+source edit, so it makes your last verification stale and stops you once at Stop until you rerun
+it. Edits under a temporary directory outside your workspace and a
 FinishUP receipt you saved never count as edits for these facts. Documentation-only edits (a README,
 a changelog, Markdown guides outside test, fixture, data, golden, resource, prompt or template
 folders) are recorded as work but never make an earlier verification stale, unless the task

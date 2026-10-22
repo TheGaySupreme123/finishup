@@ -327,17 +327,25 @@ def test_many_changes_preserve_bounded_lineage_and_latest_question_identity() ->
 
 
 def test_late_changed_annotation_reasks_without_moving_the_call_frontier() -> None:
+    """A late annotation joins its call's change at the call's frontier (AI route: it asks).
+
+    The change names no path, so on the local route the verification is stale; on the AI route
+    the same row is the rerun question, and the late annotation re-asks with its own subject.
+    After a rerun, another late annotation of the old call does not reopen the question.
+    """
+
     ledger = ObservedLedger()
     ledger.plan("pytest -q")
     ledger.passes("pytest -q")
     result = ledger.run("python update.py", ResultOutcome.SUCCESS, workspace_effect="changed")
-    before = _verification_questions(case_for(ledger))[0]
+    assert [row.state for row in case_for(ledger).verification_freshness or ()] == ["stale"]
+    before = _verification_questions(replace(case_for(ledger), verification_advisory=True))[0]
     ledger.annotate_workspace_effect(result, "unavailable")
-    after = _verification_questions(case_for(ledger))[0]
+    after = _verification_questions(replace(case_for(ledger), verification_advisory=True))[0]
     assert before.candidate.subject_refs != after.candidate.subject_refs
     ledger.passes("pytest -q")
     ledger.annotate_workspace_effect(result, "changed", scopes=("workspace",))
-    assert not _verification_questions(case_for(ledger))
+    assert not _verification_questions(replace(case_for(ledger), verification_advisory=True))
 
 
 def test_conflicting_input_declarations_ask_instead_of_asserting_staleness() -> None:
@@ -396,8 +404,15 @@ def test_opaque_manifest_input_cannot_borrow_a_workspace_noop_proof(path: str) -
         write_scope="workspace",
         workspace_effect="unchanged",
     )
-    rows = verification_freshness(replay(ledger.prefix), ledger.prefix)
-    assert len(rows) == 1 and rows[0].state == "unknown"
+    (row,) = verification_freshness(replay(ledger.prefix), ledger.prefix)
+    # The no-op proof covers only the compared workspace: the input outside it may have changed,
+    # and FinishUP cannot place the write, so the run stays stale and says why.
+    assert row.state == "stale"
+    assert row.changes == (
+        "1 later rewrite(s) left the compared workspace unchanged, but a verification input lies"
+        " outside what the comparison covers; FinishUP cannot tell whether that touched this"
+        " verification's inputs",
+    )
 
 
 # --- PR #1167 review: per-verification scopes, honest wording, caller assertions --------------
@@ -574,13 +589,18 @@ def test_a_complete_declaration_that_omits_an_edited_file_is_accepted_and_disclo
 
 
 def test_a_complete_declaration_discloses_reliance_only_when_it_set_a_change_aside() -> None:
-    """An unnamed host edit is asked about, not set aside: no caller-assertion disclosure."""
+    """A question about an unplaceable path sets nothing aside: no caller-assertion disclosure.
+
+    The run's command also requests a ``src`` directory input, so a keyed change the record does
+    not name may lie inside it and asks. Only a named change outside the complete declaration is
+    set aside on the caller's assertion, and only then is the reliance disclosed.
+    """
 
     ledger = ObservedLedger()
-    ledger.plan("pytest -q")
+    obligation_with(ledger, 1, _COMMAND, _SRC_DIRECTORY)
     run = ledger.passes("pytest -q")
     manifest(ledger, run, inputs=("src/control.py",))
-    ledger.edit()
+    changed(ledger, "src/helper.py")
     (row,) = verification_freshness(replay(ledger.prefix), ledger.prefix)
     assert (row.state, row.basis) == ("unknown", "complete")
     assert not row.caller_asserted
@@ -588,7 +608,7 @@ def test_a_complete_declaration_discloses_reliance_only_when_it_set_a_change_asi
     assert "verification_rerun_question" in facts.codes
     assert "verification_inputs_caller_asserted" not in facts.codes
 
-    changed(ledger, "src/other.py")
+    changed(ledger, "evidence.json")
     (row,) = verification_freshness(replay(ledger.prefix), ledger.prefix)
     assert (row.state, row.basis) == ("unknown", "complete")
     assert row.caller_asserted
@@ -638,3 +658,22 @@ def test_an_undeclared_change_says_so_and_names_what_the_record_names() -> None:
     assert f'verification {run} (requested command "pytest -q")' in rendered
     assert "no usable input declaration is recorded for it" in rendered
     assert '"evidence.json" added, removed or modified' in rendered
+
+
+def test_the_ai_review_asks_about_freshness_only_when_a_verification_has_later_changes() -> None:
+    """The advisory freshness question joins the review only when it has something to weigh."""
+
+    from finishup.application.semantic_case import (
+        FRESHNESS_REVIEW_QUESTION,
+        review_question_set,
+        verification_freshness_asked,
+    )
+
+    ledger = ObservedLedger()
+    ledger.plan("pytest -q")
+    ledger.passes("pytest -q")
+    assert not verification_freshness_asked(case_for(ledger))
+    assert FRESHNESS_REVIEW_QUESTION not in review_question_set("final")
+    ledger.edit()
+    assert verification_freshness_asked(case_for(ledger))
+    assert FRESHNESS_REVIEW_QUESTION in review_question_set("final", freshness=True)
