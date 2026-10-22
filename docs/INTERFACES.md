@@ -10147,6 +10147,15 @@ follow-up loop is deleted.
   The one repair covers `ReviewerReplyInvalid` from `complete` and from decoding alike; the turn is
   captured either way. With `resume_reserved`, a store whose `usage()` is exactly `(1, 1)` runs turn
   1 again without reserving it; any other prior usage ends `interrupted` or `uncaptured_step`.
+- One reply schema per review (#1172): the provider caches the reply schema with the
+  conversation, so a review keeps the schema its first turn chose, except on the final-phase
+  repair turn and any final turn after the review's one repair is spent (the per-turn rule,
+  `FINAL_PHASE` and the late-read repair are under #1173 below). When the next exchange has no
+  room left for the `FINAL_PHASE` notice (`ReviewerBroker.notice_fits()` is false: only a first
+  exchange admitted inside the frame the notices need), the loop leaves the notice out, so the
+  notice never pushes that exchange over the cap. Only a malformed first answer reaches that
+  state, so the repair note already asks for the judgment and the turn is read-free. A first
+  exchange that leaves less room than the repair note itself still ends `case_capacity_exceeded`.
 - Broker: `application.reviewer_broker.ReviewerBroker(*, job_id, case, roots, store, admit,
   packet_refs, packet_text, max_reads, exchange_room)`; `execute(action, expired, reply="") -> str`
   returns the round-1 result envelope
@@ -11956,7 +11965,7 @@ provider-wire schemas as `ReviewerReplySchemas` (`REVIEWER_REPLY_SCHEMAS`, the s
 | Responses | `input` is the payload verbatim, `text.format` the reply schema, `store:false` kept, no tools | no schemas installed |
 | Chat Completions | `messages` is the payload verbatim, strict `response_format`, no functions or tool calls; the SDK posts the canonical rendered body itself, so the exact-body guard sees the audited bytes | `prompt_only` endpoints (unavailable, never relabelled) |
 | Local model | one frame `{"messages", "protocol": "finishup-reviewer-completion-1", "reply_schema"}` | a profile naming any other protocol (and a completion profile receiving a one-shot case) |
-| Codex subscription | one ephemeral thread per review, held in its `ReviewerSession`; the first turn sends every user message after the instruction (the packet, then the read catalog) as its text inputs, each later turn sends only the user messages after the longest history the thread holds (a read result or repair notice, then, when reads end, the final-phase notice; at most two, #1173), with `outputSchema` every turn | releases outside `REVIEWER_LOOP_REVIEWED_RELEASES` (`0.162.1`), no or a closed session, a continuation that does not extend the held thread (`case_invalid`), plan/compaction/tool/request/warning events |
+| Codex subscription | one ephemeral thread per review, held in its `ReviewerSession`; the first turn sends every user message after the instruction (the packet, then the read catalog) as its text inputs, each later turn sends only the user messages after the longest history the thread holds (a read result or repair notice, then, when reads end, the final-phase notice; at most two, #1173), with the same effort and model every turn and the same `outputSchema` except on the final-phase repair turn and any final turn after the review's one repair is spent (#1172, #1173) | releases outside `REVIEWER_LOOP_REVIEWED_RELEASES` (`0.162.1`), no or a closed session, a continuation that does not extend the held thread (`case_invalid`), plan/compaction/tool/request/warning events |
 
 A completed turn returns `SemanticResultReply(reply, provenance)`: the parsed reply object, not
 yet decoded. `reviewer_exchange(media_type, payload, schemas)` computes the exchange's history,
@@ -12428,7 +12437,8 @@ recomputation solely because the finding names paths.
   exchange). A repair note uses `FINAL_FORMAT_ERROR` whenever the next turn is final. The step
   selector still records `turn`/`final` per turn.
 - `reviewer_loop.FINAL_PHASE` is a user notice appended once, only in a review that started with
-  reads, when reads end. The conversation leaves room for it
+  reads, when reads end and the next exchange has room for it (otherwise it is left out, #1172
+  above). The conversation leaves room for it
   and one format repair (the longer of `FORMAT_ERROR` and `FINAL_FORMAT_ERROR`). The exchange
   codec accepts at most 17 messages, including catalog, five action/observation pairs and
   notices. The shared deadline and history fences remain unchanged.

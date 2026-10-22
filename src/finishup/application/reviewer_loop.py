@@ -34,12 +34,14 @@ stays a cache hit), so after its reads end the loop appends ``FINAL_PHASE`` once
 and any final-phase turn after the review's one repair is spent, send the read-free schema, so a
 route that enforces it can only return the judgment. A repair note never offers a read when the
 next turn is final. A review whose first turn offers no read sends the read-free schema on every
-turn and gets no notice. A second malformed reply, a read after the repair or in a review that
-never offered one (only a route that does not enforce the schema returns one), a revoked binding,
-a lost lease or the deadline ends the review incomplete. Every
-model turn, the repair and every read is a durable job step, reserved before it runs; a job that
-already holds steps is not resumed, except the one first turn that waited for the owner before
-anything was sent (``resume_reserved``). A failed turn is never retried.
+turn and gets no notice. When the next exchange has no room left for the notice (only a first
+exchange admitted inside the frame the notices need), the loop leaves it out. A second
+malformed reply, a read after the repair or in a review that never offered one (only a route that
+does not enforce the schema returns one), a revoked binding, a lost lease or the deadline ends the
+review incomplete. Every model turn, the repair and every read is a durable job step, reserved
+before it runs; a job that already holds steps is not resumed, except the one first turn that
+waited for the owner before anything was sent (``resume_reserved``). A failed turn is never
+retried.
 """
 
 from __future__ import annotations
@@ -171,7 +173,12 @@ class ReviewerLoop:
                     reads_allowed=offered and (reads or not repaired), strict=True
                 )
                 if offered and not reads and not final_phase:
-                    self.messages.append(Turn("user", FINAL_PHASE))
+                    # No room left for the notice (a first exchange admitted inside the frame the
+                    # notices need) leaves it out, so it never pushes that exchange over the cap
+                    # (#1172). That state is reached only after a malformed first answer, so the
+                    # repair note already asks for the judgment and the turn is read-free.
+                    if self.broker.notice_fits():
+                        self.messages.append(Turn("user", FINAL_PHASE))
                     final_phase = True
                 self.n_calls = turn = self.n_calls + 1
                 if not (resumed and turn == 1):

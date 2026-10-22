@@ -3062,3 +3062,65 @@ tokens). The one schema change left, the read-free schema on a final-phase repai
 turn after a spent repair, is labelled `schema_or_settings_change`, so these records show how
 often a review pays it. Phase 2 (reusing a thread across reviews) stays undecided until these
 records show what is left to gain.
+
+## Amendment — 2026-10-21: one reply schema per review (#1172)
+
+**Why.** The reply schema is part of the request prefix a provider's prompt cache keys on: OpenAI
+caches a structured-output schema as a prefix to the system message, and Codex sends it with every
+turn as `outputSchema`. The loop used to switch to the final-only schema after the last read, so the
+provider read the whole conversation again, uncached. In the TB-Science pilot a three-read review
+cached its two middle turns and none of its final turn (189,056 of 381,293 input tokens).
+
+**Decision.** The per-turn rule is the one the read-recovery amendment (#1173, above) records. A
+review that starts with reads sends the full reply schema on every read turn, every read-phase
+repair and its normal final turn. The loop announces that final turn by appending `FINAL_PHASE`
+once, as its own user message, so everything sent before stays byte-identical and the final turn
+can reuse the whole prefix. A review whose first turn offers no read (an ask-every-time policy, or
+no time left for one) sends the read-free schema on every turn and gets no notice, so an
+owner-approved first exchange still resumes by its exact bytes. One schema change is left, on the
+last exchange: the final-phase repair turn, and any final turn after the review's one repair is
+spent, send the read-free schema, so a route that enforces it can only return the judgment. That
+exchange pays a cache miss, which the per-exchange telemetry labels `schema_or_settings_change`.
+
+**A late read.** The normal final turn's schema still allows a read. The instruction, each read
+result's `calls_remaining` and the notice all say only `final_judgment` is accepted. A read there
+executes nothing and is the final phase's format error (`read_in_final_phase`, #1173): it takes the
+review's one repair, whose note asks for `final_judgment` only and whose turn is read-free.
+
+**Append-only.** A Codex continuation may add up to two user messages after the longest history
+its thread holds (a read result or repair notice, then `FINAL_PHASE`), each as its own text input.
+An empty, longer or non-user suffix, or a history that does not extend what the thread holds,
+still fails closed. After an answer that parsed as a JSON object the thread holds its history both
+with that answer and without it, because only the loop's decoder knows whether the answer was
+accepted or will be replaced by the repair notice; the thread never reads content to tell. Keeping
+every accepted answer is therefore the loop's rule, and a test pins that every exchange extends the
+previous one byte for byte. The notice is never merged into a read result, so a result's bytes and
+digest are unchanged. An exchange history admits 17 messages (#1173).
+
+**Size guard.** Every read leaves exchange room, in bytes and estimated tokens, for the notice
+beside the longer of the two repair texts. The exchange that carries the notice, and a repair after
+it, therefore still fit the cap. Ceiling planning keeps an 8 KiB frame in the first exchange, but a
+first exchange it could not plan may sit inside the room the notices need. In that rare case the
+loop leaves the notice out, so the notice never pushes that exchange over the cap. Only a
+malformed first answer reaches that state, so the repair note already asks for the judgment and
+the turn is read-free because the repair is spent. A first exchange that leaves less room than the
+repair note itself still ends `case_capacity_exceeded`, as before. An exchange that outgrows the
+cap is still refused whole, never trimmed.
+The reviewer path still refuses Codex compaction (it would replace history FinishUP inspected and
+disclosed). The exchange budget keeps every exchange below Codex's auto-compact threshold with its
+estimation margin, and the #1172 telemetry labels a compaction if one ever occurs.
+
+**Constant within a review.** The model is constant because one profile serves a session, the
+effort because one budget profile serves a check, and the tools because Codex registers none and
+the APIs send none. The schema is constant too, except on the last exchange above. The telemetry's
+settings digest flags any change.
+
+**Effect.** A three-read review that spends no repair now reuses its final turn's whole prefix:
+projected from the pilot, with linear turn growth, about 74% of its input cached instead of about
+50%. A review that spends its repair sends the read-free schema on its final-phase turns, so the
+repair turn, or a final turn after an earlier repair, misses the cache. Before #1173 only a final
+turn forced by the end of reads was read-free; a judgment given while reads remained kept the full
+schema. A model that answers the final turn with its judgment adds no turn, request or wait. A
+late read there costs one extra exchange, its repair, uncached because its schema changes; the
+per-exchange records show how often. The notice is a few dozen tokens. No wire schema, decoder,
+privacy rule or egress changes: every exchange is still admitted whole.
