@@ -130,6 +130,9 @@ _MODULE_CODE_INVENTORY: dict[str, frozenset[PublicErrorCode]] = {
     "check.py": frozenset(
         {
             PublicErrorCode.INTERNAL_ERROR,
+            # #1164: an oversized local deterministic-result checkpoint is refused as
+            # ``check_result_capacity_exceeded`` (INTERFACES "check_capacity_handoff").
+            PublicErrorCode.LIMIT_EXCEEDED,
             PublicErrorCode.OPERATION_PENDING,
             PublicErrorCode.SESSION_CONFLICT,
             PublicErrorCode.STORAGE_CORRUPT,
@@ -281,6 +284,13 @@ def test_retryability_tracks_operation_state() -> None:
         source = _application_source(name)
         for window in _call_windows(source, "STORAGE_CORRUPT"):
             assert not _is_retryable_call(window), (name, window)
+
+    # #1164: the check-result capacity refusal is final for the unchanged request; an unchanged
+    # retry cannot shrink the checkpoint, so it never claims to be retryable.
+    check_limit = _call_windows(_application_source("check.py"), "LIMIT_EXCEEDED")
+    assert check_limit
+    for window in check_limit:
+        assert not _is_retryable_call(window), window
 
     # status is a read-only projection: its bounded error helper hardcodes ``retryable=False``
     # for every code, so no ``status`` failure can ever claim the operation may continue. START's
