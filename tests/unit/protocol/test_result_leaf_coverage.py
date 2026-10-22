@@ -11,7 +11,7 @@ covers. This derives the leaf space from the models themselves and closes that h
 from __future__ import annotations
 
 import types
-from typing import Annotated, Union, cast, get_args, get_origin
+from typing import Annotated, ForwardRef, Union, cast, get_args, get_origin, get_type_hints
 
 import pytest
 from pydantic.fields import FieldInfo
@@ -40,6 +40,20 @@ def _is_model(annotation: object) -> bool:
     return isinstance(annotation, type) and issubclass(annotation, closed)
 
 
+def _field_annotations(model: type) -> dict[str, object]:
+    """Each declared field's annotation, with forward references resolved (#1184).
+
+    ``FieldInfo.annotation`` stays an unevaluated ``ForwardRef`` for a field whose model is
+    defined later in ``models.py`` (``CheckSuccessModel.closure_readiness``) until pydantic first
+    rebuilds the model, so reading it made the walk depend on what ran earlier in the process.
+    The module's own namespace resolves every such reference deterministically.
+    """
+
+    hints = get_type_hints(model, include_extras=True)
+    fields = cast(dict[str, FieldInfo], getattr(model, "model_fields"))
+    return {name: hints[name] for name in fields}
+
+
 def _leaf_patterns(
     annotation: object,
     path: tuple[str, ...],
@@ -47,6 +61,12 @@ def _leaf_patterns(
     depth: int = 0,
 ) -> None:
     """Collect every leaf pointer pattern the annotation can produce, arrays as ``*``."""
+
+    # An unresolved reference would collapse a whole model subtree into one opaque leaf that the
+    # registry happens to cover, so the guard would silently skip it; fail loudly instead.
+    assert not isinstance(annotation, (str, ForwardRef)), (
+        f"unresolved annotation {annotation!r} at /{'/'.join(path)}"
+    )
 
     if depth > 12:  # the deepest real result nests well under this
         raise AssertionError("result_model_nesting_deeper_than_expected")
@@ -64,10 +84,11 @@ def _leaf_patterns(
         _leaf_patterns(get_args(annotation)[0], (*path, "*"), collected, depth + 1)
         return
     if _is_model(annotation):
-        model_fields = cast(dict[str, FieldInfo], getattr(annotation, "model_fields"))
-        for name, field in model_fields.items():
-            wire_name = field.serialization_alias or name
-            _leaf_patterns(field.annotation, (*path, wire_name), collected, depth + 1)
+        model = cast(type, annotation)
+        model_fields = cast(dict[str, FieldInfo], getattr(model, "model_fields"))
+        for name, resolved in _field_annotations(model).items():
+            wire_name = model_fields[name].serialization_alias or name
+            _leaf_patterns(resolved, (*path, wire_name), collected, depth + 1)
         return
     collected.add(path)
 
@@ -136,6 +157,21 @@ def test_every_result_leaf_classifies_to_exactly_one_rule(method: str, model_nam
         if _matching_rules(method, pattern) != "covered"
     )
     assert uncovered == [], f"{method} result leaves without exactly one rule: {uncovered}"
+
+
+def test_a_forward_referenced_subtree_is_walked_not_collapsed() -> None:
+    """#1184: ``closure_readiness`` names a model defined later in ``models.py``.
+
+    The walk must reach its leaves in any process state, not record ``/closure_readiness`` as
+    one opaque leaf that a registry rule happens to cover.
+    """
+
+    patterns: set[tuple[str, ...]] = set()
+    _leaf_patterns(getattr(models, "CheckSuccessModel"), (), patterns)
+    readiness = {pattern for pattern in patterns if pattern[0] == "closure_readiness"}
+    assert ("closure_readiness",) not in readiness
+    assert ("closure_readiness", "state") in readiness
+    assert ("closure_readiness", "finding_counts", "to_do") in readiness
 
 
 def test_every_status_leaf_classifies_to_exactly_one_rule_in_every_view() -> None:
