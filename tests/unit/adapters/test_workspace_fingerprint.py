@@ -13,7 +13,10 @@ from builders.process_reaping import not_a_child_subreaper
 from finishup.adapters import workspace_fingerprint as fingerprint
 from finishup.adapters.workspace_fingerprint import WorkspaceFingerprintStore
 from finishup.config.paths import ensure_owner_only_dir
-from finishup.domain.workspace_effect import path_beyond_workspace_fingerprint
+from finishup.domain.workspace_effect import (
+    path_beyond_workspace_fingerprint,
+    workspace_path_identity,
+)
 
 _KEY = b"w" * 32
 
@@ -106,6 +109,7 @@ def test_actual_file_effects_carry_their_closed_write_class(
     )
     assert reading.effect == "changed"
     assert reading.write_scopes == (scope,)
+    assert reading.changed_entries == (workspace_path_identity(_KEY, relative),)
 
 
 @pytest.mark.parametrize(
@@ -1369,3 +1373,19 @@ def test_a_pre_call_pass_holds_no_lock_across_its_walk(
     assert noted == [True]
     assert not (directory / ".readings.dropped").exists()
     assert (directory / "pending" / f"{store.call_key('call')}.bin").is_file()
+
+
+def test_changed_entry_overflow_falls_back_to_unknown(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = _workspace(tmp_path)
+    store = _store(tmp_path)
+    monkeypatch.setattr(fingerprint, "MAX_CHANGED_ENTRIES", 1)
+    assert store.capture_before(str(root), "call", deadline=time.monotonic() + 10) is None
+    (root / "src/module.py").write_text("changed\n")
+    (root / "README.md").write_text("changed\n")
+    reading = store.effect_after(
+        str(root), "call", deadline=time.monotonic() + 10, call_complete=True
+    )
+    assert reading.effect == "changed"
+    assert reading.changed_entries is None

@@ -81,6 +81,8 @@ _READINESS_ONLY = frozenset(
 )
 _CHANGED = frozenset(
     {
+        "planned_verification_stale",
+        "edited_after_last_verification",
         "semantic_review_not_requested",
         "check_current_as_of_earlier_frontier",
         "compound_outcome_unavailable",
@@ -135,6 +137,9 @@ _CHANGED = frozenset(
         "task_input_baseline_unavailable",
         # #1118 unit 4 (AIP-2): an oracle left out for an unresolvable directory; same terms.
         "verification_input_directory_unresolved",
+        # #1143 (PR #1167 review): freshness held on a caller-asserted complete declaration; a
+        # disclosure from the start, never agent work and never a Stop-gate item.
+        "verification_inputs_caller_asserted",
     }
 )
 _CARRIED = frozenset(_GUARDED_AT_BASE)
@@ -147,8 +152,9 @@ def test_the_classification_is_a_view_of_the_table_with_the_same_readiness_group
     # deliverable_references_ambiguous_name; #1019 r2 added advice_semantic_preview_required)
     # + the #1079 unresolved verification limit + 3 readiness-only finding tokens + the #1102
     # task_input_outside_not_admitted disclosure + the #1118 task_input_baseline_unavailable one.
-    # + the #1118 unit 4 verification_input_directory_unresolved one.
-    assert len(GAP_EFFECT_TABLE) == 225
+    # + the #1118 unit 4 verification_input_directory_unresolved one + the #1143
+    # verification_rerun_question limit and verification_inputs_caller_asserted disclosure.
+    assert len(GAP_EFFECT_TABLE) == 227
     for code, group in GAP_CLASSIFICATION.items():
         assert GAP_EFFECT_TABLE[code].readiness is group, code
     assert {row.why for row in GAP_EFFECT_TABLE.values()} <= set(GAP_EFFECT_WHY)
@@ -157,8 +163,9 @@ def test_the_classification_is_a_view_of_the_table_with_the_same_readiness_group
 def test_exactly_the_documented_rows_are_marked_changed() -> None:
     changed = {code for code, row in GAP_EFFECT_TABLE.items() if row.changed}
     assert changed == _CHANGED
-    # +1: the #1118 unit 4 verification_input_directory_unresolved disclosure.
-    assert len(changed) == 44
+    # +1: the #1118 unit 4 verification_input_directory_unresolved disclosure; +2: the #1143
+    # route-dependent stale verification rows; +1: the #1143 caller-asserted input disclosure.
+    assert len(changed) == 47
 
 
 @pytest.mark.parametrize("route_requires_review", [False, True])
@@ -184,6 +191,28 @@ def test_actionable_rows_are_exactly_the_agent_actionable_group() -> None:
             assert gap_effect(code).kind is GapEffectKind.ACTIONABLE, code
         elif row.readiness is GapClass.STANDING_LIMITATION:
             assert gap_effect(code).kind is not GapEffectKind.ACTIONABLE, code
+
+
+@pytest.mark.parametrize("code", ["planned_verification_stale", "edited_after_last_verification"])
+def test_stale_verification_is_advisory_only_where_ai_review_applied(code: str) -> None:
+    """G0f follows whether freshness was AI-advisory, not the recorded review route (#1167 review).
+
+    A review route whose review was not configured, blocked or failed keeps the local rule
+    (agent work). Where AI-powered review applied, a known stale verification bounds the receipt
+    like the rerun question does; it is never merely disclosed.
+    """
+
+    assert gap_effect(code, GapContext(route_requires_review=False)).kind is (
+        GapEffectKind.ACTIONABLE
+    )
+    assert gap_effect(code, GapContext(route_requires_review=True)).kind is (
+        GapEffectKind.ACTIONABLE
+    )
+    advisory = GapContext(route_requires_review=True, freshness_advisory=True)
+    assert gap_effect(code, advisory).kind is GapEffectKind.STANDING_BOUNDING
+    assert gap_effect("verification_rerun_question", advisory).kind is (
+        GapEffectKind.STANDING_BOUNDING
+    )
 
 
 def test_the_review_not_requested_gap_follows_the_recorded_route() -> None:

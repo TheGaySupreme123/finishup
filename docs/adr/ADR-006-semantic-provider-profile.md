@@ -2860,11 +2860,12 @@ specified in [ADR-040's judgment amendment](ADR-040-reviewer-disagreement-and-ro
 
 ## Amendment — 2026-10-21: finding delivery and frozen review context (#1139, #1126, #1148)
 
-**Read the full finding before answering.** Treat `review_delivery` as a bounded advisory preview.
-When it reports truncation, follow its findings-status continuation.
-Read the action, alternative interpretation and uncertainty together before deciding.
-For example, a large result can retain the instruction while its alternative falls outside the
-host's head/tail window.
+**Read the full finding before answering.** The residual delivery fix supersedes #1152's
+bounded `review_delivery` preview with lossless `delivery_page` results (ADR-043's result-delivery
+amendment). Read action, alternative interpretation and uncertainty together before deciding.
+Follow action pages until `actionable_complete`, reconstruct explicit scalar fragments, and
+follow `inventory_read` for the complete open-finding inventory. Remaining result pages contain
+optional bulk provenance. A shortened lead is never a substitute for the complete finding.
 
 **Keep the question beside the work.** Reserve bounded prior dialogue before ordinary narrative
 and bulk excerpts.
@@ -2888,21 +2889,21 @@ A later check can freeze the requested content only if retention and disclosure 
 File-read absence keeps its existing reason.
 CLI, MCP, TUI and receipt review-read renderings carry the recorded reason.
 
-**Delivery contract.** Codex receives optional `review_delivery` before the full check-result
-fields in unreleased check-result 1.6.0, extended in place.
-The advisory also precedes the findings-status items in status-result 1.4.0.
-It uses only privacy-projected fields.
-A bounded review summary leads.
-Each of up to three challenges keeps its summary, requested action, alternative interpretation and
-uncertainty together within separate JSON-encoded byte budgets.
-The continuation marks the preview truncated and names `status view=findings`, `detail=full`,
-`limit=1` and the returned cursor.
-Full authorized fields remain unchanged.
-A `full_local` receipt carries the recorded review summary under the existing export policy.
-Evidence, snippets, manifests and provenance follow the advisory.
-The generic/Claude text channel uses the same lead ahead of evidence.
-Cursor retains its canonical full JSON copy.
-The bounded lead does not establish that a host delivered the full record.
+**Delivery contract.** Check-result 1.7.0, status-result 1.5.0 and receipt-result 1.4.0 add a
+`delivery_page` presentation after ordinary privacy projection, for an agent's oversized MCP check,
+receipt or opted-in (`delivery=paged`) status read only. Status-request 1.3.0 adds that opt-in and
+reads the signed `delivery_cursor`. The budget is Codex's 12,000-byte structured window, the
+tightest recorded host limit, for the larger channel a host reads plus a 64-byte header allowance,
+never both channels together (ADR-043). Whole action fields precede excerpts and
+provenance. An individually oversized scalar has
+explicit offsets, length and a digest for lossless reconstruction; no actionable preview is cut.
+`truncated`, `actionable_complete`, `complete`, `next_cursor` and `inventory_read` make deferred
+content and further inventory reads machine-readable. Read continuations reapply disclosure and
+read the recorded source, without dispatching review or writing a new check or receipt. CLI
+output, the native TUI and authenticated owner exports are never paged and keep their full local
+view, as do the bridge's own closure and recovery reads. Hooks carry bounded structural instructions to read status. Source retention,
+privacy and receipt inventory limits still apply. Neither emission nor a complete page proves
+native host delivery or consumer reconstruction.
 
 **Packing bounds.** The prior-finding section retains its existing 16-finding, 112-item and
 96 KiB bounds and category policy.

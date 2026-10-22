@@ -93,7 +93,11 @@ class StatusReadStreaks:
             return 0
         if operation != "status" or not session:
             return 0
-        if arguments.get("cursor") is not None or arguments.get("view") in _UNTRACKED_VIEWS:
+        if (
+            arguments.get("cursor") is not None
+            or arguments.get("delivery_cursor") is not None
+            or arguments.get("view") in _UNTRACKED_VIEWS
+        ):
             return 0
         actor = arguments.get("actor")
         actor_id = (

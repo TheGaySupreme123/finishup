@@ -25,6 +25,7 @@ from finishup.domain.events import (
     SessionOpenedPayload,
 )
 from finishup.domain.values import EventId, ObligationId, action_id, actor_id, obligation_id
+from finishup.domain.workspace_effect import workspace_path_identity
 from finishup.kernel.closure_readiness import (
     GAP_CLASSIFICATION,
     GapClass,
@@ -79,6 +80,9 @@ _OBLIGATION_SCHEMA = EventSchema("obligation_published", "1.0.0")
 _PLAN_SCHEMA = EventSchema("plan_published", "1.0.0")
 _DECISION_SCHEMA = EventSchema("decision_recorded", "1.0.0")
 _ACTION_SCHEMA = EventSchema("action_recorded", "1.0.0")
+
+VERIFICATION_RERUN_QUESTION_GAP = "verification_rerun_question"
+_STALE_GAPS = frozenset({PLANNED_VERIFICATION_STALE_GAP, EDITED_AFTER_LAST_VERIFICATION_GAP})
 
 
 @pytest.fixture(autouse=True)
@@ -175,15 +179,104 @@ def test_planned_verification_failed_then_repaired_by_a_passing_rerun() -> None:
 
 
 def test_planned_verification_stale_after_a_later_edit_until_rerun() -> None:
+    """A host edit-tool edit records no path, so FinishUP cannot place it (#1143, ADR-042).
+
+    It may have edited a deliverable source, which is a verification input: the planned run is
+    stale, as before #1143, never only a question, and the finding says what is known about it.
+    """
+
+    from finishup.kernel.verification_freshness import verification_freshness
+
     ledger = ObservedLedger()
     _planned(ledger, _command("pytest -q"))
     _plan(ledger, _OBLIGATION)
     ledger.passes("pytest -q")
     ledger.edit()
     assert (PLANNED_VERIFICATION_STALE_GAP, _OBLIGATION) in _markers(ledger)
+    assert EDITED_AFTER_LAST_VERIFICATION_GAP in _codes(ledger)
+    assert VERIFICATION_RERUN_QUESTION_GAP not in _codes(ledger)
+    (row,) = verification_freshness(replay(ledger.prefix), ledger.prefix)
+    assert row.state == "stale"
+    assert row.changes == (
+        '1 later edit(s) through a host edit tool ("apply_patch"); edit tools record no file'
+        " path; FinishUP cannot tell whether that touched this verification's inputs",
+    )
 
     ledger.passes("pytest -q")
-    assert PLANNED_VERIFICATION_STALE_GAP not in _codes(ledger)
+    assert not _codes(ledger) & (_STALE_GAPS | {VERIFICATION_RERUN_QUESTION_GAP})
+
+
+def test_planned_verification_stale_after_a_known_input_change_until_rerun() -> None:
+    """A placed change to a recorded input is stale and named until the verification reruns."""
+
+    from finishup.kernel.verification_freshness import verification_freshness
+
+    ledger = ObservedLedger()
+    _planned(
+        ledger,
+        _command("pytest -q"),
+        RequestedItem(RequestedItemKind.FILE, "src/app.py", RequestedItemRole.INPUT),
+    )
+    _plan(ledger, _OBLIGATION)
+    ledger.passes("pytest -q")
+    ledger.run(
+        "python modify.py",
+        ResultOutcome.SUCCESS,
+        runner="other",
+        workspace_effect="changed",
+        workspace_write_scopes=("workspace",),
+        workspace_changed_entries=(workspace_path_identity(INSTALLATION_KEY, "src/app.py"),),
+    )
+    assert (PLANNED_VERIFICATION_STALE_GAP, _OBLIGATION) in _markers(ledger)
+    assert EDITED_AFTER_LAST_VERIFICATION_GAP in _codes(ledger)
+    assert VERIFICATION_RERUN_QUESTION_GAP not in _codes(ledger)
+    (row,) = verification_freshness(replay(ledger.prefix), ledger.prefix)
+    assert row.changes == ('"src/app.py" changed: a recorded verification input',)
+
+    ledger.passes("pytest -q")
+    assert not _codes(ledger) & (_STALE_GAPS | {VERIFICATION_RERUN_QUESTION_GAP})
+
+
+def test_a_placed_change_outside_known_inputs_asks_and_never_stales() -> None:
+    """A placed change no recorded input names asks, without demanding a rerun (#1143)."""
+
+    ledger = ObservedLedger()
+    _planned(ledger, _command("pytest -q"))
+    _plan(ledger, _OBLIGATION)
+    ledger.passes("pytest -q")
+    ledger.run(
+        "python report.py",
+        ResultOutcome.SUCCESS,
+        runner="other",
+        workspace_effect="changed",
+        workspace_write_scopes=("workspace",),
+        workspace_changed_entries=(workspace_path_identity(INSTALLATION_KEY, "report.json"),),
+    )
+    assert (VERIFICATION_RERUN_QUESTION_GAP, _OBLIGATION) in _markers(ledger)
+    assert not _codes(ledger) & _STALE_GAPS
+
+
+@pytest.mark.parametrize("history", ["planned", "unplanned", "completed_then_pending"])
+def test_an_edit_after_a_run_whose_result_never_arrived_is_still_stale(history: str) -> None:
+    """A run whose post-event never arrived has no result to judge (#1167 review finding 1).
+
+    It is still the latest verification run, so a later edit keeps the pre-#1143 rule and makes
+    it stale; it never hides the edit.
+    """
+
+    ledger = ObservedLedger()
+    if history != "unplanned":
+        _planned(ledger, _command("pytest -q"))
+        _plan(ledger, _OBLIGATION)
+    if history == "completed_then_pending":
+        ledger.passes("pytest -q")
+        ledger.edit()
+    ledger.begin("pytest -q", runner="test")
+    ledger.edit()
+    codes = _codes(ledger)
+    assert EDITED_AFTER_LAST_VERIFICATION_GAP in codes
+    assert (PLANNED_VERIFICATION_STALE_GAP in codes) is (history != "unplanned")
+    assert VERIFICATION_RERUN_QUESTION_GAP not in codes
 
 
 def test_failed_edit_does_not_make_verification_stale() -> None:

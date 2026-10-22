@@ -352,6 +352,9 @@ class ClosureReadinessFacts:
     # owes). The defaults keep a hand-built fact set at its pre-#976 answer.
     closing_review_current: bool = True
     semantic_review_used: bool = False
+    # #1143 (PR #1167 review): an AI-powered review was used before the latest recorded check,
+    # the state that check judged freshness on (``freshness_review_used``).
+    freshness_review_used: bool = False
     # Issue #1046 (review): the latest recorded check deferred a review its route requires before
     # the first material edit, so a routine check cannot supply the missing review; only the
     # closing review can, and readiness asks for it even while ``semantic_review_not_requested``
@@ -442,6 +445,7 @@ class ClosureReadinessFacts:
             or type(self.semantic_review_current) is not bool
             or type(self.closing_review_current) is not bool
             or type(self.semantic_review_used) is not bool
+            or type(self.freshness_review_used) is not bool
             or type(self.semantic_review_deferred) is not bool
             or type(self.coordinator_failure_unchanged) is not bool
             or type(self.closing_review_no_judgment) is not bool
@@ -675,6 +679,24 @@ def _recorded_checks(records: Iterable[LedgerRecord]) -> tuple[CheckRecordedPayl
         for record in records
         if record.schema.name == "check_recorded" and type(record.payload) is CheckRecordedPayload
     )
+
+
+def freshness_review_used(records: Iterable[LedgerRecord]) -> bool:
+    """Whether an AI-powered review was used before the latest recorded check (#1143).
+
+    The check judges freshness at its input frontier: it is AI-advisory when the route requires
+    review or ``semantic_review_used`` holds over the records before it. Status, Stop and receipts
+    ask the same question of the same state, the records before the latest check, so a task's
+    first AI-powered review never turns the check that ran it advisory after the fact (PR #1167
+    review). Without a recorded check, every record counts.
+    """
+
+    prefix = tuple(records)
+    latest = max(
+        (index for index, record in enumerate(prefix) if record.schema.name == "check_recorded"),
+        default=len(prefix),
+    )
+    return semantic_review_used(prefix[:latest])
 
 
 def semantic_review_used(records: Iterable[LedgerRecord]) -> bool:
@@ -1066,6 +1088,7 @@ def closure_readiness_facts(
         ),
         closing_review_current=closing_current,
         semantic_review_used=review_used,
+        freshness_review_used=freshness_review_used(records),
         semantic_review_deferred=review_deferred,
         self_verified_finding_ids=tuple(sorted(self_verified, key=str.encode)),
         disputed_after_rebuttal_finding_ids=tuple(sorted(disputed, key=str.encode)),
@@ -1288,6 +1311,15 @@ def derive_closure_readiness(
         semantic_review_current=facts is not None and facts.semantic_review_current,
     )
     split_actionable = split.agent_actionable
+    if semantic_review_required or facts is not None and facts.freshness_review_used:
+        # #1143: freshness is AI-advisory on the route the latest check judged it on, the same
+        # predicate the check used at its input frontier (``freshness_review_used``).
+        freshness_codes = {"planned_verification_stale", "edited_after_last_verification"}
+        if freshness_codes & set(split_actionable):
+            split_actionable = tuple(
+                code for code in split_actionable if code not in freshness_codes
+            )
+            standing.add("verification_rerun_question")
     if blocked_confirmed_only and COMPLETION_PLAN_NOT_CLAIMED_GAP in split_actionable:
         # Issue #985 (C9): every open obligation is confirmed blocked, so no completion claim can
         # cover the plan; the unclaimed plan is disclosed beside the blocker, not listed as work.

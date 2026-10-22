@@ -97,6 +97,9 @@ class GapContext:
     ``CheckStanding.bounds_conclusion``: a later record FinishUP cannot prove harmless is an
     observation. ``check_carried`` is the applicable check's ``known_gaps`` and
     ``commands_complete`` its counters showing no unknown or live-failed command.
+    ``freshness_advisory`` says freshness is AI-advisory for this receipt (#1143): the applicable
+    check's recorded route required review, or a review was used before it
+    (``closure_readiness.freshness_review_used``), the predicate the check and readiness use.
     """
 
     route_requires_review: bool = True
@@ -108,6 +111,7 @@ class GapContext:
     commands_complete: bool = True
     earlier_frontier_bounds: bool = True
     historical: frozenset[str] = frozenset()
+    freshness_advisory: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -203,7 +207,6 @@ _FAMILIES: Final[tuple[_Family, ...]] = (
             "completion_scope_undeclared",
             "declared_output_emptied",
             "declared_output_removed",
-            "edited_after_last_verification",
             "instruction_requirement_unmapped",
             "lineage_child_actionable_finding",
             "lineage_child_check_stale",
@@ -218,7 +221,6 @@ _FAMILIES: Final[tuple[_Family, ...]] = (
             "obligation_blocker_unconfirmed",
             "planned_verification_failed",
             "planned_verification_not_observed",
-            "planned_verification_stale",
             "preexisting_test_edit_unjustified",
             "requested_output_git_ignored",
             "task_statement_not_supplied",
@@ -232,6 +234,15 @@ _FAMILIES: Final[tuple[_Family, ...]] = (
         review_route="A",
         changed=False,
         codes=("semantic_missing_agent_suppliable",),
+    ),
+    _Family(
+        rule="G0f",
+        family="agent_actionable",
+        readiness="A",
+        d_route="A",
+        review_route="V",
+        changed=True,
+        codes=("edited_after_last_verification", "planned_verification_stale"),
     ),
     # tb4n4 (issue #1044): a delivered file that loads a file the change created and nothing
     # declares fails where the grader receives only the declared files (interleaved-vigenere S).
@@ -424,6 +435,18 @@ _FAMILIES: Final[tuple[_Family, ...]] = (
     # admitted covers. A new code, disclosed from the start: the reviewer judged without it, and
     # only the owner's trusted-terminal ceremony admits a root, so it is never agent work, never a
     # Stop-gate item and never bounds the conclusion beyond what the review itself reports.
+    # #1143 (PR #1167 review): verification freshness held only because the caller asserted its
+    # per-run input declaration complete. An agent assertion, disclosed from the start: never
+    # agent work, never a Stop-gate item and never proof that the check read nothing else.
+    _Family(
+        rule="G4d",
+        family="disclosure",
+        readiness="S",
+        d_route="D",
+        review_route="D",
+        changed=True,
+        codes=("verification_inputs_caller_asserted",),
+    ),
     _Family(
         rule="G4c",
         family="disclosure",
@@ -609,6 +632,7 @@ _FAMILIES: Final[tuple[_Family, ...]] = (
             "policy_untrusted",
             "selection_route_changed",
             "verification_stale",
+            "verification_rerun_question",
         ),
     ),
     _Family(
@@ -745,7 +769,7 @@ _READINESS: Final[Mapping[str, GapClass]] = MappingProxyType(
         "R": GapClass.ROUTE_DEPENDENT,
     }
 )
-_SPECS: Final = frozenset({"A", "B", "D", "D*", "R", "X", "G"})
+_SPECS: Final = frozenset({"A", "B", "D", "D*", "R", "X", "G", "V"})
 
 
 def _build() -> Mapping[str, GapRow]:
@@ -784,6 +808,7 @@ if [
 # is no third table to drift.
 PROOF_TOLERATED_GAPS: Final = frozenset(
     {
+        "verification_rerun_question",
         "capture_handoff_retired",
         "captured_object_unavailable",
         "check_time_change_base_unavailable",
@@ -879,6 +904,7 @@ PROOF_TOLERATED_GAPS: Final = frozenset(
         "unpaired_event",
         "unresolved_verification_limitation",
         "verification_input_directory_unresolved",
+        "verification_inputs_caller_asserted",
         "verification_only_as_root",
         "write_outside_workspace",
     }
@@ -930,6 +956,12 @@ def _resolve(spec: str, code: str, ctx: GapContext) -> GapEffectKind:
         if ctx.review_required and not ctx.review_current:
             return GapEffectKind.ACTIONABLE
         return GapEffectKind.STANDING_BOUNDING
+    if spec == "V":
+        # Verification freshness (#1143): agent work unless freshness is AI-advisory; there it is
+        # a standing limit, like the rerun question, never agent work and never merely disclosed.
+        return (
+            GapEffectKind.STANDING_BOUNDING if ctx.freshness_advisory else GapEffectKind.ACTIONABLE
+        )
     if spec == "X":
         # ``check_current_as_of_earlier_frontier`` (tb4n3 RC-6): bounding only while a counted
         # later record is an observation FinishUP cannot prove harmless; the agent's own answers

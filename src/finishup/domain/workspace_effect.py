@@ -35,6 +35,8 @@ workspace root is out of scope for the walk and for this rule.
 
 from __future__ import annotations
 
+import hashlib
+import hmac
 import posixpath
 import re
 from collections.abc import Sequence
@@ -66,6 +68,46 @@ __all__ = [
 
 WORKSPACE_EFFECT_KEY: Final = "workspace_effect"
 WORKSPACE_WRITE_SCOPES_KEY: Final = "workspace_write_scopes"
+MAX_CHANGED_ENTRIES: Final = 128
+_ENTRIES_RE: Final = re.compile(r" \(workspace entries ([a-f0-9,]+|none)\)")
+
+
+def workspace_path_identity(key: bytes, relative: str) -> str:
+    """The existing fingerprint's domain-separated, keyed path identity; never a raw path."""
+
+    base = hmac.new(key, b"finishup/workspace-fingerprint/v1", "sha256").digest()
+    path_key = hmac.new(base, b"path", "sha256").digest()
+    return hashlib.blake2b(
+        relative.encode("utf-8", "surrogateescape"),
+        key=path_key,
+        digest_size=16,
+        person=b"fu-wf-path",
+    ).hexdigest()
+
+
+def workspace_changed_entries(value: object) -> tuple[str, ...] | None:
+    if type(value) not in {tuple, list}:
+        return None
+    values = cast(tuple[object, ...] | list[object], value)
+    if len(values) > MAX_CHANGED_ENTRIES or any(
+        type(item) is not str or re.fullmatch(r"[a-f0-9]{32}", item) is None for item in values
+    ):
+        return None
+    entries = cast(tuple[str, ...], tuple(values))
+    return entries if entries == tuple(sorted(set(entries))) else None
+
+
+def workspace_entries_from_summary(value: str | None) -> tuple[str, ...] | None:
+    if value is None or (match := _ENTRIES_RE.search(value)) is None:
+        return None
+    return workspace_changed_entries([] if match[1] == "none" else match[1].split(","))
+
+
+def _entry_suffix(entries: object) -> str:
+    known = workspace_changed_entries(entries)
+    return "" if known is None else f" (workspace entries {','.join(known) or 'none'})"
+
+
 _SCOPES_RE: Final = re.compile(
     r" \(workspace writes ([a-z_,]+)\)(?= \(workspace (?:unchanged|changed|unverified)\)\Z|\Z)"
 )
@@ -212,13 +254,13 @@ _PLACE_VCS_ROOT: Final = 4
 
 
 def result_summary_with_workspace_effect(
-    summary: str, effect: object, scopes: object = None
+    summary: str, effect: object, scopes: object = None, entries: object = None
 ) -> str:
     """Append the closed workspace suffix to an observed result summary when *effect* is known."""
 
     if type(effect) is not str or effect not in _SUMMARY_WORDS:
         return summary
-    return f"{summary}{_scope_suffix(scopes)} (workspace {_SUMMARY_WORDS[effect]})"
+    return f"{summary}{_entry_suffix(entries)}{_scope_suffix(scopes)} (workspace {_SUMMARY_WORDS[effect]})"
 
 
 def workspace_effect_from_result_summary(summary: object) -> str | None:
@@ -230,12 +272,14 @@ def workspace_effect_from_result_summary(summary: object) -> str | None:
     return None if match is None else _SUMMARY_EFFECTS[match.group(1)]
 
 
-def workspace_effect_annotation(effect: object, scopes: object = None) -> str | None:
+def workspace_effect_annotation(
+    effect: object, scopes: object = None, entries: object = None
+) -> str | None:
     """The exact evidence description carrying *effect* for an already recorded call."""
 
     if type(effect) is not str or effect not in WORKSPACE_EFFECTS:
         return None
-    return f"{WORKSPACE_EFFECT_ANNOTATION_PREFIX}{effect}{_scope_suffix(scopes)}"
+    return f"{WORKSPACE_EFFECT_ANNOTATION_PREFIX}{effect}{_entry_suffix(entries)}{_scope_suffix(scopes)}"
 
 
 def workspace_effect_from_annotation(description: object) -> str | None:
@@ -247,7 +291,8 @@ def workspace_effect_from_annotation(description: object) -> str | None:
         return None
     effect = description[len(WORKSPACE_EFFECT_ANNOTATION_PREFIX) :].split(" (", 1)[0]
     scopes = workspace_write_scopes_from_summary(description)
-    return effect if description == workspace_effect_annotation(effect, scopes) else None
+    entries = workspace_entries_from_summary(description)
+    return effect if description == workspace_effect_annotation(effect, scopes, entries) else None
 
 
 def bytecode_artifact_name(name: str) -> bool:
