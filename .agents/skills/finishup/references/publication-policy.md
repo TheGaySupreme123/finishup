@@ -225,80 +225,33 @@ their existing contradiction and decision-history meanings.
 
 ## Repair then finish
 
-Use this bounded sequence for a material repair or closure. It applies to the six existing
-operations and does not add a composer or a new protocol field:
+Follow [receipt.md](receipt.md) for closure and [review.md](review.md) for finding decisions.
+Keep the frontier you hold (the `result_frontier` of your last accepted write); read `status` for
+one only when you hold none or after `frontier_changed`. The current status frontier also works
+for `finding_frontier`; no historical frontier search is needed.
 
-1. Keep the frontier you hold (the `result_frontier` of your last accepted write) for the next
-   write; read `status` for one only when you hold none or after `frontier_changed`. Before
-   replacing evidence or a claim, cite the evidence IDs you published, and find native captures
-   with a filtered `status view=evidence` read only when you need them, preserving its filter and
-   original `limit` with every cursor.
-   Reuse only native IDs a structural link ties to the claim; a missing MCP capture call, one
-   digest-only item, or one clipped item does not establish that all native evidence is
-   unavailable.
-2. Publish the actual repair results, corrected evidence or claim, and any required plan revision.
-   Do not fabricate success or infer completion scope from the prompt. A feedback obligation is in
-   effective scope only after a supported `plan_revised` event or an exact next-version
-   `plan_published` restatement includes it; a stored or resolved obligation alone is insufficient.
-3. Before the final check, read `status view=findings` and disposition each finding with
-   `disposition: none`, with the current expected frontier and a `finding_frontier` at or after the
-   finding's own record: the item's `finding_frontier` when status carries one, otherwise the
-   current status frontier. No historical frontier search is needed. A response is a disposition,
-   not proof of repair. Observation-authored non-actionable findings need no response.
-4. Run the final check deliberately. Select `semantic_required` when the user, effective policy, or
-   named acceptance criterion requires AI-powered review. Omit `mode` to run in the task's review
-   mode (`status` `review_mode`); use `semantic_if_configured` only when review is known to be
-   optional. Reserve
-   `deterministic_only` for explicitly local/structural work or a deliberate no-egress choice, and
-   disclose an unmet required review.
-5. Respond only to findings that check returned that are still unanswered, then read
-   `status view=findings` with `filter.include_resolved: true` and actual `resolved` state. “Not
-   returned” is not “resolved”: call a
-   finding resolved only when a later qualifying check recorded it. Those responses, acknowledging
-   an observation-authored non-actionable finding, and `work_closed` need no recheck. If a recorded
-   repair, a response to another older finding, or any other material record follows the check,
-   run another check before requesting a receipt.
-6. Request `receipt`, then publish `work_closed` when the work is complete. Read `closure_readiness.unanswered_finding_count` and
-   `closure_readiness.receipt_blocking_finding_count` (findings to do plus acknowledged requirements), then report a scope-first summary of what was
-   verified/not verified alongside the receipt's checked frontier, AI-powered review status/reason,
-   and material coverage limits. Never lead with a bare zero-findings count. After
-   one current-state recheck still fails to qualify, stop repeating an unchanged check, continue any
-   distinct authorized repair, and disclose the remaining blocker.
+A feedback obligation is in effective scope only after `plan_revised` or an exact next-version
+`plan_published` restatement includes it; storing or resolving it alone is insufficient.
 
 The optional `finishup closure-prepare --session-id <returned-session> --writer-id <returned-writer>`
-command is read-only preparation. It may inventory obligations, results, evidence, findings, and
-history and draft one explicit phase, but it never invents attempts, evidence, finding responses,
-obligation satisfaction, or completion. `--output <file>` saves the result for repeated reading;
-choose a path outside the working repository. Review and submit each draft at the new frontier.
-
-When a requested item is not observed as attempted, do not copy its unchecked value into
-`attempted_items` merely to make the draft validate. Correct the assertion or use a supported
-obligation revision with rationale. When recording GitHub Actions evidence, the workflow run API
-`id` is the run identity; `run_number` is a separate display counter and must not be substituted for
-that identity.
+command is read-only preparation. It inventories the record and drafts one explicit phase;
+`--output <file>` saves the result outside the repository. Review and submit at the new frontier.
+It never invents attempts, evidence, responses, obligation satisfaction or completion. Do not copy
+an unchecked requested item into `attempted_items` just to validate a draft; correct the assertion
+or revise the obligation with a reason. A GitHub Actions workflow run's API `id` is its identity;
+`run_number` is a display counter, never a substitute.
 
 ## Operation-specific recovery and templates
 
 Keep recovery requests tied to the operation that produced them. `start` has no `writer_id`; use the
 returned `session_id` and `writer_id` on later calls. A `publish_work` preview uses `dry_run: true`
-and the same `request_id` for the real append. A timeout or unknown write outcome uses the exact
-start replay branch below when it is a `start` response without route ids; otherwise use `status
-view=operation` with `filter.operation_request_id` set to the exact write request ID:
-`absent` permits one replay of the exact original body and request ID (an `absent` check page with
-an `admission` stage was refused before admission: replay after its `retry_after_ms`, at most three
-times), `complete` uses the stored outcome without replay, and `pending` permits replay only after an exact typed continuation and
-its required approval complete. A pending operation without a continuation, `quarantined`, or an
-unknown state is retained and reported rather than guessed.
-
-The operation view requires both `session_id` and `writer_id`. If a `start` response is lost before
-those ids are returned, do not invent them or issue a fabricated status query: replay the exact
-original `start` body once with its same `request_id`; the start idempotency path returns the stored
-result or a typed boundary. Once the required route ids are known, use the exact operation filter
-above.
-
-The same start exception applies to a typed `OPERATION_PENDING` start result that has no returned
-session or writer: replay that exact start request once rather than fabricating ids for an operation
-query.
+and the same `request_id` for the real append. For a timeout or unknown outcome, use [recovery.md](recovery.md), the owning recovery procedure.
+Field preconditions: the operation view requires both `session_id` and `writer_id`. If a `start`
+response is lost before they return, do not invent ids or issue a fabricated status query; recovery
+replays the exact original `start` body with the same `request_id`. With known route ids, preserve
+`filter.operation_request_id`. `absent`, `complete` (stored outcome), `pending` (an exact typed
+continuation and required approval), and `quarantined` are distinct states, not invitations to
+publish under a fresh identity.
 
 Pagination is a read operation: a retry may use a new read request ID, but a cursor continuation
 preserves the original view, filter, frontier, and `limit`. Changing `limit` starts a new query with

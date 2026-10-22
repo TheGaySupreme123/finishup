@@ -9,6 +9,7 @@ operation orchestration is out of scope here; it belongs to integration/conforma
 
 from __future__ import annotations
 
+import ast
 import re
 from collections.abc import Iterator, Mapping
 from pathlib import Path
@@ -130,6 +131,9 @@ _MODULE_CODE_INVENTORY: dict[str, frozenset[PublicErrorCode]] = {
     "check.py": frozenset(
         {
             PublicErrorCode.INTERNAL_ERROR,
+            # #1164: an oversized local deterministic-result checkpoint is refused as
+            # ``check_result_capacity_exceeded`` (INTERFACES "check_capacity_handoff").
+            PublicErrorCode.LIMIT_EXCEEDED,
             PublicErrorCode.OPERATION_PENDING,
             PublicErrorCode.SESSION_CONFLICT,
             PublicErrorCode.STORAGE_CORRUPT,
@@ -211,7 +215,42 @@ def _call_windows(source: str, code_name: str) -> tuple[str, ...]:
     return tuple(windows)
 
 
+def _literal_retryable(window: str) -> bool | None:
+    """The literal ``retryable`` of a ``(PublicErrorCode.X, message, retryable, ...)`` window.
+
+    It is the third positional argument or the ``retryable`` keyword, wherever later arguments
+    such as ``safe_details`` sit. ``None`` when the window is not such a call or the flag is not a
+    literal bool, so the caller falls back to the textual check.
+    """
+
+    try:
+        call = ast.parse("_" + window, mode="eval").body
+    except SyntaxError:
+        return None
+    if not isinstance(call, ast.Call) or not call.args:
+        return None
+    code = call.args[0]
+    if not (
+        isinstance(code, ast.Attribute)
+        and isinstance(code.value, ast.Name)
+        and code.value.id == "PublicErrorCode"
+    ):
+        return None
+    flags = [keyword.value for keyword in call.keywords if keyword.arg == "retryable"]
+    if len(call.args) >= 3:
+        flags.append(call.args[2])
+    if len(flags) != 1:
+        return None
+    flag = flags[0]
+    if isinstance(flag, ast.Constant) and type(flag.value) is bool:
+        return flag.value
+    return None
+
+
 def _is_retryable_call(window: str) -> bool:
+    literal = _literal_retryable(window)
+    if literal is not None:
+        return literal
     return bool(re.search(r"retryable\s*=\s*True", window)) or bool(
         re.search(r",\s*True\s*,?\s*\)\s*$", window)
     )
@@ -281,6 +320,13 @@ def test_retryability_tracks_operation_state() -> None:
         source = _application_source(name)
         for window in _call_windows(source, "STORAGE_CORRUPT"):
             assert not _is_retryable_call(window), (name, window)
+
+    # #1164: the check-result capacity refusal is final for the unchanged request; an unchanged
+    # retry cannot shrink the checkpoint, so it never claims to be retryable.
+    check_limit = _call_windows(_application_source("check.py"), "LIMIT_EXCEEDED")
+    assert check_limit
+    for window in check_limit:
+        assert not _is_retryable_call(window), window
 
     # status is a read-only projection: its bounded error helper hardcodes ``retryable=False``
     # for every code, so no ``status`` failure can ever claim the operation may continue. START's

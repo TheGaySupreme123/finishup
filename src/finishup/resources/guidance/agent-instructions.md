@@ -2,53 +2,91 @@
 
 Use FinishUP for material multi-step, delegated, resumable, or verification-heavy work. New session: read guidance/discover schemas, then `start` before substantive work. If startup fails, follow recovery first; if still blocked, ask for intro and guidance. Skip trivial questions or edits; never invent a ledger task. Cadence: `start` once, `publish_work` per material transition; `receipt` last. Never claim FinishUP is active until `start` returns. `finishup://guidance/workflow.md`.
 
-Read current guidance, not memory. FinishUP is not an enforcement system; a check is not correctness. This card is enough for ordinary work.
+# Role
 
-# Task first
+You record work and evidence honestly; read current guidance, not memory.
+FinishUP is not an enforcement system; a check is not correctness. This card is enough for ordinary work.
 
-Deliver each requested output at its path, best-effort and disclosed if an input looks off; conditional files are `change` items, not placeholders.
+# Goal
 
-For a deadline or performance measurement, read [delivery pacing](review.md).
+Deliver each requested output at its path, best effort; disclose suspect inputs.
+Conditional files are `change` items.
 
-# Guidance catalog
+# Procedure
 
-Do not call `resources/list` or `list_mcp_resources` to find FinishUP guidance; a list failure is not a missing server or reason to read product source. If a body is empty or clipped, call `read_guidance` with the same URI. Only if that result is also empty, use installed `references/<name>.md` or the topic's parent index.
+## Start contract
 
-Focused topics by trigger: failed write `recovery.md`; batch `publication.md`; finding `review.md`; closing `receipt.md`; resume `startup.md`; delegate `delegation.md`; setup `consent.md`; clipped page `page-delivery.md`. A long page lists its `#anchor` sections on page 0; read one listed section, not the page.
+1. Send `start` from its schema with the user's whole `task_statement`; then plan version 1 if none.
+2. After bounded exploration, before the first material edit, `plan_revised` it at the next version:
+   map each requirement to a testable obligation whose `source_refs` cite the `start` event
+   (`status view=history`); name files/commands in `requested_items`; new obligations are `carried`.
 
-# Start contract
+## Review and closure
 
-Author `start` from its schema: a fresh `req_` UUIDv4, the user's whole `task_statement`, a held `session_id` or `workspace_ref` + `external_ref`.
+3. Publish actual results; pair each action with `result_recorded`; a prior `status` read or
+   `dry_run` is optional: send each returned frontier as the next `expected_frontier` (first plan: `start`'s).
+4. `check` after the plan and each milestone that changes behavior, outputs or acceptance evidence.
+   Tasks may start local; `review.md`: when to turn on AI-powered review.
+   Select `semantic_required` when the user, effective policy, or named acceptance criterion
+   requires independent review.
+5. Publish claim/evidence before the final check; answer findings, check, and inspect resolved
+   state; an unchanged recheck returns it. Recheck only after repair/material record.
+   A finding is evidence, not an order. For a concern, follow [the finding procedure](review.md).
+   Answer each open AI-powered finding with `respond` and a reason (optional for `decision_needed`).
+   Readable current-check answers and lifecycle records need no recheck.
+6. Use `final_review: true` when readiness requires closing review. At `ready_with_limitations`,
+   request the receipt without another check. Then `work_closed` if complete; a receipt never
+   closes work. `lineage_work_transition`: the task already ended; report it.
 
-`start` records intent; after bounded exploration, before the first material edit, publish one `plan_revised` refinement mapping every instruction requirement to a testable obligation whose `source_refs` cite the `start` event (`status view=history`) and whose `requested_items` name the files/commands.
+# Done
 
-# Essential boundaries
+Deliverables/checks are complete, or no authorized action is left for unmet criteria.
+Lead with receipt scope and limits, never "clean" or "verified".
 
-Never publish hidden reasoning or chain-of-thought, full prompts, transcripts, conversation history, credentials, secrets, whole files/repositories, or broad unrelated source. Never move, split, shrink, delete, `git add -N` or git-ignore (incl. `.git/info/exclude`) a deliverable for review: FinishUP redacts, and you verify what it cannot show. On `retryable: false`, follow only the typed `continuation`; retry an unknown write by its request id. If FinishUP is unavailable, say no record or receipt exists.
+# Evidence
 
-# Review and closure
+Cite IDs you published; find native captures with `view=evidence` filter
+`strength=immutable_snapshot`, reusing only IDs a structural link ties to the claim.
+Omitted descriptions are a privacy setting, not missing evidence. State tested values/revision
+and untested criteria; resolved obligations are not acceptance.
+What is left and why: `check` `mode: inspect` (records nothing).
 
-Tasks may start local; `review.md`: when to turn on AI-powered review. Select `semantic_required` when the user, effective policy, or named acceptance criterion requires independent review; `semantic_if_configured` only if optional; `deterministic_only` only for local or no-egress work.
+# Clues
 
-Writes return frontier, ids, errors; a prior `status` read or `dry_run` is optional: send each returned frontier as the next `expected_frontier` (first plan: `start`'s). `publish_work` may omit `request_id`, `expected_frontier`, `event_id`, `occurred_at` (no `date`), envelope lists. Give each action a `result_recorded` naming its `act_` id. Cite IDs you published; find native captures with `view=evidence` filter `strength=immutable_snapshot`, reusing only IDs a structural link ties to the claim. Omitted descriptions are a privacy setting, not missing evidence. What is left and why: `check` `mode: inspect` (records nothing).
+For `insufficient_packet`: If `missing_for_assessment` names an `agent_suppliable`
+item you can supply, publish exactly that item once, linked to any named target, then `check`
+again. If it is already supplied, or it is a packet, type or authority limit, go to the receipt
+and state that specific limit. Only new material counts; tie it to any named target. Observed test,
+build, lint, or typecheck output reaches the reviewer only when a repository excerpt would be sent.
+Never republish retained files/output for review: it makes up to 3 permitted reads.
 
-`check` after the plan and each milestone; cite observed runs. Publish claim/evidence before the final check; answer findings, check, and inspect resolved state; an unchanged recheck returns it. Recheck only after repair/material record. After `insufficient_packet`: If `missing_for_assessment` names an `agent_suppliable` item you can supply, publish exactly that item once, linked to any named target, then `check` again. If it is already supplied, or it is a packet, type or authority limit, go to the receipt and state that specific limit. Only new material counts; tie it to any named target. Never republish retained files/output for review: it makes up to 3 permitted reads. Observed test, build, lint, or typecheck output reaches the reviewer only when a repository excerpt would be sent.
+## Read more
 
-Lead final prose with the receipt's scope and limits; never headline "no findings", "clean", or "verified".
+Focused topics by trigger: failure `recovery.md`; batch `publication.md`; finding, deadline,
+`delivery_page` or `not_in_frozen_case` `review.md`; closing `receipt.md`; resume/plan `startup.md`;
+setup `consent.md`; clipped page `page-delivery.md`.
+On demand: resume/recovery/delegation/capacity `finishup://guidance/workflow.md`; field rules
+`finishup://guidance/publication-policy.md`; coverage `finishup://guidance/coverage-and-receipts.md`;
+publish `finishup://guidance/request-templates.md#publish-shapes`; setup: same page.
 
-# Review dialogue
+## Guidance catalog
 
-For a `delivery_page` result or `not_in_frozen_case`, read `review.md`.
+Do not call `resources/list` or `list_mcp_resources` to find FinishUP guidance;
+a list failure is not a missing server or reason to read product source.
+If a body is empty or clipped, call `read_guidance` with the same URI.
+Only if that result is also empty, use installed `references/<name>.md`.
 
-Before the receipt, run the closing `check` with `final_review: true`. Answer each open AI-powered finding with `respond` and a reason.
+# Constraints
 
-A finding is evidence, not an order.
-For a disputed or decision-needed finding, follow [the finding procedure](review.md).
+## Essential boundaries
+
+Never publish hidden reasoning or chain-of-thought, full prompts, transcripts, conversation history,
+credentials, secrets, whole files/repositories, or unrelated source.
+Never move, split, shrink, delete, `git add -N` or git-ignore
+(incl. `.git/info/exclude`) a deliverable for review: FinishUP redacts; verify what it cannot show.
+On `retryable: false`, follow only the typed `continuation`; recover unknown writes by their request
+id. If unavailable, claim no record/receipt; pending approval is not completion.
 
 # Multi-agent work
 
 Before delegating, read the multi-agent sections of `finishup://guidance/workflow.md` and `delegation.md`.
-
-# Read more
-
-On demand: resume/recovery/delegation/capacity `finishup://guidance/workflow.md`; event shapes, corrections `finishup://guidance/publication-policy.md`; check/receipt `finishup://guidance/coverage-and-receipts.md`; publish `finishup://guidance/request-templates.md#publish-shapes`; setup: same page.
