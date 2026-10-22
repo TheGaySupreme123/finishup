@@ -3040,11 +3040,11 @@ reused, and one closed miss label: `compaction`, `first_turn`, `none`,
 providers' minimum cacheable prefix. A count the provider does not report (Chat Completions may
 omit the cached count) is left out, never recorded as zero. A compaction is recorded, by its index
 and label alone, even when it comes before any usage report. A Codex turn whose previous turn
-reported no usage starts at the total before its own first reported request, so it records only
-its own requests; a turn that had a usage snapshot refused records no counts. Every exchange of a
-review names the review's first provider request id, so the records join the attempt row; the
-owner reads them with `finishup service diagnostics --request-id`, and an exporter that copies the
-diagnostics ring carries them.
+reported no usage starts at the total before its own first reported request, so it records its
+own requests (unless a repeated snapshot arrives first, #1192); a turn that had a usage snapshot
+refused records no counts. Every exchange of a review names the review's first provider request
+id, so the records join the attempt row; the owner reads them with `finishup service diagnostics
+--request-id`, and an exporter that copies the diagnostics ring carries them.
 
 The record holds integers, one closed token and that request id. It never holds content, a
 content digest or a provider identifier. Between a review's exchanges, the `ReviewerSession` keeps

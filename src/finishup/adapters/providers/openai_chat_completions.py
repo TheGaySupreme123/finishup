@@ -583,7 +583,9 @@ class ChatCompletionsEvaluator:
                     details_name="prompt_tokens_details",
                     output_name="completion_tokens",
                 ),
-                completed=True,
+                # A truncated (``length``) or filtered answer is not a completed generation, as
+                # Responses reports its own ``incomplete`` status.
+                completed=getattr(_first_choice(response), "finish_reason", None) == "stop",
             )
         return normalize_response(
             response,

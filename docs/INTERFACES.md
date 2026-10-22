@@ -12000,10 +12000,11 @@ request-queue and pre-disclosure bounds and all event/tool allowlists still appl
 
 **Per-exchange prompt-cache telemetry (issue #1172).** Every provider exchange that reports usage
 writes one `exchange_cache` owner diagnostic (component `codex_app_server`, `openai_responses` or
-`openai_chat_completions`; reason `completed` or `incomplete`). Its `request_id` is the review's
-first provider request id, the attempt row's `provider_request_id`, so every exchange of one review
-shares it and `finishup service diagnostics --request-id <id>` returns them all; a one-shot case
-names its own. Fields, all integers but the last:
+`openai_chat_completions`; reason `completed`, or `incomplete` when the Codex turn did not complete,
+the Responses status is not `completed` or the Chat Completions `finish_reason` is not `stop`). Its
+`request_id` is the review's first provider request id, the attempt row's `provider_request_id`, so
+every exchange of one review shares it and `finishup service diagnostics --request-id <id>`
+returns them all; a one-shot case names its own. Fields, all integers but the last:
 
 | Field | Meaning |
 |---|---|
@@ -12013,14 +12014,15 @@ names its own. Fields, all integers but the last:
 | `reviewer_cache_write_input_tokens` | provider-reported cache writes, absent where the provider did not report them |
 | `reviewer_prefix_tokens` | input of the previous exchange's last request: what this exchange could reuse (0 when it opened the conversation; absent when the previous exchange's requests are unknown) |
 | `reviewer_prefix_cached_tokens` | cached input of this exchange's first request (absent with the cached count) |
-| `reviewer_cache_miss` | closed label, below; absent when the prefix or the cached input is unknown |
+| `reviewer_cache_miss` | closed label, below; `first_turn` and `compaction` are always recorded, and a later exchange has none when its prefix or cached input is unknown |
 
 Codex counts are the thread's cumulative `total` across the turn; a snapshot whose input grew is one
 more request, and that snapshot's `last` names the request (a repeated snapshot is not another one).
 A turn starts at the total its previous turn left. When that turn reported no usage or had a usage
 snapshot refused, the turn starts instead at the total before its own first reported request (that
-snapshot's `total` less its `last`), so it records only its own requests, never the thread's
-earlier ones. A turn that had a usage snapshot refused records no counts (it may be missing a
+snapshot's `total` less its `last`), so it records its own requests, not the thread's earlier
+ones, unless a repeated snapshot of the thread's total arrives first, which it would count as its
+own (#1192). A turn that had a usage snapshot refused records no counts (it may be missing a
 request) and leaves the next prefix unknown. Responses reads `usage.input_tokens`,
 `usage.output_tokens` and, in `usage.input_tokens_details`, `cached_tokens` and
 `cache_write_tokens`; Chat Completions `prompt_tokens`, `completion_tokens` and the same two in
