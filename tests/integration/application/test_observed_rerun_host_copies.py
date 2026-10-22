@@ -150,7 +150,10 @@ async def test_a_codex_rerun_supplies_the_request_from_either_host_copy(
         return post
 
     def run_async(factory: Callable[[], Awaitable[object]]) -> object:
-        return asyncio.run(factory())
+        async def await_result() -> object:
+            return await factory()
+
+        return asyncio.run(await_result())
 
     def hook_call(post: dict[str, object], kind: str) -> int:
         payload = {**post, "hook_event_name": kind}
