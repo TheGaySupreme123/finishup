@@ -12173,16 +12173,11 @@ as `outcome_unknown` and is never resent. For it, `operation_max_retries` is `0`
 
 ### Bounded advisory delivery and frozen ledger misses (#1139, #1126, #1148)
 
-ADR-006's 2026-10-21 amendment owns this behavior. MCP Codex check results may carry
-`review_delivery` (check-result 1.6.0, optional finding-summary text or an omission), inserted first.
-Findings status pages may carry the same optional member before `items` (status-result 1.4.0).
-The bridge derives it after privacy projection. It carries at most three complete bounded groups:
-summary → requested action → alternative interpretation → uncertainty. The review-summary budget
-is 420 JSON-encoded bytes and each challenge field's is 180, including escaping. Labels, ids and
-an explicit truncated-preview continuation remain within 3,600 encoded bytes. Full findings,
-review summary, evidence and provenance are retained. Generic and Claude text lead with this
-advisory before evidence. Cursor's canonical full-copy contract is unchanged. CLI, TUI, hooks and
-receipts keep their existing full-field and privacy contracts. They do not receive a new judgment.
+ADR-006's 2026-10-21 amendment and ADR-043's residual result-delivery amendment own this behavior.
+The optional `review_delivery` field remains accepted for older 1.6.0/1.4.0 records, but current
+bridges no longer synthesize shortened previews. Oversized checks, findings status and receipts
+use the lossless `delivery_page` branch described below. Read all action fields and required
+inventory continuations before answering; excerpts and provenance follow through optional pages.
 Native-host delivery is not established by the offline clipping simulation.
 
 Prior dialogue is reserved before aggregate case fitting, and channel fallback preserves the
@@ -12313,3 +12308,45 @@ verification dependencies and generated-artifact roles remain an open design req
   and revalidates args; it never exports read/packet/judgment content. Diagnostics use
   `reviewer_reads` / `reviewer_<action>`, `outcome`=result code and `operation_count`=call ordinal.
   No raw selector/path enters a structural log or public export.
+
+## Lossless result delivery (issue #1139)
+
+`check-result` 1.7.0, `status-result` 1.5.0 and `receipt-result` 1.4.0 add the closed
+`state=delivery_page` presentation branch. It is a page of an already-authorized result, not a
+verdict or a fresh workflow operation. Each `items` entry identifies an original JSON Pointer and
+its complete `value`. A `container` marker initializes an object or array before its child
+paths; its `value=null` is a marker, not the original field value. An optional `fragment` identifies an oversized scalar's Unicode scalar
+offsets (`unit=unicode_scalar`), original length, digest and final fragment. Reconstruct it before acting; a fragment is never a preview.
+`truncated=true` reports deferred source content; `complete=true` and `next_cursor=null` mark the
+last emitted page of this source result. `actionable_complete` ends its action fields; remaining
+result pages are optional provenance. `inventory_read`, when present, names the required separate
+findings read or next inventory page. Inspect the original `suppressed_count`, receipt inventory
+limits, and `/page/next_cursor` separately: result delivery does not erase inventory pagination.
+
+`status-request` 1.3.0 adds `delivery` (`complete` or `paged`) and `delivery_cursor`. Only a
+`delivery=paged` status read may come back as pages; absent or `complete` returns the whole result,
+as 1.2.0 did. The MCP `status` tool sends `paged` unless the agent names `delivery`; the bridge's
+closure inventory and write-recovery probes send none. An agent's MCP check and receipt may page;
+CLI output, the native TUI, owner exports and `view=operation` never do. Send `delivery_cursor`
+only with `view=compact`, the held session and writer and a fresh request ID, without other
+selectors, filter, frontier or inventory cursor. A cursor binds source selection, writer, session
+(by its signature), sink, position and authorized content digest, and freezes the status read's
+live fields (head frontier, projection lag and version, rebuild state, import status, credential
+heuristic, review mode), presence included, so an append between page reads leaves a brief or full
+read continuable.
+The original complete operation is read without running it again, and disclosure runs again for
+the current reader. Every page therefore carries its own read's `privacy_projection`, never paged
+as `items` and outside the content digest; reconstruction uses the final page's projection. Past
+1,024 canonical bytes a page's `omitted_pointers` coalesce to containing fields, as past the
+512-pointer wire bound. Service restart expires these cursors, as it does existing status cursors;
+recover through current status/findings without creating a new review. Missing source, altered
+binding or changed authorized content is a bounded `INVALID_REQUEST`; it does not authorize a new review or downgrade required review.
+
+The service creates these pages before MCP rendering. The budget is 12,000 bytes, Codex's
+structured window and the tightest recorded host limit, for the larger channel a host reads (the
+structured JSON or the text) plus a 64-byte header allowance, never the sum of both;
+`budget_bytes` on each page names it. Action fields precede bulk
+provenance. No field is cut silently. The retained original operation and receipt document keep
+their identity and existing retention/redaction policy. The native TUI retains its full local
+view, as do authenticated owner exports bound to their exact approved request. Hook text points
+to status instead of duplicating review prose. ADR-043 records the measured Codex fallback, conservative host decisions and consumer reconstruction requirements.

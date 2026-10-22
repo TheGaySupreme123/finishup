@@ -222,3 +222,110 @@ output per check result. A newer service with an older bridge would reject the n
 earlier optional field. Canonical vectors: `fixtures/canonical/check-agent-next-1.5.0.case.json`
 (AGN-001) and `fixtures/canonical/status-check-outcome-1.4.0.case.json` (AGN-002, the status
 page's `check_outcome`), both from `scripts/generate_review_result_delivery_fixture.py`.
+
+### Result delivery amendment (issue #1139, 2026-10-21)
+
+The owner requested the residual fix after #1152: retaining a caveat-first preview did not prevent
+Codex from clipping the complete JSON, and a 180-byte field preview could lose the qualification
+that changed its meaning. Complete review fields therefore replace the shortened preview.
+
+Each host reads one channel against its own limit, recorded in this ADR and the host runbooks:
+
+- **Codex 0.159** shows a model only `serde_json(structuredContent)` behind a `Wall time` header,
+  never the text channel (the 2026-10-18 amendment above). For a slug missing from its bundled
+  `models.json`, `gpt-6.1-sol` at that tag (`codex-integration.md`), the window is a 10,000-byte
+  policy with a 1.2 serialization allowance: 12,000 bytes, head and tail kept. A bundled slug gets
+  48,000 bytes. The TB-Science pilot's native check results clipped at about 12,023 characters,
+  host framing included.
+- **Cursor** does not reliably deliver `structuredContent`; it reads the exact canonical JSON text
+  copy, which has no documented host limit (`cursor-integration.md`).
+- **Claude Code** delivers both channels; its MCP output limit is far above these sizes
+  (`claude-code-integration.md`).
+
+FinishUP therefore budgets the larger channel a host reads, never the sum of both: the structured
+JSON or the text, whichever is longer, plus a 64-byte allowance for Codex's `Wall time: N
+seconds\nOutput:\n` header (35 bytes, under 40 for any run shorter than a day), held to
+**12,000 bytes**, the tightest recorded window. The canonical JSON has the same byte length as
+Codex's `serde_json` rendering. The text channel can always fall back to the canonical copy, which
+is no larger than the structured JSON, so the structured result decides paging. Measured through
+the daemon on the projection workflow (3 findings): brief and full compact status (7.2 and 7.5 KB),
+findings status (10.0 KB), history, obligations, evidence and operation status, a typical check
+(9.1 KB), markdown and text receipts (6.6 KB) and publish, respond and start results each arrive as
+one response, as before #1139. On the ~1,000-event #916 ledger, brief and full compact status
+(11.3 and 11.9 KB) and brief findings status also arrive whole. Only genuinely oversize results
+page: a JSON owner-export receipt (13.5 KB) in two pages, the full findings read of the long task
+(13.6 KB) in three.
+
+After ordinary disclosure, an agent's oversized completed check, receipt, or status read becomes
+`delivery_page` results. Only the MCP bridge's agent calls page: the `status` tool sends
+`delivery=paged` (status-request 1.3.0) unless the agent names `delivery`, and the service pages a
+status read only with that opt-in. The bridge's own reads, its closure inventory and its
+write-recovery and timeout probes, send none and keep the complete result, so closure preparation
+on a ~1,000-event task makes the same 21 status reads as before, with no page reads or per-page
+audit rows. `view=operation` is never paged: its progress and elapsed time are live, and it is the
+structural recovery read. CLI JSON and terminal output, the native TUI and owner exports are never
+paged: a terminal has no model window and no flag to continue. Findings' discrepancy, requested action (`detail` and
+`challenge.requested_next_step`), alternative interpretation and uncertainty precede bulk excerpts
+and provenance. Subject refs, policy/coverage bounds and finding closure facts also remain
+action fields. Pages carry whole fields and explicit object/array initialization markers; an individually oversized scalar uses explicit fragments
+with its path, Unicode scalar offsets (`unit=unicode_scalar`), total length and canonical-JSON digest. Consumers reconstruct and
+verify the complete field before using it. There is no shortened actionable preview. A fixed
+`required_next_step`, `truncated`, `complete`, `offset`, `total_items`, `source_digest` and
+`next_cursor` distinguish emission, deferred content and consumer reconstruction. `budget_bytes`
+is a bounded integer naming the budget the page was cut to.
+`actionable_complete` marks the end of action fields; subsequent cursor pages contain optional bulk
+provenance. `inventory_read` names the separate findings read needed for suppressed rows and receipt
+text, or the next page of an existing status inventory. It must be followed before claiming that all
+open findings were considered. `complete` does
+not assert that the host delivered or the agent read the page.
+
+Continue with `status`, `view=compact`, `delivery_cursor=next_cursor`, the same session/writer and
+a fresh read request ID. These domain-separated authenticated cursors select a recorded complete
+operation or a status query pinned to its original frontier. Reads reapply the ordinary disclosure
+policy; they never dispatch review, append a check or create a receipt. A changed authorized
+content digest, changed sink, invalid binding, or missing retained source refuses continuation.
+The cursor freezes the status read's live fields (head frontier, projection lag and version,
+rebuild state, import status, credential heuristic and review mode), presence included: a brief
+body omits each at its default, and the continuation drops one the first read omitted. An
+unrelated append, the agent's own publish, a hook drain or a finished import therefore does not
+invalidate the original read, brief or full. A brief status body omits `requested_frontier` when it equals
+`result_frontier`; its pages pin `result_frontier`. The cursor body omits the held session and
+writer, which its signature binds. Like existing status cursors, a service restart expires it: recover with current
+status/findings, without starting a new review. Fresh disclosure audit metadata is outside the
+source content digest. There is no plaintext response cache, extra retention capacity, or new network authority.
+
+Because every read is its own disclosure, `privacy_projection` is never paged as `items`: each page
+carries its own read's whole local disclosure receipt, and reconstruction attaches the final page's
+projection (pages that disagree on the sink, or that page the projection, are refused). A
+projection whose canonical encoding passes 1,024 bytes coalesces its `omitted_pointers` on the page
+to containing fields, by ADR-009's rule past the 512-pointer bound and never past a top-level
+field; the omitted values still carry their inline omission markers and the local audit keeps
+each decision. The delivery-page schema branches carry the same request, task, session, writer,
+digest, frontier and projection constraints as the sibling result branches.
+
+MCP uses canonical JSON for delivery pages, findings reads and receipts, including text-only hosts;
+other status views keep their prose. Small checks carry complete JSON alongside their
+coverage-bounded prose; when that text would pass the result budget, the complete JSON is the text
+channel if it is the smaller one. Results the service never pages (start, publish, respond, a
+paused or inspected check) keep their shorter prose: the fallback never enlarges a result.
+Repeated required page reads never acquire a status write nudge, and a nudge never pushes the text
+channel past the budget. Native TUI views retain their complete local presentation; their finding
+renderer now includes every delivered finding and all challenge fields.
+Authenticated owner exports retain their full local view, because their exact-request approval
+does not authorize a generic status continuation. Hook payloads retain their structural bounded
+instructions and point to status rather than embed reviewer excerpts. CLI structural status reads
+used by hooks retain typed snapshots. Existing receipt inventory and
+redaction limits remain explicit: page completion is not proof that suppressed findings are absent.
+
+Closure preparation's own reads are never paged. Should a status page reach it anyway, it
+reconstructs the pages before consuming its pinned inventory, verifying container types, fragment
+offsets and digests, contiguous page offsets and the content digest, within a 128-page, 1 MiB
+aggregate read bound; crossing it retains the existing `closure_inventory_limit` refusal and never
+drafts from a partial inventory. Reconstruction refuses items under `/privacy_projection` or
+`/review_delivery`, which the content digest does not cover.
+
+Page admission includes inventory selectors and both cursor values. It reduces the deterministic
+fragment size when that overhead needs more room, measuring every atom against the worst page
+envelope. Mapping traversal is canonical, so reloads with different insertion order keep the
+same partition. The authenticated cursor index stays outside compression to make its maximum
+serialized length exact.

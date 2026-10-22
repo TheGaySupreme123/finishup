@@ -44,6 +44,12 @@ re-request `markdown` or `text`, or widen agent-context policy from a local term
 human format cannot project those sections, the result names the omission; it does not return
 an accepted receipt with an empty body and no pointer.
 
+The `finishup receipt` command and every terminal command print the whole result. Through an
+agent's MCP tools, a result too large for the host's window (a `json` receipt, often) arrives as
+numbered `state=delivery_page` parts. Keep reading with `status`, `view=compact` and the returned
+`delivery_cursor` until `complete` is true, and rebuild the result before relying on it; reading
+the parts never repeats the review or creates another receipt.
+
 **The durable receipt is recorded even when projection is blocked.** A projection failure is a
 disclosure decision, not a lost receipt.
 

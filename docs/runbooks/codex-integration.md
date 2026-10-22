@@ -4007,24 +4007,21 @@ when one is `agent_suppliable` (each item, how to supply it and what counts, wit
 receipt conclusion) and omits any other continuation; the verdict and missing items always come
 back. Persisting the continuation with the stored check is a storage follow-up owned by #1100.
 
-**Reviewer reads on Codex (#1118). Host decision: supported.** The reviewer conversation runs in the service for every host: up to three reads, each sent in its own privacy-checked exchange, within the channel limits. What it read reaches this host as `reviewer` on the check result (closed tokens, folder aliases, opaque source ids, line spans, sizes and the privacy receipt of the exchange that first carried each read; never a path or content), as the read lines at the head of the MCP text channel's reviewer section, in the CLI and TUI check text, and in every receipt format; a same-id check replay returns it too. Hooks carry no reads, and status's operation `check_outcome` stays structural without it. Gap: in Codex's structured result `reviewer` follows the bulky fields, so in a large result it can fall in the cut middle; the MCP text channel and the receipt carry the same lines. Codex as the review provider is a separate role: the subscription route serves the conversation only on the reviewed 0.162.1 runtime with capability profile v3 (`environments: []`, plan and user-input tools disabled), and fails closed otherwise (ADR-006).
+**Reviewer reads on Codex (#1118). Host decision: supported.** The reviewer conversation runs in the service for every host: up to three reads, each sent in its own privacy-checked exchange, within the channel limits. What it read reaches this host as `reviewer` on the check result (closed tokens, folder aliases, opaque source ids, line spans, sizes and the privacy receipt of the exchange that first carried each read; never a path or content), as the read lines at the head of the MCP text channel's reviewer section, in the CLI and TUI check text, and in every receipt format; a same-id check replay returns it too. Hooks carry no reads, and status's operation `check_outcome` stays structural without it. Bulk reviewer provenance follows action fields in bounded result pages; follow the returned cursor to read it. Codex as the review provider is a separate role: the subscription route serves the conversation only on the reviewed 0.162.1 runtime with capability profile v3 (`environments: []`, plan and user-input tools disabled), and fails closed otherwise (ADR-006).
 
 **Reviewer read recovery on Codex (#1173). Host decision: supported, service-side.** As on every host, the reviewer gets three reads that return content within at most five attempts (ADR-006, #1173): a refused or empty read costs an attempt and its bytes, not a content read, and comes back with a correction for its cause (an unknown folder alias, an absolute path, a hidden or traversing name, an ignored file, a path outside what the task declared, or a record the frozen review case does not hold) that never repeats the refused path. A read the reviewer still asks for after its reads end executes nothing and is asked once for its judgment, with a reply format without reads; once that one repair is spent (or on an earlier malformed answer), every final turn uses that format. A review that offers no read (every exchange needs the owner's approval, or no time is left for one) uses it on every turn. A route that enforces the reply format therefore always ends with a judgment; a read a route returns anyway ends the review `read_limit`. `reviewer.reads` lists every attempt and `reads_used` counts content reads; the MCP text, CLI, TUI and receipt read line adds `N of 5 read attempts` when the two differ. The controller runs in the service, so nothing differs by host. Codex as the review provider: when reads end, the final-phase notice follows the last read result on the same thread as a second text input of that turn; the continuation guard admits at most two new user messages and still refuses anything that does not extend the held thread.
 
 **Residual requests on Codex (#1118 unit 4). Host decision: supported.** As on every host, the reviewer's own reason for each residual request reaches the agent inside the fenced `review_summary` ("What the reviewer still needs"), never in `agent_next` or the structural item; a `full_local` receipt carries the same summary as one fenced advisory item, an exported receipt says it was withheld, and the privacy projection decides the agent's view of either; a linked supply no longer erases a reviewer's repeat (`semantic_missing_already_supplied` discloses it); and a `semantic_required` check stops at the same round limits, reading `incomplete_check`. The reviewer's own reads (up to three, bounded and privacy-checked) run in the service, not in the host, so they behave the same here; the provider route that serves them is a separate role (ADR-006). Recovery's `check_outcome` stays structural and omits the reason.
 
 **Read reviewer advice on Codex (#1139). Host decision: supported.** Read the full finding
-before choosing a response. Treat `review_delivery` as a bounded advisory preview.
-When it reports truncation, use its continuation: `status view=findings`, `detail=full`,
-`limit=1`, then the returned cursor. Stop when the finding you will answer includes its action,
-alternative interpretation and uncertainty, or labels them withheld.
-For example, a long check can retain the instruction while the alternative falls outside the preview.
+before choosing a response. Read `delivery_page` action pages until `actionable_complete=true`, reconstruct any labelled
+scalar fragments, and follow `inventory_read` before claiming the complete finding inventory.
+Read the action, alternative interpretation and uncertainty together, or their explicit privacy
+omissions. Bulk provenance is available through the remaining `next_cursor` pages.
 
-The optional advisory leads the structured check result and findings status page.
-Full authorized fields stay present. A `full_local` receipt carries the recorded review summary
-under export policy. Offline tests simulate Codex's 12,000-byte head/tail cut, including JSON
-escaping and Unicode. Native Codex delivery has not been re-dogfooded for this change.
-Issue #1139 owns that validation gap.
+All authorized fields remain retrievable without a new review. Offline tests measure complete
+serialized MCP frames, including escaping and Unicode. Native Codex delivery has not been
+re-dogfooded for this change; issue #1139 retains that validation gap.
 
 **Supply on Codex.** The captured output of a shell re-run of the target's exact command that
 FinishUP observed after the request counts as supplying a targeted `verification_output` (or
@@ -4107,3 +4104,30 @@ incomplete. Receipt JSON/markdown/text distinguish an agent-disproved concern fr
 repair. Trusted byte-identical in-workspace shell rewrites preserve verification freshness;
 changed reports remain conservative pending #1143's dependency/role manifest. These decisions
 are shared across macOS, Linux and Windows through WSL 2; no native Windows support is implied.
+
+### Bounded review result delivery (#1139)
+
+Only an agent's oversized MCP check, receipt or status read returns `state=delivery_page`; the
+`status` tool asks for pages (`delivery=paged`) unless the agent names `delivery`. FinishUP
+budgets the larger channel a host reads, plus a 64-byte header allowance, at 12,000 bytes, never
+the sum of both channels. On Codex that channel is the structured JSON: Codex 0.159 shows a model only
+`structuredContent`, cut to a 12,000-byte head/tail window for `gpt-6.1-sol` (a bundled slug gets
+48,000 bytes); the TB-Science stored payloads clipped at roughly 12,023 characters including
+framing. Ordinary status reads, typical checks and markdown or text receipts arrive
+whole, as before #1139; a JSON owner-export receipt can page. The bridge's own closure inventory
+and write-recovery reads, `view=operation`, and CLI output are never paged. This is a product
+bound, not a claimed universal host limit. The setting applies on macOS, Linux and Windows through
+WSL 2.
+
+Read `next_cursor` with `status view=compact delivery_cursor=<returned value>` and the same held
+session/writer through the same MCP host. Whole actionable fields precede provenance; object/array markers preserve container types, and
+explicit scalar fragments require
+reconstruction by offsets and digest before use. Read until `actionable_complete`; then bulk pages
+are optional. Follow `inventory_read` for the complete findings inventory. `complete` closes this result's
+pages only; follow the source findings inventory cursor or suppressed-count instruction separately. Reads
+reapply disclosure and never rerun review, so each page carries its own read's `privacy_projection`
+(never paged as items); reconstruct with the final page's. CLI output is never paged; hooks retain their
+bounded structural status instructions. Native TUI and exact-request authenticated owner exports
+keep the full local view. Restart expires cursors; recover through current status/findings without
+starting a new review. A revoked route, changed sink/content, or expired retained source also
+requires current status.
