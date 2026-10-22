@@ -859,7 +859,7 @@ _PROBE_VERSIONS: Final = {
     "publish-work-request": "1.2.0",
     "receipt-request": "1.0.0",
     "start-request": "1.1.0",
-    "status-request": "1.2.0",
+    "status-request": "1.3.0",
 }
 
 
