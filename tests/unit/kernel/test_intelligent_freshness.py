@@ -677,3 +677,144 @@ def test_the_ai_review_asks_about_freshness_only_when_a_verification_has_later_c
     ledger.edit()
     assert verification_freshness_asked(case_for(ledger))
     assert FRESHNESS_REVIEW_QUESTION in review_question_set("final", freshness=True)
+
+
+def test_receipts_never_claim_an_input_changed_for_an_edit_finishup_cannot_place() -> None:
+    """An edit-tool edit records no path; the shared sentences say so (#1167 review finding 3)."""
+
+    from finishup.domain.receipts import receipt_document_to_json, render_receipt_human
+
+    ledger = ObservedLedger()
+    ledger.plan("pytest -q")
+    ledger.passes("pytest -q")
+    ledger.edit()
+    facts = task_fact_signals(replay(ledger.prefix), ledger.prefix)
+    assert {"planned_verification_stale", "edited_after_last_verification"} <= set(facts.codes)
+    receipt = observed_receipt(ledger, extra_gaps=facts.codes)
+    for text in (
+        json.dumps(receipt_document_to_json(receipt)),
+        render_receipt_human(receipt, markdown=True),
+        render_receipt_human(receipt, markdown=False),
+    ):
+        assert "an edit FinishUP could not place" in text
+        assert "A recorded input changed after" not in text
+        assert "A recorded verification input changed after" not in text
+
+
+def test_a_declared_directory_input_makes_the_declaration_partial_and_asks() -> None:
+    """``src/`` names a directory: an edit inside it is never set aside (#1167 review finding 5)."""
+
+    ledger = ObservedLedger()
+    ledger.plan("pytest -q")
+    run = ledger.passes("pytest -q")
+    manifest(ledger, run, inputs=("src/", "tests/"))
+    changed(ledger, "src/app.py")
+    (row,) = verification_freshness(replay(ledger.prefix), ledger.prefix)
+    assert (row.state, row.basis) == ("unknown", "declared")
+    assert not row.caller_asserted
+    facts = task_fact_signals(replay(ledger.prefix), ledger.prefix)
+    assert "verification_rerun_question" in facts.codes
+    assert "verification_inputs_caller_asserted" not in facts.codes
+
+
+def test_reliance_on_a_complete_declaration_is_disclosed_for_a_cited_earlier_run() -> None:
+    """The run a claim cites need not be the latest one (#1167 review finding 6)."""
+
+    ledger = ObservedLedger()
+    run = ledger.run(
+        "pytest -q tests/test_a.py", ResultOutcome.SUCCESS, exit_status=0, runner="test"
+    )
+    manifest(ledger, run, inputs=("tests/test_a.py",))
+    changed(ledger, "src/app.py")
+    ledger.run("ruff check docs/", ResultOutcome.SUCCESS, exit_status=0, runner="lint")
+    ledger.append(
+        EventSchema("claim_recorded", "1.0.0"),
+        ClaimRecordedPayload(
+            claim_id("clm_00000000-0000-4000-8000-000000001168"),
+            ClaimKind.COMPLETION,
+            "The change is complete and verified.",
+            (run,),
+        ),
+        observed=False,
+    )
+    rows = verification_freshness(replay(ledger.prefix), ledger.prefix)
+    assert [(row.run_ref, row.state, row.caller_asserted) for row in rows] == [
+        (run, "current", True)
+    ]
+    facts = task_fact_signals(replay(ledger.prefix), ledger.prefix)
+    assert "verification_inputs_caller_asserted" in facts.codes
+
+
+def test_one_verifications_outside_input_keeps_the_no_op_proof_for_the_others() -> None:
+    """The byte-identical proof is withdrawn only for runs with an unseen input (finding 8)."""
+
+    ledger = ObservedLedger()
+    obligation_with(ledger, 1, _COMMAND)
+    obligation_with(
+        ledger,
+        2,
+        (RequestedItemKind.COMMAND, "make lint", None),
+        (RequestedItemKind.FILE, "/outside/lint.toml", RequestedItemRole.INPUT),
+    )
+    ledger.passes("pytest -q")
+    lint = ledger.passes("make lint")
+    ledger.run(
+        "cat saved.json > evidence.json",
+        ResultOutcome.SUCCESS,
+        write_scope="workspace",
+        workspace_effect="unchanged",
+    )
+    rows = verification_freshness(replay(ledger.prefix), ledger.prefix)
+    assert [(row.run_ref, row.state) for row in rows] == [(lint, "stale")]
+    assert rows[0].changes == (
+        "1 later rewrite(s) left the compared workspace unchanged, but a verification input lies"
+        " outside what the comparison covers; FinishUP cannot tell whether that touched this"
+        " verification's inputs",
+    )
+
+
+def test_the_review_packet_carries_freshness_detail_without_names() -> None:
+    """Requested commands and changed paths never leave as finding prose (#1167 review, 10).
+
+    The local finding names them for the agent; the review packet's finding detail counts them,
+    so they reach the reviewer only through the obligation and evidence items' own categories.
+    """
+
+    from finishup.application.check import _freshness_candidates, allocate_findings
+    from finishup.application.semantic_case import build_semantic_case
+    from finishup.domain.privacy import ReviewContextProfile, ReviewSelectionPolicy
+    from finishup.protocol.ids import IdKind, new_id
+
+    class _Ids:
+        def new(self, kind: IdKind) -> str:
+            return new_id(kind)
+
+    ledger = ObservedLedger()
+    ledger.plan("pytest -q")
+    ledger.passes("pytest -q")
+    manifest(ledger, ledger.passes("pytest -q"), complete=False, inputs=("src/control.py",))
+    changed(ledger, "src/control.py")
+    case = replace(case_for(ledger), verification_advisory=True)
+    assessments, _ = run_deterministic_policies(case, CheckScope((), ()), ("work-integrity/0.3.0",))
+    findings = allocate_findings(_Ids(), _freshness_candidates(assessments, case))
+    question = next(f for f in findings if f.summary.startswith("Is a verification rerun"))
+    assert '"src/control.py"' in question.detail and '"pytest -q"' in question.detail
+    profile = ReviewContextProfile.EXPANDED
+    semantic = build_semantic_case(
+        case_id="cas_10000000-0000-4000-8000-000000001167",
+        frozen_case=case,
+        dependency_digest="sha256:" + "b" * 64,
+        findings=findings,
+        review_context_profile=profile,
+        review_selection=ReviewSelectionPolicy.for_profile(profile),
+        policy_id="pvy_10000000-0000-4000-8000-000000000001",
+        policy_version="1",
+    )
+    (detail,) = (
+        item
+        for item in semantic.items
+        if item.section == "deterministic_detail" and item.source_ref == str(question.finding_id)
+    )
+    text = detail.content.decode("utf-8")
+    assert "src/control.py" not in text and "pytest -q" not in text
+    assert "1 named change(s) withheld here" in text

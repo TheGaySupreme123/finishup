@@ -7,7 +7,6 @@ from collections.abc import Awaitable, Callable, Iterable, Mapping
 from dataclasses import dataclass, replace
 from functools import partial
 from pathlib import Path
-from types import MappingProxyType
 from typing import TYPE_CHECKING, Any, Final, Literal, NamedTuple, Protocol, TypedDict, cast
 
 from finishup.application.closure_basis import (
@@ -237,6 +236,7 @@ from finishup.kernel.task_facts import (
     task_fact_signals,
 )
 from finishup.kernel.test_edit_visibility import PreExistingTestEdits, preexisting_test_edits
+from finishup.kernel.verification_freshness import freshness_detail, freshness_rows_for
 from finishup.observability.logging import (
     record_bounded_counts_without_raising,
     record_unexpected_exception_without_raising,
@@ -3083,6 +3083,12 @@ async def _attach_replayed_fact_lineage(
     return replace(result, fact_lineage=lineage)
 
 
+def _route_requires_ai_review(app: Application, route_profile: Literal["policy", "strict"]) -> bool:
+    """The serving route's own answer, as status computes it (``_semantic_review_required``)."""
+
+    return route_profile == "policy" and app.verification_policy.semantic == "required"
+
+
 async def _read_declared_outputs(
     runtime: TaskRuntime,
     request: CheckRequest,
@@ -3090,6 +3096,8 @@ async def _read_declared_outputs(
     capture: CheckChangeMetadata | None,
     source: CheckWorkspaceSource | None,
     port: object | None,
+    app: Application,
+    route_profile: Literal["policy", "strict"],
 ) -> tuple[
     _PolicyEvaluator,
     tuple[str, ...],
@@ -3103,17 +3111,23 @@ async def _read_declared_outputs(
     Returns the work evaluator, the task-fact gaps, whether an output is absent, the deliverable
     states to record, the in-process file names the commit classifies by type, and the frozen
     prefix's records (for the lineage the result carries).
+
+    Freshness is AI-advisory (#1143) only on the AI route, judged at the check's input frontier
+    with the predicate status and Stop use (``derive_closure_readiness``): the serving route
+    requires AI-powered review (``_route_requires_ai_review``), or the task already used one.
+    The requested mode never decides it: no configured reviewer, the strict route, a disabled
+    policy or a failed review keep the local rule, and a local-only check on an AI-route task
+    stays advisory, so check, status and Stop agree.
     """
 
     records = await _frozen_prefix_records(runtime, request, frozen)
     outputs = await _requested_output_inputs(
         frozen.case, capture, source, port, request.request_id, deliverable_history(records)
     )
+    advisory = _route_requires_ai_review(app, route_profile) or semantic_review_used(records)
 
     def evaluate(case: DeterministicCase) -> tuple[DeterministicAssessment, ...]:
-        return outputs.evaluator(
-            replace(case, verification_advisory=request.mode != "deterministic_only")
-        )
+        return outputs.evaluator(replace(case, verification_advisory=advisory))
 
     return evaluate, outputs.gaps, outputs.absent, outputs.states, outputs.files, records
 
@@ -3319,65 +3333,24 @@ def _with_undeclared_references(
     return tuple(recorded)
 
 
-# Finding text is bounded at 8 192 characters; leave room for the template and subjects.
-_MAX_FRESHNESS_DETAIL_CHARS: Final = 7_600
-_FRESHNESS_BASIS_TEXT: Final[Mapping[str, str]] = MappingProxyType(
-    {
-        "undeclared": (
-            "no usable input declaration is recorded for it, so FinishUP cannot tell which files"
-            " it read"
-        ),
-        "requested": "its inputs are known only from the task's requested input files",
-        "declared": "its inputs come from the caller's partial input declaration",
-        "complete": (
-            "its inputs come from the caller-asserted complete input declaration; FinishUP did"
-            " not observe which files it read"
-        ),
-    }
-)
-
-
 def _freshness_candidate(candidate: CandidateFinding, case: DeterministicCase) -> CandidateFinding:
     """Name the affected verification, how its inputs are known, and the later changes (#1143).
 
     Only a local ledger-stale finding about a run (the rerun question, or a known input change)
     carries this detail. Each verification is identified by its result id and, when it matched
     one, the requested command, so the agent knows what to rerun. Paths are named only where the
-    record names them; keyed-only identities are counted, never guessed.
+    record names them; keyed-only identities are counted, never guessed. The review packet
+    carries the name-free form (``kernel.verification_freshness.freshness_detail``).
     """
-
-    from finishup.domain.bounded_text import quoted_path
 
     if candidate.kind is not FindingKind.LEDGER_STALE_OR_INCOMPLETE:
         return candidate
-    rows = [
-        row
-        for row in case.verification_freshness or ()
-        if row.state != "current"
-        and (
-            case.projection.results[row.run_ref].source_event_id in candidate.subject_refs
-            or row.state == "stale"
-            and set(candidate.coverage.known_gaps)
-            & {"planned_verification_stale", "edited_after_last_verification"}
-        )
-    ]
+    rows = freshness_rows_for(case, candidate.subject_refs, candidate.coverage.known_gaps)
     if not rows:
         return candidate
-    detail = candidate.detail + " Recorded verification and later changes:"
-    for row in rows[:4]:
-        label = "" if row.label is None else f" (requested command {quoted_path(row.label)})"
-        listed = "; ".join(row.changes[:4])
-        more = f"; {len(row.changes) - 4} more" if len(row.changes) > 4 else ""
-        sentence = (
-            f" verification {row.run_ref}{label}: {_FRESHNESS_BASIS_TEXT[row.basis]}."
-            f" Later changes: {listed}{more}."
-        )
-        if len(detail) + len(sentence) > _MAX_FRESHNESS_DETAIL_CHARS:
-            break
-        detail += sentence
-    if len(rows) > 4 and len(detail) + 64 <= _MAX_FRESHNESS_DETAIL_CHARS:
-        detail += f" {len(rows) - 4} more verification(s) omitted."
-    return replace(candidate, detail=detail)
+    return replace(
+        candidate, detail=candidate.detail + freshness_detail(rows, len(candidate.detail))
+    )
 
 
 def _freshness_candidates(
@@ -6302,7 +6275,14 @@ async def execute_check_commit(
             output_files,
             prefix_records,
         ) = await _read_declared_outputs(
-            runtime, request, frozen, structural_capture, structural_source, change_capture
+            runtime,
+            request,
+            frozen,
+            structural_capture,
+            structural_source,
+            change_capture,
+            app,
+            route_profile,
         )
         if frozen.lease.phase is CheckPhase.RESERVED:
             assessments, executions = run_deterministic_policies(

@@ -271,3 +271,55 @@ def test_declared_output_precedence_applies_to_actual_changed_classes(
     assert ("planned_verification_stale" in codes) is stale
     assert ("edited_after_last_verification" in codes) is stale
     assert ("verification_rerun_question" in codes) is not stale
+
+
+@pytest.mark.parametrize("cited", ["own_test_result", "untracked_run"])
+@pytest.mark.parametrize("edit_first", [False, True])
+def test_a_claim_citing_untracked_verification_keeps_the_latest_edit_frontier(
+    cited: str, edit_first: bool
+) -> None:
+    """Only runs the freshness rows track are judged by their inputs (#1167 review finding 2).
+
+    The agent's own ``test_result`` evidence and an observed run of a class freshness does not
+    track (runner ``other``) keep the latest-edit rule: cited before a later edit they do not
+    corroborate the completion claim; published after the edit they do.
+    """
+
+    from finishup.domain.values import evidence_id, timestamp_from_string
+    from finishup.protocol.coverage import EvidenceImmutability
+
+    ledger = ObservedLedger()
+    if edit_first:
+        ledger.edit()
+    if cited == "untracked_run":
+        ref: str = ledger.run(
+            "python check_solution.py", ResultOutcome.SUCCESS, exit_status=0, runner="other"
+        )
+    else:
+        ref = evidence_id("evd_00000000-0000-4000-8000-000000001167")
+        ledger.append(
+            EventSchema("evidence_recorded", "1.0.0"),
+            EvidenceRecordedPayload(
+                evidence_id(ref),
+                EvidenceKind.TEST_RESULT,
+                EvidenceImmutability.METADATA_ONLY,
+                timestamp_from_string("2026-10-21T12:00:00.000Z"),
+                description="pytest -q: 12 passed",
+            ),
+            observed=False,
+        )
+    if not edit_first:
+        ledger.edit()
+    ledger.append(
+        EventSchema("claim_recorded", "1.0.0"),
+        ClaimRecordedPayload(
+            claim_id("clm_00000000-0000-4000-8000-000000001167"),
+            ClaimKind.COMPLETION,
+            "The change is complete and verified.",
+            (ref,),  # pyright: ignore[reportArgumentType]
+        ),
+        observed=False,
+    )
+    case = build_deterministic_case(replay(ledger.prefix), ledger.prefix, CaseAvailabilityFacts())
+    assert case.verification_freshness is not None
+    assert len(_uncorroborated_completion_findings(case)) == (0 if edit_first else 1)

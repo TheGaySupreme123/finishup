@@ -185,10 +185,12 @@ Two findings stop a completion from reading clean until the agent answers them:
   only that link, not that every requirement was captured. Repeating your unchanged request when a
   session resumes does not count as a new request.
 - `claim_without_admissible_evidence` (observed-verification form) — the hooks saw the agent edit
-  or run checks, but the completion claim cites no observed verification run, or cites one whose
-  recorded input changed after it ran. A change FinishUP cannot relate to the run's inputs asks a
-  non-blocking rerun question instead, and so does a known input change under AI-powered review.
-  The agent reruns its verification and cites that observed run.
+  or run checks, but the completion claim cites no observed verification run, or cites one that a
+  later change made stale: a recorded input changed, or an edit FinishUP could not place (such as
+  one made with the agent's file-edit tool) followed it. A change a shell command made that only
+  may touch the run's inputs asks a non-blocking rerun question instead, and under AI-powered
+  review a stale verification is such a question too. The agent reruns its verification and cites
+  that observed run.
 
 Running the check again without changing the record returns the same finding. Neither finding
 means the work is wrong, and clearing them does not prove it right.

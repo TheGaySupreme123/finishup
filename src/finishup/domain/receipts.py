@@ -576,7 +576,9 @@ TASK_FACT_GAP_SENTENCES: Final[Mapping[str, str]] = MappingProxyType(
             " did not observe which files the check read."
         ),
         "planned_verification_stale": (
-            "A recorded verification input changed after the planned verification ran."
+            "After the planned verification ran, a recorded input of it changed, or an edit"
+            " FinishUP could not place (such as a file-edit tool edit, which records no path)"
+            " was made and may have changed one."
         ),
         "planned_verification_outcome_unknown": (
             "A planned verification command ran, but the host stated no outcome for it."
@@ -592,7 +594,9 @@ TASK_FACT_GAP_SENTENCES: Final[Mapping[str, str]] = MappingProxyType(
             " observed outcome still decides."
         ),
         "edited_after_last_verification": (
-            "A recorded input changed after the last observed test, lint, typecheck or build run."
+            "After the last observed test, lint, typecheck or build run, a recorded input of it"
+            " changed, or an edit FinishUP could not place (such as a file-edit tool edit, which"
+            " records no path) was made and may have changed one."
         ),
         "requested_output_git_ignored": (
             "A requested output file is excluded by .git/info/exclude (a local exclude) or by a"

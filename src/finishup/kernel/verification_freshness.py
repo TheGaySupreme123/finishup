@@ -19,7 +19,7 @@ import posixpath
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
 from types import MappingProxyType
-from typing import Final, cast
+from typing import TYPE_CHECKING, Final, cast
 
 from finishup.domain.bounded_text import quoted_path
 from finishup.domain.events import (
@@ -50,6 +50,9 @@ from finishup.kernel.observed_failures import (
 )
 from finishup.kernel.projections import ProjectionState
 from finishup.protocol.canonical import JsonValue
+
+if TYPE_CHECKING:
+    from finishup.kernel.deterministic_checks import DeterministicCase
 
 INPUTS_REFERENCE = "finishup-verification-inputs/v1:"
 RERUN_QUESTION = "verification_rerun_question"
@@ -238,6 +241,108 @@ def _unplaced_summaries(counts: Mapping[str, tuple[int, frozenset[str]]]) -> lis
     return lines
 
 
+# Finding text is bounded at 8 192 characters; leave room for the template and subjects.
+_MAX_FRESHNESS_DETAIL_CHARS: Final = 7_600
+FRESHNESS_DETAIL_MARKER: Final = " Recorded verification and later changes:"
+_FRESHNESS_BASIS_TEXT: Final[Mapping[str, str]] = MappingProxyType(
+    {
+        "undeclared": (
+            "no usable input declaration is recorded for it, so FinishUP cannot tell which files"
+            " it read"
+        ),
+        "requested": "its inputs are known only from the task's requested input files",
+        "declared": "its inputs come from the caller's partial input declaration",
+        "complete": (
+            "its inputs come from the caller-asserted complete input declaration; FinishUP did"
+            " not observe which files it read"
+        ),
+    }
+)
+_STALE_FACTS: Final = frozenset({"planned_verification_stale", "edited_after_last_verification"})
+
+
+def freshness_rows_for(
+    case: DeterministicCase, subject_refs: Iterable[str], known_gaps: Iterable[str]
+) -> list[VerificationFreshness]:
+    """The freshness rows a local ledger-stale finding is about (#1143).
+
+    A row whose run the finding names, or a stale row when the finding carries a stale fact.
+    """
+
+    subjects = set(subject_refs)
+    stale_fact = bool(set(known_gaps) & _STALE_FACTS)
+    return [
+        row
+        for row in case.verification_freshness or ()
+        if row.state != "current"
+        and (
+            case.projection.results[row.run_ref].source_event_id in subjects
+            or row.state == "stale"
+            and stale_fact
+        )
+    ]
+
+
+def freshness_detail(
+    rows: Iterable[VerificationFreshness], used: int = 0, *, named: bool = True
+) -> str:
+    """The bounded freshness suffix of a finding detail (``FRESHNESS_DETAIL_MARKER`` first).
+
+    ``named`` renders the requested command and the changed paths the record names, for the
+    local agent. The review packet uses ``named=False``: the requested command and those paths
+    come from obligation and evidence text, so they leave only through their own privacy
+    categories, never as finding prose; it counts them instead (#1167 review finding 10).
+    ``used`` is the length of the detail the suffix extends.
+    """
+
+    rows = list(rows)
+    detail = FRESHNESS_DETAIL_MARKER
+    for row in rows[:4]:
+        label = (
+            ""
+            if row.label is None or not named
+            else f" (requested command {quoted_path(row.label)})"
+        )
+        changes = list(row.changes)
+        if not named:
+            # Named lines start with the quoted path; count lines never do.
+            hidden = sum(1 for text in changes if text.startswith('"'))
+            changes = [text for text in changes if not text.startswith('"')]
+            if hidden:
+                changes.insert(
+                    0,
+                    f"{hidden} named change(s) withheld here; the obligation and evidence items"
+                    " carry their paths where the privacy policy allows",
+                )
+        listed = "; ".join(changes[:4])
+        more = f"; {len(changes) - 4} more" if len(changes) > 4 else ""
+        sentence = (
+            f" verification {row.run_ref}{label}: {_FRESHNESS_BASIS_TEXT[row.basis]}."
+            f" Later changes: {listed}{more}."
+        )
+        if used + len(detail) + len(sentence) > _MAX_FRESHNESS_DETAIL_CHARS:
+            break
+        detail += sentence
+    if len(rows) > 4 and used + len(detail) + 64 <= _MAX_FRESHNESS_DETAIL_CHARS:
+        detail += f" {len(rows) - 4} more verification(s) omitted."
+    return detail
+
+
+def name_free_finding_detail(
+    detail: str,
+    case: DeterministicCase,
+    subject_refs: Iterable[str],
+    known_gaps: Iterable[str],
+) -> str:
+    """``detail`` with its freshness suffix re-rendered without names, for the review packet."""
+
+    head, marker, _named = detail.partition(FRESHNESS_DETAIL_MARKER)
+    if not marker:
+        return detail
+    rows = freshness_rows_for(case, subject_refs, known_gaps)
+    return head + freshness_detail(rows, len(head), named=False) if rows else head
+
+
 def verification_freshness(
     projection: ProjectionState,
     records: Iterable[LedgerRecord],
@@ -262,7 +367,10 @@ def verification_freshness(
     observed = observed_event_ids_from_records(prefix)
     requested_runs = requested_verification_run_events(projection, prefix)
     root = task_workspace_root(prefix)
-    unchanged: frozenset[ActionId] = verification_unchanged_actions(projection, prefix)
+    # Scoped per run below: only a run with an input the comparison cannot see refuses the proof.
+    unchanged: frozenset[ActionId] = verification_unchanged_actions(
+        projection, prefix, per_verification=True
+    )
     exempt = non_counting_edits_exempt(projection)
     stale_exempt = stale_exempt_write_tokens(projection)
 
@@ -355,6 +463,20 @@ def verification_freshness(
                     if type(value) is not str or len(value.encode("utf-8")) > 1024:
                         raise ValueError
                     path = relative(value)
+                    if (
+                        path is not None
+                        and (value.endswith("/") or path == ".")
+                        and not path_beyond_workspace_fingerprint(
+                            value, directory=True, workspace_root=root
+                        )
+                    ):
+                        # A directory (named with a trailing slash): FinishUP cannot tell which
+                        # of its files a change touched, so the declaration is partial and a
+                        # change it may hold asks (#1167 review). A bare name reads as a file.
+                        complete = False
+                        if field_name == "inputs":
+                            declared.directories.add(path)
+                        continue
                     identity = None if path is None else verification_path_identity(path)
                     if (
                         identity is None
@@ -368,7 +490,7 @@ def verification_freshness(
                         continue
                     names[identity] = path
                     (declared.inputs if field_name == "inputs" else outputs).add(identity)
-            if not declared.inputs and not declared.unobservable:
+            if not declared.inputs and not declared.unobservable and not declared.directories:
                 # A complete list naming no input is no evidence of what the check reads; it
                 # never lets a later change pass as unrelated (#1167 review).
                 complete = False
@@ -572,6 +694,7 @@ def verification_freshness(
             known_inputs |= declared_scope.inputs
             outputs |= declared_outputs
             unobservable |= declared_scope.unobservable
+            directories |= declared_scope.directories
         if not complete:
             # Task-level inputs no command scopes: a complete per-run declaration is the
             # caller's statement of what this run reads; any other run may read them.

@@ -188,17 +188,31 @@ def test_proof_tolerance_is_one_set_not_a_third_table() -> None:
 def test_actionable_rows_are_exactly_the_agent_actionable_group() -> None:
     for code, row in GAP_EFFECT_TABLE.items():
         if row.readiness is GapClass.AGENT_ACTIONABLE:
-            assert (
-                gap_effect(code, GapContext(route_requires_review=False)).kind
-                is GapEffectKind.ACTIONABLE
-            ), code
-            if code in {"planned_verification_stale", "edited_after_last_verification"}:
-                assert (
-                    gap_effect(code, GapContext(route_requires_review=True)).kind
-                    is GapEffectKind.DISCLOSED
-                )
+            assert gap_effect(code).kind is GapEffectKind.ACTIONABLE, code
         elif row.readiness is GapClass.STANDING_LIMITATION:
             assert gap_effect(code).kind is not GapEffectKind.ACTIONABLE, code
+
+
+@pytest.mark.parametrize("code", ["planned_verification_stale", "edited_after_last_verification"])
+def test_stale_verification_is_advisory_only_where_ai_review_applied(code: str) -> None:
+    """G0f follows whether freshness was AI-advisory, not the recorded review route (#1167 review).
+
+    A review route whose review was not configured, blocked or failed keeps the local rule
+    (agent work). Where AI-powered review applied, a known stale verification bounds the receipt
+    like the rerun question does; it is never merely disclosed.
+    """
+
+    assert gap_effect(code, GapContext(route_requires_review=False)).kind is (
+        GapEffectKind.ACTIONABLE
+    )
+    assert gap_effect(code, GapContext(route_requires_review=True)).kind is (
+        GapEffectKind.ACTIONABLE
+    )
+    advisory = GapContext(route_requires_review=True, freshness_advisory=True)
+    assert gap_effect(code, advisory).kind is GapEffectKind.STANDING_BOUNDING
+    assert gap_effect("verification_rerun_question", advisory).kind is (
+        GapEffectKind.STANDING_BOUNDING
+    )
 
 
 def test_the_review_not_requested_gap_follows_the_recorded_route() -> None:

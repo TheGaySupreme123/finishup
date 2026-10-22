@@ -287,9 +287,10 @@ FinishUP does not observe arbitrary file reads inside a shell command. Inputs ta
 outputs, and an output is exempt only when that run itself wrote it. A `complete:true` list with
 no inputs is not complete. A complete list that leaves out a file you later edit keeps the
 verification current, and FinishUP discloses `verification_inputs_caller_asserted`, so list every
-file the check reads. Directories and outside-workspace inputs remain unknown; a change whose
-comparison was unavailable cannot be placed and stays stale. Each new observed run needs its own
-declaration.
+file the check reads. Name a directory input with a trailing slash (`src/`): it makes the list
+partial, so a change inside it asks; a bare name is read as a file. Directories and
+outside-workspace inputs remain unknown; a change whose comparison was unavailable cannot be placed
+and stays stale. Each new observed run needs its own declaration.
 
 For AI-powered review, freshness is always advisory: consider the verification together with what
 changed after it and answer the non-blocking rerun question. Actual failed checks and missing
@@ -302,7 +303,9 @@ do not acknowledge a finding you dispute), a planned verification that was not o
 or an edit FinishUP cannot place (such as one through your file-edit tool) after a local-only
 verification (`edited_after_last_verification`;
 exempt scratch and FinishUP receipt files do not count, and documentation such as a README
-or changelog does not stale verification unless it is a recorded input; run each verification in the
+or changelog does not stale verification unless the task declares it, or an output directory, as
+an output (a documentation edit through your file-edit tool may still ask the rerun question when
+the verification has recorded inputs); run each verification in the
 foreground, in one tool call: a job you start in the background (`&`, `nohup`, or your host's
 run-in-background option) and poll from a later call is recorded when it starts, not when it
 finishes), a git-ignored requested output, or a declared deliverable you deleted or renamed away

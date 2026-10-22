@@ -97,6 +97,8 @@ class GapContext:
     ``CheckStanding.bounds_conclusion``: a later record FinishUP cannot prove harmless is an
     observation. ``check_carried`` is the applicable check's ``known_gaps`` and
     ``commands_complete`` its counters showing no unknown or live-failed command.
+    ``freshness_advisory`` says freshness is AI-advisory for this receipt (#1143): the applicable
+    check's AI-powered review succeeded or the task already used one, the predicate readiness uses.
     """
 
     route_requires_review: bool = True
@@ -108,6 +110,7 @@ class GapContext:
     commands_complete: bool = True
     earlier_frontier_bounds: bool = True
     historical: frozenset[str] = frozenset()
+    freshness_advisory: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -236,7 +239,7 @@ _FAMILIES: Final[tuple[_Family, ...]] = (
         family="agent_actionable",
         readiness="A",
         d_route="A",
-        review_route="D",
+        review_route="V",
         changed=True,
         codes=("edited_after_last_verification", "planned_verification_stale"),
     ),
@@ -765,7 +768,7 @@ _READINESS: Final[Mapping[str, GapClass]] = MappingProxyType(
         "R": GapClass.ROUTE_DEPENDENT,
     }
 )
-_SPECS: Final = frozenset({"A", "B", "D", "D*", "R", "X", "G"})
+_SPECS: Final = frozenset({"A", "B", "D", "D*", "R", "X", "G", "V"})
 
 
 def _build() -> Mapping[str, GapRow]:
@@ -952,6 +955,12 @@ def _resolve(spec: str, code: str, ctx: GapContext) -> GapEffectKind:
         if ctx.review_required and not ctx.review_current:
             return GapEffectKind.ACTIONABLE
         return GapEffectKind.STANDING_BOUNDING
+    if spec == "V":
+        # Verification freshness (#1143): agent work unless freshness is AI-advisory; there it is
+        # a standing limit, like the rerun question, never agent work and never merely disclosed.
+        return (
+            GapEffectKind.STANDING_BOUNDING if ctx.freshness_advisory else GapEffectKind.ACTIONABLE
+        )
     if spec == "X":
         # ``check_current_as_of_earlier_frontier`` (tb4n3 RC-6): bounding only while a counted
         # later record is an observation FinishUP cannot prove harmless; the agent's own answers

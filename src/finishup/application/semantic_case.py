@@ -169,6 +169,7 @@ from finishup.kernel.task_facts import (
     open_effective_obligations,
 )
 from finishup.kernel.test_edit_visibility import check_change_header_entries, check_change_sections
+from finishup.kernel.verification_freshness import name_free_finding_detail
 from finishup.legacy_names import LEGACY_PRODUCT_NAME, PRODUCT_NAME
 from finishup.observability.privacy import (
     EGRESS_CREDENTIAL_PLACEHOLDER,
@@ -7609,7 +7610,14 @@ def _build_semantic_case_once(
                             source_ref=finding_ref,
                             linked_subject_refs=linked,
                             occurred_order=finding.subject_frontier.sequence,
-                            text=finding.detail,
+                            # Freshness names (a requested command, changed paths) come from
+                            # obligation and evidence text: they never leave as finding prose.
+                            text=name_free_finding_detail(
+                                finding.detail,
+                                frozen_case,
+                                linked,
+                                finding.coverage.known_gaps,
+                            ),
                             over_limit=over_limit,
                         )
                     )

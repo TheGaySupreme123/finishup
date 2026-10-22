@@ -132,7 +132,7 @@ from finishup.kernel.closure_class import (
     is_bookkeeping_finding,
     obligation_closures,
 )
-from finishup.kernel.closure_readiness import premise_disputed_finding_ids
+from finishup.kernel.closure_readiness import premise_disputed_finding_ids, semantic_review_used
 from finishup.kernel.command_attempts import command_attempts
 from finishup.kernel.completion_scope import (
     SCOPE_REPAIR,
@@ -1409,6 +1409,8 @@ def _gap_context(context: ReceiptBuildContext, historical: frozenset[str]) -> Ga
         ),
         earlier_frontier_bounds=bounds,
         historical=historical,
+        freshness_advisory=(check is not None and check.semantic_status is SemanticStatus.SUCCEEDED)
+        or semantic_review_used(context.records),
     )
 
 

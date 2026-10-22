@@ -256,6 +256,29 @@ def test_a_placed_change_outside_known_inputs_asks_and_never_stales() -> None:
     assert not _codes(ledger) & _STALE_GAPS
 
 
+@pytest.mark.parametrize("history", ["planned", "unplanned", "completed_then_pending"])
+def test_an_edit_after_a_run_whose_result_never_arrived_is_still_stale(history: str) -> None:
+    """A run whose post-event never arrived has no result to judge (#1167 review finding 1).
+
+    It is still the latest verification run, so a later edit keeps the pre-#1143 rule and makes
+    it stale; it never hides the edit.
+    """
+
+    ledger = ObservedLedger()
+    if history != "unplanned":
+        _planned(ledger, _command("pytest -q"))
+        _plan(ledger, _OBLIGATION)
+    if history == "completed_then_pending":
+        ledger.passes("pytest -q")
+        ledger.edit()
+    ledger.begin("pytest -q", runner="test")
+    ledger.edit()
+    codes = _codes(ledger)
+    assert EDITED_AFTER_LAST_VERIFICATION_GAP in codes
+    assert (PLANNED_VERIFICATION_STALE_GAP in codes) is (history != "unplanned")
+    assert VERIFICATION_RERUN_QUESTION_GAP not in codes
+
+
 def test_failed_edit_does_not_make_verification_stale() -> None:
     ledger = ObservedLedger()
     _planned(ledger, _command("pytest -q"))

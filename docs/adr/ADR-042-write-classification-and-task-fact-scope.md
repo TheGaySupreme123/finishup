@@ -453,8 +453,10 @@ declarations use an ordinary `evidence_recorded` row with reference
 `complete` (boolean). The declaration is the agent's assertion, not an observed process read
 trace. Inputs win when a path is also an output. Malformed, conflicting, redacted and
 out-of-workspace declarations cannot establish completeness, and neither can a `complete: true`
-declaration whose `inputs` list is empty. A rerun is a new `res_` identity and needs its own
-declaration.
+declaration whose `inputs` list is empty or that names a directory (a value ending in `/`, or
+`.`): a directory input makes the run ask about any change it may hold, never set it aside. A bare
+directory name cannot be told from a file and is read as one. A rerun is a new `res_` identity and
+needs its own declaration.
 
 A requested input the fingerprint cannot compare (outside the workspace or beyond the
 fingerprint) leaves its own runs unable to rule out any later placed write, so those runs ask. A
@@ -476,7 +478,9 @@ the owner's merge authorization during the PR #1167 review, recorded on #1143):
   the run's freshness row records `basis: complete` with the set-aside changes, and the standing
   task fact `verification_inputs_caller_asserted` (a G4d disclosure, never agent work or a Stop
   item) states on status, Stop-time readiness and receipt JSON, markdown and text that freshness
-  relied on a caller assertion and that FinishUP did not observe which files the check read.
+  relied on a caller assertion and that FinishUP did not observe which files the check read. It
+  covers every retained run (the latest of its command, or one the account cites), not only the
+  latest verification.
 
 The native before/after comparison now supplies at most 128 sorted, unique, domain-separated,
 installation-keyed path identities for changed entries (including removals). It reuses the
@@ -521,6 +525,10 @@ behavior. Only a reviewer `stale_evidence_for_changed_state` concern that cites 
 verification run (test, lint, typecheck or build, an agent-linked requested run, or a run the
 freshness rows track) becomes the `decision_needed` rerun question; the reviewer's own summary is
 kept at the start of its detail. Any other stale-evidence concern keeps its own kind and text.
-Receipt gap effects disclose AI-route freshness without making it a blocker; unknown coverage
-remains an honest limitation. CLI, MCP, hooks, TUI, and receipt JSON, markdown and text consume
+On receipts, AI-route freshness is a standing limit (never agent work), the same weight as the
+rerun question; it is AI-route only where AI-powered review applied (the policy route requires it
+or the task used one), never merely because a check asked for a review that was not configured,
+blocked or failed (PR #1167 review findings 4 and 7). Unknown coverage remains an honest
+limitation. A run whose result never arrived keeps the pre-#1143 last-edit rule, and a completion
+claim's ref that the freshness rows do not track keeps the latest-edit frontier (findings 1 and 2). CLI, MCP, hooks, TUI, and receipt JSON, markdown and text consume
 these shared facts and finding details; no surface runs tests itself.

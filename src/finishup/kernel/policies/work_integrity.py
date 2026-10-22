@@ -673,23 +673,25 @@ def _uncorroborated_completion_findings(case: DeterministicCase) -> list[Determi
     if latest_edit is None and not verification_observed:
         return []
     observed = observed_event_ids_from_coverage(case.coverage_by_ref)
-    after = latest_edit or 0
-    # New cases compare the cited run's inputs, not a task-wide edit frontier. Old frozen cases
-    # retain their original conservative behavior on replay.
-    freshness: dict[str, VerificationFreshness] | None = (
-        None
-        if case.verification_freshness is None
-        else {row.run_ref: row for row in case.verification_freshness}
-    )
-    if case.verification_advisory:
-        after = 0
-    if freshness is not None:
-        for row in case.verification_freshness or ():
-            result = case.projection.results[row.run_ref].payload
-            if result is not None:
-                for evidence in result.evidence_refs:
-                    freshness[str(evidence)] = row
-        after = 0
+    # New cases judge a cited run the freshness rows track (and the evidence its result links) by
+    # its own inputs, not a task-wide edit frontier (#1143). Every other cited ref (the agent's own
+    # test_result/command_output evidence, a cooperative result, an observed run of a class the
+    # freshness rows do not track) keeps the latest-edit frontier. Old frozen cases carry no rows
+    # and keep the frontier for every ref. On the AI route freshness is advisory throughout.
+    freshness: dict[str, VerificationFreshness] = {}
+    for row in case.verification_freshness or ():
+        freshness[str(row.run_ref)] = row
+        result = case.projection.results[row.run_ref].payload
+        if result is not None:
+            for evidence in result.evidence_refs:
+                freshness[str(evidence)] = row
+
+    def frontier(ref: str) -> int:
+        return 0 if case.verification_advisory or ref in freshness else latest_edit or 0
+
+    def current(ref: str) -> bool:
+        return case.verification_advisory or ref not in freshness or freshness[ref].state != "stale"
+
     output: list[DeterministicAssessment] = []
     for claim_id, record in effective_claim_items(case.projection):
         claim = record.payload
@@ -702,25 +704,11 @@ def _uncorroborated_completion_findings(case: DeterministicCase) -> list[Determi
             obligation = case.projection.obligations.get(obligation_ref)
             if obligation is not None and obligation.payload is not None:
                 chain.update(obligation.payload.resolution_evidence_refs)
-        if any(
-            runs.get(ref, -1) > after
-            and (
-                freshness is None
-                or case.verification_advisory
-                or ref not in freshness
-                or freshness[ref].state != "stale"
-            )
-            for ref in chain
-        ):
+        if any(runs.get(ref, -1) > frontier(ref) and current(ref) for ref in chain):
             continue
         if any(
-            _self_published_verification_after(case, claim, ref, after, observed)
-            and (
-                freshness is None
-                or case.verification_advisory
-                or ref not in freshness
-                or freshness[ref].state != "stale"
-            )
+            _self_published_verification_after(case, claim, ref, frontier(ref), observed)
+            and current(ref)
             for ref in chain
         ):
             continue
