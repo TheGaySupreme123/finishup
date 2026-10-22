@@ -29,6 +29,7 @@ from finishup.domain.values import (
     EvidenceId,
     FindingId,
     Frontier,
+    JsonObject,
     ObligationId,
     ReceiptId,
     ResultId,
@@ -1618,11 +1619,18 @@ class ReceiptDocument:
     # limits"), and every rule behind the conclusion. Absent (empty / None) keeps earlier bytes.
     limitation_disclosed_finding_ids: tuple[FindingId, ...] = ()
     conclusion_basis: ReceiptConclusionBasis | None = None
+    correctness_advisory_counts: JsonObject | None = None
     # Optional agent declarations; never affect conclusion, gap accounting or closure.
     verification_coverage: VerificationCoverage | None = None
 
     def __post_init__(self) -> None:
         invalid = "invalid_receipt_document"
+        if self.correctness_advisory_counts is not None:
+            from finishup.domain.correctness_advisories import validate_advisory_counts
+
+            validate_advisory_counts(self.correctness_advisory_counts)
+            if not receipt_document_carries_terminal_sections(self.versions):
+                raise ProtocolValueError(invalid)
         if self.verification_coverage is not None and (
             type(self.verification_coverage) is not VerificationCoverage
             or _receipt_document_artifact_version(self.versions) != "1.3.0"
@@ -2217,6 +2225,7 @@ def receipt_document_from_json(value: object) -> ReceiptDocument:
                 "semantic_reason",
                 "limitation_disclosed_finding_ids",
                 "conclusion_basis",
+                "correctness_advisory_counts",
                 "verification_coverage",
             }
         ),
@@ -2369,6 +2378,11 @@ def receipt_document_from_json(value: object) -> ReceiptDocument:
         limitation_disclosed_finding_ids=tuple(
             finding_id(item)
             for item in _array(source.get("limitation_disclosed_finding_ids", ()), invalid)
+        ),
+        correctness_advisory_counts=(
+            cast(JsonObject, freeze_json(source["correctness_advisory_counts"]))
+            if "correctness_advisory_counts" in source
+            else None
         ),
         conclusion_basis=(
             _conclusion_basis_from_json(source["conclusion_basis"])
@@ -2574,6 +2588,8 @@ def receipt_document_to_json(document: ReceiptDocument) -> dict[str, object]:
         )
     if document.limitation_disclosed_finding_ids:
         result["limitation_disclosed_finding_ids"] = list(document.limitation_disclosed_finding_ids)
+    if document.correctness_advisory_counts is not None:
+        result["correctness_advisory_counts"] = document.correctness_advisory_counts
     if document.conclusion_basis is not None:
         result["conclusion_basis"] = {
             "reasons": [

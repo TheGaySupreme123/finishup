@@ -61,15 +61,18 @@ from finishup.cli import hook_io
 from finishup.cli.closure_gate import (
     BLOCKER_RECHECK_ITEM,
     MAX_GATE_BLOCKS_PER_TURN,
+    STOP_ADVISORY_NOTICE,
     ClosureGate,
     closure_gate_already_delivered,
     closure_gate_reasked_blockers,
     closure_gate_turn_blocks,
     read_closure_gate,
     record_closure_gate_delivered,
+    record_stop_advisory_notice,
     reset_closure_gate_turn,
     set_standing_advice_withheld,
     standing_advice_withheld,
+    stop_advisory_notice_delivered,
 )
 from finishup.cli.hook_diagnostics import (
     observe_exception_reason,
@@ -4443,6 +4446,7 @@ def _decide_closure_gate(
     remaining_seconds: float,
     _state: Path | None,
     active_stop: bool = False,
+    advisory_notes: list[str] | None = None,
 ) -> ClosureGate | None:
     """Decide the Stop-time closure gate for one mapped session (#977). Never raises.
 
@@ -4523,6 +4527,7 @@ def _decide_closure_gate(
                 reasked_blockers=reasked,
                 active_stop=active_stop,
                 code_mode=code_mode,
+                advisory_notes=advisory_notes,
             )
 
         decided = cast(ClosureGate | None, run(_read))
@@ -4596,6 +4601,37 @@ def _standing_advice_carry(
     except Exception:
         return False
     return False
+
+
+def _stop_advisory_notice(
+    identities: list[str],
+    *,
+    stop_already_active: bool,
+    mapping: LifecycleMapping | None,
+    source: ObservationSource,
+    rendered_output: dict[str, JsonValue],
+    _state: Path | None,
+) -> tuple[str, str] | None:
+    """Add the owner-facing advisory notice to this Stop's output, or nothing (#1162).
+
+    It rides only a Stop the host did not already continue, only while a note has no recorded
+    response (``identities`` is non-empty), and once per session for each set of unanswered
+    notes. It never changes the gate or spends a continuation. Returns the session and identity
+    to record once the output is written.
+    """
+
+    if not identities or stop_already_active or mapping is None:
+        return None
+    session_id = mapping.finishup_session_id
+    if stop_advisory_notice_delivered(session_id, identities[0], _state=_state):
+        return None
+    if source is ObservationSource.CURSOR_HOOK:
+        # Cursor's Stop stdout only continues the agent: one complete sentence per stderr line.
+        for sentence in re.split(r"(?<=\.) ", STOP_ADVISORY_NOTICE):
+            _stderr_line(sentence)
+    else:
+        rendered_output["systemMessage"] = STOP_ADVISORY_NOTICE
+    return session_id, identities[0]
 
 
 def _record_closure_gate_emitted(
@@ -5302,6 +5338,7 @@ def handle_observe(
 
         # Assigned only by the Stop-time closure gate below (#977); every earlier render sees None.
         closure_gate: ClosureGate | None = None
+        stop_advisory_notes: list[str] = []
 
         def _render_context(
             additional_context: str, *, limit: int | None = None
@@ -6538,6 +6575,7 @@ def handle_observe(
                 ),
                 _state=_state,
                 active_stop=stop_already_active,
+                advisory_notes=stop_advisory_notes,
             )
             if closure_gate is not None:
                 # The gate is the whole Stop message: it names what remains, and ordinary
@@ -6659,11 +6697,21 @@ def handle_observe(
                 additional = f"{additional}\n{session_recap}".strip()
                 context_limit = RECAP_CONTEXT_LIMIT
             rendered_output = _render_context(additional, limit=context_limit) if additional else {}
+            stop_notice = _stop_advisory_notice(
+                stop_advisory_notes,
+                stop_already_active=stop_already_active,
+                mapping=mapping,
+                source=source,
+                rendered_output=rendered_output,
+                _state=_state,
+            )
             host_consumable = bool(rendered_output)
-            if additional:
+            if additional or stop_notice is not None:
                 emitted = _stdout_json(rendered_output, stdout)
             else:
                 emitted = _stdout_json({}, stdout)
+            if emitted and stop_notice is not None:
+                record_stop_advisory_notice(*stop_notice, _state=_state)
             if emitted and host_consumable and closure_gate is not None and mapping is not None:
                 _record_closure_gate_emitted(
                     mapping.finishup_session_id,

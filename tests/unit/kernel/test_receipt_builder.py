@@ -3050,3 +3050,42 @@ def test_an_unchanged_coordinator_failure_is_named_on_the_receipt() -> None:
     assert rendered.count(COORDINATOR_FAILURE_LIMITATION) == 1
     assert COORDINATOR_FAILURE_SENTENCE not in limitations.body
     assert COORDINATOR_FAILURE_SENTENCE not in rendered
+
+
+@pytest.mark.parametrize("profile", tuple(ReceiptRedactionProfile))
+@pytest.mark.parametrize("include", tuple(ReceiptInclude))
+def test_unanswered_correctness_advice_is_visible_and_never_blocks(
+    profile: ReceiptRedactionProfile, include: ReceiptInclude
+) -> None:
+    baseline = _context(check=_check(CheckVerdict.NO_ISSUE_DETECTED, _coverage()))
+    check = replace(
+        cast(CheckRecordedPayload, baseline.applicable_check),
+        correctness_advisories=(
+            JsonObject(
+                {
+                    "summary": "World AABBs miss rotated receptacles.",
+                    "detail": "Use receptacle-frame footprints.",
+                    "subject_refs": (),
+                }
+            ),
+        ),
+    )
+    record = SimpleNamespace(
+        payload=check,
+        event_id=_CHECK_EVENT_ID,
+        session_id="ses_00000000-0000-4000-8000-000000000009",
+        schema=SimpleNamespace(name="check_recorded"),
+        ledger=SimpleNamespace(ingestion_sequence=2),
+    )
+    context = replace(_context(check=check), records=cast(tuple[LedgerRecord, ...], (record,)))
+    receipt = _build(context, profile=profile, include=include)
+    assert receipt.conclusion == _build(baseline, profile=profile, include=include).conclusion
+    for text in _renderings(receipt):
+        assert "Earlier correctness advisories: 1; no recorded response: 1" in text
+        assert "no recorded response" in text
+        assert "status view=history" in text
+        if profile is ReceiptRedactionProfile.FULL_LOCAL:
+            assert "World AABBs" in text
+        else:
+            assert "World AABBs" not in text
+            assert "withheld" in text

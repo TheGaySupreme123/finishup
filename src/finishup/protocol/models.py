@@ -43,6 +43,7 @@ from finishup.domain.coordination import (
     SessionHealth,
     WorkState,
 )
+from finishup.domain.correctness_advisories import ADVISORY_ID_PATTERN
 from finishup.legacy_names import LAUNCHER_NAMES
 from finishup.protocol.canonical import JsonValue, parse_canonical_integer_string
 from finishup.protocol.coverage import (
@@ -1876,9 +1877,11 @@ class RespondRequestModel(PublicRequestModel):
     session_id: SessionIdWire
     writer_id: WriterIdWire
     expected_frontier: FrontierModel
-    finding_id: FindingIdWire
+    finding_id: FindingIdWire | Annotated[str, Field(pattern=ADVISORY_ID_PATTERN)]
     finding_frontier: FrontierModel
     disposition: Literal[
+        "addressed",
+        "declined",
         "acknowledged",
         "acknowledged_not_done",
         "duplicate_of",
@@ -4798,9 +4801,11 @@ class RespondResponseModel(_ClosedModel):
     )
 
     response_event_id: EventIdWire
-    finding_id: FindingIdWire
+    finding_id: FindingIdWire | Annotated[str, Field(pattern=ADVISORY_ID_PATTERN)]
     finding_frontier: FrontierModel
     disposition: Literal[
+        "addressed",
+        "declined",
         "acknowledged",
         "acknowledged_not_done",
         "duplicate_of",
@@ -4830,7 +4835,15 @@ class RespondResponseModel(_ClosedModel):
             and self.reason.category is not DataCategory.FINDING_SUMMARY
         ):
             raise ValueError("reason_omission_category_invalid")
-        if self.disposition in {"acknowledged", "duplicate_of"}:
+        if self.disposition in {"addressed", "declined"}:
+            if (
+                self.reason is None
+                or self.waiver_scope is not None
+                or self.waiver_expiry is not None
+                or (self.disposition == "addressed" and not self.evidence)
+            ):
+                raise ValueError("response_fields_invalid")
+        elif self.disposition in {"acknowledged", "duplicate_of"}:
             if self.waiver_scope is not None or self.waiver_expiry is not None:
                 raise ValueError("response_fields_invalid")
         elif self.disposition in {
@@ -5446,10 +5459,49 @@ class StatusHistoryItemModel(_ClosedModel):
     ]
 
 
+_ADVISORY_SUBJECT_REF_PATTERN: Final = (
+    r"^(?:evt|obl|clm)_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+)
+_ADVISORY_EVIDENCE_REF_PATTERN: Final = (
+    r"^(?:evd|res)_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+)
+
+
+class StatusHistoryCorrectnessAdvisoryModel(_ClosedModel):
+    """#1162: one routine correctness note on its check's history row, with its recorded status.
+
+    Typed so the result-leaf registry covers exactly the leaves it can emit: prose is
+    ``finding_summary`` content (or its omission), every other leaf is a closed token or an id.
+    """
+
+    optional_non_null_fields = frozenset({"reason", "response_event_id", "evidence_refs"})
+    summary: String1To8192 | OmittedContentModel
+    detail: String1To8192 | OmittedContentModel
+    subject_refs: tuple[Annotated[str, Field(pattern=_ADVISORY_SUBJECT_REF_PATTERN)], ...]
+    advisory_id: Annotated[str, Field(pattern=ADVISORY_ID_PATTERN)]
+    disposition: Literal["addressed", "declined", "no_recorded_response"]
+    reason: String1To4096 | OmittedContentModel | None = None
+    response_event_id: EventIdWire | None = None
+    evidence_refs: (
+        tuple[Annotated[str, Field(pattern=_ADVISORY_EVIDENCE_REF_PATTERN)], ...] | None
+    ) = None
+
+
 class StatusHistoryItemV14Model(StatusHistoryItemModel):
     """v1.4 history row: a completed check's provider-bound input coverage, and time provenance."""
 
-    optional_non_null_fields = frozenset({"review_input_manifest", "occurred_at_source"})
+    optional_non_null_fields = frozenset(
+        {
+            "review_input_manifest",
+            "occurred_at_source",
+            "correctness_advisories",
+            "advisory_provenance",
+            "advisory_subject_frontier",
+        }
+    )
+    correctness_advisories: tuple[StatusHistoryCorrectnessAdvisoryModel, ...] | None = None
+    advisory_provenance: JsonValue | None = None
+    advisory_subject_frontier: FrontierModel | None = None
     review_input_manifest: ReviewInputManifestModel | None = None
     # Issue #1084 (review R7): present only when the publish that appended this event omitted
     # ``occurred_at`` and the service recorded its own clock. Absent means caller-asserted. Derived
@@ -5780,6 +5832,7 @@ class StatusClosureReadinessModel(_ClosedModel):
     left to do but the receipt will disclose limitations or acknowledged items (ADR-032).
     """
 
+    correctness_advisory_summary: String1To4096 | None = None
     declared_obligation_count: CanonicalUInt64Wire | None
     no_obligations_reason: (
         Literal[
@@ -5871,6 +5924,7 @@ class StatusClosureReadinessModel(_ClosedModel):
 
     optional_non_null_fields = frozenset(
         {
+            "correctness_advisory_summary",
             "check_cause",
             "predicted_receipt",
             "undeclared_references",
@@ -7195,7 +7249,16 @@ class ReceiptChildrenModel(_ClosedModel):
         return self
 
 
+class CorrectnessAdvisoryCountsModel(_ClosedModel):
+    total: CanonicalUInt64Wire
+    no_recorded_response: CanonicalUInt64Wire
+    withheld_may_answer: CanonicalUInt64Wire
+
+
 class ReceiptSuccessModel(_ClosedModel):
+    optional_non_null_fields = frozenset({"correctness_advisory_counts"})
+    correctness_advisory_counts: CorrectnessAdvisoryCountsModel | None = None
+
     protocol_version: Literal["0.1"]
     schema_version: Literal["1.0.0"]
     request_id: RequestIdWire
@@ -8016,6 +8079,7 @@ _STATUS_COMMON_STRUCTURAL_POINTERS: Final = (
         "/closure_readiness",
         (
             "blocking_conditions/*",
+            "correctness_advisory_summary",
             "declared_obligation_count",
             "no_obligations_reason",
             "open_obligation_count",
@@ -8360,6 +8424,23 @@ _STATUS_HISTORY_STRUCTURAL_POINTERS: Final = (
         ),
     )
     + _prefix_leaf_patterns("/page/items/*/review_input_manifest", _REVIEW_INPUT_MANIFEST_LEAVES)
+    # #1162: like the check result's ``/semantic_provenance``, the container itself is structural.
+    + ("/page/items/*/advisory_provenance",)
+    + _prefix_leaf_patterns("/page/items/*/advisory_provenance", _SEMANTIC_PROVENANCE_LEAVES)
+    + _prefix_leaf_patterns("/page/items/*/advisory_subject_frontier", FRONTIER_LEAVES)
+    + _prefix_leaf_patterns(
+        "/page/items/*/correctness_advisories/*",
+        ("advisory_id", "disposition", "subject_refs/*", "response_event_id", "evidence_refs/*"),
+    )
+    + _prefix_leaf_patterns(
+        "/page/items/*/correctness_advisories/*/summary", _OMITTED_CONTENT_LEAVES
+    )
+    + _prefix_leaf_patterns(
+        "/page/items/*/correctness_advisories/*/detail", _OMITTED_CONTENT_LEAVES
+    )
+    + _prefix_leaf_patterns(
+        "/page/items/*/correctness_advisories/*/reason", _OMITTED_CONTENT_LEAVES
+    )
 )
 
 _STATUS_OBLIGATIONS_STRUCTURAL_POINTERS: Final = (
@@ -8752,6 +8833,9 @@ _STATUS_CONTENT_RULES: Final[tuple[tuple[str, str, DataCategory], ...]] = (
         "/page/verification_coverage/criteria/*/witnesses/*/worst",
         DataCategory.COMMAND_METADATA,
     ),
+    ("history", "/page/items/*/correctness_advisories/*/summary", DataCategory.FINDING_SUMMARY),
+    ("history", "/page/items/*/correctness_advisories/*/detail", DataCategory.FINDING_SUMMARY),
+    ("history", "/page/items/*/correctness_advisories/*/reason", DataCategory.FINDING_SUMMARY),
     ("findings", "/page/review_delivery", DataCategory.FINDING_SUMMARY),
     ("candidate_findings", "/page/items/*/detail", DataCategory.FINDING_SUMMARY),
     ("candidate_findings", "/page/items/*/summary", DataCategory.FINDING_SUMMARY),
@@ -8819,6 +8903,14 @@ _STATUS_COMMON_CONTENT_RULES: Final[tuple[tuple[str, DataCategory], ...]] = (
         "/closure_readiness/undeclared_references/*/paths/*",
         DataCategory.REPOSITORY_EXCERPT,
     ),
+)
+_ADVISORY_RECEIPT_STRUCTURAL_POINTERS: Final = (
+    "/correctness_advisory_counts/total",
+    "/correctness_advisory_counts/no_recorded_response",
+    "/correctness_advisory_counts/withheld_may_answer",
+    "/document/correctness_advisory_counts/total",
+    "/document/correctness_advisory_counts/no_recorded_response",
+    "/document/correctness_advisory_counts/withheld_may_answer",
 )
 _RECEIPT_CONTENT_RULES: Final[tuple[tuple[str, DataCategory], ...]] = (
     (
@@ -8916,7 +9008,7 @@ def _build_result_leaf_rules() -> tuple[_ResultLeafRule, ...]:
     add_structural("status", _STATUS_LINEAGE_STRUCTURAL_POINTERS, status_view="lineage")
     add_structural("status", _STATUS_PROJECT_STRUCTURAL_POINTERS, status_view="project")
     add_structural("status", _STATUS_VERSIONS_STRUCTURAL_POINTERS, status_view="versions")
-    add_structural("receipt", _RECEIPT_STRUCTURAL_POINTERS)
+    add_structural("receipt", _RECEIPT_STRUCTURAL_POINTERS + _ADVISORY_RECEIPT_STRUCTURAL_POINTERS)
     add_structural(
         "receipt",
         _prefix_leaf_patterns(
@@ -9019,7 +9111,7 @@ def _build_result_leaf_rules() -> tuple[_ResultLeafRule, ...]:
         ):
             raise RuntimeError("invalid_result_leaf_classification")
     if (
-        len(result) != 1830
+        len(result) != 1926
     ):  # ... #1017 +3, #1027 +5, tb4n3 LO +9, W2-A +46, LF +34 (fact_lineage), W2-B +2,
         # tb4n4 #1044 +7 (closure_readiness.undeclared_references), #1048 +38 (inspection),
         # #1047 +2 (follow_up_round), tb4n5 +3 (publish action_notices),
@@ -9031,7 +9123,8 @@ def _build_result_leaf_rules() -> tuple[_ResultLeafRule, ...]:
         # W6 +1 check (agent_next) / +15 status (operation check_outcome),
         # #1118 +18 check (reviewer), +1 check_recorded 1.6.0; #1139 +8 check/status delivery
         # #1140 +83 check (shared readiness, including one repository-excerpt leaf),
-        # #1144/#1149 +3 receipt (disproved ids and stopped status/reason)
+        # #1144/#1149 +3 receipt (disproved ids and stopped status/reason),
+        # #1162 +95 (advisory history, readiness summary, receipt counts; +1 provenance container)
         raise RuntimeError("incomplete_result_leaf_registry")
     return result
 

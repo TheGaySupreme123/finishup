@@ -43,6 +43,20 @@ This topic owns the closing procedure. Start with readiness: at `ready_with_limi
   no repair review merely to make it resolved; it remains advisory history.
 - Never empty, delete or withdraw a working deliverable to close a finding or a Stop message.
 
+## Earlier correctness advisories
+
+Routine AI-powered correctness notes are non-blocking and need no answer. The receipt counts them
+and shows each displayed note as `addressed (agent-reported, linked evidence)`, `declined with
+reason` or `no recorded response`; include the material ones and their status in final prose,
+with their retrieval and evidence links. Silence, a later clean check or a passing count is not
+repair proof, and a withheld decision that may answer a note is not an answer. To record an
+answer, `respond` with the note's `<check-event-id>:<ordinal>` in `finding_id` and a
+`finding_frontier` at or after its check: `addressed` needs a reason and evidence or result refs,
+at least one recorded after that check; `declined` needs a reason. Either is your report, not
+independent verification, and needs no recheck. For rows the receipt omits, read
+`status view=history` with `filter.schema_name=check_recorded` in the session the receipt names
+for that check, following `next_cursor` with the same filter and limit.
+
 ## Final prose
 
 Receipt and final prose are scope-first. Lead with what recorded evidence/checks covered and what was

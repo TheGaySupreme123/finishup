@@ -20,6 +20,9 @@ _DESCRIPTION_PRIORITY: Final = (
     "await_observations",
     "disposition",
     "finding_frontier",
+    # respond's duplicate_of rule (which finding a restatement may link to) outranks the shared
+    # expected_frontier hint when only one of them fits.
+    "duplicate_of_finding_id",
     "final_review",
     "mode",
     "expected_frontier",

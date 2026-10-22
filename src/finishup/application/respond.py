@@ -9,9 +9,11 @@ from typing import Final, Literal, Protocol, cast
 
 from finishup.application.ledger_snapshot import projection_for_records
 from finishup.application.unit_of_work import PreparedMutation, run_prepared_append
+from finishup.domain.correctness_advisories import ADVISORY_RESPONSE_STATEMENT, is_advisory_id
 from finishup.domain.events import (
     RESPONSE_EVENT_SCHEMA_VERSION,
     CheckRecordedPayload,
+    DecisionRecordedPayload,
     EventDraft,
     EventSchema,
     LedgerRecord,
@@ -32,6 +34,7 @@ from finishup.domain.values import (
     Actor,
     ActorType,
     Frontier,
+    JsonObject,
     actor_id,
     event_id,
     evidence_id,
@@ -41,6 +44,7 @@ from finishup.domain.values import (
     timestamp_from_datetime,
     timestamp_from_string,
 )
+from finishup.kernel.correctness_advisories import correctness_advisories
 from finishup.kernel.finding_resolution import next_standing_position
 from finishup.kernel.finding_todo import (
     ABSOLUTELY_FINAL_TODO_STATES,
@@ -875,8 +879,13 @@ async def _accepted_record(runtime: TaskRuntime, result: AppendResult) -> Ledger
         str(record.event_id) != summary.event_id
         or record.writer.sequence != summary.writer_sequence
         or record.entry_digest != summary.entry_digest
-        or record.schema.name != "response_recorded"
-        or type(record.payload) is not ResponseRecordedPayload
+        or not (
+            type(record.payload) is ResponseRecordedPayload
+            or (
+                type(record.payload) is DecisionRecordedPayload
+                and record.payload.advisory_response is not None
+            )
+        )
     ):
         raise _error(PublicErrorCode.STORAGE_CORRUPT, "The response event range is invalid.")
     return record
@@ -932,6 +941,44 @@ async def _public_result(
     projection: ProjectionState | None = None,
 ) -> RespondInternalResult:
     record = await _accepted_record(runtime, result)
+    if isinstance(record.payload, DecisionRecordedPayload):
+        answer = record.payload.advisory_response
+        assert answer is not None
+        return RespondInternalResult(
+            "0.1",
+            "1.0.0",
+            request.request_id,
+            True,
+            runtime.task_id,
+            runtime.session_id,
+            cast(str, runtime.writer_id),
+            result.subject_frontier,
+            result.result_frontier,
+            RespondAcceptedEventModel(
+                event_id=record.event_id,
+                writer_sequence=str(record.writer.sequence),
+                ingestion_sequence=str(record.ledger.ingestion_sequence),
+                accepted_at=record.ledger.accepted_at.wire,
+                entry_digest=record.entry_digest,
+            ),
+            RespondResponseModel.model_validate(
+                {
+                    "response_event_id": record.event_id,
+                    "finding_id": answer["advisory_id"],
+                    "finding_frontier": request.finding_frontier.model_dump(mode="json"),
+                    "disposition": answer["disposition"],
+                    "reason": record.payload.rationale,
+                    "evidence": tuple(
+                        {"reference_id": ref}
+                        for ref in cast(tuple[str, ...], answer["evidence_refs"])
+                    ),
+                }
+            ),
+            record.coverage,
+            (),
+            runtime.engine_version,
+            runtime.projection_version,
+        )
     payload = cast(ResponseRecordedPayload, record.payload)
     evidence = tuple(RespondEvidenceSummaryModel(reference_id=ref) for ref in payload.evidence_refs)
     response_wire: dict[str, object] = {
@@ -1061,6 +1108,180 @@ def _admit_todo_state(disposition: str, todo: FindingTodoState) -> None:
     )
 
 
+async def _record_advisory_response(
+    app: Application, runtime: TaskRuntime, request: RespondRequest, digest: str
+) -> AppendResult:
+    """Optional dialogue about a note. It is a decision, never finding resolution or repair proof."""
+    current = Frontier(
+        int(request.expected_frontier.sequence), request.expected_frontier.head_digest
+    )
+    records, projection = await _records_through(runtime, current)
+    anchor = int(request.finding_frontier.sequence)
+    if (
+        not 0 < anchor <= len(records)
+        or records[anchor - 1].entry_digest != request.finding_frontier.head_digest
+    ):
+        raise _error(
+            PublicErrorCode.INVALID_REQUEST,
+            "The advisory frontier is not in this ledger prefix: send a finding_frontier from "
+            "this task's ledger, such as the current status frontier.",
+            reason_code="invalid_frontier",
+            field="/finding_frontier",
+        )
+    row = next(
+        (
+            row
+            for row in correctness_advisories(records[:anchor])
+            if row.advisory_id == request.finding_id
+        ),
+        None,
+    )
+    if row is None:
+        recorded = next(
+            (
+                row
+                for row in correctness_advisories(records)
+                if row.advisory_id == request.finding_id
+            ),
+            None,
+        )
+        if recorded is not None:
+            # #1162 review: the history row's advisory_subject_frontier is the check's subject
+            # frontier, which precedes the check record (the #917 trap for findings). Name the
+            # frontier that works instead of sending the agent back to that row.
+            raise _error(
+                PublicErrorCode.INVALID_REQUEST,
+                (
+                    "The note is unavailable at the supplied frontier. finding_frontier may be "
+                    "any frontier at or after the note's check record (sequence "
+                    f"{recorded.check.ledger.ingestion_sequence}), such as the current status "
+                    "frontier. The history row's advisory_subject_frontier precedes that record "
+                    "and is rejected."
+                ),
+                reason_code="invalid_frontier",
+                field="/finding_frontier",
+            )
+        raise _error(
+            PublicErrorCode.INVALID_REQUEST,
+            (
+                "No correctness advisory of this task has this identity: copy the "
+                "<check-event-id>:<ordinal> from the receipt or status view=history."
+            ),
+            reason_code="response_fields_invalid",
+            field="/finding_id",
+        )
+    refs = () if request.evidence_refs is None else request.evidence_refs
+    if (
+        request.disposition not in {"addressed", "declined"}
+        or request.reason is None
+        or not request.reason.strip()
+        or len(request.reason.encode("utf-8")) > 4096
+        or (request.disposition == "addressed" and not refs)
+        or request.waiver_scope is not None
+        or request.waiver_expiry is not None
+        or request.duplicate_of_finding_id is not None
+    ):
+        raise _error(
+            PublicErrorCode.INVALID_REQUEST,
+            "Advisories accept addressed with linked evidence and a reason, or declined with a reason; no response is required.",
+            reason_code="response_fields_invalid",
+        )
+    after_note = False
+    for ref in refs:
+        item = (
+            projection.evidence.get(evidence_id(ref))
+            if ref.startswith("evd_")
+            else projection.results.get(result_id(ref))
+        )
+        if item is None or item.payload is None:
+            raise _error(
+                PublicErrorCode.INVALID_REQUEST,
+                "Advisory evidence must name a readable recorded evidence or result of this task.",
+                reason_code="response_fields_invalid",
+                field="/evidence_refs",
+            )
+        after_note = after_note or item.source_frontier > row.check.ledger.ingestion_sequence
+    if request.disposition == "addressed" and not after_note:
+        # #1162 review: like self_verified (#984), addressed links work recorded after the note;
+        # evidence the reviewer already had when it raised the note cannot show it was addressed.
+        raise _error(
+            PublicErrorCode.INVALID_REQUEST,
+            (
+                "addressed needs at least one evidence_refs id recorded after the note's check: "
+                "publish the evidence of what you changed or ran, then cite its evd_ or res_ id."
+            ),
+            reason_code="response_fields_invalid",
+            field="/evidence_refs",
+        )
+    payload = DecisionRecordedPayload(
+        statement=ADVISORY_RESPONSE_STATEMENT,
+        rationale=request.reason,
+        authority=actor_id(request.actor.actor_id),
+        advisory_response=JsonObject(
+            {
+                "advisory_id": request.finding_id,
+                "disposition": request.disposition,
+                "evidence_refs": refs,
+            }
+        ),
+    )
+    now = app.clock.now_utc()
+    coverage = coverage_for_channel(_channel(request))
+    draft = EventDraft(
+        event_id(app.ids.new(IdKind.EVENT)),
+        EventSchema("decision_recorded", "1.1.0"),
+        timestamp_from_datetime(now),
+        (row.check.event_id,),
+        payload,
+        (),
+        tuple(evidence_id(ref) if ref.startswith("evd_") else result_id(ref) for ref in refs),
+    )
+    body = canonical_encode(encode_payload(payload))
+    metadata = ObjectMetadata(
+        ObjectKind.EVENT_PAYLOAD, media_type_for("decision_recorded"), runtime.task_id, now
+    )
+    staged = await runtime.objects.stage(ObjectSource(data=body, declared_size=len(body)), metadata)
+    ref = await runtime.objects.finalize(staged)
+    author = Actor(
+        actor_id(request.actor.actor_id),
+        ActorType(request.actor.actor_type.value),
+        coverage.authorship_assurance,
+    )
+    command = AppendCommand(
+        runtime.task_id,
+        runtime.session_id,
+        cast(str, runtime.writer_id),
+        request.request_id,
+        OperationKind.RESPOND,
+        digest,
+        current.sequence,
+        (
+            AppendEntry(
+                draft,
+                author,
+                ref,
+                ref.commitment,
+                metadata.media_type,
+                ref.plaintext_size,
+                _channel(request),
+                coverage,
+                "projected",
+            ),
+        ),
+    )
+    return await run_prepared_append(
+        runtime.ledger,
+        PreparedMutation(
+            cast(str, runtime.writer_id),
+            request.request_id,
+            digest,
+            current.sequence,
+            (ref,),
+            command,
+        ),
+    )
+
+
 async def execute_respond(app: Application, request: RespondRequest) -> RespondInternalResult:
     """Validate, object-publish, and atomically append one ``response_recorded`` event."""
 
@@ -1083,6 +1304,14 @@ async def execute_respond(app: Application, request: RespondRequest) -> RespondI
             raise _error(PublicErrorCode.INVALID_REQUEST, "The waiver is not authorized.")
         digest = request_digest(_identity(request, policy_digest=app.waiver_policy_digest))
         result = await _preflight(runtime, request, digest)
+        if is_advisory_id(request.finding_id):
+            if result is None:
+                result = await _record_advisory_response(app, runtime, request, digest)
+            return await _public_result(request, runtime, result)
+        if request.disposition in {"addressed", "declined"}:
+            raise _error(
+                PublicErrorCode.INVALID_REQUEST, "This disposition requires an advisory identity."
+            )
         answered_from: ProjectionState | None = None
         if result is None:
             finding_frontier = Frontier(

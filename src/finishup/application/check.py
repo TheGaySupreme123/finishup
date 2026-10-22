@@ -22,6 +22,10 @@ from finishup.application.missing_for_assessment import (
 )
 from finishup.application.review_concern import answer_bound, concern_material_after
 from finishup.domain.coordination import CoordinationError, CoordinationErrorCode
+from finishup.domain.correctness_advisories import (
+    MAX_ADVISORIES_PER_CHECK,
+    validate_advisories,
+)
 from finishup.domain.events import (
     MAX_SEMANTIC_INCLUDED_REFS,
     MAX_UNDECLARED_REFERENCES,
@@ -496,6 +500,9 @@ class SemanticJudgmentReview:
     # Issue #1042: routine-phase correctness concerns (``code_defect``) recorded as advisory,
     # non-blocking notes in the review summary instead of findings.
     advisory_notes: int = 0
+    # Issue #1162: the retained, answerable rows of those notes, keyed by their fence-resolved
+    # subjects. A note whose row cannot be retained stays in the summary only, with a disclosure.
+    correctness_advisories: tuple[JsonObject, ...] = ()
     # Issue #1043: requirement challenges recorded as the agent's own criterion
     # (``agent_criterion_unmet``); they are still candidates, so this is a diagnostic count only.
     agent_criteria: int = 0
@@ -524,8 +531,14 @@ class SemanticJudgmentReview:
             raise _invalid("semantic_judgment_review_invalid")
         if type(self.refs_reduced) is not int or self.refs_reduced < 0:
             raise _invalid("semantic_judgment_review_invalid")
-        if type(self.advisory_notes) is not int or self.advisory_notes < 0:
+        if (
+            type(self.advisory_notes) is not int
+            or self.advisory_notes < 0
+            or type(self.correctness_advisories) is not tuple
+            or len(self.correctness_advisories) > self.advisory_notes
+        ):
             raise _invalid("semantic_judgment_review_invalid")
+        validate_advisories(self.correctness_advisories)
         if type(self.agent_criteria) is not int or not 0 <= self.agent_criteria <= len(
             self.candidates
         ):
@@ -3940,6 +3953,13 @@ _ADVISORY_NOTES_HEADER: Final = (
     "judges incomplete work only, so these are not findings and need no answer; weigh them in "
     "your own verification):"
 )
+# Issue #1162: a note whose bounded advisory row could not be retained (never expected once its
+# subjects are fence-resolved) degrades to this summary instead of discarding the review.
+_ADVISORY_ROWS_NOT_RETAINED_NOTE: Final = (
+    "FinishUP note: {count} reviewer correctness note(s) above are kept in this summary only; "
+    "they have no advisory identity, so the receipt does not count them and respond cannot "
+    "target them."
+)
 # Issue #1043: fixed words and a count only; the findings carry the reviewer's own text.
 _AGENT_CRITERIA_NOTE: Final = (
     "FinishUP recorded {count} requirement challenge(s) as your own criterion "
@@ -4625,7 +4645,7 @@ def validate_semantic_judgment(
     candidates: list[CandidateFinding] = []
     restatements = 0
     re_raised: list[tuple[FindingId, ReviewerChallenge]] = []
-    advisory: list[ReviewerChallenge] = []
+    advisory: list[tuple[ReviewerChallenge, tuple[str, ...]]] = []
     agent_criteria = 0
     work_claimed = completion_claim_present(case.projection)
     # Issue #1042: the phase the packet named decides; without it, the completion claim alone does
@@ -4811,7 +4831,9 @@ def validate_semantic_judgment(
             # Issue #1042: a routine review judges incomplete work only. Its correctness concern is
             # recorded as an advisory, non-blocking note in the review summary, not a finding. A
             # re-raise of a recorded finding was folded onto that finding above, unchanged.
-            advisory.append(challenge)
+            # #1162: the retained row keeps the fence-resolved subjects (an ``act_``/``res_``/
+            # ``evd_`` citation resolves to its source event), never the raw citations.
+            advisory.append((challenge, refs))
             continue
         agent_criteria += rerouted
         policy_id, policy_version = _policy_identity(challenge.finding_kind)
@@ -4867,6 +4889,22 @@ def validate_semantic_judgment(
         if admitted[key].verdict == "fixed":
             admitted[key] = PriorFindingVerdictRecord(finding_id(key), "unassessable", ())
             verdicts_unsupported += 1
+    advisory_rows = _correctness_advisory_rows(tuple(advisory))
+    advisory_summary = _summary_with_concerns(
+        review_summary, _ADVISORY_NOTES_HEADER, tuple(item for item, _refs in advisory)
+    )
+    if len(advisory_rows) < len(advisory):
+        advisory_summary = _bounded_review_text(
+            "\n".join(
+                (
+                    advisory_summary,
+                    "",
+                    _ADVISORY_ROWS_NOT_RETAINED_NOTE.format(
+                        count=len(advisory) - len(advisory_rows)
+                    ),
+                )
+            )
+        )
     return _judgment_review(
         tuple(candidates),
         returned_challenges,
@@ -4876,10 +4914,7 @@ def validate_semantic_judgment(
         restatements,
         verdicts_set_aside,
         _summary_with_re_raised(
-            _summary_with_agent_criteria(
-                _summary_with_concerns(review_summary, _ADVISORY_NOTES_HEADER, tuple(advisory)),
-                agent_criteria,
-            ),
+            _summary_with_agent_criteria(advisory_summary, agent_criteria),
             tuple(re_raised),
             frozenset(
                 restated
@@ -4903,8 +4938,38 @@ def validate_semantic_judgment(
         snippets_rejected,
         fence.refs_reduced,
         advisory_notes=len(advisory),
+        correctness_advisories=advisory_rows,
         agent_criteria=agent_criteria,
     )
+
+
+def _correctness_advisory_rows(
+    advisory: tuple[tuple[ReviewerChallenge, tuple[str, ...]], ...],
+) -> tuple[JsonObject, ...]:
+    """The retained advisory rows (#1162), each admitted on its own.
+
+    A row that does not fit the bounded record is left out instead of failing the review: the
+    note is still in the review summary, the caller discloses that it was not retained, and every
+    other challenge of the same review is kept.
+    """
+
+    rows: list[JsonObject] = []
+    for challenge, refs in advisory:
+        if len(rows) >= MAX_ADVISORIES_PER_CHECK:
+            break
+        row = JsonObject(
+            {
+                "summary": _bounded_review_text(challenge.summary),
+                "detail": _bounded_review_text(challenge.message_to_main_agent),
+                "subject_refs": tuple(sorted(set(refs), key=str.encode)),
+            }
+        )
+        try:
+            validate_advisories((row,))
+        except ValueError:
+            continue
+        rows.append(row)
+    return tuple(rows)
 
 
 _VERIFICATION_RERUN_SUMMARY: Final = "Is a verification rerun needed after these changes?"
@@ -6736,6 +6801,7 @@ async def execute_check_commit(
                 claim_ids=scope.claim_ids, obligation_ids=scope.obligation_ids
             ),
             "semantic_conclusion": semantic_conclusion,
+            "correctness_advisories": review.correctness_advisories,
             "review_summary": (
                 review.review_summary
                 if semantic_result.status is SemanticStatus.SUCCEEDED

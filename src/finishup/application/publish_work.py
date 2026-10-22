@@ -373,6 +373,7 @@ _LOCATABLE_DRAFT_SUBFIELDS: Final = frozenset(
 # an agent guessing which of several reference lists broke the canonical set form.
 _LOCATABLE_PAYLOAD_FIELDS: Final = frozenset(
     {
+        "advisory_response",
         "affected_obligation_ids",
         "disputes_refs",
         "evidence_refs",
@@ -609,6 +610,12 @@ def _event_invalid(
             "last accepted write; read status only if you hold none. Retry idempotently with the "
             "same request_id."
         )
+    elif reason_code == "event_family_not_admitted" and payload_field == "advisory_response":
+        message = (
+            "The event batch is invalid. A correctness-advisory response is recorded only through "
+            "respond: put the note's check-event-id:ordinal in finding_id with disposition "
+            "addressed or declined. Remove advisory_response from this decision draft."
+        )
     elif reason_code == "frontier_changed":
         message = (
             "The event batch is invalid. Call status to read the current frontier, then retry "
@@ -804,6 +811,15 @@ def _validate_admission(
         if (known and item.draft.schema.name not in admitted) or (not known and not trusted_import):
             raise _event_invalid("event_family_not_admitted", event_index=index, subfield="schema")
         payload = item.draft.payload
+        if type(payload) is DecisionRecordedPayload and payload.advisory_response is not None:
+            # #1162: a correctness-advisory response is recorded only through respond, which
+            # admits it against the note at its frontier and its linked evidence (ADR-006).
+            raise _event_invalid(
+                "event_family_not_admitted",
+                event_index=index,
+                subfield="payload",
+                payload_field="advisory_response",
+            )
         if type(payload) is ObligationPublishedPayload and not trusted_import:
             for position, requested in enumerate(payload.requested_items):
                 if (

@@ -52,7 +52,8 @@ host already has.
 
 1. **The switch is a `decision_recorded` 1.1.0 draft.** 1.1.0 is an additive superset of the
    released 1.0.0 that requires one field, `review_mode: "ai_powered" | "local"`; 1.0.0 refuses it.
-   A decision rides 1.1.0 exactly when it carries the switch, so every other decision keeps its
+   Amended by ADR-006 (#1162): 1.1.0 also admits a mutually exclusive, typed non-blocking
+   advisory response that cannot switch review mode. Other decisions keep their
    1.0.0 bytes and every old ledger replays unchanged. The decision's event id and ledger sequence
    say when; its `authority` actor says by whom; its `rationale` says why. One `publish_work`
    draft is the whole opt-in, on every host (Codex, Claude Code, Cursor) through the same MCP

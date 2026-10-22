@@ -95,6 +95,7 @@ from finishup.protocol.models import (
     PublishWorkRequest,
     PublishWorkSuccessModel,
     ReadGuidanceSuccessModel,
+    ReceiptSuccessModel,
     RespondClosureAfterModel,
     RespondEvidenceSummaryModel,
     RespondResponseModel,
@@ -115,6 +116,7 @@ from finishup.protocol.models import (
     StatusEvidenceItemModel,
     StatusFindingItemModel,
     StatusFindingsPageModel,
+    StatusHistoryCorrectnessAdvisoryModel,
     StatusHistoryItemV14Model,
     StatusLineageChildModel,
     StatusObligationItemModel,
@@ -415,6 +417,8 @@ _RESULT_OPTIONAL_NON_NULL: tuple[tuple[type[BaseModel], frozenset[str]], ...] = 
                 "closing_material_frontier",
                 # ADR-033 D1: absent unless a flagged resolution is a receipt coverage limit.
                 "acceptance_risk",
+                # #1162: absent unless an earlier correctness note has no recorded response.
+                "correctness_advisory_summary",
             }
         ),
     ),
@@ -462,7 +466,26 @@ _RESULT_OPTIONAL_NON_NULL: tuple[tuple[type[BaseModel], frozenset[str]], ...] = 
     # Issue #1139: a whole delivered value carries neither a fragment nor a container marker.
     (DeliveryItemModel, frozenset({"fragment", "container"})),
     # Issue #1084 (review R7): a service-recorded event time is labelled on the history row.
-    (StatusHistoryItemV14Model, frozenset({"review_input_manifest", "occurred_at_source"})),
+    (
+        StatusHistoryItemV14Model,
+        frozenset(
+            {
+                "review_input_manifest",
+                "occurred_at_source",
+                # #1162: present only on a check row that carries correctness advisories.
+                "correctness_advisories",
+                "advisory_provenance",
+                "advisory_subject_frontier",
+            }
+        ),
+    ),
+    # #1162: a note's response fields are absent while it has no recorded response.
+    (
+        StatusHistoryCorrectnessAdvisoryModel,
+        frozenset({"reason", "response_event_id", "evidence_refs"}),
+    ),
+    # #1162: absent unless the task has correctness advisories and the receipt is terminal.
+    (ReceiptSuccessModel, frozenset({"correctness_advisory_counts"})),
     (
         ReviewInputManifestModel,
         frozenset({"review_phase", "omitted_item_total", "follow_up_round"}),
@@ -1380,6 +1403,9 @@ def test_status_closure_readiness_omits_an_unset_checklist() -> None:
     # ADR-033 D1: no acceptance-provenance coverage limit omits the list; null is refused too.
     with pytest.raises(ValidationError, match="optional_field_must_not_be_null"):
         StatusClosureReadinessModel.model_validate({**dumped, "acceptance_risk": None})
+    # #1162: no unanswered correctness note omits the summary; null is refused too.
+    with pytest.raises(ValidationError, match="optional_field_must_not_be_null"):
+        StatusClosureReadinessModel.model_validate({**dumped, "correctness_advisory_summary": None})
 
 
 def test_fact_lineage_omits_every_unset_field() -> None:
@@ -2033,6 +2059,8 @@ def test_every_result_optional_non_null_field_has_an_unset_projection_case() -> 
         "closing_material_frontier",
         # ADR-033 D1: absent unless a flagged resolution is a receipt coverage limit.
         "acceptance_risk",
+        # #1162: absent unless an earlier correctness note has no recorded response.
+        "correctness_advisory_summary",
     ):
         # Issue #913: the checklist is absent as a whole on an earlier 0.3 build's readiness.
         covered["StatusClosureReadinessModel", field] = (
@@ -2146,6 +2174,17 @@ def test_every_result_optional_non_null_field_has_an_unset_projection_case() -> 
     )
     covered["CheckVerifiedItemModel", "requirement_or_claim"] = (
         "test_verified_item_refuses_null_reviewer_text"
+    )
+    for field in ("correctness_advisories", "advisory_provenance", "advisory_subject_frontier"):
+        covered["StatusHistoryItemV14Model", field] = (
+            "test_correctness_advisory_fields_omit_when_unset_and_refuse_null"
+        )
+    for field in ("reason", "response_event_id", "evidence_refs"):
+        covered["StatusHistoryCorrectnessAdvisoryModel", field] = (
+            "test_correctness_advisory_fields_omit_when_unset_and_refuse_null"
+        )
+    covered["ReceiptSuccessModel", "correctness_advisory_counts"] = (
+        "test_correctness_advisory_fields_omit_when_unset_and_refuse_null"
     )
     covered["StatusHistoryItemV14Model", "review_input_manifest"] = (
         "test_nested_multi_agent_results_omit_unset_fields"
@@ -2337,6 +2376,52 @@ def test_server_filled_and_brief_fields_omit_when_unset() -> None:
         {**row, "occurred_at_source": "service_clock"}
     )
     assert labelled.occurred_at_source == "service_clock"
+
+
+def test_correctness_advisory_fields_omit_when_unset_and_refuse_null() -> None:
+    """#1162: a check row without notes, an unanswered note and a receipt without notes omit the
+    advisory fields; an explicit null is refused, never projected."""
+
+    from tests.unit.protocol.test_models_and_schemas import (  # pyright: ignore[reportPrivateUsage]
+        _receipt_result_wire,  # pyright: ignore[reportPrivateUsage]
+    )
+
+    row: dict[str, JsonValue] = {
+        "event_id": protocol_id("evt_", 1162),
+        "schema_name": "check_recorded",
+        "schema_version": "1.6.0",
+        "actor_id": "harness:test",
+        "publication_channel": "cooperative_mcp",
+        "ingestion_sequence": "3",
+        "occurred_at": "2026-10-16T00:00:00.000Z",
+        "accepted_at": "2026-10-16T00:00:00.000Z",
+        "occurred_at_consistency": "within_forward_skew_allowance",
+        "projection_status": "projected",
+        "summary_code": "check_recorded",
+    }
+    history = StatusHistoryItemV14Model.model_validate(row)
+    dumped = history.model_dump(mode="json", exclude_unset=True)
+    for field in ("correctness_advisories", "advisory_provenance", "advisory_subject_frontier"):
+        assert field not in dumped
+        with pytest.raises(ValidationError, match="optional_field_must_not_be_null"):
+            StatusHistoryItemV14Model.model_validate({**row, field: None})
+    note: dict[str, JsonValue] = {
+        "summary": "Receptacle-frame geometry needs a local footprint check.",
+        "detail": "Add a rotated-receptacle case.",
+        "subject_refs": [protocol_id("evt_", 1163)],
+        "advisory_id": protocol_id("evt_", 1164) + ":1",
+        "disposition": "no_recorded_response",
+    }
+    unanswered = StatusHistoryCorrectnessAdvisoryModel.model_validate(note)
+    assert unanswered.model_dump(mode="json", exclude_unset=True) == note
+    for field in ("reason", "response_event_id", "evidence_refs"):
+        with pytest.raises(ValidationError, match="optional_field_must_not_be_null"):
+            StatusHistoryCorrectnessAdvisoryModel.model_validate({**note, field: None})
+    receipt = _receipt_result_wire()
+    parsed = ReceiptSuccessModel.model_validate(receipt)
+    assert "correctness_advisory_counts" not in parsed.model_dump(mode="json", exclude_unset=True)
+    with pytest.raises(ValidationError, match="optional_field_must_not_be_null"):
+        ReceiptSuccessModel.model_validate({**receipt, "correctness_advisory_counts": None})
 
 
 def test_review_mode_omits_unset_reason_and_switch() -> None:

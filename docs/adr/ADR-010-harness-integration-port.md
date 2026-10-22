@@ -424,6 +424,18 @@ not emit `followup_message` for advice. No privacy widening, provider connection
 The one later exception is the Stop-time closure gate (ADR-033, #977): Codex `decision: block`,
 Claude Code `additionalContext`, and Cursor `followup_message`, once per ledger frontier.
 
+**Amendment (2026-10-22, issue #1162):** "Common output fields" above includes `systemMessage`.
+Codex's hooks reference, re-read on 2026-10-22, lists `continue`, `stopReason`, `systemMessage`
+and `suppressOutput` as the common fields Stop and SubagentStop support, `systemMessage` being
+surfaced as a warning in the UI or event stream; the #222 failure was `hookSpecificOutput`, which
+is not a common field. Claude Code's reference lists the same fields for every event and names the
+events that discard `systemMessage` (Stop is not one of them); it is shown to the user. The
+non-blocking correctness-advisory notice (ADR-006) therefore uses `systemMessage` on both hosts,
+alone or beside the closure gate's own Stop payload, and never rides `decision`/`reason` or Stop
+`additionalContext`, which continue the agent. Cursor's `stop` stdout has only the continuing
+`followup_message`, so that notice goes to bounded stderr. Live host display of the notice is not
+established by the hook-contract tests.
+
 **Amendment (2026-08-14):** Hook advice delivery no longer falls back to the workspace-wide
 `advice_snapshot` for task-scoped conditions. Before a Codex session is mapped, task-scoped
 advice is selected only from that Codex session's retained envelopes. After mapping, delivery

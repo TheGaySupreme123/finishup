@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import io
 import json
+import re
 from collections.abc import Mapping
 from pathlib import Path
 from types import SimpleNamespace
@@ -22,6 +23,7 @@ from finishup.adapters.integrations.observation_local import LocalObservationSto
 from finishup.cli import closure_gate as gate_module
 from finishup.cli import observe_hooks
 from finishup.cli.closure_gate import (
+    STOP_ADVISORY_NOTICE,
     closure_gate_already_delivered,
     closure_gate_from_readiness,
     record_closure_gate_delivered,
@@ -1139,3 +1141,119 @@ def test_an_unadmitted_outside_task_input_changes_neither_the_stop_gate_nor_the_
     assert sentence is not None
     assert "finishup privacy input-roots add <folder>" in sentence
     assert "/" not in sentence.replace("<folder>", "")
+
+
+# Stop output fields each host documents (re-read 2026-10-22). Codex: Stop/SubagentStop accept the
+# common output fields (continue, stopReason, systemMessage, suppressOutput) plus decision/reason.
+# Claude Code: every event accepts the common JSON output fields, Stop included, plus
+# decision/reason and hookSpecificOutput.additionalContext; systemMessage is shown to the user.
+_CODEX_STOP_FIELDS = frozenset(
+    {"continue", "stopReason", "systemMessage", "suppressOutput", "decision", "reason"}
+)
+_CLAUDE_STOP_FIELDS = frozenset({*_CODEX_STOP_FIELDS, "hookSpecificOutput"})
+
+
+# The service's agent-facing readiness summary. Its presence (a note has no recorded response) is
+# the only input the Stop notice reads; none of its text reaches the owner-facing notice.
+_AGENT_SUMMARY = (
+    "Earlier correctness advisories with no recorded response: 4, newest "
+    "evt_00000000-0000-4000-8000-000000000001:4. Non-blocking: no answer is required. Full rows: "
+    "status view=history filter.schema_name=check_recorded with session_id "
+    "ses_00000000-0000-4000-8000-000000000001 (follow next_cursor)."
+)
+
+
+def _assert_advisory_notice(host: _Host, output: Mapping[str, Any], err: str) -> None:
+    """The owner-facing notice reached the host's non-continuing channel exactly once."""
+
+    if host.name == "cursor":
+        # Cursor's Stop stdout only continues the agent; the notice stays on bounded stderr.
+        lines = err.splitlines()
+        assert all(len(line) <= 200 for line in lines)
+        sentences = re.split(r"(?<=\.) ", STOP_ADVISORY_NOTICE)
+        assert len(sentences) == 2 and all(sentence.endswith(".") for sentence in sentences)
+        for sentence in sentences:
+            assert lines.count(sentence) == 1
+        assert "correctness notes" not in json.dumps(output)
+    else:
+        assert output["systemMessage"] == STOP_ADVISORY_NOTICE
+        allowed = _CODEX_STOP_FIELDS if host.name == "codex" else _CLAUDE_STOP_FIELDS
+        assert set(output) <= allowed
+    assert "view=history" not in STOP_ADVISORY_NOTICE
+
+
+def _assert_no_advisory_notice(output: Mapping[str, Any], err: str) -> None:
+    assert "systemMessage" not in output
+    assert "correctness notes" not in err
+    assert "correctness notes" not in json.dumps(output)
+
+
+@pytest.mark.parametrize("gated", [False, True], ids=["advisory_only", "with_closure_gate"])
+def test_advisory_stop_note_uses_only_each_hosts_admitted_channel(
+    tmp_path: Path, host: _Host, capsys: pytest.CaptureFixture[str], gated: bool
+) -> None:
+    """#1162: the notice never continues the agent, alone or beside an active closure gate."""
+
+    session = f"advisory-{'gated' if gated else 'only'}"
+    h = _Harness(tmp_path, host.key(session))
+    if not gated:
+        h.readiness = _readiness(state="ready_with_limitations", actionable=())
+    h.readiness.correctness_advisory_summary = _AGENT_SUMMARY
+    output = _stop(h, host, session)
+    err = capsys.readouterr().err
+    assert h.reasons() == (["closure_gate_continued"] if gated else ["closure_gate_not_required"])
+    _assert_advisory_notice(host, output, err)
+    if host.name == "cursor":
+        assert output == ({} if not gated else {"followup_message": output["followup_message"]})
+        if gated:
+            assert "FinishUP closure gate" in output["followup_message"]
+        return
+    if not gated:
+        assert output == {"systemMessage": STOP_ADVISORY_NOTICE}
+        return
+    if host.name == "codex":
+        assert set(output) == {"decision", "reason", "systemMessage"}
+        assert output["decision"] == "block"
+        gate_text = output["reason"]
+    else:
+        assert set(output) == {"hookSpecificOutput", "systemMessage"}
+        assert output["hookSpecificOutput"]["hookEventName"] == "Stop"
+        gate_text = output["hookSpecificOutput"]["additionalContext"]
+    assert "FinishUP closure gate" in gate_text
+    # The gate message stays the gate's own; the advisory notice never rides the continuation.
+    assert "correctness" not in gate_text
+
+
+def test_advisory_stop_notice_once_per_session_and_unanswered_set(
+    tmp_path: Path, host: _Host, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """#1162 review: never on a re-entry, and again only when the unanswered notes change.
+
+    Notes need no answer, so an unchanged set of unanswered notes must not warn the owner on every
+    later turn. The readiness summary names exactly that set; its identity decides.
+    """
+
+    session = "advisory-sequence"
+    h = _Harness(tmp_path, host.key(session))
+    h.readiness.correctness_advisory_summary = _AGENT_SUMMARY
+    # A gated Stop carries the notice once beside the gate ...
+    first = _stop(h, host, session)
+    _assert_advisory_notice(host, first, capsys.readouterr().err)
+    # ... and the Stop that ends the continued turn does not repeat it.
+    reentry = _stop(h, host, session, guarded=True)
+    _assert_no_advisory_notice(reentry, capsys.readouterr().err)
+    # A later turn with the same unanswered notes stays silent.
+    h.readiness = _readiness(state="ready_with_limitations", actionable=())
+    h.readiness.correctness_advisory_summary = _AGENT_SUMMARY
+    unchanged = _stop(h, host, session)
+    _assert_no_advisory_notice(unchanged, capsys.readouterr().err)
+    assert unchanged == {}
+    # A new unanswered note changes the set, so the owner is told once more.
+    h.readiness.correctness_advisory_summary = _AGENT_SUMMARY.replace(": 4,", ": 5,")
+    changed = _stop(h, host, session)
+    _assert_advisory_notice(host, changed, capsys.readouterr().err)
+    # Once every note has a recorded response the service omits the summary: no notice.
+    h.readiness = _readiness(state="ready_with_limitations", actionable=())
+    answered = _stop(h, host, session)
+    _assert_no_advisory_notice(answered, capsys.readouterr().err)
+    assert answered == {}

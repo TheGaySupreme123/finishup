@@ -3082,7 +3082,6 @@ keep the full local view. Restart expires cursors; recover through current statu
 starting a new review. A revoked route, changed sink/content, or expired retained source also
 requires current status.
 
-
 ### Verification freshness decisions (#1143)
 
 All hosts use ADR-042's per-verification input rule. A trusted workspace comparison retains
@@ -3112,6 +3111,30 @@ and carry no path identity, so such an edit after a verification cannot be place
 names the edit tool and the count, and the verification stays stale until it reruns.
 Future process-read capture is outside #1143 and requires its own owning issue and authority
 review; no host silently claims that capability here.
+
+### Correctness advisory closing visibility (#1162)
+
+Routine reviewer correctness notes persist independently of findings. Receipts (all formats and
+include levels), CLI and terminal-interface status/history, and MCP structured status/history
+results show the original check, subjects, provenance and optional agent-reported disposition; the
+MCP text fallback of status does not repeat them. No response is required and no advisory creates
+a closure gate. An answer is recorded only through `respond` (`publish_work` refuses one), and
+`addressed` cites at least one evidence or result recorded after the note's check. The shared
+closing guidance asks final prose to retain material advisory statuses. Status history is
+session-scoped: a note is listed in the history of the session that recorded its check, while the
+receipt counts every note of the task and names each note's recording session.
+
+At Stop, while at least one note has no recorded response, Codex and Claude Code receive
+FinishUP's fixed owner-facing notice through the common `systemMessage`, without a blocking
+decision or model-feedback continuation. Cursor's Stop stdout supports only continuing advice, so
+the same notice goes to stderr, one sentence per line within the 200-character stderr line bound,
+also beside an active closure gate's `followup_message`. It appears once per session for each set
+of unanswered notes (never on a `stop_hook_active` re-entry) and stops once every note has a
+recorded response; UI visibility
+depends on the host's diagnostic display. Full retrieval stays available in the shared
+receipt and `status view=history` filtered to `check_recorded`. Model receipt of these Stop
+diagnostics and live host/OS parity have not been established by unit hook-contract tests.
+Follow-up owner for any richer non-continuing host channel: issue #1162.
 
 ## Test manifests and verification quality (issue #1170)
 

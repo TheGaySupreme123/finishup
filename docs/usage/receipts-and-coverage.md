@@ -554,3 +554,19 @@ needed instead of demanding one. A report the verification itself wrote, declare
 is not a reason to rerun. A report you write with your coding agent's file-edit tool records no
 file path, so it still makes earlier verification stale unless it is documentation or notes; write
 incidental reports outside the project instead.
+
+Earlier correctness advice remains visible when you finish. The receipt shows how many notes
+were recorded and, for each displayed note, **addressed (agent-reported, linked evidence)**,
+**declined with reason**, or **no recorded response**. Advice never blocks closing. A later
+successful check does not establish that an earlier note was addressed. Export views label
+withheld prose; truncated lists link to the paginated history. While a note has no recorded
+response, your coding agent's app may show a short FinishUP notice when the agent stops, once for
+each new set of such notes; it does not block finishing and points you to the receipt.
+
+Your agent may optionally record its response through `respond`, using the advisory identity in
+`finding_id` and a current `finding_frontier`: `addressed` needs a reason and evidence or result
+refs, at least one recorded after the note, while `declined` needs a reason. This records the
+agent's account, not independent proof. Retrieve the full index through `status view=history`
+with `filter.schema_name=check_recorded`, following `next_cursor` with the same filter and limit.
+History lists one session's records, so read a note from the session that recorded its check: the
+receipt names that session for each note and counts every note of the task.

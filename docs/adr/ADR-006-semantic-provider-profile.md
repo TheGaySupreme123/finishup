@@ -3192,6 +3192,105 @@ digest and generation, the provider binding (endpoint, model, effort, reply sche
 version and isolated configuration, and the review's input roots and read catalog. Reuse never
 crosses tasks.
 
+## Amendment — 2026-10-21: routine correctness advisory dispositions (#1162)
+
+Routine `code_defect` notes remain advisory and non-blocking. In addition to their immediate
+review-summary delivery, check-recorded 1.6.0 retains up to ten `correctness_advisories`, each with
+the original summary, message and subject refs. Subject refs are the fence-resolved subjects of the
+challenge, never its raw citations: an `act_`, `res_` or `evd_` citation the fence admits resolves
+to its source `evt_`, and a cited finding to its subjects, so a note names `evt_`/`obl_`/`clm_`
+refs only, at most 64 (the finding bound). Each row is admitted on its own. A row that still
+cannot be retained never rejects the review: the note stays in the review summary with a FinishUP
+line saying it has no advisory identity, and every other challenge of that review is kept.
+Each prose field is bounded to 8,192 UTF-8 bytes;
+truncation is labeled. The originating check supplies its subject frontier and exact AI-powered
+provenance. Identity is `<check-event-id>:<one-based-ordinal>`. Notes are not findings, never enter
+finding ranking or resolution, and never affect closure readiness or the receipt conclusion.
+
+`respond` optionally accepts that identity in its existing `finding_id` target field and an
+in-chain `finding_frontier` at or after the check. `addressed` requires a reason and readable
+task evidence/result refs, at least one recorded after the note's check (as `self_verified` needs
+evidence after its finding, #984: work the reviewer already had cannot show the note was
+addressed); `declined` requires a reason. Both are agent reports, never proof of repair. Only
+`respond` records them: `publish_work` refuses a decision draft carrying `advisory_response`
+(`event_family_not_admitted` at `/event_drafts/<n>/payload/advisory_response`), so every response
+passes these checks. A later readable response replaces the displayed disposition; earlier decisions
+remain retrievable. Idempotent replay uses the same response request identity. No answer is
+required, and later checks or silence never answer an advisory.
+
+An unreadable (withheld) decision is never attached to a note and never called silence. Only a
+withheld `decision_recorded` 1.1.0 whose sole causal parent is a noted check can be an advisory
+response, but its envelope does not prove it is one: a review-mode switch naming that check as its
+only parent looks the same once its payload is withheld, and the payload also carried the target
+ordinal. So the notes keep their own status and the inventory counts it as a withheld decision
+that may answer a note (at most one per note of that check without a recorded response). The
+same ambiguity keeps the conservative rule for unreadable records: a withheld decision makes a
+check stale even when it was an advisory response. Recognising a withheld advisory response
+exactly is follow-up #1190.
+
+The response is a typed `decision_recorded` 1.1.0 `advisory_response` with a fixed statement,
+reason in `rationale`, check causal parent and mirrored evidence refs. This unreleased version
+now admits exactly one of `review_mode` or `advisory_response`; the latter cannot change review
+mode, affect obligations or supersede a decision. Recording a readable one does not stale a check
+or require another check (a withheld one does, above). Released 1.0.0 decisions and earlier check readers remain closed and unchanged.
+
+Both wire changes are in place, under the repository's rule for wire versions: a version on no
+release tag may be amended in place until it ships in a release; a released version is never
+amended. check-recorded 1.6.0 is on no release tag and on neither `main` nor `0.3` (#1118
+introduced it on this integration line). decision-recorded 1.1.0 and respond-request/result 1.1.0
+(also on the `0.3` branch) and receipt-document/receipt-result 1.3.0 and status-result 1.4.0 (also
+on `main` and `0.3`) are on no release tag either, but those branches carry their earlier shape: a release cut from one of them
+before this line merges into it would freeze that shape, and these additions would then need new
+versions.
+
+The existing frontier-bound `status view=history` with `filter.schema_name=check_recorded`
+retrieves original notes, provenance, and the latest response at that frontier. Its existing
+signed cursor, selector and limit rules apply, and so does its session scope: a session's history
+lists only its own rows, so another session's check row, notes and review-input manifest never
+appear there. The receipt is task-wide and carries every note's identity, check, recording
+session and status; the retrieval continuation names the `session_id` of each recording session
+(up to three, then a count; each receipt row names its own). A status read is routed by that
+session and its writer, so a later session of the task may be unable to open those rows; the
+receipt rows still carry their prose within the receipt bound. History prose is `finding_summary` content under
+the existing local disclosure policy. Every receipt include level and JSON/markdown/text rendering
+carries a task-wide count and bounded rows; export profiles explicitly withhold concern/response
+prose and count the redaction. The complete advisory prose is bounded to 8,192 characters and at most 64 rows are
+rendered, with omitted rows counted and the history continuation retained.
+
+Stop reads closure readiness without creating a gate or continuation. Readiness carries
+`correctness_advisory_summary` only while at least one note has no recorded response, and its text
+names only those notes (their count, the newest three identities and the recording sessions):
+readiness names what is still open, while the receipt and history keep every note, every status and
+any withheld decision. That set only grows by a new note, which leads the list, and only shrinks
+by an answer, which lowers the count, so the text changes exactly when the set does. The Stop hook
+never parses it: it compares the text's digest with the one it last showed for the session, and
+shows FinishUP's fixed owner-facing notice (earlier AI-powered review left correctness notes with
+no recorded response; they do not block finishing; the task receipt lists each note and its
+status) only when the set of unanswered notes changed since then. Because no answer is required,
+an unchanged set never repeats the notice on later turns; it also never rides a Stop the host
+already continued (`stop_hook_active`), and stops once every note has a recorded response. Codex and Claude Code receive it as an owner-facing `systemMessage`, a common output field each host documents for Stop
+(Codex: Stop/SubagentStop accept the common fields plus `decision`/`reason`; Claude Code: every
+event accepts the common fields, and Stop does not discard `systemMessage`). It is added beside an
+active closure gate's `decision: block`/`reason` (Codex) or `hookSpecificOutput.additionalContext`
+(Claude Code) and never enters the gate's continuation text. Claude Code's Stop
+`additionalContext` and Codex's `reason` both continue the agent, so neither carries the note.
+Cursor has no non-continuing Stop stdout advice channel, so its bounded disclosure uses stderr,
+one complete sentence per line, each within the 200-character stderr line bound. These are owner-facing diagnostics, not proof of delivery
+to the model or of final-prose compliance. All hosts share the receipt/status index and guidance
+asks final prose to disclose material advisory statuses. No host is asked to resume merely to
+answer or repeat a correctness advisory.
+
+Current receipt-document/result 1.3.0 also carries optional structural
+`correctness_advisory_counts` (`total`, `no_recorded_response`, `withheld_may_answer`).
+`no_recorded_response` counts notes with no readable response; `withheld_may_answer` counts
+withheld decisions that may answer one of those notes, so the two may overlap; each is at most
+`total`. A history row's `disposition` is `addressed`, `declined` or `no_recorded_response`. These
+survive replay and supply the short MCP preview for every rendering. Counts are never extracted
+from quoted reviewer or agent prose; source text cannot impersonate the advisory inventory.
+Older receipt artifacts keep their exact shape.
+
+Historical check summaries without typed advisory rows are not parsed or backfilled into identities.
+
 ## Amendment: agent-declared test coverage and discriminating checks (2026-10-21, issue #1170)
 
 Maintainer acknowledgement: the explicit scoped request recorded on #1170 authorizes the additive

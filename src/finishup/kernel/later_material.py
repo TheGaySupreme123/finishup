@@ -50,6 +50,7 @@ from typing import Final
 from finishup.domain.events import (
     ActionKind,
     ActionRecordedPayload,
+    DecisionRecordedPayload,
     EvidenceRecordedPayload,
     LedgerRecord,
     RequestedItemKind,
@@ -432,6 +433,12 @@ def classify_later_material(
     """
 
     name = record.schema.name
+    if (
+        name == "decision_recorded"
+        and isinstance(record.payload, DecisionRecordedPayload)
+        and record.payload.advisory_response is not None
+    ):
+        return LaterMaterial(LaterMaterialClass.NON_COUNTING_WRITE, "advisory_disposition")
     if not is_observation_authored(record):
         if name == "response_recorded":
             return LaterMaterial(LaterMaterialClass.RESPONSE, "cooperative_response")
