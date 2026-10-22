@@ -3130,10 +3130,12 @@ privacy rule or egress changes: every exchange is still admitted whole.
 
 Status: proposed for maintainer acceptance. No behavior changes.
 
-**Packet order is unchanged.** Within a review the packet is sent once, and every later turn can
-reuse it whole as part of the cached prefix. The one exception, a final-phase repair turn whose
-schema changes ("one reply schema per review", above), misses it whatever its order. So the
-packet's internal order cannot change caching inside a review.
+**Packet order is unchanged.** Within a review the packet leads every exchange (Codex sends it once,
+on the review's thread; the stateless routes resend it with the whole conversation), and every
+later turn can reuse it whole as part of the cached prefix. The exception, a final-phase turn after
+a spent repair (the repair turn itself, or a final turn after an earlier repair), changes the
+schema ("one reply schema per review", above) and misses it whatever its order. So the packet's
+internal order cannot change caching inside a review.
 It would matter only where a later review's request can reuse an earlier review's prefix. On the
 Codex route that does not happen today: Codex 0.162.1 keys a fresh root thread's prompt cache on its
 session id, which is its thread id, and every review opens a fresh ephemeral thread. The Responses
@@ -3158,10 +3160,11 @@ phase 1's telemetry. On what is known now, none of the three ways meets those co
 - *Continue one Codex thread across a task's reviews.* The cache key stays the same, but the next
   review's first exchange carries the earlier review's whole conversation plus a new packet. The
   sized route's exchange budget is 169,144 *estimated* tokens ("Exchange budget sized to the
-  reviewer model's context", above), and the estimate is at least the provider's count on reviewer
-  packets (`domain.reviewer_context`). One-exchange reviews in the TB-Science pilot averaged about
-  92,500 provider input tokens (#1177), so two such first exchanges already exceed the budget. The
-  thread would need compaction (refused here: it replaces history FinishUP inspected) or a smaller
+  reviewer model's context", above), and the estimate is at least the `o200k_base` count measured
+  on reviewer packets (`domain.reviewer_context`; the reviewer model's own tokenizer is not
+  published). One-exchange reviews in the TB-Science pilot averaged about 92,500 provider input
+  tokens (#1177), so two such first exchanges, about 177,000 tokens without Codex's own turn
+  framing, exceed the budget even counted one for one. The thread would need compaction (refused here: it replaces history FinishUP inspected) or a smaller
   packet. The model would also review with its earlier conversation in context, which changes what
   an independent review is.
 - *Fork from a warmed base thread* (`thread/fork`). In Codex 0.162.1 an ephemeral fork of a root
