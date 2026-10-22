@@ -29,6 +29,7 @@ from finishup.application.service import (
     VerificationPolicy,
 )
 from finishup.application.start import StartInternalResult
+from finishup.application.status import StatusInternalResult
 from finishup.domain.events import ReceiptRecordedPayload, RuntimeProfile
 from finishup.domain.privacy import (
     AuthorizationScope,
@@ -72,6 +73,7 @@ from finishup.protocol.models import (
     ReceiptRedactionProfile,
     ReceiptRequest,
     ReceiptResultModel,
+    ReceiptSuccessModel,
     RespondRequest,
     StatusFindingsPageModel,
     StatusRequest,
@@ -464,12 +466,19 @@ async def test_receipt_request_result_parity() -> None:
             }
         ),
     )
-    cli_projected = await app.project_result_for_client(cli_context, cli_binding, receipt)
-    mcp_projected = await app.project_result_for_client(mcp_context, mcp_binding, receipt)
+    # This test compares disclosure, before the separately tested cursor presentation.
+    cli_projected = await app.project_result_for_client(
+        cli_context, cli_binding, receipt, _paginate=False
+    )
+    mcp_projected = await app.project_result_for_client(
+        mcp_context, mcp_binding, receipt, _paginate=False
+    )
     assert isinstance(cli_projected, ReceiptResultModel)
     assert isinstance(mcp_projected, ReceiptResultModel)
     assert cli_projected.root.ok is True
     assert mcp_projected.root.ok is True
+    assert isinstance(cli_projected.root, ReceiptSuccessModel)
+    assert isinstance(mcp_projected.root, ReceiptSuccessModel)
 
     cli_body = cli_projected.root.model_dump(mode="json", exclude={"privacy_projection"})
     mcp_body = mcp_projected.root.model_dump(mode="json", exclude={"privacy_projection"})
@@ -812,6 +821,7 @@ async def test_receipt_context_uses_same_availability_snapshot() -> None:
         "at_frontier": str(checked.result_frontier.sequence),
     }
     status = await app.status(StatusRequest.model_validate(status_wire))
+    assert isinstance(status, StatusInternalResult)
     status_page = cast(StatusFindingsPageModel, status.page)
     status_item = next(item for item in status_page.items if item.finding_id == finding.finding_id)
     assert canonical_encode(

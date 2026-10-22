@@ -169,6 +169,7 @@ from finishup.kernel.task_facts import (
     open_effective_obligations,
 )
 from finishup.kernel.test_edit_visibility import check_change_header_entries, check_change_sections
+from finishup.kernel.verification_freshness import name_free_finding_detail
 from finishup.legacy_names import LEGACY_PRODUCT_NAME, PRODUCT_NAME
 from finishup.observability.privacy import (
     EGRESS_CREDENTIAL_PLACEHOLDER,
@@ -275,6 +276,7 @@ __all__ = [
     "acknowledged_obligation_rows",
     "BLOCKER_REVIEW_INSTRUCTION",
     "review_question_set",
+    "verification_freshness_asked",
     "captured_edit_paths",
     "review_selection_digest",
     "ReviewPacketDisclosure",
@@ -385,6 +387,14 @@ REVIEW_PHASE_QUESTIONS: Final[Mapping[SemanticBudgetProfile, str]] = MappingProx
             "decision_needed, not an unmet requirement."
         ),
     }
+)
+# Asked only when the frozen case records a verification with later changes (#1143): AI review
+# never blocks on staleness; it weighs the verification against those changes and asks.
+FRESHNESS_REVIEW_QUESTION: Final = (
+    "Verification freshness is advisory: weigh each recorded verification against the changes "
+    "after it and ask the agent whether a rerun is needed (it reruns or answers via respond with a "
+    "reason); never block or demand a rerun on staleness alone. A failed or missing required check "
+    "is separate."
 )
 _REVIEW_QUESTIONS: Final = (
     "What did you verify against the task and the change, how (the code path, output or recorded "
@@ -532,11 +542,14 @@ def review_question_set(
     phase: SemanticBudgetProfile,
     blockers: tuple[tuple[str, str, tuple[str, ...]], ...] = (),
     acknowledged: tuple[str, ...] = (),
+    *,
+    freshness: bool = False,
 ) -> tuple[str, ...]:
     """Return the closed question set for one review phase.
 
     The final phase adds one blocker question when ``blockers`` (``recorded_blockers``) is not
-    empty; the routine phase never judges blockers.
+    empty; the routine phase never judges blockers. ``freshness`` adds the advisory freshness
+    question when a recorded verification has later changes (``verification_freshness_asked``).
     """
 
     parsed = parse_semantic_budget_profile(phase)
@@ -545,7 +558,22 @@ def review_question_set(
         if parsed == "final" and (blockers or acknowledged)
         else ()
     )
-    return (REVIEW_PHASE_QUESTIONS[parsed], *_REVIEW_QUESTIONS, *extra)
+    return (
+        REVIEW_PHASE_QUESTIONS[parsed],
+        *((FRESHNESS_REVIEW_QUESTION,) if freshness else ()),
+        *_REVIEW_QUESTIONS,
+        *extra,
+    )
+
+
+def verification_freshness_asked(case: DeterministicCase) -> bool:
+    """Whether the frozen case records a verification with later changes (#1143).
+
+    A pure function of the frozen case, so recovery rebuilds the same question set; old frozen
+    cases carry no freshness rows and keep their original question set.
+    """
+
+    return any(row.state != "current" for row in case.verification_freshness or ())
 
 
 type _Section = Literal[
@@ -7582,7 +7610,14 @@ def _build_semantic_case_once(
                             source_ref=finding_ref,
                             linked_subject_refs=linked,
                             occurred_order=finding.subject_frontier.sequence,
-                            text=finding.detail,
+                            # Freshness names (a requested command, changed paths) come from
+                            # obligation and evidence text: they never leave as finding prose.
+                            text=name_free_finding_detail(
+                                finding.detail,
+                                frozen_case,
+                                linked,
+                                finding.coverage.known_gaps,
+                            ),
                             over_limit=over_limit,
                         )
                     )
@@ -8606,6 +8641,7 @@ def _build_semantic_case_once(
         review_phase,
         recorded_blockers(frozen_case.projection),
         acknowledged_obligation_rows(frozen_case.projection),
+        freshness=verification_freshness_asked(frozen_case),
     )
     # tb4n5: which excerpts supply the follow-up beyond the first packet, so the provider-bound
     # manifest recomputes ``supplied`` from the ones admission kept. Bound into the digest only for

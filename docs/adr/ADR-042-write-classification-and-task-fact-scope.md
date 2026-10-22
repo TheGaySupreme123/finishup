@@ -403,7 +403,142 @@ Declared input paths are normalized lexically, including parent segments and sla
 before their workspace boundary is checked. An input such as `subdir/../../input.json` is outside
 that comparison and cannot inherit its unchanged proof.
 
-This is a minimal plaster. Newly written evidence or report bytes still advance freshness.
+*(Superseded by the verification input freshness amendment below: evidence and report bytes no
+longer advance freshness by themselves, and the per-run input declaration is the versioned
+manifest this paragraph called for. The byte-identical exemption above still applies.)* This is a
+minimal plaster. Newly written evidence or report bytes still advance freshness.
 Exempting those safely needs a versioned dependency manifest connecting each verification to its
 inputs and generated artifact roles. Existing write classes cannot establish that an arbitrary
 report is not a later verification input. That broader decision remains open on #1143.
+
+
+## Amendment (2026-10-21): verification input freshness and advisory questions (#1143)
+
+This supersedes the task-wide edit frontier for every change the workspace comparison can place,
+and the earlier mitigation's open decision above. A placed change is one a trusted before/after
+comparison recorded with its keyed path identities. A placed change makes a verification stale
+only when it touches a recorded verification input; evidence/report/log outputs, byte-identical
+writes and placed changes outside the check's known input set do not demand a rerun. A stale fact
+names the affected verification and changed input. When a placed change may touch an input
+FinishUP cannot rule out (unknown dependencies), it asks whether a rerun is needed, without
+asserting staleness or blocking Stop.
+
+A counting change FinishUP cannot place keeps the rule from before this amendment: the
+verification is stale and, on a local-only route, Stop holds. Unplaceable changes are host
+edit-tool edits, shell writes without a trusted comparison, unavailable or incomplete comparisons
+(root replacement, more than 128 changed paths, an older record), and a no-op proof that cannot
+cover an input outside the comparison. Exempt classes (docs, notes, scratch, FinishUP-owned)
+never make a verification stale, as before. The finding says what is known about such a change
+(its kind and count, and for an edit the host tool's name) and says plainly that FinishUP cannot
+tell whether it touched the verification's inputs; it never claims more.
+
+Decision (2026-10-22, the v2 merge controller under the owner's #1143 direction, recorded on
+#1143 and PR #1167; the owner may revisit it): the direction exempts only writes that "do not
+touch the verification's inputs" (evidence/report/log outputs, byte-identical rewrites), and says
+"only a change to a verification input makes that verification stale, and then the finding should
+name the change". A change FinishUP cannot place may be a deliverable-source edit, which is an
+input. Treating it as only a question would drop FinishUP's core catch, an agent that forgot to
+rerun after editing, so the conservative reading keeps it stale. The pilot's forced reruns came
+from a verifier's own evidence writes, which the comparison places; those get the input-aware
+treatment above. Recording keyed edit-target identities for host edit tools, so a declared input
+edited through one is named, is follow-up #1188.
+
+Command commitments identify the actual observed run, including the existing segment/agent-link
+matching. Every input scope is per verification. A file or directory requested with role `input`
+belongs to the runs of the command its obligation requests; an obligation that requests no command
+names task-level inputs, which apply to every run that lacks its own complete declaration. Per-run
+declarations use an ordinary `evidence_recorded` row with reference
+`finishup-verification-inputs/v1:<observed res_ id>` and a JSON description containing exactly
+`inputs` (exact file paths), `outputs` (evidence/report/log files written by that check), and
+`complete` (boolean). The declaration is the agent's assertion, not an observed process read
+trace. Inputs win when a path is also an output. Malformed, conflicting, redacted and
+out-of-workspace declarations cannot establish completeness, and neither can a `complete: true`
+declaration whose `inputs` list is empty or that names a directory (a value ending in `/`, or
+`.`): a directory input makes the run ask about any change it may hold, never set it aside. An
+output directory instead covers only files the run's own trusted comparison wrote whose recorded
+name lies under it, and leaves completeness unchanged; a run-written file the record does not name
+could be anywhere (a `--fix` run rewriting a source), so its later change is judged like any other
+placed change, and the workspace root covers nothing. A bare directory name cannot be told from
+a file and is read as one. A rerun is a new `res_` identity and needs its own declaration.
+
+A requested input the fingerprint cannot compare (outside the workspace or beyond the
+fingerprint) leaves its own runs unable to rule out any later placed write, so those runs ask. A
+requested directory input inside the workspace rules out only later changes whose paths the record
+names and that lie outside the directory; an unnamed keyed identity may lie inside it, so those
+runs ask. A byte-identical shell rewrite stays quiet unless the run has an input the comparison
+cannot see; then the rewrite cannot be placed and the run is stale.
+
+Caller declarations never hide a real edit on their own (decided by the merge orchestrator under
+the owner's merge authorization during the PR #1167 review, recorded on #1143):
+
+- an output exemption covers only bytes the verification itself produced: the declared output
+  must appear in that run's own trusted changed-entry set. A declared output the run never wrote,
+  such as a pre-existing source file listed only as an output under `complete: false`, stays a
+  possible input, and its later edit asks;
+- a `complete: true` declaration with no inputs is not complete, so a later edit asks;
+- a `complete: true` declaration that omits a file that is later edited is the intended meaning
+  of a complete caller assertion and keeps that verification current. The reliance is disclosed:
+  the run's freshness row records `basis: complete` with the set-aside changes, and the standing
+  task fact `verification_inputs_caller_asserted` (a G4d disclosure, never agent work or a Stop
+  item) states on status, Stop-time readiness and receipt JSON, markdown and text that freshness
+  relied on a caller assertion and that FinishUP did not observe which files the check read. It
+  covers every retained run (the latest of its command, or one the account cites), not only the
+  latest verification.
+
+The native before/after comparison now supplies at most 128 sorted, unique, domain-separated,
+installation-keyed path identities for changed entries (including removals). It reuses the
+fingerprint's existing path domain and key; raw paths and command text never enter structural
+storage. Root replacement, overflow, unavailable comparison or an old host record supplies no
+complete changed-entry set. A late observation annotation stays attached to its original call's
+result frontier; a contradictory delivery cannot grant an unrelated-write exemption. Known
+input names come only from admitted payloads: requested files, declarations, and the bounded
+latest agent-published evidence references, each matched only by an exact keyed identity. A
+changed path the record does not name is counted as a keyed-only identity, never reconstructed by
+reading the filesystem at replay time. Every freshness question and stale finding names the
+affected verification (its result id and, when it matched one, the requested command), states how
+its inputs are known (no usable declaration, requested inputs, a partial declaration, or a
+caller-asserted complete declaration), and lists the later changes. It never claims that inputs
+were declared when they were not.
+
+Host tool reads do not prove which files a shell process opened: Codex, Claude Code and Cursor
+currently supply no complete per-process read trace. A command's name, extension, successful exit,
+or an earlier agent read therefore never establishes a complete dependency set. Existing lexical
+notes/docs/scratch exemptions remain available when there is no contradictory known input; when
+the dependency coverage of a placed change is uncertain, ask instead of demanding a rerun. This is
+the bounded fallback, not a claim to infer arbitrary dependencies. Capturing process reads is
+outside this change and grants no new capture, disclosure or network authority.
+
+Host-native edit tools (Codex `apply_patch`, the Claude Code and Cursor edit and write tools) are
+not fingerprinted and record no path identity, so an edit through one of them after a
+verification cannot be placed: the verification is stale, as before this amendment, and the
+finding names the edit tool and count. A complete declaration never sets such an edit aside, so it
+raises no `verification_inputs_caller_asserted` disclosure; that disclosure appears only when a
+placed change was set aside on the caller's assertion.
+
+AI-powered review treats freshness as advisory even when an input change is known or a change
+cannot be placed. The packet carries the recorded verification with subsequent paths and short
+change summaries in a non-blocking local question, and the review asks about freshness only when
+the frozen case records a verification with later changes. The reviewer asks the agent to decide:
+rerun, or `respond` with `acknowledged` and a reasoned explanation that rerunning is not needed.
+The answer is retained as an agent assertion and suppresses only that question's exact run/change
+set; a new change asks again. Any nonempty reason satisfies the generic `respond` contract:
+FinishUP records the answer and the reviewer judges it, but does not grade its quality. Rerunning
+supersedes the old question. Actual failures and missing required checks retain their existing
+behavior. Only a reviewer `stale_evidence_for_changed_state` concern that cites an observed
+verification run (test, lint, typecheck or build, an agent-linked requested run, or a run the
+freshness rows track) becomes the `decision_needed` rerun question; the reviewer's own summary is
+kept at the start of its detail. Any other stale-evidence concern keeps its own kind and text.
+On receipts, AI-route freshness is a standing limit (never agent work), the same weight as the
+rerun question. Freshness is AI-route by one predicate on one state: the policy route requires
+AI-powered review under the effective policy (an owner's explicit local conversation setting or
+switch relaxes it), or a review was used before the check that judged freshness. The check asks it
+of its frozen prefix; status, Stop and receipts ask it of the records before the latest check, so
+the task's first AI-powered review never turns the check that ran it advisory after the fact, and
+a check that asked for a review that was not configured, blocked or failed stays local (PR #1167
+review, both rounds). Unknown coverage remains an honest limitation. A run whose result never
+arrived keeps the pre-#1143 last-edit rule, and on the AI route the check asks about it. A
+completion claim's cited run that freshness judges is judged exactly as the task facts judge it
+(a stale row rejects it; no row means current); every other cited ref keeps the latest-edit
+frontier, where the run's own trusted write never counts against it. CLI, MCP, hooks, TUI, and
+receipt JSON, markdown and text consume these shared facts and finding details; no surface runs
+tests itself.

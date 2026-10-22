@@ -400,6 +400,7 @@ async def _assert_mcp_scope_projection(
         ),
         _cli_binding(seed, facts),
         status,
+        _paginate=False,
     )
     assert isinstance(projected, StatusResultModel)
     assert isinstance(projected.root, StatusSuccessModel)
@@ -434,15 +435,17 @@ async def test_status_request_result_parity() -> None:
         ControlClientKind.MCP_BRIDGE, ProjectionRenderMode.MACHINE_READABLE, False
     )
     cli_projected = await app.project_result_for_client(
-        cli_context, _cli_binding(111, facts), status
+        cli_context, _cli_binding(111, facts), status, _paginate=False
     )
     mcp_projected = await app.project_result_for_client(
-        mcp_context, _cli_binding(113, facts), status
+        mcp_context, _cli_binding(113, facts), status, _paginate=False
     )
     assert isinstance(cli_projected, StatusResultModel)
     assert isinstance(mcp_projected, StatusResultModel)
     assert cli_projected.root.ok is True
     assert mcp_projected.root.ok is True
+    assert isinstance(cli_projected.root, StatusSuccessModel)
+    assert isinstance(mcp_projected.root, StatusSuccessModel)
 
     cli_body = cli_projected.root.model_dump(mode="json", exclude={"privacy_projection"})
     mcp_body = mcp_projected.root.model_dump(mode="json", exclude={"privacy_projection"})
@@ -551,6 +554,7 @@ async def test_status_distinguishes_undeclared_and_declared_empty_scope(
         ),
         _cli_binding(seed + 5, facts),
         status,
+        _paginate=False,
     )
     assert isinstance(projected, StatusResultModel)
     projected_success = projected.root
@@ -1158,6 +1162,7 @@ async def test_status_is_task_state_read_only_and_projection_receipted() -> None
     )
     assert isinstance(projected, StatusResultModel)
     assert projected.root.ok is True
+    assert isinstance(projected.root, StatusSuccessModel)
     assert projected.root.privacy_projection.sink == "local_human_view"
     assert len(projection.candidates) == 1
 
@@ -2051,6 +2056,7 @@ async def test_project_status_pages_and_lineage_fallback_use_the_public_projecti
     )
     assert isinstance(projected, StatusResultModel)
     assert projected.root.ok is True
+    assert isinstance(projected.root, StatusSuccessModel)
     assert projected.root.view == "lineage"
 
 
@@ -2065,6 +2071,7 @@ async def _projected_status(
         ),
         _cli_binding(rpc_seed, facts),
         status,
+        _paginate=False,
     )
     assert isinstance(projected, StatusResultModel)
     return projected

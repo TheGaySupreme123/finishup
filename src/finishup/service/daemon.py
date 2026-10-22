@@ -1471,6 +1471,12 @@ class ServiceDaemon:
         try:
             admission = await self._composition.lifecycle.admit(request.method.value)
             handler = getattr(application, request.method.value, None)
+            if (
+                request.method is ControlMethod.STATUS
+                and isinstance(request.body, StatusRequest)
+                and request.body.delivery_cursor is not None
+            ):
+                handler = getattr(application, "read_result_delivery", None)
             if not callable(handler):
                 raise ControlError("method_forbidden")
             routed = self._with_session_route(request)

@@ -522,6 +522,45 @@ async def test_closure_inventory_reads_each_view_once_per_page(
     assert cpu / unit < 40, f"closure inventory costs {cpu / unit:.1f} baseline units"
 
 
+async def test_mcp_closure_prepare_is_never_paged_on_a_long_task() -> None:
+    """#1139 review: the bridge's closure inventory reads one status call per inventory page.
+
+    Its reads send no ``delivery=paged``, so the ~1,000-event ledger never turns into delivery
+    pages, extra page reads or a disclosure audit row per page; the inventory stays whole.
+    """
+
+    from finishup.domain.closure import prepare_closure as prepare_mcp_closure
+    from finishup.protocol.models import ClosureSelectionModel
+
+    ledger = await build_codex_status_ledger()
+    calls: list[str] = []
+
+    async def status(request: StatusRequest) -> StatusResult:
+        assert request.delivery is None and request.delivery_cursor is None
+        calls.append(request.view)
+        model = await ledger.project_status(
+            public_model_to_wire(request), 990_000 + 10 * len(calls)
+        )
+        assert public_model_to_wire(model).get("state") != "delivery_page"
+        return model
+
+    prepared = await prepare_mcp_closure(
+        status,
+        ledger.started.session_id,
+        ledger.started.writer_id,
+        ClosureSelectionModel.model_validate({"phase": "inventory"}),
+        client_kind="cooperative_agent",
+        integration="cooperative_mcp",
+        scope_to_selection=True,
+        host="codex",
+    )
+    rows = cast(dict[str, list[JsonValue]], prepared["inventory"])
+    assert calls == ["compact"] + [
+        view for view in CLOSURE_VIEWS for _ in range(max(1, -(-len(rows[view]) // 100)))
+    ]
+    assert len(calls) == 21 and len(rows["history"]) == ledger.head.sequence
+
+
 async def test_concurrent_compact_burst_is_no_worse_than_serial() -> None:
     """Sixteen concurrent compact reads cost what sixteen solo reads cost (criterion 5).
 

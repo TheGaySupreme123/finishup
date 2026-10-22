@@ -28,6 +28,7 @@ from finishup.ports.semantic import (
     ReviewerReplySchemas,
     ReviewerSession,
     SemanticResult,
+    SemanticResultInvalid,
     SemanticResultReply,
     reviewer_exchange,
 )
@@ -380,9 +381,11 @@ class _UsageCapture(_Capture):
     the input); a Chat Completions answer whose cached count is ``None`` has no details at all.
     """
 
-    def __init__(self, route: str, usages: list[tuple[int, int | None, int]]) -> None:
+    def __init__(
+        self, route: str, usages: list[tuple[int, int | None, int]], finish_reason: str = "stop"
+    ) -> None:
         super().__init__(route)
-        self.usages = usages
+        self.usages, self.finish_reason = usages, finish_reason
 
     async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
         response = await super().handle_async_request(request)
@@ -409,6 +412,10 @@ class _UsageCapture(_Capture):
             }
             | ({} if details is None else {"prompt_tokens_details": details})
         )
+        if self.route != "responses":
+            cast(list[dict[str, object]], payload["choices"])[0]["finish_reason"] = (
+                self.finish_reason
+            )
         return httpx.Response(200, request=request, json=payload)
 
 
@@ -469,6 +476,19 @@ async def test_a_chat_answer_without_a_cached_count_still_records_and_leaves_its
         "reviewer_cache_miss": "first_turn",
     }
     assert (second["reviewer_prefix_tokens"], second["reviewer_cache_miss"]) == (2_000, "none")
+
+
+async def test_a_truncated_chat_answer_is_recorded_incomplete(
+    records: list[dict[str, object]],
+) -> None:
+    # ``length`` is the Chat Completions spelling of Responses ``incomplete``: the answer is
+    # invalid, so its exchange is not recorded as a completed one.
+    capture = _UsageCapture("chat", [(2_000, 0, 30)], finish_reason="length")
+    result, *_rest = await _api_evaluate("chat", _FIRST, capture, _Clock())
+    assert type(result) is SemanticResultInvalid
+    assert [(r["component"], r["outcome"]) for r in records] == [
+        ("openai_chat_completions", "incomplete")
+    ]
 
 
 async def test_an_api_answer_without_usage_records_nothing(
