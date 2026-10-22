@@ -13,12 +13,6 @@ from finishup.domain.events import (
 from finishup.domain.receipts import ReceiptRedactionProfile
 from finishup.domain.values import JsonObject
 
-# Status history is session-scoped, so the continuation names the session that recorded the check.
-ADVISORY_HISTORY_CONTINUATION = (
-    "Retrieve status view=history filter.schema_name=check_recorded in the session that recorded "
-    "the check (follow next_cursor)."
-)
-
 
 @dataclass(frozen=True, slots=True)
 class CorrectnessAdvisory:
@@ -28,35 +22,48 @@ class CorrectnessAdvisory:
     response: LedgerRecord | None = None
 
     @property
-    def readable_response(self) -> bool:
-        return self.response is not None and self.response.payload is not None
-
-    @property
     def disposition(self) -> str:
         if self.response is None:
             return "no recorded response"
         payload = self.response.payload
-        if payload is None:
-            return "response_unavailable"
         assert isinstance(payload, DecisionRecordedPayload)
         assert payload.advisory_response is not None
         return str(payload.advisory_response["disposition"])
 
 
+# Status history is session-scoped, so the continuation names the sessions that recorded the checks.
+_NAMED_SESSIONS = 3
+
+
+def advisory_history_continuation(rows: tuple[CorrectnessAdvisory, ...]) -> str:
+    """Where the full rows are: history of the session that recorded each noted check."""
+
+    sessions = tuple(dict.fromkeys(str(row.check.session_id) for row in rows))
+    named = ", ".join(sessions[:_NAMED_SESSIONS])
+    if len(sessions) > _NAMED_SESSIONS:
+        named += f" and {len(sessions) - _NAMED_SESSIONS} more (each receipt row names its own)"
+    return (
+        "Full rows: status view=history filter.schema_name=check_recorded with session_id "
+        f"{named or 'of the recording session'} (follow next_cursor)."
+    )
+
+
 @dataclass(frozen=True, slots=True)
 class CorrectnessAdvisoryIndex:
     rows: tuple[CorrectnessAdvisory, ...]
-    # Withheld responses on checks with several notes. Their target note is withheld with their
-    # payload, so none is attached to a note; each is counted (at most one per note of that check
-    # without a recorded response) and disclosed beside the notes, which keep their own status.
+    # Withheld decisions that may answer a note. A withheld payload hides both its target and
+    # whether it is an advisory response at all (a review-mode switch can have the same envelope),
+    # so none is attached to a note: each is counted (at most one per note of its check without a
+    # recorded response) and disclosed beside the notes, which keep their own status.
     unmatched_withheld: int = 0
 
 
 def _withheld_response_check(record: LedgerRecord) -> str | None:
-    """The check a withheld decision could answer a note of, or ``None``.
+    """The check a withheld decision may answer a note of, or ``None``.
 
     Only ``decision_recorded`` 1.1.0 can carry an advisory response, and every advisory response
-    names exactly its check as causal parent; that envelope survives when the payload does not.
+    names exactly its check as causal parent. That envelope survives when the payload does not,
+    but it does not prove the record is a response: it only says it may be one.
     """
 
     if getattr(record, "payload", None) is not None:
@@ -69,12 +76,11 @@ def _withheld_response_check(record: LedgerRecord) -> str | None:
 
 
 def correctness_advisory_index(records: tuple[LedgerRecord, ...]) -> CorrectnessAdvisoryIndex:
-    """Index every note with the response attached to it, and nothing else.
+    """Index every note with the readable response attached to it, and nothing else.
 
     A readable response attaches to the note it names; a later readable response replaces the
-    displayed one. A withheld (payload-less) decision never replaces a readable account. It is
-    attached only where its target is certain: its check carries exactly one note. On a check
-    with several notes it is counted as unmatched instead of rewriting the check's other notes.
+    displayed one. A withheld (payload-less) decision is never attached to a note: it is counted
+    as one that may answer a note of its check, and the notes keep their own status.
     """
 
     rows: dict[str, CorrectnessAdvisory] = {}
@@ -95,13 +101,7 @@ def correctness_advisory_index(records: tuple[LedgerRecord, ...]) -> Correctness
             if key in rows:
                 rows[key] = replace(rows[key], response=record)
         elif (check := _withheld_response_check(record)) is not None and check in notes_by_check:
-            keys_of_check = notes_by_check[check]
-            if len(keys_of_check) == 1:
-                row = rows[keys_of_check[0]]
-                if not row.readable_response:
-                    rows[keys_of_check[0]] = replace(row, response=record)
-            else:
-                withheld_by_check[check] = withheld_by_check.get(check, 0) + 1
+            withheld_by_check[check] = withheld_by_check.get(check, 0) + 1
     unmatched = sum(
         min(count, sum(rows[key].response is None for key in notes_by_check[check]))
         for check, count in withheld_by_check.items()
@@ -119,10 +119,7 @@ def advisory_counts(index: CorrectnessAdvisoryIndex) -> JsonObject:
         {
             "total": str(len(rows)),
             "no_recorded_response": str(sum(row.response is None for row in rows)),
-            "response_unavailable": str(
-                sum(row.disposition == "response_unavailable" for row in rows)
-                + index.unmatched_withheld
-            ),
+            "response_unavailable": str(index.unmatched_withheld),
         }
     )
 
@@ -137,8 +134,6 @@ def advisory_closing_text(
             status = "addressed (agent-reported, linked evidence)"
         elif status == "declined":
             status = "declined with reason (retrieve history)"
-        elif status == "response_unavailable":
-            status = "response unavailable (withheld)"
         text += f" {row.advisory_id}: {status}."
     if len(rows) > 3:
         text += f" {len(rows) - 3} earlier rows omitted; retrieve history."
@@ -146,19 +141,16 @@ def advisory_closing_text(
 
 
 def advisory_summary(rows: tuple[CorrectnessAdvisory, ...], *, unmatched_withheld: int = 0) -> str:
-    unavailable = sum(row.disposition == "response_unavailable" for row in rows)
     text = (
         f"Earlier correctness advisories: {len(rows)}; no recorded response: "
         f"{sum(row.response is None for row in rows)}. Non-blocking. "
     )
-    if unavailable + unmatched_withheld:
-        text += f"Response details unavailable: {unavailable + unmatched_withheld}. "
     if unmatched_withheld:
         text += (
-            f"Withheld responses not matched to a note: {unmatched_withheld}; each may answer one "
-            "note of its several-note check listed with no recorded response. "
+            f"Withheld decisions that may answer a note: {unmatched_withheld}; each may answer one "
+            "note of its check listed with no recorded response. "
         )
-    return text + ADVISORY_HISTORY_CONTINUATION
+    return text + advisory_history_continuation(rows)
 
 
 def advisory_item(row: CorrectnessAdvisory, profile: ReceiptRedactionProfile) -> str:
@@ -167,13 +159,12 @@ def advisory_item(row: CorrectnessAdvisory, profile: ReceiptRedactionProfile) ->
         status = "addressed (agent-reported, linked evidence)"
     elif status == "declined":
         status = "declined with reason"
-    elif status == "response_unavailable":
-        status = "response unavailable (withheld)"
     payload = row.check.payload
     assert isinstance(payload, CheckRecordedPayload)
     prefix = (
         f"Correctness advisory {row.advisory_id}: {status}. "
-        f"Check {row.check.event_id}; subject frontier {payload.subject_frontier.sequence}; "
+        f"Check {row.check.event_id} in session {row.check.session_id}; "
+        f"subject frontier {payload.subject_frontier.sequence}; "
         f"subjects: {', '.join(str(ref) for ref in cast(tuple[str, ...], row.concern['subject_refs']))}."
     )
     if row.response is not None and isinstance(row.response.payload, DecisionRecordedPayload):
@@ -183,8 +174,6 @@ def advisory_item(row: CorrectnessAdvisory, profile: ReceiptRedactionProfile) ->
         prefix += (
             f" Linked evidence: {', '.join(refs) or 'none'}; response {row.response.event_id}."
         )
-    elif row.response is not None:
-        prefix += f" Response {row.response.event_id} (details withheld)."
     # Like the existing reviewer-summary leaf, export profiles retain identity/counts but withhold
     # model and agent prose. Local client policy performs the second projection after building.
     if profile is not ReceiptRedactionProfile.FULL_LOCAL:

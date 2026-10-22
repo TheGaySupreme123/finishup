@@ -12246,14 +12246,21 @@ its raw `act_`/`res_`/`evd_` citations. A row that cannot be retained degrades t
 summary with a disclosure and never rejects the review. Subject frontier and semantic provenance
 belong to that check. `status view=history` filtered to `check_recorded` exposes the rows and
 their frontier-bound disposition with ordinary pagination; history stays session-scoped, so a
-note is retrieved in the session that recorded its check, while the receipt is task-wide.
+note is retrieved in the session that recorded its check, while the receipt is task-wide. Each
+receipt row names its check's recording session, and the retrieval continuation names those
+`session_id`s.
 
 An optional `respond` targets this identity using the existing `finding_id`/`finding_frontier`
-keys. `addressed` means agent-reported with linked evidence; `declined` records the reason;
-absence is `no_recorded_response`. A withheld response is `response_unavailable` when its check
-carries a single note; on a several-note check its target is withheld, so it is attached to no
-note and counted in `correctness_advisory_counts.response_unavailable` as not matched to a note.
-A withheld response never replaces a readable disposition.
-Typed `decision_recorded` 1.1.0 `advisory_response` records carry the target, disposition and mirrored
-evidence refs; `rationale` carries the reason. They are independent of review-mode switches and
-never change finding state, check applicability, closure readiness or receipt conclusions.
+keys. `addressed` means agent-reported with linked evidence, at least one ref recorded after the
+note's check (`response_fields_invalid` at `/evidence_refs` otherwise); `declined` records the
+reason; absence is `no_recorded_response`. `respond` is the only way in: `publish_work` refuses a
+decision draft carrying `advisory_response` (`event_family_not_admitted`). A withheld decision is
+never attached to a note: its envelope cannot show whether it is an advisory response or a
+review-mode switch, so it is counted in `correctness_advisory_counts.response_unavailable` as one
+that may answer a note, and it stales the check under the unreadable-record rule (follow-up
+#1190). Typed `decision_recorded` 1.1.0 `advisory_response` records carry the target,
+disposition and mirrored evidence refs; `rationale` carries the reason. They are independent of
+review-mode switches and never change finding state, check applicability, closure readiness or
+receipt conclusions. Closure readiness carries `correctness_advisory_summary` only while some note
+has no recorded response; the Stop hooks read its presence and show a fixed owner-facing notice
+once per Stop sequence (not on a `stop_hook_active` re-entry).

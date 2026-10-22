@@ -2110,7 +2110,10 @@ async def _closure_readiness(
         )
 
         advisory_index = correctness_advisory_index(loaded.records)
-        if advisory_index.rows:
+        # #1162: readiness names what is still open, so the summary is present only while some
+        # note has no recorded response. Hooks read its presence (never its text) to decide the
+        # owner-facing Stop notice; the receipt and history keep every note and its status.
+        if any(row.response is None for row in advisory_index.rows):
             optional_fields["correctness_advisory_summary"] = advisory_closing_text(
                 advisory_index.rows, unmatched_withheld=advisory_index.unmatched_withheld
             )

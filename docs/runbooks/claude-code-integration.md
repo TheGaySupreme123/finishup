@@ -2971,20 +2971,27 @@ are shared across macOS, Linux and Windows through WSL 2; no native Windows supp
 ### Correctness advisory closing visibility (#1162)
 
 Routine reviewer correctness notes persist independently of findings. Receipts (all formats and
-include levels), CLI/MCP and terminal-interface status/history show the original check, subjects,
-provenance and optional agent-reported disposition. No response is required and no advisory creates
-a closure gate. The shared guidance asks final prose to retain material advisory statuses. Status
-history is session-scoped: a note is listed in the history of the session that recorded its check,
-while the receipt counts every note of the task.
+include levels), CLI and terminal-interface status/history, and MCP structured status/history
+results show the original check, subjects, provenance and optional agent-reported disposition; the
+MCP text fallback of status does not repeat them. No response is required and no advisory creates
+a closure gate. An answer is recorded only through `respond` (`publish_work` refuses one), and
+`addressed` cites at least one evidence or result recorded after the note's check. The shared
+closing guidance asks final prose to retain material advisory statuses. Status history is
+session-scoped: a note is listed in the history of the session that recorded its check, while the
+receipt counts every note of the task and names each note's recording session.
 
-At Stop, Codex and Claude Code receive the structural count/status disclosure through the common
-owner-facing `systemMessage`, without a blocking decision or model-feedback continuation. Both
-hosts document `systemMessage` as a common output field Stop accepts (re-read 2026-10-22, ADR-010
-amendment for #1162). With an active closure gate the same object also carries the gate's own
-payload (Codex `decision: block` plus `reason`; Claude Code `hookSpecificOutput.additionalContext`),
-and the note never enters that continuation text. Cursor's
-Stop stdout supports only continuing advice, so its non-blocking disclosure goes to stderr; UI
-visibility depends on the host's diagnostic display. Full retrieval stays available in the shared
+At Stop, while at least one note has no recorded response, Codex and Claude Code receive
+FinishUP's fixed owner-facing notice (earlier AI-powered review left correctness notes with no
+recorded response; they do not block finishing; the task receipt lists each note and its status)
+through the common `systemMessage`, without a blocking decision or model-feedback continuation.
+It appears once per Stop sequence: a Stop the host already continued (`stop_hook_active`) does not
+repeat it, and it stops once every note has a recorded response. Both hosts document
+`systemMessage` as a common output field Stop accepts (re-read 2026-10-22, ADR-010 amendment for
+#1162). With an active closure gate the same object also carries the gate's own payload (Codex
+`decision: block` plus `reason`; Claude Code `hookSpecificOutput.additionalContext`), and the
+notice never enters that continuation text. Cursor's Stop stdout supports only continuing advice,
+so its non-blocking notice goes to stderr under the same conditions; UI visibility depends on the
+host's diagnostic display. Full retrieval stays available in the shared
 receipt and `status view=history` filtered to `check_recorded`. Model receipt of these Stop
 diagnostics and live host/OS parity have not been established by unit hook-contract tests.
 Follow-up owner for any richer non-continuing host channel: issue #1162.

@@ -2924,25 +2924,31 @@ provenance. Identity is `<check-event-id>:<one-based-ordinal>`. Notes are not fi
 finding ranking or resolution, and never affect closure readiness or the receipt conclusion.
 
 `respond` optionally accepts that identity in its existing `finding_id` target field and an
-in-chain `finding_frontier` at or after the check. `addressed` requires a reason and at least one
-readable task evidence/result ref; `declined` requires a reason. Both are agent reports, never
-proof of repair. A later readable response replaces the displayed disposition; earlier decisions
+in-chain `finding_frontier` at or after the check. `addressed` requires a reason and readable
+task evidence/result refs, at least one recorded after the note's check (as `self_verified` needs
+evidence after its finding, #984: work the reviewer already had cannot show the note was
+addressed); `declined` requires a reason. Both are agent reports, never proof of repair. Only
+`respond` records them: `publish_work` refuses a decision draft carrying `advisory_response`
+(`event_family_not_admitted` at `/event_drafts/<n>/payload/advisory_response`), so every response
+passes these checks. A later readable response replaces the displayed disposition; earlier decisions
 remain retrievable. Idempotent replay uses the same response request identity. No answer is
 required, and later checks or silence never answer an advisory.
 
-An unreadable (withheld) response is never called silence and never rewrites a note it may not
-answer. Only a withheld `decision_recorded` 1.1.0 whose sole causal parent is the check can be an
-advisory response, and its target ordinal is withheld with its payload. It is attached, as
-`response_unavailable`, only to a check's single note, and never replaces a readable disposition.
-On a check with several notes it is attached to none: those notes keep their own status and the
-inventory counts it as a withheld response not matched to a note (at most one per note of that
-check without a recorded response), saying that it may answer one of them.
+An unreadable (withheld) decision is never attached to a note and never called silence. Only a
+withheld `decision_recorded` 1.1.0 whose sole causal parent is a noted check can be an advisory
+response, but its envelope does not prove it is one: a review-mode switch naming that check as its
+only parent looks the same once its payload is withheld, and the payload also carried the target
+ordinal. So the notes keep their own status and the inventory counts it as a withheld decision
+that may answer a note (at most one per note of that check without a recorded response). The
+same ambiguity keeps the conservative rule for unreadable records: a withheld decision makes a
+check stale even when it was an advisory response. Recognising a withheld advisory response
+exactly is follow-up #1190.
 
 The response is a typed `decision_recorded` 1.1.0 `advisory_response` with a fixed statement,
 reason in `rationale`, check causal parent and mirrored evidence refs. This unreleased version
 now admits exactly one of `review_mode` or `advisory_response`; the latter cannot change review
-mode, affect obligations or supersede a decision. Recording it does not stale a check or require
-another check. Released 1.0.0 decisions and earlier check readers remain closed and unchanged.
+mode, affect obligations or supersede a decision. Recording a readable one does not stale a check
+or require another check (a withheld one does, above). Released 1.0.0 decisions and earlier check readers remain closed and unchanged.
 
 Both wire changes are in place, under the repository's rule for wire versions: a version on no
 release tag may be amended in place until it ships in a release; a released version is never
@@ -2957,15 +2963,24 @@ The existing frontier-bound `status view=history` with `filter.schema_name=check
 retrieves original notes, provenance, and the latest response at that frontier. Its existing
 signed cursor, selector and limit rules apply, and so does its session scope: a session's history
 lists only its own rows, so another session's check row, notes and review-input manifest never
-appear there. The receipt is task-wide and carries every note's identity, check and status;
-retrieval continuations name the session that recorded the check. History prose is `finding_summary` content under
+appear there. The receipt is task-wide and carries every note's identity, check, recording
+session and status; the retrieval continuation names the `session_id` of each recording session
+(up to three, then a count; each receipt row names its own). A status read is routed by that
+session and its writer, so a later session of the task may be unable to open those rows; the
+receipt rows still carry their prose within the receipt bound. History prose is `finding_summary` content under
 the existing local disclosure policy. Every receipt include level and JSON/markdown/text rendering
 carries a task-wide count and bounded rows; export profiles explicitly withhold concern/response
 prose and count the redaction. The complete advisory prose is bounded to 8,192 characters and at most 64 rows are
 rendered, with omitted rows counted and the history continuation retained.
 
-Stop reads the same advisory index without creating a gate or continuation. Codex and Claude Code
-receive an owner-facing `systemMessage`, a common output field each host documents for Stop
+Stop reads closure readiness without creating a gate or continuation. Readiness carries
+`correctness_advisory_summary` only while at least one note has no recorded response (readiness
+names what is still open; the receipt and history keep every note). The Stop hook reads only that
+field's presence, never its agent-facing text, and then shows FinishUP's fixed owner-facing notice:
+earlier AI-powered review left correctness notes with no recorded response; they do not block
+finishing; the task receipt lists each note and its status. It rides only a Stop the host did not
+already continue (`stop_hook_active` false), so once per Stop sequence, and stops once every note
+has a recorded response. Codex and Claude Code receive it as an owner-facing `systemMessage`, a common output field each host documents for Stop
 (Codex: Stop/SubagentStop accept the common fields plus `decision`/`reason`; Claude Code: every
 event accepts the common fields, and Stop does not discard `systemMessage`). It is added beside an
 active closure gate's `decision: block`/`reason` (Codex) or `hookSpecificOutput.additionalContext`
@@ -2979,9 +2994,10 @@ answer or repeat a correctness advisory.
 
 Current receipt-document/result 1.3.0 also carries optional structural
 `correctness_advisory_counts` (`total`, `no_recorded_response`, `response_unavailable`).
-`no_recorded_response` counts notes with no readable or attached response; `response_unavailable`
-counts withheld responses, attached or not matched to a note, so the two may overlap; each is at
-most `total`. These
+`no_recorded_response` counts notes with no readable response; `response_unavailable` counts
+withheld decisions that may answer one of those notes, so the two may overlap; each is at most
+`total`. A history row's `disposition` is `addressed`, `declined` or `no_recorded_response`
+(`response_unavailable` stays in the closed token set but is no longer produced for a row). These
 survive replay and supply the short MCP preview for every rendering. Counts are never extracted
 from quoted reviewer or agent prose; source text cannot impersonate the advisory inventory.
 Older receipt artifacts keep their exact shape.

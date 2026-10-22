@@ -52,7 +52,3 @@ Before delegating, read the multi-agent sections of `finishup://guidance/workflo
 # Read more
 
 On demand: resume/recovery/delegation/capacity `finishup://guidance/workflow.md`; event shapes, corrections `finishup://guidance/publication-policy.md`; check/receipt `finishup://guidance/coverage-and-receipts.md`; publish `finishup://guidance/request-templates.md#publish-shapes`; setup: same page.
-
-At closing, disclose material earlier correctness advisories and their recorded statuses from
-the receipt (including no recorded response), with retrieval/evidence links. They never block
-closing and need no answer; later silence or a passing check is not repair proof.

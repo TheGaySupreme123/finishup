@@ -121,6 +121,12 @@ __all__ = [
     "standing_advice_withheld",
 ]
 
+# #1162: shown by the host to whoever watches the session (Codex and Claude Code systemMessage,
+# Cursor stderr, one sentence per line). Each sentence stays within the 200-character stderr line.
+STOP_ADVISORY_NOTICE: Final = (
+    "FinishUP: an earlier AI-powered review left correctness notes on this task with no recorded "
+    "response. They do not block finishing; the task receipt lists each note and its status."
+)
 _FILE_NAME: Final = "closure-gate.json"
 _BLOCKER_FILE_NAME: Final = "closure-gate-blockers.json"
 _TURN_FILE_NAME: Final = "closure-gate-turns.json"
@@ -1308,9 +1314,12 @@ async def read_closure_gate(
         if type(sequence) is not str or type(digest) is not str:
             raise ClosureGateUnavailable("status_unreadable")
         readiness = getattr(branch, "closure_readiness", None)
+        # #1162: the readiness summary is present only while an earlier correctness note has no
+        # recorded response. Its text is agent-facing, so the Stop notice is FinishUP's own fixed
+        # owner-facing wording, decided by the summary's presence alone.
         note = getattr(readiness, "correctness_advisory_summary", None)
         if advisory_notes is not None and type(note) is str and note:
-            advisory_notes.append(note[:1800])
+            advisory_notes.append(STOP_ADVISORY_NOTICE)
         return closure_gate_from_readiness(
             readiness,
             frontier_sequence=sequence,

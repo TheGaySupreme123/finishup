@@ -10017,7 +10017,11 @@ async def test_correctness_advisory_survives_check_response_and_receipt(
     assert second.subject_frontier == status.subject_frontier
     assert isinstance(second.page, StatusHistoryPageModel)
     assert getattr(second.page.items[0], "correctness_advisories", None) is None
-    assert status.closure_readiness.correctness_advisory_summary is not None
+    # Readiness names what is still open: the summary stays while the note has no recorded
+    # response and leaves once it has one (the receipt below still lists the note).
+    assert (status.closure_readiness.correctness_advisory_summary is None) is (
+        disposition is not None
+    )
     for offset, format_value in enumerate(("json", "markdown", "text")):
         receipt = await app.receipt(
             ReceiptRequest.model_validate(
@@ -10037,6 +10041,9 @@ async def test_correctness_advisory_survives_check_response_and_receipt(
         text = str(receipt.as_json())
         assert "Earlier correctness advisories: 1" in text
         assert "world AABBs" in text
+        # History is session-scoped, so the receipt names the session that recorded the check.
+        assert f"in session {started.session_id}" in text
+        assert f"with session_id {started.session_id}" in text
         assert (
             "no recorded response"
             if disposition is None
@@ -10060,3 +10067,90 @@ async def test_correctness_advisory_survives_check_response_and_receipt(
         retained = correctness_advisories(cold_records)
         assert len(retained) == 1
         assert retained[0].disposition == (disposition or "no recorded response")
+
+
+@pytest.mark.parametrize("backend", ["memory", "sqlite"])
+async def test_an_advisory_response_needs_respond_and_evidence_recorded_after_the_note(
+    backend: Literal["memory", "sqlite"],
+) -> None:
+    """#1162 review: publish_work cannot record an advisory response around respond's checks,
+    and addressed cannot cite only work the reviewer already had when it raised the note."""
+
+    from finishup.domain.correctness_advisories import ADVISORY_RESPONSE_STATEMENT
+    from finishup.kernel.correctness_advisories import correctness_advisories
+
+    def round_one(_frozen: FrozenCase) -> tuple[ReviewerChallenge, ...]:
+        return (
+            _routine_note(
+                "Geometry uses world AABBs instead of receptacle-frame footprints.",
+                protocol_id("res_", 216405),
+            ),
+        )
+
+    app, runtime, _ = _build_app(
+        semantic="required",
+        ledger_backend=backend,
+        semantic_evaluator=_scripted_reviewer([round_one]),
+    )
+    started, checked, task_refs = await _routine_advisory_task(app, seed=216400)
+    ledger, _objects = runtime.resources[started.task_id]
+    records = tuple([r async for r in ledger.load_events(started.session_id)])
+    (note,) = correctness_advisories(records)
+    with pytest.raises(PublicOperationError) as published:
+        await app.publish_work(
+            PublishWorkRequest.model_validate(
+                {
+                    **_request_base(protocol_id("req_", 216410)),
+                    "session_id": started.session_id,
+                    "writer_id": started.writer_id,
+                    "expected_frontier": _frontier(checked.result_frontier),
+                    "event_drafts": [
+                        {
+                            "event_id": protocol_id("evt_", 216411),
+                            "schema": {"name": "decision_recorded", "version": "1.1.0"},
+                            "occurred_at": "2026-07-19T12:00:05.000Z",
+                            "causal_parents": [str(note.check.event_id)],
+                            "payload": {
+                                "statement": ADVISORY_RESPONSE_STATEMENT,
+                                "rationale": "Published around respond.",
+                                "authority": "harness:test",
+                                "advisory_response": {
+                                    "advisory_id": note.advisory_id,
+                                    "disposition": "addressed",
+                                    "evidence_refs": [task_refs["result"]],
+                                },
+                            },
+                            "artifact_refs": [],
+                            "evidence_refs": [task_refs["result"]],
+                        }
+                    ],
+                }
+            )
+        )
+    assert published.value.safe_details is not None
+    assert published.value.safe_details["reason_code"] == "event_family_not_admitted"
+    assert published.value.safe_details["field"] == "/event_drafts/0/payload/advisory_response"
+    assert "only through respond" in str(published.value)
+    with pytest.raises(PublicOperationError) as early:
+        await app.respond(
+            RespondRequest.model_validate(
+                {
+                    **_request_base(protocol_id("req_", 216412)),
+                    "session_id": started.session_id,
+                    "writer_id": started.writer_id,
+                    "expected_frontier": _frontier(checked.result_frontier),
+                    "finding_id": note.advisory_id,
+                    "finding_frontier": _frontier(checked.result_frontier),
+                    "disposition": "addressed",
+                    "reason": "Cites only the edit the reviewer already read.",
+                    # The edit's own result, recorded before the check that raised the note.
+                    "evidence_refs": [task_refs["result"]],
+                }
+            )
+        )
+    assert early.value.safe_details is not None
+    assert early.value.safe_details["reason_code"] == "response_fields_invalid"
+    assert early.value.safe_details["field"] == "/evidence_refs"
+    after = tuple([r async for r in ledger.load_events(started.session_id)])
+    assert len(after) == len(records)
+    assert correctness_advisories(after)[0].response is None

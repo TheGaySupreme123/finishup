@@ -2984,6 +2984,7 @@ def test_unanswered_correctness_advice_is_visible_and_never_blocks(
     record = SimpleNamespace(
         payload=check,
         event_id=_CHECK_EVENT_ID,
+        session_id="ses_00000000-0000-4000-8000-000000000009",
         schema=SimpleNamespace(name="check_recorded"),
         ledger=SimpleNamespace(ingestion_sequence=2),
     )

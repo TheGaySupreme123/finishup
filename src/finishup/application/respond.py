@@ -1152,6 +1152,7 @@ async def _record_advisory_response(
             PublicErrorCode.INVALID_REQUEST,
             "Advisories accept addressed with linked evidence and a reason, or declined with a reason; no response is required.",
         )
+    after_note = False
     for ref in refs:
         item = (
             projection.evidence.get(evidence_id(ref))
@@ -1163,6 +1164,19 @@ async def _record_advisory_response(
                 PublicErrorCode.INVALID_REQUEST,
                 "Advisory evidence must name a readable recorded evidence or result of this task.",
             )
+        after_note = after_note or item.source_frontier > row.check.ledger.ingestion_sequence
+    if request.disposition == "addressed" and not after_note:
+        # #1162 review: like self_verified (#984), addressed links work recorded after the note;
+        # evidence the reviewer already had when it raised the note cannot show it was addressed.
+        raise _error(
+            PublicErrorCode.INVALID_REQUEST,
+            (
+                "addressed needs at least one evidence_refs id recorded after the note's check: "
+                "publish the evidence of what you changed or ran, then cite its evd_ or res_ id."
+            ),
+            reason_code="response_fields_invalid",
+            field="/evidence_refs",
+        )
     payload = DecisionRecordedPayload(
         statement=ADVISORY_RESPONSE_STATEMENT,
         rationale=request.reason,

@@ -6659,16 +6659,21 @@ def handle_observe(
                 additional = f"{additional}\n{session_recap}".strip()
                 context_limit = RECAP_CONTEXT_LIMIT
             rendered_output = _render_context(additional, limit=context_limit) if additional else {}
-            if stop_advisory_notes:
-                # Advisory visibility never changes the gate or spends a continuation.
-                note = stop_advisory_notes[0]
+            # #1162: the owner-facing advisory notice rides only a Stop the host did not already
+            # continue (once per Stop sequence), and only while a note has no recorded response.
+            # It never changes the gate or spends a continuation.
+            stop_notice = (
+                stop_advisory_notes[0] if stop_advisory_notes and not stop_already_active else None
+            )
+            if stop_notice is not None:
+                note = stop_notice
                 if source is ObservationSource.CURSOR_HOOK:
                     for sentence in note.split(". "):
                         _stderr_line(sentence)
                 else:
                     rendered_output["systemMessage"] = note
             host_consumable = bool(rendered_output)
-            if additional or stop_advisory_notes:
+            if additional or stop_notice is not None:
                 emitted = _stdout_json(rendered_output, stdout)
             else:
                 emitted = _stdout_json({}, stdout)

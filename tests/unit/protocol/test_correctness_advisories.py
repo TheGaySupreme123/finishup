@@ -104,6 +104,7 @@ def test_advisory_decisions_cannot_bypass_response_reason_bounds(reason: str) ->
 
 
 _CHECK_EVENT = "evt_00000000-0000-4000-8000-000000000001"
+_SESSION = "ses_00000000-0000-4000-8000-000000000009"
 
 
 def _noted_check(notes: int) -> SimpleNamespace:
@@ -125,7 +126,7 @@ def _noted_check(notes: int) -> SimpleNamespace:
         ),
     )
     assert isinstance(checked, CheckRecordedPayload)
-    return SimpleNamespace(payload=checked, event_id=_CHECK_EVENT)
+    return SimpleNamespace(payload=checked, event_id=_CHECK_EVENT, session_id=_SESSION)
 
 
 def _withheld(
@@ -167,28 +168,29 @@ def _index(*records: SimpleNamespace) -> CorrectnessAdvisoryIndex:
     return correctness_advisory_index(cast(tuple[LedgerRecord, ...], records))
 
 
-def test_redacted_response_is_never_inferred_to_be_no_response() -> None:
-    from finishup.kernel.correctness_advisories import advisory_counts
+def test_a_withheld_decision_is_disclosed_as_one_that_may_answer_a_note() -> None:
+    """#1162 review: a withheld payload hides whether the decision is a response at all.
 
-    index = _index(_noted_check(1), _withheld(9))
-    rows = index.rows
-    # The check carries one note, so the withheld decision can only answer that note.
-    assert rows[0].disposition == "response_unavailable"
-    assert str(cast(SimpleNamespace, rows[0].response).event_id).endswith("000000000009")
-    assert index.unmatched_withheld == 0
-    assert "no recorded response: 0" in advisory_summary(rows)
-    assert dict(advisory_counts(index).items()) == {
-        "total": "1",
-        "no_recorded_response": "0",
-        "response_unavailable": "1",
-    }
-
-
-def test_one_withheld_decision_never_rewrites_the_other_notes_of_its_check() -> None:
-    """#1162 review: the target of a withheld decision on a several-note check is withheld too."""
+    A review-mode switch whose only parent is the check has the same envelope as an advisory
+    response once its payload is withheld, so it is never attached to a note (never shown as that
+    note's response) and never called silence: it is counted as one that may answer a note.
+    """
 
     from finishup.domain.correctness_advisories import validate_advisory_counts
     from finishup.kernel.correctness_advisories import advisory_closing_text, advisory_counts
+
+    single = _index(_noted_check(1), _withheld(9))
+    assert single.rows[0].response is None
+    assert single.rows[0].disposition == "no recorded response"
+    assert single.unmatched_withheld == 1
+    assert dict(advisory_counts(single).items()) == {
+        "total": "1",
+        "no_recorded_response": "1",
+        "response_unavailable": "1",
+    }
+    summary = advisory_summary(single.rows, unmatched_withheld=single.unmatched_withheld)
+    assert "no recorded response: 1" in summary
+    assert "Withheld decisions that may answer a note: 1" in summary
 
     index = _index(_noted_check(3), _answer(7, 1), _withheld(8))
     assert [row.disposition for row in index.rows] == [
@@ -207,20 +209,25 @@ def test_one_withheld_decision_never_rewrites_the_other_notes_of_its_check() -> 
         "no_recorded_response": "2",
         "response_unavailable": "1",
     }
-    summary = advisory_summary(index.rows, unmatched_withheld=index.unmatched_withheld)
-    assert "no recorded response: 2" in summary
-    assert "Response details unavailable: 1" in summary
-    assert "Withheld responses not matched to a note: 1" in summary
     closing = advisory_closing_text(index.rows, unmatched_withheld=index.unmatched_withheld)
     assert f"{_CHECK_EVENT}:1: declined with reason" in closing
     assert f"{_CHECK_EVENT}:2: no recorded response" in closing
+    assert "Withheld decisions that may answer a note: 1" in closing
     # More withheld decisions than unanswered notes never count past those notes.
     capped = _index(_noted_check(2), _answer(7, 1), _withheld(8), _withheld(9), _withheld(10))
     assert capped.unmatched_withheld == 1
-    # Once every note has a readable answer, a withheld decision is a re-answer, not a gap.
+    # Once every note has a readable answer, a withheld decision cannot answer an open note.
     answered = _index(_noted_check(2), _answer(7, 1), _answer(8, 2), _withheld(9))
     assert answered.unmatched_withheld == 0
     assert [row.disposition for row in answered.rows] == ["declined", "declined"]
+
+
+def test_the_history_continuation_names_each_recording_session() -> None:
+    """#1162 review: history is session-scoped, so the continuation says which session to read."""
+
+    rows = _index(_noted_check(2)).rows
+    summary = advisory_summary(rows)
+    assert f"with session_id {_SESSION} (follow next_cursor)" in summary
 
 
 def test_a_withheld_decision_never_replaces_a_readable_disposition() -> None:
@@ -266,7 +273,11 @@ def test_receipt_advisory_prose_has_a_task_wide_bound_and_retrieval_marker() -> 
     checked = _check(CheckVerdict.NO_ISSUE_DETECTED, _coverage())
     record = cast(
         LedgerRecord,
-        SimpleNamespace(payload=checked, event_id="evt_00000000-0000-4000-8000-000000000001"),
+        SimpleNamespace(
+            payload=checked,
+            event_id="evt_00000000-0000-4000-8000-000000000001",
+            session_id=_SESSION,
+        ),
     )
     rows = tuple(
         CorrectnessAdvisory(f"{record.event_id}:{n}", record, concern) for n in range(1, 6)
@@ -298,6 +309,7 @@ def test_addressed_advice_keeps_evidence_links_when_export_withholds_prose(profi
         SimpleNamespace(
             payload=_check(CheckVerdict.NO_ISSUE_DETECTED, _coverage()),
             event_id=target.split(":")[0],
+            session_id=_SESSION,
         ),
     )
     response = cast(

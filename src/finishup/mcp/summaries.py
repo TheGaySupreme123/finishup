@@ -1909,14 +1909,15 @@ def _receipt_correctness_advisory_clause(source: Mapping[str, JsonValue]) -> str
         return ""
     withheld = counts.get("response_unavailable")
     withheld_clause = (
-        f"; response details unavailable: {withheld}"
+        f"; withheld decisions that may answer a note: {withheld}"
         if type(withheld) is str and withheld.isdigit() and withheld != "0"
         else ""
     )
     return (
         f"Earlier correctness advisories: {total}; no recorded response: {unanswered}"
         f"{withheld_clause}. Non-blocking; dispositions and provenance: status view=history "
-        "filter.schema_name=check_recorded in the recording session (follow next_cursor)."
+        "filter.schema_name=check_recorded in the session each receipt row names (follow "
+        "next_cursor)."
     )
 
 

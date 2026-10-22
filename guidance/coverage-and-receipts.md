@@ -750,20 +750,3 @@ records, is answered by the completed review recorded after it, so `acknowledged
 attempt; any other kind, even one citing only a check, and a finding naming any obligation, claim,
 response, or work record, or restating a finding about the work, still does. After repairing a
 finding, run at least one re-review in the same mode before the receipt.
-
-### Earlier correctness advisories
-
-Routine correctness notes are non-blocking and need no answer. They remain on their originating
-check with subject refs and AI-powered provenance. At closing, the receipt counts them and shows
-`addressed (agent-reported, linked evidence)`, `declined with reason`, or `no recorded response`.
-Never infer repair from silence, a later clean check or a generic passing count. Withheld response
-details are unavailable, not evidence of no answer; one that cannot be matched to a note is counted
-separately. Read omitted/truncated rows with `status view=history`,
-`filter.schema_name=check_recorded`, following `next_cursor` unchanged with the same filter and
-limit. History is session-scoped: a note appears in the session that recorded its check.
-
-Optionally call `respond` with the advisory's `<check-event-id>:<ordinal>` in `finding_id` and
-an in-chain `finding_frontier` at or after the check: `addressed` needs reason and recorded
-evidence/result refs; `declined` needs reason. No response or extra check is required for the
-advisory itself. Include material earlier notes and their recorded status in final prose, with
-retrieval/evidence links; distinguish your report from independent verification.
