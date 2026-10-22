@@ -9,6 +9,7 @@ operation orchestration is out of scope here; it belongs to integration/conforma
 
 from __future__ import annotations
 
+import ast
 import re
 from collections.abc import Iterator, Mapping
 from pathlib import Path
@@ -214,7 +215,42 @@ def _call_windows(source: str, code_name: str) -> tuple[str, ...]:
     return tuple(windows)
 
 
+def _literal_retryable(window: str) -> bool | None:
+    """The literal ``retryable`` of a ``(PublicErrorCode.X, message, retryable, ...)`` window.
+
+    It is the third positional argument or the ``retryable`` keyword, wherever later arguments
+    such as ``safe_details`` sit. ``None`` when the window is not such a call or the flag is not a
+    literal bool, so the caller falls back to the textual check.
+    """
+
+    try:
+        call = ast.parse("_" + window, mode="eval").body
+    except SyntaxError:
+        return None
+    if not isinstance(call, ast.Call) or not call.args:
+        return None
+    code = call.args[0]
+    if not (
+        isinstance(code, ast.Attribute)
+        and isinstance(code.value, ast.Name)
+        and code.value.id == "PublicErrorCode"
+    ):
+        return None
+    flags = [keyword.value for keyword in call.keywords if keyword.arg == "retryable"]
+    if len(call.args) >= 3:
+        flags.append(call.args[2])
+    if len(flags) != 1:
+        return None
+    flag = flags[0]
+    if isinstance(flag, ast.Constant) and type(flag.value) is bool:
+        return flag.value
+    return None
+
+
 def _is_retryable_call(window: str) -> bool:
+    literal = _literal_retryable(window)
+    if literal is not None:
+        return literal
     return bool(re.search(r"retryable\s*=\s*True", window)) or bool(
         re.search(r",\s*True\s*,?\s*\)\s*$", window)
     )
