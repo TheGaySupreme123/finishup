@@ -2917,17 +2917,19 @@ About half of the reviewer's input is served from the provider's prompt cache (4
 TB-Science pilot trials), and input is nearly all of its cost. Until now only each attempt's
 cumulative usage was kept, so a miss could not be attributed. Every provider exchange that
 reports usage now writes one `exchange_cache` owner diagnostic: its input, cached input,
-cache-write (Codex only) and output tokens, how many model requests it made, the prefix it could
-reuse from the review's previous exchange, how much of that its first request reused, and one
-closed miss label: `compaction`, `first_turn`, `none`, `schema_or_settings_change`, `retry` or
-`unexplained`, the first that applies (see INTERFACES, "Per-exchange prompt-cache telemetry").
-`none` allows a 1,024-token shortfall, one minimum cache block. A compaction is recorded, by its
-index and label alone, even when it comes before any usage report. A Codex turn whose previous turn
-reported no usage records no counts, because its starting total is unknown. Every exchange of a
-review names
-the review's first provider request id, so the records join the attempt row; the owner reads them
-with `finishup service diagnostics --request-id`, and an exporter that copies the diagnostics ring
-carries them.
+cache-write (where the provider reports it) and output tokens, how many model requests it made,
+the prefix it could reuse from the review's previous exchange, how much of that its first request
+reused, and one closed miss label: `compaction`, `first_turn`, `none`,
+`schema_or_settings_change`, `retry` or `unexplained`, the first that applies (see INTERFACES,
+"Per-exchange prompt-cache telemetry"). `none` allows a shortfall of up to 1,024 tokens, the
+providers' minimum cacheable prefix. A count the provider does not report (Chat Completions may
+omit the cached count) is left out, never recorded as zero. A compaction is recorded, by its index
+and label alone, even when it comes before any usage report. A Codex turn whose previous turn
+reported no usage starts at the total before its own first reported request, so it records only
+its own requests; a turn that had a usage snapshot refused records no counts. Every exchange of a
+review names the review's first provider request id, so the records join the attempt row; the
+owner reads them with `finishup service diagnostics --request-id`, and an exporter that copies the
+diagnostics ring carries them.
 
 The record holds integers, one closed token and that request id. It never holds content, a
 content digest or a provider identifier. Between a review's exchanges, the `ReviewerSession` keeps
@@ -2956,17 +2958,24 @@ sends that schema on every turn, the format repair included. When a review whose
 stops offering them (count cap, read room or final reserve), the loop appends `FINAL_TURN` once as
 its own user message ("no_reads_left: Reply with final_judgment only; a read action now ends the
 review incomplete.") and offers no read after it. The decoder rule is unchanged: a read action after
-that ends the review `read_limit` with no observation, no extra turn and no retry. A review whose
-first turn offers no read (an ask-every-time policy, or no time left for one) keeps the final-only
-schema and its media type on every turn and gets no notice, so an owner-approved first exchange
-still resumes by its exact bytes. The media types keep their meaning; the final one now appears only
-in such reviews.
+that ends the review `read_limit` with no observation, no extra turn and no retry. A format repair on
+a turn that offers no read asks for `final_judgment` only ("format_error: <code>. No reads remain.
+Reply with final_judgment only, matching the schema."), so a model that follows it never sends the
+read the schema still allows; every read leaves room for the longer of the two repair texts. A
+review whose first turn offers no read (an ask-every-time policy, or no time left for one) keeps the
+final-only schema and its media type on every turn and gets no notice, so an owner-approved first
+exchange still resumes by its exact bytes. The media types keep their meaning; the final one now
+appears only in such reviews.
 
 **Append-only.** A Codex continuation may add up to two user messages after the longest history
 its thread holds (a read result or repair notice, then the no-reads-left notice), each as its own
 text input. An empty, longer or non-user suffix, or a history that does not extend what the thread
-holds, still fails closed. The notice is never merged into a read result, so a result's bytes and digest
-are unchanged. An exchange history admits 13 messages (one more, for the notice).
+holds, still fails closed. After an answer that parsed as a JSON object the thread holds its history
+both with that answer and without it, because only the loop's decoder knows whether the answer was
+accepted or will be replaced by the repair notice; the thread never reads content to tell. Keeping
+every accepted answer is therefore the loop's rule, and a test pins that every exchange extends the
+previous one byte for byte. The notice is never merged into a read result, so a result's bytes and
+digest are unchanged. An exchange history admits 13 messages (one more, for the notice).
 
 **Size guard.** Every read leaves exchange room, in bytes and estimated tokens, for the notice
 beside the one format-repair notice. The exchange that carries the notice, and a repair after it,

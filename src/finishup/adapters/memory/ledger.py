@@ -11,6 +11,7 @@ from datetime import UTC, datetime, timedelta
 from enum import StrEnum
 from typing import Any, Final, Literal, cast
 
+from finishup.adapters.objects.check_resume import open_check_resume, stage_check_resume
 from finishup.domain.events import (
     CHECK_EVENT_SCHEMA_VERSION,
     DEFERRED_CHECK_EVENT_SCHEMA_VERSION,
@@ -738,7 +739,7 @@ async def load_frozen_case_from_resume(
             or prior.commitment != pointer["commitment"]
         ):
             raise ValueError("deterministic_result_pointer_invalid")
-        raw = await _open_exact_object(objects, prior)
+        raw = await open_check_resume(objects, prior, await _open_exact_object(objects, prior))
         parsed = strict_json_parse(raw)
         if canonical_encode(parsed) != raw:
             raise ValueError("resume_object_noncanonical")
@@ -746,7 +747,11 @@ async def load_frozen_case_from_resume(
         expected_frontier = source["subject_frontier"]
         expected_dependency = source["dependency_digest"]
     elif current.metadata.kind is ObjectKind.CHECK_RESUME:
-        resume_source = source
+        raw = await open_check_resume(objects, current, raw)
+        parsed = strict_json_parse(raw)
+        if canonical_encode(parsed) != raw:
+            raise ValueError("resume_object_noncanonical")
+        resume_source = _strict_mapping(parsed, reason="resume_object_shape_invalid")
         expected_frontier = None
         expected_dependency = None
     else:
@@ -3202,30 +3207,53 @@ class MemoryLedgerAdapter:
 
         case, dependency, resume_bytes = await _run_blocking_joined(build)
         created_at = _now(self._clock)
-        staged_resume = await self._objects.stage(
-            ObjectSource(data=resume_bytes, declared_size=len(resume_bytes)),
-            ObjectMetadata(
-                ObjectKind.CHECK_RESUME,
-                "application/vnd.yoetz.check-resume+json",
-                self._task_id,
-                created_at,
-            ),
-        )
-        resume_ref = await self._objects.finalize(staged_resume)
-        async with self._lock:
+
+        def refresh_inputs_current() -> bool:
             current = self._state.operations.get((writer_id, request_id))
             live_frontier = Frontier(
                 self._state.projection.frontier, self._state.projection.head_digest
             )
-            if (
+            return not (
                 current is None
                 or current[0] != prior_record
                 or live_frontier != frontier
                 or self._state.object_refs != object_refs
                 or self._pending_import(session_id)
+            )
+
+        try:
+            resume_ref, resume_pages = await stage_check_resume(
+                self._objects,
+                resume_bytes,
+                ObjectMetadata(
+                    ObjectKind.CHECK_RESUME,
+                    "application/vnd.yoetz.check-resume+json",
+                    self._task_id,
+                    created_at,
+                ),
+            )
+        except PublicOperationError as exc:
+            if exc.retryable or exc.safe_details.get("reason_code") != (
+                "check_resume_capacity_exceeded"
             ):
+                raise
+            # This operation was admitted before the refresh, so the non-retryable capacity
+            # refusal closes it (#1159): status and every exact replay then report the same
+            # stored LIMIT_EXCEEDED instead of a pending wait that the refusal forbids resuming.
+            # The refusal staged nothing. It is stored only when computed from current inputs;
+            # otherwise the same-identity retry rebuilds against the moved state.
+            async with self._lock:
+                if not refresh_inputs_current():
+                    raise check_admission_refused(
+                        CheckAdmissionStage.ACQUISITION_CONTENDED
+                    ) from exc
+                self._store_terminal_check_error_locked(prior_record, exc)
+            raise
+        async with self._lock:
+            if not refresh_inputs_current():
                 raise check_admission_refused(CheckAdmissionStage.ACQUISITION_CONTENDED)
             self._state.frozen_cases[(writer_id, request_id)] = case
+            self._state.object_refs.update((ref.object_id, ref) for ref in resume_pages)
             self._remember_dependency_digest((writer_id, request_id), case, dependency)
             _, renewed = self._replace_pending_record(
                 prior_record,
@@ -3397,8 +3425,9 @@ class MemoryLedgerAdapter:
             self._remember_dependency_digest(key, case, dependency)
             assert self._objects is not None
             created_at = _now(self._clock)
-            staged = await self._objects.stage(
-                ObjectSource(data=case_bytes, declared_size=len(case_bytes)),
+            resume_ref, resume_pages = await stage_check_resume(
+                self._objects,
+                case_bytes,
                 ObjectMetadata(
                     ObjectKind.CHECK_RESUME,
                     "application/vnd.yoetz.check-resume+json",
@@ -3406,7 +3435,6 @@ class MemoryLedgerAdapter:
                     created_at,
                 ),
             )
-            resume_ref = await self._objects.finalize(staged)
             async with self._lock:
                 if key in self._state.operations:
                     # Another invocation admitted this exact key after this one's reservation
@@ -3454,6 +3482,7 @@ class MemoryLedgerAdapter:
                     None,
                 )
                 self._state.frozen_cases[key] = case
+                self._state.object_refs.update((ref.object_id, ref) for ref in resume_pages)
                 self._state.operations[key] = (operation, None)
                 return FrozenCase(case, self._lease_for(operation))
         finally:
@@ -4538,14 +4567,6 @@ class MemoryLedgerAdapter:
 
         if failure.retryable:
             raise TypeError("retryable_check_failure_cannot_terminalize")
-        canonical = canonical_encode(
-            {
-                "code": failure.code.value,
-                "message": str(failure),
-                "retryable": failure.retryable,
-                "safe_details": dict(failure.safe_details),
-            }
-        )
         key = (lease.writer_id, lease.operation_id)
         async with self._lock:
             current = self._state.operations.get(key)
@@ -4555,20 +4576,38 @@ class MemoryLedgerAdapter:
                 and key in self._state.check_errors
             ):
                 return
-            record = self._require_lease(lease)
-            terminal = replace(
-                record,
-                state=OperationState.COMPLETE,
-                phase=CheckPhase.TERMINAL,
-                owner_generation=None,
-                lease_owner_id=None,
-                lease_generation=None,
-                lease_expires_at=None,
-                resume_object_ref=None,
-                result_canonical=canonical,
-                result_digest=f"sha256:{hashlib.sha256(canonical).hexdigest()}",
-                result_locator=None,
-                terminal_at=_now(self._clock),
-            )
-            self._state.operations[key] = (terminal, None)
-            self._state.check_errors[key] = failure
+            self._store_terminal_check_error_locked(self._require_lease(lease), failure)
+
+    def _store_terminal_check_error_locked(
+        self, record: OperationRecord, failure: PublicOperationError
+    ) -> None:
+        """Close one pending check with a stored non-retryable error; the caller holds the lock."""
+
+        if failure.retryable:
+            raise TypeError("retryable_check_failure_cannot_terminalize")
+        canonical = canonical_encode(
+            {
+                "code": failure.code.value,
+                "message": str(failure),
+                "retryable": failure.retryable,
+                "safe_details": dict(failure.safe_details),
+            }
+        )
+        terminal = replace(
+            record,
+            state=OperationState.COMPLETE,
+            phase=CheckPhase.TERMINAL,
+            owner_generation=None,
+            lease_owner_id=None,
+            lease_generation=None,
+            lease_expires_at=None,
+            resume_object_ref=None,
+            result_canonical=canonical,
+            result_digest=f"sha256:{hashlib.sha256(canonical).hexdigest()}",
+            result_locator=None,
+            terminal_at=_now(self._clock),
+            suspension_kind=None,
+        )
+        key = (record.writer_id, record.operation_id)
+        self._state.operations[key] = (terminal, None)
+        self._state.check_errors[key] = failure

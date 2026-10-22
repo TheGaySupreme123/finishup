@@ -36,8 +36,9 @@ anything was sent (``resume_reserved``). A failed turn is never retried.
 The reply schema is chosen once, at the first turn, and kept for the whole review (#1172): the
 provider caches the schema with the conversation, so switching it after the last read would make
 the provider read the whole conversation again. When reads end, the loop appends ``FINAL_TURN`` as
-its own user message instead; a read after that still ends the review ``read_limit``. Only when the
-next exchange has no room left for that notice does it narrow the schema, as before.
+its own user message instead, and a format repair after that asks for the final judgment only; a
+read after that still ends the review ``read_limit``. Only when the next exchange has no room left
+for that notice does it narrow the schema, as before.
 """
 
 from __future__ import annotations
@@ -66,6 +67,10 @@ LOCAL_READ_SECONDS: Final = 5.0
 FORMAT_ERROR: Final = (
     "format_error: {code}. Reply with exactly one read action or final_judgment that matches the "
     "schema."
+)
+# The repair in the final phase never invites a read: none would be executed (#1173).
+FINAL_FORMAT_ERROR: Final = (
+    "format_error: {code}. No reads remain. Reply with final_judgment only, matching the schema."
 )
 # The one notice a review whose schema still offers reads gets when they end (#1172).
 FINAL_TURN: Final = (
@@ -199,7 +204,10 @@ class ReviewerLoop:
                 except ReviewerReplyInvalid as e:
                     if repaired:
                         return self.exit("format_invalid")
-                    repaired, note = True, FORMAT_ERROR.format(code=e.code)
+                    # Once reads have ended, the schema may still offer one (#1172): the repair
+                    # asks for the judgment only, so following it never ends the review.
+                    template = FORMAT_ERROR if reads else FINAL_FORMAT_ERROR
+                    repaired, note = True, template.format(code=e.code)
                     await self.store.reserve("repair", 1, e.code.encode())
                     await self.store.capture("repair", 1, note.encode())
                     self.messages.append(Turn("user", note))  # the malformed text is not echoed

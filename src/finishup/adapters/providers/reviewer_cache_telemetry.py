@@ -26,26 +26,35 @@ __all__ = ["api_exchange_usage", "record_exchange_cache"]
 def api_exchange_usage(
     usage: object, *, input_name: str, details_name: str, output_name: str
 ) -> ExchangeCacheUsage | None:
-    """One stateless API request's reported usage, or ``None`` unless it is whole.
+    """One stateless API request's reported usage, or ``None`` without input and output counts.
 
-    Responses reports ``input_tokens``/``input_tokens_details.cached_tokens``/``output_tokens``,
-    Chat Completions ``prompt_tokens``/``prompt_tokens_details.cached_tokens``/
-    ``completion_tokens``; neither reports cache writes.
+    Responses reports ``input_tokens``/``output_tokens`` and, in ``input_tokens_details``,
+    ``cached_tokens`` and ``cache_write_tokens``; Chat Completions ``prompt_tokens``/
+    ``completion_tokens`` and the same two in ``prompt_tokens_details``, which the SDK types as
+    optional. A cached or cache-write count the answer omits stays unknown, never zero, so the
+    input still becomes the next exchange's prefix.
     """
 
     try:
         input_tokens = getattr(usage, input_name, None)
-        cached_tokens = getattr(getattr(usage, details_name, None), "cached_tokens", None)
         output_tokens = getattr(usage, output_name, None)
+        details = getattr(usage, details_name, None)
+        cached_tokens = getattr(details, "cached_tokens", None)
+        write_tokens = getattr(details, "cache_write_tokens", None)
     except Exception:  # noqa: BLE001 - an unexpected SDK shape is no usage, never a failure
         return None
-    if type(input_tokens) is not int or type(cached_tokens) is not int:
+    if type(input_tokens) is not int or type(output_tokens) is not int:
         return None
-    if type(output_tokens) is not int:
-        return None
+    cached = cached_tokens if type(cached_tokens) is int else None
     try:
         return ExchangeCacheUsage(
-            input_tokens, cached_tokens, output_tokens, 1, cached_tokens, input_tokens
+            input_tokens,
+            cached,
+            output_tokens,
+            1,
+            cached,
+            input_tokens,
+            cache_write_input_tokens=write_tokens if type(write_tokens) is int else None,
         )
     except ValueError:
         return None

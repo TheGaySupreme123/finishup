@@ -237,13 +237,15 @@ async def test_codex_refuses_an_empty_or_three_message_continuation(
         await session.aclose()
 
 
+@pytest.mark.parametrize("answer", ["not json", '{"reply":{}}'])
 async def test_codex_carries_a_repair_and_the_notice_as_two_inputs(
-    monkeypatch: pytest.MonkeyPatch,
+    monkeypatch: pytest.MonkeyPatch, answer: str
 ) -> None:
-    """After an answer that was not JSON, reads can end too: the repair notice and the
-    no-reads-left notice follow the held thread, each its own input."""
+    """After an answer the loop rejected, reads can end too: the repair notice and the
+    no-reads-left notice follow the held thread, each its own input. A JSON object the loop's
+    decoder rejected is held with and without it, and the repair extends the snapshot without it."""
 
-    runtime = _UsageRuntime(["not json", _FINAL], [[(90_000, 0, 50)], [(90_200, 89_984, 50)]])
+    runtime = _UsageRuntime([answer, _FINAL], [[(90_000, 0, 50)], [(90_200, 89_984, 50)]])
     session = ReviewerSession("review-a", _DEADLINE)
     request = "req_74000000-0000-4000-8000-000000000031"
     await _exchange(monkeypatch, runtime, session, _FIRST, request)
