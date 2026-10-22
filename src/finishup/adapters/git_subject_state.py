@@ -18,7 +18,9 @@ from typing import Final, Literal, cast
 
 from finishup.adapters.git_rev_parse import absolute_rev_parse_path
 from finishup.adapters.git_version import require_supported_git
+from finishup.adapters.home_project_reads import home_private_path, home_read_arguments
 from finishup.config.foreign_write import writable_by_others
+from finishup.config.home_project import home_project_allowed
 from finishup.domain.values import SubjectStateRef
 from finishup.ports.subject_state import (
     MAX_SUBJECT_STATE_FILES,
@@ -211,7 +213,11 @@ class _GitRunner:
         accepted_returncodes: frozenset[int] = frozenset({0}),
         keep_prefix_on_limit: bool = False,
     ) -> tuple[int, bytearray]:
-        argv = (os.fspath(self.executable), *_GIT_SAFE_PREFIX, *arguments)
+        argv = (
+            os.fspath(self.executable),
+            *_GIT_SAFE_PREFIX,
+            *home_read_arguments(root, arguments),
+        )
         # ``GIT_CONFIG_GLOBAL`` exists only since Git 2.32. An older Git reads its global
         # configuration from ``$HOME/.gitconfig`` and ``$XDG_CONFIG_HOME/git/config`` instead,
         # so both point at ``os.devnull``: a ``HOME`` naming the workspace would have made a
@@ -275,12 +281,15 @@ class _GitRunner:
 
 
 def open_local_workspace(
-    path: Path, *, timeout_seconds: float = _GIT_TIMEOUT_SECONDS
+    path: Path,
+    *,
+    timeout_seconds: float = _GIT_TIMEOUT_SECONDS,
+    admitted_home_project: bool = False,
 ) -> LocalWorkspaceHandle:
     """Validate one explicit local Git root and return an opaque descriptor handle."""
 
     root = _lexically_safe_absolute(path)
-    _reject_ambiguous_root(root)
+    _reject_ambiguous_root(root, admitted_home_project=admitted_home_project)
     descriptor = -1
     try:
         descriptor = _open_root_descriptor(root)
@@ -781,6 +790,12 @@ class GitSubjectStateAdapter:
             except OSError as exc:
                 raise _CaptureFailure(SubjectStateLimitation.UNSAFE_ROOT) from exc
             for entry in ordered:
+                name_bytes = os.fsencode(entry.name)
+                relative = name_bytes if not relative_dir else relative_dir + b"/" + name_bytes
+                # HOME exclusions never skip a `.git`: a nested repository stays refused below,
+                # exactly as in any other root.
+                if entry.name != ".git" and home_private_path(workspace.root, relative):
+                    continue
                 entries_seen += 1
                 path_bytes_seen += len(os.fsencode(entry.name))
                 if entries_seen > self._max_files:
@@ -800,12 +815,17 @@ class GitSubjectStateAdapter:
                     facts = entry.stat(follow_symlinks=False)
                 except OSError as exc:
                     raise _CaptureFailure(SubjectStateLimitation.UNSAFE_ROOT) from exc
+                if stat.S_ISLNK(facts.st_mode):
+                    # Never followed. A link's own mode bits are no writability signal (Linux
+                    # always reports 0777), so every root names it unsupported, not unsafe.
+                    raise _CaptureFailure(
+                        SubjectStateLimitation.SYMLINK_UNSUPPORTED,
+                        SubjectStateStatus.UNSUPPORTED,
+                    )
                 expected_uid = os.geteuid() if hasattr(os, "geteuid") else os.getuid()
                 if facts.st_uid != expected_uid or writable_by_others(facts):
                     raise _CaptureFailure(SubjectStateLimitation.UNSAFE_ROOT)
-                if stat.S_ISLNK(facts.st_mode) or not (
-                    stat.S_ISREG(facts.st_mode) or stat.S_ISDIR(facts.st_mode)
-                ):
+                if not (stat.S_ISREG(facts.st_mode) or stat.S_ISDIR(facts.st_mode)):
                     raise _CaptureFailure(
                         SubjectStateLimitation.SYMLINK_UNSUPPORTED,
                         SubjectStateStatus.UNSUPPORTED,
@@ -818,8 +838,6 @@ class GitSubjectStateAdapter:
                         # never opened directly; only the hardened git subprocess touches
                         # the object store, so its internals need no per-file walk.
                         continue
-                    name_bytes = os.fsencode(entry.name)
-                    relative = name_bytes if not relative_dir else relative_dir + b"/" + name_bytes
                     if relative in ignored_prefixes or relative + b"/" in ignored_prefixes:
                         continue  # gitignore-excluded subtree: capture never opens files inside it
                     pending.append((Path(entry.path), relative))
@@ -919,9 +937,11 @@ def _lexically_safe_absolute(path: Path) -> Path:
     return path
 
 
-def _reject_ambiguous_root(root: Path) -> None:
+def _reject_ambiguous_root(root: Path, *, admitted_home_project: bool = False) -> None:
     home = Path.home()
-    if root == Path(root.anchor) or root == home:
+    if root == Path(root.anchor) or (
+        root == home and not (home_project_allowed(root) or admitted_home_project)
+    ):
         raise ValueError("unsafe_root")
 
 

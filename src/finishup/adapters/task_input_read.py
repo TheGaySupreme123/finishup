@@ -38,8 +38,10 @@ import time
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass, replace
 from itertools import islice
+from pathlib import Path
 from typing import Final, Literal
 
+from finishup.adapters.home_project_reads import home_private_path
 from finishup.adapters.input_summary import declared_binary_format, summarize_task_input
 from finishup.config.foreign_write import writable_by_others
 from finishup.domain.privacy import admitted_input_root_valid
@@ -387,7 +389,7 @@ def _beneath(value: str, roots: tuple[str, ...]) -> tuple[str, bytes] | None:
                 encoded = relative.encode("utf-8", errors="strict")
             except UnicodeEncodeError:
                 return None
-            if credential_named_bytes(encoded):
+            if credential_named_bytes(encoded) or home_private_path(Path(root), encoded):
                 return None
             return root, encoded
     return None
@@ -765,8 +767,11 @@ def list_beneath(
                 if expired():
                     raise ReadDeadline("reviewer_read_deadline")
                 try:
-                    hidden = entry.name.startswith(".") or credential_named_bytes(
-                        entry.name.encode("utf-8", errors="strict")
+                    encoded = entry.name.encode("utf-8", errors="strict")
+                    hidden = (
+                        entry.name.startswith(".")
+                        or credential_named_bytes(encoded)
+                        or home_private_path(Path(root), path + b"/" + encoded if path else encoded)
                     )
                     facts = entry.stat(follow_symlinks=False)
                 except (UnicodeEncodeError, OSError):
