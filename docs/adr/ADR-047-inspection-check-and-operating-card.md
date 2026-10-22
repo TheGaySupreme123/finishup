@@ -354,6 +354,9 @@ report that state beside the receipt, not to retry or open a new task. No result
 lifecycle continuation that permits closing, so no surface tells the agent to wait for one.
 
 Mandatory surface (card, skill and the longest served initialize block; budget 8,192): Codex
-8,168, Cursor 8,182, portable 8,179, Claude Code 7,725 (before: 8,152, 8,125, 8,142, 7,668). MCP
+8,167, Cursor 8,181, portable 8,178, Claude Code 7,724 (before: 8,152, 8,125, 8,142, 7,668). MCP
 tool names, descriptors and their digests, and the Claude Code, Codex and Cursor initialize bodies
-are unchanged. The generic host's initialize text changes because it inlines the card.
+are unchanged. The generic host's initialize text changes because it inlines the card. The
+`workflow.md#completion` topic, which #1167's freshness guidance had pushed to 17,255 bytes, is
+16,042 bytes again, inside the 16,384-byte one-page bound (#1193): its closing sequence now lives
+once in `receipt.md`.
