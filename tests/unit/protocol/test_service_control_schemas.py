@@ -1601,10 +1601,12 @@ def test_v29_changes_only_the_selection_runtime_and_keeps_frozen_v28() -> None:
             f"{name}-2.9.0.schema.json"
         ).read_bytes()
         # 2.9.0 (unreleased) also moves to the respond 1.1.0 pair (issue #905), to the
-        # check-result 1.6.0 review output (issue #961, deferral reason on 1.5.0, reviewer record on
-        # 1.6.0, #1118) and to the publish-work 1.1.0 result
-        # that names the current policy-pack versions; undo those retargets before comparing,
-        # so every other byte must still match frozen 2.8.
+        # check-result review output (issue #961, deferral reason on 1.5.0, reviewer record on
+        # 1.6.0, #1118; bounded review-result delivery on 1.7.0, #1139 via #1171), to the
+        # publish-work 1.1.0 result that names the current policy-pack versions, and to the
+        # #1139 delivery-paging bodies (status request 1.3.0, status result 1.5.0, receipt result
+        # 1.4.0, #1171). Undo exactly those retargets before comparing, so every other byte must
+        # still match frozen 2.8.
         v29 = cast(
             dict[str, Any],
             _without_policy_v12(
@@ -1613,8 +1615,11 @@ def test_v29_changes_only_the_selection_runtime_and_keeps_frozen_v28() -> None:
                     .read_bytes()
                     .replace(b"respond-request-1.1.0", b"respond-request-1.0.0")
                     .replace(b"respond-result-1.1.0", b"respond-result-1.0.0")
-                    .replace(b"check-result-1.6.0", b"check-result-1.3.0")
+                    .replace(b"check-result-1.7.0", b"check-result-1.3.0")
                     .replace(b"publish-work-result-1.1.0", b"publish-work-result-1.0.0")
+                    .replace(b"status-request-1.3.0", b"status-request-1.2.0")
+                    .replace(b"status-result-1.5.0", b"status-result-1.4.0")
+                    .replace(b"receipt-result-1.4.0", b"receipt-result-1.3.0")
                 )
             ),
         )

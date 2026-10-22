@@ -374,6 +374,12 @@ async def test_v3_evidence_records_the_argv_its_own_process_launched(
     tmp_path.chmod(0o700)
     root = Path(tempfile.mkdtemp(dir=tmp_path))
     with pytest.MonkeyPatch.context() as patch:
+        # The retained runtime is the Mac arm64 build (its record and the userAgent below), and
+        # every launch refuses a binding for another host as codex_runtime_platform_unsupported.
+        # Pin the host the way test_codex_app_server's ``_launchable`` does, so this argv test is
+        # not silently a Mac-only test that fails before launch on Linux.
+        patch.setattr("sys.platform", "darwin")
+        patch.setattr("platform.machine", lambda: "arm64")
         patch.setattr(module, "verify_private_local_bundle", lambda _path: None)  # pyright: ignore[reportUnknownLambdaType,reportUnknownArgumentType]
         patch.setattr(module, "_BUNDLED_ENTRY_SHA256", {})
         patch.setattr(module, "_RECORDED_CATALOG_FALLBACKS", set[object]())

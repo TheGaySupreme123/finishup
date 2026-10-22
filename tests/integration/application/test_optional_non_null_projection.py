@@ -248,6 +248,11 @@ _RESULT_OPTIONAL_NON_NULL: tuple[tuple[type[BaseModel], frozenset[str]], ...] = 
                 "review_mode",
                 # W6 #1107: absent exactly when ``overall_next`` is.
                 "agent_next",
+                # #1140 (ADR-032 amendment): the shared readiness verdict at the result frontier;
+                # absent on results an earlier build stored.
+                "closure_readiness",
+                # #1139: a legacy MCP-only advisory preview; current bridges never synthesize it.
+                "review_delivery",
             }
         ),
     ),
@@ -436,7 +441,8 @@ _RESULT_OPTIONAL_NON_NULL: tuple[tuple[type[BaseModel], frozenset[str]], ...] = 
     (CheckProjectedFindingModel, frozenset({"challenge"})),
     (CheckVerifiedItemModel, frozenset({"requirement_or_claim", "snippet"})),
     (StatusCompactItemModel, frozenset({"latest_check_test_edits", "latest_check"})),
-    (StatusFindingsPageModel, frozenset({"attempt_budget"})),
+    # #1139: ``review_delivery`` is the legacy MCP-only advisory preview.
+    (StatusFindingsPageModel, frozenset({"attempt_budget", "review_delivery"})),
     # Issue #1139: a whole delivered value carries neither a fragment nor a container marker.
     (DeliveryItemModel, frozenset({"fragment", "container"})),
     # Issue #1084 (review R7): a service-recorded event time is labelled on the history row.
@@ -1524,7 +1530,14 @@ async def test_root_start_and_check_omit_unset_multi_agent_fields() -> None:
         assert "finding_checklist" in projected_check
         # Issue #986 (E2): a route that did not require AI-powered review is recorded as false.
         assert projected_check["semantic_route_required"] is False
+        # #1140: a new check carries the shared readiness verdict at its result frontier; it stays
+        # optional for results an earlier build stored.
+        assert "closure_readiness" in projected_check
+        # #1139: current bridges no longer synthesize the legacy advisory preview.
+        assert "review_delivery" not in projected_check
         for field in (
+            "closure_readiness",
+            "review_delivery",
             "finding_checklist",
             "semantic_route_required",
             "semantic_withheld_items",
@@ -1734,7 +1747,11 @@ async def test_root_start_and_check_omit_unset_multi_agent_fields() -> None:
             },
             ("latest_check_test_edits", "latest_check"),
         ),
-        (StatusFindingsPageModel, {"items": [], "next_cursor": None}, ("attempt_budget",)),
+        (
+            StatusFindingsPageModel,
+            {"items": [], "next_cursor": None},
+            ("attempt_budget", "review_delivery"),
+        ),
         (
             StatusOperationPageModel,
             {
@@ -2045,6 +2062,8 @@ def test_every_result_optional_non_null_field_has_an_unset_projection_case() -> 
                 "semantic_route_required",
                 "fact_lineage",
                 "review_mode",
+                "closure_readiness",
+                "review_delivery",
             ),
         ),
     ):
@@ -2104,7 +2123,7 @@ def test_every_result_optional_non_null_field_has_an_unset_projection_case() -> 
         ("CheckProjectedFindingModel", ("challenge",)),
         ("CheckVerifiedItemModel", ("snippet",)),
         ("StatusCompactItemModel", ("latest_check_test_edits", "latest_check")),
-        ("StatusFindingsPageModel", ("attempt_budget",)),
+        ("StatusFindingsPageModel", ("attempt_budget", "review_delivery")),
         ("StatusProjectPageModel", ("title", "description", "title_ref", "description_ref")),
         (
             "StatusAdviceItemModel",
