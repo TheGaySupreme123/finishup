@@ -1590,3 +1590,19 @@ the same 50 ms clock slack as the candidates, so a launcher whose start the Linu
 rounded down is not taken for the host (#1090 PL-1). Residual: if a Codex build's rollout item did
 not join its hook call by id, the stream copy would stay a second, fact-less, material action (no
 stamping across ids this round).
+
+
+### Input-aware freshness (#1143, 2026-10-21)
+
+ADR-042's intelligent freshness amendment supersedes the global last-edit rule above for every
+change the workspace comparison can place. A placed change produces a deterministic stale fact
+only when it touches a known verification input; when its input relationship is unknown it yields
+the standing `verification_rerun_question`. A counting change FinishUP cannot place (a host
+edit-tool edit, a shell write without a trusted comparison, an unavailable or incomplete
+comparison) keeps the last-edit rule above: stale, and a Stop item on the local route (controller
+decision of 2026-10-22, ADR-042). Stop never demands a rerun for the question, nor for the
+`verification_inputs_caller_asserted` disclosure that freshness relied on a caller-asserted
+complete input declaration. AI-route freshness is always advisory, with recorded verification,
+known changed paths and short change summaries presented for the agent's rerun or reasoned
+`respond` decision. Actual failures, missing verification and unrelated obligation/finding gates
+retain their rules.

@@ -12231,12 +12231,119 @@ says only that the agent recorded its own verification. Receipt-document 1.3.0 o
 receipts identify those concerns separately. No row becomes independently resolved or clean.
 
 For freshness, a service-stamped, complete workspace fingerprint proving an in-workspace shell
-write byte-identical does not advance the verification edit frontier. The same trusted action set
-is frozen as `verification_unchanged_action_ids` in the internal deterministic case and used by
+write byte-identical is not a later change. The same trusted action set is frozen as
+`verification_unchanged_action_ids` in the internal deterministic case and used by
 work-integrity. Contradictory or unavailable observations, outside writes, and declared paths the
-fingerprint cannot compare retain conservative freshness. This is the bounded #1143 mitigation;
-new report files and changed report bytes still invalidate freshness. General per-command
-verification dependencies and generated-artifact roles remain an open design requirement.
+fingerprint cannot compare never borrow that proof. Which later changes make a verification stale
+or raise a question is defined once, in the next section.
+
+
+### Intelligent verification freshness (#1143, ADR-042)
+
+`kernel.verification_freshness.VerificationFreshness(run_ref, state, changes, change_refs, basis,
+label)` is a prefix-derived, frozen per-run fact. `state` is `stale` (a recorded input changed, or a
+counting change FinishUP cannot place), `unknown` (a placed change may touch an input FinishUP
+cannot rule out) or `current`; a `current` row exists only to disclose a change set aside on a
+caller-asserted complete declaration.
+`basis` is `undeclared|requested|declared|complete` and `label` is the requested command the run
+matched, if any. `changes` are bounded, already quoted summaries: a named path, a count of
+keyed-only identities the record does not name, or, for changes FinishUP cannot place, their kind
+and count (an edit names its host tool) with the statement that FinishUP cannot tell whether they
+touched the verification's inputs. `verification_freshness(projection, records)`
+combines service-stamped workspace comparisons with requested input files and directories and the
+versioned, caller-asserted evidence convention
+`reference=finishup-verification-inputs/v1:<res_ id>`,
+`description={"inputs":["source.py","config.json"],"outputs":["evidence.json"],"complete":true}`.
+Only exact file inputs are declared; arbitrary shell process reads are not observed by any host.
+A value ending in `/` (or the workspace root `.`) names a directory; a bare name is read as a
+file. An input directory makes the declaration partial and the run asks about any change it may
+hold. An output directory covers only files the run's own trusted comparison wrote whose recorded
+name (a declared or requested file, or an agent evidence reference) lies under it; a write whose
+location the record does not name is not covered, and the workspace root (`./`) covers nothing.
+It leaves the declaration as complete as it was.
+An input takes precedence over an evidence output. A placed change (a trusted comparison's keyed
+changed-entry identities) whose input relationship is unknown asks, never demands a rerun.
+A counting change FinishUP cannot place keeps the pre-#1143 rule and makes the verification stale:
+host-native edit-tool edits (not fingerprinted, `fingerprinted_tool`, so they carry no
+changed-entry identity), shell writes without a trusted comparison, unavailable or incomplete
+comparisons, and a no-op proof that cannot cover an input outside the comparison. Exempt classes
+never make it stale. Decision recorded in ADR-042 (controller, 2026-10-22, under the #1143
+direction); keyed edit-target identities for host edit tools are follow-up #1188.
+
+Input scopes are per verification: a requested input belongs to the runs of its obligation's
+command; a command-less obligation's inputs apply to runs without their own complete declaration.
+An input outside the fingerprint's coverage makes its runs ask about every later write; a
+requested in-workspace directory rules out only named changed paths outside it. An output is
+exempt only when the run's own trusted comparison wrote it. A `complete: true` declaration with no
+inputs is not complete. A complete declaration that omits a later-edited file keeps the run
+current and raises the standing disclosure `verification_inputs_caller_asserted` (G4d); the
+disclosure appears only when a placed change was actually set aside on that assertion
+(`VerificationFreshness.set_aside`, derived and not persisted), never for an unplaceable change.
+
+`domain.workspace_effect.workspace_path_identity(key, relative)` reuses the fingerprint's keyed
+path identity. `WorkspaceEffectReading.changed_entries` and the optional active-control structural
+`workspace_changed_entries` carry a complete sorted set of at most 128 32-hex identities; omission
+means unknown (root replacement, overflow, unavailable or legacy comparison). Result/annotation
+suffixes preserve it alongside effect and write classes. Raw paths stay in admitted encrypted
+payloads; names come only from requested files, declarations and the bounded latest
+agent-published evidence references, by exact keyed match. Old control schemas stay frozen; the
+unreleased active 2.9.0 envelope admits the field.
+
+`DeterministicCase.verification_freshness` is absent on old frozen cases, which retain their legacy
+replay semantics. New cases persist the derived rows. `verification_advisory` is a per-evaluation
+AI-route flag. One predicate decides it on one state: the policy route requires AI-powered
+review, or a review was used before the check that judged freshness. `check` asks it of its
+frozen prefix; status and Stop (`ClosureFacts.freshness_review_used`) and receipts
+(`GapContext.freshness_advisory`: the applicable check's recorded route required review, or
+`closure_readiness.freshness_review_used`) ask it of the records before the latest check. So the
+first AI-powered review never turns the check that ran it advisory after the fact, and the
+requested mode never sets it: a check with no configured reviewer, on the strict route, under a
+disabled policy or with a failed review keeps the local rule. "The policy route requires review"
+uses the effective policy: the owner's explicit local conversation setting or switch
+(`_task_local_by_choice`; the check's resolved policy) relaxes `required` for check, status and
+Stop alike. Receipts cannot see the serving route and read the check's recorded route bit
+(`semantic_route_required` omitted means required); that bit also counts a check that explicitly
+asked for `semantic_required` on an optional policy, where the check itself used the local rule.
+Both answers bound the receipt (actionable versus standing), so the conclusion is the same. Known
+input changes and unplaceable counting changes produce `planned_verification_stale` /
+`edited_after_last_verification` only on the affected runs; the stale finding's detail names the
+verification and the changes. A run whose result never arrived (pending or unreadable) has
+nothing to judge and keeps the pre-#1143 last-edit rule; on the AI route the check asks about it
+(`DeterministicCase.verification_unjudged_stale`, its action and change events). A completion
+claim's cited run that freshness judges (`DeterministicCase.verification_tracked_runs`: a
+test/lint/typecheck/build or requested run with a readable result) is judged exactly as the task
+facts judge it: a stale row rejects it, no row means it is current. Every other cited ref (the
+agent's own `test_result`/`command_output` evidence, a run of an untracked class) keeps the
+latest-edit frontier, where the run's own trusted write at its own result frontier never counts
+against it. Unknown relationships of placed changes use the standing
+`verification_rerun_question` code and a non-blocking `ledger_stale_or_incomplete` question whose
+subjects bind the observed run event and subsequent change events. `respond acknowledged` with a
+nonempty reason records a no-rerun decision for that exact set under the generic respond contract;
+it does not rewrite the evidence or prove freshness. A later qualifying check observes the answer.
+AI-route freshness is never agent work or a Stop item; on receipts a stale verification is then a
+standing limit (G0f spec `V`, `GapContext.freshness_advisory`), like the question, and a
+caller-asserted reliance is disclosed for any retained run (the latest of its command or one the
+account cites); failures and missing checks retain their existing rules.
+
+CLI/MCP check/status and TUI consume shared task-fact sentences. Encrypted finding details name the
+verification (result id and requested command), state how its inputs are known, and list named
+paths and short change summaries; keyed-only changes are counted and never described as declared.
+The semantic packet includes those local questions through its existing selected/scanned finding
+content, alongside verification evidence and diffs. Its finding detail is the name-free form
+(`kernel.verification_freshness.name_free_finding_detail`): the requested command and named
+paths come from obligation and evidence text, so they leave only through those privacy
+categories, never as `finding_summary` prose, and the detail counts them instead; `semantic_case.review_question_set(...,
+freshness=verification_freshness_asked(case))` adds `FRESHNESS_REVIEW_QUESTION` only when the frozen
+case records a verification with later changes, so other review packets are unchanged. Receipt JSON, markdown and text retain the
+same question, response, caller-assertion disclosure and coverage limitations. There is no new
+permission, provider, capture or execution authority.
+
+The semantic fence routes a reviewer's `stale_evidence_for_changed_state` concern to
+`decision_needed` / `answer_question` only when it cites an observed verification run; the
+reviewer's summary is kept at the start of the detail. Other stale-evidence concerns keep their
+kind and text. Durable local-result checkpoint validation reproduces named freshness details from
+the frozen case before comparing text; restart does not lose the question or trigger an unchanged
+recomputation solely because the finding names paths.
 
 ### Reviewer read recovery and private metrics (#1173)
 

@@ -565,8 +565,21 @@ TASK_FACT_GAP_SENTENCES: Final[Mapping[str, str]] = MappingProxyType(
         "planned_verification_failed": (
             "A planned verification command failed on its latest observed run."
         ),
+        "verification_rerun_question": (
+            "Verification inputs or later changes are not fully known. Is a rerun needed?"
+            " Review the recorded verification and subsequent paths/change summaries; rerun it"
+            " or respond acknowledged with a reasoned explanation that a rerun is not needed."
+            " This question does not block closure."
+        ),
+        "verification_inputs_caller_asserted": (
+            "Verification freshness relied on the caller-asserted complete input list for that"
+            " run: a later change outside the declared inputs was treated as unrelated. FinishUP"
+            " did not observe which files the check read."
+        ),
         "planned_verification_stale": (
-            "A planned verification command last ran before the latest observed edit."
+            "After the planned verification ran, a recorded input of it changed, or an edit"
+            " FinishUP could not place (such as a file-edit tool edit, which records no path)"
+            " was made and may have changed one."
         ),
         "planned_verification_outcome_unknown": (
             "A planned verification command ran, but the host stated no outcome for it."
@@ -582,7 +595,9 @@ TASK_FACT_GAP_SENTENCES: Final[Mapping[str, str]] = MappingProxyType(
             " observed outcome still decides."
         ),
         "edited_after_last_verification": (
-            "An observed edit followed the last observed test, lint, typecheck or build run."
+            "After the last observed test, lint, typecheck or build run, a recorded input of it"
+            " changed, or an edit FinishUP could not place (such as a file-edit tool edit, which"
+            " records no path) was made and may have changed one."
         ),
         "requested_output_git_ignored": (
             "A requested output file is excluded by .git/info/exclude (a local exclude) or by a"

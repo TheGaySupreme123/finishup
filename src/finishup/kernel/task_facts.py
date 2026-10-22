@@ -58,7 +58,7 @@ import threading
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field, replace
 from types import MappingProxyType
-from typing import Final, cast
+from typing import TYPE_CHECKING, Final, cast
 
 from finishup.domain.command_segments import (
     PlannedSegment,
@@ -186,6 +186,7 @@ from finishup.domain.write_scope import (
 )
 from finishup.kernel.command_attempts import attempted_items_for_obligation
 from finishup.kernel.fact_lineage import (
+    MAX_LINEAGE_SOURCES,
     RULE_COMMAND_MATCH,
     RULE_COMMAND_UNMATCHED,
     RULE_EDIT_AFTER_RUN,
@@ -212,6 +213,9 @@ from finishup.kernel.projections import (
     ProjectionState,
 )
 from finishup.protocol.coverage import Coverage, PublicationChannel
+
+if TYPE_CHECKING:
+    from finishup.kernel.verification_freshness import VerificationFreshness
 
 __all__ = [
     "AGENT_ACTIONABLE_TASK_FACT_GAPS",
@@ -352,6 +356,13 @@ def register_command_identity_key(key_material: bytes | None) -> None:
 
 def command_identity_key_registered() -> bool:
     return _COMMAND_IDENTITY_KEY[0] is not None
+
+
+def verification_path_identity(relative: str) -> str | None:
+    from finishup.domain.workspace_effect import workspace_path_identity
+
+    key = _COMMAND_IDENTITY_KEY[0]
+    return None if key is None else workspace_path_identity(key, relative)
 
 
 def command_identity_key_generation() -> int:
@@ -1456,11 +1467,17 @@ def _verification_input_not_fingerprinted(
 def verification_unchanged_actions(
     projection: ProjectionState,
     records: Iterable[LedgerRecord],
+    *,
+    per_verification: bool = False,
 ) -> frozenset[ActionId]:
     """In-workspace shell writes whose trusted before/after input state is identical (#1143).
 
     This is a bounded plaster, not a claim to know arbitrary command dependencies. Unknown or
     contradictory fingerprints and writes outside the compared workspace remain stale-making.
+    By default a requested input the comparison cannot see withdraws the proof task-wide.
+    ``per_verification`` leaves that scoping to the caller (``verification_freshness`` applies it
+    to the runs that input belongs to, #1167 review finding 8); an unreadable obligation still
+    withdraws it everywhere, since its inputs are unknown.
     """
 
     from finishup.kernel.later_material import workspace_effects
@@ -1472,7 +1489,8 @@ def verification_unchanged_actions(
     if any(
         row.payload is None
         or row.redacted
-        or any(
+        or not per_verification
+        and any(
             item.role is RequestedItemRole.INPUT
             and item.item_kind in _DECLARED_OUTPUT_KINDS
             and _verification_input_not_fingerprinted(
@@ -1878,10 +1896,44 @@ class TaskFactSignals:
     # ADR-045: where each fact came from (rule, the obligation item, the observed runs or edit it
     # rests on). Derived with the markers, from the same prefix.
     lineage: tuple[FactLineage, ...] = ()
+    # #1143 (PR #1167 review): the events of a stale verdict on a run freshness could not judge
+    # (a pending or unreadable result): its action event and the later edit. On the AI route the
+    # check asks about them, since no freshness row can carry the question.
+    unjudged_stale_events: tuple[EventId, ...] = ()
 
     def __post_init__(self) -> None:
         if not set(self.codes) <= TASK_FACT_GAPS:
             raise ValueError("task_fact_code_invalid")
+
+
+def _changed_after(
+    delta: VerificationFreshness | None,
+    run: _ObservedRun,
+    state: _ObservedState,
+    event_positions: Mapping[EventId, int],
+    judged: frozenset[EventId],
+) -> tuple[int, tuple[EventId, ...]] | None:
+    """The frontier and change events that make *run* stale, or ``None`` (#1143, ADR-042).
+
+    A run freshness judged (an observed, readable result: ``judged``) follows its row; no row
+    means nothing later bears on it. A run with no result to judge (a pending run whose
+    post-event never arrived, or an unreadable result) keeps the pre-#1143 rule, so any later
+    counting edit makes it stale (#1167 review finding 1).
+    """
+
+    if run.action_event in judged:
+        if delta is None or delta.state != "stale":
+            return None
+        return (
+            max((event_positions.get(ref, 0) for ref in delta.change_refs), default=run.position),
+            delta.change_refs,
+        )
+    if state.latest_edit is None or state.latest_edit <= run.position:
+        return None
+    return (
+        state.latest_edit,
+        () if state.latest_edit_event is None else (state.latest_edit_event,),
+    )
 
 
 def task_fact_signals(
@@ -1900,6 +1952,34 @@ def task_fact_signals(
     state = _observed_state(
         projection, observed, cooperative_event_ids_from_records(prefix), prefix
     )
+    from finishup.kernel.verification_freshness import (
+        CALLER_ASSERTED_INPUTS,
+        RERUN_QUESTION,
+        verification_freshness,
+    )
+
+    freshness = verification_freshness(projection, prefix)
+    event_positions = {record.event_id: record.ledger.ingestion_sequence for record in prefix}
+    unjudged: set[EventId | None] = set()
+    # The runs freshness judges: an observed command action with an observed, readable result.
+    judged = frozenset(
+        action.source_event_id
+        for result in projection.results.values()
+        if result.payload is not None
+        and result.source_event_id in observed
+        and (action := projection.actions.get(result.payload.action_id)) is not None
+        and action.source_event_id in observed
+    )
+    by_event: dict[EventId | None, VerificationFreshness] = {}
+    for fact in freshness:
+        result = projection.results.get(fact.run_ref)
+        action = (
+            None
+            if result is None or result.payload is None
+            else projection.actions.get(result.payload.action_id)
+        )
+        if action is not None:
+            by_event[action.source_event_id] = fact
     batches = decision_batches(prefix)
     blocked = blocked_obligations(projection, batches)
     acknowledged = acknowledged_obligation_ids(projection)
@@ -2000,7 +2080,15 @@ def task_fact_signals(
                     )
                 elif outcome is ResultOutcome.UNKNOWN:
                     markers.add((PLANNED_VERIFICATION_OUTCOME_UNKNOWN_GAP, obligation))
-                if state.latest_edit is not None and state.latest_edit > latest.position:
+                delta = by_event.get(latest.action_event)
+                if delta is not None and delta.state == "unknown":
+                    markers.add((RERUN_QUESTION, obligation))
+                if delta is not None and delta.caller_asserted:
+                    markers.add((CALLER_ASSERTED_INPUTS, obligation))
+                changed_after = _changed_after(delta, latest, state, event_positions, judged)
+                if changed_after is not None and latest.action_event not in judged:
+                    unjudged.update((latest.action_event, *changed_after[1]))
+                if changed_after is not None:
                     markers.add((PLANNED_VERIFICATION_STALE_GAP, obligation))
                     lineage.append(
                         FactLineage(
@@ -2010,20 +2098,13 @@ def task_fact_signals(
                             obligation_id=obligation,
                             item_index=index,
                             frontier=latest.position,
-                            prior_frontier=state.latest_edit,
+                            prior_frontier=changed_after[0],
                             proof="observed_run",
                             source_event_ids=tuple(
                                 sorted(
-                                    {
-                                        *sources,
-                                        *(
-                                            (state.latest_edit_event,)
-                                            if state.latest_edit_event is not None
-                                            else ()
-                                        ),
-                                    },
+                                    {*sources, *changed_after[1]},
                                     key=str.encode,
-                                )
+                                )[:MAX_LINEAGE_SOURCES]
                             ),
                         )
                     )
@@ -2041,19 +2122,28 @@ def task_fact_signals(
         }.values(),
         key=lambda run: run.position,
     )
-    if (
-        verification_runs
-        and state.latest_edit is not None
-        and state.latest_edit > verification_runs[-1].position
-    ):
+    last_changed = (
+        None
+        if not verification_runs
+        else _changed_after(
+            by_event.get(verification_runs[-1].action_event),
+            verification_runs[-1],
+            state,
+            event_positions,
+            judged,
+        )
+    )
+    if last_changed is not None:
         markers.add((EDITED_AFTER_LAST_VERIFICATION_GAP, None))
         last_run = verification_runs[-1]
+        if last_run.action_event not in judged:
+            unjudged.update((last_run.action_event, *last_changed[1]))
         lineage.append(
             FactLineage(
                 code=EDITED_AFTER_LAST_VERIFICATION_GAP,
                 rule=RULE_EDIT_AFTER_RUN,
                 state="edited_after",
-                frontier=state.latest_edit,
+                frontier=last_changed[0],
                 prior_frontier=last_run.position,
                 proof="observed_run",
                 source_event_ids=tuple(
@@ -2064,17 +2154,23 @@ def task_fact_signals(
                                 if last_run.action_event is not None
                                 else ()
                             ),
-                            *(
-                                (state.latest_edit_event,)
-                                if state.latest_edit_event is not None
-                                else ()
-                            ),
+                            *last_changed[1],
                         },
                         key=str.encode,
-                    )
+                    )[:MAX_LINEAGE_SOURCES]
                 ),
             )
         )
+
+    if verification_runs:
+        delta = by_event.get(verification_runs[-1].action_event)
+        if delta is not None and delta.state == "unknown":
+            markers.add((RERUN_QUESTION, None))
+    if any(fact.caller_asserted for fact in freshness):
+        # Freshness of a retained run (the latest of its command, or one the account cites) held
+        # only on the caller's complete-declaration assertion: disclosed, whichever run it is
+        # (#1167 review finding 6).
+        markers.add((CALLER_ASSERTED_INPUTS, None))
 
     # Runtime facts.
     # Frozen legacy identifier (ADR-048): recorded wire token value.
@@ -2123,6 +2219,9 @@ def task_fact_signals(
         acting_started=state.acting,
         blocked=blocked,
         lineage=tuple(sorted(dict.fromkeys(lineage), key=lambda item: item.sort_key)),
+        unjudged_stale_events=tuple(
+            sorted((event for event in unjudged if event is not None), key=str.encode)
+        ),
     )
 
 

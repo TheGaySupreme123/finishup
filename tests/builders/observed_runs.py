@@ -433,6 +433,7 @@ class ObservedLedger:
         write_scope: str | None = None,
         workspace_effect: str | None = None,
         workspace_write_scopes: tuple[str, ...] | None = None,
+        workspace_changed_entries: tuple[str, ...] | None = None,
     ) -> ResultId:
         """Record one tool call as the coordinator materializes it: action, then result.
 
@@ -461,6 +462,7 @@ class ObservedLedger:
             subject_state=subject_state,
             workspace_effect=workspace_effect,
             workspace_write_scopes=workspace_write_scopes,
+            workspace_changed_entries=workspace_changed_entries,
         )
 
     def begin(
@@ -539,6 +541,7 @@ class ObservedLedger:
         subject_state: SubjectStateRef | None = None,
         workspace_effect: str | None = None,
         workspace_write_scopes: tuple[str, ...] | None = None,
+        workspace_changed_entries: tuple[str, ...] | None = None,
     ) -> ResultId:
         """Record the result of a call ``begin`` recorded."""
 
@@ -555,6 +558,7 @@ class ObservedLedger:
                     f"Observed result status={outcome.value}",
                     workspace_effect,
                     workspace_write_scopes,
+                    workspace_changed_entries,
                 ),
                 subject_state=subject_state,
             ),

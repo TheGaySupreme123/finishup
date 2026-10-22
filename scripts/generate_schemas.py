@@ -8866,6 +8866,14 @@ def _control_v2_9_schema(entry: _RegistryEntry) -> dict[str, JsonValue]:
             "enum": cast(list[JsonValue], sorted(WORKSPACE_EFFECTS)),
             "type": "string",
         }
+        from finishup.domain.workspace_effect import MAX_CHANGED_ENTRIES
+
+        fields["workspace_changed_entries"] = {
+            "type": "array",
+            "items": {"type": "string", "pattern": "^[a-f0-9]{32}$"},
+            "maxItems": MAX_CHANGED_ENTRIES,
+            "uniqueItems": True,
+        }
         fields["workspace_write_scopes"] = {
             "type": "array",
             "items": {"type": "string", "enum": cast(list[JsonValue], sorted(WRITE_SCOPES))},

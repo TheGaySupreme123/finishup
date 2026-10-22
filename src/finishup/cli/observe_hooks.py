@@ -1717,6 +1717,10 @@ def map_hook_payload_to_envelope(
     if workspace_reading is not None:
         # The closed before/after fact, after identity: it never changes the call's source.
         structural = JsonObject({**structural, WORKSPACE_EFFECT_KEY: workspace_reading.effect})
+        if workspace_reading.changed_entries is not None:
+            structural = JsonObject(
+                {**structural, "workspace_changed_entries": workspace_reading.changed_entries}
+            )
         if workspace_reading.write_scopes is not None:
             structural = JsonObject(
                 {**structural, "workspace_write_scopes": workspace_reading.write_scopes}
