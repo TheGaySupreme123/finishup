@@ -1504,7 +1504,7 @@ def test_token_usage_parser_rejects_incoherent_counters() -> None:
 
     for notice in notices:
         with pytest.raises(ValueError, match="^codex_app_server_token_usage_invalid$"):
-            module._runtime_token_usage_from_notification(  # pyright: ignore[reportPrivateUsage]
+            module._runtime_token_usages_from_notification(  # pyright: ignore[reportPrivateUsage]
                 notice, thread_id=_THREAD_ID, turn_id=_TURN_ID
             )
 

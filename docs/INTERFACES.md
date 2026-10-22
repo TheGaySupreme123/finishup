@@ -10147,6 +10147,15 @@ follow-up loop is deleted.
   The one repair covers `ReviewerReplyInvalid` from `complete` and from decoding alike; the turn is
   captured either way. With `resume_reserved`, a store whose `usage()` is exactly `(1, 1)` runs turn
   1 again without reserving it; any other prior usage ends `interrupted` or `uncaptured_step`.
+- One reply schema per review (#1172): the provider caches the reply schema with the
+  conversation, so a review keeps the schema its first turn chose, except on the final-phase
+  repair turn and any final turn after the review's one repair is spent (the per-turn rule,
+  `FINAL_PHASE` and the late-read repair are under #1173 below). When the next exchange has no
+  room left for the `FINAL_PHASE` notice (`ReviewerBroker.notice_fits()` is false: only a first
+  exchange admitted inside the frame the notices need), the loop leaves the notice out, so the
+  notice never pushes that exchange over the cap. Only a malformed first answer reaches that
+  state, so the repair note already asks for the judgment and the turn is read-free. A first
+  exchange that leaves less room than the repair note itself still ends `case_capacity_exceeded`.
 - Broker: `application.reviewer_broker.ReviewerBroker(*, job_id, case, roots, store, admit,
   packet_refs, packet_text, max_reads, exchange_room)`; `execute(action, expired, reply="") -> str`
   returns the round-1 result envelope
@@ -11956,7 +11965,7 @@ provider-wire schemas as `ReviewerReplySchemas` (`REVIEWER_REPLY_SCHEMAS`, the s
 | Responses | `input` is the payload verbatim, `text.format` the reply schema, `store:false` kept, no tools | no schemas installed |
 | Chat Completions | `messages` is the payload verbatim, strict `response_format`, no functions or tool calls; the SDK posts the canonical rendered body itself, so the exact-body guard sees the audited bytes | `prompt_only` endpoints (unavailable, never relabelled) |
 | Local model | one frame `{"messages", "protocol": "finishup-reviewer-completion-1", "reply_schema"}` | a profile naming any other protocol (and a completion profile receiving a one-shot case) |
-| Codex subscription | one ephemeral thread per review, held in its `ReviewerSession`; the first turn sends every user message after the instruction (the packet, then the read catalog) as its text inputs, each later turn sends only the user messages after the longest history the thread holds (a read result or repair notice, then, when reads end, the final-phase notice; at most two, #1173), with `outputSchema` every turn | releases outside `REVIEWER_LOOP_REVIEWED_RELEASES` (`0.162.1`), no or a closed session, a continuation that does not extend the held thread (`case_invalid`), plan/compaction/tool/request/warning events |
+| Codex subscription | one ephemeral thread per review, held in its `ReviewerSession`; the first turn sends every user message after the instruction (the packet, then the read catalog) as its text inputs, each later turn sends only the user messages after the longest history the thread holds (a read result or repair notice, then, when reads end, the final-phase notice; at most two, #1173), with the same effort and model every turn and the same `outputSchema` except on the final-phase repair turn and any final turn after the review's one repair is spent (#1172, #1173) | releases outside `REVIEWER_LOOP_REVIEWED_RELEASES` (`0.162.1`), no or a closed session, a continuation that does not extend the held thread (`case_invalid`), plan/compaction/tool/request/warning events |
 
 A completed turn returns `SemanticResultReply(reply, provenance)`: the parsed reply object, not
 yet decoded. `reviewer_exchange(media_type, payload, schemas)` computes the exchange's history,
@@ -11997,6 +12006,53 @@ Discarded telemetry and streamed deltas no longer exhaust a 4,096-event allowanc
 `codex_event_<family>_bytes` (re-encoded JSON), `codex_event_wire_bytes` (active-turn traffic including
 the turn acknowledgement), and attempt `duration_ms` including cleanup. Per-message,
 request-queue and pre-disclosure bounds and all event/tool allowlists still apply.
+
+**Per-exchange prompt-cache telemetry (issue #1172).** Every provider exchange that reports usage
+writes one `exchange_cache` owner diagnostic (component `codex_app_server`, `openai_responses` or
+`openai_chat_completions`; reason `completed`, or `incomplete` when the Codex turn did not complete,
+the Responses status is not `completed` or the Chat Completions `finish_reason` is not `stop`). Its
+`request_id` is the review's first provider request id, the attempt row's `provider_request_id`, so
+every exchange of one review shares it and `finishup service diagnostics --request-id <id>`
+returns them all; a one-shot case names its own. Fields, all integers but the last:
+
+| Field | Meaning |
+|---|---|
+| `reviewer_exchange_index` | 1-based exchange of the review (a one-shot case is 1) |
+| `reviewer_model_requests` | model requests the exchange made |
+| `reviewer_input_tokens`, `reviewer_cached_input_tokens`, `reviewer_output_tokens` | provider-reported, summed over those requests; the cached count is absent when the provider did not report one |
+| `reviewer_cache_write_input_tokens` | provider-reported cache writes, absent where the provider did not report them |
+| `reviewer_prefix_tokens` | input of the previous exchange's last request: what this exchange could reuse (0 when it opened the conversation; absent when the previous exchange's requests are unknown) |
+| `reviewer_prefix_cached_tokens` | cached input of this exchange's first request (absent with the cached count) |
+| `reviewer_cache_miss` | closed label, below; `first_turn` and `compaction` are always recorded, and a later exchange has none when its prefix or cached input is unknown |
+
+Codex counts are the thread's cumulative `total` across the turn; a snapshot whose input grew is one
+more request, and that snapshot's `last` names the request (a repeated snapshot is not another one).
+A turn starts at the total its previous turn left. When that turn reported no usage or had a usage
+snapshot refused, the turn starts instead at the total before its own first reported request (that
+snapshot's `total` less its `last`), so it records its own requests, not the thread's earlier
+ones, unless a repeated snapshot of the thread's total arrives first, which it would count as its
+own (#1192). A turn that had a usage snapshot refused records no counts (it may be missing a
+request) and leaves the next prefix unknown. Responses reads `usage.input_tokens`,
+`usage.output_tokens` and, in `usage.input_tokens_details`, `cached_tokens` and
+`cache_write_tokens`; Chat Completions `prompt_tokens`, `completion_tokens` and the same two in
+`prompt_tokens_details`, which may be absent. A count the answer omits is left out, never recorded
+as zero. An answer without input and output counts records nothing. A compaction is still
+recorded then, by its index and label alone. The local model route records nothing (FinishUP
+observes no provider prompt cache there), nor does the credential probe.
+
+`reviewer_cache_miss` is the first that applies: `compaction` (a `thread/compacted` notification or
+`contextCompaction` item in the turn, recorded even where the reviewer then refuses it);
+`first_turn` (the exchange opened the review's conversation; every one-shot case); `none` (the
+first request's cached input falls short of the prefix by at most 1,024 tokens, the providers'
+minimum cacheable prefix; they cache whole 128-token blocks from there, so a prefix that short is
+`none` even when nothing of it was cached);
+`schema_or_settings_change` (the digest of what the route sends beside the messages differs from
+the previous exchange's: the Codex `turn/start` parameters except `input` and `threadId`, or the API
+body except `input`/`messages`); `retry` (the history does not carry the previous answer, so this
+is the loop's one format repair); `unexplained`. The state between a review's exchanges is
+`ReviewerSession.cache` (`domain.reviewer_cache.ReviewerCacheState`): counts, the last history's
+message count and that settings digest, never content. Recording never changes an outcome: any
+failure in it is dropped. A record is at most 656 bytes, inside the ring's 1,024-byte line cap.
 
 `complete(history, schema, deadline=)` returns the reply object. It raises the decoder's
 `ReviewerReplyInvalid("output_not_json")` only for a completed answer that is not one JSON object
@@ -12380,7 +12436,8 @@ recomputation solely because the finding names paths.
   exchange). A repair note uses `FINAL_FORMAT_ERROR` whenever the next turn is final. The step
   selector still records `turn`/`final` per turn.
 - `reviewer_loop.FINAL_PHASE` is a user notice appended once, only in a review that started with
-  reads, when reads end. The conversation leaves room for it
+  reads, when reads end and the next exchange has room for it (otherwise it is left out, #1172
+  above). The conversation leaves room for it
   and one format repair (the longer of `FORMAT_ERROR` and `FINAL_FORMAT_ERROR`). The exchange
   codec accepts at most 17 messages, including catalog, five action/observation pairs and
   notices. The shared deadline and history fences remain unchanged.

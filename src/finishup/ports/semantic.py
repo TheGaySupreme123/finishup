@@ -28,6 +28,7 @@ from finishup.domain.findings import (
     SemanticProvenance,
     TokenUsage,
 )
+from finishup.domain.reviewer_cache import ReviewerCacheState
 from finishup.domain.reviewer_context import MESSAGE_OVERHEAD_TOKENS, estimated_model_tokens
 from finishup.domain.values import (
     FindingId,
@@ -2267,11 +2268,14 @@ class ReviewerSession:
     in flight before it cleans up the held state. Transcript content never selects a session.
     """
 
-    __slots__ = ("closed", "deadline", "held", "lock", "opened", "review_id")
+    __slots__ = ("cache", "closed", "deadline", "held", "lock", "opened", "review_id")
 
     def __init__(self, review_id: str, deadline: Deadline) -> None:
         self.review_id, self.deadline = review_id, deadline
         self.held: ReviewerSessionHold | None = None
+        # What the last exchange leaves the next one's prompt-cache accounting (#1172): counts,
+        # roles and a settings digest only, never transcript content.
+        self.cache = ReviewerCacheState()
         # Set once the provider opens this review's conversation; a stateful provider never
         # opens a second one for the same review (a lost thread ends the review instead).
         self.opened = False

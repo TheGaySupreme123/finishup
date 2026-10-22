@@ -231,6 +231,16 @@ class ReviewerBroker:
             and (room is None or room >= MIN_ROOM + READ_ACTION_ROOM)
         )
 
+    def notice_fits(self) -> bool:
+        """Whether the next exchange still has the room every read leaves for the loop's notices.
+
+        That room is reserved past each fitted read (#1172), so only a first exchange admitted
+        inside it, where ceiling planning could not keep its frame, leaves less.
+        """
+
+        room = self._exchange_room()
+        return room is None or room >= 0
+
     async def execute(
         self, action: ReviewerActionModel, expired: Callable[[], bool], reply: str = ""
     ) -> str:
