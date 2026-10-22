@@ -3083,10 +3083,18 @@ async def _attach_replayed_fact_lineage(
     return replace(result, fact_lineage=lineage)
 
 
-def _route_requires_ai_review(app: Application, route_profile: Literal["policy", "strict"]) -> bool:
-    """The serving route's own answer, as status computes it (``_semantic_review_required``)."""
+def _route_requires_ai_review(
+    policy_semantic: Literal["disabled", "optional", "required"],
+    route_profile: Literal["policy", "strict"],
+) -> bool:
+    """The serving route's own answer under the effective policy (#1143, PR #1167 review).
 
-    return route_profile == "policy" and app.verification_policy.semantic == "required"
+    ``policy_semantic`` is the policy this check runs with (``_check_review_mode``): an owner's
+    local conversation setting or switch already relaxed ``required`` to ``optional``, exactly as
+    status computes it (``_semantic_review_required`` and not ``_task_local_by_choice``).
+    """
+
+    return route_profile == "policy" and policy_semantic == "required"
 
 
 async def _read_declared_outputs(
@@ -3096,7 +3104,7 @@ async def _read_declared_outputs(
     capture: CheckChangeMetadata | None,
     source: CheckWorkspaceSource | None,
     port: object | None,
-    app: Application,
+    policy_semantic: Literal["disabled", "optional", "required"],
     route_profile: Literal["policy", "strict"],
 ) -> tuple[
     _PolicyEvaluator,
@@ -3124,7 +3132,9 @@ async def _read_declared_outputs(
     outputs = await _requested_output_inputs(
         frozen.case, capture, source, port, request.request_id, deliverable_history(records)
     )
-    advisory = _route_requires_ai_review(app, route_profile) or semantic_review_used(records)
+    advisory = _route_requires_ai_review(policy_semantic, route_profile) or semantic_review_used(
+        records
+    )
 
     def evaluate(case: DeterministicCase) -> tuple[DeterministicAssessment, ...]:
         return outputs.evaluator(replace(case, verification_advisory=advisory))
@@ -6281,7 +6291,7 @@ async def execute_check_commit(
             structural_capture,
             structural_source,
             change_capture,
-            app,
+            policy_semantic,
             route_profile,
         )
         if frozen.lease.phase is CheckPhase.RESERVED:

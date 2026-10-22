@@ -12255,8 +12255,10 @@ versioned, caller-asserted evidence convention
 Only exact file inputs are declared; arbitrary shell process reads are not observed by any host.
 A value ending in `/` (or the workspace root `.`) names a directory; a bare name is read as a
 file. An input directory makes the declaration partial and the run asks about any change it may
-hold. An output directory covers the files the run's own trusted comparison wrote, unless the
-record names one outside it, and leaves the declaration as complete as it was.
+hold. An output directory covers only files the run's own trusted comparison wrote whose recorded
+name (a declared or requested file, or an agent evidence reference) lies under it; a write whose
+location the record does not name is not covered, and the workspace root (`./`) covers nothing.
+It leaves the declaration as complete as it was.
 An input takes precedence over an evidence output. A placed change (a trusted comparison's keyed
 changed-entry identities) whose input relationship is unknown asks, never demands a rerun.
 A counting change FinishUP cannot place keeps the pre-#1143 rule and makes the verification stale:
@@ -12294,7 +12296,13 @@ frozen prefix; status and Stop (`ClosureFacts.freshness_review_used`) and receip
 `closure_readiness.freshness_review_used`) ask it of the records before the latest check. So the
 first AI-powered review never turns the check that ran it advisory after the fact, and the
 requested mode never sets it: a check with no configured reviewer, on the strict route, under a
-disabled policy or with a failed review keeps the local rule. Known
+disabled policy or with a failed review keeps the local rule. "The policy route requires review"
+uses the effective policy: the owner's explicit local conversation setting or switch
+(`_task_local_by_choice`; the check's resolved policy) relaxes `required` for check, status and
+Stop alike. Receipts cannot see the serving route and read the check's recorded route bit
+(`semantic_route_required` omitted means required); that bit also counts a check that explicitly
+asked for `semantic_required` on an optional policy, where the check itself used the local rule.
+Both answers bound the receipt (actionable versus standing), so the conclusion is the same. Known
 input changes and unplaceable counting changes produce `planned_verification_stale` /
 `edited_after_last_verification` only on the affected runs; the stale finding's detail names the
 verification and the changes. A run whose result never arrived (pending or unreadable) has

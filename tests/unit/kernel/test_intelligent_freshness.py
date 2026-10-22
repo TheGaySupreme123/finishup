@@ -924,13 +924,29 @@ def test_a_claim_citing_a_stale_verification_is_still_uncorroborated() -> None:
     assert len(_uncorroborated_completion_findings(case_for(ledger))) == 1
 
 
-def test_a_declared_output_directory_covers_the_runs_own_writes() -> None:
-    """``reports/`` as an output covers what the run wrote there; it keeps the list complete."""
+def test_a_declared_output_directory_covers_the_runs_own_named_writes() -> None:
+    """``reports/`` covers a file the run wrote there once the record names it (#1167 review).
+
+    The agent's evidence reference names ``reports/x.json``; the run's own trusted comparison
+    wrote it, so its later rewrite is quiet and the list stays complete.
+    """
 
     ledger = ObservedLedger()
     ledger.plan("pytest -q")
     run = producing_run(ledger, "pytest -q", "reports/x.json")
     manifest(ledger, run, inputs=("src/app.py",), outputs=("reports/",))
+    ledger.append(
+        EventSchema("evidence_recorded", "1.0.0"),
+        EvidenceRecordedPayload(
+            evidence_id("evd_00000000-0000-4000-8000-000000002168"),
+            EvidenceKind.OTHER,
+            EvidenceImmutability.METADATA_ONLY,
+            timestamp_from_string("2026-10-21T12:00:00.000Z"),
+            reference="reports/x.json",
+            description="Verifier report",
+        ),
+        observed=False,
+    )
     changed(ledger, "reports/x.json")
     assert not verification_freshness(replay(ledger.prefix), ledger.prefix)
     facts = task_fact_signals(replay(ledger.prefix), ledger.prefix)
@@ -940,7 +956,36 @@ def test_a_declared_output_directory_covers_the_runs_own_writes() -> None:
         "verification_rerun_question",
         "verification_inputs_caller_asserted",
     } & set(facts.codes)
-    # A file the run never wrote is not covered: the complete list sets it aside, disclosed.
-    changed(ledger, "reports/other.json")
+
+
+@pytest.mark.parametrize("output", ["reports/", "./"])
+def test_an_output_directory_never_covers_an_unplaced_own_write(output: str) -> None:
+    """A ``--fix`` run rewrote a source FinishUP cannot name (#1167 final check, finding 1).
+
+    Its location is unknown, so neither ``reports/`` nor the workspace root covers it: a later
+    change to it asks the input-aware question instead of passing silently.
+    """
+
+    ledger = ObservedLedger()
+    run = ledger.run(
+        "ruff check --fix src",
+        ResultOutcome.SUCCESS,
+        exit_status=0,
+        runner="lint",
+        workspace_effect="changed",
+        workspace_write_scopes=("workspace",),
+        workspace_changed_entries=tuple(
+            sorted(
+                workspace_path_identity(INSTALLATION_KEY, path)
+                for path in ("src/app.py", "reports/x.json")
+            )
+        ),
+    )
+    manifest(ledger, run, complete=False, inputs=("pyproject.toml",), outputs=(output,))
+    changed(ledger, "src/app.py")
     (row,) = verification_freshness(replay(ledger.prefix), ledger.prefix)
-    assert (row.state, row.basis) == ("current", "complete")
+    assert (row.state, row.basis) == ("unknown", "declared")
+    assert (
+        "verification_rerun_question"
+        in task_fact_signals(replay(ledger.prefix), ledger.prefix).codes
+    )

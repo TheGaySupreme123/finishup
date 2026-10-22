@@ -289,7 +289,8 @@ no inputs is not complete. A complete list that leaves out a file you later edit
 verification current, and FinishUP discloses `verification_inputs_caller_asserted`, so list every
 file the check reads. Name a directory with a trailing slash; a bare name is read as a file. An
 input directory (`src/`) makes the list partial, so a change inside it asks; an output directory
-(`reports/`) covers the files that run itself wrote there. Directories and
+(`reports/`) covers files that run itself wrote there once the record names them (list the file, or
+cite it as evidence), and `./` covers nothing. Directories and
 outside-workspace inputs remain unknown; a change whose comparison was unavailable cannot be placed
 and stays stale. Each new observed run needs its own declaration.
 

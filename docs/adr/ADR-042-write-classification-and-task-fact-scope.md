@@ -455,8 +455,10 @@ trace. Inputs win when a path is also an output. Malformed, conflicting, redacte
 out-of-workspace declarations cannot establish completeness, and neither can a `complete: true`
 declaration whose `inputs` list is empty or that names a directory (a value ending in `/`, or
 `.`): a directory input makes the run ask about any change it may hold, never set it aside. An
-output directory instead covers the files the run's own trusted comparison wrote (unless the record
-names one outside it) and leaves completeness unchanged. A bare directory name cannot be told from
+output directory instead covers only files the run's own trusted comparison wrote whose recorded
+name lies under it, and leaves completeness unchanged; a run-written file the record does not name
+could be anywhere (a `--fix` run rewriting a source), so its later change is judged like any other
+placed change, and the workspace root covers nothing. A bare directory name cannot be told from
 a file and is read as one. A rerun is a new `res_` identity and needs its own declaration.
 
 A requested input the fingerprint cannot compare (outside the workspace or beyond the
@@ -528,7 +530,8 @@ freshness rows track) becomes the `decision_needed` rerun question; the reviewer
 kept at the start of its detail. Any other stale-evidence concern keeps its own kind and text.
 On receipts, AI-route freshness is a standing limit (never agent work), the same weight as the
 rerun question. Freshness is AI-route by one predicate on one state: the policy route requires
-AI-powered review, or a review was used before the check that judged freshness. The check asks it
+AI-powered review under the effective policy (an owner's explicit local conversation setting or
+switch relaxes it), or a review was used before the check that judged freshness. The check asks it
 of its frozen prefix; status, Stop and receipts ask it of the records before the latest check, so
 the task's first AI-powered review never turns the check that ran it advisory after the fact, and
 a check that asked for a review that was not configured, blocked or failed stays local (PR #1167

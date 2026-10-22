@@ -17,6 +17,8 @@ import pytest
 
 from builders.start_application import protocol_id, start_request
 from finishup.domain.events import ActionKind
+from finishup.domain.privacy import ConversationReview
+from finishup.kernel.review_mode import ConversationReviewContext
 from finishup.ports.ledger import CheckCommitResult
 from finishup.protocol.models import CheckRequest, SemanticStatus
 from integration.application import test_respond_status_receipt as h
@@ -29,18 +31,27 @@ _QUESTION = "Is a verification rerun needed after the recorded changes?"
 
 async def _edit_after_a_test_run(
     semantic: Literal["disabled", "optional", "required"],
-    mode: str,
+    mode: str | None,
     seed_offset: int,
     *,
     pending: bool = False,
     final_review: bool = False,
+    conversation: str | None = None,
 ) -> tuple[CheckCommitResult, Any]:
     """A test run, then an ``apply_patch`` edit, then one check; returns it and its readiness.
 
-    ``pending`` leaves the test run without a result (its post-event never arrived).
+    ``pending`` leaves the test run without a result (its post-event never arrived);
+    ``conversation`` is the owner's explicit conversation review setting.
     """
 
     app, runtime, _ = h._build_app(seed_offset=seed_offset, semantic=semantic)
+    if conversation is not None:
+        setting = ConversationReview(conversation)
+
+        async def reader(_runtime: object) -> ConversationReviewContext:
+            return ConversationReviewContext(setting, True, True)
+
+        object.__setattr__(app, "conversation_review_reader", reader)
     started = await app.start(start_request(5100, title="freshness route"))
     appended = await s._append_observed(
         app,
@@ -62,7 +73,7 @@ async def _edit_after_a_test_run(
                 "session_id": started.session_id,
                 "writer_id": started.writer_id,
                 "expected_frontier": h._frontier(appended.result_frontier),
-                "mode": mode,
+                **({} if mode is None else {"mode": mode}),
                 "max_findings": "5",
                 **({"final_review": True} if final_review else {}),
             }
@@ -116,3 +127,20 @@ async def test_a_pending_run_then_an_edit_on_the_ai_route_is_asked_not_phantom()
     )
     assert any(finding.summary == _QUESTION for finding in checked.findings)
     assert "edited_after_last_verification" not in readiness.agent_actionable
+
+
+@pytest.mark.parametrize("setting", ["local_only", "local_agent_opt_in"])
+async def test_an_owner_local_setting_keeps_a_required_policy_on_the_local_rule(
+    setting: str,
+) -> None:
+    """The owner chose local checks for this conversation (#1167 final check, finding 2).
+
+    The check runs local, so it judges freshness by the local rule like status and Stop: no rerun
+    question whose answer could never release Stop.
+    """
+
+    checked, readiness = await _edit_after_a_test_run("required", None, 81, conversation=setting)
+    assert all(finding.summary != _QUESTION for finding in checked.findings)
+    assert "edited_after_last_verification" in checked.coverage.known_gaps
+    assert "edited_after_last_verification" in readiness.agent_actionable
+    assert "verification_rerun_question" not in readiness.standing_limitations

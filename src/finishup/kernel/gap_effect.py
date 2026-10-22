@@ -98,7 +98,8 @@ class GapContext:
     observation. ``check_carried`` is the applicable check's ``known_gaps`` and
     ``commands_complete`` its counters showing no unknown or live-failed command.
     ``freshness_advisory`` says freshness is AI-advisory for this receipt (#1143): the applicable
-    check's AI-powered review succeeded or the task already used one, the predicate readiness uses.
+    check's recorded route required review, or a review was used before it
+    (``closure_readiness.freshness_review_used``), the predicate the check and readiness use.
     """
 
     route_requires_review: bool = True

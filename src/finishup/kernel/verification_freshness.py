@@ -151,7 +151,8 @@ class _InputScope:
     inputs: set[str] = field(default_factory=lambda: set[str]())
     directories: set[str] = field(default_factory=lambda: set[str]())
     unobservable: bool = False
-    # Output directories a per-run declaration names: they cover the files the run itself wrote.
+    # Output directories a per-run declaration names: they cover the files the run itself wrote
+    # whose recorded names lie under them.
     output_directories: set[str] = field(default_factory=lambda: set[str]())
 
 
@@ -524,8 +525,8 @@ def verification_freshness(
                         # A directory (named with a trailing slash; a bare name reads as a file).
                         # An input directory: FinishUP cannot tell which of its files a change
                         # touched, so the declaration is partial and a change it may hold asks.
-                        # An output directory covers the files the run itself wrote beneath it
-                        # and leaves the declaration as complete as it was (#1167 review).
+                        # An output directory covers the named files the run itself wrote
+                        # beneath it and leaves the declaration as complete as it was.
                         if field_name == "inputs":
                             complete = False
                             declared.directories.add(path)
@@ -759,13 +760,19 @@ def verification_freshness(
         own = set(own_changes.get(run_event) or ())
         produced = (outputs & own) - known_inputs
         if output_directories:
-            # A declared output directory covers the files this run's own trusted comparison
-            # wrote, unless the record names one outside every declared output directory.
+            # A declared output directory covers only files this run's own trusted comparison
+            # wrote whose recorded name lies under it: an unnamed write could be anywhere (a
+            # ``--fix`` run rewriting a source), so it is never assumed to be there. The
+            # workspace root names no particular directory and covers nothing.
             produced |= {
                 identity
                 for identity in own - known_inputs
-                if (name := names.get(identity)) is None
-                or any(_within(name, directory) for directory in output_directories)
+                if (name := names.get(identity)) is not None
+                and any(
+                    _within(name, directory)
+                    for directory in output_directories
+                    if directory not in {"", "."}
+                )
             }
         basis = (
             "complete"
