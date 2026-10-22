@@ -139,6 +139,7 @@ from finishup.config.paths import PathSafetyError, ensure_owner_only_dir, existi
 from finishup.domain.values import JsonObject, JsonValue
 from finishup.domain.workspace_effect import (
     BYTECODE_CACHE_DIRECTORY,
+    MAX_CHANGED_ENTRIES,
     SHALLOW_DIRECTORY_NAMES,
     VCS_METADATA_DIRECTORIES,
     VCS_OPAQUE_DIRECTORIES,
@@ -261,6 +262,7 @@ class WorkspaceEffectReading:
     reason: UnavailableReason | None = None
     fresh: bool = True
     write_scopes: tuple[str, ...] | None = None
+    changed_entries: tuple[str, ...] | None = None
 
 
 @dataclass(slots=True)
@@ -630,12 +632,14 @@ class WorkspaceFingerprintStore:
                 before.root_ino,
             )
             removed = before.entries.keys() - after.entries.keys()
+            changed_entries = set(removed)
             changed = replaced_root or bool(removed)
             scopes = {before.entries[key].write_class for key in removed}
             for key, entry in after.entries.items():
                 prior = before.entries.get(key)
                 if prior is None:
                     changed = True
+                    changed_entries.add(key)
                     scopes.add(entry.write_class)
                     entry.digest = hasher.digest(root, after.paths[key], entry)
                     continue
@@ -645,6 +649,7 @@ class WorkspaceFingerprintStore:
                 if entry.kind not in {_KIND_FILE, _KIND_LINK} or prior.kind != entry.kind:
                     if not prior.same_metadata(entry):
                         changed = True
+                        changed_entries.add(key)
                         scopes.update((prior.write_class, entry.write_class))
                     continue
                 entry.digest = hasher.digest(root, after.paths[key], entry)
@@ -655,6 +660,7 @@ class WorkspaceFingerprintStore:
                     or prior.mode != entry.mode
                 ):
                     changed = True
+                    changed_entries.add(key)
                     scopes.update((prior.write_class, entry.write_class))
             if not changed:
                 if not self._settled(after.settle):
@@ -671,6 +677,9 @@ class WorkspaceFingerprintStore:
                 write_scopes=None
                 if replaced_root
                 else tuple(sorted(scope for scope in scopes if scope)),
+                changed_entries=None
+                if replaced_root or len(changed_entries) > MAX_CHANGED_ENTRIES
+                else tuple(sorted(key.hex() for key in changed_entries)),
             )
         except _Unavailable as failure:
             with contextlib.suppress(OSError, PathSafetyError, ValueError):

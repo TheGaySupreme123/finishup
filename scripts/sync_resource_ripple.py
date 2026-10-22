@@ -164,7 +164,8 @@ def _installed_manifest_agrees_with_schema(repo_root: Path) -> bool:
 
 def _check(repo_root: Path) -> bool:
     return (
-        _run(repo_root, "generate_advice_egress_fixture.py", "--check")
+        _run(repo_root, "generate_verification_freshness_fixture.py", "--check")
+        and _run(repo_root, "generate_advice_egress_fixture.py", "--check")
         and _run(repo_root, "generate_project_policy_fixture.py", "--check")
         and _run(repo_root, "generate_check_conclusion_fixture.py", "--check")
         and _run(repo_root, "generate_check_totals_fixture.py", "--check")
@@ -193,6 +194,7 @@ def _write_pass(repo_root: Path) -> bool:
         ):
             return False
     steps = (
+        ("generate_verification_freshness_fixture.py", "--write"),
         # Fixture builders validate public requests through the packaged schema catalog. Add
         # the new row contract and heal current builder-owned schemas before refreshing that
         # catalog. Mirroring a stale current schema first would make request validation fail

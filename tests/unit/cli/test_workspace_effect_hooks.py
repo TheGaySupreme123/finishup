@@ -1058,21 +1058,44 @@ def test_a_consent_re_check_that_fails_records_nothing_but_is_diagnosed(
 
 @pytest.mark.parametrize("host", ["codex", "claude", "cursor"])
 @pytest.mark.parametrize(
-    "target,stale", [("app.py", True), ("README.md", False), ("run.log", False)]
+    "target,changed_code", [("app.py", True), ("README.md", False), ("run.log", False)]
 )
+@pytest.mark.parametrize("declared", [False, True])
 def test_indirect_script_effect_reaches_freshness_stop_and_receipts(
-    tmp_path: Path, host: str, target: str, stale: bool
+    tmp_path: Path, host: str, target: str, changed_code: bool, declared: bool
 ) -> None:
+    """A script's indirect write reaches freshness, Stop and receipts through every host hook.
+
+    With the test run's inputs declared, the hook's keyed changed entry names ``app.py`` as a
+    changed input: the verification is stale and Stop continues the agent. Without a declaration
+    the same code change asks a non-blocking question instead. Documentation and log writes stay
+    quiet either way.
+    """
+
     import subprocess
     import sys
     from types import SimpleNamespace
 
-    from builders.observed_runs import INSTALLATION_KEY, ObservedLedger, observed_receipt
+    from builders.observed_runs import ObservedLedger, observed_receipt
     from finishup.cli.closure_gate import closure_gate_from_readiness
-    from finishup.domain.events import EventPayload
+    from finishup.domain.command_segments import command_segment_commitments
+    from finishup.domain.events import (
+        EventPayload,
+        EventSchema,
+        EvidenceKind,
+        EvidenceRecordedPayload,
+        ResultOutcome,
+    )
+    from finishup.domain.observation import (
+        normalize_observed_command,
+        observed_command_commitment,
+    )
     from finishup.domain.receipts import receipt_document_to_json, render_receipt_human
+    from finishup.domain.values import evidence_id, timestamp_from_string
+    from finishup.kernel.observed_failures import observed_command_field
     from finishup.kernel.reducers import replay
     from finishup.kernel.task_facts import register_command_identity_key, task_fact_signals
+    from finishup.protocol.coverage import EvidenceImmutability
 
     workspace, state, commitment = _setup(tmp_path)
     (workspace / "app.py").write_text("def answer(): return 42\n")
@@ -1100,18 +1123,53 @@ def test_indirect_script_effect_reaches_freshness_stop_and_receipts(
     emit(post, shape(post, "indirect", "python modify.py"))
     (envelope,) = _posts(state, commitment)
     assert envelope.structural_payload["workspace_write_scopes"] == (
-        ("workspace",) if stale else ("docs",) if target.endswith(".md") else ("notes",)
+        ("workspace",) if changed_code else ("docs",) if target.endswith(".md") else ("notes",)
     )
     batch = materialize_observation_envelope(envelope, task_id=_TASK)
-    register_command_identity_key(INSTALLATION_KEY)
+    # The kernel names paths with the same installation key the hook's fingerprint used.
+    key = LocalObservationStore(_state=state).key_material()
+    register_command_identity_key(key)
     try:
+        normalized = normalize_observed_command("python -m unittest -q")
+        assert normalized is not None
+        segments = command_segment_commitments(key, normalized)
         ledger = ObservedLedger()
         ledger.plan("python -m unittest -q")
-        ledger.passes("python -m unittest -q")
+        tested = ledger.run(
+            "python -m unittest -q",
+            ResultOutcome.SUCCESS,
+            exit_status=0,
+            raw_command=observed_command_field(
+                observed_command_commitment(key, normalized),
+                None if segments is None else segments[0],
+                None if segments is None else segments[1],
+            ),
+        )
+        if declared:
+            ledger.append(
+                EventSchema("evidence_recorded", "1.0.0"),
+                EvidenceRecordedPayload(
+                    evidence_id("evd_00000000-0000-4000-8000-000000001143"),
+                    EvidenceKind.OTHER,
+                    EvidenceImmutability.METADATA_ONLY,
+                    timestamp_from_string("2026-10-21T12:00:00.000Z"),
+                    reference=f"finishup-verification-inputs/v1:{tested}",
+                    description=json.dumps(
+                        {"inputs": ["app.py", "test_app.py"], "outputs": [], "complete": True}
+                    ),
+                ),
+                observed=False,
+            )
         for item in batch.drafts:
             ledger.append(item.draft.schema, cast(EventPayload, item.draft.payload), observed=True)
         facts = task_fact_signals(replay(ledger.prefix), ledger.prefix)
+        stale = changed_code and declared
+        asked = changed_code and not declared
         assert ("edited_after_last_verification" in facts.codes) is stale
+        assert ("planned_verification_stale" in facts.codes) is stale
+        assert ("verification_rerun_question" in facts.codes) is asked
+        assert "planned_verification_not_observed" not in facts.codes
+        assert "workspace_changed_entries" in envelope.structural_payload
         gate = closure_gate_from_readiness(
             SimpleNamespace(
                 state="action_required",
@@ -1134,5 +1192,6 @@ def test_indirect_script_effect_reaches_freshness_stop_and_receipts(
         ]
         for text in rendered:
             assert ("edited_after_last_verification" in text) is stale
+            assert ("verification_rerun_question" in text) is asked
     finally:
         register_command_identity_key(None)
