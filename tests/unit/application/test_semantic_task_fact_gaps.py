@@ -203,9 +203,13 @@ def test_task_fact_gap_codes_reach_packet_known_gaps() -> None:
 
 
 async def test_a_round_stopped_after_one_retry_never_calls_the_reviewer() -> None:
-    """tb4n1 D3: after two insufficient-packet reviews in a row, the check skips the reviewer."""
+    """tb4n1 D3: after two insufficient-packet reviews in a row, the check skips the reviewer.
 
-    from finishup.protocol.models import SemanticStatus
+    ADR-040's #1149 amendment: a review that was requested and then stopped reads
+    ``unavailable / round_limit_unassessable``, never ``not_requested / deterministic_mode``.
+    """
+
+    from finishup.protocol.models import SemanticReason, SemanticStatus
 
     calls: list[object] = []
 
@@ -224,7 +228,9 @@ async def test_a_round_stopped_after_one_retry_never_calls_the_reviewer() -> Non
         round_stopped=True,
     )
     assert calls == []
-    assert result.status is SemanticStatus.NOT_REQUESTED
+    assert result.status is SemanticStatus.UNAVAILABLE
+    assert result.reason is SemanticReason.ROUND_LIMIT_UNASSESSABLE
+    assert result.provenance is None
 
 
 async def test_the_round_stop_reads_the_frozen_ledger_prefix_and_binds_required_checks() -> None:

@@ -21,12 +21,22 @@ from finishup.domain.workspace_effect import (
 _KEY = b"w" * 32
 
 
+def _no_lingering(_window_ns: int, _root: str) -> bool:
+    """No same-user process lingers: tests that are not about the probe never read the table.
+
+    The real probe answers ``process_lingering`` for any process of this user started during the
+    call window whose working directory it cannot read, so on a shared runner an unrelated
+    process could flip an ``unchanged`` comparison (#1183). Only the lingering tests below keep
+    the real probe.
+    """
+
+    return False
+
+
 def _store(tmp_path: Path) -> WorkspaceFingerprintStore:
     """File-walk and settlement tests assume no lingering writer, independent of the runner."""
 
-    return WorkspaceFingerprintStore(
-        tmp_path / "state" / "fp", _KEY, lingering=lambda _window, _root: False
-    )
+    return WorkspaceFingerprintStore(tmp_path / "state" / "fp", _KEY, lingering=_no_lingering)
 
 
 def _granted(tmp_path: Path) -> WorkspaceFingerprintStore:
@@ -495,7 +505,9 @@ def test_unestablished_comparisons_are_unavailable(tmp_path: Path, setup: str, r
         data[40] ^= 1
         pending.write_bytes(bytes(data))
     if setup == "other_key":
-        store = WorkspaceFingerprintStore(tmp_path / "state" / "fp", b"v" * 32)
+        store = WorkspaceFingerprintStore(
+            tmp_path / "state" / "fp", b"v" * 32, lingering=_no_lingering
+        )
     reading = store.effect_after(
         str(root),
         "call",
@@ -1214,7 +1226,9 @@ def test_a_revoke_during_the_pre_call_walk_publishes_and_recreates_nothing(
     root = _workspace(tmp_path)
     directory = tmp_path / "state" / "fp"
     grant = _Grant()
-    store = WorkspaceFingerprintStore(directory, _KEY, admitted=grant if checked else None)
+    store = WorkspaceFingerprintStore(
+        directory, _KEY, admitted=grant if checked else None, lingering=_no_lingering
+    )
     assert store.capture_before(str(root), "call_a", deadline=time.monotonic() + 10) is None
     real_walk = WorkspaceFingerprintStore._walk  # pyright: ignore[reportPrivateUsage]
 
@@ -1244,7 +1258,7 @@ def test_a_pre_call_pass_after_a_revoke_creates_nothing(tmp_path: Path) -> None:
     directory = tmp_path / "state" / "fp"
     grant = _Grant()
     grant.granted = False
-    store = WorkspaceFingerprintStore(directory, _KEY, admitted=grant)
+    store = WorkspaceFingerprintStore(directory, _KEY, admitted=grant, lingering=_no_lingering)
     assert store.capture_before(str(root), "call", deadline=time.monotonic() + 10) is None
     assert grant.asked == 1
     assert not directory.exists()
@@ -1259,7 +1273,7 @@ def test_the_tally_counts_a_first_reading_only_while_observation_is_granted(
 
     directory = tmp_path / "state" / "fp"
     grant = _Grant()
-    store = WorkspaceFingerprintStore(directory, _KEY, admitted=grant)
+    store = WorkspaceFingerprintStore(directory, _KEY, admitted=grant, lingering=_no_lingering)
     first = fingerprint.WorkspaceEffectReading("unavailable", "no_pre_snapshot")
     assert store.note_reading(first, "call_1")
     summary = _tally(directory)
@@ -1279,7 +1293,7 @@ def test_a_withdrawn_grant_keeps_an_existing_store_but_records_nothing(tmp_path:
     root = _workspace(tmp_path)
     directory = tmp_path / "state" / "fp"
     grant = _Grant()
-    store = WorkspaceFingerprintStore(directory, _KEY, admitted=grant)
+    store = WorkspaceFingerprintStore(directory, _KEY, admitted=grant, lingering=_no_lingering)
     assert store.capture_before(str(root), "call_a", deadline=time.monotonic() + 10) is None
     assert store.note_reading(fingerprint.WorkspaceEffectReading("unchanged"), "call_0")
     grant.granted = False
@@ -1298,7 +1312,7 @@ def test_a_consent_check_that_raises_is_not_a_grant(tmp_path: Path) -> None:
 
     root = _workspace(tmp_path)
     directory = tmp_path / "state" / "fp"
-    store = WorkspaceFingerprintStore(directory, _KEY, admitted=broken)
+    store = WorkspaceFingerprintStore(directory, _KEY, admitted=broken, lingering=_no_lingering)
     assert store.capture_before(str(root), "call", deadline=time.monotonic() + 10) is None
     assert not store.note_reading(fingerprint.WorkspaceEffectReading("changed"), "call_1")
     assert not directory.exists()
@@ -1316,8 +1330,10 @@ def test_a_pre_call_snapshot_is_never_published_into_a_store_re_created_during_i
     directory = tmp_path / "state" / "fp"
     grant = _Grant()
     admitted = grant if checked else None
-    straddling = WorkspaceFingerprintStore(directory, _KEY, admitted=admitted)
-    other = WorkspaceFingerprintStore(directory, _KEY, admitted=admitted)
+    straddling = WorkspaceFingerprintStore(
+        directory, _KEY, admitted=admitted, lingering=_no_lingering
+    )
+    other = WorkspaceFingerprintStore(directory, _KEY, admitted=admitted, lingering=_no_lingering)
     real_walk = WorkspaceFingerprintStore._walk  # pyright: ignore[reportPrivateUsage]
     regranted: list[bool] = []
 
@@ -1359,7 +1375,7 @@ def test_a_pre_call_pass_holds_no_lock_across_its_walk(
     root = _workspace(tmp_path)
     directory = tmp_path / "state" / "fp"
     grant = _Grant()
-    store = WorkspaceFingerprintStore(directory, _KEY, admitted=grant)
+    store = WorkspaceFingerprintStore(directory, _KEY, admitted=grant, lingering=_no_lingering)
     real_walk = WorkspaceFingerprintStore._walk  # pyright: ignore[reportPrivateUsage]
     noted: list[bool] = []
 
