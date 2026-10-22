@@ -2041,7 +2041,16 @@ STATUS_DEFAULT_PAGE_LIMIT: Final = "20"
 
 class StatusRequestModel(PublicRequestModel):
     optional_non_null_fields = frozenset(
-        {"filter", "project_id", "task_id", "correlation_id", "detail", "limit"}
+        {
+            "filter",
+            "project_id",
+            "task_id",
+            "correlation_id",
+            "detail",
+            "limit",
+            "delivery",
+            "delivery_cursor",
+        }
     )
 
     session_id: SessionIdWire
@@ -2072,6 +2081,13 @@ class StatusRequestModel(PublicRequestModel):
     # earlier body. The MCP tool asks for ``brief`` unless the agent names a detail.
     detail: Literal["brief", "full"] | None = None
     cursor: CursorWire | None = None
+    # Issue #1139: ``paged`` lets the service return an oversized result as ``delivery_page``s;
+    # absent or ``complete`` returns it whole. The MCP tool asks for ``paged`` unless the agent
+    # names a delivery; the bridge's own recovery and closure reads keep the complete result.
+    delivery: Literal["complete", "paged"] | None = None
+    delivery_cursor: (
+        Annotated[str, Field(min_length=1, max_length=4096, pattern=r"^[A-Za-z0-9_.-]+$")] | None
+    ) = None
 
     @model_validator(mode="before")
     @classmethod
@@ -2092,6 +2108,16 @@ class StatusRequestModel(PublicRequestModel):
 
     @model_validator(mode="after")
     def _validate_status_request(self) -> StatusRequestModel:
+        if self.delivery_cursor is not None and (
+            self.view != "compact"
+            or self.cursor is not None
+            or self.filter is not None
+            or self.at_frontier is not None
+            or self.project_id is not None
+            or self.task_id is not None
+            or self.correlation_id is not None
+        ):
+            raise ValueError("delivery_cursor_selector_conflict")
         selectors = tuple(
             value
             for value in (self.project_id, self.task_id, self.correlation_id)
@@ -4536,6 +4562,54 @@ class CheckInspectionModel(_ClosedModel):
         return self
 
 
+class DeliveryFragmentModel(_ClosedModel):
+    unit: Literal["unicode_scalar"]
+    offset: Annotated[int, Field(ge=0)]
+    end: Annotated[int, Field(ge=1)]
+    length: Annotated[int, Field(ge=1)]
+    digest: Sha256Digest
+    complete: bool
+
+
+class DeliveryItemModel(_ClosedModel):
+    optional_non_null_fields = frozenset({"fragment", "container"})
+    path: Annotated[str, Field(min_length=1, max_length=4096)]
+    value: JsonValue
+    fragment: DeliveryFragmentModel | None = None
+    container: Literal["object", "array"] | None = None
+
+
+class DeliveryPageModel(_ClosedModel):
+    protocol_version: Literal["0.1"]
+    schema_version: Literal["1.0.0"]
+    ok: Literal[True]
+    state: Literal["delivery_page"]
+    request_id: RequestIdWire
+    source_request_id: RequestIdWire
+    source_operation: Literal["check", "receipt", "status"]
+    task_id: TaskIdWire
+    session_id: SessionIdWire
+    writer_id: WriterIdWire
+    result_frontier: FrontierModel
+    source_digest: Sha256Digest
+    offset: Annotated[int, Field(ge=0)]
+    total_items: Annotated[int, Field(ge=1)]
+    truncated: Literal[True]
+    complete: bool
+    # The serialized budget this page was cut to (ADR-043); a bounded integer, not a constant.
+    budget_bytes: Annotated[int, Field(ge=1_024, le=1_048_576)]
+    actionable_complete: bool
+    inventory_read: JsonValue | None
+    required_next_step: Annotated[str, Field(min_length=1, max_length=512)]
+    items: Annotated[tuple[DeliveryItemModel, ...], Field(min_length=1)]
+    next_cursor: (
+        Annotated[str, Field(min_length=1, max_length=4096, pattern=r"^[A-Za-z0-9_.-]+$")] | None
+    )
+    # This read's own local disclosure receipt. Never paged as items: each continuation is a
+    # fresh disclosure, and reconstruction carries the final page's projection.
+    privacy_projection: PrivacyProjectionModel
+
+
 class CheckSuccessModel(_ClosedModel):
     optional_non_null_fields = frozenset(
         {
@@ -4680,7 +4754,7 @@ class CheckSuccessModel(_ClosedModel):
 
 
 type CheckSuccessBranch = Annotated[
-    CheckSuccessModel | CheckAwaitingHumanModel | CheckInspectionModel,
+    CheckSuccessModel | CheckAwaitingHumanModel | CheckInspectionModel | DeliveryPageModel,
     Field(discriminator="state"),
 ]
 type CheckResultBranch = Annotated[
@@ -6951,16 +7025,22 @@ def _status_result_kind(value: object) -> str:
         source = cast(Mapping[object, object], value)
         if source.get("ok") is False:
             return "failure"
+        if source.get("state") == "delivery_page":
+            return "delivery"
         return "brief" if source.get("detail") == "brief" else "success"
     if getattr(value, "ok", None) is False:
         return "failure"
+    if getattr(value, "state", None) == "delivery_page":
+        return "delivery"
     return "brief" if getattr(value, "detail", None) == "brief" else "success"
 
 
 type StatusResultBranch = Annotated[
     Annotated[StatusSuccessModel, Tag("success")]
     | Annotated[StatusBriefSuccessModel, Tag("brief")]
+    | Annotated[DeliveryPageModel, Tag("delivery")]
     | Annotated[OperationFailureModel, Tag("failure")],
+    # Delivery pages are a transport presentation, never a new status/closure verdict.
     Discriminator(_status_result_kind),
 ]
 
@@ -7089,7 +7169,10 @@ class ReceiptSuccessModel(_ClosedModel):
 
 
 type ReceiptResultBranch = Annotated[
-    ReceiptSuccessModel | OperationFailureModel, Field(discriminator="ok")
+    Annotated[ReceiptSuccessModel, Tag("success")]
+    | Annotated[DeliveryPageModel, Tag("delivery")]
+    | Annotated[OperationFailureModel, Tag("failure")],
+    Discriminator(_status_result_kind),
 ]
 
 

@@ -511,7 +511,7 @@ def _internal_result(
     )
 
 
-async def _replay_result(
+async def read_recorded_receipt(
     runtime: TaskRuntime, request: ReceiptRequest, operation: OperationRecord
 ) -> ReceiptInternalResult:
     record, receipt_ref = await _accepted_receipt_event(runtime, operation)
@@ -558,6 +558,10 @@ async def _replay_result(
     )
 
 
+# Kept for existing internal audit/test consumers; both names are the same read-only path.
+_replay_result = read_recorded_receipt
+
+
 async def execute_receipt(app: Application, request: ReceiptRequest) -> ReceiptInternalResult:
     """Freeze an exact case, publish its canonical document, and append one locator event."""
 
@@ -587,7 +591,7 @@ async def execute_receipt(app: Application, request: ReceiptRequest) -> ReceiptI
         logical_digest = request_digest(_identity(request, versions))
         operation = await _preflight(runtime, request, logical_digest)
         if operation is not None:
-            return await _replay_result(runtime, request, operation)
+            return await read_recorded_receipt(runtime, request, operation)
 
         frontier = Frontier(
             int(request.expected_frontier.sequence), request.expected_frontier.head_digest

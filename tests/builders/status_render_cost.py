@@ -179,7 +179,11 @@ class CodexStatusLedger:
     async def project(
         self, body: Mapping[str, JsonValue], internal: StatusInternalResult, seed: int
     ) -> StatusResult:
-        """The daemon's post-commit projection of one ``status`` result for an MCP bridge."""
+        """The daemon's post-commit projection of one ``status`` result for an MCP bridge.
+
+        The frame carries the request body as the daemon's does. These closure-shaped reads send
+        no ``delivery=paged`` (#1139), so, like the bridge's own closure reads, they are not paged.
+        """
 
         facts = await self.app.projection_binding_facts(ControlMethod.STATUS, body, internal)
         rpc_id = protocol_id("rpc_", seed)
@@ -197,6 +201,7 @@ class CodexStatusLedger:
                     "method": ControlMethod.STATUS.value,
                     "service_instance_id": service_instance_id,
                     "service_generation": "1",
+                    "body": dict(body),
                 }
             ),
         )

@@ -3020,12 +3020,10 @@ new root. Details and offline checks: [reviewer instruction evaluation](reviewer
 ### Review context and delivery (#1139, #1126, #1148)
 
 Read the full finding before choosing a response.
-Treat `review_delivery` as a bounded advisory preview.
-When it reports truncation, follow its `status view=findings` continuation with `detail=full`,
-`limit=1` and the returned cursor.
-Stop when the finding you will answer includes its action, alternative interpretation and
-uncertainty, or labels them withheld.
-For example, a long check can keep an instruction while its alternative falls outside the preview.
+Read `delivery_page` action pages until `actionable_complete=true`, reconstruct any labelled
+scalar fragments, and follow `inventory_read` before claiming the complete finding inventory.
+Read the action, alternative interpretation and uncertainty together, or their explicit privacy
+omissions. Bulk provenance is available through the remaining `next_cursor` pages.
 
 Treat `not_in_frozen_case` as unavailable in this frozen check.
 Do not infer that the item was never recorded.
@@ -3035,7 +3033,7 @@ For example, an unknown ref can be outside this case.
 The shared packet builder retains bounded prior dialogue ahead of ordinary bulk.
 The task, diff floor and latest verification remain protected when whole prior dialogues yield.
 Cursor keeps the canonical full JSON copy in the MCP text channel.
-The Codex compact structured lead leaves that contract unchanged.
+An agent's oversized results use the shared lossless result pages in both MCP channels.
 Offline contract tests cover the shared packet and read paths.
 Native Cursor delivery has not been re-dogfooded here. Issue #1139 owns that validation gap.
 
@@ -3047,6 +3045,32 @@ incomplete. Receipt JSON/markdown/text distinguish an agent-disproved concern fr
 repair. Trusted byte-identical in-workspace shell rewrites preserve verification freshness;
 changed reports follow the verification freshness decisions below. These decisions are shared
 across macOS, Linux and Windows through WSL 2; no native Windows support is implied.
+
+### Bounded review result delivery (#1139)
+
+Only an agent's oversized MCP check, receipt or status read returns `state=delivery_page`; the
+`status` tool asks for pages (`delivery=paged`) unless the agent names `delivery`. FinishUP
+budgets the larger channel a host reads, plus a 64-byte header allowance, at 12,000 bytes, never
+the sum of both channels. On Cursor the model reads the exact canonical JSON text copy, which has no
+documented host limit, so the budget comes from the tightest recorded host limit, Codex's
+12,000-byte structured window, and pages are the same on every host. Ordinary status reads, typical checks and markdown or text receipts arrive
+whole, as before #1139; a JSON owner-export receipt can page. The bridge's own closure inventory
+and write-recovery reads, `view=operation`, and CLI output are never paged. This is a product
+bound, not a claimed universal host limit. The setting applies on macOS, Linux and Windows through
+WSL 2.
+
+Read `next_cursor` with `status view=compact delivery_cursor=<returned value>` and the same held
+session/writer through the same MCP host. Whole actionable fields precede provenance; object/array markers preserve container types, and
+explicit scalar fragments require
+reconstruction by offsets and digest before use. Read until `actionable_complete`; then bulk pages
+are optional. Follow `inventory_read` for the complete findings inventory. `complete` closes this result's
+pages only; follow the source findings inventory cursor or suppressed-count instruction separately. Reads
+reapply disclosure and never rerun review, so each page carries its own read's `privacy_projection`
+(never paged as items); reconstruct with the final page's. CLI output is never paged; hooks retain their
+bounded structural status instructions. Native TUI and exact-request authenticated owner exports
+keep the full local view. Restart expires cursors; recover through current status/findings without
+starting a new review. A revoked route, changed sink/content, or expired retained source also
+requires current status.
 
 
 ### Verification freshness decisions (#1143)

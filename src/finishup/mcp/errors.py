@@ -101,6 +101,9 @@ _SAFE_LOCATION_SEGMENTS: Final = frozenset(
         "content_availability",
         "content_digest",
         "cursor",
+        # Issue #1139: status opts into result delivery pages and continues them.
+        "delivery",
+        "delivery_cursor",
         "described_state",
         "description",
         # Issue #1084: the status detail level (``brief`` or ``full``).

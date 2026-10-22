@@ -129,7 +129,8 @@ _RESOURCE_LIMIT: Final = 4_194_304
 # 1.0.0, ai-status 1.0.0) and +1 canonical host-connection-batch case. #1118: +1 runtime config
 # (the reviewer's derived Codex 0.162.1 model catalog), +1 schema (privacy-policy 1.3.0).
 # #1173: +1 bundle migration (0018, reviewer read-attempt bounds).
-REVIEWED_RESOURCE_COUNT: Final = 329
+# #1139: +4 lossless result-delivery schemas.
+REVIEWED_RESOURCE_COUNT: Final = 333
 _RESOURCE_KINDS: Final = frozenset(
     {
         "canonical_vector",
@@ -148,7 +149,7 @@ _REQUEST_RESULT_VERSIONS: Final = (
     ("catalog", "7.0.0"),
     ("chat-user-attestation", "1.0.0"),
     ("check-request", "1.1.0"),
-    ("check-result", "1.6.0"),
+    ("check-result", "1.7.0"),
     ("closure-prepare-request", "1.0.0"),
     ("closure-prepare-result", "1.0.0"),
     ("client-info", "1.0.0"),
@@ -179,7 +180,7 @@ _REQUEST_RESULT_VERSIONS: Final = (
     ("read-guidance-result", "1.1.0"),
     ("receipt-document", "1.3.0"),
     ("receipt-request", "1.0.0"),
-    ("receipt-result", "1.3.0"),
+    ("receipt-result", "1.4.0"),
     ("respond-request", "1.1.0"),
     ("respond-result", "1.1.0"),
     ("review-packet-row", "2.0.0"),
@@ -196,8 +197,8 @@ _REQUEST_RESULT_VERSIONS: Final = (
     ("start-request", "1.1.0"),
     ("start-result", "1.1.0"),
     ("status", "7.0.0"),
-    ("status-request", "1.2.0"),
-    ("status-result", "1.4.0"),
+    ("status-request", "1.3.0"),
+    ("status-result", "1.5.0"),
     ("subject-state-ref", "1.0.0"),
     ("work-state", "1.0.0"),
 )
