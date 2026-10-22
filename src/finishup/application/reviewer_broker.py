@@ -272,13 +272,11 @@ class ReviewerBroker:
             usage["reason"] = "deadline"
             raise ReadDeadline("reviewer_read_deadline")
         room = min(MAX_RESULT_BYTES, args.max_bytes, self.total - self.used)
-        refusal = not isinstance(selected, _WithheldRead) and len(selected) == 2
+        # The read itself finished before its local stop (checked above). Admission is local and
+        # never ends the review: a result admitted after the stop is still sent, as before #1173,
+        # and the next turn's reserve check decides whether another read is offered. Only a
+        # refusal's optional correction is dropped when it crosses the stop (``_result``).
         encoded = await self._result(tool_ref, ordinal, selected, room, left, action, expired)
-        # A result's admission shares the local read stop. A refusal's correction that crosses it
-        # is dropped instead (the bare refusal is sent), so a hint never ends the review.
-        if expired() and not refusal:
-            usage["reason"] = "deadline"
-            raise ReadDeadline("reviewer_read_deadline")
         from finishup.protocol.canonical import strict_json_parse
 
         result = cast(dict[str, JsonValue], strict_json_parse(encoded))

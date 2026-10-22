@@ -613,8 +613,9 @@ the three content reads, with at most five attempts in total and the same time l
 refusals still leave three content reads, and each further refusal uses up one of them. Refusals
 explain the allowed path or frozen-record selector where policy permits, without repeating the
 refused path. Their bytes still count. If the reviewer asks for another read after its reads are
-used up, nothing more is read: FinishUP asks it once for its judgment, unless it already had its
-one chance to correct a reply; then, or if it asks again, the review ends without a judgment. When
+used up, nothing more is read: FinishUP asks it for its judgment and, from then on, accepts only
+a judgment (a provider that does not enforce that reply format can still end the review without
+one). When
 you approve each exchange yourself, the reviewer is offered no reads at all. With the smallest
 channel limits the longer read guidance leaves room for two reads that return content rather than
 three.

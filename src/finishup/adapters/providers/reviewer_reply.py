@@ -98,9 +98,8 @@ def reviewer_reply_schema(*, reads_allowed: bool, strict: bool = False) -> dict[
 # The provider-wire reply schemas every route's factory installs (#1118).
 REVIEWER_REPLY_SCHEMAS: Final = ReviewerReplySchemas(
     turn=reviewer_reply_schema(reads_allowed=True, strict=True),
-    # A review keeps the schema its first turn chose (#1172, #1173): one that starts with reads
-    # sends ``turn`` on every turn and the controller enforces the cap; only a review that offers
-    # no read at all sends this read-free schema, on every turn.
+    # A review that offers no read sends this read-free schema on every turn; one that started
+    # with reads sends ``turn`` until its one repair is spent in the final phase (#1172, #1173).
     final=reviewer_reply_schema(reads_allowed=False, strict=True),
 )
 

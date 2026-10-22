@@ -58,7 +58,7 @@ async def test_two_corrections_preserve_three_reads_and_export_only_selector_usa
     assert [r.reason for r in record.reads] == ["forbidden_path", "not_recorded", None, None, None]
     assert all(r.disclosure is not None for r in record.reads)
     assert "final_judgment now" in gateway.exchanges[-1][1][-1][1]
-    # A stable provider schema/digest, including the final phase, on the real dispatch path.
+    # The provider schema/digest on the real dispatch path, final phase included.
     from finishup.adapters.providers.reviewer_reply import REVIEWER_REPLY_SCHEMAS
     from finishup.ports.semantic import reviewer_exchange
 
@@ -70,7 +70,10 @@ async def test_two_corrections_preserve_three_reads_and_export_only_selector_usa
         )
         for media, history in gateway.exchanges
     ]
-    assert len({e.schema_digest for e in exchanges if e is not None}) == 1
+    # One schema while reads are offered; the repair was spent on turn 1, so the final turn
+    # alone is read-free (one schema change, on the review's last exchange).
+    digests = [e.schema_digest for e in exchanges if e is not None]
+    assert len(set(digests[:-1])) == 1 and digests[-1] != digests[0]
     assert len(diagnostics) == 5
     assert [d["counts"] for d in diagnostics] == [{"operation_count": n} for n in range(1, 6)]
     assert [d["outcome"] for d in diagnostics] == [

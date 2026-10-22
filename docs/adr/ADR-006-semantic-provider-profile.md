@@ -2405,10 +2405,11 @@ FinishUP owns a small verifying loop. Each model turn returns exactly one reply 
 `findings/reviewer-reply-1.0.0`: `read_packet_section`, `read_ledger` or `read_file` (the round-1
 broker inputs, as JSON text FinishUP interprets, never provider tool registrations), or
 `final_judgment`, the existing provider judgment validated by `normalize_judgment(...,
-require_part2=True)`. The root is an object wrapper. A review keeps the schema its first turn
-chose (#1173): one that starts with reads sends the full union on every turn, and when no read
-allowance remains the controller appends a final-phase notice and accepts only `FinalReply`; a
-review whose first turn offers no read sends the read-free root (only `FinalReply`) on every turn. Strict wire form comes from `strict_output_schema`; the decoder still
+require_part2=True)`. The root is an object wrapper. A review that starts with reads sends the
+full union while a read can still be offered or repaired (#1173): when no read allowance remains
+the controller appends a final-phase notice and accepts only `FinalReply`, and the repair turn and
+any final turn after the review's one repair is spent send the read-free root (only
+`FinalReply`). A review whose first turn offers no read sends the read-free root on every turn. Strict wire form comes from `strict_output_schema`; the decoder still
 enforces what it drops, and reads a strict null as the field's default.
 
 The loop allows at most three content-bearing reads and five attempts, 8 KiB per complete result
@@ -2423,12 +2424,13 @@ do not change. A job that already holds steps is not resumed: its review ends in
 exception is a first turn that waited for the owner before anything was sent, which runs once more
 in its own reservation (see "Owner approval" under "Service wiring and delivery"). After the cap
 only the final judgment is accepted. Since #1173 a review that started with reads keeps the read
-branches on the wire, so a read then is the final phase's format error: it executes nothing and
-takes the review's one repair, which asks for `final_judgment` only; a read after that repair, or
-after an earlier repair, ends the review `read_limit` with no observation. A review that never
-offered a read keeps the read-free schema, so a schema-enforcing route cannot return one; a read
-a route returns anyway ends `read_limit` (on ask-every-time a repair would be another exchange
-needing its own approval). One format repair is allowed per review, for a
+branches on its normal final turn, so a read then is the final phase's format error: it executes
+nothing and takes the review's one repair, which asks for `final_judgment` only and is sent with
+the read-free schema. Once the repair is spent (there, or earlier on a malformed answer), every
+final turn is read-free, so a route that enforces the schema can only return the judgment. A
+review that never offered a read keeps the read-free schema throughout. Only a route that does not
+enforce the schema can still return a read there; it ends the review `read_limit` with no
+observation (on ask-every-time a repair would be another exchange needing its own approval). One format repair is allowed per review, for a
 completed answer that is not one JSON object as for one the decoder rejects, and the malformed text
 is not echoed back. A second malformed reply, a failed or uncertain model turn, a lost lease, or a
 binding that no longer holds ends the review incomplete. The shared deadline is checked after every await: a reply that
@@ -2935,19 +2937,28 @@ model whose every selector is refused stops after five refusals with no content 
 history and category/root revocation checks apply to every extra turn. No failed transport is
 retried and a prior job's steps never refill.
 
-A review keeps the reply schema its first turn chose (#1172; the same rule #1177's prompt-cache
-work relies on). A review that starts with reads sends the full union on every turn, so after its
-reads end the cap is the controller's alone: the loop appends the final-phase notice
-(`FINAL_PHASE`) once, and a read returned after that executes nothing and is the final phase's
-format error (`read_in_final_phase`). A review whose first turn offers no read (ask-every-time,
-where every exchange needs the owner's approval, or a first turn already inside the 30-second
-final reserve) sends the read-free `REVIEWER_REPLY_SCHEMAS.final` on every turn and gets no notice,
-so a schema-enforcing route cannot end its one approved exchange on a read. A repair in the final
-phase, for a late read or any other format error, uses `FINAL_FORMAT_ERROR`, which asks for
-`final_judgment` only, never "a read action or final_judgment". A read after that repair, or
-after an earlier repair, ends `read_limit`, and so does a read a route returns against the
-read-free schema: on the ask-every-time route its repair would be a second exchange needing its
-own owner approval, which nothing resumes. The
+Which reply schema each turn sends (#1172 keeps the conversation prefix stable for prompt
+caching; #1173 keeps every enforced path ending with a judgment):
+
+- a review whose first turn offers no read (ask-every-time, where every exchange needs the owner's
+  approval, or a first turn already inside the 30-second final reserve): the read-free
+  `REVIEWER_REPLY_SCHEMAS.final` on every turn, with no final-phase notice;
+- a review that starts with reads: the full union on every read turn, on a read-phase repair turn,
+  and on the normal final turn (the one after the loop appends `FINAL_PHASE`), so a well-behaved
+  model's last exchange is still a cache hit;
+- the same review once its one repair is spent: the repair turn itself, and every final turn after
+  a repair (including one spent on an earlier malformed answer), send the read-free schema.
+
+The trade-off is at most one schema change per review, on its last exchange, which that exchange
+pays as a prompt-cache miss; in return a route that enforces the schema (Responses `strict`, Chat
+Completions `provider_enforced`, Codex `outputSchema`) can never end a review on a read. A read
+returned on the normal final turn executes nothing and is the final phase's format error
+(`read_in_final_phase`). A repair whose next turn is final uses `FINAL_FORMAT_ERROR`, which asks
+for `final_judgment` only, never "a read action or final_judgment", so the repair note never
+contradicts the notice that follows it. Only a route that does not enforce the schema can still
+return a read after the repair, or against a zero-read review's read-free schema; that ends
+`read_limit` (on ask-every-time a repair would be a second exchange needing its own owner
+approval, which nothing resumes). The
 turn budget is unchanged: five read turns, the final turn and the one repair. The repair room
 every read leaves is the longer of the two repair texts. On the Codex subscription route the
 final-phase notice follows the last read result as a second new user message on the held thread;
@@ -2991,8 +3002,10 @@ exchange, not the one the action will travel in). The shipped default ceilings a
 Refusals keep their bytes counted. This is accepted for the clearer selectors;
 `test_the_smallest_channel_limits_leave_room_for_fewer_content_reads` pins the read count.
 
-A refusal's correction is admitted under the local read stop: one admitted after the stop is
-dropped and the bare refusal is sent, so a late hint never ends the review. The private
+Admission never ends a review on the local read stop: the read itself must finish before its
+stop, but a content result whose admission completes after it is still sent (as before #1173),
+and a refusal's correction admitted after it is dropped and the bare refusal is sent. The next
+turn's reserve check decides whether another read is offered. The private
 `reviewer_read_usage` object write for a failed attempt is best effort: when that telemetry is the
 only reason to write, a failed write is logged and the attempt keeps its own outcome, evaluation
 and retry.

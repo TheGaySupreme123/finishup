@@ -28,11 +28,14 @@
 
 At most three content-bearing reads, five read attempts, then only the final judgment. One format
 repair for the whole review, for a completed answer that is not one JSON object or not a valid
-reply, or for a read in the final phase of a review that started with reads: such a review keeps
-its first turn's reply schema, reads included, on every turn (#1172), so after its reads end the
-loop appends ``FINAL_PHASE`` once and that repair asks for the final judgment only. A review whose
-first turn offers no read sends the read-free schema on every turn and gets no notice. A second
-malformed reply, a read after the repair or in a review that never offered one, a revoked binding,
+reply, or for a read in the final phase of a review that started with reads. Such a review keeps
+the full reply schema while a read can still be offered or repaired (#1172: the normal final turn
+stays a cache hit), so after its reads end the loop appends ``FINAL_PHASE`` once; the repair turn,
+and any final-phase turn after the review's one repair is spent, send the read-free schema, so a
+route that enforces it can only return the judgment. A repair note never offers a read when the
+next turn is final. A review whose first turn offers no read sends the read-free schema on every
+turn and gets no notice. A second malformed reply, a read after the repair or in a review that
+never offered one (only a route that does not enforce the schema returns one), a revoked binding,
 a lost lease or the deadline ends the review incomplete. Every
 model turn, the repair and every read is a durable job step, reserved before it runs; a job that
 already holds steps is not resumed, except the one first turn that waited for the owner before
@@ -140,8 +143,7 @@ class ReviewerLoop:
         self.messages = [Turn("system", self.instruction), Turn("user", self.packet)]
         repaired = False
         final_phase = False
-        schema: dict[str, JsonValue] | None = None
-        offered = False
+        offered: bool | None = None
         try:
             usage = await self.store.usage()
             # The caller proved the one reserved first turn waited for the owner and sent nothing;
@@ -157,11 +159,17 @@ class ReviewerLoop:
                 if not await self.history_admissible(frozenset(self.broker.history_roots)):
                     return self.exit("authorization_changed")
                 reads = self.broker.reads_allowed() and self.remaining() > self.reserve
-                if schema is None:
-                    # One reply schema per review (#1172, #1173): the provider caches it with the
-                    # conversation. A review that never offers a read (ask-every-time, or a first
-                    # turn already inside the final reserve) keeps the read-free schema instead.
-                    schema, offered = reviewer_reply_schema(reads_allowed=reads, strict=True), reads
+                if offered is None:
+                    # A review that never offers a read (ask-every-time, or a first turn already
+                    # inside the final reserve) keeps the read-free schema on every turn.
+                    offered = reads
+                # The provider caches the schema with the conversation (#1172), so a review that
+                # started with reads keeps the full one while a late read can still be repaired.
+                # Once its one repair is spent (the repair turn itself included), the final phase
+                # sends the read-free schema: one cache miss, never a review ended by a read.
+                schema = reviewer_reply_schema(
+                    reads_allowed=offered and (reads or not repaired), strict=True
+                )
                 if offered and not reads and not final_phase:
                     self.messages.append(Turn("user", FINAL_PHASE))
                     final_phase = True
@@ -198,7 +206,11 @@ class ReviewerLoop:
                 except ReviewerReplyInvalid as e:
                     if repaired:
                         return self.exit("format_invalid")
-                    template = FORMAT_ERROR if reads else FINAL_FORMAT_ERROR
+                    # The note matches the next turn: never "a read action" before a final one.
+                    reads_next = (
+                        reads and self.broker.reads_allowed() and self.remaining() > self.reserve
+                    )
+                    template = FORMAT_ERROR if reads_next else FINAL_FORMAT_ERROR
                     repaired, note = True, template.format(code=e.code)
                     await self.store.reserve("repair", 1, e.code.encode())
                     await self.store.capture("repair", 1, note.encode())

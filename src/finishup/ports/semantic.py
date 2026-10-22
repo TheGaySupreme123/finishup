@@ -2130,8 +2130,8 @@ class SemanticResultUnavailable:
 # first, then user and assistant turns ending with user. Two user turns may follow each other (the
 # loop's format-repair notice never echoes the malformed reply); two assistant turns may not. The
 # case media type names the reply schema the provider must enforce: every branch, or the final
-# judgment only. A review keeps the one its first turn chose (#1173): after its reads end, a review
-# that started with reads keeps every branch and the controller enforces the limit.
+# judgment only. A review that started with reads keeps every branch on its normal final turn (the
+# controller enforces the limit) and goes final-only once its one repair is spent (#1173).
 type ReviewerMessage = tuple[Literal["system", "user", "assistant"], str]
 REVIEWER_EXCHANGE_MEDIA_TYPES: Final = {
     "turn": "application/vnd.finishup.reviewer-turn+json",

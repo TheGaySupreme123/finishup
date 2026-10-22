@@ -505,6 +505,83 @@ async def test_reads_append_observations_then_the_final_phase_is_announced() -> 
     assert steps.rows[("read", 2)][1] == canonical_encode(second)
 
 
+class _SchemaHonouring:
+    """A route that enforces the reply schema: it reads whenever the schema offers a read."""
+
+    def __init__(self, *first: JsonValue) -> None:
+        self.first = list(first)
+        self.calls: list[tuple[tuple[Turn, ...], dict[str, JsonValue]]] = []
+        self.clock_after_first: Callable[[], None] | None = None
+
+    async def complete(
+        self, history: Sequence[Turn], schema: dict[str, JsonValue], *, deadline: Deadline
+    ) -> JsonValue:
+        del deadline
+        self.calls.append((tuple(history), schema))
+        if self.first:
+            reply = self.first.pop(0)
+            if self.clock_after_first is not None:
+                self.clock_after_first()
+            return reply
+        return (
+            _LEDGER_READ
+            if schema == reviewer_reply_schema(reads_allowed=True, strict=True)
+            else _FINAL
+        )
+
+
+_FULL = reviewer_reply_schema(reads_allowed=True, strict=True)
+_FINAL_ONLY = reviewer_reply_schema(reads_allowed=False, strict=True)
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    "first", [(), ({"reply": {}},)], ids=["always-reads", "malformed-then-reads"]
+)
+async def test_a_schema_enforcing_route_always_reaches_a_judgment(
+    first: tuple[JsonValue, ...],
+) -> None:
+    """#1173 round 2: a model that reads whenever it may, even after spending the repair on a
+    malformed answer, still ends with a judgment: once the one repair is spent, the final phase
+    (the repair turn included) sends the read-free schema. The normal final turn keeps the full
+    schema, so a well-behaved model still gets the cache hit."""
+
+    loop, broker, _, _ = _setup()
+    model = _SchemaHonouring(*first)
+    loop.model = model
+    outcome = await loop.run()
+    assert outcome.status == "final" and outcome.judgment is not None, outcome.reason
+    assert broker.content_reads == 3
+    # Four full-schema turns (cache hits), then exactly one read-free turn.
+    assert [schema for _history, schema in model.calls] == [_FULL] * 4 + [_FINAL_ONLY]
+    last = model.calls[-1][0][-1].content
+    if first:  # malformed, repaired while reads remain, 3 reads, then the spent-repair final turn
+        assert model.calls[1][0][-1].content.startswith("format_error: action_invalid. Reply with")
+        assert last == FINAL_PHASE
+    else:  # 3 reads, the final turn (full) reads, and its repair turn is read-free
+        assert last.startswith("format_error: read_in_final_phase. No reads remain.")
+
+
+@pytest.mark.anyio
+async def test_a_repair_before_a_final_turn_never_invites_a_read() -> None:
+    """#1173 round 2: a malformed answer whose turn ran into the final reserve gets the
+    final-phase note ("No reads remain"), not "a read action or final_judgment" followed by the
+    final-phase notice, and the next turn is read-free."""
+
+    loop, _broker, _, _ = _setup()
+    now = [1.0]
+    loop.clock = lambda: now[0]
+    model = _SchemaHonouring("not json")
+    model.clock_after_first = lambda: now.__setitem__(0, 580.0)  # inside the 30 s reserve
+    loop.model = model
+    outcome = await loop.run()
+    assert outcome.status == "final" and len(model.calls) == 2
+    assert [schema for _h, schema in model.calls] == [_FULL, _FINAL_ONLY]
+    repair, notice = (t.content for t in model.calls[1][0][-2:])
+    assert repair.startswith("format_error: envelope_invalid. No reads remain.")
+    assert notice == FINAL_PHASE
+
+
 @pytest.mark.anyio
 async def test_a_read_in_the_final_phase_gets_the_one_repair_asking_for_the_judgment() -> None:
     # #1173: the wire schema still offers reads after the cap (#1172), so a schema-valid read
@@ -1153,6 +1230,28 @@ async def test_retry_attempts_share_the_original_deadline_and_final_reserve(
     outcome = await loop.run()
     assert outcome.status == "final" and len(model.calls) == 2 and broker.calls == 1
     assert "final_judgment now" in model.calls[-1][0][-1].content
+
+
+@pytest.mark.anyio
+async def test_a_result_admitted_after_the_local_stop_is_still_sent() -> None:
+    # #1173 round 2: the read finished before its local stop; only its (local) admission ran
+    # past it. As before #1173 the result is sent and the review goes on to its judgment,
+    # instead of ending ``deadline`` with nothing.
+    loop, broker, model, _ = _setup(_LEDGER_READ, _FINAL)
+    now = [1.0]
+    loop.clock = lambda: now[0]
+    admit = broker._admit  # pyright: ignore[reportPrivateUsage]
+
+    async def late(elements: tuple[ReadElement, ...], envelope: bytes) -> str | None:
+        reason = await admit(elements, envelope)
+        now[0] = 6.0
+        return reason
+
+    broker._admit = late  # pyright: ignore[reportPrivateUsage]
+    outcome = await loop.run()
+    assert outcome.status == "final" and len(model.calls) == 2
+    (result,) = _observations(outcome.history)
+    assert result["status"] in {"ok", "partial"} and broker.content_reads == 1
 
 
 @pytest.mark.anyio

@@ -414,3 +414,29 @@ async def test_the_final_phase_continues_on_the_held_codex_thread(
         assert repair.startswith("format_error: read_in_final_phase.")
     reviewer = cast(dict[str, JsonValue], mcp_wire["reviewer"])
     assert (reviewer["exchanges"], reviewer["reads_used"]) == (str(len(answers)), "3")
+
+
+@pytest.mark.parametrize(
+    "answers",
+    [
+        pytest.param(_encoded(_READ, _READ, _READ, _READ, _FINAL), id="always-reads"),
+        pytest.param([_MALFORMED, *_encoded(_READ, _READ, _READ, _FINAL)], id="malformed"),
+    ],
+)
+async def test_codex_gets_the_read_free_schema_once_the_repair_is_spent(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, answers: list[str]
+) -> None:
+    """#1173 round 2: Codex enforces ``outputSchema``. The read-offering turns keep one schema
+    (cache hits); once the review's one repair is spent, the final turn sends the read-free
+    schema, so the model can only return the judgment there."""
+
+    checked, wire, _mcp = await _review(tmp_path, monkeypatch, answers)
+    assert getattr(checked, "semantic_status") is SemanticStatus.SUCCEEDED
+    turns = [request["params"] for request in wire if request["method"] == "turn/start"]
+    schemas = [json.dumps(turn["outputSchema"], sort_keys=True) for turn in turns]
+    assert len(turns) == 5 and len(set(schemas[:4])) == 1 and schemas[4] != schemas[0]
+    branches = [
+        len(cast(dict[str, Any], turn["outputSchema"])["properties"]["reply"]["anyOf"])
+        for turn in turns
+    ]
+    assert branches == [4, 4, 4, 4, 1]  # three read actions and the judgment, then only it
