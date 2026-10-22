@@ -209,12 +209,12 @@ _FINDING_ORIGIN_WORDS: Final[dict[str, str]] = {
 def render_human_findings(
     findings: Sequence[CheckProjectedFindingModel] | Sequence[object],
 ) -> str:
-    """Render at most the first three already-ordered findings."""
+    """Render every delivered finding without shortening its actionable fields."""
 
     if not findings:
         return "Findings: none"
     lines = ["Findings:"]
-    for finding in findings[:3]:
+    for finding in findings:
         kind = _token(getattr(finding, "kind", "unknown"))
         priority = getattr(finding, "priority", "unknown")
         origin = _FINDING_ORIGIN_WORDS.get(
@@ -226,9 +226,15 @@ def render_human_findings(
         detail = getattr(finding, "detail", None)
         if detail is not None:
             lines.append(f"  {_projected_text(detail)}")
-    remaining = len(findings) - 3
-    if remaining > 0:
-        lines.append(f"Additional findings not shown: {remaining}")
+        challenge = getattr(finding, "challenge", None)
+        if challenge is not None:
+            for label, field in (
+                ("Discrepancy", "discrepancy"),
+                ("Requested action", "requested_next_step"),
+                ("Alternative interpretation", "alternative_interpretation"),
+                ("Uncertainty", "uncertainty"),
+            ):
+                lines.append(f"  {label}: " + _projected_text(getattr(challenge, field, None)))
     return "\n".join(lines)
 
 

@@ -309,8 +309,8 @@ def test_descriptor_text_is_frozen_and_honest() -> None:
     assert tuple(TOOL_DESCRIPTORS) == ("policy", "strict")
     assert tuple(TOOL_DESCRIPTOR_DIGESTS) == ("policy", "strict")
     assert TOOL_DESCRIPTOR_SET_DIGEST == {
-        "policy": "sha256:900c75a24aecb3e2c2f27fea37454f3c6ba4a860eb87029b2cd520c0e14f60ca",
-        "strict": "sha256:4d60dd897d45a64161021500d82b9ccbd91ce2e75772b4e285739b0c3a955867",
+        "policy": "sha256:091e59a26de7c1ff59b64425fa6295d4f8eca14842557035c1cb3db769e5f6c0",
+        "strict": "sha256:85dbcd9b977c49bd896dcc00de7770e26ff8be1a7ba2ee6f768004cf76665316",
     }
     for profile, descriptors in TOOL_DESCRIPTORS.items():
         assert tuple(item.name for item in descriptors) == _EXPECTED_TOOL_NAMES
@@ -369,12 +369,12 @@ def test_descriptor_text_is_frozen_and_honest() -> None:
     assert publish_descriptor.input_schema_ref.endswith("publish-work-request-1.2.0.schema.json")
     assert publish_descriptor.output_schema_ref.endswith("publish-work-result-1.1.0.schema.json")
     check_descriptor = descriptor_for("check")
-    assert check_descriptor.output_schema_ref.endswith("check-result-1.6.0.schema.json")
+    assert check_descriptor.output_schema_ref.endswith("check-result-1.7.0.schema.json")
     status_descriptor = descriptor_for("status")
-    assert status_descriptor.input_schema_ref.endswith("status-request-1.2.0.schema.json")
-    assert status_descriptor.output_schema_ref.endswith("status-result-1.4.0.schema.json")
+    assert status_descriptor.input_schema_ref.endswith("status-request-1.3.0.schema.json")
+    assert status_descriptor.output_schema_ref.endswith("status-result-1.5.0.schema.json")
     receipt_descriptor = descriptor_for("receipt")
-    assert receipt_descriptor.output_schema_ref.endswith("receipt-result-1.3.0.schema.json")
+    assert receipt_descriptor.output_schema_ref.endswith("receipt-result-1.4.0.schema.json")
     closure_descriptor = descriptor_for("closure_prepare")
     assert closure_descriptor.input_schema_ref.endswith("closure-prepare-request-1.0.0.schema.json")
     assert closure_descriptor.output_schema_ref.endswith("closure-prepare-result-1.0.0.schema.json")

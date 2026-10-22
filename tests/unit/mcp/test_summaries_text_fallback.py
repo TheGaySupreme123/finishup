@@ -179,7 +179,7 @@ def test_reviewer_output_is_separate_and_explicitly_advisory() -> None:
     assert "code_defect: The error path is still reachable." in rendered
 
 
-def test_reviewer_output_discloses_text_budget_truncation() -> None:
+def test_reviewer_output_keeps_all_fields_for_service_paging() -> None:
     rendered = render_check_reviewer_output(
         {
             "review_summary": "summary",
@@ -194,8 +194,9 @@ def test_reviewer_output_discloses_text_budget_truncation() -> None:
             ],
         }
     )
-    assert "Reviewer output truncated at the local text budget." in rendered
-    assert len(rendered.encode("utf-8")) <= 12_288
+    assert "Reviewer output truncated" not in rendered
+    for index in range(64):
+        assert f"requirement-{index}-" + ("x" * 512) in rendered
 
 
 def test_start_text_says_the_first_plan_sends_this_frontier() -> None:

@@ -53,6 +53,7 @@ def test_schema_two_upgrade_survives_restart_and_file_copy_restore(tmp_path: Pat
         "0015",
         "0016",
         "0017",
+        "0018",
     )
     expected = {
         "observation_workspace_bindings",

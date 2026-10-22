@@ -1126,6 +1126,73 @@ async def test_terminal_response_persistence_failure_is_unknown_without_replayab
     assert ledger.attempts[_ATT1].result_object_ref is None
 
 
+@dataclass(frozen=True, slots=True)
+class _ReadUsageEval(_Eval):
+    reviewer_read_usage: tuple[object, ...] = ()
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("max_retries", [0, 1])
+async def test_a_lost_private_read_usage_write_never_changes_the_failed_review(
+    max_retries: int,
+) -> None:
+    """#1173: read usage is owner-local telemetry. Losing its object write keeps the failed
+    review's own outcome and evaluation (its reviewer record) and never stops the retry."""
+
+    ledger = _FakeLedger(_queued_job(), _lease())
+    failed = _ReadUsageEval(
+        SemanticStatus.INVALID,
+        SemanticReason.RESPONSE_CONTENT_INVALID,
+        reviewer_read_usage=({"call": 1, "reason": "forbidden_path"},),
+    )
+    script: list[_Eval] = [failed, _SUCCESS]
+    returned: list[object] = []
+
+    async def dispatch(handle: SemanticAttemptHandle, attempt_deadline: Deadline) -> _Eval:
+        del handle, attempt_deadline
+        return script.pop(0)
+
+    async def publish(handle: SemanticAttemptHandle, value: object) -> ObjectRef:
+        del handle
+        if value is failed:
+            raise OSError("response_store_unavailable")
+        return _response_ref()
+
+    def build_final(
+        status: SemanticStatus,
+        reason: SemanticReason,
+        value: object | None,
+        accounting: SemanticAttemptAccounting,
+    ) -> object:
+        returned.append(value)
+        return status, reason
+
+    result = await run_durable_semantic_attempts(
+        ledger=ledger,
+        lease=ledger.lease,
+        job=ledger.job,
+        deadline=Deadline(datetime(2030, 1, 1, tzinfo=UTC), 1000.0),
+        max_retries=max_retries,
+        now_monotonic=lambda: 0.0,
+        dispatch=dispatch,
+        publish_success_response=publish,
+        sleep=lambda _: _async_noop(),
+        build_final=build_final,
+    )
+    if max_retries:  # the repair attempt still runs and is selected
+        assert result == (SemanticStatus.SUCCEEDED, SemanticReason.SEMANTIC_COMPLETED)
+        assert ledger.outcomes is not None
+        assert ledger.outcomes[0] == (
+            _ATT1,
+            AttemptOutcome.EXPIRED,
+            SemanticReason.RESPONSE_CONTENT_INVALID,
+        )
+    else:  # the terminal outcome and its evaluation are the review's own
+        assert result == (SemanticStatus.INVALID, SemanticReason.RESPONSE_CONTENT_INVALID)
+        assert returned == [failed]
+        assert ledger.attempts is not None and ledger.attempts[_ATT1].result_object_ref is None
+
+
 @pytest.mark.anyio
 async def test_retryable_withheld_evaluation_replays_after_deadline_terminalization() -> None:
     """An expired retry row keeps the same omission carrier for immediate and replayed results."""

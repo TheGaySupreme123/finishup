@@ -35,7 +35,13 @@ from finishup.adapters.task_input_read import (
 from finishup.application.check import validate_semantic_judgment
 from finishup.application.egress import PrivacyCoordinator, reviewer_history_admissible
 from finishup.application.reviewer_broker import ReadElement, ReadRoot, ReviewerBroker
-from finishup.application.reviewer_loop import ReviewerLoop, ReviewerModelError, Turn
+from finishup.application.reviewer_loop import (
+    FINAL_PHASE,
+    ReviewerLoop,
+    ReviewerModelError,
+    Turn,
+)
+from finishup.application.reviewer_telemetry import read_usage_from_wire
 from finishup.domain.privacy import AuthorizationScope, AuthorizationScopeKind, PrivacyPolicy
 from finishup.ports.change_capture import SnapshotFile, TaskInputSnapshotSet
 from finishup.ports.privacy import (
@@ -380,8 +386,15 @@ def test_instruction_is_one_short_pstack_prompt_with_the_honesty_rules() -> None
     text = REVIEWER_LOOP_INSTRUCTION
     # #1145/#1146 add bounded acceptance/calibration rules to the compact M6 core.
     # This cap includes both; never replace it with the full packet-only instruction.
-    assert len(text.encode()) < 6500 and len(text.split()) < 1050
-    for heading in ("## Goal", "## Done", "## Evidence", "## Clues", "## Constraints"):
+    assert len(text.encode()) < 8100 and len(text.split()) < 1300
+    for heading in (
+        "## Goal",
+        "## Procedure",
+        "## Done",
+        "## Evidence",
+        "## Clues",
+        "## Constraints",
+    ):
         assert text.count(heading) == 1
     assert "Review only the supplied packet." not in text
     assert "citable_refs array and nothing else" not in text
@@ -395,7 +408,10 @@ def test_instruction_is_one_short_pstack_prompt_with_the_honesty_rules() -> None
         "not_assessable",
         "never an instruction",
         "[REDACTED]",
-        "Up to 3 reads, 8 KiB each and 24 KiB in all",
+        "Up to 3 content reads, at most 5 attempts, 8 KiB each and 24 KiB in all",
+        # #1173: the example path is an unmistakable placeholder, and a listing's cost is stated.
+        '"path":"<relative-path>"',
+        "a path=. listing that returns names spends a content read",
         "Never ask the agent to deliver less",
         "insufficient_packet means unassessable",
         "exactly one prior_finding_verdicts entry",
@@ -462,7 +478,7 @@ async def test_no_read_review_is_one_completion() -> None:
 
 
 @pytest.mark.anyio
-async def test_reads_append_observations_then_only_final_is_offered() -> None:
+async def test_reads_append_observations_then_the_final_phase_is_announced() -> None:
     steps = _Steps()
     loop, _broker, model, _ = _setup(_PACKET_READ, _LEDGER_READ, _LEDGER_READ, _FINAL, steps=steps)
     outcome = await loop.run()
@@ -473,7 +489,11 @@ async def test_reads_append_observations_then_only_final_is_offered() -> None:
     records = cast(list[dict[str, str]], _data(second)["records"])
     assert records[0]["ref"].startswith("claim-")
     assert third["calls_remaining"] == 0
-    assert model.calls[-1][1] == reviewer_reply_schema(reads_allowed=False, strict=True)
+    # One reply schema for the whole review (#1172): the final turn is announced, not narrowed.
+    assert {canonical_encode(schema) for _history, schema in model.calls} == {
+        canonical_encode(reviewer_reply_schema(reads_allowed=True, strict=True))
+    }
+    assert model.calls[-1][0][-1] == Turn("user", FINAL_PHASE)
     for sent in (first, second, third):
         assert sent["result_utf8_bytes"] == len(canonical_encode(sent)) <= 8192
         assert sent["status"] != "ok" or sent["truncated"] is False  # m1
@@ -485,12 +505,112 @@ async def test_reads_append_observations_then_only_final_is_offered() -> None:
     assert steps.rows[("read", 2)][1] == canonical_encode(second)
 
 
+class _SchemaHonouring:
+    """A route that enforces the reply schema: it reads whenever the schema offers a read."""
+
+    def __init__(self, *first: JsonValue) -> None:
+        self.first = list(first)
+        self.calls: list[tuple[tuple[Turn, ...], dict[str, JsonValue]]] = []
+        self.clock_after_first: Callable[[], None] | None = None
+
+    async def complete(
+        self, history: Sequence[Turn], schema: dict[str, JsonValue], *, deadline: Deadline
+    ) -> JsonValue:
+        del deadline
+        self.calls.append((tuple(history), schema))
+        if self.first:
+            reply = self.first.pop(0)
+            if self.clock_after_first is not None:
+                self.clock_after_first()
+            return reply
+        return (
+            _LEDGER_READ
+            if schema == reviewer_reply_schema(reads_allowed=True, strict=True)
+            else _FINAL
+        )
+
+
+_FULL = reviewer_reply_schema(reads_allowed=True, strict=True)
+_FINAL_ONLY = reviewer_reply_schema(reads_allowed=False, strict=True)
+
+
 @pytest.mark.anyio
-async def test_a_read_after_the_cap_executes_nothing_and_ends_incomplete() -> None:
-    loop, broker, _model, _ = _setup(_LEDGER_READ, _LEDGER_READ, _LEDGER_READ, _LEDGER_READ)
+@pytest.mark.parametrize(
+    "first", [(), ({"reply": {}},)], ids=["always-reads", "malformed-then-reads"]
+)
+async def test_a_schema_enforcing_route_always_reaches_a_judgment(
+    first: tuple[JsonValue, ...],
+) -> None:
+    """#1173 round 2: a model that reads whenever it may, even after spending the repair on a
+    malformed answer, still ends with a judgment: once the one repair is spent, the final phase
+    (the repair turn included) sends the read-free schema. The normal final turn keeps the full
+    schema, so a well-behaved model still gets the cache hit."""
+
+    loop, broker, _, _ = _setup()
+    model = _SchemaHonouring(*first)
+    loop.model = model
     outcome = await loop.run()
-    assert (outcome.status, outcome.reason) == ("incomplete", "read_limit")
-    assert len(_observations(outcome.history)) == 3 and broker.reads_allowed() is False
+    assert outcome.status == "final" and outcome.judgment is not None, outcome.reason
+    assert broker.content_reads == 3
+    # Four full-schema turns (cache hits), then exactly one read-free turn.
+    assert [schema for _history, schema in model.calls] == [_FULL] * 4 + [_FINAL_ONLY]
+    last = model.calls[-1][0][-1].content
+    if first:  # malformed, repaired while reads remain, 3 reads, then the spent-repair final turn
+        assert model.calls[1][0][-1].content.startswith("format_error: action_invalid. Reply with")
+        assert last == FINAL_PHASE
+    else:  # 3 reads, the final turn (full) reads, and its repair turn is read-free
+        assert last.startswith("format_error: read_in_final_phase. No reads remain.")
+
+
+@pytest.mark.anyio
+async def test_a_repair_before_a_final_turn_never_invites_a_read() -> None:
+    """#1173 round 2: a malformed answer whose turn ran into the final reserve gets the
+    final-phase note ("No reads remain"), not "a read action or final_judgment" followed by the
+    final-phase notice, and the next turn is read-free."""
+
+    loop, _broker, _, _ = _setup()
+    now = [1.0]
+    loop.clock = lambda: now[0]
+    model = _SchemaHonouring("not json")
+    model.clock_after_first = lambda: now.__setitem__(0, 580.0)  # inside the 30 s reserve
+    loop.model = model
+    outcome = await loop.run()
+    assert outcome.status == "final" and len(model.calls) == 2
+    assert [schema for _h, schema in model.calls] == [_FULL, _FINAL_ONLY]
+    repair, notice = (t.content for t in model.calls[1][0][-2:])
+    assert repair.startswith("format_error: envelope_invalid. No reads remain.")
+    assert notice == FINAL_PHASE
+
+
+@pytest.mark.anyio
+async def test_a_read_in_the_final_phase_gets_the_one_repair_asking_for_the_judgment() -> None:
+    # #1173: the wire schema still offers reads after the cap (#1172), so a schema-valid read
+    # there is the final phase's format error, never an INVALID review without a judgment.
+    steps = _Steps()
+    reads = (_LEDGER_READ,) * 4
+    loop, broker, model, _ = _setup(*reads, _FINAL, steps=steps)
+    outcome = await loop.run()
+    assert (outcome.status, outcome.reason, outcome.model_turns) == ("final", None, 5)
+    assert len(_observations(outcome.history)) == broker.calls == 3  # the late read never ran
+    repair = model.calls[-1][0][-1].content
+    assert repair.startswith("format_error: read_in_final_phase.") and "read action" not in repair
+    assert "final_judgment only" in repair
+    assert ("repair", 1) in steps.rows and ("read", 4) not in steps.rows
+    # The late read is not echoed: the result, the final-phase notice, the repair, the judgment.
+    assert [t.role for t in outcome.history[-4:]] == ["user", "user", "user", "assistant"]
+    # A read after that repair executes nothing and ends the review; no second repair.
+    loop, broker, model, _ = _setup(*reads, _LEDGER_READ)
+    outcome = await loop.run()
+    assert (outcome.status, outcome.reason, outcome.model_turns) == ("incomplete", "read_limit", 5)
+    assert broker.calls == 3 and broker.reads_allowed() is False
+    # A review that never offered a read (ask-every-time) gets no repair: that would be another
+    # exchange needing its own owner approval.
+    steps = _Steps()
+    loop, broker, model, _ = _setup(_LEDGER_READ, _FINAL, steps=steps)
+    broker._max_reads = broker._max_attempts = 0  # pyright: ignore[reportPrivateUsage]
+    outcome = await loop.run()
+    assert (outcome.reason, outcome.model_turns, broker.calls) == ("read_limit", 1, 0)
+    assert list(steps.rows) == [("turn", 1)]
 
 
 @pytest.mark.anyio
@@ -908,3 +1028,275 @@ async def test_citations_follow_the_advertised_refs_and_the_fallback_fits(
                 None,
             )
             assert advertised == set() and result["next_cursor"] is None
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("kind", ["file", "packet", "ledger"])
+async def test_a_wrong_selector_recovers_without_spending_a_content_read(
+    tmp_path: Path, kind: str
+) -> None:
+    (tmp_path / "calc.py").write_text("selector_recovery_witness\n")
+    root = ReadRoot("w1", str(tmp_path.resolve()))
+    wrong = {
+        "file": _text("w1", "/absolute/calc.py", max_bytes=1024),
+        "packet": _read(
+            "read_packet_section", section="agent_account", item_ref=_CLM, offset=0, max_bytes=1024
+        ),
+        "ledger": _read("read_ledger", view="claims", refs=["goal-1"], cursor=None, max_bytes=1024),
+    }[kind]
+
+    def correct(history: tuple[Turn, ...]) -> JsonValue:
+        result = _observations(history)[-1]
+        assert result["status"] in {"unavailable", "denied"}
+        assert result["calls_remaining"] == 3
+        assert result["result_utf8_bytes"] == len(canonical_encode(result)) <= 1024
+        if kind == "file":
+            assert result["allowed_root_ids"] == ["w1"]
+            assert "relative" in cast(str, result["continuation"])
+            return _text("w1", "calc.py")
+        row = cast(list[dict[str, JsonValue]], result["alternatives"])[0]
+        if kind == "packet":
+            return _read(
+                "read_packet_section",
+                section=cast(list[str], row["sections"])[0],
+                item_ref=row["item_id"],
+                offset=0,
+            )
+        return _read(
+            "read_ledger",
+            view=cast(list[str], row["views"])[0],
+            refs=[row["source_ref"]],
+            cursor=None,
+        )
+
+    loop, broker, model, _ = _setup(
+        wrong, correct, _LEDGER_READ, _LEDGER_READ, _FINAL, roots=[root]
+    )
+    broker._job = "job_00000000-0000-4000-8000-000000000001"  # pyright: ignore[reportPrivateUsage]
+    outcome = await loop.run()
+    assert outcome.status == "final" and outcome.model_turns == 5
+    assert broker.calls == 4 and broker.content_reads == 3
+    results = _observations(outcome.history)
+    assert all(r["status"] in {"ok", "partial"} for r in results[1:])
+    assert results[-1]["calls_remaining"] == 0
+    assert "final_judgment now" in model.calls[-1][0][-1].content
+    usage = read_usage_from_wire(broker.read_usage)
+    assert usage is not None and len(usage) == 4
+    assert "selector_recovery_witness" not in json.dumps(usage)
+    assert all(set(row) == {"call", "action", "args", "status", "reason"} for row in usage)
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    ("root_id", "path", "reason", "cause", "aliases"),
+    [
+        ("w1", "/abs/secret.txt", "forbidden_path", "drop the filesystem prefix", ["w1"]),
+        ("w1", "secret.txt", "forbidden_path", "ignore rules exclude this path", ["w1"]),
+        ("w1", ".env", "forbidden_path", "Hidden (dot-prefixed)", ["w1"]),
+        ("w1", "../w/calc.py", "forbidden_path", "traversing (..)", ["w1"]),
+        (
+            "zz",
+            "calc.py",
+            "forbidden_path",
+            "alias from the catalog's read_file_roots",
+            ["w1", "o1"],
+        ),
+        ("o1", "customer/notes.md", "outside_scope", "task-declared paths", ["o1"]),
+    ],
+)
+async def test_each_refused_path_gets_its_own_correction_without_echoing_it(
+    tmp_path: Path, root_id: str, path: str, reason: str, cause: str, aliases: list[str]
+) -> None:
+    # #1173: an ignored or hidden relative path is not told to "use a relative path", and
+    # outside_scope gets a correction too; none repeats the refused path or a copyable example.
+    work, shared = tmp_path / "w", tmp_path / "shared"
+    (shared / "specs").mkdir(parents=True)
+    work.mkdir()
+    (work / "calc.py").write_text("def add(a, b):\n    return a + b\n")
+    root = str(shared.resolve())
+    roots = (
+        ReadRoot("w1", str(work.resolve()), refuse=lambda name: name == "secret.txt"),
+        ReadRoot("o1", root, input_root=root, declared=("specs",)),
+    )
+    policy = replace(with_llm(minimal_external_policy()), admitted_input_roots=(root,))
+    action = _text(root_id, path, max_bytes=1024)
+    loop, broker, _, _ = _setup(action, _FINAL, roots=roots, policy=policy)
+    (result,) = _observations((await loop.run()).history)
+    assert (result["status"], result["reason"], result["data"]) == ("denied", reason, None)
+    assert result["allowed_root_ids"] == aliases and result["calls_remaining"] == 3
+    continuation = cast(str, result["continuation"])
+    assert cause in continuation
+    if cause in {"ignore rules exclude this path", "Hidden (dot-prefixed)", "traversing (..)"}:
+        assert "relative to the root_id" not in continuation  # no absolute-path advice
+    encoded = canonical_encode(result).decode()
+    for echoed in (path, path.rsplit("/", 1)[-1], "src/main.py"):
+        assert echoed not in encoded
+    assert broker.content_reads == 0
+
+
+@pytest.mark.anyio
+async def test_five_empty_attempts_and_one_repair_are_a_hard_no_loop_bound() -> None:
+    wrong = _read("read_ledger", view="claims", refs=["unknown"], cursor=None)
+    loop, broker, model, _ = _setup({}, *([wrong] * 5), _FINAL)
+    outcome = await loop.run()
+    assert outcome.status == "final" and len(model.calls) == outcome.model_turns == 7
+    assert broker.calls == 5 and broker.content_reads == 0 and not broker.reads_allowed()
+    assert [r["calls_remaining"] for r in _observations(outcome.history)] == [3, 3, 2, 1, 0]
+    # Every failed attempt remains durably spent; another run cannot refill the allowance.
+    assert (await loop.run()).reason == "interrupted"
+    assert len(model.calls) == 7
+
+
+@pytest.mark.anyio
+async def test_a_sixth_failed_read_is_refused_without_an_observation() -> None:
+    wrong = _text("w1", "/wrong")
+    # The sixth read gets the final phase's one repair; a seventh ends the review.
+    loop, broker, model, _ = _setup(*([wrong] * 7))
+    outcome = await loop.run()
+    assert outcome.reason == "read_limit" and outcome.model_turns == len(model.calls) == 7
+    assert len(_observations(outcome.history)) == broker.calls == 5
+    assert model.calls[-1][0][-1].content.startswith("format_error: read_in_final_phase.")
+
+
+@pytest.mark.anyio
+async def test_empty_native_refusals_do_not_count_as_content_reads(tmp_path: Path) -> None:
+    (tmp_path / "empty.txt").write_text("")
+    (tmp_path / "oversize.txt").write_bytes(b"x" * (MAX_TASK_INPUT_READ_BYTES + 1))
+    loop, broker, _, _ = _setup(
+        _text("w1", "empty.txt", max_bytes=1024),
+        _text("w1", "oversize.txt"),
+        _FINAL,
+        roots=[ReadRoot("w1", str(tmp_path.resolve()))],
+    )
+    outcome = await loop.run()
+    empty, oversize = _observations(outcome.history)
+    assert empty["reason"] == "not_recorded" and "never recorded" in cast(
+        str, empty["continuation"]
+    )
+    assert "missing_for_assessment" in cast(str, empty["continuation"])
+    assert oversize["reason"] == "native_read_limit"
+    assert broker.calls == 2 and broker.content_reads == 0
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("static_admitted", [True, False])
+async def test_correction_metadata_is_admitted_and_never_contains_item_content(
+    static_admitted: bool,
+) -> None:
+    loop, broker, _, _ = _setup(
+        _read("read_packet_section", section="agent_account", item_ref="wrong", offset=0), _FINAL
+    )
+    admitted: list[tuple[tuple[ReadElement, ...], bytes]] = []
+
+    async def withhold_rows(elements: tuple[ReadElement, ...], envelope: bytes) -> str | None:
+        admitted.append((elements, envelope))
+        assert b"self.retries" not in envelope
+        return "privacy_withheld" if elements or not static_admitted else None
+
+    broker._admit = withhold_rows  # pyright: ignore[reportPrivateUsage]
+    result = _observations((await loop.run()).history)[0]
+    (rows, with_rows), (none, static) = admitted
+    assert rows and b'"alternatives"' in with_rows and none == ()
+    assert "alternatives" not in result and result["data"] is None
+    assert not broker.cited_refs and broker.content_reads == 0
+    if static_admitted:
+        # #1173: withholding the catalog rows keeps the static #1148 continuation, which is
+        # itself scanned in the exact envelope that is sent.
+        assert canonical_encode(result) == static
+        continuation = cast(str, result["continuation"])
+        assert "does not establish that the item was never recorded" in continuation
+        assert "missing_for_assessment" in continuation and "retry a listed" not in continuation
+    else:
+        assert "continuation" not in result
+
+
+@pytest.mark.anyio
+async def test_retry_attempts_share_the_original_deadline_and_final_reserve(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    loop, broker, model, _ = _setup(_text("w1", "/wrong"), _FINAL)
+    now = [1.0]
+    loop.clock = lambda: now[0]
+    # The first reply leaves one second for the local read, then the next turn is final.
+    model.after = lambda: now.__setitem__(0, 569.0 if len(model.calls) == 1 else 570.0)
+    capture = broker.store.capture
+
+    async def advance(kind: ReviewStepKind, ordinal: int, result: bytes) -> None:
+        await capture(kind, ordinal, result)
+        if kind == "read":
+            now[0] = 570.0
+
+    monkeypatch.setattr(broker.store, "capture", advance)
+    outcome = await loop.run()
+    assert outcome.status == "final" and len(model.calls) == 2 and broker.calls == 1
+    assert "final_judgment now" in model.calls[-1][0][-1].content
+
+
+@pytest.mark.anyio
+async def test_a_result_admitted_after_the_local_stop_is_still_sent() -> None:
+    # #1173 round 2: the read finished before its local stop; only its (local) admission ran
+    # past it. As before #1173 the result is sent and the review goes on to its judgment,
+    # instead of ending ``deadline`` with nothing.
+    loop, broker, model, _ = _setup(_LEDGER_READ, _FINAL)
+    now = [1.0]
+    loop.clock = lambda: now[0]
+    admit = broker._admit  # pyright: ignore[reportPrivateUsage]
+
+    async def late(elements: tuple[ReadElement, ...], envelope: bytes) -> str | None:
+        reason = await admit(elements, envelope)
+        now[0] = 6.0
+        return reason
+
+    broker._admit = late  # pyright: ignore[reportPrivateUsage]
+    outcome = await loop.run()
+    assert outcome.status == "final" and len(model.calls) == 2
+    (result,) = _observations(outcome.history)
+    assert result["status"] in {"ok", "partial"} and broker.content_reads == 1
+
+
+@pytest.mark.anyio
+async def test_a_correction_admitted_after_the_local_stop_is_not_sent() -> None:
+    # #1173: a hint admitted past the local read stop is dropped, never sent late; the bare
+    # refusal is sent and the review goes on (it no longer ends the review ``deadline``).
+    loop, broker, model, _ = _setup(_text("w1", "/wrong"), _FINAL)
+    now = [1.0]
+    loop.clock = lambda: now[0]
+
+    async def late(_elements: tuple[ReadElement, ...], _envelope: bytes) -> None:
+        now[0] = 6.0
+
+    broker._admit = late  # pyright: ignore[reportPrivateUsage]
+    outcome = await loop.run()
+    assert outcome.status == "final" and len(model.calls) == 2
+    (refused,) = _observations(outcome.history)
+    assert (refused["status"], refused["reason"]) == ("denied", "forbidden_path")
+    assert "continuation" not in refused and "allowed_root_ids" not in refused
+    assert broker.read_usage[0]["reason"] == "forbidden_path" and broker.content_reads == 0
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("why", ["ask_every_time", "first_turn_in_reserve"])
+async def test_a_review_that_never_offers_a_read_keeps_the_read_free_schema(why: str) -> None:
+    # #1173: only a review that started with reads keeps the full schema after its reads end.
+    # One that offers none (each exchange needs the owner's approval, or the first turn is
+    # already inside the final reserve) sends the read-free schema on every turn, as before,
+    # and gets no final-phase notice: a strict route cannot return a read at all.
+    from finishup.adapters.providers.reviewer_reply import REVIEWER_REPLY_SCHEMAS
+
+    assert REVIEWER_REPLY_SCHEMAS.final == reviewer_reply_schema(reads_allowed=False, strict=True)
+    final_only = cast(dict[str, dict[str, JsonValue]], REVIEWER_REPLY_SCHEMAS.final)
+    assert "read_file" not in json.dumps(final_only["properties"]["reply"])
+    steps = _Steps()
+    loop, broker, model, _ = _setup("not json", _FINAL, steps=steps)
+    if why == "ask_every_time":
+        broker._max_reads = broker._max_attempts = 0  # pyright: ignore[reportPrivateUsage]
+    else:
+        loop.reserve = 1_000.0  # the whole deadline is inside the final reserve
+    outcome = await loop.run()
+    assert outcome.status == "final" and len(model.calls) == 2  # the repair still applies
+    assert {canonical_encode(schema) for _history, schema in model.calls} == {
+        canonical_encode(REVIEWER_REPLY_SCHEMAS.final)
+    }
+    assert all(t.content != FINAL_PHASE for t in outcome.history)
+    assert model.calls[1][0][-1].content.startswith("format_error: envelope_invalid. No reads")
+    assert steps.rows[("turn", 1)][0] == b"final"

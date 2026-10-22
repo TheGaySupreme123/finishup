@@ -48,7 +48,7 @@ from finishup.kernel.claim_verification import CLAIM_VERIFICATION_HEADER
 from finishup.kernel.fact_lineage import FactLineage, lineage_from_wire, lineage_texts
 from finishup.legacy_names import LAUNCHER_NAME, LAUNCHER_NAMES
 from finishup.mcp.errors import VALIDATION_REASON_TOKENS
-from finishup.protocol.canonical import JsonValue, canonical_encode, ensure_canonical_value
+from finishup.protocol.canonical import JsonValue, ensure_canonical_value
 from finishup.protocol.errors import (
     SERVICE_STARTUP_PHASES,
     PublicErrorCode,
@@ -101,7 +101,6 @@ __all__ = [
 # exceeding it degrades the optional clauses and can never raise (ADR-030 "Budget priority").
 MAX_SUMMARY_BYTES: Final = 4096
 _MAX_SUMMARY_BYTES: Final = MAX_SUMMARY_BYTES
-_MAX_REVIEW_OUTPUT_BYTES: Final = 12_288
 _REVIEW_VERDICTS: Final = frozenset({"supported", "not_supported", "not_assessable"})
 _REVIEW_KINDS: Final = frozenset(
     {
@@ -993,25 +992,8 @@ def _review_refs(value: object) -> tuple[str, ...]:
     )[:16]
 
 
-def _clip_review_text(value: str, budget: int) -> str:
-    if budget <= 0:
-        return ""
-    encoded = value.encode("utf-8")
-    if len(encoded) <= budget:
-        return value
-    suffix = "…".encode()
-    if budget <= len(suffix):
-        return suffix[:budget].decode("utf-8", errors="ignore")
-    return encoded[: budget - len(suffix)].decode("utf-8", errors="ignore") + "…"
-
-
 def render_check_review_delivery(envelope: object) -> str:
-    """A complete bounded advisory lead, before inventories in a host-clipped result (#1139).
-
-    Size each field by its JSON encoding, including escaping. A long summary or quotation must
-    never spend the room reserved for an alternative or uncertainty. Only already projected
-    finding prose is used here; the full authorized record remains behind the status reads.
-    """
+    """Render complete authorized advice; the service pages it before host delivery (#1139)."""
 
     source = _mapping(envelope)
     summary = _review_text(source.get("review_summary"))
@@ -1028,24 +1010,10 @@ def render_check_review_delivery(envelope: object) -> str:
     if summary is None and not challenges:
         return ""
 
-    def bounded(value: object, budget: int) -> str:
-        text = _review_text(value) or "[omitted by privacy policy]"
-        # Canonical JSON escapes the same control characters as the native host's encoding.
-        if len(canonical_encode(text)) <= budget:
-            return text
-        low, high = 4, min(budget, len(text.encode()))
-        while low < high:
-            middle = (low + high + 1) // 2
-            if len(canonical_encode(_clip_review_text(text, middle))) <= budget:
-                low = middle
-            else:
-                high = middle - 1
-        return _clip_review_text(text, low)
-
     lines = ["AI-powered reviewer output (advisory; model-derived; not independent proof):"]
     if summary is not None:
-        lines.append("Reviewer summary: " + bounded(summary, 420))
-    for row in challenges[:3]:
+        lines.append("Reviewer summary: " + summary)
+    for row in challenges:
         challenge = cast(Mapping[str, JsonValue], row["challenge"])
         ref = row.get("finding_id")
         label = (
@@ -1065,12 +1033,7 @@ def render_check_review_delivery(envelope: object) -> str:
                 if key == "requested_next_step" and detail
                 else challenge.get(key)
             )
-            lines.append(f"{name}: {bounded(value, 180)}")
-    lines.append(
-        "Truncated to a bounded preview; read more via status view=findings with limit=1, "
-        "detail=full and the returned cursor for finding text and provenance. A full_local receipt carries "
-        "the recorded review summary subject to export policy. Full authorized fields follow."
-    )
+            lines.append(f"{name}: " + (_review_text(value) or "[omitted by privacy policy]"))
     return "\n".join(lines)
 
 
@@ -1079,7 +1042,8 @@ def render_check_reviewer_output(envelope: object) -> str:
 
     ``render_safe_compact_summary`` stays structural and bounded (4096 bytes since tb4n3 RC-2;
     it was 512). This separate section carries only the privacy-projected Part 2 fields, with fixed
-    labels and a larger overall bound so a successful review is visible to text-only hosts.
+    labels. Oversized service results are paged before rendering, so this renderer never cuts
+    an actionable field to fit a second text-only bound.
     """
 
     source = _mapping(envelope)
@@ -1148,27 +1112,7 @@ def render_check_reviewer_output(envelope: object) -> str:
         lines.insert(
             0, "AI-powered reviewer output (advisory; model-derived; not independent proof):"
         )
-    rendered: list[str] = []
-    used = 0
-    truncation_notice = "Reviewer output truncated at the local text budget."
-    total_bytes = sum(len(line.encode("utf-8")) for line in lines) + max(len(lines) - 1, 0)
-    budget = _MAX_REVIEW_OUTPUT_BYTES
-    if total_bytes > budget:
-        budget -= len(truncation_notice.encode("utf-8")) + 1
-    for line in lines:
-        separator = 1 if rendered else 0
-        remaining = budget - used - separator
-        clipped = _clip_review_text(line, remaining)
-        if not clipped:
-            break
-        rendered.append(clipped)
-        used += separator + len(clipped.encode("utf-8"))
-        if len(clipped) < len(line):
-            break
-    result = "\n".join(rendered)
-    if total_bytes > _MAX_REVIEW_OUTPUT_BYTES and result:
-        result += "\n" + truncation_notice
-    return f"{result}\n{reads}" if reads else result
+    return "\n".join([*lines, *([reads] if reads else [])])
 
 
 def _repair_clause(error: Mapping[str, JsonValue]) -> str:

@@ -840,6 +840,9 @@ async def test_status_is_task_read_only_paginated_and_projection_receipted() -> 
     )
     assert isinstance(projected, StatusResultModel)
     assert projected.root.ok is True
+    from finishup.protocol.models import StatusSuccessModel
+
+    assert isinstance(projected.root, StatusSuccessModel)
     assert projected.root.privacy_projection.sink == "local_human_view"
     assert len(projection.candidates) == 1
 
@@ -854,6 +857,7 @@ async def test_status_is_task_read_only_paginated_and_projection_receipted() -> 
     )
     assert isinstance(projected_again, StatusResultModel)
     assert projected_again.root.ok is True
+    assert isinstance(projected_again.root, StatusSuccessModel)
     assert (
         projected_again.root.privacy_projection.local_disclosure_receipt_id
         != projected.root.privacy_projection.local_disclosure_receipt_id
