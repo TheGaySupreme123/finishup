@@ -772,11 +772,13 @@ SEMANTIC_REVIEW_INSTRUCTION: Final = "\n\n".join(
             "yoetz-assumption: or yoetz-verification-limit:; treat each as its finishup- form.",
             # Issue #907: packet order and the missing-item list. n7 RC7 (#1108): primary material
             # leads, so the reviewer reads the work before the agent's account of it; this order
-            # is SEMANTIC_CASE_SECTION_ORDER. Issue #1094 round-3 note: the supplied-summary rule
-            # applies wherever a supplied answer arrives, not only in an in-check follow-up, and
-            # supplied material includes the re-runs of a requested command FinishUP observed.
-            "Items come primary material first: the task statement; then excerpts (the "
-            "check-time change, task inputs, observed output and the other recorded excerpts); "
+            # is SEMANTIC_CASE_SECTION_ORDER (#1170 leads it with the structural coverage index).
+            # Issue #1094 round-3 note: the supplied-summary rule applies wherever a supplied
+            # answer arrives, not only in an in-check follow-up, and supplied material includes
+            # the re-runs of a requested command FinishUP observed.
+            "Items come primary material first, after any agent-declared coverage index: the "
+            "task statement; then excerpts (the check-time change, task inputs, observed output "
+            "and the other recorded excerpts); "
             "then FinishUP's deterministic findings; then the agent's own account (plan, "
             "obligations, claims, decisions and the agent-disclosures row); then earlier findings "
             "and the timeline. Read the work before the agent's account of it. Within a section "
