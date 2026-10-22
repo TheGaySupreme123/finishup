@@ -35,7 +35,13 @@ from finishup.adapters.task_input_read import (
 from finishup.application.check import validate_semantic_judgment
 from finishup.application.egress import PrivacyCoordinator, reviewer_history_admissible
 from finishup.application.reviewer_broker import ReadElement, ReadRoot, ReviewerBroker
-from finishup.application.reviewer_loop import FINAL_TURN, ReviewerLoop, ReviewerModelError, Turn
+from finishup.application.reviewer_loop import (
+    FINAL_FORMAT_ERROR,
+    FINAL_TURN,
+    ReviewerLoop,
+    ReviewerModelError,
+    Turn,
+)
 from finishup.domain.privacy import AuthorizationScope, AuthorizationScopeKind, PrivacyPolicy
 from finishup.ports.change_capture import SnapshotFile, TaskInputSnapshotSet
 from finishup.ports.privacy import (
@@ -529,9 +535,10 @@ async def test_the_notice_is_sent_once_and_stays_before_the_format_repair() -> N
     assert (outcome.status, outcome.model_turns) == ("final", 5)
     assert [turn.content for turn in outcome.history].count(FINAL_TURN) == 1
     repair, notice = model.calls[-1][0][-1], model.calls[-1][0][-2]
-    assert (
-        repair.content.startswith("format_error: action_invalid.") and notice.content == FINAL_TURN
-    )
+    # The schema still offers a read, so the repair after the notice must not invite one: a model
+    # that followed a read-or-judgment repair would end the review with no judgment.
+    assert repair.content == FINAL_FORMAT_ERROR.format(code="action_invalid")
+    assert "read action" not in repair.content and notice.content == FINAL_TURN
     assert len({id(schema) for _history, schema in model.calls}) == 1
 
 

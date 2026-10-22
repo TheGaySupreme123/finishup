@@ -10149,12 +10149,16 @@ follow-up loop is deleted.
   whose schema offers reads stops offering them (count cap, read room or final reserve), the loop
   appends `FINAL_TURN` once as its own user message (`"no_reads_left: Reply with final_judgment
   only; a read action now ends the review incomplete."`) and offers no read after it; a read
-  action then still ends `read_limit` with no observation. A review whose first turn offers no read
-  keeps the final-only schema and gets no notice, so an owner-approved first exchange resumes by
-  the same bytes. Every read leaves exchange room for that notice beside the one format-repair
-  notice (`reviewer_run._NOTICE_ROOM_BYTES`/`_TOKENS`). When the next exchange has no room left for
-  it (`ReviewerBroker.notice_fits()` is false: only a first exchange admitted inside that frame),
-  the loop narrows the schema to final-only instead, as before, and appends nothing.
+  action then still ends `read_limit` with no observation. A format repair on a turn that offers
+  no read uses `FINAL_FORMAT_ERROR` (`"format_error: <code>. No reads remain. Reply with
+  final_judgment only, matching the schema."`), so it never invites the read the schema still
+  allows; the room kept for a repair is the longer of the two texts. A review whose first turn
+  offers no read keeps the final-only schema and gets no notice, so an owner-approved first
+  exchange resumes by the same bytes. Every read leaves exchange room for that notice beside the
+  one format-repair notice (`reviewer_run._NOTICE_ROOM_BYTES`/`_TOKENS`). When the next exchange
+  has no room left for it (`ReviewerBroker.notice_fits()` is false: only a first exchange admitted
+  inside that frame), the loop narrows the schema to final-only instead, as before, and appends
+  nothing.
 - Broker: `application.reviewer_broker.ReviewerBroker(*, job_id, case, roots, store, admit,
   packet_refs, packet_text, max_reads, exchange_room)`; `execute(action, expired, reply="") -> str`
   returns the round-1 result envelope

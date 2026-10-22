@@ -35,6 +35,7 @@ from finishup.application.reviewer_broker import (
 )
 from finishup.application.reviewer_exchange import ReviewerExchangeModel
 from finishup.application.reviewer_loop import (
+    FINAL_FORMAT_ERROR,
     FINAL_TURN,
     FORMAT_ERROR,
     ReviewerLoop,
@@ -84,13 +85,15 @@ PACKET_TURN: Final = "[FinishUP review packet]"
 _INVALID_ENDINGS: Final = frozenset({"format_invalid", "read_limit", "turn_limit"})
 _SOURCE_DOMAIN: Final = b"finishup/reviewer-read-source/v1\x00"
 # The one format-repair notice a conversation may still add after any exchange (its codes are the
-# service's own short names), and the one no-reads-left notice before its final turn (#1172):
-# every read leaves room for both, so the exchange that appends them still fits the cap (#1118).
-_NOTICE_ROOM_BYTES: Final = reviewer_message_bytes(
-    "user", FORMAT_ERROR.format(code="x" * 64)
+# service's own short names; the final phase's repair has its own wording, so the room is the
+# longer of the two), and the one no-reads-left notice before its final turn (#1172): every read
+# leaves room for both, so the exchange that appends them still fits the cap (#1118).
+_REPAIR_NOTES: Final = tuple(t.format(code="x" * 64) for t in (FORMAT_ERROR, FINAL_FORMAT_ERROR))
+_NOTICE_ROOM_BYTES: Final = max(
+    reviewer_message_bytes("user", note) for note in _REPAIR_NOTES
 ) + reviewer_message_bytes("user", FINAL_TURN)
-_NOTICE_ROOM_TOKENS: Final = reviewer_message_tokens(
-    FORMAT_ERROR.format(code="x" * 64)
+_NOTICE_ROOM_TOKENS: Final = max(
+    reviewer_message_tokens(note) for note in _REPAIR_NOTES
 ) + reviewer_message_tokens(FINAL_TURN)
 
 
