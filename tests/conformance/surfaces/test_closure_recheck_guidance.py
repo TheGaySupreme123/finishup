@@ -208,11 +208,33 @@ def test_close_guidance_states_the_work_closed_rule_the_service_enforces() -> No
         assert "lifecycle continuation" not in text, path.name
         assert "close continuation" not in text, path.name
     card = _collapsed(_GUIDANCE / "agent-instructions.md")
-    assert "Then publish `work_closed` if the work is complete; a receipt never closes it." in card
-    assert "`lineage_work_transition` means the task already ended: report it." in card
+    assert "Then `work_closed` if complete; a receipt never closes work." in card
+    assert "`lineage_work_transition`: the task already ended; report it." in card
+    # Hosts reload the skill at closure (ADR-047), possibly after the card left the context.
+    for skill in _SKILLS:
+        assert "Then `work_closed` if complete." in _collapsed(skill), skill.parent.parent.name
     closing = _section(_GUIDANCE / "receipt.md", "## Closing sequence")
     assert "publish `work_closed` from the task's active session; it needs no recheck." in closing
     assert "Only `open` work closes: `lineage_work_transition` means the task already ended" in (
         closing
     )
     assert "Do not retry the close or open a new task for it" in closing
+
+
+def test_closing_topics_match_the_freshness_and_response_rules_the_code_enforces() -> None:
+    """Independent review of #1169 at 5dc725758, findings 1, 4 and 5."""
+
+    receipt = _collapsed(_GUIDANCE / "receipt.md")
+    # `verification_freshness`: a change FinishUP cannot place keeps verification stale (#1143).
+    assert "A write it cannot place (no trusted or complete comparison" in receipt
+    assert "keeps the verification stale" in receipt
+    assert "only when it is one of that verification's recorded inputs" not in receipt
+    review = _collapsed(_GUIDANCE / "review.md")
+    # Every unanswered, unresolved finding stays in `findings_unanswered`; `respond` refuses an
+    # acknowledgement without a later recorded attempt as `resolution_attempt_required`.
+    assert "Answer each open AI-powered finding with `respond` and a reason" in review
+    assert "`acknowledged` on a reviewer finding also cites an `evd_` or `res_` recorded" in review
+    assert "only when the table requires it" not in review
+    # #1118: the reviewer reads retained content itself, so the card keeps the rule visible.
+    card = _collapsed(_GUIDANCE / "agent-instructions.md")
+    assert "Never republish retained files/output for review" in card

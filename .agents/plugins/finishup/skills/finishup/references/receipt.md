@@ -67,12 +67,15 @@ template.
 
 Keep incidental verification logs and evidence reports outside the workspace and outside declared
 output directories, then publish their evidence through the ledger. A report the task requires is
-a deliverable: keep and declare it. A shell-written report stales earlier verification only when it
-is one of that verification's recorded inputs; a rewrite FinishUP's comparison proves byte-identical,
-or a report the verification wrote and declared as its output, does not. A file-edit-tool write
-records no path, so it stales verification unless it is documentation or notes. Do not rerun an expensive verification merely to reproduce identical
-evidence: a stale finding names the changed input, and a non-blocking `verification_rerun_question`
-takes a rerun or `respond acknowledged` with why none is needed ([freshness](workflow.md#completion)).
+a deliverable: keep and declare it. A report write FinishUP can place (its shell workspace
+comparison names the files) stales earlier verification when it touches a recorded input, and may
+ask a non-blocking `verification_rerun_question` when FinishUP cannot rule an input out; a
+byte-identical rewrite, or a report the verification wrote and declared as its output, does
+neither. A write it cannot place (no trusted or complete comparison, or a file-edit-tool edit other
+than documentation or notes) keeps the verification stale. Do not rerun an expensive verification
+merely to reproduce identical evidence: a stale finding names the changed input; answer the rerun
+question with a rerun or `respond acknowledged` saying why none is needed
+([freshness](workflow.md#completion)).
 
 `unavailable / round_limit_unassessable` means AI-powered review was requested and stopped after
 repeated unassessable rounds; it does not mean review was never requested. Required review remains

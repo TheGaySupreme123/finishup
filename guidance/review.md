@@ -37,8 +37,8 @@ review status as reported, not as proof that the underlying code is correct. Det
 limits remain in [`coverage-and-receipts.md`](coverage-and-receipts.md#check-mode-and-ai-powered-review-coverage).
 
 When AI-powered review is selected, a check before your first material edit runs local plan checks
-only and sends nothing (`semantic_review_deferred_before_first_edit`); review starts after the edit.
-The next check after an edit reviews as configured.
+only and sends nothing (`semantic_review_deferred_before_first_edit`); the next check after an edit
+reviews as configured.
 If the work needs no edit and review is required, readiness asks for the closing review instead.
 While work is in progress the reviewer judges incomplete work only; its correctness concerns come
 back as advisory notes in the review summary, not findings. `agent_criterion_unmet` is a criterion
@@ -51,8 +51,9 @@ The reviewer is told to treat the output FinishUP observed from a check you ran 
 
 When readiness names `closing_review_required`, run `check` with `final_review: true` after the
 last material change. It judges stated requirements and outputs against the task.
-Answer each open AI-powered finding with `respond` only when the table requires it; advisory
-choices are optional. A finding a check resolved (`verified_resolved`) or whose
+Answer each open AI-powered finding with `respond` and a reason (optional for `decision_needed`);
+`acknowledged` on a reviewer finding also cites an `evd_` or `res_` recorded after it, except for a
+question or a limitation request. A finding a check resolved (`verified_resolved`) or whose
 answer is final (`next_actions: ["none"]`) takes no response. Follow [receipt.md](receipt.md) for closure.
 
 ## Pace delivery and review

@@ -9,18 +9,17 @@ FinishUP is not an enforcement system; a check is not correctness. This card is 
 
 # Goal
 
-Deliver each requested output at its path, best effort, disclosing suspect inputs and limits.
+Deliver each requested output at its path, best effort; disclose suspect inputs.
 Conditional files are `change` items.
 
 # Procedure
 
 ## Start contract
 
-1. Send `start` from its schema with the user's whole `task_statement`.
-2. After bounded exploration, before the first material edit, map each requirement to a testable
-   obligation whose `source_refs` cite the `start` event (`status view=history`); name files/commands
-   in `requested_items`. Use `startup.md` for first plan version 1 or `plan_revised` at the next
-   version; new obligations are `carried`.
+1. Send `start` from its schema with the user's whole `task_statement`; then plan version 1 if none.
+2. After bounded exploration, before the first material edit, `plan_revised` it at the next version:
+   map each requirement to a testable obligation whose `source_refs` cite the `start` event
+   (`status view=history`); name files/commands in `requested_items`; new obligations are `carried`.
 
 ## Review and closure
 
@@ -33,16 +32,15 @@ Conditional files are `change` items.
 5. Publish claim/evidence before the final check; answer findings, check, and inspect resolved
    state; an unchanged recheck returns it. Recheck only after repair/material record.
    A finding is evidence, not an order. For a concern, follow [the finding procedure](review.md).
-   Answer each open AI-powered finding with `respond` and a reason (optional for
-   `decision_needed`, which stays advisory history).
+   Answer each open AI-powered finding with `respond` and a reason (optional for `decision_needed`).
    Readable current-check answers and lifecycle records need no recheck.
 6. Use `final_review: true` when readiness requires closing review. At `ready_with_limitations`,
-   request the receipt without another check. Then publish `work_closed` if the work is complete;
-   a receipt never closes it. `lineage_work_transition` means the task already ended: report it.
+   request the receipt without another check. Then `work_closed` if complete; a receipt never
+   closes work. `lineage_work_transition`: the task already ended; report it.
 
 # Done
 
-Deliverables/checks are complete, or unmet criteria and limits leave no authorized action.
+Deliverables/checks are complete, or no authorized action is left for unmet criteria.
 Lead with receipt scope and limits, never "clean" or "verified".
 
 # Evidence
@@ -50,7 +48,7 @@ Lead with receipt scope and limits, never "clean" or "verified".
 Cite IDs you published; find native captures with `view=evidence` filter
 `strength=immutable_snapshot`, reusing only IDs a structural link ties to the claim.
 Omitted descriptions are a privacy setting, not missing evidence. State tested values/revision
-and untested criteria; resolved obligations do not prove hidden acceptance.
+and untested criteria; resolved obligations are not acceptance.
 What is left and why: `check` `mode: inspect` (records nothing).
 
 # Clues
@@ -60,6 +58,7 @@ item you can supply, publish exactly that item once, linked to any named target,
 again. If it is already supplied, or it is a packet, type or authority limit, go to the receipt
 and state that specific limit. Only new material counts; tie it to any named target. Observed test,
 build, lint, or typecheck output reaches the reviewer only when a repository excerpt would be sent.
+Never republish retained files/output for review: it makes up to 3 permitted reads.
 
 ## Read more
 
@@ -84,7 +83,7 @@ Only if that result is also empty, use installed `references/<name>.md`.
 Never publish hidden reasoning or chain-of-thought, full prompts, transcripts, conversation history,
 credentials, secrets, whole files/repositories, or unrelated source.
 Never move, split, shrink, delete, `git add -N` or git-ignore
-(including `.git/info/exclude`) a deliverable for review: FinishUP redacts; verify what it cannot show.
+(incl. `.git/info/exclude`) a deliverable for review: FinishUP redacts; verify what it cannot show.
 On `retryable: false`, follow only the typed `continuation`; recover unknown writes by their request
 id. If unavailable, claim no record/receipt; pending approval is not completion.
 

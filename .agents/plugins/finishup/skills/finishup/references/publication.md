@@ -4,9 +4,9 @@ Read this topic when a result or error names it, or when deciding whether a tran
 evidence item, obligation, or claim belongs in the ledger. Publish the smallest material,
 state-bound facts needed for another participant to understand and check the work.
 
-Follow [startup.md](startup.md) for the plan: after bounded exploration, before the first material
-edit, map each requirement to a testable obligation and refine the current plan with
-`plan_revised`. It owns versions, immutable meaning and statement-sourced obligations. Then publish
+Follow [startup.md](startup.md) for the plan: publish version 1 after `start` if none exists; after
+bounded exploration, before the first material edit, map each requirement to a testable obligation
+and refine that plan with `plan_revised`. It owns versions, immutable meaning and statement-sourced obligations. Then publish
 material transitions, results, evidence and the completion claim, one transition per small batch.
 Close with `work_closed` as [receipt.md](receipt.md) says; a receipt never closes work. A `publish_work` body may omit `request_id`,
 `expected_frontier`, each draft's `event_id`, `occurred_at`, `causal_parents`, `artifact_refs` and

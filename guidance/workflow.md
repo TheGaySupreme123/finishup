@@ -534,7 +534,7 @@ initialize instructions do not say it is a child. Each child's assignment carrie
 - its closure duties: in its own task, publish its plan and obligations, results and evidence,
   and completion claim; `check`; `respond` to each finding it returns, repairing and rechecking
   where the finding requires it; `receipt`; then `work_closed`, because a receipt never closes
-  work. The respond-and-repair loop applies only to actionable defects; advisory choices need no
+  work (if complete; `lineage_work_transition` means it already ended). The respond-and-repair loop applies only to actionable defects; advisory choices need no
   answer or repair review. It reports its task and receipt ids and limits back to the parent.
 
 For a self-registered child, the parent publishes `child_accepted` or `child_rejected` after the
