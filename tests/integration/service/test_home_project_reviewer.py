@@ -44,6 +44,8 @@ async def test_home_reviewer_reads_source_but_refuses_host_state_and_absolute_pa
             c._read_file(".codex/auth.json"),  # pyright: ignore[reportPrivateUsage]
             c._read_file("auth.json"),  # pyright: ignore[reportPrivateUsage]
             c._FINAL,  # pyright: ignore[reportPrivateUsage]
+            # Three reads need more than the minimal policy's room since #1173 (ADR-006).
+            policy=c._ROOMY,  # pyright: ignore[reportPrivateUsage]
         )
     assert result.status is SemanticStatus.SUCCEEDED, result.reason
     assert result.reviewer is not None
@@ -79,6 +81,9 @@ async def test_home_reviewer_keeps_relative_selector_and_git_ignore_boundaries(
             c._read_file(str(root / "calc.py")),  # pyright: ignore[reportPrivateUsage]
             c._read_file("secret.txt"),  # pyright: ignore[reportPrivateUsage]
             c._FINAL,  # pyright: ignore[reportPrivateUsage]
+            # A long absolute-path action beside a corrected refusal needs more than the minimal
+            # policy's room since #1173 (ADR-006).
+            policy=c._ROOMY,  # pyright: ignore[reportPrivateUsage]
         )
     assert result.status is SemanticStatus.SUCCEEDED, result.reason
     assert result.reviewer is not None

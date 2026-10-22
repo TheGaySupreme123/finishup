@@ -3,7 +3,9 @@
 The no-AI mode is "FinishUP", or "local" as a short label; the add-on is "AI-powered review".
 Wire values keep their released spellings (``deterministic_only``, ``deterministic_mode``,
 ``no_unresolved_deterministic_findings``, the ``deterministic`` finding origin, the checkpoint
-media type), so this guard ignores those tokens and identifiers. It scans:
+media type, and the reviewer's closed read selectors ``deterministic_findings``,
+``deterministic_summary`` and ``deterministic_detail``, which its read procedure must name
+exactly), so this guard ignores those tokens and identifiers. It scans:
 
 - prose in guidance, the host skills, ``docs/usage`` and the README (outside code spans);
 - every non-docstring string literal in ``src/finishup`` that reads as prose: what the CLI, the
@@ -28,6 +30,7 @@ _CODE_SPAN: Final = re.compile(r"`[^`\n]*`")
 _IDENTIFIER: Final = re.compile(r"^[A-Za-z0-9_./:#+-]*$")
 _WIRE_TOKENS: Final = re.compile(
     r"\b(?:deterministic_only|deterministic_mode|no_unresolved_deterministic_findings)\b"
+    r"|\bdeterministic_(?:findings|summary|detail)\b"
     r"|vnd\.yoetz\.deterministic-result"
 )
 _MODEL_FACING: Final = frozenset({"src/finishup/adapters/providers/openai_responses.py"})
@@ -92,3 +95,8 @@ def test_the_guard_sees_a_reintroduced_phrase() -> None:
     assert not _WORD.search(_CODE_SPAN.sub("", "use `deterministic_only` only for local work"))
     assert _WORD.search(_WIRE_TOKENS.sub("", "within deterministic coverage; deterministic_only"))
     assert not _WORD.search(_WIRE_TOKENS.sub("", "switch to deterministic_only"))
+    # The reviewer's read selectors are wire values; a phrase around them is still prose.
+    assert not _WORD.search(
+        _WIRE_TOKENS.sub("", "deterministic_findings for deterministic_summary")
+    )
+    assert _WORD.search(_WIRE_TOKENS.sub("", "deterministic_findings are deterministic"))

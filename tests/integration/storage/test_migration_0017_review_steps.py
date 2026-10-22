@@ -38,9 +38,9 @@ def _tables(db: apsw.Connection) -> set[str]:
 def test_schema_sixteen_upgrade_adds_only_an_empty_structural_step_table() -> None:
     db = _schema_sixteen()
     before = _tables(db)
-    report = run_migrations(db, BUNDLE_MIGRATIONS, maintenance=None)  # type: ignore[arg-type]
+    report = run_migrations(db, BUNDLE_MIGRATIONS[:17], maintenance=None)  # type: ignore[arg-type]
     assert (report.from_version, report.to_version, report.applied_versions) == (16, 17, ("0017",))
-    assert verify_schema_identity(db).state == "current"
+    assert verify_schema_identity(db).state == "migration_required"
     assert _tables(db) - before == {"semantic_review_steps"}
     columns = [row[1] for row in db.execute("PRAGMA table_info(semantic_review_steps)")]
     # Keyed commitments and counts only: no path, argument, prompt, model text or result column.
@@ -52,7 +52,7 @@ def test_schema_sixteen_upgrade_adds_only_an_empty_structural_step_table() -> No
         "capture_commitment",
         "capture_bytes",
     ]
-    assert run_migrations(db, BUNDLE_MIGRATIONS, maintenance=None).applied_versions == ()  # type: ignore[arg-type]
+    assert run_migrations(db, BUNDLE_MIGRATIONS[:17], maintenance=None).applied_versions == ()  # type: ignore[arg-type]
 
 
 @pytest.mark.parametrize(
@@ -70,7 +70,7 @@ def test_step_rows_enforce_the_review_limits(
     kind: str, ordinal: int, capture: str | None, size: int | None
 ) -> None:
     db = _schema_sixteen()
-    run_migrations(db, BUNDLE_MIGRATIONS, maintenance=None)  # type: ignore[arg-type]
+    run_migrations(db, BUNDLE_MIGRATIONS[:17], maintenance=None)  # type: ignore[arg-type]
     db.execute("PRAGMA foreign_keys = OFF")  # isolate the CHECKs; the control row proves it
     insert = (
         "INSERT INTO semantic_review_steps(job_id,kind,ordinal,selector_commitment,"

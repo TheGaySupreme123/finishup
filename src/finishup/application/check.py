@@ -2331,6 +2331,8 @@ class FinalSemanticEvaluation:
     reviewer_citable_refs: frozenset[str] = frozenset()
     # Each file read's ``alias:path`` by call, kept only in the encrypted review response.
     reviewer_paths: Mapping[int, str] | None = None
+    # Selector-only diagnostics; private payload in the encrypted attempt response, never public.
+    reviewer_read_usage: tuple[Mapping[str, JsonValue], ...] | None = None
 
     def __post_init__(self) -> None:
         if (

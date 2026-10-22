@@ -4169,7 +4169,7 @@ def _add_reviewer_definitions(definitions: dict[str, JsonValue]) -> None:
     read_properties: dict[str, JsonValue] = {
         "action": enum("read_file", "read_ledger", "read_packet_section"),
         "baseline": nullable(enum("admission_time", "check_time", "read_time", "task_start")),
-        "call": enum("1", "2", "3"),
+        "call": enum("1", "2", "3", "4", "5"),
         "disclosure": nullable(
             {"pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$", "type": "string"}
         ),
@@ -4208,7 +4208,7 @@ def _add_reviewer_definitions(definitions: dict[str, JsonValue]) -> None:
         "ended": nullable(token),
         "exchanges": count,
         "read_bytes": count,
-        "reads": {"items": {"$ref": "#/$defs/reviewer_read"}, "maxItems": 3, "type": "array"},
+        "reads": {"items": {"$ref": "#/$defs/reviewer_read"}, "maxItems": 5, "type": "array"},
         "reads_used": enum("0", "1", "2", "3"),
     }
     reviewer_record: dict[str, JsonValue] = {
