@@ -1186,9 +1186,25 @@ class DeterministicCase:
     verification_unchanged_action_ids: tuple[ActionId, ...] = ()
     verification_freshness: tuple[VerificationFreshness, ...] | None = None
     verification_advisory: bool = False
+    # #1143 (PR #1167 review): the results freshness judges (a tracked run with no row is
+    # current), and the events of a stale verdict on a run it could not judge. Frozen so the
+    # claim rule and the AI-route question agree with the task facts after recovery.
+    verification_tracked_runs: tuple[ResultId, ...] = ()
+    verification_unjudged_stale: tuple[EventId, ...] = ()
 
     def __post_init__(self) -> None:
         if type(self.verification_advisory) is not bool:
+            raise _invalid_case()
+        if (
+            type(self.verification_tracked_runs) is not tuple
+            or type(self.verification_unjudged_stale) is not tuple
+            or self.verification_tracked_runs
+            != tuple(sorted(set(self.verification_tracked_runs), key=str.encode))
+            or self.verification_unjudged_stale
+            != tuple(sorted(set(self.verification_unjudged_stale), key=str.encode))
+            or any(ref not in self.projection.results for ref in self.verification_tracked_runs)
+            or any(ref not in self.allowed_ids for ref in self.verification_unjudged_stale)
+        ):
             raise _invalid_case()
         if self.verification_freshness is not None and (
             type(self.verification_freshness) is not tuple
@@ -1620,6 +1636,16 @@ def deterministic_case_to_json(case: DeterministicCase) -> dict[str, JsonValue]:
             else {}
         ),
         **(
+            {"verification_tracked_runs": list(case.verification_tracked_runs)}
+            if case.verification_tracked_runs
+            else {}
+        ),
+        **(
+            {"verification_unjudged_stale": list(case.verification_unjudged_stale)}
+            if case.verification_unjudged_stale
+            else {}
+        ),
+        **(
             {"verification_unchanged_action_ids": list(case.verification_unchanged_action_ids)}
             if case.verification_unchanged_action_ids
             else {}
@@ -1675,6 +1701,15 @@ def deterministic_case_from_json(value: JsonValue) -> DeterministicCase:
             source_keys -= {"verification_freshness"}
         workspace_edit = source.get("workspace_verification_edit_frontier", 0)
         source_keys -= {"workspace_verification_edit_frontier"}
+        tracked_runs = tuple(
+            result_id(cast(str, value))
+            for value in _case_json_array(source.get("verification_tracked_runs", ()))
+        )
+        unjudged_stale = tuple(
+            event_id(cast(str, value))
+            for value in _case_json_array(source.get("verification_unjudged_stale", ()))
+        )
+        source_keys -= {"verification_tracked_runs", "verification_unjudged_stale"}
         unchanged_actions = tuple(
             action_id(cast(str, value))
             for value in _case_json_array(source.get("verification_unchanged_action_ids", ()))
@@ -1845,6 +1880,8 @@ def deterministic_case_from_json(value: JsonValue) -> DeterministicCase:
             verification_unchanged_action_ids=unchanged_actions,
             verification_freshness=freshness,
             verification_advisory=cast(bool, advisory),
+            verification_tracked_runs=tracked_runs,
+            verification_unjudged_stale=unjudged_stale,
         )
     except (KeyError, TypeError, ValueError) as exc:
         raise _invalid_case() from exc
@@ -2242,10 +2279,15 @@ def build_deterministic_case(
         verification_unchanged_actions,
         workspace_verification_edits,
     )
-    from finishup.kernel.verification_freshness import verification_freshness
+    from finishup.kernel.verification_freshness import (
+        verification_freshness,
+        verification_tracked_runs,
+    )
 
     freshness = verification_freshness(projection, accepted_prefix)
-    for code, obligation in task_fact_signals(projection, accepted_prefix).markers:
+    tracked_runs = verification_tracked_runs(projection, accepted_prefix)
+    signals = task_fact_signals(projection, accepted_prefix)
+    for code, obligation in signals.markers:
         if obligation is None:
             _add_gap(gaps, code, code, ())
         else:
@@ -2579,6 +2621,10 @@ def build_deterministic_case(
             sorted(verification_unchanged_actions(projection, accepted_prefix), key=str.encode)
         ),
         verification_freshness=freshness,
+        verification_tracked_runs=tracked_runs,
+        verification_unjudged_stale=tuple(
+            event for event in signals.unjudged_stale_events if event in source_by_ref
+        ),
     )
 
 

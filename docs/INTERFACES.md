@@ -12253,8 +12253,10 @@ versioned, caller-asserted evidence convention
 `reference=finishup-verification-inputs/v1:<res_ id>`,
 `description={"inputs":["source.py","config.json"],"outputs":["evidence.json"],"complete":true}`.
 Only exact file inputs are declared; arbitrary shell process reads are not observed by any host.
-A value ending in `/` (or the workspace root `.`) names a directory: it makes the declaration
-partial and the run asks about any change it may hold; a bare name is read as a file.
+A value ending in `/` (or the workspace root `.`) names a directory; a bare name is read as a
+file. An input directory makes the declaration partial and the run asks about any change it may
+hold. An output directory covers the files the run's own trusted comparison wrote, unless the
+record names one outside it, and leaves the declaration as complete as it was.
 An input takes precedence over an evidence output. A placed change (a trusted comparison's keyed
 changed-entry identities) whose input relationship is unknown asks, never demands a rerun.
 A counting change FinishUP cannot place keeps the pre-#1143 rule and makes the verification stale:
@@ -12285,17 +12287,25 @@ unreleased active 2.9.0 envelope admits the field.
 
 `DeterministicCase.verification_freshness` is absent on old frozen cases, which retain their legacy
 replay semantics. New cases persist the derived rows. `verification_advisory` is a per-evaluation
-AI-route flag that `check` sets with the predicate status and Stop use at the check's input
-frontier (`derive_closure_readiness`): the policy route requires AI-powered review, or the task
-already used one. The requested mode never sets it, so a check with no configured reviewer, on
-the strict route, under a disabled policy or with a failed review keeps the local rule. Known
+AI-route flag. One predicate decides it on one state: the policy route requires AI-powered
+review, or a review was used before the check that judged freshness. `check` asks it of its
+frozen prefix; status and Stop (`ClosureFacts.freshness_review_used`) and receipts
+(`GapContext.freshness_advisory`: the applicable check's recorded route required review, or
+`closure_readiness.freshness_review_used`) ask it of the records before the latest check. So the
+first AI-powered review never turns the check that ran it advisory after the fact, and the
+requested mode never sets it: a check with no configured reviewer, on the strict route, under a
+disabled policy or with a failed review keeps the local rule. Known
 input changes and unplaceable counting changes produce `planned_verification_stale` /
 `edited_after_last_verification` only on the affected runs; the stale finding's detail names the
 verification and the changes. A run whose result never arrived (pending or unreadable) has
-nothing to judge and keeps the pre-#1143 last-edit rule. A completion claim's cited run that the
-freshness rows track is judged by them; every other cited ref (the agent's own
-`test_result`/`command_output` evidence, a run of an untracked class) keeps the latest-edit
-frontier. Unknown relationships of placed changes use the standing
+nothing to judge and keeps the pre-#1143 last-edit rule; on the AI route the check asks about it
+(`DeterministicCase.verification_unjudged_stale`, its action and change events). A completion
+claim's cited run that freshness judges (`DeterministicCase.verification_tracked_runs`: a
+test/lint/typecheck/build or requested run with a readable result) is judged exactly as the task
+facts judge it: a stale row rejects it, no row means it is current. Every other cited ref (the
+agent's own `test_result`/`command_output` evidence, a run of an untracked class) keeps the
+latest-edit frontier, where the run's own trusted write at its own result frontier never counts
+against it. Unknown relationships of placed changes use the standing
 `verification_rerun_question` code and a non-blocking `ledger_stale_or_incomplete` question whose
 subjects bind the observed run event and subsequent change events. `respond acknowledged` with a
 nonempty reason records a no-rerun decision for that exact set under the generic respond contract;

@@ -60,6 +60,7 @@ def manifest(
     *,
     complete: bool = True,
     inputs: tuple[str, ...] = ("src/control.py", "config.json", "data.csv"),
+    outputs: tuple[str, ...] = ("evidence.json",),
 ) -> None:
     ledger.append(
         EventSchema("evidence_recorded", "1.0.0"),
@@ -72,7 +73,7 @@ def manifest(
             description=json.dumps(
                 {
                     "inputs": list(inputs),
-                    "outputs": ["evidence.json"],
+                    "outputs": list(outputs),
                     "complete": complete,
                 }
             ),
@@ -818,3 +819,128 @@ def test_the_review_packet_carries_freshness_detail_without_names() -> None:
     text = detail.content.decode("utf-8")
     assert "src/control.py" not in text and "pytest -q" not in text
     assert "1 named change(s) withheld here" in text
+
+
+def _cite(ledger: ObservedLedger, *refs: str) -> None:
+    ledger.append(
+        EventSchema("claim_recorded", "1.0.0"),
+        ClaimRecordedPayload(
+            claim_id("clm_00000000-0000-4000-8000-000000002167"),
+            ClaimKind.COMPLETION,
+            "The change is complete and verified.",
+            tuple(sorted(refs)),  # pyright: ignore[reportArgumentType]
+        ),
+        observed=False,
+    )
+
+
+@pytest.mark.parametrize(
+    "history",
+    [
+        "own_write",
+        "own_output_rewritten_complete",
+        "own_output_rewritten_partial",
+        "two_runs_write_the_output",
+        "no_op_beside_another_runs_outside_input",
+        "untracked_run_own_write",
+    ],
+)
+def test_a_claim_citing_a_current_verification_is_corroborated(history: str) -> None:
+    """The claim rule judges a cited run exactly as the task facts do (#1167 review, round 2).
+
+    A verification whose own outputs, or a byte-identical rewrite, followed it is current in the
+    task facts, so a completion claim citing it is corroborated; a run's own write is never a
+    later edit against itself, whether or not freshness tracks the run.
+    """
+
+    from finishup.kernel.policies.work_integrity import _uncorroborated_completion_findings
+
+    ledger = ObservedLedger()
+    cited: list[str] = []
+    if history == "no_op_beside_another_runs_outside_input":
+        obligation_with(ledger, 1, _COMMAND)
+        obligation_with(
+            ledger,
+            2,
+            (RequestedItemKind.COMMAND, "make lint", None),
+            (RequestedItemKind.FILE, "/outside/lint.toml", RequestedItemRole.INPUT),
+        )
+        cited.append(ledger.passes("pytest -q"))
+        ledger.run(
+            "cat saved.json > evidence.json",
+            ResultOutcome.SUCCESS,
+            write_scope="workspace",
+            workspace_effect="unchanged",
+        )
+    elif history == "untracked_run_own_write":
+        cited.append(
+            ledger.run(
+                "python check_solution.py",
+                ResultOutcome.SUCCESS,
+                exit_status=0,
+                runner="other",
+                workspace_effect="changed",
+                workspace_write_scopes=("workspace",),
+                workspace_changed_entries=(workspace_path_identity(INSTALLATION_KEY, "out.json"),),
+            )
+        )
+    else:
+        run = producing_run(ledger, "pytest -q", "evidence.json")
+        cited.append(run)
+        if history != "own_write":
+            manifest(
+                ledger, run, complete=history != "own_output_rewritten_partial", inputs=("app.py",)
+            )
+        if history == "two_runs_write_the_output":
+            second = producing_run(ledger, "pytest -q tests/test_b.py", "evidence.json")
+            manifest(ledger, second, inputs=("app.py",))
+            cited.append(second)
+        elif history != "own_write":
+            changed(ledger, "evidence.json")
+    _cite(ledger, *cited)
+    facts = task_fact_signals(replay(ledger.prefix), ledger.prefix)
+    assert not {
+        "planned_verification_stale",
+        "edited_after_last_verification",
+        "verification_rerun_question",
+    } & set(facts.codes)
+    assert not _uncorroborated_completion_findings(case_for(ledger))
+
+
+def test_a_claim_citing_a_stale_verification_is_still_uncorroborated() -> None:
+    """The same rule still rejects a cited run a recorded input change made stale."""
+
+    from finishup.kernel.policies.work_integrity import _uncorroborated_completion_findings
+
+    ledger = ObservedLedger()
+    run = producing_run(ledger, "pytest -q", "evidence.json")
+    manifest(ledger, run, inputs=("app.py",))
+    changed(ledger, "app.py")
+    _cite(ledger, run)
+    assert (
+        "edited_after_last_verification"
+        in task_fact_signals(replay(ledger.prefix), ledger.prefix).codes
+    )
+    assert len(_uncorroborated_completion_findings(case_for(ledger))) == 1
+
+
+def test_a_declared_output_directory_covers_the_runs_own_writes() -> None:
+    """``reports/`` as an output covers what the run wrote there; it keeps the list complete."""
+
+    ledger = ObservedLedger()
+    ledger.plan("pytest -q")
+    run = producing_run(ledger, "pytest -q", "reports/x.json")
+    manifest(ledger, run, inputs=("src/app.py",), outputs=("reports/",))
+    changed(ledger, "reports/x.json")
+    assert not verification_freshness(replay(ledger.prefix), ledger.prefix)
+    facts = task_fact_signals(replay(ledger.prefix), ledger.prefix)
+    assert not {
+        "planned_verification_stale",
+        "edited_after_last_verification",
+        "verification_rerun_question",
+        "verification_inputs_caller_asserted",
+    } & set(facts.codes)
+    # A file the run never wrote is not covered: the complete list sets it aside, disclosed.
+    changed(ledger, "reports/other.json")
+    (row,) = verification_freshness(replay(ledger.prefix), ledger.prefix)
+    assert (row.state, row.basis) == ("current", "complete")

@@ -184,7 +184,7 @@ it holds the conclusion below clean), `disclosed` (shown, never bounds) and `his
 | R | `semantic_review_not_requested`: disclosed when the check recorded that its route did not require review (a check that asked for `deterministic_only` on such a route records no such code, ADR-033 amendment of 2026-10-12); actionable while required review is not current; otherwise bounding |
 | X | `check_current_as_of_earlier_frontier`: bounding exactly when the standing of the check says a later record is unclassified (`kernel/check_standing`, `CheckStanding.bounds_conclusion`); the agent's own answers are a disclosure |
 | G | host-observation gaps (`captured_object_unavailable`, `host_outcome_unavailable`, `unpaired_event`, `compound_outcome_unavailable`): disclosed only while the applicable check carried the code and its command counters show no unknown or live-failed command; otherwise bounding |
-| V | verification freshness (G0f, #1143): bounding when freshness is AI-advisory (`GapContext.freshness_advisory`: the applicable check's review succeeded or the task already used one), otherwise actionable |
+| V | verification freshness (G0f, #1143): bounding when freshness is AI-advisory (`GapContext.freshness_advisory`: the applicable check's recorded route required review, or a review was used before it), otherwise actionable |
 
 Of the 213 recorded codes, 35 change; the rest keep today's behaviour under both routes, and a
 conformance test freezes that against the table's own predecessor. The changes, each with its rule
@@ -487,13 +487,13 @@ right after `resolved`), derived from the ledger.
 
 `planned_verification_stale` and `edited_after_last_verification` use G0f: actionable on the local
 route; on the review route spec `V` makes them a standing bounding limit only when freshness is
-AI-advisory (the applicable check's AI-powered review succeeded or the task already used one), and
-actionable otherwise. A review route whose review was not configured, blocked, failed or not
+AI-advisory (the applicable check's recorded route required review, or a review was used before
+it), and actionable otherwise. A review route whose review was not configured, blocked, failed or not
 requested is therefore still the local rule, and a known stale verification bounds the receipt at
 least as much as the unknown-relationship question does (PR #1167 review findings 4 and 7). The
-shared readiness split and the check's own advisory flag use the AI-route predicate of
-`derive_closure_readiness` (policy route requires review, or the task already used one), judged at
-the check's input frontier.
+shared readiness split and the check's own advisory flag use one AI-route predicate on one state
+(policy route requires review, or a review was used before the check that judged freshness), so
+the task's first AI-powered review never turns its own check advisory after the fact.
 `verification_rerun_question` is a standing coverage limit (G8c), never a receipt or Stop blocker;
 its informational question can be answered with a reasoned `respond acknowledged`, retained as an
 agent assertion for that exact run/change set. It is proof-tolerated as an unknown dependency

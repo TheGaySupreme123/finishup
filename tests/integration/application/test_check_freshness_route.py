@@ -18,7 +18,7 @@ import pytest
 from builders.start_application import protocol_id, start_request
 from finishup.domain.events import ActionKind
 from finishup.ports.ledger import CheckCommitResult
-from finishup.protocol.models import CheckRequest
+from finishup.protocol.models import CheckRequest, SemanticStatus
 from integration.application import test_respond_status_receipt as h
 from integration.application import test_tb4n3_own_calls_cross_surface as s
 
@@ -28,9 +28,17 @@ _QUESTION = "Is a verification rerun needed after the recorded changes?"
 
 
 async def _edit_after_a_test_run(
-    semantic: Literal["disabled", "optional", "required"], mode: str, seed_offset: int
+    semantic: Literal["disabled", "optional", "required"],
+    mode: str,
+    seed_offset: int,
+    *,
+    pending: bool = False,
+    final_review: bool = False,
 ) -> tuple[CheckCommitResult, Any]:
-    """A test run, then an ``apply_patch`` edit, then one check; returns it and its readiness."""
+    """A test run, then an ``apply_patch`` edit, then one check; returns it and its readiness.
+
+    ``pending`` leaves the test run without a result (its post-event never arrived).
+    """
 
     app, runtime, _ = h._build_app(seed_offset=seed_offset, semantic=semantic)
     started = await app.start(start_request(5100, title="freshness route"))
@@ -40,7 +48,7 @@ async def _edit_after_a_test_run(
         started,
         (
             s._action(5620, ActionKind.COMMAND, "Bash", "test"),
-            s._result(5621, 5620),
+            *(() if pending else (s._result(5621, 5620),)),
             s._action(5622, ActionKind.EDIT, "apply_patch", "compound"),
             s._result(5623, 5622),
         ),
@@ -56,6 +64,7 @@ async def _edit_after_a_test_run(
                 "expected_frontier": h._frontier(appended.result_frontier),
                 "mode": mode,
                 "max_findings": "5",
+                **({"final_review": True} if final_review else {}),
             }
         )
     )
@@ -76,5 +85,34 @@ async def test_a_check_without_ai_review_keeps_the_local_freshness_rule(mode: st
 
 async def test_a_check_on_a_route_that_requires_ai_review_asks_instead() -> None:
     checked, readiness = await _edit_after_a_test_run("required", "semantic_if_configured", 78)
+    assert any(finding.summary == _QUESTION for finding in checked.findings)
+    assert "edited_after_last_verification" not in readiness.agent_actionable
+
+
+async def test_the_first_ai_review_as_the_final_review_keeps_check_and_status_on_one_route() -> (
+    None
+):
+    """Optional policy: the first AI-powered review is the closing one (#1167 review, round 2).
+
+    The check judged freshness before any review was used, so it applied the local rule and
+    asked nothing; status and Stop judge the same state and keep the stale verification as
+    agent work, never a standing question with no finding to answer.
+    """
+
+    checked, readiness = await _edit_after_a_test_run(
+        "optional", "semantic_if_configured", 79, final_review=True
+    )
+    assert checked.semantic_status is SemanticStatus.SUCCEEDED
+    assert all(finding.summary != _QUESTION for finding in checked.findings)
+    assert "edited_after_last_verification" in readiness.agent_actionable
+    assert "verification_rerun_question" not in readiness.standing_limitations
+
+
+async def test_a_pending_run_then_an_edit_on_the_ai_route_is_asked_not_phantom() -> None:
+    """Required route: a run whose result never arrived, then an edit, mints the question."""
+
+    checked, readiness = await _edit_after_a_test_run(
+        "required", "semantic_if_configured", 80, pending=True
+    )
     assert any(finding.summary == _QUESTION for finding in checked.findings)
     assert "edited_after_last_verification" not in readiness.agent_actionable

@@ -24,6 +24,7 @@ from typing import TYPE_CHECKING, Final, cast
 from finishup.domain.bounded_text import quoted_path
 from finishup.domain.events import (
     ActionKind,
+    ActionRecordedPayload,
     ClaimRecordedPayloadV1_1,
     EvidenceRecordedPayload,
     LedgerRecord,
@@ -121,9 +122,10 @@ class VerificationFreshness:
     def caller_asserted(self) -> bool:
         """Freshness set a later change aside only on the caller's complete declaration.
 
-        A change the record cannot place (an unnamed host edit) is asked about, not set aside, so
-        a complete declaration alone never raises the disclosure. A stale run already demands a
-        rerun, so it discloses nothing more.
+        A change FinishUP cannot place (a host edit-tool edit) makes the run stale, and one that
+        may lie in a directory input asks; neither is set aside, so a complete declaration alone
+        never raises the disclosure. A stale run already demands a rerun, so it discloses nothing
+        more.
         """
 
         return self.state == "current" or self.set_aside and self.state != "stale"
@@ -149,6 +151,8 @@ class _InputScope:
     inputs: set[str] = field(default_factory=lambda: set[str]())
     directories: set[str] = field(default_factory=lambda: set[str]())
     unobservable: bool = False
+    # Output directories a per-run declaration names: they cover the files the run itself wrote.
+    output_directories: set[str] = field(default_factory=lambda: set[str]())
 
 
 def _within(name: str, directory: str) -> bool:
@@ -343,6 +347,53 @@ def name_free_finding_detail(
     return head + freshness_detail(rows, len(head), named=False) if rows else head
 
 
+_TRACKED_RUNNERS: Final = frozenset({"test", "lint", "typecheck", "build"})
+
+
+def _tracked_run(
+    action: ActionRecordedPayload, event: EventId, requested_runs: frozenset[EventId] | None
+) -> bool:
+    """A verification run freshness judges: a test/lint/typecheck/build or requested command."""
+
+    return action.action_kind is ActionKind.COMMAND and (
+        event in (requested_runs or ())
+        or observed_action_runner_class(action.description) in _TRACKED_RUNNERS
+    )
+
+
+def verification_tracked_runs(
+    projection: ProjectionState, records: Iterable[LedgerRecord]
+) -> tuple[ResultId, ...]:
+    """Every result freshness judges, sorted: an observed, readable result of a tracked run.
+
+    A tracked run with no freshness row is current (nothing later bears on it). Frozen with the
+    case so the completion-claim rule judges the same runs the task facts do (#1167 review).
+    """
+
+    from finishup.kernel.task_facts import (
+        observed_event_ids_from_records,
+        requested_verification_run_events,
+    )
+
+    prefix = tuple(records)
+    observed = observed_event_ids_from_records(prefix)
+    requested_runs = requested_verification_run_events(projection, prefix)
+    tracked: list[ResultId] = []
+    for ref, row in projection.results.items():
+        result = row.payload
+        if result is None or row.source_event_id not in observed:
+            continue
+        action = projection.actions.get(result.action_id)
+        if (
+            action is not None
+            and action.payload is not None
+            and action.source_event_id in observed
+            and _tracked_run(action.payload, action.source_event_id, requested_runs)
+        ):
+            tracked.append(ref)
+    return tuple(sorted(tracked, key=str.encode))
+
+
 def verification_freshness(
     projection: ProjectionState,
     records: Iterable[LedgerRecord],
@@ -470,12 +521,16 @@ def verification_freshness(
                             value, directory=True, workspace_root=root
                         )
                     ):
-                        # A directory (named with a trailing slash): FinishUP cannot tell which
-                        # of its files a change touched, so the declaration is partial and a
-                        # change it may hold asks (#1167 review). A bare name reads as a file.
-                        complete = False
+                        # A directory (named with a trailing slash; a bare name reads as a file).
+                        # An input directory: FinishUP cannot tell which of its files a change
+                        # touched, so the declaration is partial and a change it may hold asks.
+                        # An output directory covers the files the run itself wrote beneath it
+                        # and leaves the declaration as complete as it was (#1167 review).
                         if field_name == "inputs":
+                            complete = False
                             declared.directories.add(path)
+                        else:
+                            declared.output_directories.add(path)
                         continue
                     identity = None if path is None else verification_path_identity(path)
                     if (
@@ -537,11 +592,7 @@ def verification_freshness(
             continue
         completed.add(result.action_id)
         position = first_positions.setdefault(result.action_id, row.source_frontier)
-        if action.payload.action_kind is ActionKind.COMMAND and (
-            action.source_event_id in (requested_runs or ())
-            or observed_action_runner_class(action.payload.description)
-            in {"test", "lint", "typecheck", "build"}
-        ):
+        if _tracked_run(action.payload, action.source_event_id, requested_runs):
             runs.append((ref, position, action.source_event_id))
             observed_run = observed_run_from_command(action.payload.command)
             matched = _InputScope()
@@ -689,12 +740,14 @@ def verification_freshness(
         complete = declared and declarations[0][2]
         unobservable = matched.unobservable
         directories = set(matched.directories)
+        output_directories: set[str] = set()
         if declared:
             declared_scope, declared_outputs, _ = declarations[0]
             known_inputs |= declared_scope.inputs
             outputs |= declared_outputs
             unobservable |= declared_scope.unobservable
             directories |= declared_scope.directories
+            output_directories = declared_scope.output_directories
         if not complete:
             # Task-level inputs no command scopes: a complete per-run declaration is the
             # caller's statement of what this run reads; any other run may read them.
@@ -703,7 +756,17 @@ def verification_freshness(
         # An output exemption covers only bytes the verification itself produced: the run's own
         # trusted comparison changed that path. A declared output the run never wrote (such as a
         # pre-existing source file) does not make its later edits unrelated.
-        produced = (outputs & set(own_changes.get(run_event) or ())) - known_inputs
+        own = set(own_changes.get(run_event) or ())
+        produced = (outputs & own) - known_inputs
+        if output_directories:
+            # A declared output directory covers the files this run's own trusted comparison
+            # wrote, unless the record names one outside every declared output directory.
+            produced |= {
+                identity
+                for identity in own - known_inputs
+                if (name := names.get(identity)) is None
+                or any(_within(name, directory) for directory in output_directories)
+            }
         basis = (
             "complete"
             if complete

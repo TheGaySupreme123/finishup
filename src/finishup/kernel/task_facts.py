@@ -1896,6 +1896,10 @@ class TaskFactSignals:
     # ADR-045: where each fact came from (rule, the obligation item, the observed runs or edit it
     # rests on). Derived with the markers, from the same prefix.
     lineage: tuple[FactLineage, ...] = ()
+    # #1143 (PR #1167 review): the events of a stale verdict on a run freshness could not judge
+    # (a pending or unreadable result): its action event and the later edit. On the AI route the
+    # check asks about them, since no freshness row can carry the question.
+    unjudged_stale_events: tuple[EventId, ...] = ()
 
     def __post_init__(self) -> None:
         if not set(self.codes) <= TASK_FACT_GAPS:
@@ -1956,6 +1960,7 @@ def task_fact_signals(
 
     freshness = verification_freshness(projection, prefix)
     event_positions = {record.event_id: record.ledger.ingestion_sequence for record in prefix}
+    unjudged: set[EventId | None] = set()
     # The runs freshness judges: an observed command action with an observed, readable result.
     judged = frozenset(
         action.source_event_id
@@ -2081,6 +2086,8 @@ def task_fact_signals(
                 if delta is not None and delta.caller_asserted:
                     markers.add((CALLER_ASSERTED_INPUTS, obligation))
                 changed_after = _changed_after(delta, latest, state, event_positions, judged)
+                if changed_after is not None and latest.action_event not in judged:
+                    unjudged.update((latest.action_event, *changed_after[1]))
                 if changed_after is not None:
                     markers.add((PLANNED_VERIFICATION_STALE_GAP, obligation))
                     lineage.append(
@@ -2129,6 +2136,8 @@ def task_fact_signals(
     if last_changed is not None:
         markers.add((EDITED_AFTER_LAST_VERIFICATION_GAP, None))
         last_run = verification_runs[-1]
+        if last_run.action_event not in judged:
+            unjudged.update((last_run.action_event, *last_changed[1]))
         lineage.append(
             FactLineage(
                 code=EDITED_AFTER_LAST_VERIFICATION_GAP,
@@ -2210,6 +2219,9 @@ def task_fact_signals(
         acting_started=state.acting,
         blocked=blocked,
         lineage=tuple(sorted(dict.fromkeys(lineage), key=lambda item: item.sort_key)),
+        unjudged_stale_events=tuple(
+            sorted((event for event in unjudged if event is not None), key=str.encode)
+        ),
     )
 
 
