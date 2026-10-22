@@ -405,11 +405,22 @@ request stays rejected; the field is never moved or reinterpreted. The field nam
 when it byte-equals a frozen catalogued payload property name (a caller-invented key can never
 match), both family names come from an import-gated registry derived from the frozen `publish_work`
 presentation schema, and ownership is asserted only when it is unique — ambiguous fields (for
-example `statement`, `summary`), draft-envelope keys (`evidence_refs`, `artifact_refs`), fields
-owned by another version of the selected family, and unknown keys all retain the plain
-admitted-key answer. The same fact is repeated as one bounded sentence in the authoring hint and
-as a `Repair:` clause on the compatible text summary channel, because MCP hosts are not required
-to surface `structuredContent`.
+example `statement`, `summary`), draft-envelope keys (`evidence_refs`, `artifact_refs`),
+and unknown keys all retain the plain admitted-key answer. The same fact is repeated as one
+bounded sentence in the authoring hint and as a `Repair:` clause on the compatible text summary
+channel, because MCP hosts are not required to surface `structuredContent`.
+
+When the family is correct but its selected event version does not admit the field, the same
+catalog-derived repair uses `repair_kind: field_version` and adds `repair_owning_version`: the
+earliest advertised version admitting that field (issue #1202). The selected and owning family
+are equal. For example, `verification` on `result_recorded/1.0.0` names `result_recorded/1.1.0`;
+the tool envelope's version is unchanged. A cross-family repair also names `repair_owning_version`
+when the field first appears after 1.0.0. These are field-admission facts, not a guarantee that
+other payload members validate. No field is discarded, moved, or upgraded automatically, and
+invalid fields in the corrected version remain rejected. Version repairs retain
+`input_correction_new_identity`; family repairs retain `field_ownership_repair`.
+`finishup.mcp.errors.field_repair_hint` reconstructs the authoring and compact text remedy from
+the frozen catalog, including version membership; no rejected values enter either rendering.
 
 The same text channel also carries a bounded `Reason:` clause when `safe_details` holds a frozen
 protocol `reason_code`, optionally followed by a JSON-pointer `field` (issue #579), and a bounded
