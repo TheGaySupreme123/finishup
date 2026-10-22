@@ -1122,7 +1122,11 @@ async def _record_advisory_response(
         or records[anchor - 1].entry_digest != request.finding_frontier.head_digest
     ):
         raise _error(
-            PublicErrorCode.INVALID_REQUEST, "The advisory frontier is not in this ledger prefix."
+            PublicErrorCode.INVALID_REQUEST,
+            "The advisory frontier is not in this ledger prefix: send a finding_frontier from "
+            "this task's ledger, such as the current status frontier.",
+            reason_code="invalid_frontier",
+            field="/finding_frontier",
         )
     row = next(
         (
@@ -1133,9 +1137,38 @@ async def _record_advisory_response(
         None,
     )
     if row is None:
+        recorded = next(
+            (
+                row
+                for row in correctness_advisories(records)
+                if row.advisory_id == request.finding_id
+            ),
+            None,
+        )
+        if recorded is not None:
+            # #1162 review: the history row's advisory_subject_frontier is the check's subject
+            # frontier, which precedes the check record (the #917 trap for findings). Name the
+            # frontier that works instead of sending the agent back to that row.
+            raise _error(
+                PublicErrorCode.INVALID_REQUEST,
+                (
+                    "The note is unavailable at the supplied frontier. finding_frontier may be "
+                    "any frontier at or after the note's check record (sequence "
+                    f"{recorded.check.ledger.ingestion_sequence}), such as the current status "
+                    "frontier. The history row's advisory_subject_frontier precedes that record "
+                    "and is rejected."
+                ),
+                reason_code="invalid_frontier",
+                field="/finding_frontier",
+            )
         raise _error(
             PublicErrorCode.INVALID_REQUEST,
-            "The advisory is unavailable at this frontier; retrieve status view=history.",
+            (
+                "No correctness advisory of this task has this identity: copy the "
+                "<check-event-id>:<ordinal> from the receipt or status view=history."
+            ),
+            reason_code="response_fields_invalid",
+            field="/finding_id",
         )
     refs = () if request.evidence_refs is None else request.evidence_refs
     if (
@@ -1151,6 +1184,7 @@ async def _record_advisory_response(
         raise _error(
             PublicErrorCode.INVALID_REQUEST,
             "Advisories accept addressed with linked evidence and a reason, or declined with a reason; no response is required.",
+            reason_code="response_fields_invalid",
         )
     after_note = False
     for ref in refs:
@@ -1163,6 +1197,8 @@ async def _record_advisory_response(
             raise _error(
                 PublicErrorCode.INVALID_REQUEST,
                 "Advisory evidence must name a readable recorded evidence or result of this task.",
+                reason_code="response_fields_invalid",
+                field="/evidence_refs",
             )
         after_note = after_note or item.source_frontier > row.check.ledger.ingestion_sequence
     if request.disposition == "addressed" and not after_note:

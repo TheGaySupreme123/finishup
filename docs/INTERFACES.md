@@ -12534,11 +12534,15 @@ note's check (`response_fields_invalid` at `/evidence_refs` otherwise); `decline
 reason; absence is `no_recorded_response`. `respond` is the only way in: `publish_work` refuses a
 decision draft carrying `advisory_response` (`event_family_not_admitted`). A withheld decision is
 never attached to a note: its envelope cannot show whether it is an advisory response or a
-review-mode switch, so it is counted in `correctness_advisory_counts.response_unavailable` as one
+review-mode switch, so it is counted in `correctness_advisory_counts.withheld_may_answer` as one
 that may answer a note, and it stales the check under the unreadable-record rule (follow-up
 #1190). Typed `decision_recorded` 1.1.0 `advisory_response` records carry the target,
 disposition and mirrored evidence refs; `rationale` carries the reason. They are independent of
 review-mode switches and never change finding state, check applicability, closure readiness or
 receipt conclusions. Closure readiness carries `correctness_advisory_summary` only while some note
-has no recorded response; the Stop hooks read its presence and show a fixed owner-facing notice
-once per Stop sequence (not on a `stop_hook_active` re-entry).
+has no recorded response, and its text names only those notes, so it changes exactly when that
+set does. The Stop hooks compare its digest with the last one shown for the session and show a
+fixed owner-facing notice only when the set changed, never on a `stop_hook_active` re-entry. A
+`finding_frontier` before the note's check (such as the history row's
+`advisory_subject_frontier`) is refused with `invalid_frontier` at `/finding_frontier`, naming
+the check's sequence; an unknown identity is `response_fields_invalid` at `/finding_id`.

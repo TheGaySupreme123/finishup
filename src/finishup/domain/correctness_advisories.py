@@ -77,7 +77,7 @@ def validate_advisory_counts(counts: JsonObject) -> None:
     if type(counts) is not JsonObject or set(counts) != {
         "total",
         "no_recorded_response",
-        "response_unavailable",
+        "withheld_may_answer",
     }:
         raise ProtocolValueError("invalid_event_value_type")
     for value in counts.values():
@@ -87,11 +87,11 @@ def validate_advisory_counts(counts: JsonObject) -> None:
             or int(value) > 2**63 - 1
         ):
             raise ProtocolValueError("invalid_event_value_type")
-    # A withheld response that cannot be matched to one note of a several-note check is counted
-    # as unavailable while those notes keep their own status, so the two counts may overlap.
+    # A withheld decision is never attached to a note (it may not be a response at all), so the
+    # notes it may answer keep counting as no recorded response and the two counts may overlap.
     total = int(str(counts["total"]))
     if (
         int(str(counts["no_recorded_response"])) > total
-        or int(str(counts["response_unavailable"])) > total
+        or int(str(counts["withheld_may_answer"])) > total
     ):
         raise ProtocolValueError("invalid_event_value_type")

@@ -10155,6 +10155,33 @@ async def test_an_advisory_response_needs_respond_and_evidence_recorded_after_th
     assert early.value.safe_details is not None
     assert early.value.safe_details["reason_code"] == "response_fields_invalid"
     assert early.value.safe_details["field"] == "/evidence_refs"
+    # The history row's only frontier is the check's subject frontier, which precedes the check
+    # record (the #917 trap): the refusal names the frontier that works, with a reason code.
+    subject = cast(CheckRecordedPayload, note.check.payload).subject_frontier
+    with pytest.raises(PublicOperationError) as before_check:
+        await app.respond(
+            RespondRequest.model_validate(
+                {
+                    **_request_base(protocol_id("req_", 216413)),
+                    "session_id": started.session_id,
+                    "writer_id": started.writer_id,
+                    "expected_frontier": _frontier(checked.result_frontier),
+                    "finding_id": note.advisory_id,
+                    "finding_frontier": {
+                        "sequence": str(subject.sequence),
+                        "head_digest": subject.head_digest,
+                    },
+                    "disposition": "declined",
+                    "reason": "Kept the existing geometry.",
+                }
+            )
+        )
+    assert before_check.value.safe_details is not None
+    assert before_check.value.safe_details["reason_code"] == "invalid_frontier"
+    assert before_check.value.safe_details["field"] == "/finding_frontier"
+    message = str(before_check.value)
+    assert f"sequence {note.check.ledger.ingestion_sequence}" in message
+    assert "current status frontier" in message and "advisory_subject_frontier" in message
     after = tuple([r async for r in ledger.load_events(started.session_id)])
     assert len(after) == len(records)
     assert correctness_advisories(after)[0].response is None

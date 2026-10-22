@@ -2115,7 +2115,7 @@ async def _closure_readiness(
         # owner-facing Stop notice; the receipt and history keep every note and its status.
         if any(row.response is None for row in advisory_index.rows):
             optional_fields["correctness_advisory_summary"] = advisory_closing_text(
-                advisory_index.rows, unmatched_withheld=advisory_index.unmatched_withheld
+                advisory_index.rows
             )
     if cause is not None:
         optional_fields["check_cause"] = cause

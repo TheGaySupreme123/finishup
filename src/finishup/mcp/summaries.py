@@ -1851,7 +1851,7 @@ def _receipt_correctness_advisory_clause(source: Mapping[str, JsonValue]) -> str
         or not unanswered.isdigit()
     ):
         return ""
-    withheld = counts.get("response_unavailable")
+    withheld = counts.get("withheld_may_answer")
     withheld_clause = (
         f"; withheld decisions that may answer a note: {withheld}"
         if type(withheld) is str and withheld.isdigit() and withheld != "0"

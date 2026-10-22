@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import io
 import json
+import re
 from collections.abc import Mapping
 from pathlib import Path
 from types import SimpleNamespace
@@ -1155,8 +1156,9 @@ _CLAUDE_STOP_FIELDS = frozenset({*_CODEX_STOP_FIELDS, "hookSpecificOutput"})
 # The service's agent-facing readiness summary. Its presence (a note has no recorded response) is
 # the only input the Stop notice reads; none of its text reaches the owner-facing notice.
 _AGENT_SUMMARY = (
-    "Earlier correctness advisories: 4; no recorded response: 4. Non-blocking. Full rows: status "
-    "view=history filter.schema_name=check_recorded with session_id "
+    "Earlier correctness advisories with no recorded response: 4, newest "
+    "evt_00000000-0000-4000-8000-000000000001:4. Non-blocking: no answer is required. Full rows: "
+    "status view=history filter.schema_name=check_recorded with session_id "
     "ses_00000000-0000-4000-8000-000000000001 (follow next_cursor)."
 )
 
@@ -1168,7 +1170,9 @@ def _assert_advisory_notice(host: _Host, output: Mapping[str, Any], err: str) ->
         # Cursor's Stop stdout only continues the agent; the notice stays on bounded stderr.
         lines = err.splitlines()
         assert all(len(line) <= 200 for line in lines)
-        for sentence in STOP_ADVISORY_NOTICE.split(". "):
+        sentences = re.split(r"(?<=\.) ", STOP_ADVISORY_NOTICE)
+        assert len(sentences) == 2 and all(sentence.endswith(".") for sentence in sentences)
+        for sentence in sentences:
             assert lines.count(sentence) == 1
         assert "correctness notes" not in json.dumps(output)
     else:
@@ -1220,10 +1224,14 @@ def test_advisory_stop_note_uses_only_each_hosts_admitted_channel(
     assert "correctness" not in gate_text
 
 
-def test_advisory_stop_notice_once_per_stop_sequence_and_only_while_unanswered(
+def test_advisory_stop_notice_once_per_session_and_unanswered_set(
     tmp_path: Path, host: _Host, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    """#1162 review: not on a continued Stop's re-entry, and gone once no note is unanswered."""
+    """#1162 review: never on a re-entry, and again only when the unanswered notes change.
+
+    Notes need no answer, so an unchanged set of unanswered notes must not warn the owner on every
+    later turn. The readiness summary names exactly that set; its identity decides.
+    """
 
     session = "advisory-sequence"
     h = _Harness(tmp_path, host.key(session))
@@ -1234,11 +1242,16 @@ def test_advisory_stop_notice_once_per_stop_sequence_and_only_while_unanswered(
     # ... and the Stop that ends the continued turn does not repeat it.
     reentry = _stop(h, host, session, guarded=True)
     _assert_no_advisory_notice(reentry, capsys.readouterr().err)
-    # A later turn's Stop shows it again while a note still has no recorded response.
+    # A later turn with the same unanswered notes stays silent.
     h.readiness = _readiness(state="ready_with_limitations", actionable=())
     h.readiness.correctness_advisory_summary = _AGENT_SUMMARY
-    later = _stop(h, host, session)
-    _assert_advisory_notice(host, later, capsys.readouterr().err)
+    unchanged = _stop(h, host, session)
+    _assert_no_advisory_notice(unchanged, capsys.readouterr().err)
+    assert unchanged == {}
+    # A new unanswered note changes the set, so the owner is told once more.
+    h.readiness.correctness_advisory_summary = _AGENT_SUMMARY.replace(": 4,", ": 5,")
+    changed = _stop(h, host, session)
+    _assert_advisory_notice(host, changed, capsys.readouterr().err)
     # Once every note has a recorded response the service omits the summary: no notice.
     h.readiness = _readiness(state="ready_with_limitations", actionable=())
     answered = _stop(h, host, session)

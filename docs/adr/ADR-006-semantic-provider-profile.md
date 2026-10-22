@@ -3258,30 +3258,33 @@ prose and count the redaction. The complete advisory prose is bounded to 8,192 c
 rendered, with omitted rows counted and the history continuation retained.
 
 Stop reads closure readiness without creating a gate or continuation. Readiness carries
-`correctness_advisory_summary` only while at least one note has no recorded response (readiness
-names what is still open; the receipt and history keep every note). The Stop hook reads only that
-field's presence, never its agent-facing text, and then shows FinishUP's fixed owner-facing notice:
-earlier AI-powered review left correctness notes with no recorded response; they do not block
-finishing; the task receipt lists each note and its status. It rides only a Stop the host did not
-already continue (`stop_hook_active` false), so once per Stop sequence, and stops once every note
-has a recorded response. Codex and Claude Code receive it as an owner-facing `systemMessage`, a common output field each host documents for Stop
+`correctness_advisory_summary` only while at least one note has no recorded response, and its text
+names only those notes (their count, the newest three identities and the recording sessions):
+readiness names what is still open, while the receipt and history keep every note, every status and
+any withheld decision. That set only grows by a new note, which leads the list, and only shrinks
+by an answer, which lowers the count, so the text changes exactly when the set does. The Stop hook
+never parses it: it compares the text's digest with the one it last showed for the session, and
+shows FinishUP's fixed owner-facing notice (earlier AI-powered review left correctness notes with
+no recorded response; they do not block finishing; the task receipt lists each note and its
+status) only when the set of unanswered notes changed since then. Because no answer is required,
+an unchanged set never repeats the notice on later turns; it also never rides a Stop the host
+already continued (`stop_hook_active`), and stops once every note has a recorded response. Codex and Claude Code receive it as an owner-facing `systemMessage`, a common output field each host documents for Stop
 (Codex: Stop/SubagentStop accept the common fields plus `decision`/`reason`; Claude Code: every
 event accepts the common fields, and Stop does not discard `systemMessage`). It is added beside an
 active closure gate's `decision: block`/`reason` (Codex) or `hookSpecificOutput.additionalContext`
 (Claude Code) and never enters the gate's continuation text. Claude Code's Stop
 `additionalContext` and Codex's `reason` both continue the agent, so neither carries the note.
 Cursor has no non-continuing Stop stdout advice channel, so its bounded disclosure uses stderr,
-one structural sentence per line, each within the 200-character stderr line bound. These are owner-facing diagnostics, not proof of delivery
+one complete sentence per line, each within the 200-character stderr line bound. These are owner-facing diagnostics, not proof of delivery
 to the model or of final-prose compliance. All hosts share the receipt/status index and guidance
 asks final prose to disclose material advisory statuses. No host is asked to resume merely to
 answer or repeat a correctness advisory.
 
 Current receipt-document/result 1.3.0 also carries optional structural
-`correctness_advisory_counts` (`total`, `no_recorded_response`, `response_unavailable`).
-`no_recorded_response` counts notes with no readable response; `response_unavailable` counts
+`correctness_advisory_counts` (`total`, `no_recorded_response`, `withheld_may_answer`).
+`no_recorded_response` counts notes with no readable response; `withheld_may_answer` counts
 withheld decisions that may answer one of those notes, so the two may overlap; each is at most
-`total`. A history row's `disposition` is `addressed`, `declined` or `no_recorded_response`
-(`response_unavailable` stays in the closed token set but is no longer produced for a row). These
+`total`. A history row's `disposition` is `addressed`, `declined` or `no_recorded_response`. These
 survive replay and supply the short MCP preview for every rendering. Counts are never extracted
 from quoted reviewer or agent prose; source text cannot impersonate the advisory inventory.
 Older receipt artifacts keep their exact shape.

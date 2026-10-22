@@ -2079,8 +2079,9 @@ _POLICY_TOOL_DESCRIPTORS: Final = (
         "is not met. Only if a new finding restates the SAME issue as an earlier one you answered, respond "
         "duplicate_of with duplicate_of_finding_id; linking never resolves the new finding. "
         "A correctness advisory needs no answer; to record one, put its check-event-id:ordinal "
-        "in finding_id and respond addressed (reason and evidence_refs) or declined (reason): "
-        "a non-blocking agent report. "
+        "in finding_id and respond addressed (reason, and evidence_refs with at least one recorded "
+        "after the note's check) or declined (reason). That appends a non-blocking decision "
+        "record, not a finding response, and needs no recheck. "
         "This appends one "
         "finding-response record to the local FinishUP ledger; it does not publish to GitHub or run an "
         "AI-powered evaluation. It does not resolve other findings or establish that underlying work "
@@ -2251,7 +2252,7 @@ TOOL_DESCRIPTOR_DIGESTS: Final[Mapping[McpRouteProfile, Mapping[str, str]]] = Ma
                 "start": "sha256:4f0882901380efe04aa96f066a0bd56cd7511b091f0b5728d0efa02ef86a4499",
                 "publish_work": "sha256:0818149f507547dbdd4d3d0c37761e09978ad3c46b699df5a3c635093cdd6e2a",
                 "check": "sha256:48dfd8224c245f8af98e833046ae1e56f5c2e44b25b937c8ce1bf399fe230246",
-                "respond": "sha256:b7589cc15864558eb9b4bc262d1fe80560e2570364ba731af8ad6b96ead6ef08",
+                "respond": "sha256:302f82a565c2a19dadfd0f59dcf237ef953636c7bb3008c93df7b01843e1a928",
                 "status": "sha256:b5b522c70143921055c1260c3e4a9bb35c8efd6208fc65cef55b84605519d5e4",
                 "receipt": "sha256:af7788b3708ecd6ff952a4debd7969547ca2b4396d4046df488567a2a51ba9f2",
                 "read_guidance": "sha256:dbcb10d90771cbf18e469e9646127d7966fd54771f360cdff77759d740efeb08",
@@ -2263,7 +2264,7 @@ TOOL_DESCRIPTOR_DIGESTS: Final[Mapping[McpRouteProfile, Mapping[str, str]]] = Ma
                 "start": "sha256:4f0882901380efe04aa96f066a0bd56cd7511b091f0b5728d0efa02ef86a4499",
                 "publish_work": "sha256:0818149f507547dbdd4d3d0c37761e09978ad3c46b699df5a3c635093cdd6e2a",
                 "check": "sha256:50a1fbc793d1b55f8cec40ff8408795ad8523ca3fb0eda9837606c3b6ec4b2df",
-                "respond": "sha256:b7589cc15864558eb9b4bc262d1fe80560e2570364ba731af8ad6b96ead6ef08",
+                "respond": "sha256:302f82a565c2a19dadfd0f59dcf237ef953636c7bb3008c93df7b01843e1a928",
                 "status": "sha256:b5b522c70143921055c1260c3e4a9bb35c8efd6208fc65cef55b84605519d5e4",
                 "receipt": "sha256:af7788b3708ecd6ff952a4debd7969547ca2b4396d4046df488567a2a51ba9f2",
                 "read_guidance": "sha256:dbcb10d90771cbf18e469e9646127d7966fd54771f360cdff77759d740efeb08",
@@ -2274,8 +2275,8 @@ TOOL_DESCRIPTOR_DIGESTS: Final[Mapping[McpRouteProfile, Mapping[str, str]]] = Ma
 )
 TOOL_DESCRIPTOR_SET_DIGEST: Final[Mapping[McpRouteProfile, str]] = MappingProxyType(
     {
-        "policy": "sha256:091e59a26de7c1ff59b64425fa6295d4f8eca14842557035c1cb3db769e5f6c0",
-        "strict": "sha256:85dbcd9b977c49bd896dcc00de7770e26ff8be1a7ba2ee6f768004cf76665316",
+        "policy": "sha256:e51bc3f3eca314bc40fd91ada60cd51e65ee9a98f7deaef1bca07a54e13c7b73",
+        "strict": "sha256:39a3422abaf937402ae55b400a967eb940ce4523fb3c15ce78b5edf23e4fa635",
     }
 )
 

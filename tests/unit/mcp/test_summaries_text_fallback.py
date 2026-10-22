@@ -360,7 +360,7 @@ def test_advisory_receipt_preview_uses_structural_counts_not_quoted_prose() -> N
         "correctness_advisory_counts": {
             "total": "2",
             "no_recorded_response": "1",
-            "response_unavailable": "0",
+            "withheld_may_answer": "0",
         },
     }
     preview = summary_for_receipt(source)

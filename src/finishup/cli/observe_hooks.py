@@ -61,15 +61,18 @@ from finishup.cli import hook_io
 from finishup.cli.closure_gate import (
     BLOCKER_RECHECK_ITEM,
     MAX_GATE_BLOCKS_PER_TURN,
+    STOP_ADVISORY_NOTICE,
     ClosureGate,
     closure_gate_already_delivered,
     closure_gate_reasked_blockers,
     closure_gate_turn_blocks,
     read_closure_gate,
     record_closure_gate_delivered,
+    record_stop_advisory_notice,
     reset_closure_gate_turn,
     set_standing_advice_withheld,
     standing_advice_withheld,
+    stop_advisory_notice_delivered,
 )
 from finishup.cli.hook_diagnostics import (
     observe_exception_reason,
@@ -4600,6 +4603,37 @@ def _standing_advice_carry(
     return False
 
 
+def _stop_advisory_notice(
+    identities: list[str],
+    *,
+    stop_already_active: bool,
+    mapping: LifecycleMapping | None,
+    source: ObservationSource,
+    rendered_output: dict[str, JsonValue],
+    _state: Path | None,
+) -> tuple[str, str] | None:
+    """Add the owner-facing advisory notice to this Stop's output, or nothing (#1162).
+
+    It rides only a Stop the host did not already continue, only while a note has no recorded
+    response (``identities`` is non-empty), and once per session for each set of unanswered
+    notes. It never changes the gate or spends a continuation. Returns the session and identity
+    to record once the output is written.
+    """
+
+    if not identities or stop_already_active or mapping is None:
+        return None
+    session_id = mapping.finishup_session_id
+    if stop_advisory_notice_delivered(session_id, identities[0], _state=_state):
+        return None
+    if source is ObservationSource.CURSOR_HOOK:
+        # Cursor's Stop stdout only continues the agent: one complete sentence per stderr line.
+        for sentence in re.split(r"(?<=\.) ", STOP_ADVISORY_NOTICE):
+            _stderr_line(sentence)
+    else:
+        rendered_output["systemMessage"] = STOP_ADVISORY_NOTICE
+    return session_id, identities[0]
+
+
 def _record_closure_gate_emitted(
     finishup_session_id: str,
     closure_gate: ClosureGate,
@@ -6663,24 +6697,21 @@ def handle_observe(
                 additional = f"{additional}\n{session_recap}".strip()
                 context_limit = RECAP_CONTEXT_LIMIT
             rendered_output = _render_context(additional, limit=context_limit) if additional else {}
-            # #1162: the owner-facing advisory notice rides only a Stop the host did not already
-            # continue (once per Stop sequence), and only while a note has no recorded response.
-            # It never changes the gate or spends a continuation.
-            stop_notice = (
-                stop_advisory_notes[0] if stop_advisory_notes and not stop_already_active else None
+            stop_notice = _stop_advisory_notice(
+                stop_advisory_notes,
+                stop_already_active=stop_already_active,
+                mapping=mapping,
+                source=source,
+                rendered_output=rendered_output,
+                _state=_state,
             )
-            if stop_notice is not None:
-                note = stop_notice
-                if source is ObservationSource.CURSOR_HOOK:
-                    for sentence in note.split(". "):
-                        _stderr_line(sentence)
-                else:
-                    rendered_output["systemMessage"] = note
             host_consumable = bool(rendered_output)
             if additional or stop_notice is not None:
                 emitted = _stdout_json(rendered_output, stdout)
             else:
                 emitted = _stdout_json({}, stdout)
+            if emitted and stop_notice is not None:
+                record_stop_advisory_notice(*stop_notice, _state=_state)
             if emitted and host_consumable and closure_gate is not None and mapping is not None:
                 _record_closure_gate_emitted(
                     mapping.finishup_session_id,

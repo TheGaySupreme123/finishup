@@ -5477,7 +5477,7 @@ class StatusHistoryCorrectnessAdvisoryModel(_ClosedModel):
     detail: String1To8192 | OmittedContentModel
     subject_refs: tuple[Annotated[str, Field(pattern=_ADVISORY_SUBJECT_REF_PATTERN)], ...]
     advisory_id: Annotated[str, Field(pattern=ADVISORY_ID_PATTERN)]
-    disposition: Literal["addressed", "declined", "no_recorded_response", "response_unavailable"]
+    disposition: Literal["addressed", "declined", "no_recorded_response"]
     reason: String1To4096 | OmittedContentModel | None = None
     response_event_id: EventIdWire | None = None
     evidence_refs: (
@@ -7182,7 +7182,7 @@ class ReceiptChildrenModel(_ClosedModel):
 class CorrectnessAdvisoryCountsModel(_ClosedModel):
     total: CanonicalUInt64Wire
     no_recorded_response: CanonicalUInt64Wire
-    response_unavailable: CanonicalUInt64Wire
+    withheld_may_answer: CanonicalUInt64Wire
 
 
 class ReceiptSuccessModel(_ClosedModel):
@@ -8794,10 +8794,10 @@ _STATUS_COMMON_CONTENT_RULES: Final[tuple[tuple[str, DataCategory], ...]] = (
 _ADVISORY_RECEIPT_STRUCTURAL_POINTERS: Final = (
     "/correctness_advisory_counts/total",
     "/correctness_advisory_counts/no_recorded_response",
-    "/correctness_advisory_counts/response_unavailable",
+    "/correctness_advisory_counts/withheld_may_answer",
     "/document/correctness_advisory_counts/total",
     "/document/correctness_advisory_counts/no_recorded_response",
-    "/document/correctness_advisory_counts/response_unavailable",
+    "/document/correctness_advisory_counts/withheld_may_answer",
 )
 _RECEIPT_CONTENT_RULES: Final[tuple[tuple[str, DataCategory], ...]] = (
     ("/document/gaps/*/detail", DataCategory.FINDING_SUMMARY),

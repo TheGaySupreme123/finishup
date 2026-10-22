@@ -140,7 +140,9 @@ def _withheld(
     )
 
 
-def _answer(seed: int, ordinal: int, disposition: str = "declined") -> SimpleNamespace:
+def _answer(
+    seed: int, ordinal: int, disposition: str = "declined", *, check: str = _CHECK_EVENT
+) -> SimpleNamespace:
     from finishup.domain.correctness_advisories import ADVISORY_RESPONSE_STATEMENT
     from finishup.domain.events import DecisionRecordedPayload
     from finishup.domain.values import actor_id
@@ -152,7 +154,7 @@ def _answer(seed: int, ordinal: int, disposition: str = "declined") -> SimpleNam
             authority=actor_id("harness:test"),
             advisory_response=JsonObject(
                 {
-                    "advisory_id": f"{_CHECK_EVENT}:{ordinal}",
+                    "advisory_id": f"{check}:{ordinal}",
                     "disposition": disposition,
                     "evidence_refs": (),
                 }
@@ -160,7 +162,7 @@ def _answer(seed: int, ordinal: int, disposition: str = "declined") -> SimpleNam
         ),
         event_id=f"evt_00000000-0000-4000-8000-{seed:012d}",
         schema=SimpleNamespace(name="decision_recorded", version="1.1.0"),
-        causal_parents=(_CHECK_EVENT,),
+        causal_parents=(check,),
     )
 
 
@@ -186,7 +188,7 @@ def test_a_withheld_decision_is_disclosed_as_one_that_may_answer_a_note() -> Non
     assert dict(advisory_counts(single).items()) == {
         "total": "1",
         "no_recorded_response": "1",
-        "response_unavailable": "1",
+        "withheld_may_answer": "1",
     }
     summary = advisory_summary(single.rows, unmatched_withheld=single.unmatched_withheld)
     assert "no recorded response: 1" in summary
@@ -207,12 +209,12 @@ def test_a_withheld_decision_is_disclosed_as_one_that_may_answer_a_note() -> Non
     assert dict(counts.items()) == {
         "total": "3",
         "no_recorded_response": "2",
-        "response_unavailable": "1",
+        "withheld_may_answer": "1",
     }
-    closing = advisory_closing_text(index.rows, unmatched_withheld=index.unmatched_withheld)
-    assert f"{_CHECK_EVENT}:1: declined with reason" in closing
-    assert f"{_CHECK_EVENT}:2: no recorded response" in closing
-    assert "Withheld decisions that may answer a note: 1" in closing
+    # Readiness names only what is still open: the two unanswered notes, newest first.
+    closing = advisory_closing_text(index.rows)
+    assert f"no recorded response: 2, newest {_CHECK_EVENT}:3, {_CHECK_EVENT}:2." in closing
+    assert f"{_CHECK_EVENT}:1" not in closing
     # More withheld decisions than unanswered notes never count past those notes.
     capped = _index(_noted_check(2), _answer(7, 1), _withheld(8), _withheld(9), _withheld(10))
     assert capped.unmatched_withheld == 1
@@ -220,6 +222,35 @@ def test_a_withheld_decision_is_disclosed_as_one_that_may_answer_a_note() -> Non
     answered = _index(_noted_check(2), _answer(7, 1), _answer(8, 2), _withheld(9))
     assert answered.unmatched_withheld == 0
     assert [row.disposition for row in answered.rows] == ["declined", "declined"]
+
+
+def test_readiness_text_changes_exactly_when_the_unanswered_set_does() -> None:
+    """#1162 review: the Stop notice is shown once per set of unanswered notes.
+
+    The hook compares the readiness text, never parses it, so the text must be a function of
+    that set alone: unchanged by answers to other notes, withheld decisions or answered additions,
+    and changed by a new unanswered note or an answer to an open one.
+    """
+
+    from finishup.kernel.correctness_advisories import advisory_closing_text
+
+    later_check = "evt_00000000-0000-4000-8000-000000000021"
+    later = SimpleNamespace(
+        payload=_noted_check(1).payload, event_id=later_check, session_id=_SESSION
+    )
+
+    def text(*records: SimpleNamespace) -> str:
+        return advisory_closing_text(_index(*records).rows)
+
+    open_two = text(_noted_check(2))
+    # A withheld decision may answer a note but does not change which notes are unanswered.
+    assert text(_noted_check(2), _withheld(9)) == open_two
+    # A later check whose note was already answered adds nothing to the open set.
+    assert text(_noted_check(2), later, _answer(11, 1, check=later_check)) == open_two
+    # An answer to an open note, or a new open note, changes it.
+    assert text(_noted_check(2), _answer(7, 1)) != open_two
+    assert text(_noted_check(2), later) != open_two
+    assert f"newest {later_check}:1, {_CHECK_EVENT}:2" in text(_noted_check(2), later)
 
 
 def test_the_history_continuation_names_each_recording_session() -> None:

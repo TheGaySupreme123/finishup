@@ -119,25 +119,30 @@ def advisory_counts(index: CorrectnessAdvisoryIndex) -> JsonObject:
         {
             "total": str(len(rows)),
             "no_recorded_response": str(sum(row.response is None for row in rows)),
-            "response_unavailable": str(index.unmatched_withheld),
+            "withheld_may_answer": str(index.unmatched_withheld),
         }
     )
 
 
-def advisory_closing_text(
-    rows: tuple[CorrectnessAdvisory, ...], *, unmatched_withheld: int = 0
-) -> str:
-    text = advisory_summary(rows, unmatched_withheld=unmatched_withheld)
-    for row in rows[-3:]:
-        status = row.disposition
-        if status == "addressed":
-            status = "addressed (agent-reported, linked evidence)"
-        elif status == "declined":
-            status = "declined with reason (retrieve history)"
-        text += f" {row.advisory_id}: {status}."
-    if len(rows) > 3:
-        text += f" {len(rows) - 3} earlier rows omitted; retrieve history."
-    return text
+def advisory_closing_text(rows: tuple[CorrectnessAdvisory, ...]) -> str:
+    """Closure-readiness text: only the notes that still have no recorded response.
+
+    Readiness names what is still open, so the text is a function of that set alone (newest
+    first, then the recording sessions). The set only grows by a new note, which leads the list,
+    and only shrinks by an answer, which lowers the count; so the text changes exactly when the
+    set does, and a Stop hook can compare it instead of parsing it (#1162 review).
+    """
+
+    unanswered = tuple(row for row in rows if row.response is None)
+    newest = tuple(reversed(unanswered))
+    named = ", ".join(row.advisory_id for row in newest[:3])
+    if len(newest) > 3:
+        named += f" (+{len(newest) - 3} earlier)"
+    return (
+        f"Earlier correctness advisories with no recorded response: {len(unanswered)}, newest "
+        f"{named}. Non-blocking: no answer is required; disclose material ones in final prose. "
+        + advisory_history_continuation(unanswered)
+    )
 
 
 def advisory_summary(rows: tuple[CorrectnessAdvisory, ...], *, unmatched_withheld: int = 0) -> str:

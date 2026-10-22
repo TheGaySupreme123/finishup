@@ -3128,8 +3128,9 @@ At Stop, while at least one note has no recorded response, Codex and Claude Code
 FinishUP's fixed owner-facing notice through the common `systemMessage`, without a blocking
 decision or model-feedback continuation. Cursor's Stop stdout supports only continuing advice, so
 the same notice goes to stderr, one sentence per line within the 200-character stderr line bound,
-also beside an active closure gate's `followup_message`. It appears once per Stop sequence (not on
-a `stop_hook_active` re-entry) and stops once every note has a recorded response; UI visibility
+also beside an active closure gate's `followup_message`. It appears once per session for each set
+of unanswered notes (never on a `stop_hook_active` re-entry) and stops once every note has a
+recorded response; UI visibility
 depends on the host's diagnostic display. Full retrieval stays available in the shared
 receipt and `status view=history` filtered to `check_recorded`. Model receipt of these Stop
 diagnostics and live host/OS parity have not been established by unit hook-contract tests.

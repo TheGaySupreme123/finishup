@@ -3050,8 +3050,9 @@ At Stop, while at least one note has no recorded response, Codex and Claude Code
 FinishUP's fixed owner-facing notice (earlier AI-powered review left correctness notes with no
 recorded response; they do not block finishing; the task receipt lists each note and its status)
 through the common `systemMessage`, without a blocking decision or model-feedback continuation.
-It appears once per Stop sequence: a Stop the host already continued (`stop_hook_active`) does not
-repeat it, and it stops once every note has a recorded response. Both hosts document
+It appears once per session for each set of unanswered notes: an unchanged set stays silent on
+later turns (no answer is required), a Stop the host already continued (`stop_hook_active`) never
+repeats it, and it stops once every note has a recorded response. Both hosts document
 `systemMessage` as a common output field Stop accepts (re-read 2026-10-22, ADR-010 amendment for
 #1162). With an active closure gate the same object also carries the gate's own payload (Codex
 `decision: block` plus `reason`; Claude Code `hookSpecificOutput.additionalContext`), and the

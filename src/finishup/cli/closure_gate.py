@@ -128,6 +128,7 @@ STOP_ADVISORY_NOTICE: Final = (
     "response. They do not block finishing; the task receipt lists each note and its status."
 )
 _FILE_NAME: Final = "closure-gate.json"
+_ADVISORY_NOTICE_FILE_NAME: Final = "stop-advisory-notice.json"
 _BLOCKER_FILE_NAME: Final = "closure-gate-blockers.json"
 _TURN_FILE_NAME: Final = "closure-gate-turns.json"
 _STANDING_FILE_NAME: Final = "stop-withheld-standing-advice.json"
@@ -1316,10 +1317,12 @@ async def read_closure_gate(
         readiness = getattr(branch, "closure_readiness", None)
         # #1162: the readiness summary is present only while an earlier correctness note has no
         # recorded response. Its text is agent-facing, so the Stop notice is FinishUP's own fixed
-        # owner-facing wording, decided by the summary's presence alone.
+        # owner-facing wording, decided by the summary's presence and identity alone.
         note = getattr(readiness, "correctness_advisory_summary", None)
         if advisory_notes is not None and type(note) is str and note:
-            advisory_notes.append(STOP_ADVISORY_NOTICE)
+            # The summary is a function of the unanswered notes alone, so its digest identifies
+            # that set: the hook shows the notice again only when the set changed (#1162 review).
+            advisory_notes.append(stop_advisory_notice_identity(note))
         return closure_gate_from_readiness(
             readiness,
             frontier_sequence=sequence,
@@ -1374,6 +1377,35 @@ def closure_gate_already_delivered(
 ) -> bool:
     _directory, path, _lock = _paths(_state)
     return _load(path).get(session_id) == identity
+
+
+def stop_advisory_notice_identity(summary: str) -> str:
+    """The identity of one readiness advisory summary, which names the unanswered notes."""
+
+    return "sha256:" + hashlib.sha256(summary.encode("utf-8")).hexdigest()
+
+
+def stop_advisory_notice_delivered(
+    session_id: str, identity: str, *, _state: Path | None = None
+) -> bool:
+    """True when this session's last Stop notice was for the same set of unanswered notes."""
+
+    _directory, path, _lock = _paths(_state, _ADVISORY_NOTICE_FILE_NAME)
+    return _load(path).get(session_id) == identity
+
+
+def record_stop_advisory_notice(
+    session_id: str, identity: str, *, _state: Path | None = None
+) -> None:
+    """Remember the set the session's owner was last told about. Never raises."""
+
+    with contextlib.suppress(Exception):
+        _directory, path, _lock = _paths(_state, _ADVISORY_NOTICE_FILE_NAME)
+        with _locked(_state) as directory:
+            entries = _load(path)
+            entries.pop(session_id, None)
+            entries[session_id] = identity
+            _store(directory, path, _ADVISORY_NOTICE_FILE_NAME, entries)
 
 
 def closure_gate_reasked_blockers(session_id: str, *, _state: Path | None = None) -> frozenset[str]:

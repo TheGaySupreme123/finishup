@@ -560,8 +560,8 @@ were recorded and, for each displayed note, **addressed (agent-reported, linked 
 **declined with reason**, or **no recorded response**. Advice never blocks closing. A later
 successful check does not establish that an earlier note was addressed. Export views label
 withheld prose; truncated lists link to the paginated history. While a note has no recorded
-response, your coding agent's app may show a short FinishUP notice when the agent stops; it does
-not block finishing and points you to the receipt.
+response, your coding agent's app may show a short FinishUP notice when the agent stops, once for
+each new set of such notes; it does not block finishing and points you to the receipt.
 
 Your agent may optionally record its response through `respond`, using the advisory identity in
 `finding_id` and a current `finding_frontier`: `addressed` needs a reason and evidence or result

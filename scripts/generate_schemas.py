@@ -2439,7 +2439,6 @@ def _correctness_advisories_schema(*, history: bool = False) -> dict[str, JsonVa
                         "addressed",
                         "declined",
                         "no_recorded_response",
-                        "response_unavailable",
                     ],
                     "type": "string",
                 },
@@ -2476,7 +2475,7 @@ def _correctness_advisories_schema(*, history: bool = False) -> dict[str, JsonVa
 
 
 def _advisory_counts_schema() -> dict[str, JsonValue]:
-    fields = ("total", "no_recorded_response", "response_unavailable")
+    fields = ("total", "no_recorded_response", "withheld_may_answer")
     return {
         "type": "object",
         "additionalProperties": False,
