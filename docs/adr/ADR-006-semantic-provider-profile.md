@@ -3051,7 +3051,9 @@ not proof of execution, independence or correctness.
 
 The deterministic coverage projection reports absent, failing, own-generated or tuned-only,
 stale, repeated and redundant witnesses within its recorded scope. It is advisory and
-non-blocking, never a green “covered” or correctness verdict. Quotes, file names, case names and
+non-blocking, never a green “covered” or correctness verdict. Its stale flag is the conservative
+latest-material-edit candidate, not ADR-042's per-verification freshness judgement, which alone
+raises freshness questions and findings (alignment: #1194). Quotes, file names, case names and
 worst values remain user content under the existing privacy and prose-rendering boundaries.
 The leading packet view uses structural source references and character spans, with criterion
 text remaining in its separately authorized task/obligation items. Human receipts show ordinal

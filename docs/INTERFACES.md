@@ -12237,7 +12237,8 @@ write byte-identical is not a later change. The same trusted action set is froze
 `verification_unchanged_action_ids` in the internal deterministic case and used by
 work-integrity. Contradictory or unavailable observations, outside writes, and declared paths the
 fingerprint cannot compare never borrow that proof. Which later changes make a verification stale
-or raise a question is defined once, in the next section.
+or raise a question is defined once, in the next section; the advisory #1170 coverage `stale`
+candidate is not that judgement.
 
 
 ### Intelligent verification freshness (#1143, ADR-042)
@@ -12473,8 +12474,12 @@ rows, then gaps before other rows; `omitted_criteria` counts every row past the 
 `public_only` (where the cases came from) and `own_or_tuned_only` (no witness free of the agent's
 own generation or tuning) are independent axes: public cases the agent tuned on carry both. Human
 renderings say "only task-public cases" and "only own-generated or tuned-on cases".
-Freshness reuses the shared service-proven unchanged-write exemption and workspace edit frontier;
-frozen packets pass both facts, while status/receipts derive them from authenticated records.
+Its `stale` flag is a conservative candidate, not the #1143 freshness judgement above: any later
+counting material edit marks a witness, after the shared service-proven unchanged-write exemption
+and workspace edit frontier (frozen packets pass both facts; status/receipts derive them from
+authenticated records). It does not apply ADR-042's per-verification input rule, so a witness can
+show `stale` here while check, status and Stop judge its run current; only that rule raises
+freshness questions and findings. Alignment is follow-up #1194.
 Every surface labels this **agent-declared** and advisory, with no green `covered` state and no
 effect on findings, closure readiness or AI-review requirements.
 
