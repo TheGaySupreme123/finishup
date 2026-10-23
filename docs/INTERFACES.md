@@ -12014,8 +12014,8 @@ provider-wire schemas as `ReviewerReplySchemas` (`REVIEWER_REPLY_SCHEMAS`, the s
 
 | Route | Request | Refusal |
 |---|---|---|
-| Responses | `input` is the payload verbatim, `text.format` the reply schema, `store:false` kept, no tools | no schemas installed |
-| Chat Completions | `messages` is the payload verbatim, strict `response_format`, no functions or tool calls; the SDK posts the canonical rendered body itself, so the exact-body guard sees the audited bytes | `prompt_only` endpoints (unavailable, never relabelled) |
+| Responses | text-only `input` is the payload verbatim; admitted image turns use native text/image content parts, `text.format` the reply schema, `store:false` kept, no tools | no schemas installed |
+| Chat Completions | text-only `messages` is the payload verbatim; admitted image turns use native text/image content parts, strict `response_format`, no functions or tool calls; the SDK posts the canonical rendered body itself, so the exact-body guard sees the audited bytes | `prompt_only` endpoints (unavailable, never relabelled) |
 | Local model | one frame `{"messages", "protocol": "finishup-reviewer-completion-1", "reply_schema"}` | a profile naming any other protocol (and a completion profile receiving a one-shot case) |
 | Codex subscription | one ephemeral thread per review, held in its `ReviewerSession`; the first turn sends every user message after the instruction (the packet, then the read catalog) as its text inputs, each later turn sends only the user messages after the longest history the thread holds (a read result or repair notice, then, when reads end, the final-phase notice; at most two, #1173), with the same effort and model every turn and the same `outputSchema` except on the final-phase repair turn and any final turn after the review's one repair is spent (#1172, #1173) | releases outside `REVIEWER_LOOP_REVIEWED_RELEASES` (`0.162.1`), no or a closed session, a continuation that does not extend the held thread (`case_invalid`), plan/compaction/tool/request/warning events |
 

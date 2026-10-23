@@ -31,7 +31,12 @@ import time
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Final, Literal, cast
+from typing import Final, Literal, Protocol, cast
+
+from jsonschema import Draft202012Validator, SchemaError
+from referencing import Registry
+from referencing.exceptions import Unresolvable
+from referencing.typing import Schema
 
 from finishup.domain.values import validate_sha256_digest
 from finishup.protocol.canonical import JsonValue, canonical_digest, strict_json_parse
@@ -830,6 +835,10 @@ def _strings(values: set[str] | tuple[str, ...]) -> JsonValue:
     return [cast(JsonValue, item) for item in sorted(values)]
 
 
+class _ImageValidator(Protocol):
+    def is_valid(self, instance: object) -> bool: ...
+
+
 def check_app_server_schema(document: object) -> str:
     """Structurally check the reviewed subset; return the digest of the facts that were checked.
 
@@ -913,26 +922,21 @@ def check_app_server_schema(document: object) -> str:
         if not _admits_string(field_schema, definitions, value):
             raise ValueError("codex_runtime_protocol_incompatible")
         facts[f"sent:{name}.{prop}"] = _strings(_accepted(field_schema, definitions)[1])
-    # Image URL can be a flat property or an anyOf branch (0.162.1 also allows fileId).
+    # Validate the whole variant: a parent URL field cannot bypass nested constraints.
     image = _variant_schema(_resolve(definitions["UserInput"], definitions), definitions, "image")
     assert image is not None  # checked above
-    properties = cast(Mapping[str, object], image["properties"])
-    branches = image.get("anyOf", [])
-    if not isinstance(branches, list) or not _admits_string(
-        properties["detail"], definitions, "low"
-    ):
-        raise ValueError("codex_runtime_protocol_incompatible")
-    for branch in [image, *cast(list[object], branches)]:
-        source = _resolve(branch, definitions)
-        fields = source.get("properties")
-        if isinstance(fields, Mapping) and "url" in fields:
-            if (
-                "string" not in _accepted(cast(Mapping[str, object], fields)["url"], definitions)[0]
-                or not _required(source) <= _SENT_VARIANT_FIELDS[("UserInput", "image")]
-            ):
-                raise ValueError("codex_runtime_protocol_incompatible")
-            break
-    else:
+    image_input = {"type": "image", "url": "data:image/png;base64,AA==", "detail": "low"}
+    try:
+        validator = cast(
+            _ImageValidator,
+            Draft202012Validator(
+                {"definitions": definitions, "allOf": [image]}, registry=Registry[Schema]()
+            ),
+        )
+        accepted = validator.is_valid(image_input)
+    except (SchemaError, Unresolvable, RecursionError) as exc:
+        raise ValueError("codex_runtime_protocol_incompatible") from exc
+    if not accepted:
         raise ValueError("codex_runtime_protocol_incompatible")
     model = _resolve(definitions["Model"], definitions)
     modalities = _resolve(
@@ -947,7 +951,7 @@ def check_app_server_schema(document: object) -> str:
         "url": "string",
         "detail": "low",
         "modality": "image",
-        "required": _strings(set(_required(source))),
+        "validated_input": image_input,
     }
     return canonical_digest(facts)
 

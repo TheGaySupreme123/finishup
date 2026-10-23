@@ -225,6 +225,22 @@ def test_pinned_url_or_file_id_image_shape_is_checked(regression: str) -> None:
             check_app_server_schema(document)
 
 
+@pytest.mark.parametrize("constraint", ["file_id", "nested_detail", "forbidden_url", "remote_ref"])
+def test_parent_url_property_cannot_bypass_complete_image_constraints(constraint: str) -> None:
+    document = minimal_app_server_schema()
+    image = cast(list[dict[str, object]], _definitions(document)["UserInput"]["oneOf"])[-1]
+    if constraint == "file_id":
+        image["anyOf"] = [{"required": ["fileId"]}]
+    elif constraint == "nested_detail":
+        image["allOf"] = [{"properties": {"detail": {"const": "high"}}}]
+    elif constraint == "forbidden_url":
+        image["not"] = {"required": ["url"]}
+    else:
+        image["allOf"] = [{"$ref": "https://unavailable.invalid/image-schema"}]
+    with pytest.raises(ValueError, match="codex_runtime_protocol_incompatible"):
+        check_app_server_schema(document)
+
+
 def _regress(definitions: dict[str, dict[str, object]], regression: str) -> None:
     if regression == "client_method_gone":
         cast(list[object], definitions["ClientRequest"]["oneOf"]).pop(0)
