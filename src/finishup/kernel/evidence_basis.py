@@ -415,7 +415,11 @@ def build_evidence_view(
     for key in state.actions:
         for obligation in scopes.get(str(key), ()):
             action_refs.setdefault(obligation, []).append(str(key))
-    for key, row in state.results.items():
+    # Snapshot maps normalize identity order. Select the newest linked results explicitly so
+    # the cap preserves the same evidence before and after projection serialization.
+    for key, row in sorted(
+        state.results.items(), key=lambda item: (-item[1].source_frontier, str(item[0]))
+    ):
         if row.payload is None or str(key) not in readable:
             continue
         source = by_event.get(str(row.source_event_id))

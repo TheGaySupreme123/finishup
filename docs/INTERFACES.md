@@ -12755,8 +12755,10 @@ independent oracle nor adequacy. An addressed note does not establish repair; a 
 unanswered note creates no work. Check-global praise is never per-obligation approval.
 
 Resolution rows reuse `finding_resolution_attempt` and `self_verification_evaluation` at the same
-prefix. Their reasons, check identity and explicit admitted ruling stay separate. Rulings and
-assessments disclose current versus historical applicability through `check_standing`. The
+prefix. Their reasons, check identity and explicit admitted ruling stay separate. Reason
+details retain closed codes or the existing bounded command-overlap list of obligation
+identities; participant prose and paths are never accepted as structural resolution reasons.
+Rulings and assessments disclose current versus historical applicability through `check_standing`. The
 proof-limit eligibility result also respects the existing terminal state; `respond` still admits
 the reason and post-finding evidence independently. No evidence-display cap changes closure.
 

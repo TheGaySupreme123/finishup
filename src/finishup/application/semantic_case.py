@@ -7508,15 +7508,7 @@ def _build_semantic_case_once(
             for assessment in cast(list[dict[str, JsonValue]], linked_basis.get("assessments", [])):
                 for field in ("requirement_or_claim", "snippet"):
                     assessment.pop(field, None)
-            if len(canonical_encode(linked_basis)) > 4096:
-                obligation_json["evidence_basis"] = {"availability": "not_selected", "omitted": 1}
-                omissions.append(
-                    _omit(
-                        ref, DataCategory.BOUNDED_STRUCTURAL_METADATA, "obligation", "not_selected"
-                    )
-                )
-            else:
-                obligation_json["evidence_basis"] = linked_basis
+            obligation_json["evidence_basis"] = linked_basis
         elif frozen_case.evidence_view is not None:
             obligation_json["evidence_basis"] = {"availability": "not_selected"}
         disclosed = disclosures.get(ref)
@@ -7534,6 +7526,17 @@ def _build_semantic_case_once(
             # Issue #1079: the criterion (this item), the claimed result, the latest observed
             # verification and any missing input, as one object. Refs and closed tokens only.
             obligation_json["resolved_basis"] = cast(JsonValue, basis)
+        if (
+            "evidence_basis" in obligation_json
+            and len(canonical_encode(obligation_json)) > MAX_REVIEW_TEXT_BYTES
+        ):
+            # Optional links yield before the existing prose bound can clip the criterion.
+            obligation_json["evidence_basis"] = {"availability": "not_selected", "omitted": 1}
+            if len(canonical_encode(obligation_json)) > MAX_REVIEW_TEXT_BYTES:
+                obligation_json.pop("evidence_basis")
+            omissions.append(
+                _omit(ref, DataCategory.BOUNDED_STRUCTURAL_METADATA, "obligation", "not_selected")
+            )
         text, fit = _bounded_json(cast(Mapping[str, JsonValue], obligation_json))
         item = _content_item(
             item_id=f"obligation-{ref}",

@@ -6264,6 +6264,16 @@ class StatusEvidenceAssessmentModel(CheckVerifiedItemModel):
     applicability: Literal["current", "historical"]
 
 
+_EVIDENCE_RESOLUTION_REASON_PATTERN: Final = (
+    r"^(?:(?:coverage:)?[a-z][a-z0-9_]{0,127}|command_relation_overlaps_obligation:"
+    r"obl_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}"
+    r"(?:,obl_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}){0,15})$"
+)
+EvidenceResolutionReasonWire = Annotated[
+    str, Field(pattern=_EVIDENCE_RESOLUTION_REASON_PATTERN, max_length=692)
+]
+
+
 class StatusEvidenceResolutionModel(_ClosedModel):
     finding_ref: FindingIdWire
     check_event_id: EventIdWire | None
@@ -6284,22 +6294,10 @@ class StatusEvidenceResolutionModel(_ClosedModel):
     ruling_check_event_id: EventIdWire | None
     ruling_applicability: Literal["current", "historical"] | None
     ruling_cited_refs: Annotated[tuple[SubjectIdWire, ...], Field(max_length=16)]
-    reasons: Annotated[
-        tuple[
-            Annotated[str, Field(pattern=r"^(?:coverage:)?[a-z][a-z0-9_]{0,127}$", max_length=137)],
-            ...,
-        ],
-        Field(max_length=16),
-    ]
+    reasons: Annotated[tuple[EvidenceResolutionReasonWire, ...], Field(max_length=16)]
     self_verified_available: bool
     self_verified_refusal: CodeWire | None
-    blocking_reasons: Annotated[
-        tuple[
-            Annotated[str, Field(pattern=r"^(?:coverage:)?[a-z][a-z0-9_]{0,127}$", max_length=137)],
-            ...,
-        ],
-        Field(max_length=16),
-    ]
+    blocking_reasons: Annotated[tuple[EvidenceResolutionReasonWire, ...], Field(max_length=16)]
 
 
 class StatusObligationEvidenceModel(_ClosedModel):

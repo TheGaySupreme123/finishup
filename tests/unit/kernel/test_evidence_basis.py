@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 # pyright: reportPrivateUsage=false
+import json
 from dataclasses import fields, replace
 from typing import Any, cast
 
@@ -50,7 +51,7 @@ from finishup.domain.events import (
     media_type_for,
 )
 from finishup.domain.privacy import ReviewContextProfile, ReviewSelectionPolicy
-from finishup.domain.values import Actor, ActorType, JsonObject, actor_id
+from finishup.domain.values import Actor, ActorType, JsonObject, actor_id, object_id
 from finishup.kernel.deterministic_checks import (
     CaseAvailabilityFacts,
     build_deterministic_case,
@@ -64,7 +65,11 @@ from finishup.kernel.evidence_basis import (
     evidence_view_json,
     evidence_view_refs,
 )
-from finishup.kernel.projections import LatestTestedState
+from finishup.kernel.projections import (
+    LatestTestedState,
+    projection_from_snapshot,
+    projection_snapshot,
+)
 from finishup.kernel.reducers import replay
 from finishup.protocol.canonical import JsonValue, canonical_digest, canonical_encode
 from finishup.protocol.coverage import AuthorshipAssurance, PublicationChannel
@@ -74,7 +79,12 @@ from unit.kernel import test_self_verification as self_verify
 
 
 def _envelope(
-    sequence: int, family: str, payload: EventPayload, *, observed: bool = False
+    sequence: int,
+    family: str,
+    payload: EventPayload,
+    *,
+    observed: bool = False,
+    previous: LedgerRecord | None = None,
 ) -> AcceptedEvent:
     """Individually valid accepted records; tests that need a replay chain use real vectors."""
     base = genesis_session_opened()
@@ -123,12 +133,20 @@ def _envelope(
         causal_parents=parents,
         evidence_refs=refs,
         ledger=replace(
-            base.ledger, ingestion_sequence=sequence, previous_entry_digest=base.entry_digest
+            base.ledger,
+            ingestion_sequence=sequence,
+            previous_entry_digest=base.entry_digest if previous is None else previous.entry_digest,
         ),
         projection_locator=ProjectionLocator(
             schema, logical, canonical_digest(encode_payload(payload))
         ),
-        payload_ref=replace(base.payload_ref, media_type=media_type_for(family)),
+        payload_ref=replace(
+            base.payload_ref,
+            media_type=media_type_for(family),
+            object_id=base.payload_ref.object_id
+            if previous is None
+            else object_id(f"obj_00000000-0000-4000-8000-{sequence:012d}"),
+        ),
     )
     if observed:
         values.update(
@@ -393,6 +411,115 @@ def test_advice_and_reason_survive_empty_history_with_separate_provider_categori
     assert b"RESPONSE_REASON" not in structural_bytes and b"ADVICE_DETAIL" not in structural_bytes
 
 
+def test_capped_evidence_view_matches_live_replay_after_projection_snapshot_round_trip() -> None:
+    records: list[LedgerRecord] = [genesis_session_opened()]
+    payloads: list[tuple[str, EventPayload]] = [
+        (
+            "obligation_published",
+            ObligationPublishedPayload(
+                obl(1), "Criterion", "Record results", ObligationStatus.OPEN
+            ),
+        )
+    ]
+    for n in range(9, 0, -1):
+        payloads.extend(
+            (
+                (
+                    "action_recorded",
+                    ActionRecordedPayload(
+                        act(n),
+                        ActionKind.COMMAND,
+                        "Probe",
+                        obligation_refs=(obl(1),),
+                        command="true",
+                    ),
+                ),
+                ("result_recorded", ResultRecordedPayload(res(n), act(n), ResultOutcome.SUCCESS)),
+                (
+                    "claim_recorded",
+                    ClaimRecordedPayload(
+                        clm(n), ClaimKind.MATERIAL, "Reported", (res(n),), obligation_refs=(obl(1),)
+                    ),
+                ),
+            )
+        )
+    for sequence, (family, payload) in enumerate(payloads, start=2):
+        records.append(
+            _envelope(
+                sequence,
+                family,
+                payload,
+                observed=family != "claim_recorded",
+                previous=records[-1],
+            )
+        )
+    prefix = tuple(records)
+    live = replay(prefix)
+    restored = projection_from_snapshot(projection_snapshot(live))
+    assert tuple(live.results) == tuple(res(n) for n in range(9, 0, -1))
+    assert tuple(restored.results) == tuple(res(n) for n in range(1, 10))
+    live_view = build_evidence_view(live, prefix)
+    assert build_evidence_view(restored, prefix) == live_view
+    basis = evidence_basis_by_obligation(live_view)[str(obl(1))]
+    assert tuple(row.result_ref for row in basis.results) == tuple(res(n) for n in range(1, 9))
+    assert len(basis.claims) == len(basis.action_refs) == len(basis.observed_refs) == 8
+    assert basis.omitted >= 3
+
+
+@pytest.mark.parametrize("baseline_bytes", [3691, 4096])
+def test_optional_basis_yields_to_intact_criterion_in_actual_semantic_packet(
+    baseline_bytes: int,
+) -> None:
+    case, records = _case()
+    original = case.projection.obligations[obl(1)]
+    assert original.payload is not None
+    empty = replace(original.payload, description="x")
+    padding = baseline_bytes - len(canonical_encode(encode_payload(empty)))
+    description = "a" * (padding // 2) + " CENTRAL REQUIREMENT MUST SURVIVE "
+    description = description.ljust(padding + 1, "z")
+    payload = replace(empty, description=description)
+    assert len(canonical_encode(encode_payload(payload))) == baseline_bytes
+    state = replace(
+        case.projection,
+        obligations={
+            **case.projection.obligations,
+            obl(1): obligation_record(payload, original.source_frontier),
+        },
+    )
+    view = build_evidence_view(state, records, freshness=(), tracked_runs=())
+    assert evidence_basis_by_obligation(view)[str(obl(1))].results
+    frozen = replace(
+        case,
+        projection=state,
+        evidence_view=evidence_view_json(view),
+        allowed_ids=case.allowed_ids | evidence_view_refs(view),
+    )
+    packet = build_semantic_case(
+        case_id="cas_10000000-0000-4000-8000-000000000001",
+        frozen_case=frozen,
+        dependency_digest="sha256:" + "b" * 64,
+        findings=(),
+        review_context_profile=ReviewContextProfile.ASSISTED,
+        review_selection=ReviewSelectionPolicy.for_profile(ReviewContextProfile.ASSISTED),
+        policy_id="pvy_10000000-0000-4000-8000-000000000001",
+        policy_version="1",
+    )
+    item = next(item for item in packet.items if item.item_id == f"obligation-{obl(1)}")
+    content = json.loads(item.content)
+    assert content["description"] == description
+    assert item.content_bytes <= 4096
+    if baseline_bytes == 3691:
+        assert content["evidence_basis"] == {"availability": "not_selected", "omitted": 1}
+    else:
+        assert "evidence_basis" not in content
+    assert any(
+        omission.subject_ref == str(obl(1))
+        and omission.category is DataCategory.BOUNDED_STRUCTURAL_METADATA
+        and omission.reason == "not_selected"
+        for omission in packet.packet.omissions
+    )
+
+
 def test_new_basis_retains_frontier_and_old_cases_keep_their_bytes() -> None:
     records = replay_records("all-event-families")
     frozen = build_deterministic_case(replay(records), records, CaseAvailabilityFacts())
@@ -624,6 +751,42 @@ def test_resolution_detail_uses_existing_eligibility_and_keeps_terminal_items_un
         assert (
             not final.self_verified_available and final.self_verified_refusal == "finding_terminal"
         )
+
+
+@pytest.mark.parametrize("count", [1, 16])
+def test_resolution_reason_contract_preserves_existing_scoped_overlap_ids(count: int) -> None:
+    from jsonschema import Draft202012Validator
+    from pydantic import TypeAdapter, ValidationError
+
+    from finishup.protocol.models import EvidenceResolutionReasonWire
+
+    reason = "command_relation_overlaps_obligation:" + ",".join(obl(n) for n in range(count))
+    adapter: TypeAdapter[str] = TypeAdapter(EvidenceResolutionReasonWire)
+    assert adapter.validate_python(reason) == reason
+    validate = cast(Any, Draft202012Validator(adapter.json_schema())).validate
+    validate(reason)
+    for invalid in (
+        reason + ",private/path",
+        reason.replace("obl_", "res_"),
+        reason + "," + ",".join(obl(n) for n in range(16)),
+    ):
+        with pytest.raises(ValidationError):
+            adapter.validate_python(invalid)
+    # The shared view must accept the reason that the production closure predicate emits.
+    case, records = _case()
+    finding = self_verify._finding()
+    state = replace(case.projection, findings={finding.finding_id: finding_record(finding, 4)})
+    check = self_verify._check(gaps=("observation_input_loss",))
+    basis = evidence_basis_by_obligation(
+        build_evidence_view(
+            state, (*records, _envelope(50, "check_recorded", check)), freshness=(), tracked_runs=()
+        )
+    )[str(obl(1))]
+    row = basis.resolution[0]
+    decoded = type(row).model_validate(
+        {**row.model_dump(), "reasons": (reason,), "blocking_reasons": (reason,)}
+    )
+    assert decoded.reasons == decoded.blocking_reasons == (reason,)
 
 
 def test_original_obligation_event_advice_survives_a_later_resolution_revision() -> None:
