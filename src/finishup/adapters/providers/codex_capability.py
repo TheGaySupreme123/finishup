@@ -36,7 +36,7 @@ from typing import Final, Literal, Protocol, cast
 from jsonschema import Draft202012Validator, SchemaError
 from referencing import Registry
 from referencing.exceptions import Unresolvable
-from referencing.typing import Schema
+from referencing.jsonschema import Schema
 
 from finishup.domain.values import validate_sha256_digest
 from finishup.protocol.canonical import JsonValue, canonical_digest, strict_json_parse
