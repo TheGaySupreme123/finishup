@@ -2,6 +2,10 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
+
+import pytest
+
 from finishup.application.receipt_projection import (
     WITHHELD,
     ReceiptExcerpt,
@@ -9,6 +13,53 @@ from finishup.application.receipt_projection import (
     withheld_text,
 )
 from finishup.protocol.models import MAX_PROJECTION_CONTENT_LEAVES
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    "text",
+    ["plain prose " * 2000, '\\"' * 12000, "界" * 10000],
+    ids=["ascii", "escaped", "unicode"],
+)
+async def test_clean_oversized_receipt_is_admitted_and_delivered_losslessly(text: str) -> None:
+    from builders.projection_workflow import project_case, run_projection_workflow
+    from finishup.application.receipt import ReceiptInternalResult
+    from finishup.application.service import internal_control_json
+    from finishup.domain.privacy import MAX_EGRESS_ITEM_BYTES
+    from finishup.protocol.canonical import canonical_encode
+
+    workflow = await run_projection_workflow("optional", max_findings=2)
+    case = workflow.case("receipt")
+    assert isinstance(case.internal, ReceiptInternalResult)
+    document = internal_control_json(case.internal)["document"]
+    assert isinstance(document, dict)
+    sections = document["sections"]
+    assert isinstance(sections, list) and isinstance(sections[0], dict)
+    sections[0]["body"] = text
+    case = replace(case, internal=replace(case.internal, document=document))
+    projected = await project_case(workflow.app, case, 9900)
+    shown_document = projected["document"]
+    assert isinstance(shown_document, dict)
+    shown_sections = shown_document["sections"]
+    assert isinstance(shown_sections, (list, tuple)) and isinstance(shown_sections[0], dict)
+    shown = shown_sections[0]["body"]
+    assert isinstance(shown, str)
+    assert shown == text  # Admission parts never shorten the delivered prose or its tail.
+    from finishup.application.receipt_projection import receipt_fragments
+
+    parts = receipt_fragments(canonical_encode(shown))
+    assert len(parts) > 1 and all(len(part) <= MAX_EGRESS_ITEM_BYTES for part in parts)
+    assert b"".join(parts) == canonical_encode(text)
+    assert canonical_encode(shown_document["findings"]) == canonical_encode(document["findings"])
+
+
+def test_receipt_partition_cannot_hide_a_credential_crossing_the_boundary() -> None:
+    from finishup.application.receipt_projection import receipt_fragments
+    from finishup.protocol.canonical import canonical_encode
+
+    content = canonical_encode("x" * 16370 + " sk-" + "a" * 40 + " tail")
+    with pytest.raises(ValueError, match="receipt_projection_fragment_sensitive"):
+        receipt_fragments(content)
 
 
 def _excerpt(path: str, *spellings: str) -> ReceiptExcerpt:

@@ -221,7 +221,7 @@ async def test_cli_prompt_accepting_the_offered_runtime_keeps_newest_first_fallb
             "runtime_source_identity": "openai-codex-npm-darwin-arm64-0.162.1",
             "executable_sha256": "sha256:" + "a" * 64,
             "code_mode_host_sha256": "sha256:" + "b" * 64,
-            "capability_profile": "codex-evaluator/capability/v3",
+            "capability_profile": "codex-evaluator/capability/v4",
             "capability_evidence_expires_at": "2026-11-30T00:00:00Z",
             "codex_home": str(tmp_path / "home"),
             "disconnect_command": "finishup provider codex disconnect",

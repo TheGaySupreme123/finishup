@@ -35,7 +35,7 @@ Conditional files are `change` items.
    Answer each open AI-powered finding with `respond` and a reason (optional for `decision_needed`).
    Readable current-check answers and lifecycle records need no recheck.
 6. Use `final_review: true` when readiness requires closing review. At `ready_with_limitations`,
-   request the receipt without another check. Then `work_closed` if complete; a receipt never
+   request the receipt without another check. Then publish `{"schema":{"name":"work_closed","version":"1.0.0"},"payload":{}}` if complete; a receipt never
    closes work. `lineage_work_transition`: the task already ended; report it.
 
 # Done

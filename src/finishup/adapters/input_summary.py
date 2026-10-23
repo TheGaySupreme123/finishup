@@ -99,6 +99,7 @@ _PDF_HEADER_WINDOW: Final = 1_024
 
 _PNG: Final = "PNG image"
 _JPEG: Final = "JPEG image"
+_SVG: Final = "SVG image"
 _GIF: Final = "GIF image"
 _BMP: Final = "BMP image"
 _WEBP: Final = "WebP image"
@@ -266,6 +267,14 @@ def _detect(data: bytes) -> tuple[str, _Describer]:
         return _PNG, _png
     if data.startswith(b"\xff\xd8\xff"):
         return _JPEG, _jpeg
+    if (
+        re.match(
+            rb"(?:\xef\xbb\xbf)?\s*(?:<\?xml[^>]*\?>\s*)?(?:<!DOCTYPE[\s\S]*?)?<svg(?:\s|>)",
+            data[:1024],
+        )
+        is not None
+    ):
+        return _SVG, _svg
     if data[:6] in {b"GIF87a", b"GIF89a"}:
         return _GIF, _gif
     if data[:4] == b"RIFF" and data[8:12] == b"WEBP":
@@ -317,6 +326,53 @@ def _png(data: bytes, _extension: str) -> _Description:
             f"color type: {_PNG_COLOR_TYPES.get(color, f'unknown ({color})')}",
         ]
     return _PNG, facts, []
+
+
+def _svg(data: bytes, _extension: str) -> _Description:
+    """Attribute/text facts only, through the existing XML and scan-before-cut boundaries."""
+    if len(data) > 65_536:
+        return _SVG, ["structure: source exceeds 65536-byte limit"], []
+    root = _parse_xml(data)
+    if root is None or root.tag not in {"svg", "{http://www.w3.org/2000/svg}svg"}:
+        return _SVG, ["structure: unavailable or refused XML"], []
+    facts = ["assessment: XML structure only; no rendering or external resources"]
+    for key in ("width", "height", "viewBox"):
+        if key in root.attrib:
+            facts.append(f"{key}: {_clean(root.attrib[key], 256)}")
+    table: list[str] = []
+    attributes = {
+        "x",
+        "y",
+        "x1",
+        "x2",
+        "y1",
+        "y2",
+        "cx",
+        "cy",
+        "r",
+        "rx",
+        "ry",
+        "width",
+        "height",
+        "points",
+        "d",
+        "fill",
+        "stroke",
+        "transform",
+    }
+    for number, node in enumerate(root.iter()):
+        if number == 16:
+            table.append(_CUT_LINE)
+            break
+        values = [
+            f"{key}={_clean(value, 256)}"
+            for key, value in sorted(node.attrib.items())
+            if key in attributes
+        ]
+        if node.text and node.text.strip():
+            values.append("text=" + _clean(node.text, 256))
+        table.append(_QUOTE + _clean(_local(node.tag), 64) + ": " + "; ".join(values))
+    return _SVG, facts, table
 
 
 def _jpeg(data: bytes, _extension: str) -> _Description:

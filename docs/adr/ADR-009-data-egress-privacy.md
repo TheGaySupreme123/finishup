@@ -1355,7 +1355,7 @@ selection or channel ceiling is raised, the round cap is unchanged, and Private 
   the agent's record, so it only selects candidates and never authenticates output.
 - **Deliverables named in prose.** A requested `change` item that names files in its text orders
   those files after every literal declaration. This orders the check-time change only.
-- **Summaries, never bytes, of binary inputs.** A binary, image or data input that was skipped
+- **Summaries, never bytes, of binary inputs in the packet.** A binary, image or data input that was skipped
   before becomes FinishUP's own bounded summary (format, size, digest, dimensions, page estimate,
   workbook sheet names and first rows, archive member names, array dtype and shape), at most
   16 KiB, labelled as FinishUP's description and never as the file. A file whose leading bytes
@@ -1466,6 +1466,17 @@ selection or channel ceiling is raised, the round cap is unchanged, and Private 
 
 The behaviour is service-side and identical for Codex, Claude Code and Cursor on macOS, Linux and
 Windows through WSL 2.
+
+### 2026-10-23 amendment — explicit image disclosure (#1203)
+
+The existing text/binary-summary permission grants no pixels. A current owner-approved LLM policy
+must additionally allow `semantic-review-images` for the same bound destination and scope before a
+small PNG/JPEG can accompany an existing admitted reviewer read. Original bytes and exact encoded
+content pass admission/scanning; image history retains that purpose and root fence on subsequent
+turns. Defaults remain off. Scanning covers raw bytes and metadata, not OCR of visible image text;
+the owner must choose whether those pixels may be sent. Detected never-send content stays blocked.
+No runtime grant is implied by developing or installing this capability. Bounds, format translation
+and refusals are specified in [INTERFACES](../INTERFACES.md#reviewer-completion-exchanges-issue-1118-unit-3-adr-006).
 
 ## Task-named directories, quoted paths, `other` follow-ups and unadmitted outside inputs (2026-10-18, issue #1102)
 

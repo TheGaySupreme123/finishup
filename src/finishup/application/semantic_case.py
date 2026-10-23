@@ -6722,9 +6722,26 @@ def _settled_finding_items(
         body["limitation_disclosed_by"] = disclosure.basis or ""
     if record.settled_reraise_count:
         body["settled_reraise_count"] = record.settled_reraise_count
+    verification_question = payload.kind is FindingKind.DECISION_NEEDED
+    if verification_question and answer is not None:
+        # Keep the question -> answer -> evidence link after an optional question is settled.
+        # These are references, not a claim that the proposed check ran or passed.
+        body["evidence_refs"] = list[JsonValue](
+            str(ref) for ref in answer.evidence_refs if str(ref) in allowed
+        )[:_MAX_PRIOR_FINDING_LISTED_REFS]
+        body["evidence_ref_count"] = len(answer.evidence_refs)
+        if payload.challenge is not None:
+            body["requested_next_step"] = payload.challenge.requested_next_step
     prose: list[tuple[str, str]] = []
     if include_prose:
         prose.append(("summary", payload.summary))
+        if verification_question:
+            prose.append(("message", payload.detail))
+            if payload.challenge is not None:
+                prose.extend(
+                    (field, getattr(payload.challenge, field))
+                    for field in ("discrepancy", "alternative_interpretation", "uncertainty")
+                )
         if answer is not None and answer.reason is not None:
             prose.append(("response", answer.reason))
         body["text_item_ids"] = {

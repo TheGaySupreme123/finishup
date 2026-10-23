@@ -97,7 +97,7 @@ def test_any_stable_release_at_or_above_the_floor_forms_a_binding(version: str) 
 
     assert profile.runtime_version == version
     assert profile.capability_profile == CODEX_EVALUATOR_CAPABILITY_PROFILE
-    assert CODEX_EVALUATOR_CAPABILITY_PROFILE == "codex-evaluator/capability/v3"
+    assert CODEX_EVALUATOR_CAPABILITY_PROFILE == "codex-evaluator/capability/v4"
     assert module.CODEX_EVALUATOR_RUNTIME_FLOOR == "0.157.1"
 
 

@@ -215,7 +215,15 @@ LOCAL_FINDING_ANSWER_ITEM_PREFIX: Final = "local-finding-answer-"
 # (issue #980). Structural row ``settled-finding-<ref>``; prose rows
 # ``settled-finding-summary-<ref>`` and ``settled-finding-response-<ref>``.
 SETTLED_FINDING_ITEM_PREFIX: Final = "settled-finding-"
-SETTLED_FINDING_ITEM_SUFFIXES: Final = ("", "summary-", "response-")
+SETTLED_FINDING_ITEM_SUFFIXES: Final = (
+    "",
+    "summary-",
+    "response-",
+    "message-",
+    "discrepancy-",
+    "alternative_interpretation-",
+    "uncertainty-",
+)
 type ReviewerNextStep = Literal[
     "act",
     "provide_evidence",

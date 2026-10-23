@@ -14,7 +14,7 @@ Codex is enough: the next `setup` or `repair` adopts the newer release without a
 |---|---|
 | Eligible releases | stable OpenAI Codex npm `X.Y.Z` at or above the floor `0.157.1`; prereleases are never eligible |
 | Platforms | macOS arm64 (`@openai/codex-darwin-arm64`), Linux x86_64 (`@openai/codex-linux-x64`); x86_64 WSL2 Linux userspace follows Linux (WSL smoke pending); no native Windows |
-| Capability profile | `codex-evaluator/capability/v3` (v2 bindings move through `repair`) |
+| Capability profile | `codex-evaluator/capability/v4` (earlier bindings move through `repair`) |
 | Isolated config SHA-256 | `bd8fffe5abd02d085c13213ab2f5aaefe362c85e8a354f4fd79a58938ce9740c` (`support/codex-evaluator/config.toml`) |
 | Reviewer-loop releases | `0.162.1` only. Every check review is a reviewer conversation since #1118, so on another admitted release a check's review ends unavailable (`capability_evidence_stale`); only background advice still uses one-shot sessions there |
 | Evidence expires | `2026-11-30T00:00:00Z` (this FinishUP release's reviewed subset and probe) |
@@ -100,7 +100,7 @@ entry (about 20 ms) and keys the result by executable SHA-256. The change is vis
 from its own measurement and the process keeps that digest, so the evidence of every turn it runs,
 including a retained reviewer thread, names what that process ran even when a concurrent launch
 of the same executable measured the other way (#1118 V3). The capability record, its
-checks, the isolated config and the profile (`codex-evaluator/capability/v3`) are unchanged:
+checks, the isolated config and the profile (`codex-evaluator/capability/v4`) are unchanged:
 admission does not depend on the catalog, only the launch argv does, like the four 0.162.1 keys.
 
 Tool surface the model receives on 0.162.1 with gpt-6.1-sol (`environments: []`, isolated config):

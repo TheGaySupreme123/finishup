@@ -19,6 +19,7 @@ from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Final, Literal, cast
 
+from finishup.adapters.reviewer_artifacts import artifact_facts, image_attachment
 from finishup.adapters.task_input_read import (
     ReadDeadline,
     clear_cut,
@@ -171,6 +172,7 @@ class _Piece:
     root: str | None = None
     category: DataCategory = DataCategory.REPOSITORY_EXCERPT
     truncation_reason: str | None = None
+    image: bytes | None = None
     end: int = field(init=False)
 
     def __post_init__(self) -> None:
@@ -196,8 +198,10 @@ class ReviewerBroker:
         packet_text: Mapping[str, tuple[str, ...]] | None = None,
         max_reads: int = MAX_READS,
         exchange_room: Callable[[], int | None] = lambda: None,
+        images: bool = False,
     ) -> None:
         self.store, self._job, self._case, self._admit = store, job_id, case, admit
+        self._images = images
         # #1118: the bytes the conversation's next exchange may still add under the disclosure
         # cap (``None`` when unbounded). A result is fitted to what is left of it after the read
         # action, measured as the exchange encodes both, escaping included.
@@ -413,6 +417,11 @@ class ReviewerBroker:
             if over <= 0:
                 break
             last = pieces[-1]
+            if last.image is not None:
+                # An image is atomic. Keep facts when the whole attachment cannot fit.
+                last.image = None
+                last.truncation_reason = "image_byte_budget"
+                continue
             if shape == "list" or (len(pieces) > 1 and last.end - last.start <= over + 64):
                 pieces.pop()
                 continue
@@ -430,7 +439,11 @@ class ReviewerBroker:
             last.end = fits
         else:
             return envelope("unavailable", "byte_budget")
-        elements = tuple((piece.category, piece.text, piece.root) for piece in pieces)
+        elements = tuple(
+            (piece.category, data, piece.root)
+            for piece in pieces
+            for data in (piece.text,) + ((piece.image,) if piece.image is not None else ())
+        )
         reason = await self._admit(elements, encoded)
         if reason is not None:
             return envelope("denied", reason)
@@ -663,6 +676,27 @@ class ReviewerBroker:
         data, size = read
         if size > len(data):
             return _WithheldRead(size)
+        facts = artifact_facts(data)
+        if facts is not None:
+            image = image_attachment(data, facts) if self._images else None
+            facts["image_review"] = (
+                "attachment_eligible"
+                if image is not None
+                else "not_enabled_or_unsupported"
+                if not self._images
+                else "attachment_limit_or_type"
+            )
+            rendered = canonical_encode(facts)
+            piece = _Piece(
+                rendered,
+                0,
+                len(rendered),
+                refs,
+                {**prov, "representation": "deterministic_artifact_facts"},
+                root=root.input_root,
+                image=data if image is not None else None,
+            )
+            return ("text", [piece], None, 0)
         starts = [0, *(m.end() for m in re.finditer(b"\n", data))]
         first, last = args.start_line - 1, args.start_line - 1 + args.line_count
         if first >= len(starts) or starts[first] >= len(data):
@@ -720,7 +754,14 @@ def _data(shape: str, pieces: list[_Piece]) -> tuple[JsonValue, dict[str, list[s
             last = piece.line + text.count("\n") - text.endswith("\n")
             lines = {"start": piece.line, "end_inclusive": last}
         span = {"start": piece.start, "end_exclusive": piece.end}
-        item = {"text": text, "provenance": {**piece.prov, "span": span, "line_span": lines}}
+        item: dict[str, JsonValue] = {
+            "text": text,
+            "provenance": {**piece.prov, "span": span, "line_span": lines},
+        }
+        if piece.image is not None:
+            facts = artifact_facts(piece.image)
+            assert facts is not None
+            item["image"] = image_attachment(piece.image, facts)
         items.append(item if shape == "text" else {"ref": piece.ref, **item})
     if shape == "list":
         unspanned = pieces[0].prov | {"span": None, "line_span": None}

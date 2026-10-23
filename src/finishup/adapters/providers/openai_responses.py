@@ -28,6 +28,7 @@ from finishup.adapters.providers.reviewer_cache_telemetry import (
     api_exchange_usage,
     record_exchange_cache,
 )
+from finishup.adapters.reviewer_artifacts import image_messages
 from finishup.domain.findings import FindingKind, SamplingParams, SemanticFailureClass
 from finishup.domain.privacy import (
     ApprovedOutboundCase,
@@ -1666,7 +1667,7 @@ def _build_body_object(
         # and the reply schema is plain structured output. No tools of any kind are sent.
         body: dict[str, JsonValue] = {
             "model": case.provider_binding.model_id,
-            "input": payload_value,
+            "input": image_messages(exchange.history, "responses"),
             "max_output_tokens": OPENAI_MAX_OUTPUT_TOKENS,
             "text": {
                 "format": {

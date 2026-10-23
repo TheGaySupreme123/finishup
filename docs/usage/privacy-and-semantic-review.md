@@ -266,6 +266,19 @@ task input.
 
 ## Commands
 
+Small image attachments are an additional, default-off choice for AI-powered review. A custom
+policy can add `semantic-review-images` to the LLM channel's allowed purposes through the existing
+`privacy propose` / `privacy decide-policy` or desired-state approval flow. Both machine and
+repository ceilings must allow it; removing that purpose revokes it. Guided setup does not enable
+it or currently offer an image toggle. Review still needs ordinary repository-excerpt permission.
+
+The reviewer can read an existing PNG/JPEG beneath an admitted folder and receive its whole image
+when it fits 4 KiB and 512 pixels per edge. Larger images provide header facts; SVG provides bounded
+attributes and text. These facts do not prove appearance. No image is resized, rendered or fetched,
+and the existing read budgets still apply. Image text is not checked with OCR. Provider/model
+support is separate: local routes provide facts, and a Codex model without explicit image support
+ends that review exchange unavailable. Images observed only by digest in your host remain unseen.
+
 ```text
 finishup --privacy                 # the AI-powered review options or the recommended policy (below)
 finishup privacy setup             # equivalent guided policy review

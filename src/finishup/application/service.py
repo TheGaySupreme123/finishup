@@ -3236,6 +3236,7 @@ class Application:
             HUMAN_TEXT_MAX_CHARS,
             ReceiptExcerpt,
             bounded_omitted_pointers,
+            receipt_fragments,
             withheld_text,
         )
 
@@ -3246,6 +3247,7 @@ class Application:
 
         receipt_excerpt_items: dict[str, ReceiptExcerpt] = {}
         leaf_excerpts: dict[str, list[ReceiptExcerpt]] = {}
+        receipt_fragment_sources: dict[str, str] = {}
         receipt_provenance: ProjectionProvenanceContext | None = None
         if type(result) is ReceiptInternalResult and sink is LocalDisclosureSink.AGENT_CONTEXT:
             from finishup.application.receipt_projection import receipt_excerpts
@@ -3290,19 +3292,29 @@ class Application:
             if classification == "public_structural":
                 continue
             spans = leaf_excerpts.get(pointer)
-            items.append(
-                CandidateContextItem(
-                    f"leaf-{ordinal}",
-                    classification,
-                    scope,
-                    pointer,
-                    canonical_encode(
-                        withheld_text(value, spans, max_chars=field_chars(pointer))
-                        if type(value) is str and spans
-                        else value
-                    ),
-                )
+            content = canonical_encode(
+                withheld_text(value, spans, max_chars=field_chars(pointer))
+                if type(value) is str and spans
+                else value
             )
+            fragments = (
+                receipt_fragments(content)
+                if type(result) is ReceiptInternalResult and not spans
+                else (content,)
+            )
+            for part, data in enumerate(fragments):
+                origin = pointer if len(fragments) == 1 else f"{pointer}/@admission_part/{part}"
+                if len(fragments) > 1:
+                    receipt_fragment_sources[origin] = pointer
+                items.append(
+                    CandidateContextItem(
+                        f"leaf-{ordinal}" if len(fragments) == 1 else f"leaf-{ordinal}-{part}",
+                        classification,
+                        scope,
+                        origin,
+                        data,
+                    )
+                )
         source_request_id = source.get("request_id")
         projection_request_id = (
             binding.original_request_id
@@ -3374,7 +3386,12 @@ class Application:
             if excerpt is not None:
                 withheld_spans.setdefault(excerpt.pointer, []).append(excerpt)
         marking_omissions = tuple(
-            omission
+            replace(
+                omission,
+                json_pointer=receipt_fragment_sources.get(
+                    omission.json_pointer, omission.json_pointer
+                ),
+            )
             for omission in completed.omissions
             if omission.json_pointer not in receipt_excerpt_items
         )
@@ -3436,7 +3453,7 @@ class Application:
                 tuple(
                     receipt_excerpt_items[item.json_pointer].pointer
                     if item.json_pointer in receipt_excerpt_items
-                    else item.json_pointer
+                    else receipt_fragment_sources.get(item.json_pointer, item.json_pointer)
                     for item in completed.omissions
                 )
             ),

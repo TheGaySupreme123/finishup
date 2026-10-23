@@ -47,7 +47,7 @@ from finishup.domain.reviewer_reads import render_reviewer_lines, reviewer_recor
 from finishup.kernel.claim_verification import CLAIM_VERIFICATION_HEADER
 from finishup.kernel.fact_lineage import FactLineage, lineage_from_wire, lineage_texts
 from finishup.legacy_names import LAUNCHER_NAME, LAUNCHER_NAMES
-from finishup.mcp.errors import VALIDATION_REASON_TOKENS
+from finishup.mcp.errors import VALIDATION_REASON_TOKENS, field_repair_hint
 from finishup.protocol.canonical import JsonValue, ensure_canonical_value
 from finishup.protocol.errors import (
     SERVICE_STARTUP_PHASES,
@@ -1116,7 +1116,7 @@ def render_check_reviewer_output(envelope: object) -> str:
 
 
 def _repair_clause(error: Mapping[str, JsonValue]) -> str:
-    """Render the bounded field-ownership repair fact, or "" when none travels on the error.
+    """Render a catalog-confirmed family/version remedy, or "" when none travels on the error.
 
     Hosts are not required to surface structured content, so the one schema-derived repair
     sentence is repeated on the text channel (issue #266). Every token the sentence carries was
@@ -1128,15 +1128,8 @@ def _repair_clause(error: Mapping[str, JsonValue]) -> str:
     if not isinstance(details, Mapping):
         return ""
     typed = cast(Mapping[str, JsonValue], details)
-    if typed.get("repair_kind") != "field_ownership":
-        return ""
-    field = typed.get("repair_field")
-    owner = typed.get("repair_owning_family")
-    selected = typed.get("repair_selected_family")
-    for token in (field, owner, selected):
-        if type(token) is not str or _FIELD_NAME.fullmatch(token) is None:
-            return ""
-    return f" Repair: {field} is admitted only by the {owner} payload, not {selected}."
+    remedy = field_repair_hint(typed)
+    return f" Repair: {remedy}." if remedy else ""
 
 
 # Frozen command keys whose values are repository literals gated by ``_TOKEN_DETAIL_VALUES``.
@@ -1411,7 +1404,7 @@ def _blocking_reasons_clause(error: Mapping[str, JsonValue]) -> str:
 def summary_for_public_error(envelope: object) -> str:
     """Render only the stable public error identity, never message or rejected input.
 
-    Bounded exceptions are the field-ownership repair fact (issue #266), the frozen
+    Bounded exceptions are the field family/version repair fact (issues #266, #1202), the frozen
     ``reason_code``/``field`` location clause (issue #579), and the exact-shape claim-revision
     invariant clause. All projected values come from schema or registry tokens, never caller
     input. A host that drops structured content on ``isError`` would otherwise lose the only

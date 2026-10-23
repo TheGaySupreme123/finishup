@@ -405,11 +405,22 @@ request stays rejected; the field is never moved or reinterpreted. The field nam
 when it byte-equals a frozen catalogued payload property name (a caller-invented key can never
 match), both family names come from an import-gated registry derived from the frozen `publish_work`
 presentation schema, and ownership is asserted only when it is unique — ambiguous fields (for
-example `statement`, `summary`), draft-envelope keys (`evidence_refs`, `artifact_refs`), fields
-owned by another version of the selected family, and unknown keys all retain the plain
-admitted-key answer. The same fact is repeated as one bounded sentence in the authoring hint and
-as a `Repair:` clause on the compatible text summary channel, because MCP hosts are not required
-to surface `structuredContent`.
+example `statement`, `summary`), draft-envelope keys (`evidence_refs`, `artifact_refs`),
+and unknown keys all retain the plain admitted-key answer. The same fact is repeated as one
+bounded sentence in the authoring hint and as a `Repair:` clause on the compatible text summary
+channel, because MCP hosts are not required to surface `structuredContent`.
+
+When the family is correct but its selected event version does not admit the field, the same
+catalog-derived repair uses `repair_kind: field_version` and adds `repair_owning_version`: the
+earliest advertised version admitting that field (issue #1202). The selected and owning family
+are equal. For example, `verification` on `result_recorded/1.0.0` names `result_recorded/1.1.0`;
+the tool envelope's version is unchanged. A cross-family repair also names `repair_owning_version`
+when the field first appears after 1.0.0. These are field-admission facts, not a guarantee that
+other payload members validate. No field is discarded, moved, or upgraded automatically, and
+invalid fields in the corrected version remain rejected. Version repairs retain
+`input_correction_new_identity`; family repairs retain `field_ownership_repair`.
+`finishup.mcp.errors.field_repair_hint` reconstructs the authoring and compact text remedy from
+the frozen catalog, including version membership; no rejected values enter either rendering.
 
 The same text channel also carries a bounded `Reason:` clause when `safe_details` holds a frozen
 protocol `reason_code`, optionally followed by a JSON-pointer `field` (issue #579), and a bounded
@@ -7648,8 +7659,9 @@ still reports the credential connected. A `ready` binding on a host installation
 
 The evaluator is admitted by capability, not by one pinned build (ADR-006 capability amendment,
 2026-10-13): any stable Codex release at or above `0.157.1` whose retained bytes pass the check
-(profile `codex-evaluator/capability/v3`; v3 adds the experimental `thread/start.environments`
-subset fact and the plan/user-input utility disables, #1118 unit 3). A passed check commits
+(profile `codex-evaluator/capability/v4`; v3 added the experimental `thread/start.environments`
+subset fact and plan/user-input utility disables; v4 checks model image modalities and low-detail
+URL-image inputs, #1203). Existing v3 bindings require `repair`. A passed check commits
 `yoetz.codex-evaluator-capability/1` (`capability.json`) beside the retained runtime:
 `capability_profile`, `runtime_floor`, `runtime_version`, `source_identity`,
 `platform` (`os`, `architecture`), `executable_sha256`, `code_mode_host_sha256`,
@@ -11948,6 +11960,44 @@ receipt remains coverage-bounded; Stop is never blocked on it.
 
 ### Reviewer completion exchanges (issue #1118 unit 3, ADR-006)
 
+**Admitted artifacts and verification questions (#1203).** The existing `read_file` text read
+also supplies the task-input summarizer's source-bound facts for supported binary formats and SVG
+structure. `artifact_facts` names its method, full-read digest, size, redaction and limitations.
+Facts are repository excerpts, never visual confirmation. SVG uses the existing safe XML parser,
+value scan before truncation and whole-line summary caps; it evaluates no code or external resource.
+
+`semantic-review-images` is an additional owner-approved LLM-channel purpose, absent from every
+default. Text permission alone supplies no pixels. A whole PNG/JPEG of at most 4,096 bytes and
+512 pixels per edge may accompany an admitted read as `data.image` (`media_type`,
+`source_digest`, `content_base64`). Original bytes are separately admitted and scanned before
+encoding; the whole read stays within 8 KiB and the conversation within 24 KiB. Oversize or
+unsupported attachments leave facts and an explicit limit; attachments are never cut. PNG chunk
+bounds/CRCs/end markers and JPEG segment/scan/end-marker bounds are checked before attachment;
+these container checks do not certify decoded pixels. Retained
+image history rechecks that purpose, policy and admitted roots on every exchange.
+
+Responses and Chat render admitted read images as their native low-detail image content parts.
+The gateway proves the entire rendered input equals the deterministic translation of the approved
+history; no missing, changed or extra input is accepted instead of the verbatim-payload rule.
+Packet, catalog and assistant text never become image authority. Codex supplies an inline low-detail
+image only on a retained continuation, after the exact model catalog explicitly lists image input.
+An unsupported Codex model ends that exchange unavailable; unknown/local routes supply facts only.
+This changes no host capture: digest-only observed images still contain no pixels. No native visual
+accuracy or benchmark improvement is established by the offline transport tests.
+
+An optional distinguishing probe uses existing `decision_needed` fields: discrepancy names the
+criterion and assumption, alternative interpretation names outcomes, and the message proposes the
+check. `respond` links the answer and evidence. Settled question context now retains that proposal
+and its evidence IDs inside the existing history bounds, without reopening a mandatory finding or
+claiming that an agent's answer independently verifies a repair.
+
+Check delivery cursors freeze the presence or absence of call-local `observations_awaited` in their
+authenticated selector; replay derives observed-work references from the trusted ledger prefix at
+the result frontier. Neither recovery repeats a check. Large clean receipt leaves are admitted in
+service-owned 16 KiB fragments, each mapped back to its whole leaf for denial. A whole-value scan
+precedes partitioning; sensitive oversized values fail closed. Delivered clean prose remains whole,
+with the existing lossless host paging, original receipt digest and complete structured findings.
+
 One reviewer-loop completion is one ordinary gateway dispatch with its own admission, rendered-body
 scan, root fence, consume, owed receipt and one-use credential or runtime authority. Its approved
 payload is the canonical history `encode_reviewer_exchange(history)`: a JSON array of
@@ -11964,8 +12014,8 @@ provider-wire schemas as `ReviewerReplySchemas` (`REVIEWER_REPLY_SCHEMAS`, the s
 
 | Route | Request | Refusal |
 |---|---|---|
-| Responses | `input` is the payload verbatim, `text.format` the reply schema, `store:false` kept, no tools | no schemas installed |
-| Chat Completions | `messages` is the payload verbatim, strict `response_format`, no functions or tool calls; the SDK posts the canonical rendered body itself, so the exact-body guard sees the audited bytes | `prompt_only` endpoints (unavailable, never relabelled) |
+| Responses | text-only `input` is the payload verbatim; admitted image turns use native text/image content parts, `text.format` the reply schema, `store:false` kept, no tools | no schemas installed |
+| Chat Completions | text-only `messages` is the payload verbatim; admitted image turns use native text/image content parts, strict `response_format`, no functions or tool calls; the SDK posts the canonical rendered body itself, so the exact-body guard sees the audited bytes | `prompt_only` endpoints (unavailable, never relabelled) |
 | Local model | one frame `{"messages", "protocol": "finishup-reviewer-completion-1", "reply_schema"}` | a profile naming any other protocol (and a completion profile receiving a one-shot case) |
 | Codex subscription | one ephemeral thread per review, held in its `ReviewerSession`; the first turn sends every user message after the instruction (the packet, then the read catalog) as its text inputs, each later turn sends only the user messages after the longest history the thread holds (a read result or repair notice, then, when reads end, the final-phase notice; at most two, #1173), with the same effort and model every turn and the same `outputSchema` except on the final-phase repair turn and any final turn after the review's one repair is spent (#1172, #1173) | releases outside `REVIEWER_LOOP_REVIEWED_RELEASES` (`0.162.1`), no or a closed session, a continuation that does not extend the held thread (`case_invalid`), plan/compaction/tool/request/warning events |
 

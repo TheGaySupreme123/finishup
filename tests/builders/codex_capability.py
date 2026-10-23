@@ -209,4 +209,17 @@ def minimal_app_server_schema() -> dict[str, object]:
                     "properties": {"type": {"enum": [tag]}, **{prop: {} for prop in props}},
                 }
             )
+    # Independent URL-image shape, rather than deriving the sent format from the check table.
+    cast(dict[str, object], definitions["Model"]["properties"])["inputModalities"] = {
+        "type": "array",
+        "items": {"type": "string", "enum": ["text", "image"]},
+    }
+    images = cast(list[dict[str, object]], definitions["UserInput"]["oneOf"])
+    image = images[-1]
+    image["properties"] = {
+        "type": {"enum": ["image"]},
+        "url": {"type": "string"},
+        "detail": {"type": "string", "enum": ["low", "high"]},
+    }
+    image["required"] = ["type", "url"]
     return {"definitions": definitions}

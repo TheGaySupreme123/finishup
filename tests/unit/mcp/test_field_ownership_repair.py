@@ -24,10 +24,10 @@ import finishup.mcp.server as bridge
 from builders.publish_identity import bridge_bound
 from finishup.mcp.descriptors import ORDINARY_MCP_PUBLISH_EVENT_FAMILIES, descriptor_for
 from finishup.mcp.errors import safe_validation_locations
-from finishup.mcp.server import invalid_request_message
+from finishup.mcp.server import invalid_request_message, result_from_public_model
 from finishup.mcp.summaries import MAX_SUMMARY_BYTES, render_safe_compact_summary
 from finishup.protocol.errors import PublicErrorCode
-from finishup.protocol.models import PublishWorkRequestModel
+from finishup.protocol.models import PublishWorkRequestModel, PublishWorkResultModel
 
 _PUBLISH_SCHEMA = descriptor_for("publish_work").input_schema
 _TEMPLATE_URI = "finishup://guidance/request-templates.md"
@@ -194,7 +194,7 @@ def test_an_envelope_owned_key_is_not_called_misplaced_across_families() -> None
     assert "admitted only by" not in message
 
 
-def test_a_key_owned_by_another_version_of_the_same_family_gets_no_repair() -> None:
+def test_a_key_owned_by_another_version_names_the_advertised_version() -> None:
     """`digest_binding` on evidence_recorded 1.0.0 is a version defect, not a family defect."""
 
     request = _single_draft_request("evidence_recorded")
@@ -213,6 +213,131 @@ def test_a_key_owned_by_another_version_of_the_same_family_gets_no_repair() -> N
     assert locations[0]["reason"] == "extra_forbidden"
     message = invalid_request_message("publish_work", locations)
     assert "admitted only by" not in message
+    assert "digest_binding is admitted by evidence_recorded/1.1.0" in message
+
+
+def _verification_request(family: str = "result_recorded") -> dict[str, Any]:
+    request = _with_payload_keys(
+        family,
+        verification={
+            "criterion_quote": "PRIVATE-task-quote-not-for-error-output",
+            "data_source": "task_public",
+            "cases": 2,
+            "failing": 0,
+        },
+    )
+    request["event_drafts"][0]["schema"]["version"] = "1.0.0"
+    return request
+
+
+@pytest.mark.anyio
+async def test_version_recovery_preserves_the_manifest_without_reaching_the_service(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    request = _verification_request()
+    result, structured = await _dry_run_result(monkeypatch, request)
+    error = cast(dict[str, Any], structured["error"])
+    details = error["safe_details"]
+
+    assert error["code"] == "INVALID_REQUEST"
+    assert details["continuation"] == "input_correction_new_identity"
+    assert details["repair_kind"] == "field_version"
+    assert details["repair_field"] == "verification"
+    assert details["repair_selected_family"] == "result_recorded"
+    assert details["repair_owning_family"] == "result_recorded"
+    assert details["repair_owning_version"] == "1.1.0"
+    assert list(details) == sorted(details)
+    expected = "verification is admitted by result_recorded/1.1.0"
+    assert expected in error["message"]
+    summary = render_safe_compact_summary(structured)
+    assert expected in summary
+    assert len(summary.encode("ascii")) <= MAX_SUMMARY_BYTES
+    assert cast(list[Any], getattr(result, "content"))[0].text == summary
+    assert "PRIVATE-task-quote" not in str(structured)
+    assert "PRIVATE-task-quote" not in summary
+    model = PublishWorkResultModel.model_validate(structured)
+    for profile in ("generic", "cursor"):
+        host_result = result_from_public_model(model, host_profile=profile)
+        host_text = cast(list[Any], getattr(host_result, "content"))[0].text
+        assert expected in host_text
+        assert "PRIVATE-task-quote" not in host_text
+
+    # Apply only the advertised event-version correction. The tool envelope version and
+    # the complete verification payload stay unchanged, and the corrected input validates.
+    draft = request["event_drafts"][0]
+    manifest = json.loads(json.dumps(draft["payload"]["verification"]))
+    draft["schema"]["version"] = details["repair_owning_version"]
+    request["request_id"] = "req_00000000-0000-4000-8000-000000001202"
+    repaired = PublishWorkRequestModel.model_validate(bridge_bound(request))
+    assert repaired.schema_version == "1.0.0"
+    assert cast(tuple[Any, ...], repaired.event_drafts)[0]["payload"]["verification"] == manifest
+
+
+@pytest.mark.anyio
+async def test_cross_family_recovery_names_the_version_that_admits_verification(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _, structured = await _dry_run_result(monkeypatch, _verification_request("action_recorded"))
+    error = cast(dict[str, Any], structured["error"])
+    details = error["safe_details"]
+
+    assert details["continuation"] == "field_ownership_repair"
+    assert details["repair_kind"] == "field_ownership"
+    assert details["repair_owning_family"] == "result_recorded"
+    assert details["repair_owning_version"] == "1.1.0"
+    for text in (error["message"], render_safe_compact_summary(structured)):
+        assert "result_recorded payload (event schema version 1.1.0)" in text
+        assert "PRIVATE-task-quote" not in text
+
+
+@pytest.mark.anyio
+async def test_version_repair_does_not_bless_an_invalid_new_version_payload(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    request = _verification_request()
+    request["event_drafts"][0]["schema"]["version"] = "1.1.0"
+    del request["event_drafts"][0]["payload"]["verification"]["cases"]
+    _, structured = await _dry_run_result(monkeypatch, request)
+    error = cast(dict[str, Any], structured["error"])
+
+    assert error["code"] == "INVALID_REQUEST"
+    assert "repair_kind" not in error["safe_details"]
+    assert "/event_drafts/0/payload/verification/cases" in error["safe_details"]["fields"]
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("repair_owning_version", "1.9.9"),
+        ("repair_owning_version", "1.1.0\nPRIVATE-forged"),
+        ("repair_owning_family", "action_recorded"),
+        ("repair_field", "PRIVATE-forged"),
+        ("repair_selected_family", "PRIVATE-forged"),
+    ],
+)
+def test_text_repair_rejects_facts_not_in_the_advertised_catalog(field: str, value: str) -> None:
+    details = {
+        "repair_kind": "field_version",
+        "repair_field": "verification",
+        "repair_owning_family": "result_recorded",
+        "repair_selected_family": "result_recorded",
+        "repair_owning_version": "1.1.0",
+        field: value,
+    }
+    summary = render_safe_compact_summary(
+        {
+            "ok": False,
+            "error": {
+                "code": "INVALID_REQUEST",
+                "retryable": False,
+                "correlation_id": "err_00000000-0000-4000-8000-000000001202",
+                "safe_details": details,
+            },
+        }
+    )
+    assert "Repair:" not in summary
+    assert "PRIVATE-forged" not in summary
+    assert "1.9.9" not in summary
 
 
 def test_several_misplaced_fields_pick_the_ascii_first_deterministically() -> None:

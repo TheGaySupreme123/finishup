@@ -126,9 +126,10 @@ def test_records_are_deterministic_and_strictly_parsed(tmp_path: Path) -> None:
             CodexCapabilityRecord.from_json(document)
 
 
-def test_a_record_from_an_older_contract_is_not_current() -> None:
+@pytest.mark.parametrize("profile", ["codex-evaluator/x/v0", "codex-evaluator/capability/v3"])
+def test_a_record_from_an_older_contract_is_not_current(profile: str) -> None:
     older = CodexCapabilityRecord.from_json(
-        {**record_for(b"codex", b"host").to_json(), "capability_profile": "codex-evaluator/x/v0"}
+        {**record_for(b"codex", b"host").to_json(), "capability_profile": profile}
     )
     assert not older.current
 
@@ -190,6 +191,54 @@ def test_required_fields_the_evaluator_sends_pass_and_enter_the_subset_digest() 
 
 def _properties(definitions: dict[str, dict[str, object]], name: str) -> dict[str, object]:
     return cast(dict[str, object], definitions[name]["properties"])
+
+
+@pytest.mark.parametrize(
+    "regression", ["none", "url_gone", "url_type", "new_required", "detail", "modalities"]
+)
+def test_pinned_url_or_file_id_image_shape_is_checked(regression: str) -> None:
+    document = minimal_app_server_schema()
+    definitions = _definitions(document)
+    variants = cast(list[dict[str, object]], definitions["UserInput"]["oneOf"])
+    image = variants[-1]
+    properties = cast(dict[str, object], image["properties"])
+    url = {"properties": {"url": properties.pop("url")}, "required": ["url"]}
+    image["required"] = ["type"]
+    image["anyOf"] = [url, {"properties": {"fileId": {"type": "string"}}, "required": ["fileId"]}]
+    if regression == "url_gone":
+        image["anyOf"] = cast(list[object], image["anyOf"])[1:]
+    elif regression == "url_type":
+        url["properties"] = {"url": {"type": "integer"}}
+    elif regression == "new_required":
+        url["required"] = ["url", "fileId"]
+    elif regression == "detail":
+        properties["detail"] = {"enum": ["high"]}
+    elif regression == "modalities":
+        _properties(definitions, "Model")["inputModalities"] = {
+            "type": "array",
+            "items": {"type": "boolean"},
+        }
+    if regression == "none":
+        assert check_app_server_schema(document).startswith("sha256:")
+    else:
+        with pytest.raises(ValueError, match="codex_runtime_protocol_incompatible"):
+            check_app_server_schema(document)
+
+
+@pytest.mark.parametrize("constraint", ["file_id", "nested_detail", "forbidden_url", "remote_ref"])
+def test_parent_url_property_cannot_bypass_complete_image_constraints(constraint: str) -> None:
+    document = minimal_app_server_schema()
+    image = cast(list[dict[str, object]], _definitions(document)["UserInput"]["oneOf"])[-1]
+    if constraint == "file_id":
+        image["anyOf"] = [{"required": ["fileId"]}]
+    elif constraint == "nested_detail":
+        image["allOf"] = [{"properties": {"detail": {"const": "high"}}}]
+    elif constraint == "forbidden_url":
+        image["not"] = {"required": ["url"]}
+    else:
+        image["allOf"] = [{"$ref": "https://unavailable.invalid/image-schema"}]
+    with pytest.raises(ValueError, match="codex_runtime_protocol_incompatible"):
+        check_app_server_schema(document)
 
 
 def _regress(definitions: dict[str, dict[str, object]], regression: str) -> None:

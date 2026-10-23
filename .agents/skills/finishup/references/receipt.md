@@ -35,6 +35,10 @@ This topic owns the closing procedure. Start with readiness: at `ready_with_limi
 
 ## Stop conditions
 
+After the receipt, close completed work with `publish_work` using
+`{"schema":{"name":"work_closed","version":"1.0.0"},"payload":{}}`.
+The receipt records the assessment; this separate event records closure.
+
 - Do not repeat a check on unchanged state: it returns the same findings. After one current-state
   recheck still cannot qualify, stop rechecking and disclose the gap.
 - After `insufficient_packet`: If `missing_for_assessment` names an `agent_suppliable` item you can supply, publish exactly that item once, linked to any named target, then `check` again. If it is already supplied, or it is a packet, type or authority limit, go to the receipt and state that specific limit. Only new material counts; tie it to any named target. The captured output of a re-run FinishUP observed counts only once it reaches the reviewer, so publish the result even after a re-run; a respond counts only when the target is a finding, and a description never does. Observed test, build, lint, or typecheck output reaches the reviewer only when a repository excerpt would be sent.

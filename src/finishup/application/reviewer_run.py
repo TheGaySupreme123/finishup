@@ -17,6 +17,7 @@ from dataclasses import dataclass, replace
 from typing import Final, cast
 
 from finishup.adapters.providers.reviewer_reply import REVIEWER_LOOP_INSTRUCTION
+from finishup.adapters.reviewer_artifacts import image_api
 from finishup.application.egress import (
     PrivacyCoordinator,
     ReviewerExchangeFrame,
@@ -207,6 +208,11 @@ async def run_reviewer(
         ),
         max_reads=reads,
         exchange_room=exchange_room,
+        images=(
+            binding.transport != "local_af_unix"
+            and image_api(binding.endpoint_profile_id) is not None
+            and await privacy.reviewer_images_allowed(scope, binding)
+        ),
     )
     catalog = reviewer_catalog(roots, reads)
     results: list[SemanticEgressResult] = []

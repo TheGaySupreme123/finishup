@@ -388,7 +388,8 @@ def test_instruction_is_one_short_pstack_prompt_with_the_honesty_rules() -> None
     text = REVIEWER_LOOP_INSTRUCTION
     # #1145/#1146 add bounded acceptance/calibration rules to the compact M6 core.
     # This cap includes both; never replace it with the full packet-only instruction.
-    assert len(text.encode()) < 8100 and len(text.split()) < 1300
+    # #1203: preserve the old instruction ceiling and therefore the minimal policy's read room.
+    assert len(text.encode()) <= 7639 and len(text.split()) < 1300
     for heading in (
         "## Goal",
         "## Procedure",
@@ -423,7 +424,8 @@ def test_instruction_is_one_short_pstack_prompt_with_the_honesty_rules() -> None
         "limitation",
         "never abstain or ask for that source only because it is absent",
         "not the hook-observed command",
-        "it is not_assessable, not a missing_for_assessment item",
+        "Only attachments supply pixels",
+        "Unattached binaries are not missing_for_assessment",
     ):
         assert rule in " ".join(text.split()), rule
 

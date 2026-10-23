@@ -31,7 +31,12 @@ import time
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Final, Literal, cast
+from typing import Final, Literal, Protocol, cast
+
+from jsonschema import Draft202012Validator, SchemaError
+from referencing import Registry
+from referencing.exceptions import Unresolvable
+from referencing.jsonschema import Schema
 
 from finishup.domain.values import validate_sha256_digest
 from finishup.protocol.canonical import JsonValue, canonical_digest, strict_json_parse
@@ -74,7 +79,8 @@ CODEX_EVALUATOR_RUNTIME_FLOOR: Final = "0.157.1"
 # v3 (#1118 unit 3): ``initialize`` opts into the experimental API only to send
 # ``thread/start.environments: []``; the isolated config disables the plan and user-input
 # utilities; the schema is generated with ``--experimental`` so that field is checked.
-CODEX_EVALUATOR_CAPABILITY_PROFILE: Final = "codex-evaluator/capability/v3"
+# v4 (#1203): include the model modality and low-detail URL-image input contract.
+CODEX_EVALUATOR_CAPABILITY_PROFILE: Final = "codex-evaluator/capability/v4"
 CODEX_CAPABILITY_RECORD_NAME: Final = "capability.json"
 # Frozen legacy identifier (ADR-048): stored in capability.json records; protocol 0.1 keeps one
 # `yoetz.<name>/<n>` tag namespace.
@@ -504,7 +510,16 @@ _REVIEWED_SUBSET: Final[tuple[_Requirement, ...]] = (
         {"cursor": "string", "includeHidden": "boolean", "limit": "integer"},
     ),
     ("props", "ModelListResponse", {"data": "array", "nextCursor": "string"}),
-    ("props", "Model", {"id": "string", "model": "string", "supportedReasoningEfforts": "array"}),
+    (
+        "props",
+        "Model",
+        {
+            "id": "string",
+            "model": "string",
+            "supportedReasoningEfforts": "array",
+            "inputModalities": "array",
+        },
+    ),
     ("props", "ReasoningEffortOption", {"reasoningEffort": "string"}),
     ("variant", "LoginAccountParams", ("chatgpt", ())),
     ("variant", "LoginAccountParams", ("chatgptDeviceCode", ())),
@@ -568,6 +583,7 @@ _REVIEWED_SUBSET: Final[tuple[_Requirement, ...]] = (
         },
     ),
     ("variant", "UserInput", ("text", ("text",))),
+    ("variant", "UserInput", ("image", ("detail",))),
     ("values", "ReasoningSummary", ("none",)),
     ("props", "TurnStartResponse", {"turn": "object"}),
     ("props", "Turn", {"error": "null", "id": "string", "status": "string"}),
@@ -645,6 +661,7 @@ _SENT_VARIANT_FIELDS: Final[Mapping[tuple[str, str], frozenset[str]]] = {
     ("LoginAccountParams", "chatgpt"): frozenset({"type"}),
     ("LoginAccountParams", "chatgptDeviceCode"): frozenset({"type"}),
     ("UserInput", "text"): frozenset({"text", "type"}),
+    ("UserInput", "image"): frozenset({"url", "detail", "type"}),
     ("SandboxPolicy", "readOnly"): frozenset({"networkAccess", "type"}),
 }
 # The exact closed values the evaluator sends. Each request field must still admit its value
@@ -818,6 +835,10 @@ def _strings(values: set[str] | tuple[str, ...]) -> JsonValue:
     return [cast(JsonValue, item) for item in sorted(values)]
 
 
+class _ImageValidator(Protocol):
+    def is_valid(self, instance: object) -> bool: ...
+
+
 def check_app_server_schema(document: object) -> str:
     """Structurally check the reviewed subset; return the digest of the facts that were checked.
 
@@ -901,6 +922,37 @@ def check_app_server_schema(document: object) -> str:
         if not _admits_string(field_schema, definitions, value):
             raise ValueError("codex_runtime_protocol_incompatible")
         facts[f"sent:{name}.{prop}"] = _strings(_accepted(field_schema, definitions)[1])
+    # Validate the whole variant: a parent URL field cannot bypass nested constraints.
+    image = _variant_schema(_resolve(definitions["UserInput"], definitions), definitions, "image")
+    assert image is not None  # checked above
+    image_input = {"type": "image", "url": "data:image/png;base64,AA==", "detail": "low"}
+    try:
+        validator = cast(
+            _ImageValidator,
+            Draft202012Validator(
+                {"definitions": definitions, "allOf": [image]}, registry=Registry[Schema]()
+            ),
+        )
+        accepted = validator.is_valid(image_input)
+    except (SchemaError, Unresolvable, RecursionError) as exc:
+        raise ValueError("codex_runtime_protocol_incompatible") from exc
+    if not accepted:
+        raise ValueError("codex_runtime_protocol_incompatible")
+    model = _resolve(definitions["Model"], definitions)
+    modalities = _resolve(
+        cast(Mapping[str, object], model["properties"])["inputModalities"], definitions
+    )
+    items = modalities.get("items")
+    if "string" not in _accepted(items, definitions)[0] or not _admits_string(
+        items, definitions, "image"
+    ):
+        raise ValueError("codex_runtime_protocol_incompatible")
+    facts["image_input"] = {
+        "url": "string",
+        "detail": "low",
+        "modality": "image",
+        "validated_input": image_input,
+    }
     return canonical_digest(facts)
 
 

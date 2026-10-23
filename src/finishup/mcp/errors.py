@@ -33,6 +33,7 @@ __all__ = [
     "authoring_hint",
     "build_last_resort_internal_error_result",
     "build_public_error_result",
+    "field_repair_hint",
     "safe_validation_locations",
     "sanitize_unknown_tool_name",
     "tool_error_envelope",
@@ -1012,16 +1013,11 @@ def _unknown_payload_key_hint_parts(
         text = f"the payload carries {measure} {subject} does not admit"
         if admitted:
             text = f"{text}; admitted keys are {admitted}"
+        repair = _field_repair((location,))
+        if repair is not None:
+            remedy = field_repair_hint(repair)
+            parts.append((remedy, (remedy, "")))
         parts.append((text, (text, "")))
-        # One bounded ownership sentence when the rejected key is a known field with exactly one
-        # legal owning family. Both names are frozen registry content; the field name matched the
-        # frozen schema vocabulary before it could travel here (issue #266).
-        misplaced = location.get("misplaced_field")
-        if type(misplaced) is str and family is not None:
-            owner = _FIELD_OWNERSHIP.get(misplaced)
-            if owner is not None and owner != family:
-                ownership = f"{misplaced} is admitted only by the {owner} payload, not {family}"
-                parts.append((ownership, (ownership, "")))
         if not admitted:
             # Without the family the caller still needs the contract; the recital is gated off.
             names = _union_schema_names(document, cast(JsonValue, _event_draft_items(document)))
@@ -2350,6 +2346,7 @@ def _validated_failure(
 
 
 _FIELD_OWNERSHIP_REPAIR_KIND: Final = "field_ownership"
+_FIELD_VERSION_REPAIR_KIND: Final = "field_version"
 _FIELD_OWNERSHIP_TEMPLATE_URI: Final = "finishup://guidance/request-templates.md"
 # The continuation for a body the schema validator rejected before any write (ADR-030). It is the
 # same rejection whatever field failed, so it is classified once here, at the only producer of
@@ -2360,12 +2357,12 @@ _INPUT_CORRECTION_CONTINUATION: Final = "input_correction_new_identity"
 _FIELD_OWNERSHIP_CONTINUATION: Final = "field_ownership_repair"
 
 
-def _field_ownership_repair(locations: Sequence[Mapping[str, str]]) -> dict[str, str] | None:
-    """Return the bounded repair fact for the first misplaced uniquely-owned payload field.
+def _field_repair(locations: Sequence[Mapping[str, str]]) -> dict[str, str] | None:
+    """Return the first uniquely-owned field's family or event-version remedy (#266, #1202).
 
     The request stays rejected; this fact only names where the rejected field is legal, so a
-    caller repairs by moving the field instead of deleting it and silently losing the record it
-    carried (issue #266). Every value is frozen content: the field name matched the frozen schema
+    caller repairs its family or version instead of deleting it and silently losing the record it
+    carried. Every value is frozen content: the field name matched the frozen schema
     vocabulary inside the validator, both family names come from the import-gated ownership
     registry beside the frozen presentation schema, and the template URI is a checked-in constant.
     When ownership is ambiguous or unknown there is no entry in the registry and no fact travels.
@@ -2379,16 +2376,61 @@ def _field_ownership_repair(locations: Sequence[Mapping[str, str]]) -> dict[str,
         if type(family) is not str or type(field) is not str:
             continue
         owner = _FIELD_OWNERSHIP.get(field)
-        if owner is None or owner == family:
+        if owner is None:
             continue
-        return {
+        versions = _FIELD_VERSIONS[field]
+        same_family = owner == family
+        if same_family and (
+            location.get("family_version") is None or location["family_version"] in versions
+        ):
+            continue
+        repair = {
             "repair_field": field,
-            "repair_kind": _FIELD_OWNERSHIP_REPAIR_KIND,
+            "repair_kind": (
+                _FIELD_VERSION_REPAIR_KIND if same_family else _FIELD_OWNERSHIP_REPAIR_KIND
+            ),
             "repair_owning_family": owner,
             "repair_selected_family": family,
             "repair_template_uri": _FIELD_OWNERSHIP_TEMPLATE_URI,
         }
+        # Name the earliest advertised version admitting this field, not a promise that the
+        # entire payload validates. Preserve the old family-only shape for fields in 1.0.0.
+        if same_family or versions[0] != "1.0.0":
+            repair["repair_owning_version"] = versions[0]
+        return repair
     return None
+
+
+def field_repair_hint(details: Mapping[str, object]) -> str:
+    """Render only catalog-confirmed field repair facts on both MCP channels."""
+
+    from finishup.mcp.descriptors import ORDINARY_MCP_PUBLISH_EVENT_FAMILIES
+
+    field = details.get("repair_field")
+    owner = details.get("repair_owning_family")
+    selected = details.get("repair_selected_family")
+    if (
+        type(field) is not str
+        or field not in _FIELD_OWNERSHIP
+        or type(owner) is not str
+        or owner != _FIELD_OWNERSHIP[field]
+        or type(selected) is not str
+        or selected not in ORDINARY_MCP_PUBLISH_EVENT_FAMILIES
+    ):
+        return ""
+    version = details.get("repair_owning_version")
+    if version is not None and (type(version) is not str or version != _FIELD_VERSIONS[field][0]):
+        return ""
+    kind = details.get("repair_kind")
+    if kind == _FIELD_VERSION_REPAIR_KIND and owner == selected and version is not None:
+        return (
+            f"{field} is admitted by {owner}/{version}; preserve the field and select that "
+            "event schema version"
+        )
+    if kind == _FIELD_OWNERSHIP_REPAIR_KIND and owner != selected:
+        suffix = f" (event schema version {version})" if version is not None else ""
+        return f"{field} is admitted only by the {owner} payload{suffix}, not {selected}"
+    return ""
 
 
 def tool_error_envelope(
@@ -2425,13 +2467,14 @@ def build_public_error_result(
         }
         if type(details_reason_code) is str and _REASON_CODE.fullmatch(details_reason_code):
             details["reason_code"] = details_reason_code
-        repair = _field_ownership_repair(locations)
+        repair = _field_repair(locations)
         if repair is not None:
             details.update(repair)
         # A location-shaped rejection is always caller input the validator refused. The reason
         # code rides beside the locations only when a boundary knows something the locations do
         # not (the recovery oracle was unreachable), and that fact decides the directive; otherwise
-        # the ownership repair, when one applies, is the more specific instruction.
+        # the ownership repair, when one applies, is the more specific instruction. A version
+        # remedy keeps the ordinary correction directive: it does not move the field.
         reason_continuation = (
             REASON_CODE_CONTINUATIONS.get(details_reason_code)
             if type(details_reason_code) is str
@@ -2439,7 +2482,7 @@ def build_public_error_result(
         )
         if reason_continuation is not None:
             details["continuation"] = reason_continuation
-        elif repair is not None:
+        elif repair is not None and repair["repair_kind"] == _FIELD_OWNERSHIP_REPAIR_KIND:
             details["continuation"] = _FIELD_OWNERSHIP_CONTINUATION
         else:
             details["continuation"] = _INPUT_CORRECTION_CONTINUATION
@@ -2603,8 +2646,8 @@ def _check_locatable_required_names() -> None:
 _check_locatable_required_names()
 
 
-def _build_field_ownership() -> Mapping[str, str]:
-    """Map each payload field to its sole owning ordinary publish family, or omit it.
+def _build_field_repair_catalog() -> tuple[Mapping[str, str], Mapping[str, tuple[str, ...]]]:
+    """Map uniquely-owned fields to their ordinary family and advertised versions.
 
     Derived at import from the frozen publish_work presentation schema — the exact surface
     callers author against — so the registry cannot drift from the contract it corrects (issue
@@ -2627,7 +2670,7 @@ def _build_field_ownership() -> Mapping[str, str]:
         options = items.get("anyOf")
     if not isinstance(options, list):
         raise RuntimeError("field_ownership_event_drafts_missing")
-    owners: dict[str, set[str]] = {}
+    owners: dict[str, dict[str, set[str]]] = {}
     envelope_keys: set[str] = set()
     for branch in cast(list[JsonValue], options):
         resolved = _resolve_local(document, branch)
@@ -2636,6 +2679,9 @@ def _build_field_ownership() -> Mapping[str, str]:
         family = _schema_name_const(document, resolved)
         if family is None or family not in ORDINARY_MCP_PUBLISH_EVENT_FAMILIES:
             continue
+        version = _schema_version_const(document, resolved)
+        if version is None or SCHEMA_VERSION_PATTERN.fullmatch(version) is None:
+            raise RuntimeError("field_ownership_version_missing")
         branch_properties = cast(Mapping[str, JsonValue], resolved).get("properties")
         if not isinstance(branch_properties, Mapping):
             continue
@@ -2649,7 +2695,7 @@ def _build_field_ownership() -> Mapping[str, str]:
             continue
         for key in cast(Mapping[object, object], payload_properties):
             if type(key) is str:
-                owners.setdefault(key, set()).add(family)
+                owners.setdefault(key, {}).setdefault(family, set()).add(version)
     ownership = {
         field: next(iter(families))
         for field, families in owners.items()
@@ -2659,7 +2705,18 @@ def _build_field_ownership() -> Mapping[str, str]:
     # to a schema or projection change must fail startup, not silently drop the repair.
     if ownership.get("attempted_items") != "action_recorded":
         raise RuntimeError("field_ownership_registry_drifted")
-    return MappingProxyType(dict(sorted(ownership.items())))
+    versions = {
+        field: tuple(
+            sorted(
+                owners[field][family],
+                key=lambda value: tuple(int(part) for part in value.split(".")),
+            )
+        )
+        for field, family in sorted(ownership.items())
+    }
+    return MappingProxyType(dict(sorted(ownership.items()))), MappingProxyType(versions)
 
 
-_FIELD_OWNERSHIP: Final[Mapping[str, str]] = _build_field_ownership()
+_FIELD_REPAIR_CATALOG: Final = _build_field_repair_catalog()
+_FIELD_OWNERSHIP: Final[Mapping[str, str]] = _FIELD_REPAIR_CATALOG[0]
+_FIELD_VERSIONS: Final[Mapping[str, tuple[str, ...]]] = _FIELD_REPAIR_CATALOG[1]

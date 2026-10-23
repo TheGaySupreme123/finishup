@@ -508,6 +508,20 @@ async def test_real_disclosure_and_recorded_source_continuation_do_not_repeat_wo
 
     monkeypatch.setattr(type(workflow.app.privacy), "prepare_local_disclosure", disclose)
     case = workflow.case(label)
+    if label == "check":
+        from dataclasses import replace
+
+        from finishup.ports.ledger import CheckCommitResult, CheckObservationsAwaited
+
+        # This call-local field is absent when the stored check is reloaded on continuation.
+        assert isinstance(case.internal, CheckCommitResult)
+        case = replace(
+            case,
+            internal=replace(
+                case.internal,
+                observations_awaited=CheckObservationsAwaited("bounded_timeout", 2),
+            ),
+        )
     if case.method is ControlMethod.STATUS:
         # The MCP status tool opts an agent's read into pages; internal reads stay complete.
         unpaged = dict(await project_case(workflow.app, case, 8990, paginate=True))
