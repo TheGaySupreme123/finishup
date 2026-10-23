@@ -15,10 +15,12 @@ from typing import cast
 
 import pytest
 
+from builders.observed_runs import ObservedLedger
 from builders.policy_cases import evd, evt, finding_record, fnd, obl, record
 from finishup.domain.events import (
     CheckMode,
     CheckRecordedPayload,
+    EventSchema,
     LedgerRecord,
     PolicyVersion,
     ResponseRecordedPayload,
@@ -41,7 +43,9 @@ from finishup.kernel.closure_readiness import (
     derive_closure_readiness,
 )
 from finishup.kernel.finding_resolution import (
+    OBSERVED_FAILURE_NOT_RERUN,
     UNRESOLVED_FINDING_NEXT_STEPS,
+    finding_resolution_attempt,
     finding_resolution_explanation,
 )
 from finishup.kernel.finding_todo import (
@@ -52,6 +56,7 @@ from finishup.kernel.finding_todo import (
     todo_counts,
 )
 from finishup.kernel.projections import ProjectionState, StandingPosition, empty_projection_state
+from finishup.kernel.reducers import replay
 from finishup.kernel.self_verification import (
     FINDING_NOT_PROOF_LIMITED,
     FINDING_NOT_RECHECKED,
@@ -401,8 +406,10 @@ def test_refused_explanation_names_the_same_current_conditions_as_respond(gap: s
     assert blocking == self_verification_blocking_reasons(state, fnd(1), records)
     assert "coverage:" + gap in blocking
     explanation = finding_resolution_explanation(state, fnd(1), records)
-    assert "Self-verification is unavailable now: finding_not_proof_limited" in explanation
-    assert all(reason in explanation for reason in blocking)
+    marker = "Self-verification is unavailable now: finding_not_proof_limited"
+    assert marker in explanation
+    guidance = explanation.split(marker, 1)[1]
+    assert all(reason in guidance for reason in blocking)
     assert SELF_VERIFIED_GUIDANCE not in explanation
     assert "repair it, then check" not in explanation
     assert "repeating the same repair" in explanation
@@ -412,6 +419,57 @@ def test_no_later_check_guidance_reports_actual_unavailability() -> None:
     explanation = finding_resolution_explanation(_state(_finding()), fnd(1), ())
     assert "Self-verification is unavailable now: finding_not_rechecked" in explanation
     assert SELF_VERIFIED_GUIDANCE not in explanation
+
+
+@pytest.mark.parametrize("later_check", [False, True])
+def test_observed_failure_guidance_preserves_acknowledgement_and_proof_limit_exit(
+    later_check: bool,
+) -> None:
+    ledger = ObservedLedger()
+    failed = ledger.fail("pytest -q tests/test_x.py")
+    finding = ledger.advice_finding(ledger.events_of(failed))
+    state = replay(ledger.prefix)
+    assert state.findings[finding].failed_run_result_id == failed
+    records = ledger.prefix
+    if later_check:
+        payload = state.findings[finding].payload
+        assert payload is not None
+        check = _check(tested=ledger.frontier.sequence)
+        check = replace(
+            check,
+            policies=(PolicyVersion(payload.policy_id, payload.policy_version),),
+            policy_executions=(
+                check.policy_executions[0].model_copy(
+                    update={
+                        "policy_id": payload.policy_id,
+                        "policy_version": payload.policy_version,
+                    },
+                ),
+            ),
+        )
+        ledger._append(  # pyright: ignore[reportPrivateUsage]
+            EventSchema("check_recorded", "1.2.0"), check, observed=False
+        )
+        records = ledger.prefix
+        state = replay(records)
+    explanation = finding_resolution_explanation(state, finding, records)
+    assert "If the failure is expected or will stay, respond acknowledged with the reason" in (
+        explanation
+    )
+    assert "before another response" not in explanation
+    if later_check:
+        attempt = finding_resolution_attempt(state, finding, records)
+        assert attempt is not None
+        assert OBSERVED_FAILURE_NOT_RERUN in attempt.reasons
+        assert self_verification_evaluation(state, finding, records) == (None, ())
+        assert explanation.endswith(UNRESOLVED_FINDING_NEXT_STEPS)
+    else:
+        assert self_verification_evaluation(state, finding, records) == (FINDING_NOT_RECHECKED, ())
+        assert "Self-verification is unavailable now: finding_not_rechecked" in explanation
+        assert "self_verified response requires a later recorded check with only proof-limit" in (
+            explanation
+        )
+        assert SELF_VERIFIED_GUIDANCE not in explanation
 
 
 @pytest.mark.parametrize("unreadable", ["check", "returned_findings"])

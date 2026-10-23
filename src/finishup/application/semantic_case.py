@@ -6922,12 +6922,17 @@ def _settled_finding_items(
                     (field, getattr(payload.challenge, field))
                     for field in ("discrepancy", "alternative_interpretation", "uncertainty")
                 )
-        if (
-            answer is not None
-            and answer.reason is not None
-            and (not verification_question or include_decision_prose is not False)
-        ):
-            prose.append(("response", answer.reason))
+    if (
+        answer is not None
+        and answer.reason is not None
+        and (
+            include_decision_prose
+            if verification_question and include_decision_prose is not None
+            else include_prose
+        )
+    ):
+        prose.append(("response", answer.reason))
+    if include_prose or prose:
         body["text_item_ids"] = {
             field: f"{SETTLED_FINDING_ITEM_PREFIX}{field}-{ref}" for field, _text in prose
         }

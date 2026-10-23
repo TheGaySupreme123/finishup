@@ -326,6 +326,53 @@ def test_optional_decline_and_unscoped_advice_stay_history_without_new_work() ->
     assert all(not row.basis.advisories for row in task_view.obligations)
 
 
+@pytest.mark.parametrize("ninth_subject", ("readable", "redacted", "missing", "unscoped"))
+def test_advice_resolves_all_subjects_before_capping_displayed_refs(ninth_subject: str) -> None:
+    case, records = _case()
+    obligations = {
+        obl(n): obligation_record(
+            ObligationPublishedPayload(obl(n), f"Criterion {n}", "criteria", ObligationStatus.OPEN),
+            n + 1,
+        )
+        for n in range(1, 11)
+    }
+    if ninth_subject == "redacted":
+        obligations[obl(9)] = replace(obligations[obl(9)], redacted=True, payload=None)
+    elif ninth_subject == "missing":
+        del obligations[obl(9)]
+    refs = tuple(
+        sorted(
+            (*tuple(obl(n) for n in range(1, 9)), clm(2) if ninth_subject == "unscoped" else obl(9))
+        )
+    )
+    check = cast(resolution.CheckRecordedPayload, records[-2].payload)
+    note = JsonObject({**dict(check.correctness_advisories[0].items()), "subject_refs": refs})
+    view = build_evidence_view(
+        replace(case.projection, obligations=obligations),
+        (
+            *records[:-2],
+            _envelope(30, "check_recorded", replace(check, correctness_advisories=(note,))),
+            records[-1],
+        ),
+        freshness=(),
+        tracked_runs=(),
+    )
+    basis = evidence_basis_by_obligation(view)
+    advice = view.advisories[0]
+    assert advice.subject_refs == refs[:8]
+    assert advice.omitted == 1
+    assert all(basis[str(obl(n))].advisories == (advice,) for n in range(1, 9))
+    if ninth_subject == "readable":
+        assert basis[str(obl(9))].advisories == (advice,)
+        assert advice.response_event_id == evt(40)
+        assert isinstance(advice.reason, str) and "RESPONSE_REASON" in advice.reason
+        assert advice.evidence_refs == (res(1),)
+    else:
+        assert not basis.get(str(obl(9))) or not basis[str(obl(9))].advisories
+    assert not basis[str(obl(10))].advisories
+    assert len(canonical_encode(evidence_view_json(view))) <= MAX_EVIDENCE_VIEW_BYTES
+
+
 def test_prefix_missing_redacted_and_display_caps_never_fabricate_links() -> None:
     case, records = _case(observed=True)
     before_answer = replace(case.projection, frontier=35)

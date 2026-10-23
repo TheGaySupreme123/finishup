@@ -1958,8 +1958,9 @@ def _self_verification_next_steps(
         conditions += " (additional conditions omitted; inspect recorded check coverage)"
     return (
         f"Self-verification is unavailable now: {refusal}{conditions}. "
-        "Address those conditions before another response; repeating the same repair or an "
-        "aggregate review does not establish the missing proof. Respond acknowledged_not_done "
+        "A self_verified response requires a later recorded check with only proof-limit "
+        "conditions. Address the reported conditions before self_verified; repeating the same "
+        "repair or an aggregate review does not establish the missing proof. Respond acknowledged_not_done "
         "only if you truly will not or cannot do it; an acknowledgement is not repair evidence."
     )
 

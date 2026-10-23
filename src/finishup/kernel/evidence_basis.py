@@ -220,6 +220,7 @@ def build_evidence_view(
         for key, refs in observation_rows
     }
     advice: list[StatusEvidenceAdviceModel] = []
+    advice_targets: dict[str, set[ObligationId]] = {}
     for note in reversed(correctness_advisory_index(visible_prefix).rows):
         omitted = 0
 
@@ -231,13 +232,16 @@ def build_evidence_view(
 
         concern = note.concern
         subject_refs = tuple(str(ref) for ref in cast(tuple[str, ...], concern["subject_refs"]))
+        admitted_subject_refs = tuple(
+            ref for ref in subject_refs if ref in readable or ref in readable_events
+        )
+        # Resolve the full explicit relation before bounding its displayed references.
+        advice_targets[note.advisory_id] = subjects(admitted_subject_refs)
         body: dict[str, object] = {
             "advisory_id": note.advisory_id,
             "summary": prose(str(concern["summary"])),
             "detail": prose(str(concern["detail"])),
-            "subject_refs": tuple(
-                ref for ref in subject_refs if ref in readable or ref in readable_events
-            )[:_REFS],
+            "subject_refs": admitted_subject_refs[:_REFS],
             "disposition": note.disposition.replace(" ", "_"),
         }
         omitted += len(subject_refs) - len(cast(tuple[str, ...], body["subject_refs"]))
@@ -461,7 +465,7 @@ def build_evidence_view(
             omissions[obligation] += max(0, len(row.payload.evidence_refs) - _REFS)
     rows: list[dict[str, object]] = []
     for key in selected:
-        notes = [note for note in advice if key in subjects(note.subject_refs)]
+        notes = [note for note in advice if key in advice_targets[note.advisory_id]]
         lists: dict[str, tuple[Sequence[object], int]] = {
             "claims": (list(claim_rows.get(key, ())), _REFS),
             "action_refs": (sorted(action_refs.get(key, ())), _REFS),

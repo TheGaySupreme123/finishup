@@ -1661,13 +1661,16 @@ def _evidence_basis_variants(source: Mapping[str, JsonValue]) -> tuple[str, ...]
         "Evidence links: status view=obligations.",
     )
     readiness = source.get("closure_readiness")
-    if isinstance(readiness, Mapping) and readiness.get("evidence_basis_summary"):
-        return variants
+    if isinstance(readiness, Mapping):
+        summary = readiness.get("evidence_basis_summary")
+        if isinstance(summary, str) and summary:
+            return variants
     document = source.get("document")
     if isinstance(document, Mapping):
         sections = document.get("sections")
         if isinstance(sections, list | tuple) and any(
             isinstance(row, Mapping)
+            and row.get("key") == "evidence_and_claim_basis"
             and isinstance(row.get("body"), str)
             and "Recorded evidence links: status view=obligations." in str(row.get("body"))
             for row in sections
