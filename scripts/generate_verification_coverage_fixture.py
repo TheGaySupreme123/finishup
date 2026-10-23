@@ -22,6 +22,44 @@ _PATH: Final = "canonical/verification-coverage-1.4.0.case.json"
 _FIXTURE_ID: Final = "CAN-024"
 
 
+def evidence_basis_example() -> dict[str, JsonValue]:
+    """A proposed discriminator, an agent-reported probe and an optional reasoned decline."""
+    return {
+        "availability": "recorded",
+        "results": [
+            {
+                "result_ref": "res_00000000-0000-4000-8000-000000001170",
+                "action_ref": "act_00000000-0000-4000-8000-000000001170",
+                "outcome": "success",
+                "evidence_refs": [],
+                "observed": False,
+                "verification_declared": True,
+                "freshness": "legacy",
+                "verification": {
+                    "data_source": "own_generated",
+                    "cases": 1,
+                    "failing": 0,
+                    "tuned_on_these_cases": True,
+                },
+            }
+        ],
+        "advisories": [
+            {
+                "advisory_id": "evt_00000000-0000-4000-8000-000000001170:1",
+                "summary": "Proposed runtime discriminator",
+                "detail": "The executed probe may optimize away its unused canary.",
+                "subject_refs": ["obl_00000000-0000-4000-8000-000000001170"],
+                "disposition": "declined",
+                "reason": "The optional comparison was declined; its uncertainty remains.",
+                "response_event_id": "evt_00000000-0000-4000-8000-000000001171",
+                "evidence_refs": [],
+                "omitted": 0,
+            }
+        ],
+        "omitted": 0,
+    }
+
+
 def document() -> dict[str, JsonValue]:
     root = Path(__file__).resolve().parents[1]
     base = json.loads(
@@ -68,9 +106,10 @@ def document() -> dict[str, JsonValue]:
         },
         "input": {"status_result": status},
         "expected": {
+            "evidence_basis": evidence_basis_example(),
             "coverage_lines": list(
                 verification_coverage_wire_lines(cast(dict[str, object], declared))
-            )
+            ),
         },
     }
 

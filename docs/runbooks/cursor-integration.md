@@ -1,5 +1,10 @@
 # Cursor local integration runbook
 
+The shared evidence view (#1205) reaches Cursor through existing status/check/receipt results and
+the bounded Stop continuation. Use `status view=obligations` for linked advice, responses and
+settlement detail; privacy categories remain independent. Offline shared-path tests are the
+validation here; native host/OS acceptance remains a follow-up on #1205.
+
 Reviewer robustness (#1134–#1137, #1141) applies to Cursor IDE and CLI through the shared service:
 oversized native reads are withheld, sampled listings disclose inspection exhaustion, and read
 capacity is distinct from invalid replies. Codex session cleanup and notification bounds also

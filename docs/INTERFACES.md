@@ -12742,3 +12742,43 @@ fixed owner-facing notice only when the set changed, never on a `stop_hook_activ
 `finding_frontier` before the note's check (such as the history row's
 `advisory_subject_frontier`) is refused with `invalid_frontier` at `/finding_frontier`, naming
 the check's sequence; an unknown identity is `response_fields_invalid` at `/finding_id`.
+
+### Shared recorded evidence links (#1205)
+
+The optional `status(view=obligations)` item member `evidence_basis` is a bounded derived read
+for open and resolved obligations. `kernel.evidence_basis` indexes explicit readable obligation,
+effective-claim, action, result and evidence references; general task events and unscoped claims
+never acquire obligation scope from proximity. The view distinguishes assertions, agent-declared
+verification metadata, service-observed runs, observation-linked references, routine advice and its
+actual response, recorded AI assessments, and resolution. Observation establishes neither an
+independent oracle nor adequacy. An addressed note does not establish repair; a declined or
+unanswered note creates no work. Check-global praise is never per-obligation approval.
+
+Resolution rows reuse `finding_resolution_attempt` and `self_verification_evaluation` at the same
+prefix. Their reasons, check identity and explicit admitted ruling stay separate. Rulings and
+assessments disclose current versus historical applicability through `check_standing`. The
+proof-limit eligibility result also respects the existing terminal state; `respond` still admits
+the reason and post-finding evidence independently. No evidence-display cap changes closure.
+
+New frozen deterministic cases optionally retain this same view, including deliberate routine
+advice/response pairs independently of the ordinary history window. The existing non-rulable
+prior-history channel carries those pairs and assessments. Concern/assessment prose is
+`finding_summary`; the agent's routine-advice rationale and newly frozen settled-choice answer
+are separately admitted `decision_excerpt`. The obligation basis contains ids and closed tokens
+only. Provider selection may withhold either prose category independently. Reference fences still
+apply, and neither a response nor a global reviewer summary becomes a fixed ruling. Legacy cases
+without the view preserve their original encoding and resolved-only fallback; absence supplies no
+new evidence basis. Issued receipts are not rewritten.
+
+The view lists at most 64 obligation rows, eight refs/claims/results per row, four advice,
+assessment and resolution rows per obligation, and four task-level notes, inside 96 KiB. It counts
+omitted links/rows and marks the existing eight-reference observation cap; prose cuts are marked.
+Reviewer obligation metadata yields at 4 KiB without replacing the criterion; paired history
+shares the existing prior-history budget and discloses selection omissions. Freshness uses the
+existing judged-run set and per-run rows; an unjudged run remains `legacy`, never implicitly current.
+
+Shared closure readiness supplies the compact `evidence_basis_summary` pointer for CLI/MCP check
+and status, TUI closure views, and an already-required Stop continuation. Current receipt JSON,
+markdown and text carry it in their evidence section. It creates no calls, events, storage or Stop
+condition. Codex, Claude Code and Cursor consume these same result paths; offline fixtures do not
+establish native host execution or platform parity.

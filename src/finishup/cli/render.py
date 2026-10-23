@@ -497,6 +497,8 @@ def render_human_check(result: CheckSuccessModel) -> str:
         lines.append(f"Suppressed findings: {suppressed}")
     if result.overall_next is not None:
         lines.append(_render_overall_next(result.overall_next, result.finding_checklist))
+    if result.closure_readiness is not None and result.closure_readiness.evidence_basis_summary:
+        lines.append(result.closure_readiness.evidence_basis_summary)
     if result.finding_checklist is not None:
         lines.extend(
             _render_checklist(
@@ -740,6 +742,8 @@ def render_closure_readiness_lines(readiness: StatusClosureReadinessModel) -> tu
         )
     if readiness.correctness_advisory_summary:
         lines.append(readiness.correctness_advisory_summary)
+    if readiness.evidence_basis_summary:
+        lines.append(readiness.evidence_basis_summary)
     return tuple(lines)
 
 
@@ -1037,6 +1041,14 @@ def render_human_status(result: StatusSuccessModel) -> str:
         lines.extend(_render_result_items(result.page))
     if isinstance(result.page, StatusObligationsPageModel):
         for obligation in result.page.items:
+            basis = obligation.evidence_basis
+            if basis is not None:
+                lines.append(
+                    f"{obligation.obligation_id} evidence links ({basis.availability}): "
+                    f"{len(basis.claims)} claims, {len(basis.results)} results, "
+                    f"{len(basis.observed_refs)} observation links; omitted {basis.omitted}. "
+                    "Use JSON status for the bounded advice/response and settlement detail."
+                )
             for attempt in obligation.command_attempts[:3]:
                 lines.append(
                     f"{obligation.obligation_id} command item {attempt.requested_item_index}: {attempt.relation} (attempt only, not success)"

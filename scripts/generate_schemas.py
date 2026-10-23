@@ -4936,10 +4936,24 @@ def _verification_coverage_schema() -> dict[str, JsonValue]:
             "cases": count,
             "failing": count,
             "stale": {"type": "boolean"},
+            "freshness": {"type": "string", "enum": ["current", "stale", "unknown", "legacy"]},
             "tuned_on_these_cases": {"type": "boolean"},
             "worst": text("command_metadata", 64),
         },
         "required": ["result_id", "action_id", "data_source", "cases", "failing", "stale"],
+        "allOf": [
+            {
+                "if": {
+                    "properties": {"freshness": {"enum": ["current", "unknown"]}},
+                    "required": ["freshness"],
+                },
+                "then": {"properties": {"stale": {"const": False}}},
+            },
+            {
+                "if": {"properties": {"freshness": {"const": "stale"}}, "required": ["freshness"]},
+                "then": {"properties": {"stale": {"const": True}}},
+            },
+        ],
     }
     criterion: dict[str, JsonValue] = {
         "type": "object",
@@ -5240,6 +5254,10 @@ def _status_result_v1_4_schema(entry: _RegistryEntry) -> dict[str, JsonValue]:
         dict[str, JsonValue],
         cast(dict[str, JsonValue], definitions["closure_readiness"])["properties"],
     )["correctness_advisory_summary"] = {"type": "string", "minLength": 1, "maxLength": 4096}
+    cast(
+        dict[str, JsonValue],
+        cast(dict[str, JsonValue], definitions["closure_readiness"])["properties"],
+    )["evidence_basis_summary"] = {"type": "string", "minLength": 1, "maxLength": 4096}
     # Issue #1084 (review R7), unreleased in-place addition: present only when the publish that
     # appended the event omitted occurred_at and the service recorded its own clock.
     history_properties["occurred_at_source"] = {
@@ -6566,8 +6584,10 @@ def _add_status_closure_verdict(definitions: dict[str, JsonValue]) -> None:
         ]
     )
     obligation_item = cast(dict[str, JsonValue], definitions["obligation_item"])
+    _add_evidence_basis_schema(definitions)
     cast(dict[str, JsonValue], obligation_item["properties"]).update(
         {
+            "evidence_basis": {"$ref": "#/$defs/obligation_evidence_basis"},
             "closure_basis": {"enum": list(_OBLIGATION_CLOSURE_BASES), "type": "string"},
             "closure_class": {"enum": list(_OBLIGATION_CLOSURE_CLASSES), "type": "string"},
         }
@@ -6578,6 +6598,105 @@ def _add_status_closure_verdict(definitions: dict[str, JsonValue]) -> None:
             "then": {"required": ["closure_basis", "closure_class"]},
         }
     )
+
+
+def _add_evidence_basis_schema(definitions: dict[str, JsonValue]) -> None:
+    """Typed read shape, with exact wire identities and separate omission categories (#1205)."""
+    from finishup.protocol.models import StatusObligationEvidenceModel
+
+    root = cast(dict[str, JsonValue], TypeAdapter(StatusObligationEvidenceModel).json_schema())
+    nested = cast(dict[str, JsonValue], root.pop("$defs", {}))
+    # Every prose leaf below uses the common, category-bound omission instead of these generic
+    # Pydantic definitions. BeforeValidator-backed identities need the real wire definitions too.
+    nested.pop("DataCategory", None)
+    nested.pop("OmittedContentModel", None)
+    root.pop("title", None)
+    definitions.update(nested)
+    definitions["obligation_evidence_basis"] = root
+    definitions.setdefault(
+        "claim_id",
+        {
+            "type": "string",
+            "pattern": r"^clm_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+        },
+    )
+
+    def props(name: str) -> dict[str, JsonValue]:
+        return cast(
+            dict[str, JsonValue], cast(dict[str, JsonValue], definitions[name])["properties"]
+        )
+
+    def ref(name: str) -> dict[str, JsonValue]:
+        return {"$ref": "#/$defs/" + name}
+
+    def array_items(name: str, field: str, item: dict[str, JsonValue]) -> None:
+        cast(dict[str, JsonValue], props(name)[field])["items"] = item
+
+    props("StatusEvidenceClaimModel")["claim_ref"] = ref("claim_id")
+    array_items(
+        "StatusEvidenceClaimModel",
+        "supporting_refs",
+        {"anyOf": [ref("evidence_or_result_id"), ref("obligation_id")]},
+    )
+    array_items("obligation_evidence_basis", "action_refs", ref("action_id"))
+    array_items("obligation_evidence_basis", "observed_refs", ref("evidence_or_result_id"))
+    props("StatusEvidenceResultModel")["result_ref"] = ref("result_id")
+    props("StatusEvidenceResultModel")["action_ref"] = {
+        "anyOf": [ref("action_id"), {"type": "null"}]
+    }
+    array_items("StatusEvidenceResultModel", "evidence_refs", ref("evidence_id"))
+    props("StatusEvidenceResultModel")["verification"] = ref("StatusEvidenceVerificationModel")
+    props("StatusEvidenceAdviceModel")["response_event_id"] = ref("event_id")
+    props("StatusEvidenceAdviceModel")["evidence_refs"] = {
+        "type": "array",
+        "maxItems": 8,
+        "items": ref("evidence_or_result_id"),
+    }
+    props("StatusEvidenceAssessmentModel")["check_event_id"] = ref("event_id")
+    props("StatusEvidenceAssessmentModel")["checked_frontier"] = ref("canonical_uint")
+    props("StatusEvidenceAssessmentModel")["cited_refs"] = {
+        "type": "array",
+        "minItems": 1,
+        "maxItems": 16,
+        "uniqueItems": True,
+        "items": ref("subject_id"),
+    }
+    cast(dict[str, JsonValue], definitions["StatusEvidenceAssessmentModel"])["allOf"] = [
+        {
+            "if": {"properties": {"verdict": {"const": "not_assessable"}}, "required": ["verdict"]},
+            "then": {"not": {"required": ["snippet"]}},
+            "else": {"required": ["snippet"]},
+        }
+    ]
+    props("StatusEvidenceResolutionModel")["finding_ref"] = ref("finding_id")
+    for field in ("check_event_id", "resolved_by_check_event_id", "ruling_check_event_id"):
+        props("StatusEvidenceResolutionModel")[field] = {
+            "anyOf": [ref("event_id"), {"type": "null"}]
+        }
+    props("StatusEvidenceResolutionModel")["checked_frontier"] = {
+        "anyOf": [ref("canonical_uint"), {"type": "null"}]
+    }
+    for name, field, category, limit in (
+        ("StatusEvidenceAdviceModel", "summary", "finding_summary", 8192),
+        ("StatusEvidenceAdviceModel", "detail", "finding_summary", 8192),
+        ("StatusEvidenceAdviceModel", "reason", "decision_excerpt", 4096),
+        ("StatusEvidenceAssessmentModel", "requirement_or_claim", "finding_summary", 8192),
+        ("StatusEvidenceAssessmentModel", "snippet", "finding_summary", 8192),
+    ):
+        props(name)[field] = {
+            "anyOf": [
+                {"type": "string", "minLength": 1, "maxLength": limit},
+                {
+                    "allOf": [
+                        {
+                            "$ref": SCHEMA_NAMESPACE
+                            + "common/operation-result-1.0.0.schema.json#/$defs/omitted_content"
+                        },
+                        {"properties": {"category": {"const": category}}, "required": ["category"]},
+                    ]
+                },
+            ]
+        }
 
 
 def _add_status_semantic_progress(definitions: dict[str, JsonValue]) -> None:

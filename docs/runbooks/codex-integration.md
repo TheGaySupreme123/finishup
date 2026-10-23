@@ -1,5 +1,10 @@
 # Codex integration runbook
 
+The shared evidence view (#1205) reaches Codex through existing status/check/receipt results and
+the bounded Stop continuation. Use `status view=obligations` for linked advice, responses and
+settlement detail; privacy categories remain independent. Offline shared-path tests are the
+validation here; native host/OS acceptance remains a follow-up on #1205.
+
 Reviewer robustness (#1134–#1137, #1141) is shared service behavior on macOS, Linux and WSL 2:
 native reads over 1 MiB are withheld with an explicit limit, sampled directory listings disclose
 inspection exhaustion, and read capacity is reported separately from invalid replies. The Codex

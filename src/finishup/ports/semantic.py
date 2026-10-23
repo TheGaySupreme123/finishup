@@ -1606,6 +1606,16 @@ class SemanticCase:
         # (issue #980) are non-rulable context of their own.
         if packet.prior_finding_refs != structural or any(
             item_by_id[item_id].source_ref not in structural
+            and not (
+                item_by_id[item_id].source_ref in frontier_refs
+                and item_by_id[item_id].source_ref.startswith("evt_")
+                and any(
+                    item_id.startswith(
+                        f"{SETTLED_FINDING_ITEM_PREFIX}{kind}-{item_by_id[item_id].source_ref}-"
+                    )
+                    for kind in ("advice", "assessment")
+                )
+            )
             and item_id
             not in {
                 LOCAL_FINDING_ANSWER_ITEM_PREFIX + item_by_id[item_id].source_ref,

@@ -112,6 +112,7 @@ from finishup.domain.values import (
     EventId,
     FindingId,
     JsonObject,
+    ResultId,
     SubjectStateRelation,
     freeze_json,
     session_id,
@@ -177,7 +178,7 @@ from finishup.kernel.task_facts import (
 from finishup.kernel.test_edit_visibility import check_change_header_entries, check_change_sections
 from finishup.kernel.verification_capture import command_is_declared_verification
 from finishup.kernel.verification_coverage import build_verification_coverage
-from finishup.kernel.verification_freshness import name_free_finding_detail
+from finishup.kernel.verification_freshness import VerificationFreshness, name_free_finding_detail
 from finishup.legacy_names import LEGACY_PRODUCT_NAME, PRODUCT_NAME
 from finishup.observability.privacy import (
     EGRESS_CREDENTIAL_PLACEHOLDER,
@@ -2326,6 +2327,8 @@ def _verification_coverage_item(
     limit: int,
     unchanged_action_ids: tuple[ActionId, ...] = (),
     workspace_verification_edit_frontier: int = 0,
+    freshness: tuple[VerificationFreshness, ...] | None = None,
+    tracked_runs: tuple[ResultId, ...] | None = None,
 ) -> SemanticCaseItem | None:
     """A structural index; criterion text stays in its separately authorized source item."""
 
@@ -2334,6 +2337,8 @@ def _verification_coverage_item(
         task_statement=task_statement,
         unchanged_action_ids=unchanged_action_ids,
         workspace_verification_edit_frontier=workspace_verification_edit_frontier,
+        freshness=freshness,
+        tracked_runs=tracked_runs,
     )
     if not coverage.criteria or limit < 256:
         return None
@@ -6434,6 +6439,7 @@ def _prior_findings_section(
     allowed: frozenset[str],
     *,
     include_prose: bool,
+    include_decision_prose: bool | None = None,
     compact: bool = False,
     remaining_items: int,
     remaining_bytes: int,
@@ -6499,7 +6505,20 @@ def _prior_findings_section(
     # first. One that does not fit is not a truncation of the rulable section: the reviewer can
     # still rule on every open finding, and an unnamed re-raise becomes a new finding as before.
     for ref, record in _settled_finding_candidates(projection, allowed):
-        rows = _settled_finding_items(ref, record, projection, allowed, include_prose=include_prose)
+        rows = _settled_finding_items(
+            ref,
+            record,
+            projection,
+            allowed,
+            include_prose=include_prose,
+            include_decision_prose=include_decision_prose,
+        )
+        if (
+            include_decision_prose is False
+            and record.payload is not None
+            and record.payload.kind is FindingKind.DECISION_NEEDED
+        ):
+            omissions.append(_omit(ref, DataCategory.DECISION_EXCERPT, "decision", "not_selected"))
         size = sum(item.content_bytes for item in rows)
         if (
             carried >= MAX_PRIOR_FINDINGS
@@ -6643,6 +6662,166 @@ def _resolved_criterion_basis(
     }
 
 
+def _evidence_context_items(
+    frozen_case: DeterministicCase,
+    allowed: frozenset[str],
+    selection: ReviewSelectionPolicy,
+    *,
+    remaining_items: int,
+    remaining_bytes: int,
+) -> tuple[list[SemanticCaseItem], list[ReviewOmission]]:
+    """Deliberately paired, non-rulable history; each prose category is admitted separately.
+
+    The check is the pair's identity, as a finding is the identity of its response dialogue.
+    The actual response event remains explicit. These rows cannot invite a finding ruling.
+    """
+    if frozen_case.evidence_view is None:
+        return [], []
+    from finishup.kernel.evidence_basis import evidence_view_from_json
+
+    view = evidence_view_from_json(frozen_case.evidence_view)
+    items: list[SemanticCaseItem] = []
+    omissions: list[ReviewOmission] = []
+    notes = {note.advisory_id: note for note in view.advisories}
+    for row in view.obligations:
+        for note in row.basis.advisories:
+            notes.setdefault(note.advisory_id, note)
+    for note in notes.values():
+        ref, ordinal = note.advisory_id.split(":", 1)
+        if ref not in allowed:
+            continue
+        identity = f"{SETTLED_FINDING_ITEM_PREFIX}advice-{ref}-{ordinal}"
+        body = cast(dict[str, JsonValue], note.model_dump(mode="json", exclude_unset=True))
+        for field in ("summary", "detail", "reason"):
+            body.pop(field, None)
+        body.update(
+            kind="routine_advice_history", non_rulable=True, omitted_context_rows=view.omitted
+        )
+        prose: list[tuple[str, DataCategory, str]] = []
+        if selection.include_finding_prose:
+            prose.append(
+                (
+                    "concern",
+                    DataCategory.FINDING_SUMMARY,
+                    f"AI-powered advice (non-blocking): {note.summary}\n{note.detail}",
+                )
+            )
+        else:
+            omissions.append(_omit(ref, DataCategory.FINDING_SUMMARY, "finding", "not_selected"))
+        if note.reason is not None:
+            if "decisions" in selection.sections:
+                prose.append(
+                    (
+                        "response",
+                        DataCategory.DECISION_EXCERPT,
+                        f"Agent response (self-reported): {note.reason}",
+                    )
+                )
+            else:
+                omissions.append(
+                    _omit(ref, DataCategory.DECISION_EXCERPT, "decision", "not_selected")
+                )
+        cited_results = tuple(ref for ref in note.evidence_refs or () if ref.startswith("res_"))
+        if "targeted_excerpts" in selection.sections and "command" in selection.excerpt_kinds:
+            for token in cited_results[:2]:
+                if token not in allowed:
+                    continue
+                result = frozen_case.projection.results.get(validate_result_id(token))
+                if result is not None and result.payload is not None and not result.redacted:
+                    prose.append(
+                        (
+                            f"result-{token}",
+                            DataCategory.COMMAND_METADATA,
+                            f"Cited result {token} (agent-reported unless separately observed): "
+                            f"{result.payload.outcome.value}\n{result.payload.summary or 'No result summary recorded.'}",
+                        )
+                    )
+        body["omitted_cited_result_excerpts"] = len(cited_results) - sum(
+            name.startswith("result-") for name, _category, _value in prose
+        )
+        body["text_item_ids"] = {name: f"{identity}-{name}" for name, _category, _value in prose}
+        text, _fit = _bounded_json(body)
+        group = [
+            _content_item(
+                item_id=identity,
+                section="prior_finding",
+                category=DataCategory.BOUNDED_STRUCTURAL_METADATA,
+                source_kind="finding",
+                source_ref=ref,
+                linked_subject_refs=(ref,),
+                occurred_order=0,
+                text=text,
+            )
+        ]
+        for name, category, value in prose:
+            linked_refs = {ref}
+            if name.startswith("result-"):
+                linked_refs.add(name.removeprefix("result-"))
+            elif name == "response" and note.response_event_id in allowed:
+                linked_refs.add(note.response_event_id)
+            group.append(
+                _content_item(
+                    item_id=f"{identity}-{name}",
+                    section="prior_finding",
+                    category=category,
+                    source_kind="decision"
+                    if category is DataCategory.DECISION_EXCERPT
+                    else "result"
+                    if name.startswith("result-")
+                    else "finding",
+                    source_ref=ref,
+                    linked_subject_refs=tuple(sorted(linked_refs)),
+                    occurred_order=0,
+                    text=value,
+                )
+            )
+        size = sum(item.content_bytes for item in group)
+        if len(items) + len(group) > remaining_items or size > remaining_bytes:
+            omissions.extend(
+                _omit(ref, item.category, item.source_kind, "not_selected") for item in group
+            )
+            continue
+        items.extend(group)
+        remaining_bytes -= size
+    assessments = {
+        (
+            assessment.check_event_id,
+            assessment.cited_refs,
+            str(assessment.requirement_or_claim),
+        ): assessment
+        for row in view.obligations
+        for assessment in row.basis.assessments
+    }
+    for ordinal, assessment in enumerate(
+        sorted(assessments.values(), key=lambda row: -int(row.checked_frontier))
+    ):
+        ref = assessment.check_event_id
+        if ref not in allowed:
+            continue
+        if not selection.include_finding_prose:
+            omissions.append(_omit(ref, DataCategory.FINDING_SUMMARY, "finding", "not_selected"))
+            continue
+        item = _content_item(
+            item_id=f"{SETTLED_FINDING_ITEM_PREFIX}assessment-{ref}-{ordinal}",
+            section="prior_finding",
+            category=DataCategory.FINDING_SUMMARY,
+            source_kind="finding",
+            source_ref=ref,
+            # Earlier model prose belongs to its check, never to the result it judged. Otherwise
+            # the quote fence could mistake an AI assessment for the cited result's own text.
+            linked_subject_refs=(ref,),
+            occurred_order=int(assessment.checked_frontier),
+            text=f"Recorded AI assessment ({assessment.applicability}, advisory): {assessment.requirement_or_claim}\n"
+            f"{assessment.verdict}\n{assessment.snippet or 'No snippet recorded.'}",
+        )
+        if len(items) >= remaining_items or item.content_bytes > remaining_bytes:
+            omissions.append(_omit(ref, DataCategory.FINDING_SUMMARY, "finding", "not_selected"))
+            continue
+        items.append(item)
+        remaining_bytes -= item.content_bytes
+    return items, omissions
+
+
 def _obligation_disclosures(
     projection: ProjectionState, allowed: frozenset[str]
 ) -> dict[str, dict[str, JsonValue]]:
@@ -6690,6 +6869,7 @@ def _settled_finding_items(
     allowed: frozenset[str],
     *,
     include_prose: bool,
+    include_decision_prose: bool | None = None,
 ) -> list[SemanticCaseItem]:
     """One settled finding as a non-rulable row, plus its headline and the agent's reason."""
 
@@ -6742,7 +6922,11 @@ def _settled_finding_items(
                     (field, getattr(payload.challenge, field))
                     for field in ("discrepancy", "alternative_interpretation", "uncertainty")
                 )
-        if answer is not None and answer.reason is not None:
+        if (
+            answer is not None
+            and answer.reason is not None
+            and (not verification_question or include_decision_prose is not False)
+        ):
             prose.append(("response", answer.reason))
         body["text_item_ids"] = {
             field: f"{SETTLED_FINDING_ITEM_PREFIX}{field}-{ref}" for field, _text in prose
@@ -6765,7 +6949,13 @@ def _settled_finding_items(
             _content_item(
                 item_id=f"{SETTLED_FINDING_ITEM_PREFIX}{field}-{ref}",
                 section="prior_finding",
-                category=DataCategory.FINDING_SUMMARY,
+                category=(
+                    DataCategory.DECISION_EXCERPT
+                    if field == "response"
+                    and verification_question
+                    and include_decision_prose is not None
+                    else DataCategory.FINDING_SUMMARY
+                ),
                 source_kind="finding",
                 source_ref=ref,
                 linked_subject_refs=(ref,),
@@ -7112,6 +7302,13 @@ def _build_semantic_case_once(
     frontier_refs = frontier_refs - local_check_refs
     allowed = frontier_refs | local_check_refs
     projection = frozen_case.projection
+    from finishup.kernel.evidence_basis import evidence_basis_by_obligation, evidence_view_from_json
+
+    evidence_bases = (
+        {}
+        if frozen_case.evidence_view is None
+        else evidence_basis_by_obligation(evidence_view_from_json(frozen_case.evidence_view))
+    )
 
     captured_groups, captured_gaps = _captured_content_groups(
         projection,
@@ -7183,6 +7380,8 @@ def _build_semantic_case_once(
             limit=min(4096, selection.max_excerpt_bytes, selection.max_total_excerpt_bytes),
             unchanged_action_ids=frozen_case.verification_unchanged_action_ids,
             workspace_verification_edit_frontier=frozen_case.workspace_verification_edit_frontier,
+            freshness=frozen_case.verification_freshness,
+            tracked_runs=frozen_case.verification_tracked_runs,
         )
         if coverage_item is not None:
             items.append(coverage_item)
@@ -7296,13 +7495,41 @@ def _build_semantic_case_once(
             )
         )[:16]
         obligation_json = dict(cast(Mapping[str, JsonValue], encode_payload(payload)))
+        basis_row = evidence_bases.get(ref)
+        if basis_row is not None:
+            # This obligation item carries ids/closed facts only. Reviewer and agent prose use
+            # their own categories below, never this obligation-text or structural admission.
+            linked_basis = cast(
+                dict[str, JsonValue], basis_row.model_dump(mode="json", exclude_unset=True)
+            )
+            for note in cast(list[dict[str, JsonValue]], linked_basis.get("advisories", [])):
+                for field in ("summary", "detail", "reason"):
+                    note.pop(field, None)
+            for assessment in cast(list[dict[str, JsonValue]], linked_basis.get("assessments", [])):
+                for field in ("requirement_or_claim", "snippet"):
+                    assessment.pop(field, None)
+            if len(canonical_encode(linked_basis)) > 4096:
+                obligation_json["evidence_basis"] = {"availability": "not_selected", "omitted": 1}
+                omissions.append(
+                    _omit(
+                        ref, DataCategory.BOUNDED_STRUCTURAL_METADATA, "obligation", "not_selected"
+                    )
+                )
+            else:
+                obligation_json["evidence_basis"] = linked_basis
+        elif frozen_case.evidence_view is not None:
+            obligation_json["evidence_basis"] = {"availability": "not_selected"}
         disclosed = disclosures.get(ref)
         if disclosed is not None:
             # tb4n3 RC-1: the reviewer must not read a recorded limit as undisclosed. n7 RC7
             # (#1108): it reads it in the agent-disclosures row, the agent's assertion, never
             # beside the obligation as if FinishUP had settled it.
             carried_disclosures[ref] = (source_ref, disclosed)
-        basis = _resolved_criterion_basis(payload, projection, allowed)
+        basis = (
+            _resolved_criterion_basis(payload, projection, allowed)
+            if frozen_case.evidence_view is None
+            else None
+        )
         if basis is not None:
             # Issue #1079: the criterion (this item), the claimed result, the latest observed
             # verification and any missing input, as one object. Refs and closed tokens only.
@@ -8454,12 +8681,31 @@ def _build_semantic_case_once(
             projection,
             allowed,
             include_prose=selection.include_finding_prose,
+            include_decision_prose=(
+                "decisions" in selection.sections if frozen_case.evidence_view is not None else None
+            ),
             compact=not bool(sections & {"goal", "obligations", "claims"}),
             remaining_items=MAX_SEMANTIC_CASE_ITEMS - len(fixed_item_ids),
             remaining_bytes=MAX_PRIOR_FINDING_SECTION_BYTES,
         )
         items.extend(prior_items)
         fixed_item_ids.update(item.item_id for item in prior_items)
+        paired, paired_omissions = _evidence_context_items(
+            frozen_case,
+            allowed,
+            selection,
+            remaining_items=min(
+                MAX_PRIOR_FINDING_ITEMS - len(prior_items),
+                MAX_SEMANTIC_CASE_ITEMS - len(fixed_item_ids),
+            ),
+            remaining_bytes=max(
+                0, MAX_PRIOR_FINDING_SECTION_BYTES - sum(item.content_bytes for item in prior_items)
+            ),
+        )
+        prior_items.extend(paired)
+        prior_omissions.extend(paired_omissions)
+        items.extend(paired)
+        fixed_item_ids.update(item.item_id for item in paired)
     excerpts_cut_for_case_bound = _fit_excerpts_within_case_bound(
         items,
         targeted,

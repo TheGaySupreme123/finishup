@@ -1236,6 +1236,10 @@ def closure_gate_from_readiness(
         delivered_ack = bool(ack_text) and "ack" in included
         asked_premise = premise is not None and "premise" in included
     withdrawn_keys = (_withdrawn_key(readiness, withdrawn_items),) if withdrawn_items else ()
+    if getattr(readiness, "evidence_basis_summary", None):
+        detail = " Evidence links and current proof-limit eligibility: status view=obligations."
+        if len(text) + len(detail) <= _MAX_TEXT_CHARS:
+            text += detail
     return ClosureGate(
         identity,
         text,

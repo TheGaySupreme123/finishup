@@ -5833,6 +5833,7 @@ class StatusClosureReadinessModel(_ClosedModel):
     """
 
     correctness_advisory_summary: String1To4096 | None = None
+    evidence_basis_summary: String1To4096 | None = None
     declared_obligation_count: CanonicalUInt64Wire | None
     no_obligations_reason: (
         Literal[
@@ -5925,6 +5926,7 @@ class StatusClosureReadinessModel(_ClosedModel):
     optional_non_null_fields = frozenset(
         {
             "correctness_advisory_summary",
+            "evidence_basis_summary",
             "check_cause",
             "predicted_receipt",
             "undeclared_references",
@@ -6206,6 +6208,130 @@ class StatusCommandAttemptModel(_ClosedModel):
         return self
 
 
+class StatusEvidenceClaimModel(_ClosedModel):
+    claim_ref: ClaimIdWire
+    supporting_refs: Annotated[
+        tuple[EvidenceOrResultIdWire | ObligationIdWire, ...], Field(max_length=8)
+    ]
+
+
+class StatusEvidenceVerificationModel(_ClosedModel):
+    data_source: Literal[
+        "task_public", "own_generated", "independent", "held_out", "stated_environment", "unknown"
+    ]
+    cases: Annotated[int, Field(strict=True, ge=0, le=2**53 - 1)]
+    failing: Annotated[int, Field(strict=True, ge=0, le=2**53 - 1)]
+    tuned_on_these_cases: bool | None
+
+
+class StatusEvidenceResultModel(_ClosedModel):
+    optional_non_null_fields = frozenset({"verification"})
+    result_ref: ResultIdWire
+    action_ref: ActionIdWire | None
+    outcome: Literal["success", "failure", "partial", "unknown"]
+    evidence_refs: Annotated[tuple[EvidenceIdWire, ...], Field(max_length=8)]
+    observed: bool
+    verification_declared: bool
+    verification: StatusEvidenceVerificationModel | None = None
+    freshness: Literal["current", "stale", "unknown", "legacy"]
+
+
+class StatusEvidenceAdviceModel(StatusHistoryCorrectnessAdvisoryModel):
+    """Same recorded dialogue; agent rationale has its own admission category (#1205)."""
+
+    omitted: Annotated[int, Field(strict=True, ge=0)] = 0
+    subject_refs: Annotated[
+        tuple[Annotated[str, Field(pattern=_ADVISORY_SUBJECT_REF_PATTERN)], ...],
+        Field(max_length=8),
+    ]
+    evidence_refs: Annotated[tuple[EvidenceOrResultIdWire, ...], Field(max_length=8)] | None = None
+
+    @model_validator(mode="after")
+    def _validate_categories(self) -> StatusEvidenceAdviceModel:
+        for value, category in (
+            (self.summary, DataCategory.FINDING_SUMMARY),
+            (self.detail, DataCategory.FINDING_SUMMARY),
+            (self.reason, DataCategory.DECISION_EXCERPT),
+        ):
+            if isinstance(value, OmittedContentModel) and value.category is not category:
+                raise ValueError("evidence_advice_omission_category_invalid")
+        return self
+
+
+class StatusEvidenceAssessmentModel(CheckVerifiedItemModel):
+    check_event_id: EventIdWire
+    checked_frontier: CanonicalUInt64Wire
+    applicability: Literal["current", "historical"]
+
+
+class StatusEvidenceResolutionModel(_ClosedModel):
+    finding_ref: FindingIdWire
+    check_event_id: EventIdWire | None
+    check_could_resolve: bool
+    checked_frontier: CanonicalUInt64Wire | None
+    reviewer_verdict: (
+        Literal[
+            "fixed",
+            "still_present",
+            "answered_not_fixed",
+            "unassessable",
+            "withdrawn",
+            "disputed_after_rebuttal",
+        ]
+        | None
+    )
+    resolved_by_check_event_id: EventIdWire | None
+    ruling_check_event_id: EventIdWire | None
+    ruling_applicability: Literal["current", "historical"] | None
+    ruling_cited_refs: Annotated[tuple[SubjectIdWire, ...], Field(max_length=16)]
+    reasons: Annotated[
+        tuple[
+            Annotated[str, Field(pattern=r"^(?:coverage:)?[a-z][a-z0-9_]{0,127}$", max_length=137)],
+            ...,
+        ],
+        Field(max_length=16),
+    ]
+    self_verified_available: bool
+    self_verified_refusal: CodeWire | None
+    blocking_reasons: Annotated[
+        tuple[
+            Annotated[str, Field(pattern=r"^(?:coverage:)?[a-z][a-z0-9_]{0,127}$", max_length=137)],
+            ...,
+        ],
+        Field(max_length=16),
+    ]
+
+
+class StatusObligationEvidenceModel(_ClosedModel):
+    availability: Literal["recorded", "not_recorded", "not_selected"]
+    claims: Annotated[tuple[StatusEvidenceClaimModel, ...], Field(max_length=8)] = ()
+    action_refs: Annotated[tuple[ActionIdWire, ...], Field(max_length=8)] = ()
+    results: Annotated[tuple[StatusEvidenceResultModel, ...], Field(max_length=8)] = ()
+    observed_refs: Annotated[tuple[EvidenceOrResultIdWire, ...], Field(max_length=8)] = ()
+    observed_refs_capped: bool = False
+    advisories: Annotated[tuple[StatusEvidenceAdviceModel, ...], Field(max_length=4)] = ()
+    assessments: Annotated[tuple[StatusEvidenceAssessmentModel, ...], Field(max_length=4)] = ()
+    resolution: Annotated[tuple[StatusEvidenceResolutionModel, ...], Field(max_length=4)] = ()
+    omitted: Annotated[int, Field(strict=True, ge=0)] = 0
+
+
+class FrozenEvidenceObligationModel(_ClosedModel):
+    obligation_id: ObligationIdWire
+    basis: StatusObligationEvidenceModel
+
+
+class FrozenEvidenceViewModel(_ClosedModel):
+    obligations: Annotated[tuple[FrozenEvidenceObligationModel, ...], Field(max_length=64)]
+    advisories: Annotated[tuple[StatusEvidenceAdviceModel, ...], Field(max_length=4)]
+    omitted: Annotated[int, Field(strict=True, ge=0)]
+
+    @model_validator(mode="after")
+    def _validate_obligations(self) -> FrozenEvidenceViewModel:
+        _require_unique(tuple(row.obligation_id for row in self.obligations), limit=64)
+        _require_unique(tuple(row.advisory_id for row in self.advisories), limit=4)
+        return self
+
+
 class StatusObligationItemModel(_ClosedModel):
     optional_non_null_fields = frozenset(
         {
@@ -6214,6 +6340,7 @@ class StatusObligationItemModel(_ClosedModel):
             "in_current_plan",
             "closure_class",
             "closure_basis",
+            "evidence_basis",
         }
     )
 
@@ -6243,6 +6370,7 @@ class StatusObligationItemModel(_ClosedModel):
     # cannot be read (the obligation is not effective) and on an earlier 0.3 build.
     closure_class: ObligationClosureClassLiteral | None = None
     closure_basis: ObligationClosureBasisLiteral | None = None
+    evidence_basis: StatusObligationEvidenceModel | None = None
 
     @model_validator(mode="after")
     def _validate_obligation_item(self) -> StatusObligationItemModel:
@@ -6333,7 +6461,7 @@ class StatusResultsPageModel(_ClosedModel):
 
 
 class StatusVerificationWitnessModel(_ClosedModel):
-    optional_non_null_fields = frozenset({"worst", "tuned_on_these_cases"})
+    optional_non_null_fields = frozenset({"worst", "tuned_on_these_cases", "freshness"})
 
     result_id: ResultIdWire
     action_id: ActionIdWire
@@ -6343,8 +6471,17 @@ class StatusVerificationWitnessModel(_ClosedModel):
     cases: Annotated[int, Field(strict=True, ge=0, le=2**53 - 1)]
     failing: Annotated[int, Field(strict=True, ge=0, le=2**53 - 1)]
     stale: bool
+    freshness: Literal["current", "stale", "unknown", "legacy"] | None = None
     tuned_on_these_cases: bool | None = None
     worst: Annotated[str, Field(min_length=1, max_length=64)] | OmittedContentModel | None = None
+
+    @model_validator(mode="after")
+    def _validate_freshness(self) -> StatusVerificationWitnessModel:
+        if (self.freshness in {"current", "unknown"} and self.stale) or (
+            self.freshness == "stale" and not self.stale
+        ):
+            raise ValueError("verification_witness_freshness_mismatch")
+        return self
 
 
 class StatusVerificationCriterionModel(_ClosedModel):
@@ -8080,6 +8217,7 @@ _STATUS_COMMON_STRUCTURAL_POINTERS: Final = (
         (
             "blocking_conditions/*",
             "correctness_advisory_summary",
+            "evidence_basis_summary",
             "declared_obligation_count",
             "no_obligations_reason",
             "open_obligation_count",
@@ -8227,6 +8365,7 @@ _VERIFICATION_COVERAGE_STRUCTURAL_LEAVES: Final = (
     "criteria/*/witnesses/*/cases",
     "criteria/*/witnesses/*/failing",
     "criteria/*/witnesses/*/stale",
+    "criteria/*/witnesses/*/freshness",
     "criteria/*/witnesses/*/tuned_on_these_cases",
     "criteria/*/task_criterion_quote/category",
     "criteria/*/task_criterion_quote/omitted",
@@ -8473,6 +8612,66 @@ _STATUS_OBLIGATIONS_STRUCTURAL_POINTERS: Final = (
     + _prefix_leaf_patterns("/page/items/*/evidence_expectation", _OMITTED_CONTENT_LEAVES)
     + _prefix_leaf_patterns("/page/items/*/requested_items/*/value", _OMITTED_CONTENT_LEAVES)
     + _prefix_leaf_patterns("/page/items/*/unattempted_items/*/value", _OMITTED_CONTENT_LEAVES)
+    + _prefix_leaf_patterns(
+        "/page/items/*/evidence_basis",
+        (
+            "availability",
+            "omitted",
+            "claims/*/claim_ref",
+            "claims/*/supporting_refs/*",
+            "action_refs/*",
+            "observed_refs/*",
+            "results/*/result_ref",
+            "results/*/action_ref",
+            "results/*/outcome",
+            "results/*/evidence_refs/*",
+            "results/*/observed",
+            "results/*/verification_declared",
+            "results/*/verification/data_source",
+            "results/*/verification/cases",
+            "results/*/verification/failing",
+            "results/*/verification/tuned_on_these_cases",
+            "results/*/freshness",
+            "observed_refs_capped",
+            "advisories/*/advisory_id",
+            "advisories/*/subject_refs/*",
+            "advisories/*/disposition",
+            "advisories/*/response_event_id",
+            "advisories/*/evidence_refs/*",
+            "advisories/*/omitted",
+            "assessments/*/check_event_id",
+            "assessments/*/checked_frontier",
+            "assessments/*/applicability",
+            "assessments/*/verdict",
+            "assessments/*/cited_refs/*",
+            "resolution/*/finding_ref",
+            "resolution/*/check_event_id",
+            "resolution/*/check_could_resolve",
+            "resolution/*/checked_frontier",
+            "resolution/*/reviewer_verdict",
+            "resolution/*/resolved_by_check_event_id",
+            "resolution/*/ruling_check_event_id",
+            "resolution/*/ruling_applicability",
+            "resolution/*/ruling_cited_refs/*",
+            "resolution/*/reasons/*",
+            "resolution/*/self_verified_available",
+            "resolution/*/self_verified_refusal",
+            "resolution/*/blocking_reasons/*",
+        ),
+    )
+    + tuple(
+        pointer
+        for field in (
+            "advisories/*/summary",
+            "advisories/*/detail",
+            "advisories/*/reason",
+            "assessments/*/requirement_or_claim",
+            "assessments/*/snippet",
+        )
+        for pointer in _prefix_leaf_patterns(
+            "/page/items/*/evidence_basis/" + field, _OMITTED_CONTENT_LEAVES
+        )
+    )
 )
 
 _STATUS_RESULTS_STRUCTURAL_POINTERS: Final = ("/page/next_cursor",) + _prefix_leaf_patterns(
@@ -8884,6 +9083,31 @@ _STATUS_CONTENT_RULES: Final[tuple[tuple[str, str, DataCategory], ...]] = (
     ("obligations", "/page/items/*/evidence_expectation", DataCategory.OBLIGATION_TEXT),
     ("obligations", "/page/items/*/requested_items/*/value", DataCategory.OBLIGATION_TEXT),
     ("obligations", "/page/items/*/unattempted_items/*/value", DataCategory.OBLIGATION_TEXT),
+    (
+        "obligations",
+        "/page/items/*/evidence_basis/advisories/*/summary",
+        DataCategory.FINDING_SUMMARY,
+    ),
+    (
+        "obligations",
+        "/page/items/*/evidence_basis/advisories/*/detail",
+        DataCategory.FINDING_SUMMARY,
+    ),
+    (
+        "obligations",
+        "/page/items/*/evidence_basis/advisories/*/reason",
+        DataCategory.DECISION_EXCERPT,
+    ),
+    (
+        "obligations",
+        "/page/items/*/evidence_basis/assessments/*/requirement_or_claim",
+        DataCategory.FINDING_SUMMARY,
+    ),
+    (
+        "obligations",
+        "/page/items/*/evidence_basis/assessments/*/snippet",
+        DataCategory.FINDING_SUMMARY,
+    ),
     ("project", "/page/title", DataCategory.TASK_DESCRIPTION),
     ("project", "/page/description", DataCategory.TASK_DESCRIPTION),
     (
@@ -9111,7 +9335,7 @@ def _build_result_leaf_rules() -> tuple[_ResultLeafRule, ...]:
         ):
             raise RuntimeError("invalid_result_leaf_classification")
     if (
-        len(result) != 1926
+        len(result) != 1992
     ):  # ... #1017 +3, #1027 +5, tb4n3 LO +9, W2-A +46, LF +34 (fact_lineage), W2-B +2,
         # tb4n4 #1044 +7 (closure_readiness.undeclared_references), #1048 +38 (inspection),
         # #1047 +2 (follow_up_round), tb4n5 +3 (publish action_notices),
@@ -9125,6 +9349,7 @@ def _build_result_leaf_rules() -> tuple[_ResultLeafRule, ...]:
         # #1140 +83 check (shared readiness, including one repository-excerpt leaf),
         # #1144/#1149 +3 receipt (disproved ids and stopped status/reason),
         # #1162 +95 (advisory history, readiness summary, receipt counts; +1 provenance container)
+        # #1205 +64 (evidence links and separately categorized prose), #1194 +2 witness freshness.
         raise RuntimeError("incomplete_result_leaf_registry")
     return result
 
