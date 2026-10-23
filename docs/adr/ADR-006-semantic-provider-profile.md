@@ -1504,6 +1504,15 @@ findings. A ruling on an item that is already final, or one contradicted by the 
 restatement, is set aside without that gap (a diagnostic count only), so it cannot stall the
 review's other open findings.
 
+**Optional quote loss (#1205).** The same explicit, independently admitted `fixed` ruling also
+tolerates `semantic_review_snippet_invalid` on its own finding. An unrelated optional positive
+`verified` row with an invalid quote is still dropped, and the quote-loss diagnostic remains
+disclosed in coverage and receipts; it cannot veto the ruling's separately admitted repair basis.
+Neither silence nor an unsupported or unassessable ruling gains this tolerance. All existing
+citation/admission, re-raise, material-change, freshness, unreadable-proof and reduced-scope repair
+guards remain. This corrects a controlled paired counterexample, not a claim that the incomplete
+historical Math archive would resolve.
+
 **Terminal states: findings as a to-do list that ends.** Every recorded finding is in exactly one
 to-do state, read from replayed projection facts only (`kernel/finding_todo.py`, transition table
 kept as data): `open`, or one of three terminal states. `verified_resolved` is the existing
@@ -3317,9 +3326,13 @@ not proof of execution, independence or correctness.
 
 The deterministic coverage projection reports absent, failing, own-generated or tuned-only,
 stale, repeated and redundant witnesses within its recorded scope. It is advisory and
-non-blocking, never a green “covered” or correctness verdict. Its stale flag is the conservative
-latest-material-edit candidate, not ADR-042's per-verification freshness judgement, which alone
-raises freshness questions and findings (alignment: #1194). Quotes, file names, case names and
+non-blocking, never a green “covered” or correctness verdict. Under the locked #1194 decision
+(2026-10-23), its witnesses reuse ADR-042's per-verification freshness judgment for the exact
+retained runs that engine judges. `current`, `stale` and `unknown` stay distinct; a missing row
+means current only for a known judged run. Untracked runs and old frozen cases retain the
+conservative latest-material-edit candidate, labeled `legacy`. Frozen packets use their stored
+freshness rows and tracked set, never a later prefix. Issued receipts without this optional
+witness field retain their original wire shape and rendering. Quotes, file names, case names and
 worst values remain user content under the existing privacy and prose-rendering boundaries.
 The leading packet view uses structural source references and character spans, with criterion
 text remaining in its separately authorized task/obligation items. Human receipts show ordinal

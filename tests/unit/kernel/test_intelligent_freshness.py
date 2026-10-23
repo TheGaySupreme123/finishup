@@ -23,6 +23,10 @@ from finishup.domain.events import (
     RequestedItemKind,
     RequestedItemRole,
     ResultOutcome,
+    ResultRecordedPayload,
+    ResultVerification,
+    VerificationDataSource,
+    encode_payload,
 )
 from finishup.domain.findings import FINDING_KIND_TRAITS, Finding, ResponseDisposition
 from finishup.domain.values import (
@@ -31,9 +35,14 @@ from finishup.domain.values import (
     evidence_id,
     finding_id,
     obligation_id,
+    result_id,
     timestamp_from_string,
 )
-from finishup.domain.workspace_effect import workspace_path_identity
+from finishup.domain.verification_coverage import verification_coverage_lines
+from finishup.domain.workspace_effect import (
+    result_summary_with_workspace_effect,
+    workspace_path_identity,
+)
 from finishup.kernel.deterministic_checks import (
     CaseAvailabilityFacts,
     build_deterministic_case,
@@ -43,7 +52,9 @@ from finishup.kernel.deterministic_checks import (
 from finishup.kernel.policies.work_integrity import _verification_questions
 from finishup.kernel.reducers import replay
 from finishup.kernel.task_facts import register_command_identity_key, task_fact_signals
-from finishup.kernel.verification_freshness import verification_freshness
+from finishup.kernel.verification_coverage import build_verification_coverage
+from finishup.kernel.verification_freshness import verification_freshness, verification_tracked_runs
+from finishup.protocol.canonical import canonical_digest
 from finishup.protocol.coverage import EvidenceImmutability
 
 
@@ -989,3 +1000,281 @@ def test_an_output_directory_never_covers_an_unplaced_own_write(output: str) -> 
         "verification_rerun_question"
         in task_fact_signals(replay(ledger.prefix), ledger.prefix).codes
     )
+
+
+_COVERAGE_QUOTE = "Every prediction must meet the bound"
+
+
+def _coverage_run(
+    ledger: ObservedLedger,
+    *,
+    command: str = "pytest -q",
+    produced: str | None = None,
+    observed: bool = True,
+    runner: str = "test",
+    failing: int = 0,
+    cases: int = 7,
+) -> ResultId:
+    action = ledger.begin(command, observed=observed, runner=runner)
+    ref = result_id(str(action).replace("act_", "res_"))
+    ledger.append(
+        EventSchema("result_recorded", "1.1.0"),
+        ResultRecordedPayload(
+            ref,
+            action,
+            ResultOutcome.FAILURE if failing else ResultOutcome.SUCCESS,
+            exit_status=1 if failing else 0,
+            summary=result_summary_with_workspace_effect(
+                "Observed result",
+                "changed" if produced else "unchanged",
+                ("workspace",),
+                (workspace_path_identity(INSTALLATION_KEY, produced),) if produced else (),
+            ),
+            verification=ResultVerification(
+                _COVERAGE_QUOTE, VerificationDataSource.TASK_PUBLIC, cases, failing, "worst", True
+            ),
+        ),
+        observed=observed,
+    )
+    return ref
+
+
+@pytest.mark.parametrize(
+    ("change", "expected"),
+    [
+        ("none", "current"),
+        ("input", "stale"),
+        ("disjoint", "current"),
+        ("output", "current"),
+        ("noop", "current"),
+        ("undeclared", "unknown"),
+        ("outside", "unknown"),
+        ("directory", "unknown"),
+        ("unplaced", "stale"),
+        ("unavailable", "stale"),
+    ],
+)
+def test_coverage_uses_the_same_per_run_freshness_live_and_frozen(
+    change: str, expected: str
+) -> None:
+    ledger = ObservedLedger()
+    run = _coverage_run(ledger, produced="evidence.json" if change == "output" else None)
+    if change != "undeclared":
+        manifest(
+            ledger,
+            run,
+            inputs=("/outside/input.json",)
+            if change == "outside"
+            else ("src/",)
+            if change == "directory"
+            else ("src/control.py",),
+            complete=change != "output",
+        )
+    if change == "noop":
+        ledger.run(
+            "cat saved.json > evidence.json",
+            ResultOutcome.SUCCESS,
+            write_scope="workspace",
+            workspace_effect="unchanged",
+        )
+    elif change == "unplaced":
+        ledger.edit()
+    elif change == "unavailable":
+        ledger.run("python update.py", ResultOutcome.SUCCESS, workspace_effect="unavailable")
+    elif change != "none":
+        changed(
+            ledger,
+            "src/control.py"
+            if change == "input"
+            else "evidence.json"
+            if change == "output"
+            else "other.py",
+        )
+    case = deterministic_case_from_json(deterministic_case_to_json(case_for(ledger)))
+    live = build_verification_coverage(
+        case.projection, ledger.prefix, task_statement=_COVERAGE_QUOTE
+    )
+    frozen = build_verification_coverage(
+        case.projection,
+        task_statement=_COVERAGE_QUOTE,
+        unchanged_action_ids=case.verification_unchanged_action_ids,
+        workspace_verification_edit_frontier=case.workspace_verification_edit_frontier,
+        freshness=case.verification_freshness,
+        tracked_runs=case.verification_tracked_runs,
+    )
+    assert live == frozen
+    row = live.criteria[0]
+    witness = row.witnesses[0]
+    assert (witness.result_id, witness.freshness, witness.stale) == (
+        run,
+        expected,
+        expected == "stale",
+    )
+    assert ("stale" in row.flags) is (expected == "stale")
+    assert witness.tuned_on_these_cases is True and witness.data_source == "task_public"
+    assert {"public_only", "own_or_tuned_only"} <= set(row.flags)
+    assert f"freshness={expected}" in "\n".join(verification_coverage_lines(live))
+    # Replaying an old frozen case has no new judgment, even beside current live records.
+    legacy = build_verification_coverage(
+        case.projection,
+        task_statement=_COVERAGE_QUOTE,
+        unchanged_action_ids=case.verification_unchanged_action_ids,
+        workspace_verification_edit_frontier=case.workspace_verification_edit_frontier,
+        freshness=None,
+        tracked_runs=(),
+    )
+    assert legacy.criteria[0].witnesses[0].freshness == "legacy"
+    assert "legacy latest-edit candidate" in "\n".join(verification_coverage_lines(legacy))
+
+
+@pytest.mark.parametrize("citation", ["none", "result", "evidence"])
+def test_tracked_set_is_exactly_the_retained_runs_not_omitted_older_duplicates(
+    citation: str,
+) -> None:
+    ledger = ObservedLedger()
+    evidence = evidence_id("evd_00000000-0000-4000-8000-000000009994")
+    old = _coverage_run(ledger, failing=2)
+    manifest(ledger, old)
+    changed(ledger, "src/control.py")
+    latest = _coverage_run(ledger, cases=3)
+    projection = replay(ledger.prefix)
+    row = projection.results[old]
+    assert row.payload is not None
+    refs = {
+        "result": old,
+        "evidence": evidence,
+    }
+    if citation != "none":
+        _cite(ledger, refs[citation])
+        projection = replay(ledger.prefix)
+    if citation == "evidence":
+        # Exercise the existing attached-evidence citation path on the pure projection;
+        # ObservedLedger's envelope builder intentionally has no result-evidence parameter.
+        payload = replace(row.payload, evidence_refs=(evidence,))
+        projection = replace(
+            projection,
+            results={
+                **projection.results,
+                old: replace(
+                    row, payload=payload, payload_digest=canonical_digest(encode_payload(payload))
+                ),
+            },
+        )
+    tracked = verification_tracked_runs(projection, ledger.prefix)
+    rows = verification_freshness(projection, ledger.prefix)
+    assert set(tracked) == ({latest} if citation == "none" else {old, latest})
+    assert {item.run_ref for item in rows} == (set() if citation == "none" else {old})
+    view = build_verification_coverage(projection, ledger.prefix, task_statement=_COVERAGE_QUOTE)
+    # Different case counts/provenance cannot supersede failures. The omitted old failure is
+    # still shown, but absent judgment is legacy, never a claim it is current.
+    witness = next(item for item in view.criteria[0].witnesses if item.result_id == old)
+    assert witness.failing == 2
+    assert witness.freshness == ("legacy" if citation == "none" else "stale")
+    # Base cases persisted every eligible result, including the unjudged duplicate. Do not
+    # interpret that overinclusive inventory as a current verdict when replaying its packet.
+    frozen = build_verification_coverage(
+        projection,
+        task_statement=_COVERAGE_QUOTE,
+        freshness=rows,
+        tracked_runs=tuple(sorted((old, latest))),
+        workspace_verification_edit_frontier=5,
+    )
+    frozen_witness = next(item for item in frozen.criteria[0].witnesses if item.result_id == old)
+    assert frozen_witness.freshness == witness.freshness
+
+
+def test_retention_uses_first_result_position_and_does_not_let_a_late_correction_win() -> None:
+    ledger = ObservedLedger()
+    action = ledger.begin("pytest -q", runner="test")
+    # A different invocation starts later but finishes first. Result order, not action order,
+    # controls the latest retained run, matching the freshness engine's existing predicate.
+    earlier_result = ledger.passes("pytest -q")
+    later_result = ledger.end(action, ResultOutcome.UNKNOWN)
+    assert verification_tracked_runs(replay(ledger.prefix), ledger.prefix) == (later_result,)
+    changed(ledger, "config.json")
+    newest_run = ledger.passes("pytest -q")
+    correction = ledger.correct_outcome(later_result, ResultOutcome.SUCCESS, exit_status=0)
+    projection = replay(ledger.prefix)
+    assert earlier_result != later_result != newest_run
+    assert verification_tracked_runs(projection, ledger.prefix) == (newest_run,)
+    _cite(ledger, correction)
+    projection = replay(ledger.prefix)
+    assert set(verification_tracked_runs(projection, ledger.prefix)) == {newest_run, correction}
+    assert [
+        (row.run_ref, row.state) for row in verification_freshness(projection, ledger.prefix)
+    ] == [(correction, "unknown")]
+
+
+@pytest.mark.parametrize(
+    "kind", ["unobserved", "untracked", "unreadable_result", "unreadable_action", "pending"]
+)
+def test_no_current_verdict_for_unjudged_runs(kind: str) -> None:
+    ledger = ObservedLedger()
+    run = _coverage_run(
+        ledger, observed=kind != "unobserved", runner="other" if kind == "untracked" else "test"
+    )
+    changed(ledger, "src/control.py")
+    projection = replay(ledger.prefix)
+    row = projection.results[run]
+    assert row.payload is not None
+    if kind == "unreadable_result":
+        projection = replace(projection, results={run: replace(row, payload=None, redacted=True)})
+    elif kind == "unreadable_action":
+        ref = row.payload.action_id
+        projection = replace(
+            projection,
+            actions={
+                **projection.actions,
+                ref: replace(projection.actions[ref], payload=None, redacted=True),
+            },
+        )
+    elif kind == "pending":
+        projection = replace(
+            projection,
+            results={ref: value for ref, value in projection.results.items() if ref != run},
+        )
+    assert run not in verification_tracked_runs(projection, ledger.prefix)
+    assert not verification_freshness(projection, ledger.prefix)
+    view = build_verification_coverage(projection, ledger.prefix, task_statement=_COVERAGE_QUOTE)
+    assert all(witness.freshness == "legacy" for row in view.criteria for witness in row.witnesses)
+
+
+def test_coverage_display_cap_cannot_shrink_closure_freshness() -> None:
+    from finishup.kernel.policies.work_integrity import _uncorroborated_completion_findings
+
+    ledger = ObservedLedger()
+    runs = [
+        _coverage_run(ledger, command=f"pytest tests/test_{number}.py", failing=1)
+        for number in range(5)
+    ]
+    for run in runs:
+        manifest(ledger, run)
+    changed(ledger, "src/control.py")
+    _cite(ledger, runs[0])
+    case = case_for(ledger)
+    view = build_verification_coverage(
+        case.projection, ledger.prefix, task_statement=_COVERAGE_QUOTE
+    )
+    row = view.criteria[0]
+    assert len(row.witnesses) == 3 and row.omitted_witnesses == 2
+    assert row.unresolved_failing_runs == 5
+    assert runs[0] not in {witness.result_id for witness in row.witnesses}
+    assert len(case.verification_tracked_runs) == len(case.verification_freshness or ()) == 5
+    assert _uncorroborated_completion_findings(case)
+
+
+def test_a_fresh_failure_keeps_source_tuning_and_failed_case_visibility() -> None:
+    ledger = ObservedLedger()
+    run = _coverage_run(ledger, failing=2)
+    view = build_verification_coverage(
+        replay(ledger.prefix), ledger.prefix, task_statement=_COVERAGE_QUOTE
+    )
+    row = view.criteria[0]
+    witness = row.witnesses[0]
+    assert (witness.result_id, witness.freshness, witness.stale) == (run, "current", False)
+    assert (witness.data_source, witness.tuned_on_these_cases, witness.worst) == (
+        "task_public",
+        True,
+        "worst",
+    )
+    assert row.unresolved_failing_runs == 1 and "failing_cases" in row.flags

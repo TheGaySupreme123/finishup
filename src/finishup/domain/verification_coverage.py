@@ -167,6 +167,15 @@ def coverage_flag_label(flag: str) -> str:
     return _FLAG_LABELS.get(flag, flag.replace("_", " "))
 
 
+def _freshness_label(state: object, stale: bool) -> str:
+    if state is None:
+        # Issued receipts and their golden renderings keep their original shape and prose.
+        return "; predates a material edit" if stale else ""
+    if state in ("current", "stale", "unknown"):
+        return f"; freshness={state}"
+    return "; legacy latest-edit candidate" + (": predates a material edit" if stale else "")
+
+
 @dataclass(frozen=True, slots=True)
 class VerificationWitness:
     result_id: ResultId
@@ -177,6 +186,8 @@ class VerificationWitness:
     tuned_on_these_cases: bool | None = None
     worst: str | None = None
     stale: bool = False
+    # Absent on issued receipts. Legacy is only a latest-edit candidate, never a per-run verdict.
+    freshness: str | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "result_id", result_id(self.result_id))
@@ -196,6 +207,13 @@ class VerificationWitness:
                 and (type(self.worst) is not str or not 1 <= len(self.worst) <= 64)
             )
             or type(self.stale) is not bool
+            or self.freshness is not None
+            and type(self.freshness) is not str
+            or self.freshness not in {None, "current", "stale", "unknown", "legacy"}
+            or self.freshness in {"current", "unknown"}
+            and self.stale
+            or self.freshness == "stale"
+            and not self.stale
         ):
             raise ProtocolValueError("invalid_event_value_type")
 
@@ -277,6 +295,7 @@ def verification_coverage_to_json(value: VerificationCoverage) -> dict[str, Json
                         "cases": witness.cases,
                         "failing": witness.failing,
                         "stale": witness.stale,
+                        **({} if witness.freshness is None else {"freshness": witness.freshness}),
                         **(
                             {}
                             if witness.tuned_on_these_cases is None
@@ -339,10 +358,12 @@ def verification_coverage_from_json(value: object) -> VerificationCoverage:
                 raise ProtocolValueError(invalid)
             witness = cast(Mapping[str, object], raw)
             required = {"result_id", "action_id", "data_source", "cases", "failing", "stale"}
-            if not required <= set(witness) or set(witness) - required - {
-                "worst",
-                "tuned_on_these_cases",
-            }:
+            if (
+                not required <= set(witness)
+                or set(witness) - required - {"worst", "tuned_on_these_cases", "freshness"}
+                or "freshness" in witness
+                and witness["freshness"] is None
+            ):
                 raise ProtocolValueError(invalid)
             witnesses.append(
                 VerificationWitness(
@@ -352,6 +373,7 @@ def verification_coverage_from_json(value: object) -> VerificationCoverage:
                     cases=cast(int, witness["cases"]),
                     failing=cast(int, witness["failing"]),
                     stale=cast(bool, witness["stale"]),
+                    freshness=cast(str | None, witness.get("freshness")),
                     worst=cast(str | None, witness.get("worst")),
                     tuned_on_these_cases=cast(bool | None, witness.get("tuned_on_these_cases")),
                 )
@@ -393,8 +415,7 @@ def verification_coverage_lines(
                 detail += "; tuned on these cases"
             elif witness.tuned_on_these_cases is None:
                 detail += "; tuning not declared"
-            if witness.stale:
-                detail += "; predates a material edit"
+            detail += _freshness_label(witness.freshness, witness.stale)
             lines.append(detail + ".")
         if row.omitted_witnesses:
             lines.append(
@@ -445,8 +466,7 @@ def verification_coverage_wire_lines(value: Mapping[str, object]) -> tuple[str, 
                     detail += "; worst value withheld"
                 if witness.get("tuned_on_these_cases") is True:
                     detail += "; tuned on these cases"
-                if witness.get("stale") is True:
-                    detail += "; predates a material edit"
+                detail += _freshness_label(witness.get("freshness"), witness.get("stale") is True)
                 lines.append(detail + ".")
         if row.get("omitted_witnesses"):
             lines.append(

@@ -30,6 +30,19 @@ ADR-034 (proof-limited findings), ADR-035 (declared delivered set), ADR-040 (rev
 disagreement), ADR-041 (obligation status re-derived), ADR-043 (bounded agent-facing text),
 ADR-045 (derived facts carry lineage).
 
+**Settlement guidance amendment (#1205).** Unresolved finding explanations obtain current
+`self_verified` eligibility and refusal conditions from the same replay-derived evaluator as
+`respond`, using the same projection and exact record prefix. They offer self-verification only
+when that predicate permits it; response-field and terminal-state admission remain unchanged.
+Refusals name their actual blocking conditions instead of prescribing another identical repair
+or aggregate review. Eligibility remains a disclosed agent verification, not proven resolution or
+a clean receipt. Existing terminal and nonblocking explanations retain their meaning.
+
+An independently admitted per-finding `fixed` ruling tolerates an unrelated optional quote-loss
+diagnostic (`semantic_review_snippet_invalid`, ADR-006) without restoring the rejected positive
+row or hiding the diagnostic. Every other settlement guard remains. These are derived read/proof
+corrections; they add no writes or settlement state and do not rewrite issued receipts.
+
 ## Context
 
 Roughly fourteen places answered the question "does this item still bound closure?" with their own

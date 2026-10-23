@@ -59,6 +59,15 @@ Read these together, never in isolation: the frontier, the verdict, the coverage
 disposition, evidence provenance, freshness, suppressed counts, and limitations. Derived Markdown is
 a human view of the same structured record.
 
+Checks and receipts point to `status`, `view=obligations`, for bounded evidence detail. It links
+the recorded claim, action and result to any observed execution, earlier advice, the agent's
+actual response, and applicable AI assessments. Open and resolved obligations can have detail;
+missing, historical and capped material is disclosed. A proposed test is not an executed test,
+an observed run does not establish test adequacy, and an agent's response does not prove repair.
+Optional advice may be declined or left unanswered without blocking completion. Related finding
+rows also explain the latest resolution attempt and current proof-limit eligibility; recording
+`self_verified` still requires the agent's reason and its own later evidence.
+
 A limitation an earlier check reported and a later check no longer reports stays on the receipt as
 history: it appears under "Cleared earlier (historical)" with the frontier at which a check first
 stopped reporting it. A historical limitation is not a current limitation: it is not counted among

@@ -2165,6 +2165,11 @@ async def _closure_readiness(
             check_in_flight=check_in_flight,
         )
     )
+    if loaded is not None:
+        from finishup.kernel.evidence_basis import evidence_basis_summary
+
+        if summary := evidence_basis_summary(loaded.projection):
+            optional_fields["evidence_basis_summary"] = summary
     model = StatusClosureReadinessModel(
         declared_obligation_count=str(declared_obligations),
         no_obligations_reason=no_obligations_reason,

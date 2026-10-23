@@ -156,6 +156,7 @@ from finishup.kernel.deterministic_checks import (
     CaseGap,
 )
 from finishup.kernel.deterministic_scope import commands_complete
+from finishup.kernel.evidence_basis import evidence_basis_summary
 from finishup.kernel.fact_lineage import FactLineage, lineage_texts
 from finishup.kernel.finding_resolution import (
     finding_resolution_explanation,
@@ -2265,6 +2266,7 @@ def _sections(
     reviewer_sentence: str = "",
     reviewer_advisory: str | None = None,
     correctness_advisory_summary: str = "",
+    evidence_basis_summary: str = "",
     correctness_advisory_items: tuple[str, ...] = (),
     correctness_advisory_omitted: int = 0,
     task_statement_source_sentence: str = "",
@@ -2502,6 +2504,8 @@ def _sections(
     bodies[ReceiptSectionKey.EVIDENCE_AND_CLAIM_BASIS] = (
         f"The receipt retains {claim_phrase} and {evidence_phrase}."
     )
+    if evidence_basis_summary:
+        bodies[ReceiptSectionKey.EVIDENCE_AND_CLAIM_BASIS] += " " + evidence_basis_summary
     items[ReceiptSectionKey.EVIDENCE_AND_CLAIM_BASIS] = (*claim_refs, *evidence_refs)
 
     if attempt_explanations:
@@ -3124,6 +3128,9 @@ def build_receipt(
             else ""
         ),
         correctness_advisory_items=advisory_render[0],
+        evidence_basis_summary=(
+            evidence_basis_summary(context.projection) if settles_rejections else ""
+        ),
         correctness_advisory_omitted=advisory_render[1],
         attempt_explanations=tuple(
             f"{obligation.obligation_id} command item {attempt.requested_item_index}: {attempt.relation}. "

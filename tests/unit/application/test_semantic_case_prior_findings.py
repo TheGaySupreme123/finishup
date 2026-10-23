@@ -839,6 +839,94 @@ def test_answered_verification_question_keeps_its_probe_outcomes_and_evidence(
     assert answer.reason is not None and answer.reason in texts[f"{prefix}response-{fnd(7)}"]
 
 
+@pytest.mark.parametrize("modern", (False, True))
+@pytest.mark.parametrize("include_finding_prose", (False, True))
+@pytest.mark.parametrize("include_decisions", (False, True))
+@pytest.mark.parametrize(
+    "kind", (FindingKind.DECISION_NEEDED, FindingKind.COMPLETION_WITH_OPEN_OBLIGATIONS)
+)
+def test_settled_answer_respects_independent_custom_prose_selection(
+    modern: bool,
+    include_finding_prose: bool,
+    include_decisions: bool,
+    kind: FindingKind,
+) -> None:
+    from finishup.application.semantic_case import semantic_case_packet_view
+    from finishup.kernel.evidence_basis import build_evidence_view, evidence_view_json
+
+    question = replace(
+        _semantic(7, challenge=_CHALLENGE),
+        kind=kind,
+        priority=3 if kind is FindingKind.DECISION_NEEDED else 1,
+        policy_id="research-evidence" if kind is FindingKind.DECISION_NEEDED else "work-integrity",
+        summary="QUESTION_SUMMARY: optional discriminating probe",
+        detail="QUESTION_DETAIL: compare the two outcomes",
+    )
+    answer = ResponseRecordedPayload(
+        finding_id=fnd(7),
+        finding_frontier=FRONTIER,
+        disposition=ResponseDisposition.ACKNOWLEDGED_NOT_DONE,
+        reason="DECISION_ANSWER: comparison declined; uncertainty remains",
+        evidence_refs=(res(1),),
+    )
+    frozen = _numba_case(
+        extra_findings={fnd(7): finding_record(question, 11)},
+        extra_responses={fnd(7): record(answer, 17)},
+    )
+    if modern:
+        frozen = replace(
+            frozen,
+            evidence_view=evidence_view_json(
+                build_evidence_view(frozen.projection, (), freshness=(), tracked_runs=())
+            ),
+        )
+    selection = replace(
+        ReviewSelectionPolicy.for_profile(ReviewContextProfile.GOAL_AWARE),
+        include_finding_prose=include_finding_prose,
+    )
+    if not include_decisions:
+        selection = replace(
+            selection,
+            sections=tuple(section for section in selection.sections if section != "decisions"),
+        )
+    case = _build(frozen, ReviewContextProfile.CUSTOM, selection=selection)
+    question_is_decision = modern and kind is FindingKind.DECISION_NEEDED
+    answer_admitted = include_decisions if question_is_decision else include_finding_prose
+    response_id = f"settled-finding-response-{fnd(7)}"
+    summary_id = f"settled-finding-summary-{fnd(7)}"
+    items = {item.item_id: item for item in case.items}
+    row = _row(case, f"settled-finding-{fnd(7)}")
+    declared = cast(Mapping[str, JsonValue], row.get("text_item_ids", {}))
+    assert (response_id in items) is answer_admitted
+    assert (declared.get("response") == response_id) is answer_admitted
+    assert (summary_id in items) is include_finding_prose
+    assert (declared.get("summary") == summary_id) is include_finding_prose
+    if answer_admitted:
+        assert items[response_id].category is (
+            DataCategory.DECISION_EXCERPT if question_is_decision else DataCategory.FINDING_SUMMARY
+        )
+    if question_is_decision and not include_decisions:
+        assert any(
+            omission.subject_ref == str(fnd(7))
+            and omission.category is DataCategory.DECISION_EXCERPT
+            and omission.reason == "not_selected"
+            for omission in case.packet.omissions
+        )
+    prepared = semantic_case_to_prepared_payload(case, set(items))
+    assert (b"DECISION_ANSWER" in prepared) is answer_admitted
+    assert (b"QUESTION_SUMMARY" in prepared) is include_finding_prose
+    assert (b"QUESTION_DETAIL" in prepared) is (
+        include_finding_prose and kind is FindingKind.DECISION_NEEDED
+    )
+    if not include_finding_prose:
+        assert all(item.category is not DataCategory.FINDING_SUMMARY for item in case.items)
+    if not include_decisions:
+        assert all(item.category is not DataCategory.DECISION_EXCERPT for item in case.items)
+    assert row["rulable"] is False
+    assert str(fnd(7)) not in case.packet.prior_finding_refs
+    assert str(fnd(7)) in semantic_case_packet_view(case).settled_finding_refs
+
+
 def _limitation_request(number: int) -> Finding:
     return replace(
         _semantic(number, challenge=_CHALLENGE),

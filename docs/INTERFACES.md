@@ -1908,7 +1908,11 @@ its `-part-NN` parts, not the source file; renderings say "of the captured item"
 - `semantic_review_snippet_invalid` — a reviewer quote could not be proved against the exact safe
   provider-bound text of the rows it cites, including after response recovery without the
   ephemeral text index. The quote is removed from a kept challenge, a verified row is dropped, and
-  the remaining review stays visible;
+  the remaining review stays visible. For AI-powered absence proof, only an explicit,
+  independently admitted `fixed` ruling tolerates this diagnostic for its own finding (#1205);
+  it remains disclosed, and a rejected positive row supplies no evidence. Silence and
+  unsupported/unassessable rulings retain their
+  blockers, as do re-raised concerns, stale/unreadable proof and missing reduced-scope repairs;
 - `semantic_case_content_over_item_limit` — recorded text the publish-side prose bound accepted
   (`MAX_TEXT_BYTES`, 8192) exceeded what one case item carries (`MAX_REVIEW_TEXT_BYTES`, 4096), so
   the case shortened it or replaced the payload with a `yoetz.bounded-content-omission/1` marker.
@@ -10321,6 +10325,11 @@ response is `rejected` that check records `rejection_accepted`, not resolution (
 `unassessable` add the blocker `reviewer_verdict_<verdict>`. The resolution explanation names a
 resolution that came from a `fixed` ruling.
 
+The same admitted-`fixed` path tolerates `semantic_review_snippet_invalid` (#1205): losing an
+unrelated optional positive quote does not veto the ruling's independently fenced repair basis.
+The optional positive row stays dropped and the diagnostic stays disclosed. Citation admission,
+material change, current freshness and reduced-scope repair requirements remain unchanged.
+
 #### Finding to-do states and `acknowledged_not_done` (issue #905)
 
 `acknowledged_not_done` is a `respond` disposition: the agent states, with a required non-empty
@@ -10381,6 +10390,18 @@ readiness lists the standing code `finding_self_verified`; `receipt-document` `1
 invalid) and markdown/text render a "Self-verified by the agent; FinishUP could not prove the repair"
 section; the conclusion is at best `insufficient_coverage`. `check-result` `finding_checklist.counts`
 and the status findings view carry `self_verified` as a count and a `todo_state`.
+
+`self_verification_evaluation(state, finding_id, records, *, attempt=None)` returns the existing
+predicate's `(refusal, blocking_reasons)` in one evaluation. A supplied `ResolutionAttempt` must
+be for that finding at the same projection/record prefix; otherwise omit it. The refusal and
+blocking-reason helpers delegate to this evaluator. Finding explanations use it too, rather than
+derive another eligibility rule: eligible rows state availability and the disclosed, non-clean
+meaning; refused rows name current conditions and do not prescribe an identical repair or
+aggregate review as a guaranteed remedy. Terminal/nonblocking rows retain their existing
+explanations. The helper does not apply response-field or terminal-state admission and never calls
+the presentation layer, so the resolution/self-verification dependency does not recurse. Existing
+`finding_resolution_attempt` and check `prior_finding_verdicts` remain the check/ruling seams for
+evidence views; no new recorded state is introduced.
 
 #### `disputed_after_rebuttal`: a standing reviewer disagreement (issue #1020, ADR-040)
 
@@ -12420,7 +12441,8 @@ verification and the changes. A run whose result never arrived (pending or unrea
 nothing to judge and keeps the pre-#1143 last-edit rule; on the AI route the check asks about it
 (`DeterministicCase.verification_unjudged_stale`, its action and change events). A completion
 claim's cited run that freshness judges (`DeterministicCase.verification_tracked_runs`: a
-test/lint/typecheck/build or requested run with a readable result) is judged exactly as the task
+retained observed test/lint/typecheck/build or requested run with a readable action and result;
+the latest per command plus explicitly cited older runs) is judged exactly as the task
 facts judge it: a stale row rejects it, no row means it is current. Every other cited ref (the
 agent's own `test_result`/`command_output` evidence, a run of an untracked class) keeps the
 latest-edit frontier, where the run's own trusted write at its own result frontier never counts
@@ -12566,7 +12588,8 @@ and Cursor through the shared resolver; it does not widen global runner names or
 Native observed output and agent-declared file ingestion remain distinct evidence sources.
 
 `kernel.verification_coverage.build_verification_coverage(projection, records=(), *,
-task_statement=None, unchanged_action_ids=None, workspace_verification_edit_frontier=0)` is a
+task_statement=None, unchanged_action_ids=None, workspace_verification_edit_frontier=0,
+freshness=None, tracked_runs=None)` is a
 pure, bounded advisory projection. Its candidate flags are `no_test`,
 `failing_cases`, `own_or_tuned_only`, `public_only`, `stale`, `repeated_run` and `redundant_tests`.
 It prefers a current independent witness without awarding volume, retains failures from unrelated
@@ -12593,12 +12616,24 @@ which cannot be shown.
 `public_only` (where the cases came from) and `own_or_tuned_only` (no witness free of the agent's
 own generation or tuning) are independent axes: public cases the agent tuned on carry both. Human
 renderings say "only task-public cases" and "only own-generated or tuned-on cases".
-Its `stale` flag is a conservative candidate, not the #1143 freshness judgement above: any later
-counting material edit marks a witness, after the shared service-proven unchanged-write exemption
-and workspace edit frontier (frozen packets pass both facts; status/receipts derive them from
-authenticated records). It does not apply ADR-042's per-verification input rule, so a witness can
-show `stale` here while check, status and Stop judge its run current; only that rule raises
-freshness questions and findings. Alignment is follow-up #1194.
+Each new witness carries `freshness: current | stale | unknown | legacy` (#1194). Live reads derive
+the ADR-042 rows and exact retained run set from the authenticated prefix. Frozen packets pass
+both `freshness=frozen_case.verification_freshness` and
+`tracked_runs=frozen_case.verification_tracked_runs`, including empty tuples. A missing row means
+current only for a run in that judged set with a readable action and result; unknown is never
+current or stale. The selection uses the first observed result position of each action, so a late
+outcome correction cannot move a run past an edit or supersede a newer invocation. Explicit
+result/evidence citations retain older eligible runs; omitted duplicates have no judgment.
+Older frozen inventories that listed all eligible duplicates are narrowed by that same retention
+selection over their frozen projection, without rerunning the input/change predicates.
+Unjudged runs, absent frozen freshness, or an incomplete frozen pair retain the conservative
+latest-material-edit candidate, labeled `legacy`, after the shared unchanged-write exemption and
+workspace edit frontier. The `stale` boolean remains for compatibility: it is true for a stale
+judgment or a legacy stale candidate, false for current/unknown. A criterion's stale flag requires
+every present witness to be stale; its unknown witnesses still display their own state. The
+optional field is omitted when decoding/re-encoding issued receipts that lack it; those receipts
+keep their original rendering. Display caps and packet omissions never shrink the engine's full
+freshness/tracked calculation or alter closure and scope guards.
 Every surface labels this **agent-declared** and advisory, with no green `covered` state and no
 effect on findings, closure readiness or AI-review requirements.
 
@@ -12707,3 +12742,45 @@ fixed owner-facing notice only when the set changed, never on a `stop_hook_activ
 `finding_frontier` before the note's check (such as the history row's
 `advisory_subject_frontier`) is refused with `invalid_frontier` at `/finding_frontier`, naming
 the check's sequence; an unknown identity is `response_fields_invalid` at `/finding_id`.
+
+### Shared recorded evidence links (#1205)
+
+The optional `status(view=obligations)` item member `evidence_basis` is a bounded derived read
+for open and resolved obligations. `kernel.evidence_basis` indexes explicit readable obligation,
+effective-claim, action, result and evidence references; general task events and unscoped claims
+never acquire obligation scope from proximity. The view distinguishes assertions, agent-declared
+verification metadata, service-observed runs, observation-linked references, routine advice and its
+actual response, recorded AI assessments, and resolution. Observation establishes neither an
+independent oracle nor adequacy. An addressed note does not establish repair; a declined or
+unanswered note creates no work. Check-global praise is never per-obligation approval.
+
+Resolution rows reuse `finding_resolution_attempt` and `self_verification_evaluation` at the same
+prefix. Their reasons, check identity and explicit admitted ruling stay separate. Reason
+details retain closed codes or the existing bounded command-overlap list of obligation
+identities; participant prose and paths are never accepted as structural resolution reasons.
+Rulings and assessments disclose current versus historical applicability through `check_standing`. The
+proof-limit eligibility result also respects the existing terminal state; `respond` still admits
+the reason and post-finding evidence independently. No evidence-display cap changes closure.
+
+New frozen deterministic cases optionally retain this same view, including deliberate routine
+advice/response pairs independently of the ordinary history window. The existing non-rulable
+prior-history channel carries those pairs and assessments. Concern/assessment prose is
+`finding_summary`; the agent's routine-advice rationale and newly frozen settled-choice answer
+are separately admitted `decision_excerpt`. The obligation basis contains ids and closed tokens
+only. Provider selection may withhold either prose category independently. Reference fences still
+apply, and neither a response nor a global reviewer summary becomes a fixed ruling. Legacy cases
+without the view preserve their original encoding and resolved-only fallback; absence supplies no
+new evidence basis. Issued receipts are not rewritten.
+
+The view lists at most 64 obligation rows, eight refs/claims/results per row, four advice,
+assessment and resolution rows per obligation, and four task-level notes, inside 96 KiB. It counts
+omitted links/rows and marks the existing eight-reference observation cap; prose cuts are marked.
+Reviewer obligation metadata yields at 4 KiB without replacing the criterion; paired history
+shares the existing prior-history budget and discloses selection omissions. Freshness uses the
+existing judged-run set and per-run rows; an unjudged run remains `legacy`, never implicitly current.
+
+Shared closure readiness supplies the compact `evidence_basis_summary` pointer for CLI/MCP check
+and status, TUI closure views, and an already-required Stop continuation. Current receipt JSON,
+markdown and text carry it in their evidence section. It creates no calls, events, storage or Stop
+condition. Codex, Claude Code and Cursor consume these same result paths; offline fixtures do not
+establish native host execution or platform parity.

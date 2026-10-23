@@ -1775,6 +1775,13 @@ def _projection_items(
             else frozenset(effective_obligations(projection))
         )
         obligation_classes = obligation_closures(projection, records=records)
+        from finishup.kernel.evidence_basis import (
+            build_evidence_view,
+            evidence_basis_by_obligation,
+        )
+        from finishup.protocol.models import StatusObligationEvidenceModel
+
+        bases = evidence_basis_by_obligation(build_evidence_view(projection, records))
         return tuple(
             _obligation_item(
                 obligation,
@@ -1784,6 +1791,9 @@ def _projection_items(
                 None if effective_refs is None else obligation in effective_refs,
             ).model_copy(
                 update={
+                    "evidence_basis": bases.get(
+                        str(obligation), StatusObligationEvidenceModel(availability="not_selected")
+                    ),
                     "command_attempts": command_attempts(projection, records, obligation),
                     **(
                         {

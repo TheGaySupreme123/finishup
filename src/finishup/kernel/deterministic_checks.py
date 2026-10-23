@@ -48,6 +48,7 @@ from finishup.domain.values import (
     EvidenceId,
     FindingId,
     Frontier,
+    JsonObject,
     ObjectId,
     ObligationId,
     ResultId,
@@ -1191,8 +1192,26 @@ class DeterministicCase:
     # claim rule and the AI-route question agree with the task facts after recovery.
     verification_tracked_runs: tuple[ResultId, ...] = ()
     verification_unjudged_stale: tuple[EventId, ...] = ()
+    # #1205: bounded linked facts and paired routine advice, independent of the history window.
+    # None is a legacy case with no recorded basis, never an empty/current evidence claim.
+    evidence_view: JsonObject | None = None
 
     def __post_init__(self) -> None:
+        if self.evidence_view is not None:
+            from finishup.kernel.evidence_basis import (
+                MAX_EVIDENCE_VIEW_BYTES,
+                evidence_view_from_json,
+                evidence_view_refs,
+            )
+
+            if type(self.evidence_view) is not JsonObject:
+                raise _invalid_case()
+            view = evidence_view_from_json(self.evidence_view)
+            if (
+                len(canonical_encode(self.evidence_view)) > MAX_EVIDENCE_VIEW_BYTES
+                or not evidence_view_refs(view) <= self.allowed_ids
+            ):
+                raise _invalid_case()
         if type(self.verification_advisory) is not bool:
             raise _invalid_case()
         if (
@@ -1621,6 +1640,7 @@ def deterministic_case_to_json(case: DeterministicCase) -> dict[str, JsonValue]:
             else {}
         ),
         **({"verification_advisory": True} if case.verification_advisory else {}),
+        **({"evidence_view": case.evidence_view} if case.evidence_view is not None else {}),
         **(
             {
                 "verification_freshness": cast(
@@ -1669,6 +1689,8 @@ def deterministic_case_from_json(value: JsonValue) -> DeterministicCase:
         frozen = freeze_json(value)
         source = _case_json_object(frozen)
         source_keys = frozenset(source)
+        evidence_view = source.get("evidence_view")
+        source_keys -= {"evidence_view"}
         advisory = source.get("verification_advisory", False)
         source_keys -= {"verification_advisory"}
         freshness = None
@@ -1882,6 +1904,9 @@ def deterministic_case_from_json(value: JsonValue) -> DeterministicCase:
             verification_advisory=cast(bool, advisory),
             verification_tracked_runs=tracked_runs,
             verification_unjudged_stale=unjudged_stale,
+            evidence_view=None
+            if evidence_view is None
+            else JsonObject(_case_json_object(evidence_view)),
         )
     except (KeyError, TypeError, ValueError) as exc:
         raise _invalid_case() from exc
@@ -2487,6 +2512,22 @@ def build_deterministic_case(
         add_event_ref(record.source_event_id)
     for item in history:
         add_event_ref(item.event_id)
+    from finishup.kernel.evidence_basis import (
+        build_evidence_view,
+        evidence_view_json,
+        evidence_view_refs,
+    )
+
+    evidence_view = build_evidence_view(
+        projection,
+        accepted_prefix,
+        unavailable_event_ids=frozenset(str(ref) for ref in unavailable_events),
+        freshness=freshness,
+        tracked_runs=tracked_runs,
+    )
+    for ref in evidence_view_refs(evidence_view):
+        if ref.startswith("evt_"):
+            add_optional_event_ref(event_id(ref))
     # The event that recorded the current task statement is a citable source, so a reviewer can
     # name the stated requirement a plan or diff omits (issue #908).
     task_statement = current_task_statement(accepted_prefix)
@@ -2624,6 +2665,11 @@ def build_deterministic_case(
         verification_tracked_runs=tracked_runs,
         verification_unjudged_stale=tuple(
             event for event in signals.unjudged_stale_events if event in source_by_ref
+        ),
+        evidence_view=(
+            evidence_view_json(evidence_view)
+            if evidence_view.obligations or evidence_view.advisories or evidence_view.omitted
+            else None
         ),
     )
 

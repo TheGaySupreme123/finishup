@@ -991,8 +991,11 @@ def prior_finding_verdict(check: CheckRecordedPayload, finding: Finding) -> str 
 # with every cited ref intact and fenced to what was sent (``_admit_prior_verdicts``), so the
 # reduction can never be the ruling's own basis. Without an explicit ``fixed`` ruling the gap
 # keeps blocking AI-powered proof.
+# The same applies to ``semantic_review_snippet_invalid`` (#1205): an unrelated optional
+# verified row may lose its quote and be dropped without weakening this independently admitted
+# ruling. The diagnostic stays disclosed; neither that row nor silence becomes positive proof.
 _FIXED_RULING_TOLERATED_GAPS: Final = _INSUFFICIENT_PACKET_GAPS | frozenset(
-    {"content_unselected", SEMANTIC_REVIEW_REFS_REDUCED_GAP}
+    {"content_unselected", SEMANTIC_REVIEW_REFS_REDUCED_GAP, SEMANTIC_REVIEW_SNIPPET_INVALID_GAP}
 )
 
 
@@ -1028,7 +1031,8 @@ def _prior_verdict_effect(
     ``fixed`` is the reviewer judging this finding on material recorded after it, so a
     whole-packet ``insufficient_packet`` (and its coverage marker), excerpts the packet's
     budget cut (``content_unselected``, issue #907) and citations of unsent refs the fence removed
-    from reviewer items (``semantic_review_refs_reduced``, issue #976) no longer veto it; every
+    from reviewer items (``semantic_review_refs_reduced``, issue #976), or unrelated rejected
+    quotes (``semantic_review_snippet_invalid``, issue #1205) no longer veto it; every
     other rule still applies, including freshness, material change and the issue not being
     returned again. ``withdrawn`` (the reviewer accepting the agent's rejection) keeps the
     ordinary rules here, under which an assessable review that does not re-raise a finding over
@@ -1719,7 +1723,11 @@ def _finding_resolution_explanation(
             state, finding_id, finding_record, disposition
         )
         if observed is not None:
-            return observed
+            return (
+                observed + " " + _self_verification_next_steps(state, finding_id, records)
+                if observed.startswith("Unresolved:")
+                else observed
+            )
     if disposition is ResponseDisposition.ACKNOWLEDGED_NOT_DONE:
         return (
             "Acknowledged, not done: the agent recorded with a reason that it will not do this. "
@@ -1817,11 +1825,20 @@ def _finding_resolution_explanation(
                 "later qualifying coordination check can resolve it."
             )
     if attempt is None:
-        return "Unresolved: no later recorded check is available for an absence proof."
+        return (
+            "Unresolved: no later recorded check is available for an absence proof. "
+            + _self_verification_next_steps(state, finding_id, records)
+        )
     if attempt.reasons == (_CHECK_UNREADABLE,):
-        return f"Unresolved: check {attempt.check_event_id} is unreadable; absence is unproven."
+        return (
+            f"Unresolved: check {attempt.check_event_id} is unreadable; absence is unproven. "
+            + _self_verification_next_steps(state, finding_id, records, attempt=attempt)
+        )
     if attempt.reasons == (_RETURNED_FINDINGS_UNREADABLE,):
-        return f"Unresolved: returned findings of check {attempt.check_event_id} are unreadable."
+        return (
+            f"Unresolved: returned findings of check {attempt.check_event_id} are unreadable. "
+            + _self_verification_next_steps(state, finding_id, records, attempt=attempt)
+        )
     reasons = attempt.reasons
     returned_again = "issue_returned_again" in reasons
     relation = "Returned again" if returned_again else "Not returned; absence remains unproven"
@@ -1845,7 +1862,7 @@ def _finding_resolution_explanation(
     return (
         f"{relation} in check {attempt.check_event_id} of subject frontier "
         f"{attempt.subject_sequence}. Resolution requirements not met: {detail}."
-        f"{later} {UNRESOLVED_FINDING_NEXT_STEPS}"
+        f"{later} " + _self_verification_next_steps(state, finding_id, records, attempt=attempt)
     )
 
 
@@ -1914,15 +1931,38 @@ def _observed_failed_command_explanation(
 # Synthetic reasons for a resolution attempt FinishUP could not read at all.
 _CHECK_UNREADABLE: Final = "check_unreadable"
 _RETURNED_FINDINGS_UNREADABLE: Final = "returned_findings_unreadable"
-# What every unresolved-finding explanation tells the agent to do next, in order (issue #984,
-# F1): repair first; self-verify a repair only a FinishUP limit keeps unproven; acknowledge as not
-# done only as the last resort. It never invites an immediate acknowledgement.
+# Offered only when the existing respond evaluator permits self-verification at this prefix.
 UNRESOLVED_FINDING_NEXT_STEPS: Final = (
-    "Next: repair it, then check. "
+    "Self-verification is available now under the proof-limit rule. "
     + SELF_VERIFIED_GUIDANCE
-    + " Respond acknowledged_not_done only if you truly will not or cannot do it; an "
-    "acknowledgement is not repair evidence."
+    + " This is disclosed, not proven resolution; the receipt cannot read clean."
 )
+
+
+def _self_verification_next_steps(
+    state: ProjectionState,
+    finding_id: FindingId,
+    records: tuple[LedgerRecord, ...],
+    *,
+    attempt: ResolutionAttempt | None = None,
+) -> str:
+    # Local import breaks the module dependency, not the evaluation: eligibility reads attempts,
+    # never this explanation. The same evaluator and prefix serve respond and every read view.
+    from finishup.kernel.self_verification import self_verification_evaluation
+
+    refusal, blocking = self_verification_evaluation(state, finding_id, records, attempt=attempt)
+    if refusal is None:
+        return UNRESOLVED_FINDING_NEXT_STEPS
+    conditions = " (" + ", ".join(blocking[:32]) + ")" if blocking else ""
+    if len(blocking) > 32:
+        conditions += " (additional conditions omitted; inspect recorded check coverage)"
+    return (
+        f"Self-verification is unavailable now: {refusal}{conditions}. "
+        "A self_verified response requires a later recorded check with only proof-limit "
+        "conditions. Address the reported conditions before self_verified; repeating the same "
+        "repair or an aggregate review does not establish the missing proof. Respond acknowledged_not_done "
+        "only if you truly will not or cannot do it; an acknowledgement is not repair evidence."
+    )
 
 
 @dataclass(frozen=True, slots=True)

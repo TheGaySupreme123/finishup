@@ -1655,6 +1655,30 @@ def _check_fact_why_part(source: Mapping[str, JsonValue]) -> Part | None:
     return None
 
 
+def _evidence_basis_variants(source: Mapping[str, JsonValue]) -> tuple[str, ...]:
+    variants = (
+        "Evidence links: status view=obligations; responses and observed runs do not prove repair or test adequacy.",
+        "Evidence links: status view=obligations.",
+    )
+    readiness = source.get("closure_readiness")
+    if isinstance(readiness, Mapping):
+        summary = readiness.get("evidence_basis_summary")
+        if isinstance(summary, str) and summary:
+            return variants
+    document = source.get("document")
+    if isinstance(document, Mapping):
+        sections = document.get("sections")
+        if isinstance(sections, list | tuple) and any(
+            isinstance(row, Mapping)
+            and row.get("key") == "evidence_and_claim_basis"
+            and isinstance(row.get("body"), str)
+            and "Recorded evidence links: status view=obligations." in str(row.get("body"))
+            for row in sections
+        ):
+            return variants
+    return ()
+
+
 def summary_for_check(envelope: object) -> str:
     """Compose the check's text projection: verdict, next instruction and frontier first.
 
@@ -1692,6 +1716,10 @@ def summary_for_check(envelope: object) -> str:
         ),
         _opt(render.text("children", lambda: _children_clause(source))),
         _opt(render.text("notes", lambda: _notes_clause(source))),
+        _opt(
+            *render.variants("evidence_basis", lambda: _evidence_basis_variants(source)),
+            priority=_P_DETAIL,
+        ),
         *overall,
     ]
     if not overall and input_action_required:
@@ -2119,6 +2147,10 @@ def summary_for_status(envelope: object) -> str:
     brief = _brief_without_counts(source)
     parts: list[Part | None] = [
         _req(f"Status view: {view}; {_frontier_clause(source)};"),
+        _opt(
+            *render.variants("evidence_basis", lambda: _evidence_basis_variants(source)),
+            priority=_P_DETAIL,
+        ),
         # Issue #1084 (review R5): a brief non-compact body carries no counts; say so, never
         # "unavailable". view compact or detail full returns them.
         _req("detail: brief (counts in view compact);")
@@ -2735,6 +2767,10 @@ def summary_for_receipt(envelope: object) -> str:
         _req(_receipt_correctness_advisory_clause(source)),
         _req(f"{_frontier_clause(source)};"),
         _req(f"coverage limitations: {limitations};"),
+        _opt(
+            *render.variants("evidence_basis", lambda: _evidence_basis_variants(source)),
+            priority=_P_DETAIL,
+        ),
         # The pairing is required and sits ahead of droppable gap codes (#1079).
         *_claim_pairing_parts(typed_document),
     ]
