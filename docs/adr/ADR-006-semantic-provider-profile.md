@@ -3367,6 +3367,11 @@ image parts preserve the approved source bytes; only an explicit attachment supp
 assessment. Unsupported formats leave facts; an unsupported Codex model ends its exchange
 unavailable. Local routes and digest-only host observations do not supply pixels.
 
+Capability profile v4 includes model modality items and the URL/low-detail image-input schema,
+including nested URL-or-file-ID variants and required-field compatibility. Existing v3 bindings
+use the ordinary `repair` path before this contract is admitted. Bounded PNG/JPEG container checks
+withhold malformed attachments while retaining facts; no full pixel decoder is added.
+
 Optional distinguishing probes reuse `decision_needed` and `respond`. The next bounded history
 keeps the original criterion/assumption, alternative outcomes, proposed check, answer and linked
 evidence. An answer remains advisory and non-rulable; no check is automatically run or required,

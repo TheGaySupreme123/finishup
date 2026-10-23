@@ -7659,8 +7659,9 @@ still reports the credential connected. A `ready` binding on a host installation
 
 The evaluator is admitted by capability, not by one pinned build (ADR-006 capability amendment,
 2026-10-13): any stable Codex release at or above `0.157.1` whose retained bytes pass the check
-(profile `codex-evaluator/capability/v3`; v3 adds the experimental `thread/start.environments`
-subset fact and the plan/user-input utility disables, #1118 unit 3). A passed check commits
+(profile `codex-evaluator/capability/v4`; v3 added the experimental `thread/start.environments`
+subset fact and plan/user-input utility disables; v4 checks model image modalities and low-detail
+URL-image inputs, #1203). Existing v3 bindings require `repair`. A passed check commits
 `yoetz.codex-evaluator-capability/1` (`capability.json`) beside the retained runtime:
 `capability_profile`, `runtime_floor`, `runtime_version`, `source_identity`,
 `platform` (`os`, `architecture`), `executable_sha256`, `code_mode_host_sha256`,
@@ -11970,7 +11971,9 @@ default. Text permission alone supplies no pixels. A whole PNG/JPEG of at most 4
 512 pixels per edge may accompany an admitted read as `data.image` (`media_type`,
 `source_digest`, `content_base64`). Original bytes are separately admitted and scanned before
 encoding; the whole read stays within 8 KiB and the conversation within 24 KiB. Oversize or
-unsupported attachments leave facts and an explicit limit; attachments are never cut. Retained
+unsupported attachments leave facts and an explicit limit; attachments are never cut. PNG chunk
+bounds/CRCs/end markers and JPEG segment/scan/end-marker bounds are checked before attachment;
+these container checks do not certify decoded pixels. Retained
 image history rechecks that purpose, policy and admitted roots on every exchange.
 
 Responses and Chat render admitted read images as their native low-detail image content parts.

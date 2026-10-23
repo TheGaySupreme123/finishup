@@ -208,7 +208,13 @@ async def test_codex_continuation_checks_model_image_support(
     starts = [params for method, params in runtime.requests if method == "turn/start"]
     if vision:
         assert isinstance(result, SemanticResultReply)
-        assert len(starts) == 2 and starts[-1]["input"] == image_message(history[-1][1], "codex")
+        assert len(starts) == 2
+        inputs = cast(list[object], starts[-1]["input"])
+        assert inputs[1] == {
+            "type": "image",
+            "detail": "low",
+            "url": "data:image/png;base64," + base64.b64encode(_png()).decode(),
+        }
     else:
         assert len(starts) == 1
         assert result.provenance.runtime_evidence is not None
@@ -239,3 +245,38 @@ def test_facts_keep_scope_and_format_limits_explicit() -> None:
     pdf = artifact_facts(b"%PDF-1.7\n1 0 obj <</Type /Page>> endobj")
     assert pdf is not None and "PDF document" in str(pdf["summary"])
     assert artifact_facts(b'const icon = "<svg viewBox=...>";') is None
+
+
+@pytest.mark.parametrize("damage", ["truncated", "bad_crc", "oversized_chunk", "header_only"])
+def test_corrupt_png_is_facts_only(damage: str) -> None:
+    raw = _png(extra=b"acTL")  # A metadata substring is not an animation chunk or a refusal.
+    facts = artifact_facts(raw)
+    assert facts is not None and image_attachment(raw, facts) is not None
+    if damage == "truncated":
+        raw = raw[:-1]
+    elif damage == "bad_crc":
+        raw = raw[:-1] + bytes([raw[-1] ^ 1])
+    elif damage == "oversized_chunk":
+        raw = raw[:33] + b"\xff\xff\xff\xff" + raw[37:]
+    else:
+        raw = raw[:33]
+    facts = artifact_facts(raw)
+    assert facts is not None and (facts["width"], facts["height"]) == (2, 2)
+    assert image_attachment(raw, facts) is None
+
+
+def test_jpeg_segments_and_entropy_markers_are_checked() -> None:
+    # One-component SOF/SOS container with stuffed FF and restart markers in entropy data.
+    frame = b"\xff\xc0\x00\x0b\x08\x00\x02\x00\x02\x01\x01\x11\x00"
+    scan = b"\xff\xda\x00\x08\x01\x01\x00\x00\x3f\x00"
+    raw = b"\xff\xd8" + frame + scan + b"\x12\xff\x00\x34\xff\xd0\x56\xff\xd9"
+    facts = artifact_facts(raw)
+    assert facts is not None and image_attachment(raw, facts) is not None
+    for damaged in (
+        raw[:-1],
+        raw[:15] + b"\xff\xd9",
+        raw.replace(b"\x00\x0b", b"\xff\xff"),
+        raw.replace(scan, b"\xff\xda\x00\x01"),
+    ):
+        facts = artifact_facts(damaged)
+        assert facts is not None and image_attachment(damaged, facts) is None

@@ -5,6 +5,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import re
+import zlib
 from typing import Final, Literal, cast
 
 from finishup.adapters.input_summary import declared_binary_format, summarize_task_input
@@ -69,6 +70,7 @@ def image_attachment(data: bytes, facts: dict[str, JsonValue]) -> dict[str, Json
             type(facts.get(k)) is int and 0 < cast(int, facts[k]) <= MAX_IMAGE_EDGE
             for k in ("width", "height")
         )
+        or not _image_structure(data, str(facts.get("media_type")))
     ):
         return None
     return {
@@ -76,6 +78,57 @@ def image_attachment(data: bytes, facts: dict[str, JsonValue]) -> dict[str, Json
         "source_digest": facts["source_digest"],
         "content_base64": base64.b64encode(data).decode(),
     }
+
+
+def _image_structure(data: bytes, media_type: str) -> bool:
+    """Bounded container checks, not a pixel decoder; malformed images leave facts only."""
+    if media_type == "image/png":
+        pos, seen_data = 8, False
+        while pos + 12 <= len(data):
+            size = int.from_bytes(data[pos : pos + 4], "big")
+            kind, end = data[pos + 4 : pos + 8], pos + 12 + size
+            if end > len(data) or zlib.crc32(data[pos + 4 : end - 4]) != int.from_bytes(
+                data[end - 4 : end], "big"
+            ):
+                return False
+            if (pos == 8 and (kind != b"IHDR" or size != 13)) or (kind == b"IHDR" and pos != 8):
+                return False
+            seen_data |= kind == b"IDAT" and size > 0
+            if kind == b"IEND":
+                return size == 0 and seen_data and end == len(data)
+            pos = end
+        return False
+    pos, frame, scan = 2, False, False
+    while pos < len(data):
+        if data[pos] != 255:
+            if not scan:
+                return False
+            pos += 1
+            continue
+        while pos < len(data) and data[pos] == 255:
+            pos += 1
+        if pos == len(data):
+            return False
+        marker, pos = data[pos], pos + 1
+        if marker == 217:  # EOI, outside any length-delimited segment
+            return scan and pos == len(data)
+        if scan and (marker == 0 or 208 <= marker <= 215):  # stuffed FF or restart
+            continue
+        if marker in {0, 1, 216} or 208 <= marker <= 215 or pos + 2 > len(data):
+            return False
+        size = int.from_bytes(data[pos : pos + 2], "big")
+        if size < 2 or pos + size > len(data):
+            return False
+        if marker in {192, 193, 194}:  # SOF0/1/2, the header formats summarized above
+            if size < 8 or not data[pos + 7] or size != 8 + 3 * data[pos + 7]:
+                return False
+            frame = True
+        if marker == 218:  # SOS; subsequent bytes are entropy data until another marker
+            if not frame or size < 6 or not data[pos + 2] or size != 6 + 2 * data[pos + 2]:
+                return False
+            scan = True
+        pos += size
+    return False
 
 
 def read_image(text: str) -> tuple[dict[str, JsonValue], dict[str, JsonValue], bytes] | None:

@@ -74,7 +74,8 @@ CODEX_EVALUATOR_RUNTIME_FLOOR: Final = "0.157.1"
 # v3 (#1118 unit 3): ``initialize`` opts into the experimental API only to send
 # ``thread/start.environments: []``; the isolated config disables the plan and user-input
 # utilities; the schema is generated with ``--experimental`` so that field is checked.
-CODEX_EVALUATOR_CAPABILITY_PROFILE: Final = "codex-evaluator/capability/v3"
+# v4 (#1203): include the model modality and low-detail URL-image input contract.
+CODEX_EVALUATOR_CAPABILITY_PROFILE: Final = "codex-evaluator/capability/v4"
 CODEX_CAPABILITY_RECORD_NAME: Final = "capability.json"
 # Frozen legacy identifier (ADR-048): stored in capability.json records; protocol 0.1 keeps one
 # `yoetz.<name>/<n>` tag namespace.
@@ -504,7 +505,16 @@ _REVIEWED_SUBSET: Final[tuple[_Requirement, ...]] = (
         {"cursor": "string", "includeHidden": "boolean", "limit": "integer"},
     ),
     ("props", "ModelListResponse", {"data": "array", "nextCursor": "string"}),
-    ("props", "Model", {"id": "string", "model": "string", "supportedReasoningEfforts": "array"}),
+    (
+        "props",
+        "Model",
+        {
+            "id": "string",
+            "model": "string",
+            "supportedReasoningEfforts": "array",
+            "inputModalities": "array",
+        },
+    ),
     ("props", "ReasoningEffortOption", {"reasoningEffort": "string"}),
     ("variant", "LoginAccountParams", ("chatgpt", ())),
     ("variant", "LoginAccountParams", ("chatgptDeviceCode", ())),
@@ -568,6 +578,7 @@ _REVIEWED_SUBSET: Final[tuple[_Requirement, ...]] = (
         },
     ),
     ("variant", "UserInput", ("text", ("text",))),
+    ("variant", "UserInput", ("image", ("detail",))),
     ("values", "ReasoningSummary", ("none",)),
     ("props", "TurnStartResponse", {"turn": "object"}),
     ("props", "Turn", {"error": "null", "id": "string", "status": "string"}),
@@ -645,6 +656,7 @@ _SENT_VARIANT_FIELDS: Final[Mapping[tuple[str, str], frozenset[str]]] = {
     ("LoginAccountParams", "chatgpt"): frozenset({"type"}),
     ("LoginAccountParams", "chatgptDeviceCode"): frozenset({"type"}),
     ("UserInput", "text"): frozenset({"text", "type"}),
+    ("UserInput", "image"): frozenset({"url", "detail", "type"}),
     ("SandboxPolicy", "readOnly"): frozenset({"networkAccess", "type"}),
 }
 # The exact closed values the evaluator sends. Each request field must still admit its value
@@ -901,6 +913,42 @@ def check_app_server_schema(document: object) -> str:
         if not _admits_string(field_schema, definitions, value):
             raise ValueError("codex_runtime_protocol_incompatible")
         facts[f"sent:{name}.{prop}"] = _strings(_accepted(field_schema, definitions)[1])
+    # Image URL can be a flat property or an anyOf branch (0.162.1 also allows fileId).
+    image = _variant_schema(_resolve(definitions["UserInput"], definitions), definitions, "image")
+    assert image is not None  # checked above
+    properties = cast(Mapping[str, object], image["properties"])
+    branches = image.get("anyOf", [])
+    if not isinstance(branches, list) or not _admits_string(
+        properties["detail"], definitions, "low"
+    ):
+        raise ValueError("codex_runtime_protocol_incompatible")
+    for branch in [image, *cast(list[object], branches)]:
+        source = _resolve(branch, definitions)
+        fields = source.get("properties")
+        if isinstance(fields, Mapping) and "url" in fields:
+            if (
+                "string" not in _accepted(cast(Mapping[str, object], fields)["url"], definitions)[0]
+                or not _required(source) <= _SENT_VARIANT_FIELDS[("UserInput", "image")]
+            ):
+                raise ValueError("codex_runtime_protocol_incompatible")
+            break
+    else:
+        raise ValueError("codex_runtime_protocol_incompatible")
+    model = _resolve(definitions["Model"], definitions)
+    modalities = _resolve(
+        cast(Mapping[str, object], model["properties"])["inputModalities"], definitions
+    )
+    items = modalities.get("items")
+    if "string" not in _accepted(items, definitions)[0] or not _admits_string(
+        items, definitions, "image"
+    ):
+        raise ValueError("codex_runtime_protocol_incompatible")
+    facts["image_input"] = {
+        "url": "string",
+        "detail": "low",
+        "modality": "image",
+        "required": _strings(set(_required(source))),
+    }
     return canonical_digest(facts)
 
 
