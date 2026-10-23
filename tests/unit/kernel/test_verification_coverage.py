@@ -45,7 +45,9 @@ from finishup.kernel.projections import (
 from finishup.kernel.reducers import replay
 from finishup.kernel.task_facts import verification_unchanged_actions, workspace_verification_edits
 from finishup.kernel.verification_coverage import build_verification_coverage
+from finishup.kernel.verification_freshness import VerificationFreshness
 from finishup.protocol.canonical import canonical_digest
+from finishup.protocol.errors import ProtocolValueError
 
 _QUOTE = "Every prediction must meet the bound"
 _OBLIGATION = obligation_id("obl_00000000-0000-4000-8000-000000001170")
@@ -706,3 +708,59 @@ def test_exact_task_quote_also_maps_its_longer_obligation_restatement() -> None:
     )
     assert not any("no_test" in row.flags for row in view.criteria)
     assert len(view.criteria) == 1
+
+
+@pytest.mark.parametrize("tracked", [False, True])
+@pytest.mark.parametrize("state", [None, "stale", "unknown"])
+def test_frozen_missing_row_means_current_only_for_a_judged_run(
+    tracked: bool, state: str | None
+) -> None:
+    projection = _projection(_run(1))
+    ref = next(iter(projection.results))
+    rows = () if state is None else (VerificationFreshness(ref, state, (), ()),)
+    view = build_verification_coverage(
+        projection, freshness=rows, tracked_runs=(ref,) if tracked else ()
+    )
+    witness = view.criteria[0].witnesses[0]
+    expected = (state or "current") if tracked else "legacy"
+    assert witness.freshness == expected
+    assert witness.stale is (expected == "stale")
+    wire = verification_coverage_to_json(view)
+    assert verification_coverage_from_json(wire) == view
+    assert (
+        f"freshness={expected}" in "\n".join(verification_coverage_wire_lines(wire))
+        if tracked
+        else "legacy latest-edit candidate" in "\n".join(verification_coverage_wire_lines(wire))
+    )
+
+
+def test_frozen_tracking_without_freshness_cannot_assert_current() -> None:
+    projection = _projection(_run(1))
+    ref = next(iter(projection.results))
+    view = build_verification_coverage(projection, freshness=None, tracked_runs=(ref,))
+    assert view.criteria[0].witnesses[0].freshness == "legacy"
+
+
+def test_issued_coverage_receipts_without_freshness_roundtrip_without_backfill() -> None:
+    view = build_verification_coverage(_projection(_run(1)))
+    criterion = view.criteria[0]
+    legacy = replace(
+        view,
+        criteria=(
+            replace(criterion, witnesses=(replace(criterion.witnesses[0], freshness=None),)),
+        ),
+    )
+    wire = verification_coverage_to_json(legacy)
+    assert verification_coverage_to_json(verification_coverage_from_json(wire)) == wire
+    assert "freshness=" not in "\n".join(verification_coverage_lines(legacy))
+    assert "legacy latest-edit candidate" not in "\n".join(verification_coverage_wire_lines(wire))
+
+
+@pytest.mark.parametrize(
+    ("state", "stale"),
+    [("unknown", True), ("current", True), ("stale", False), ("invented", False)],
+)
+def test_freshness_witness_rejects_contradictory_stale_boolean(state: str, stale: bool) -> None:
+    witness = build_verification_coverage(_projection(_run(1))).criteria[0].witnesses[0]
+    with pytest.raises(ProtocolValueError):
+        replace(witness, freshness=state, stale=stale)

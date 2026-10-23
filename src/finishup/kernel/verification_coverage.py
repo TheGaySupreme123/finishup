@@ -15,7 +15,7 @@ from typing import Final
 
 from finishup.domain.events import ActionKind, LedgerRecord, ResultOutcome, ResultRecordedPayload
 from finishup.domain.task_statement import current_task_statement
-from finishup.domain.values import ActionId
+from finishup.domain.values import ActionId, EventId, ResultId
 from finishup.domain.verification_coverage import (
     MAX_COVERAGE_CRITERIA,
     MAX_CRITERION_WITNESSES,
@@ -43,6 +43,12 @@ from finishup.kernel.task_facts import (
     stale_exempt_write_tokens,
     verification_unchanged_actions,
     workspace_verification_edits,
+)
+from finishup.kernel.verification_freshness import (
+    VerificationFreshness,
+    retained_verification_runs,
+    verification_freshness,
+    verification_tracked_runs,
 )
 
 __all__ = ["build_verification_coverage", "verification_coverage_to_json"]
@@ -148,7 +154,7 @@ def _outside_quotes(candidate: str, quotes: Collection[str]) -> str:
 
 def _strength(run: _Run) -> tuple[int, int, int, int]:
     return (
-        not run.witness.stale,
+        2 if run.witness.freshness == "current" else int(not run.witness.stale),
         run.witness.tuned_on_these_cases is not True,
         _SOURCE_RANK[run.witness.data_source],
         run.row.source_frontier,
@@ -162,11 +168,16 @@ def build_verification_coverage(
     task_statement: str | None = None,
     unchanged_action_ids: Collection[ActionId] | None = None,
     workspace_verification_edit_frontier: int = 0,
+    freshness: tuple[VerificationFreshness, ...] | None = None,
+    tracked_runs: tuple[ResultId, ...] | None = None,
 ) -> VerificationCoverage:
     """Project declarations at this frontier; no finding, gate, or closure consequence.
 
     ``task_statement`` lets frozen semantic cases supply their separately admitted task text.
     Otherwise the authenticated prefix, then plan-carried text, supplies the statement.
+    Frozen callers pass both ``freshness`` and ``tracked_runs`` from the case, including empty
+    tuples. Without that pair, only a live authenticated prefix can derive per-run judgments;
+    old frozen cases and unjudged runs keep a labeled legacy latest-edit candidate.
     """
 
     if task_statement is None:
@@ -212,6 +223,27 @@ def build_verification_coverage(
         )
     )
     latest_edit = edits[-1] if edits else 0
+    if records and freshness is None and tracked_runs is None:
+        freshness = verification_freshness(projection, records)
+        tracked_runs = verification_tracked_runs(projection, records)
+    states = {row.run_ref: row.state for row in freshness or ()}
+    judged = frozenset(tracked_runs or ()) if freshness is not None else frozenset[ResultId]()
+    if not records and judged:
+        # Before #1194, frozen inventories included older duplicates the engine never judged.
+        # Recover only retention here, using frozen inputs; never rerun the freshness predicates.
+        first_positions: dict[ActionId, int] = {}
+        frozen_runs: list[tuple[ResultId, int, EventId]] = []
+        for ref, row in sorted(
+            projection.results.items(), key=lambda item: item[1].source_frontier
+        ):
+            result = row.payload
+            if result is None:
+                continue
+            position = first_positions.setdefault(result.action_id, row.source_frontier)
+            action = projection.actions.get(result.action_id)
+            if ref in judged and action is not None and action.payload is not None:
+                frozen_runs.append((ref, position, action.source_event_id))
+        judged = retained_verification_runs(projection, frozen_runs)
     runs_by_quote: dict[str, list[_Run]] = {}
     for row in sorted(projection.results.values(), key=lambda row: row.source_frontier):
         payload = row.payload
@@ -230,6 +262,11 @@ def build_verification_coverage(
             continue
         action_row = projection.actions.get(payload.action_id)
         action = None if action_row is None else action_row.payload
+        freshness_state = (
+            states.get(payload.result_id, "current")
+            if payload.result_id in judged and action is not None
+            else "legacy"
+        )
         witness = VerificationWitness(
             payload.result_id,
             payload.action_id,
@@ -238,7 +275,10 @@ def build_verification_coverage(
             manifest.failing,
             manifest.tuned_on_these_cases,
             manifest.worst,
-            row.source_frontier < latest_edit,
+            freshness_state == "stale"
+            or freshness_state == "legacy"
+            and row.source_frontier < latest_edit,
+            freshness_state,
         )
         # A different command, provenance, tuning status, or case count cannot erase a failed
         # condition. Absent a readable command, this run cannot supersede any earlier run.
@@ -348,7 +388,7 @@ def build_verification_coverage(
         latest = list(latest_by_check.values())
         failing = [run for run in latest if run.witness.failing > 0]
         present = [run for run in latest if run.witness.cases > 0]
-        current = [run for run in present if not run.witness.stale]
+        current = [run for run in present if run.witness.freshness == "current"]
         scope = current or present
         redundant_keys: set[tuple[object, ...]] = set()
         redundant = 0
@@ -377,7 +417,7 @@ def build_verification_coverage(
             flags.add("own_or_tuned_only")
         if scope and all(run.witness.data_source == "task_public" for run in scope):
             flags.add("public_only")
-        if present and not current:
+        if present and all(run.witness.stale for run in present):
             flags.add("stale")
         if repeated:
             flags.add("repeated_run")

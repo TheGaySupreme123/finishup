@@ -12420,7 +12420,8 @@ verification and the changes. A run whose result never arrived (pending or unrea
 nothing to judge and keeps the pre-#1143 last-edit rule; on the AI route the check asks about it
 (`DeterministicCase.verification_unjudged_stale`, its action and change events). A completion
 claim's cited run that freshness judges (`DeterministicCase.verification_tracked_runs`: a
-test/lint/typecheck/build or requested run with a readable result) is judged exactly as the task
+retained observed test/lint/typecheck/build or requested run with a readable action and result;
+the latest per command plus explicitly cited older runs) is judged exactly as the task
 facts judge it: a stale row rejects it, no row means it is current. Every other cited ref (the
 agent's own `test_result`/`command_output` evidence, a run of an untracked class) keeps the
 latest-edit frontier, where the run's own trusted write at its own result frontier never counts
@@ -12566,7 +12567,8 @@ and Cursor through the shared resolver; it does not widen global runner names or
 Native observed output and agent-declared file ingestion remain distinct evidence sources.
 
 `kernel.verification_coverage.build_verification_coverage(projection, records=(), *,
-task_statement=None, unchanged_action_ids=None, workspace_verification_edit_frontier=0)` is a
+task_statement=None, unchanged_action_ids=None, workspace_verification_edit_frontier=0,
+freshness=None, tracked_runs=None)` is a
 pure, bounded advisory projection. Its candidate flags are `no_test`,
 `failing_cases`, `own_or_tuned_only`, `public_only`, `stale`, `repeated_run` and `redundant_tests`.
 It prefers a current independent witness without awarding volume, retains failures from unrelated
@@ -12593,12 +12595,24 @@ which cannot be shown.
 `public_only` (where the cases came from) and `own_or_tuned_only` (no witness free of the agent's
 own generation or tuning) are independent axes: public cases the agent tuned on carry both. Human
 renderings say "only task-public cases" and "only own-generated or tuned-on cases".
-Its `stale` flag is a conservative candidate, not the #1143 freshness judgement above: any later
-counting material edit marks a witness, after the shared service-proven unchanged-write exemption
-and workspace edit frontier (frozen packets pass both facts; status/receipts derive them from
-authenticated records). It does not apply ADR-042's per-verification input rule, so a witness can
-show `stale` here while check, status and Stop judge its run current; only that rule raises
-freshness questions and findings. Alignment is follow-up #1194.
+Each new witness carries `freshness: current | stale | unknown | legacy` (#1194). Live reads derive
+the ADR-042 rows and exact retained run set from the authenticated prefix. Frozen packets pass
+both `freshness=frozen_case.verification_freshness` and
+`tracked_runs=frozen_case.verification_tracked_runs`, including empty tuples. A missing row means
+current only for a run in that judged set with a readable action and result; unknown is never
+current or stale. The selection uses the first observed result position of each action, so a late
+outcome correction cannot move a run past an edit or supersede a newer invocation. Explicit
+result/evidence citations retain older eligible runs; omitted duplicates have no judgment.
+Older frozen inventories that listed all eligible duplicates are narrowed by that same retention
+selection over their frozen projection, without rerunning the input/change predicates.
+Unjudged runs, absent frozen freshness, or an incomplete frozen pair retain the conservative
+latest-material-edit candidate, labeled `legacy`, after the shared unchanged-write exemption and
+workspace edit frontier. The `stale` boolean remains for compatibility: it is true for a stale
+judgment or a legacy stale candidate, false for current/unknown. A criterion's stale flag requires
+every present witness to be stale; its unknown witnesses still display their own state. The
+optional field is omitted when decoding/re-encoding issued receipts that lack it; those receipts
+keep their original rendering. Display caps and packet omissions never shrink the engine's full
+freshness/tracked calculation or alter closure and scope guards.
 Every surface labels this **agent-declared** and advisory, with no green `covered` state and no
 effect on findings, closure readiness or AI-review requirements.
 

@@ -542,3 +542,22 @@ completion claim's cited run that freshness judges is judged exactly as the task
 frontier, where the run's own trusted write never counts against it. CLI, MCP, hooks, TUI, and
 receipt JSON, markdown and text consume these shared facts and finding details; no surface runs
 tests itself.
+
+### 2026-10-23 amendment — advisory freshness consistency (#1194)
+
+The maintainer selected alignment of the advisory coverage index with this existing per-run
+rule. Freshness and `verification_tracked_runs` share the exact retained set: only observed,
+readable tracked runs, keeping the latest per command and any older run explicitly cited by
+result or attached evidence. Ordering uses the action's first observed result position, then
+the result frontier to distinguish corrections; a later correction cannot move an old invocation
+past a newer one. Missing rows mean current only inside that set. Pending, unreadable,
+unobserved and untracked runs, and omitted older duplicates, receive no per-run verdict.
+
+Coverage witnesses distinguish `current`, `stale` and `unknown`. Unjudged runs and old frozen
+cases keep a clearly labeled `legacy` latest-edit candidate. A frozen review uses its stored
+freshness rows and tracked set, including empty sets, rather than recomputing from newer inputs.
+An older frozen inventory that included unjudged duplicates is narrowed by the same retention
+selection over its frozen projection; this does not rejudge the stored freshness rows.
+Issued receipts keep their bytes and optional-field absence. Coverage display and packet limits
+apply only after the full calculation; no stale, failure, scope, privacy or closure guard is
+relaxed. This alignment adds no writes, dependency inference or rerun policy.

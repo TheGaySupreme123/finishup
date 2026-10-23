@@ -362,13 +362,55 @@ def _tracked_run(
     )
 
 
+def retained_verification_runs(
+    projection: ProjectionState, runs: Iterable[tuple[ResultId, int, EventId]]
+) -> frozenset[ResultId]:
+    """The exact judged set: latest per command plus eligible runs explicitly cited.
+
+    Positions are the first observed result of each action, not its action frontier or a late
+    outcome correction. Keep this selection shared with ``verification_tracked_runs``: an
+    omitted older duplicate has no verdict, so its missing freshness row cannot mean current.
+    Frozen consumers can apply the same selection to older, overinclusive tracked inventories.
+    """
+
+    cited: set[str] = set()
+    for row in projection.claims.values():
+        if row.payload is not None:
+            cited.update(row.payload.supporting_refs)
+            if type(row.payload) is ClaimRecordedPayloadV1_1:
+                cited.update(row.payload.limitation_refs)
+    for row in projection.obligations.values():
+        if row.payload is not None:
+            cited.update(row.payload.resolution_evidence_refs)
+    for row in projection.responses.values():
+        if row.payload is not None:
+            cited.update(row.payload.evidence_refs)
+    latest: dict[str, tuple[int, int, ResultId]] = {}
+    retained: set[ResultId] = set()
+    for run_ref, run_position, _ in runs:
+        result_row = projection.results[run_ref]
+        result = result_row.payload
+        assert result is not None
+        action = projection.actions[result.action_id].payload
+        assert action is not None
+        identity = command_identity(action.command) or run_ref
+        choice = (run_position, result_row.source_frontier, run_ref)
+        if identity not in latest or choice > latest[identity]:
+            latest[identity] = choice
+        if run_ref in cited or cited.intersection(result.evidence_refs):
+            retained.add(run_ref)
+    return frozenset(retained | {choice[2] for choice in latest.values()})
+
+
 def verification_tracked_runs(
     projection: ProjectionState, records: Iterable[LedgerRecord]
 ) -> tuple[ResultId, ...]:
-    """Every result freshness judges, sorted: an observed, readable result of a tracked run.
+    """Exact retained results freshness judges, sorted, before any display limit.
 
-    A tracked run with no freshness row is current (nothing later bears on it). Frozen with the
-    case so the completion-claim rule judges the same runs the task facts do (#1167 review).
+    Only observed, readable tracked runs are eligible. Keep the latest of each command and any
+    older run explicitly cited by result or attached evidence. A retained run with no freshness
+    row is current; omission proves nothing for any other run. Frozen with
+    the case so the completion-claim rule judges the same runs the task facts do (#1194).
     """
 
     from finishup.kernel.task_facts import (
@@ -379,8 +421,9 @@ def verification_tracked_runs(
     prefix = tuple(records)
     observed = observed_event_ids_from_records(prefix)
     requested_runs = requested_verification_run_events(projection, prefix)
-    tracked: list[ResultId] = []
-    for ref, row in projection.results.items():
+    tracked: list[tuple[ResultId, int, EventId]] = []
+    first_positions: dict[ActionId, int] = {}
+    for ref, row in sorted(projection.results.items(), key=lambda item: item[1].source_frontier):
         result = row.payload
         if result is None or row.source_event_id not in observed:
             continue
@@ -391,8 +434,9 @@ def verification_tracked_runs(
             and action.source_event_id in observed
             and _tracked_run(action.payload, action.source_event_id, requested_runs)
         ):
-            tracked.append(ref)
-    return tuple(sorted(tracked, key=str.encode))
+            position = first_positions.setdefault(result.action_id, row.source_frontier)
+            tracked.append((ref, position, action.source_event_id))
+    return tuple(sorted(retained_verification_runs(projection, tracked), key=str.encode))
 
 
 def verification_freshness(
@@ -702,33 +746,7 @@ def verification_freshness(
             if identity is not None and path is not None:
                 names.setdefault(identity, path)
 
-    # Repeated runs of the same command do not grow the derived packet quadratically. Keep
-    # the latest run and any older run the account still cites; history itself is retained.
-    cited: set[str] = set()
-    for row in projection.claims.values():
-        if row.payload is not None:
-            cited.update(row.payload.supporting_refs)
-            if type(row.payload) is ClaimRecordedPayloadV1_1:
-                cited.update(row.payload.limitation_refs)
-    for row in projection.obligations.values():
-        if row.payload is not None:
-            cited.update(row.payload.resolution_evidence_refs)
-    for row in projection.responses.values():
-        if row.payload is not None:
-            cited.update(row.payload.evidence_refs)
-    latest: dict[str, tuple[int, int, ResultId]] = {}
-    for run_ref, run_position, _ in runs:
-        result = projection.results[run_ref].payload
-        assert result is not None
-        action = projection.actions[result.action_id].payload
-        assert action is not None
-        identity = command_identity(action.command) or run_ref
-        choice = (run_position, projection.results[run_ref].source_frontier, run_ref)
-        if identity not in latest or choice > latest[identity]:
-            latest[identity] = choice
-        if cited.intersection(result.evidence_refs):
-            cited.add(run_ref)
-    retained = {choice[2] for choice in latest.values()} | cited
+    retained = retained_verification_runs(projection, runs)
     output: list[VerificationFreshness] = []
     for run_ref, position, run_event in runs:
         if run_ref not in retained:
