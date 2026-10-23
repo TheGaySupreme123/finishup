@@ -3355,3 +3355,20 @@ Codex, Claude Code and Cursor share these publication and advisory semantics thr
 The host runbooks record the same support decision and distinguish shared contract coverage from
 native host and platform execution. Coverage declarations change neither host-observed provenance
 nor the existing consent, packet-admission, receipt and closure boundaries.
+
+### 2026-10-23 amendment — bounded artifact context and optional probes (#1203)
+
+The text-only binary notice remains the default packet behavior. An existing admitted `read_file`
+read may now supply the shared task-input summarizer's facts, including bounded SVG attributes and
+text. It may also attach a whole PNG/JPEG (4 KiB, 512 pixels per edge) under the additional
+owner-approved `semantic-review-images` purpose. This is supplied artifact context, with no image
+acquisition, rendering, OCR, image-generation tool, new root or larger read budget. Provider-native
+image parts preserve the approved source bytes; only an explicit attachment supports visual
+assessment. Unsupported formats leave facts; an unsupported Codex model ends its exchange
+unavailable. Local routes and digest-only host observations do not supply pixels.
+
+Optional distinguishing probes reuse `decision_needed` and `respond`. The next bounded history
+keeps the original criterion/assumption, alternative outcomes, proposed check, answer and linked
+evidence. An answer remains advisory and non-rulable; no check is automatically run or required,
+and a missing result is a coverage limit rather than proof of a defect. Exact contracts and
+offline coverage: [reviewer exchanges](../INTERFACES.md#reviewer-completion-exchanges-issue-1118-unit-3-adr-006).

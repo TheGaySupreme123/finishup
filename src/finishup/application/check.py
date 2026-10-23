@@ -192,6 +192,7 @@ from finishup.kernel.observed_failures import (
     ObservedFailureState,
     observed_action_runner_class,
     observed_event_ids_from_coverage,
+    observed_event_ids_from_records,
     observed_failure_exempt,
     observed_failure_states,
 )
@@ -1632,6 +1633,7 @@ def build_overall_next(
     obligations: tuple[ObligationClosure, ...] | None = None,
     predicted_conclusion: str | None = None,
     readiness: object | None = None,
+    observed_event_ids: frozenset[EventId] | None = None,
 ) -> CheckOverallNext | None:
     """Derive the task continuation without letting the finding list speak for the task (#963).
 
@@ -1698,7 +1700,7 @@ def build_overall_next(
             predicted_conclusion=predicted_conclusion,
         )
     recorded_work_refs, disclosed_live_failure = _recorded_work_refs(
-        result, projection, coverage_by_ref, obligations
+        result, projection, coverage_by_ref, obligations, observed_event_ids
     )
     recorded_work_refs = _bounded_overall_refs(
         (*recorded_work_refs, *_undeclared_reference_refs(result))
@@ -2030,6 +2032,7 @@ def _recorded_work_refs(
     projection: ProjectionState | None,
     coverage_by_ref: Mapping[FindingBasisRef, Coverage] | None = None,
     obligations: tuple[ObligationClosure, ...] | None = None,
+    observed_event_ids: frozenset[EventId] | None = None,
 ) -> tuple[tuple[str, ...], bool]:
     """Find open effective work that a coverage-limited result still requires.
 
@@ -2059,10 +2062,14 @@ def _recorded_work_refs(
     if _overall_total_count(result, "commands", "live_failed") <= 0:
         return _bounded_overall_refs(refs), False
 
-    if coverage_by_ref is None:
+    if coverage_by_ref is None and observed_event_ids is None:
         return _bounded_overall_refs(refs), False
     try:
-        observed = observed_event_ids_from_coverage(coverage_by_ref)
+        observed = (
+            observed_event_ids
+            if observed_event_ids is not None
+            else observed_event_ids_from_coverage(coverage_by_ref or {})
+        )
         states = observed_failure_states(projection, observed, through=projection.frontier)
     except (TypeError, ValueError):
         return _bounded_overall_refs(refs), False
@@ -2168,6 +2175,7 @@ async def _attach_finding_checklist(
             obligations=loaded.basis.obligations,
             predicted_conclusion=predict_receipt_conclusion(loaded.basis).conclusion.value,
             readiness=readiness,
+            observed_event_ids=observed_event_ids_from_records(loaded.records),
         )
         return replace(
             result,

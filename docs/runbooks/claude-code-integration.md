@@ -3082,3 +3082,10 @@ See [the result recipe](../../guidance/request-templates.md#publish-work-result)
 
 This shared transport decision applies on macOS, Linux and Windows through WSL 2. Native host and
 platform execution is not established by the shared contract tests; issue #1182 owns that follow-up.
+
+**Admitted artifact review (#1203). Host decision: shared service support.** Existing reviewer
+reads supply bounded artifact facts and separately permitted small PNG/JPEG context; observed host
+images remain digest-only. Optional verification questions retain their answer/evidence links.
+CLI, MCP, hooks and receipts share the same service paths on macOS, Linux and WSL 2; offline
+contract tests establish transport and privacy behavior, not native visual accuracy. The maintainer
+owns guided image-toggle and broader format/size follow-ups in #1203. See [privacy and review](../usage/privacy-and-semantic-review.md#commands).

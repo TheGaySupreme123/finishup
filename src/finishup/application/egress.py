@@ -13,6 +13,7 @@ from enum import StrEnum
 from typing import TYPE_CHECKING, Literal, cast
 
 from finishup.adapters.privacy.local_enforcer import SecretScanRuleset, estimated_token_count
+from finishup.adapters.reviewer_artifacts import IMAGE_REVIEW_PURPOSE, read_image
 from finishup.domain.findings import SemanticDispatchKind
 from finishup.domain.privacy import (
     REVIEW_PACKET_ITEM_ID,
@@ -420,6 +421,7 @@ class ReviewerHistory:
     """
 
     policy: tuple[int, str] | None = None
+    images: bool = False
     retained: set[tuple[DataCategory, DataClass]] = field(
         default_factory=set[tuple[DataCategory, DataClass]]
     )
@@ -431,7 +433,10 @@ class ReviewerHistory:
         scope_kind: AuthorizationScopeKind,
         roots: Iterable[str | None],
     ) -> bool:
-        return reviewer_history_admissible(policy, binding, scope_kind, roots, self.retained)
+        return (
+            not self.images
+            or semantic_policy_refusal(policy, binding, IMAGE_REVIEW_PURPOSE, scope_kind) is None
+        ) and reviewer_history_admissible(policy, binding, scope_kind, roots, self.retained)
 
     def admit_exchange(
         self,
@@ -1317,6 +1322,16 @@ class PrivacyCoordinator:
             receipt,
         )
 
+    async def reviewer_images_allowed(
+        self, scope: AuthorizationScope, binding: ProviderBinding
+    ) -> bool:
+        """Image permission is additional to text review; no shipped policy grants it implicitly."""
+        effective = await self._policies.effective_policy(scope)
+        return (
+            semantic_policy_refusal(effective.policy, binding, IMAGE_REVIEW_PURPOSE, scope.kind)
+            is None
+        )
+
     async def admit_reviewer_read(
         self,
         request_id: str,
@@ -1343,6 +1358,16 @@ class PrivacyCoordinator:
             request_id, channel, None, purpose, scope, None, binding, items
         )
         effective = await self._policies.effective_policy(scope)
+        image = read_image(envelope.decode())
+        if image is not None and (
+            semantic_policy_refusal(effective.policy, binding, IMAGE_REVIEW_PURPOSE, scope.kind)
+            is not None
+            or not any(
+                kind is DataCategory.REPOSITORY_EXCERPT and data == image[2]
+                for kind, data, _root in elements
+            )
+        ):
+            return "image_permission_required"
         roots = tuple(root for _kind, _text, root in elements)
         if not reviewer_history_admissible(effective.policy, binding, scope.kind, roots) or (
             history is not None and not history.holds(effective.policy, binding, scope.kind, roots)
@@ -1367,6 +1392,7 @@ class PrivacyCoordinator:
         ):
             return "privacy_withheld"
         if history is not None:
+            history.images = history.images or image is not None
             history.retained.update(
                 (item.candidate.category, item.data_class) for item in classified.items
             )

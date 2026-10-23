@@ -789,6 +789,56 @@ def test_a_settled_finding_is_carried_nameable_but_never_rulable() -> None:
     )
 
 
+@pytest.mark.parametrize(
+    "disposition", [ResponseDisposition.ACKNOWLEDGED, ResponseDisposition.REJECTED]
+)
+def test_answered_verification_question_keeps_its_probe_outcomes_and_evidence(
+    disposition: ResponseDisposition,
+) -> None:
+    question = replace(
+        _semantic(7),
+        kind=FindingKind.DECISION_NEEDED,
+        priority=3,
+        policy_id="research-evidence",
+        detail="Set conflicting environment values, then remove the preferred value.",
+        challenge=FindingChallenge(
+            discrepancy="The requirement prefers ABS values; fallback precedence is uncertain.",
+            alternative_interpretation="ABS wins; or the OS value unexpectedly wins.",
+            requested_next_step="answer_question",
+            uncertainty="A distinguishing probe may help; it is optional.",
+        ),
+    )
+    answer = ResponseRecordedPayload(
+        finding_id=fnd(7),
+        finding_frontier=FRONTIER,
+        disposition=disposition,
+        reason="The linked result addresses the proposed probe.",
+        evidence_refs=(res(1),),
+    )
+    case = _build(
+        _numba_case(
+            extra_findings={fnd(7): finding_record(question, 11)},
+            extra_responses={fnd(7): record(answer, 17)},
+        )
+    )
+    prefix = "settled-finding-"
+    row = _row(case, prefix + str(fnd(7)))
+    assert row["rulable"] is False
+    assert row["evidence_refs"] == [str(res(1))]
+    assert row["evidence_ref_count"] == 1
+    assert row["requested_next_step"] == "answer_question"
+    assert str(fnd(7)) not in case.packet.prior_finding_refs
+    texts = {item.item_id: item.content.decode() for item in case.items}
+    assert question.detail in texts[f"{prefix}message-{fnd(7)}"]
+    assert question.challenge is not None
+    assert question.challenge.discrepancy in texts[f"{prefix}discrepancy-{fnd(7)}"]
+    assert (
+        question.challenge.alternative_interpretation
+        in texts[f"{prefix}alternative_interpretation-{fnd(7)}"]
+    )
+    assert answer.reason is not None and answer.reason in texts[f"{prefix}response-{fnd(7)}"]
+
+
 def _limitation_request(number: int) -> Finding:
     return replace(
         _semantic(number, challenge=_CHALLENGE),

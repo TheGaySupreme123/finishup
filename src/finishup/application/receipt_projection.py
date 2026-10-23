@@ -331,6 +331,24 @@ def withheld_text(
     return _bounded(replaced, limit)
 
 
+def receipt_fragments(content: bytes) -> tuple[bytes, ...]:
+    """Lossless local admission of large clean prose; fragments never become output text.
+
+    Scan the whole value before partitioning so a secret cannot hide across an item boundary.
+    Sensitive oversized values fail closed before disclosure; ordinary per-item policy and
+    scanning still apply to every fragment. Any denied fragment withholds the entire leaf.
+    """
+    if len(content) > MAX_EGRESS_ITEM_BYTES:
+        from finishup.observability.privacy import scan_for_sensitive_content
+
+        if scan_for_sensitive_content(content):
+            raise ValueError("receipt_projection_fragment_sensitive")
+    return tuple(
+        content[start : start + MAX_EGRESS_ITEM_BYTES]
+        for start in range(0, max(1, len(content)), MAX_EGRESS_ITEM_BYTES)
+    )
+
+
 # Every receipt prose field this projection rewrites admits at least this many characters
 # (section titles, the one smaller field, are never rewritten).
 _MIN_FIELD_CHARS: Final = 4_096

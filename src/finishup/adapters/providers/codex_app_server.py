@@ -57,6 +57,7 @@ from finishup.adapters.providers.openai_responses import (
 )
 from finishup.adapters.providers.reviewer_cache_telemetry import record_exchange_cache
 from finishup.adapters.providers.reviewer_reply import REVIEWER_REPLY_SCHEMAS
+from finishup.adapters.reviewer_artifacts import image_message
 from finishup.config.models import (
     CODEX_FINAL_OUTPUT_LIMIT_DEFAULT,
     CODEX_OUTPUT_LIMIT_MAX,
@@ -1226,6 +1227,8 @@ async def _require_model(
     profile: CodexAppServerProfile,
     timeout: float,
     required_efforts: tuple[str, ...] | None = None,
+    *,
+    require_images: bool = False,
 ) -> None:
     """Prove the exact model lists every effort this probe or attempt may request.
 
@@ -1254,6 +1257,10 @@ async def _require_model(
             model = cast(Mapping[str, object], raw_model)
             if model.get("model") != profile.model and model.get("id") != profile.model:
                 continue
+            if require_images:
+                modalities = model.get("inputModalities")
+                if not isinstance(modalities, list | tuple) or "image" not in modalities:
+                    raise ValueError("codex_image_input_unavailable")
             efforts = model.get("supportedReasoningEfforts")
             if not isinstance(efforts, list | tuple):
                 raise ValueError("codex_model_catalog_invalid")
@@ -2343,6 +2350,7 @@ _FAILURE_STAGE_BY_TOKEN: Final[Mapping[str, str]] = {
     "codex_login_required": "login_required",
     "codex_chatgpt_login_required": "login_required",
     "codex_model_unavailable": "model_unavailable",
+    "codex_image_input_unavailable": "model_unavailable",
     "codex_reasoning_effort_unavailable": "model_unavailable",
     "codex_model_catalog_invalid": "model_unavailable",
     "codex_thread_isolation_unproven": "thread_invalid",
@@ -2657,14 +2665,34 @@ class CodexAppServerEvaluator:
                 "summary": "none",
             }
             turn_start_usage = token_usage
-            case_disclosed = True
             events.wire_seen = getattr(runtime, "received_bytes", 0)
+            inputs = [
+                part
+                for text in case_texts
+                for part in (
+                    (
+                        image_message(text, "codex")
+                        if exchange is not None and held is not None
+                        else None
+                    )
+                    or [{"type": "text", "text": text}]
+                )
+            ]
+            if any(isinstance(part, dict) and part.get("type") == "image" for part in inputs):
+                await _require_model(
+                    runtime,
+                    self.profile,
+                    _remaining(deadline, self.clock),
+                    (budget.reasoning_effort,),
+                    require_images=True,
+                )
+            case_disclosed = True
             turn_result = await runtime.request(
                 31 if exchange is None else 100 + len(exchange.history),
                 "turn/start",
                 {
                     **turn_settings,
-                    "input": [{"type": "text", "text": text} for text in case_texts],
+                    "input": inputs,
                     "threadId": thread_id,
                 },
                 _remaining(deadline, self.clock),

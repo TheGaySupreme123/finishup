@@ -11959,6 +11959,42 @@ receipt remains coverage-bounded; Stop is never blocked on it.
 
 ### Reviewer completion exchanges (issue #1118 unit 3, ADR-006)
 
+**Admitted artifacts and verification questions (#1203).** The existing `read_file` text read
+also supplies the task-input summarizer's source-bound facts for supported binary formats and SVG
+structure. `artifact_facts` names its method, full-read digest, size, redaction and limitations.
+Facts are repository excerpts, never visual confirmation. SVG uses the existing safe XML parser,
+value scan before truncation and whole-line summary caps; it evaluates no code or external resource.
+
+`semantic-review-images` is an additional owner-approved LLM-channel purpose, absent from every
+default. Text permission alone supplies no pixels. A whole PNG/JPEG of at most 4,096 bytes and
+512 pixels per edge may accompany an admitted read as `data.image` (`media_type`,
+`source_digest`, `content_base64`). Original bytes are separately admitted and scanned before
+encoding; the whole read stays within 8 KiB and the conversation within 24 KiB. Oversize or
+unsupported attachments leave facts and an explicit limit; attachments are never cut. Retained
+image history rechecks that purpose, policy and admitted roots on every exchange.
+
+Responses and Chat render admitted read images as their native low-detail image content parts.
+The gateway proves the entire rendered input equals the deterministic translation of the approved
+history; no missing, changed or extra input is accepted instead of the verbatim-payload rule.
+Packet, catalog and assistant text never become image authority. Codex supplies an inline low-detail
+image only on a retained continuation, after the exact model catalog explicitly lists image input.
+An unsupported Codex model ends that exchange unavailable; unknown/local routes supply facts only.
+This changes no host capture: digest-only observed images still contain no pixels. No native visual
+accuracy or benchmark improvement is established by the offline transport tests.
+
+An optional distinguishing probe uses existing `decision_needed` fields: discrepancy names the
+criterion and assumption, alternative interpretation names outcomes, and the message proposes the
+check. `respond` links the answer and evidence. Settled question context now retains that proposal
+and its evidence IDs inside the existing history bounds, without reopening a mandatory finding or
+claiming that an agent's answer independently verifies a repair.
+
+Check delivery cursors freeze the presence or absence of call-local `observations_awaited` in their
+authenticated selector; replay derives observed-work references from the trusted ledger prefix at
+the result frontier. Neither recovery repeats a check. Large clean receipt leaves are admitted in
+service-owned 16 KiB fragments, each mapped back to its whole leaf for denial. A whole-value scan
+precedes partitioning; sensitive oversized values fail closed. Delivered clean prose remains whole,
+with the existing lossless host paging, original receipt digest and complete structured findings.
+
 One reviewer-loop completion is one ordinary gateway dispatch with its own admission, rendered-body
 scan, root fence, consume, owed receipt and one-use credential or runtime authority. Its approved
 payload is the canonical history `encode_reviewer_exchange(history)`: a JSON array of

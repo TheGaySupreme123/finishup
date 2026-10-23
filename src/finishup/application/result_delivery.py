@@ -351,20 +351,20 @@ def page_result(
     request_id: str | None = None,
 ) -> dict[str, JsonValue]:
     """Page a result after disclosure; the original operation remains complete and unchanged."""
-    if method == "status":
+    if method in {"status", "check"}:
+        live_fields = _STATUS_LIVE_FIELDS if method == "status" else ("observations_awaited",)
         snapshot = selector.get("_delivery_snapshot")
         if snapshot is None:
             selector = {
                 **selector,
-                "_delivery_snapshot": {k: source[k] for k in _STATUS_LIVE_FIELDS if k in source},
+                "_delivery_snapshot": {k: source[k] for k in live_fields if k in source},
             }
         elif isinstance(snapshot, Mapping):
-            # The source is a frozen status result. A subsequent append or a finished import must
-            # not replace its live watermarks while the cursor is still reading that result, nor
-            # add one a brief first read omitted at its default.
+            # Freeze call-local wait facts as well as status watermarks, including absence.
+            # A continuation neither replaces the first call's values nor adds omitted ones.
             frozen = cast(Mapping[str, JsonValue], snapshot)
-            source = {k: v for k, v in source.items() if k not in _STATUS_LIVE_FIELDS}
-            source.update({k: frozen[k] for k in _STATUS_LIVE_FIELDS if k in frozen})
+            source = {k: v for k, v in source.items() if k not in live_fields}
+            source.update({k: frozen[k] for k in live_fields if k in frozen})
         else:
             raise invalid_cursor()
     # Each read attaches a fresh local disclosure receipt to its own page, outside the items and

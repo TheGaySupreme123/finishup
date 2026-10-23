@@ -43,6 +43,7 @@ from finishup.adapters.providers.local_model import (
     LocalModelSocketResolverPort,
 )
 from finishup.adapters.providers.reviewer_reply import REVIEWER_REPLY_SCHEMAS
+from finishup.adapters.reviewer_artifacts import image_api, image_messages, read_image
 from finishup.domain.findings import SamplingParams, SemanticFailureClass
 from finishup.domain.privacy import (
     PRIVACY_REQUEST_COMMITMENT_ALGORITHM,
@@ -90,6 +91,7 @@ from finishup.ports.privacy import (
 )
 from finishup.ports.secret_memory import ProviderAttemptAuthBinding, ProviderCredentialHandle
 from finishup.ports.semantic import (
+    REVIEWER_EXCHANGE_MEDIA_TYPES,
     Deadline,
     ExternalRuntimeAuthority,
     ProviderAttemptProvenance,
@@ -102,8 +104,9 @@ from finishup.ports.semantic import (
     SemanticResultSuccess,
     SemanticResultTimeout,
     SemanticResultUnavailable,
+    decode_reviewer_exchange,
 )
-from finishup.protocol.canonical import canonical_digest
+from finishup.protocol.canonical import canonical_digest, strict_json_parse
 from finishup.protocol.ids import IdKind
 from finishup.protocol.models import SemanticProgressPhase, SemanticStatus
 
@@ -115,6 +118,34 @@ __all__ = [
 ]
 
 _ZERO_DIGEST = "sha256:" + "0" * 64
+
+
+def _render_preserves_approved_case(case: ApprovedOutboundCase, body: bytes) -> bool:
+    # Images require API content parts rather than JSON-as-text. The narrow exception proves
+    # the entire input equals the deterministic translation of this approved history; a missing,
+    # changed or extra message/image is refused before any credential or disclosure exists.
+    if case.media_type not in REVIEWER_EXCHANGE_MEDIA_TYPES.values():
+        return case.payload in body
+    try:
+        history = decode_reviewer_exchange(case.payload)
+        if not any(
+            role == "user" and n > 2 and read_image(text) is not None
+            for n, (role, text) in enumerate(history)
+        ):
+            return case.payload in body
+        api = image_api(case.provider_binding.endpoint_profile_id)
+        if api == "codex":
+            return case.payload in body
+        if api not in {"responses", "chat"}:
+            return False
+        rendered = strict_json_parse(body)
+        return isinstance(rendered, dict) and rendered.get(
+            "input" if api == "responses" else "messages"
+        ) == image_messages(history, api)
+    except ValueError:
+        return False
+
+
 _SCAN = SecretScanRuleset()
 
 
@@ -675,7 +706,7 @@ class PolicyEnforcingOutboundGateway(OutboundGatewayPort):
             return await self._preconsume_failure(
                 case, authorization, PrivacyReason.PROVIDER_UNAVAILABLE
             )
-        if type(body) is not bytes or not body or case.payload not in body:
+        if type(body) is not bytes or not body or not _render_preserves_approved_case(case, body):
             return await self._preconsume_failure(
                 case, authorization, PrivacyReason.PROVIDER_UNAVAILABLE
             )

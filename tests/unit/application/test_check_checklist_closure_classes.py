@@ -32,6 +32,30 @@ _RESULT: Any = SimpleNamespace(
 )
 
 
+def test_reloaded_check_keeps_live_observed_work_without_transient_case_coverage() -> None:
+    from builders.observed_runs import ObservedLedger
+    from finishup.kernel.observed_failures import observed_event_ids_from_records
+    from finishup.kernel.reducers import replay
+
+    ledger = ObservedLedger()
+    failed = ledger.fail("pytest tests/unit/test_example.py")
+    projection = replay(ledger.prefix)
+    result: Any = SimpleNamespace(
+        missing_for_assessment=(),
+        totals={"commands": {"live_failed": "1"}},
+        coverage=SimpleNamespace(known_gaps=("content_unselected",)),
+    )
+    overall = build_overall_next(
+        result,
+        build_finding_checklist(projection, attempt_budget=5),
+        projection,
+        observed_event_ids=observed_event_ids_from_records(ledger.prefix),
+    )
+    assert overall is not None
+    assert (overall.status, overall.action) == ("action_required", "review_recorded_work")
+    assert str(failed) in overall.target_refs
+
+
 def test_a_reasoned_acknowledgement_of_a_limitation_request_is_not_open_work() -> None:
     finding = _finding(1, semantic=True, next_step="state_unresolved_limitation")
     state, closure = _one(finding, ResponseDisposition.ACKNOWLEDGED, reasoned=True)

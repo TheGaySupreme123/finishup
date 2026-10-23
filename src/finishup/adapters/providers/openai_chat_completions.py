@@ -37,6 +37,7 @@ from finishup.adapters.providers.reviewer_cache_telemetry import (
     api_exchange_usage,
     record_exchange_cache,
 )
+from finishup.adapters.reviewer_artifacts import image_messages
 from finishup.domain.findings import SamplingParams, SemanticFailureClass
 from finishup.domain.privacy import (
     ApprovedOutboundCase,
@@ -219,7 +220,7 @@ def _build_body_object(
             raise ValueError("chat_completions_reviewer_schema_unavailable")
         return {
             "model": case.provider_binding.model_id,
-            "messages": strict_json_parse(case.payload),
+            "messages": image_messages(exchange.history, "chat"),
             "max_tokens": OPENAI_MAX_OUTPUT_TOKENS,
             "response_format": {
                 "type": "json_schema",
