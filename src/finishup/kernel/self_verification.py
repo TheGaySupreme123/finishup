@@ -65,7 +65,7 @@ from typing import Final
 from finishup.domain.events import CheckRecordedPayload, LedgerRecord
 from finishup.domain.findings import FindingOrigin
 from finishup.domain.values import EventId, FindingId
-from finishup.kernel.finding_resolution import finding_resolution_attempt
+from finishup.kernel.finding_resolution import ResolutionAttempt, finding_resolution_attempt
 from finishup.kernel.gap_effect import GAP_EFFECT_TABLE, GapClass
 from finishup.kernel.projections import ProjectionState
 from finishup.kernel.task_fact_scope import COMMAND_ATTEMPT_MISMATCH_GAP, scoped_resolution_reasons
@@ -79,6 +79,7 @@ __all__ = [
     "finding_proof_limited",
     "reasons_proof_limited",
     "self_verification_blocking_reasons",
+    "self_verification_evaluation",
     "self_verification_refusal",
 ]
 
@@ -232,7 +233,7 @@ def self_verification_refusal(
     replay-derived. Terminal to-do states and field rules are ``respond``'s, not this predicate's.
     """
 
-    refusal, _blocking = _evaluate(state, finding_id, records)
+    refusal, _blocking = self_verification_evaluation(state, finding_id, records)
     return refusal
 
 
@@ -245,7 +246,7 @@ def self_verification_blocking_reasons(
     (``coverage:<code>`` and the fixed reason vocabulary) are returned, never prose.
     """
 
-    refusal, blocking = _evaluate(state, finding_id, records)
+    refusal, blocking = self_verification_evaluation(state, finding_id, records)
     return blocking if refusal == FINDING_NOT_PROOF_LIMITED else ()
 
 
@@ -300,13 +301,25 @@ def _refreshed_reasons(
     return tuple(dict.fromkeys((*kept, *current)))
 
 
-def _evaluate(
-    state: ProjectionState, finding_id: FindingId, records: tuple[LedgerRecord, ...]
+def self_verification_evaluation(
+    state: ProjectionState,
+    finding_id: FindingId,
+    records: tuple[LedgerRecord, ...],
+    *,
+    attempt: ResolutionAttempt | None = None,
 ) -> tuple[str | None, tuple[str, ...]]:
+    """The existing admission predicate's refusal and blocking reasons, in one evaluation.
+
+    Read presentations may reuse an attempt computed for this finding at this exact state/record
+    prefix. Terminal-state and response-field admission remain ``respond``'s responsibility.
+    This calls only the resolution-attempt seam, never the explanation that presents its result.
+    """
+
     record = state.findings.get(finding_id)
     if record is None or record.payload is None:
         return FINDING_NOT_RECHECKED, ()
-    attempt = finding_resolution_attempt(state, finding_id, records)
+    if attempt is None:
+        attempt = finding_resolution_attempt(state, finding_id, records)
     if attempt is None or (
         not attempt.could_resolve and "finding_not_in_checked_frontier" in attempt.reasons
     ):

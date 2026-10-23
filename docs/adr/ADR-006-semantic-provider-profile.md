@@ -1504,6 +1504,15 @@ findings. A ruling on an item that is already final, or one contradicted by the 
 restatement, is set aside without that gap (a diagnostic count only), so it cannot stall the
 review's other open findings.
 
+**Optional quote loss (#1205).** The same explicit, independently admitted `fixed` ruling also
+tolerates `semantic_review_snippet_invalid` on its own finding. An unrelated optional positive
+`verified` row with an invalid quote is still dropped, and the quote-loss diagnostic remains
+disclosed in coverage and receipts; it cannot veto the ruling's separately admitted repair basis.
+Neither silence nor an unsupported or unassessable ruling gains this tolerance. All existing
+citation/admission, re-raise, material-change, freshness, unreadable-proof and reduced-scope repair
+guards remain. This corrects a controlled paired counterexample, not a claim that the incomplete
+historical Math archive would resolve.
+
 **Terminal states: findings as a to-do list that ends.** Every recorded finding is in exactly one
 to-do state, read from replayed projection facts only (`kernel/finding_todo.py`, transition table
 kept as data): `open`, or one of three terminal states. `verified_resolved` is the existing

@@ -57,6 +57,8 @@ from finishup.kernel.self_verification import (
     FINDING_NOT_RECHECKED,
     finding_proof_limited,
     reasons_proof_limited,
+    self_verification_blocking_reasons,
+    self_verification_evaluation,
     self_verification_refusal,
 )
 from finishup.protocol.coverage import (
@@ -374,18 +376,79 @@ def test_receipt_findings_unresolved_drops_when_every_blocking_item_is_settled()
     assert split.agent_actionable == ("receipt_findings_unresolved",)
 
 
-def test_unresolved_explanation_orders_repair_then_self_verification_then_acknowledgement() -> None:
+def test_eligible_explanation_offers_self_verification_with_its_non_clean_meaning() -> None:
     state = _state(_finding())
     records = _records(_row(10, _check(gaps=("observation_input_loss",))))
     explanation = finding_resolution_explanation(state, fnd(1), records)
     assert "coverage:observation_input_loss" in explanation
     assert explanation.endswith(UNRESOLVED_FINDING_NEXT_STEPS)
     assert SELF_VERIFIED_GUIDANCE in explanation
-    repair = explanation.index("repair it, then check")
-    verify = explanation.index("respond `self_verified`")
-    acknowledge = explanation.index("acknowledged_not_done only if you truly will not")
-    assert repair < verify < acknowledge
+    assert "Self-verification is available now" in explanation
+    assert "repair it, then check" not in explanation
+    assert "cannot read clean" in explanation
     assert "never a `finishup-blocker`" in explanation
+
+
+@pytest.mark.parametrize(
+    "gap",
+    ["gap_from_a_newer_build", "missing_ref"],
+)
+def test_refused_explanation_names_the_same_current_conditions_as_respond(gap: str) -> None:
+    state = _state(_finding())
+    records = _records(_row(10, _check(gaps=(gap,))))
+    refusal, blocking = self_verification_evaluation(state, fnd(1), records)
+    assert refusal == self_verification_refusal(state, fnd(1), records)
+    assert blocking == self_verification_blocking_reasons(state, fnd(1), records)
+    assert "coverage:" + gap in blocking
+    explanation = finding_resolution_explanation(state, fnd(1), records)
+    assert "Self-verification is unavailable now: finding_not_proof_limited" in explanation
+    assert all(reason in explanation for reason in blocking)
+    assert SELF_VERIFIED_GUIDANCE not in explanation
+    assert "repair it, then check" not in explanation
+    assert "repeating the same repair" in explanation
+
+
+def test_no_later_check_guidance_reports_actual_unavailability() -> None:
+    explanation = finding_resolution_explanation(_state(_finding()), fnd(1), ())
+    assert "Self-verification is unavailable now: finding_not_rechecked" in explanation
+    assert SELF_VERIFIED_GUIDANCE not in explanation
+
+
+@pytest.mark.parametrize("unreadable", ["check", "returned_findings"])
+def test_unreadable_proof_guidance_reports_the_actual_refusal(unreadable: str) -> None:
+    state = _state(_finding())
+    check = _check(returned=(fnd(2),) if unreadable == "returned_findings" else ())
+    if unreadable == "check":
+        state = replace(state, coverage_gaps=(f"redacted_event:{evt(10)}",))
+    records = _records(_row(10, check))
+    refusal, blocking = self_verification_evaluation(state, fnd(1), records)
+    assert refusal == FINDING_NOT_PROOF_LIMITED
+    assert blocking == (unreadable + "_unreadable",)
+    explanation = finding_resolution_explanation(state, fnd(1), records)
+    assert "Self-verification is unavailable now" in explanation
+    assert blocking[0] in explanation
+    assert SELF_VERIFIED_GUIDANCE not in explanation
+
+
+def test_guidance_display_bound_never_truncates_the_eligibility_calculation() -> None:
+    state = _state(_finding())
+    gaps = tuple(f"unknown_gap_{index:02}" for index in range(40))
+    records = _records(_row(10, _check(gaps=gaps)))
+    explanation = finding_resolution_explanation(state, fnd(1), records)
+    assert "additional conditions omitted" in explanation
+    assert self_verification_blocking_reasons(state, fnd(1), records) == tuple(
+        "coverage:" + gap for gap in gaps
+    )
+    assert self_verification_refusal(state, fnd(1), records) == FINDING_NOT_PROOF_LIMITED
+
+
+def test_terminal_self_verified_never_offers_another_response() -> None:
+    state = _state(_finding(), response=ResponseDisposition.SELF_VERIFIED)
+    records = _records(_row(10, _check(gaps=("observation_input_loss",))))
+    explanation = finding_resolution_explanation(state, fnd(1), records)
+    assert "The item is final" in explanation
+    assert "Self-verification is available now" not in explanation
+    assert SELF_VERIFIED_GUIDANCE not in explanation
 
 
 # -- A later positive sighting is never hidden under the terminal row (adversarial review) ---

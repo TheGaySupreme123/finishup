@@ -1908,7 +1908,11 @@ its `-part-NN` parts, not the source file; renderings say "of the captured item"
 - `semantic_review_snippet_invalid` — a reviewer quote could not be proved against the exact safe
   provider-bound text of the rows it cites, including after response recovery without the
   ephemeral text index. The quote is removed from a kept challenge, a verified row is dropped, and
-  the remaining review stays visible;
+  the remaining review stays visible. For AI-powered absence proof, only an explicit,
+  independently admitted `fixed` ruling tolerates this diagnostic for its own finding (#1205);
+  it remains disclosed, and a rejected positive row supplies no evidence. Silence and
+  unsupported/unassessable rulings retain their
+  blockers, as do re-raised concerns, stale/unreadable proof and missing reduced-scope repairs;
 - `semantic_case_content_over_item_limit` — recorded text the publish-side prose bound accepted
   (`MAX_TEXT_BYTES`, 8192) exceeded what one case item carries (`MAX_REVIEW_TEXT_BYTES`, 4096), so
   the case shortened it or replaced the payload with a `yoetz.bounded-content-omission/1` marker.
@@ -10321,6 +10325,11 @@ response is `rejected` that check records `rejection_accepted`, not resolution (
 `unassessable` add the blocker `reviewer_verdict_<verdict>`. The resolution explanation names a
 resolution that came from a `fixed` ruling.
 
+The same admitted-`fixed` path tolerates `semantic_review_snippet_invalid` (#1205): losing an
+unrelated optional positive quote does not veto the ruling's independently fenced repair basis.
+The optional positive row stays dropped and the diagnostic stays disclosed. Citation admission,
+material change, current freshness and reduced-scope repair requirements remain unchanged.
+
 #### Finding to-do states and `acknowledged_not_done` (issue #905)
 
 `acknowledged_not_done` is a `respond` disposition: the agent states, with a required non-empty
@@ -10381,6 +10390,18 @@ readiness lists the standing code `finding_self_verified`; `receipt-document` `1
 invalid) and markdown/text render a "Self-verified by the agent; FinishUP could not prove the repair"
 section; the conclusion is at best `insufficient_coverage`. `check-result` `finding_checklist.counts`
 and the status findings view carry `self_verified` as a count and a `todo_state`.
+
+`self_verification_evaluation(state, finding_id, records, *, attempt=None)` returns the existing
+predicate's `(refusal, blocking_reasons)` in one evaluation. A supplied `ResolutionAttempt` must
+be for that finding at the same projection/record prefix; otherwise omit it. The refusal and
+blocking-reason helpers delegate to this evaluator. Finding explanations use it too, rather than
+derive another eligibility rule: eligible rows state availability and the disclosed, non-clean
+meaning; refused rows name current conditions and do not prescribe an identical repair or
+aggregate review as a guaranteed remedy. Terminal/nonblocking rows retain their existing
+explanations. The helper does not apply response-field or terminal-state admission and never calls
+the presentation layer, so the resolution/self-verification dependency does not recurse. Existing
+`finding_resolution_attempt` and check `prior_finding_verdicts` remain the check/ruling seams for
+evidence views; no new recorded state is introduced.
 
 #### `disputed_after_rebuttal`: a standing reviewer disagreement (issue #1020, ADR-040)
 
