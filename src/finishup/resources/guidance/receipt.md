@@ -49,7 +49,12 @@ The receipt records the assessment; this separate event records closure.
 
 ## Earlier correctness advisories
 
-Routine AI-powered correctness notes are non-blocking and need no answer. The receipt counts them
+Routine AI-powered correctness notes do not block FinishUP; recording a response is optional.
+For a material concern about an explicit current task requirement—including one appearing only
+in the review summary—assess it against the task and existing evidence. Use a proportionate
+check, cite evidence that settles it, explain your disagreement, or disclose the remaining
+uncertainty. Nonblocking status or zero actionable findings does not establish that the
+requirement is met. The receipt counts them
 and shows each displayed note as `addressed (agent-reported, linked evidence)`, `declined with
 reason` or `no recorded response`; include the material ones and their status in final prose,
 with their retrieval and evidence links. Silence, a later clean check or a passing count is not
