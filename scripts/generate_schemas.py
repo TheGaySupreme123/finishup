@@ -27,6 +27,7 @@ from typing import Final, cast
 from pydantic import TypeAdapter
 from pydantic_core import core_schema
 
+from finishup.domain.review_guidance import ReviewGuidance
 from finishup.protocol.canonical import JsonValue, canonical_encode
 from finishup.protocol.models import MAX_REVIEW_EXCERPTS
 
@@ -4201,6 +4202,10 @@ def _check_result_v1_6_schema(entry: _RegistryEntry) -> dict[str, JsonValue]:
         "follow_overall_next"
     )
     success = cast(dict[str, JsonValue], definitions["success"])
+    cast(dict[str, JsonValue], success["properties"])["review_guidance"] = {
+        "type": "string",
+        "const": ReviewGuidance.MATERIAL_CONCERNS.value,
+    }
     cast(dict[str, JsonValue], success["properties"])["closure_readiness"] = {
         "$ref": SCHEMA_NAMESPACE
         + "operations/status-result-1.4.0.schema.json#/$defs/closure_readiness"

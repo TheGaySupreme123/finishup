@@ -97,6 +97,7 @@ from finishup.domain.receipts import (
     check_time_change_unavailable_reason_gap,
     semantic_coverage_gap_code,
 )
+from finishup.domain.review_guidance import ReviewGuidance
 from finishup.domain.review_input_render import render_agent_next
 from finishup.domain.reviewer_reads import ReviewerRecord
 from finishup.domain.task_statement import TASK_STATEMENT_GAPS, SpecificationPreflight
@@ -801,6 +802,7 @@ def check_internal_json(result: CheckCommitResult) -> dict[str, JsonValue]:
             {}
             if result.semantic_status is not SemanticStatus.SUCCEEDED
             else {
+                "review_guidance": ReviewGuidance.MATERIAL_CONCERNS.value,
                 "review_summary": (result.review_summary or "No review summary recorded."),
                 "verified": tuple(dict(item.items()) for item in result.verified),
             }

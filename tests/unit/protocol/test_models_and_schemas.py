@@ -319,7 +319,7 @@ _EXPECTED_RESULT_PATTERN_COUNTS: dict[tuple[str, str | None], int] = {
     (
         "check",
         None,
-    ): 550,  # #1205 +1 evidence summary; #1162 +1 advisory readiness; #1140 +83 shared readiness; #1139 +4 review_delivery; #1118 +18 reviewer; tb4n2 LA: counts/disputed_after_rebuttal; W2-A +8; tb4n3 LF +17; #1048 +38 inspection;
+    ): 551,  # #1207 +1 fixed review guidance; #1205 +1 evidence summary; #1162 +1 advisory readiness; #1140 +83 shared readiness; #1139 +4 review_delivery; #1118 +18 reviewer; tb4n2 LA: counts/disputed_after_rebuttal; W2-A +8; tb4n3 LF +17; #1048 +38 inspection;
     # #1047 +1 follow_up_round; ADR-049 +4 review_mode; W6 #1107 +1 agent_next
     ("publish_work", None): 67,  # #1084 +3 server_filled
     (
@@ -2616,7 +2616,7 @@ def test_result_leaf_registry_has_exhaustive_schema_parity() -> None:
 
     derived_patterns = _derived_result_success_patterns(catalog)
     assert (
-        len(derived_patterns) == 1961
+        len(derived_patterns) == 1962
     )  # #1140/#1144/#1149 +86 readiness/receipt; #1139 +8 delivery; #1118 +18 check reviewer, +9 LO check_cause, W2-A +46 closure verdict, +34 LF fact_lineage, W2-B +2 closure_after,
     # W6 #1107 +1 check agent_next, +15 status operation check_outcome,
     # tb4n4 #1044 +7 closure_readiness.undeclared_references, #1048 +38 inspection, #1047 +2,
@@ -2634,7 +2634,7 @@ def test_result_leaf_registry_has_exhaustive_schema_parity() -> None:
     assert type(rules) is tuple
     assert (
         len(rules)
-        == 1992  # #1205 +64 evidence leaves, #1194 +2 freshness; #1170 +58 coverage and manifest-summary privacy leaves; #1162 +95 advisory history and readiness leaves, +1 model-opaque advisory_provenance container; #1140/#1144/#1149 +86 readiness and receipt; #1139 +8 check/status review_delivery; #1118 +18 check reviewer, +1 check_recorded 1.6.0; n6 item 4: check_recorded 1.5.0; #1079 +2 admissible_verification;
+        == 1993  # #1207 +1 fixed review guidance; #1205 +64 evidence leaves, #1194 +2 freshness; #1170 +58 coverage and manifest-summary privacy leaves; #1162 +95 advisory history and readiness leaves, +1 model-opaque advisory_provenance container; #1140/#1144/#1149 +86 readiness and receipt; #1139 +8 check/status review_delivery; #1118 +18 check reviewer, +1 check_recorded 1.6.0; n6 item 4: check_recorded 1.5.0; #1079 +2 admissible_verification;
         # W6 #1107 +16 (check agent_next, status operation check_outcome);
         # +1 closing_material_frontier; #1084 +10 server_filled and brief status,
         # +1 history occurred_at_source (review R7), -2 replay_notice retired (round 2),
@@ -2651,7 +2651,7 @@ def test_result_leaf_registry_has_exhaustive_schema_parity() -> None:
 
     registry_patterns = {(rule.method, rule.status_view, rule.segments) for rule in rules}
     assert (
-        len(registry_patterns) == 1962
+        len(registry_patterns) == 1963
     )  # #1170 +57 coverage and manifest-summary leaves; #1162 +1 model-opaque container; #1140/#1144/#1149 +86 readiness/receipt; #1139 +8 delivery; #1118 +18 check reviewer, W6 #1107 +16, #1084 review R7 +1, #1027 +5, LO +9, W2-A +46, LF +34, W2-B +2, #1044 +7,
     # #1048 +38, #1047 +2, tb4n5 +3, ADR-049 +12 review_mode, #1079 +2 admissible_verification,
     # W5/D1 +2 closure_readiness.acceptance_risk; #1205 +64 evidence leaves, #1194 +2 freshness

@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Final, cast
 
 from finishup.application.result_delivery import page_result
+from finishup.domain.review_guidance import ReviewGuidance
 from finishup.mcp.summaries import render_check_review_delivery
 from finishup.protocol.canonical import JsonValue, canonical_digest, canonical_encode
 
@@ -34,6 +35,7 @@ def _result_delivery_vector() -> dict[str, JsonValue]:
         "result_frontier": {"sequence": "42", "head_digest": _DIGEST},
         "verdict": "action_required",
         "agent_next": "Read the complete uncertainty before choosing an action.",
+        "review_guidance": ReviewGuidance.MATERIAL_CONCERNS.value,
         "review_summary": "Read the complete finding before deciding.",
         "findings": [
             {
@@ -164,6 +166,7 @@ def _vectors() -> tuple[dict[str, JsonValue], ...]:
 
 def document() -> dict[str, JsonValue]:
     delivery_source: dict[str, JsonValue] = {
+        "review_guidance": ReviewGuidance.MATERIAL_CONCERNS.value,
         "review_summary": "The supplied reference may be intentional.",
         "findings": [
             {

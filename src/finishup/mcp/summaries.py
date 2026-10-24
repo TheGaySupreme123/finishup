@@ -33,6 +33,7 @@ from finishup.domain.receipts import (
     historical_gaps_from_wire,
     limitations_name_coordinator_failure,
 )
+from finishup.domain.review_guidance import review_guidance_line
 from finishup.domain.review_input_render import (
     has_agent_suppliable_missing,
     publish_exactly,
@@ -1010,7 +1011,9 @@ def render_check_review_delivery(envelope: object) -> str:
     if summary is None and not challenges:
         return ""
 
-    lines = ["AI-powered reviewer output (advisory; model-derived; not independent proof):"]
+    guidance = review_guidance_line(source.get("review_guidance"))
+    lines = [guidance] if guidance else []
+    lines.append("AI-powered reviewer output (advisory; model-derived; not independent proof):")
     if summary is not None:
         lines.append("Reviewer summary: " + summary)
     for row in challenges:

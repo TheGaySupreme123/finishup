@@ -5,6 +5,14 @@ You are the working agent using FinishUP.
 Read when a finding, pending review or closing check needs more than the operating card.
 A check evaluates only the recorded, readable, frontier-bound packet.
 
+Routine AI-powered correctness notes do not block FinishUP; recording a response is optional.
+For a material concern about an explicit current task requirement—including one appearing only
+in the review summary—assess it against the task and existing evidence. Use a proportionate
+check, cite evidence that settles it, explain your disagreement, or disclose the remaining
+uncertainty. Nonblocking status or zero actionable findings does not establish that the
+requirement is met. Successful AI-powered check results also carry a compact FinishUP reminder
+beside the reviewer summary, including when no formal findings are returned.
+
 Select `semantic_required` when the user, effective policy, or named acceptance criterion requires
 independent AI-powered review. Omit `mode` to run in the task's review mode (below). Use
 `semantic_if_configured` only when review is known to be optional. Use `deterministic_only` only for
