@@ -6645,7 +6645,10 @@ def _draft_receipt_schema() -> dict[str, JsonValue]:
                 "type": "array",
                 "uniqueItems": True,
             },
-            "source": {"enum": ["task_statement", "obligation", "manifest_quote"], "type": "string"},
+            "source": {
+                "enum": ["task_statement", "obligation", "manifest_quote"],
+                "type": "string",
+            },
             "standing": {
                 "enum": ["linked_pass_current", "agent_claim_only", "none"],
                 "type": "string",
