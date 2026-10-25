@@ -6,8 +6,10 @@ ad-hoc advisory sets, the deterministic scope, the proof-tolerance sets. They di
 is the one answer. Each of the 223 gap codes the product can emit has exactly one row, and a row
 says two separate things:
 
-* ``readiness`` - who owes the next move, unchanged from the closed ADR-032 vocabulary: ``A``
-  (an agent action removes it), ``S`` (no agent action removes it) or ``R`` (route dependent).
+* ``readiness`` - who owes the next move, from the closed ADR-032 vocabulary: ``A`` (an agent
+  action removes it), ``S`` (no agent action removes it), ``R`` (route dependent) or, since
+  issue #1209, ``F`` (fix or decline: an agent action removes it, or the agent declines it with a
+  recorded reason; never a blocker, and disclosed on the receipt while it stands).
 * the *effect* on the receipt, per route: ``A`` actionable, ``B`` standing and bounding, ``D``
   disclosed (listed, never bounds the conclusion), or a context rule (``D*`` a FinishUP review-packet
   budget, ``R`` the review-route rule, ``X`` the later-material rule, ``G`` the host-observation
@@ -68,6 +70,10 @@ class GapClass(str, Enum):  # noqa: UP042 - exact internal contract token
     AGENT_ACTIONABLE = "agent_actionable"
     STANDING_LIMITATION = "standing_limitation"
     ROUTE_DEPENDENT = "route_dependent"
+    # Issue #1209 (ADR-032 amendment): a limitation the agent can remove but is not required to.
+    # Non-blocking like a standing limitation (ADR-033 D1), disclosed on the receipt while it
+    # stands, and named to the agent as "fix, or decline with a reason" before the receipt.
+    FIX_OR_DECLINE = "fix_or_decline"
 
 
 class GapEffectKind(str, Enum):  # noqa: UP042 - exact internal contract token
@@ -159,6 +165,9 @@ GAP_EFFECT_WHY: Final[Mapping[str, str]] = MappingProxyType(
         "suffix": "records after the check that FinishUP cannot prove harmless",
         "host_guarded": "a host observation gap the applicable check itself carried",
         "disclosure": "recorded history, a deliberate selection or an informational fact",
+        "fix_or_decline": (
+            "a limit an agent action removes; the agent fixes it or declines it with a reason"
+        ),
         "finishup_review_budget": "FinishUP's own review-packet size budget; no agent action clears it",
         "finishup_advice_pipeline": "the background advice pipeline's own bound; not an agent task",
         "finishup_detail_bound": "FinishUP's own summarisation bound on routine reads or listings",
@@ -325,9 +334,7 @@ _FAMILIES: Final[tuple[_Family, ...]] = (
             "obligation_blocked_outside_agent_control",
             "obligation_evidence_stale_after_scope_edit",
             "plan_unrefined_before_first_edit",
-            "planned_verification_agent_linked",
             "planned_verification_matched_by_prefix",
-            "planned_verification_outcome_unknown",
             "planned_verification_unobservable",
             "preexisting_test_deleted",
             "preexisting_test_modified",
@@ -335,10 +342,31 @@ _FAMILIES: Final[tuple[_Family, ...]] = (
             "preexisting_test_skipped",
             "requested_output_ignored_by_repository",
             "requested_output_outside_workspace",
-            "requested_output_unchanged",
             "requested_output_unverified",
             "verification_only_as_root",
             "write_outside_workspace",
+        ),
+    ),
+    # Issue #1209 (ADR-032 amendment): disclosures an agent action removes. A requested file the
+    # record says was written is unchanged from the task base; a planned verification was matched
+    # only through the agent's own link; a planned verification's run had a host-stated outcome
+    # that does not establish the planned part's (a composed command). Their receipt effect is the
+    # G4 one (disclosed, never bounding), so the receipt conclusion is unchanged; only who owes the
+    # next move changes: the agent fixes each one or declines it with a recorded reason, and none
+    # is ever a Stop-gate item (ADR-033 D1). ``planned_verification_outcome_unknown`` is named to
+    # the agent only where the host stated the run's outcome (``TaskFactSignals.fix_or_decline``);
+    # where the host stated none it stays a plain disclosure.
+    _Family(
+        rule="G4f",
+        family="fix_or_decline",
+        readiness="F",
+        d_route="D",
+        review_route="D",
+        changed=False,
+        codes=(
+            "planned_verification_agent_linked",
+            "planned_verification_outcome_unknown",
+            "requested_output_unchanged",
         ),
     ),
     _Family(
@@ -767,6 +795,7 @@ _READINESS: Final[Mapping[str, GapClass]] = MappingProxyType(
         "A": GapClass.AGENT_ACTIONABLE,
         "S": GapClass.STANDING_LIMITATION,
         "R": GapClass.ROUTE_DEPENDENT,
+        "F": GapClass.FIX_OR_DECLINE,
     }
 )
 _SPECS: Final = frozenset({"A", "B", "D", "D*", "R", "X", "G", "V"})

@@ -2671,14 +2671,17 @@ Its optional filter (issue #1084) selects by the source event's accepted envelop
 (`status-result` 1.4.0 `brief_success`) is a strict subset of the full one: frontiers equal to
 `result_frontier`, projection metadata at their current defaults, an empty import status and an
 enforced credential filter are omitted; the compact view keeps `coverage` and `closure_readiness`
-and every other view carries `closure_state` (state, blocking conditions, agent-actionable tokens).
+and every other view carries `closure_state` (state, blocking conditions, agent-actionable tokens,
+and the open `fix_or_decline` rows, #1209).
 It is built before the disclosure boundary, so the privacy projection and its commitment cover
 exactly the brief body. The MCP `status` tool asks for `brief` unless the agent names a `detail`;
 the CLI, hooks and the bridge's own recovery reads keep the full body. A publish operation page
 adds `server_filled` when the operation recorded one. The MCP text summary of a brief non-compact
 body renders `Closure: <state>.`, the `Agent-actionable:` tokens and the count-free directive (for
 `ready_with_limitations`, "Nothing further to do. Request the receipt.") from `closure_state`, and
-omits the counts a brief body does not carry instead of printing them as unavailable.
+omits the counts a brief body does not carry instead of printing them as unavailable; while
+`closure_state.fix_or_decline` names rows it renders the count-free fix-or-decline directive
+instead of "Nothing further to do".
 Together with history's claim event/schema identity and candidate findings' bounded claim/result
 ids, this is the minimum public projection needed to author and dry-run a v1.1 replacement without
 reading raw ledger internals.
@@ -8394,9 +8397,34 @@ as a whole (absent for a result shaped by an earlier 0.3 build, never partial or
 (omitted by an earlier build; `"0"` means no material delta has been recorded).
 `closure_readiness.acceptance_risk` is optional on the same wire (omitted when no flagged
 resolution is a receipt coverage limit; see the closure-verdict section).
+`closure_readiness.fix_or_decline` is optional on the same wire (issue #1209, ADR-032 amendment
+of 2026-10-25; omitted when none): the open limitations an agent action removes, at most 64
+`{code, obligation_id}` rows sorted by code then id. `code` is one of
+`planned_verification_agent_linked` (the run that decides a planned verification is the agent's own
+link, also after an earlier direct run), `planned_verification_outcome_unknown` (only where the
+host stated the deciding run's outcome; where it stated none the code stays a plain disclosure)
+and `requested_output_unchanged` (the check records that code without its obligation, so it names
+every obligation the code can concern, written requested `file`/`directory` items that are not
+`role: input`, and the fact holds for at least one of them). Each code is also in
+`standing_limitations`: the receipt discloses it unless it is fixed, and its effect on the receipt
+conclusion is unchanged (gap table rule G4f, `D` on both routes). A row is declined, and no longer
+listed, once a readable, unsuperseded `decision_recorded` whose statement holds
+`finishup-assumption:<obligation id>` or `finishup-verification-limit:<obligation id>` names its
+obligation (for `requested_output_unchanged`, any obligation it names); the decision's rationale is
+the reason and the receipt lists the decision under its disclosed assumptions. A decision is
+material, and so is a repair: after either the agent checks once more, and "request the receipt
+without another check" applies only when nothing new was recorded. The rows are never a Stop-gate item and never make
+the state `action_required`; while any is listed the directive is "Before the receipt: fix, or
+decline with a reason: <code> (<obligation id>) ... N other limitation(s) and M acknowledged
+item(s) will be disclosed on the receipt. After a fix or a decline, run check once more, then
+request the receipt." on status text, the CLI, the
+terminal interface, the check's text, `agent_next` and the `mode: inspect` text, and a brief body's
+`closure_state` carries the same rows.
 Beside the
 unchanged `blocking_conditions` it carries `state` (`action_required|ready|ready_with_limitations|unknown`),
-`gap_classification_version` (`"8"` since `deliverable_references_undeclared_file` became an
+`gap_classification_version` (`"9"` since `requested_output_unchanged`,
+`planned_verification_agent_linked` and `planned_verification_outcome_unknown` joined the
+`fix_or_decline` readiness group (#1209); `"8"` when `deliverable_references_undeclared_file` became an
 agent-actionable task fact (#1044, ADR-035 amendment); `"7"` when the table became a view of
 `kernel.gap_effect` and added the
 readiness token `finding_rejection_awaiting_ruling` (ADR-046) and the standing task-fact
@@ -10632,8 +10660,9 @@ discriminated beside `complete` and `awaiting_human`/`awaiting_input`; no verdic
 coverage, versions or `result_frontier`), every leaf structural:
 
 - `subject_frontier` — the frontier read.
-- `remaining` — `readiness`, `predicted_conclusion` (optional), `agent_actionable` and
-  `standing_limitations` exactly as `status` `closure_readiness` prints them at that frontier
+- `remaining` — `readiness`, `predicted_conclusion` (optional), `agent_actionable`,
+  `standing_limitations` and `fix_or_decline` (optional, #1209) exactly as `status`
+  `closure_readiness` prints them at that frontier
   (`application/status.current_closure_readiness`, ADR-046); `obligations` (at most 64; count in
   `obligation_count`) — every effective obligation whose class is not `resolved`, as
   `{obligation_id, closure_class, closure_basis, missing}`, agent work first; `missing` (at most 8)

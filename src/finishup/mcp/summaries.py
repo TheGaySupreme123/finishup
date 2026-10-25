@@ -65,6 +65,8 @@ from finishup.protocol.readiness_text import (
     check_cause_sentence,
     closure_counts_variants,
     coordinator_failure_note,
+    fix_or_decline_rows,
+    fix_or_decline_variants,
     obligation_resolve_recipe_variants,
     predicted_receipt_variants,
     readiness_directive,
@@ -651,6 +653,11 @@ def _overall_next_parts(source: Mapping[str, JsonValue]) -> list[Part]:
         parts.append(_opt("acknowledged incomplete endpoint: receipt;", priority=_P_ACTION))
     if status == "ready_with_limitations" and endpoint == "receipt":
         parts.append(_opt("disclose limitation at: receipt;", priority=_P_ACTION))
+    fixable = fix_or_decline_rows(source.get("closure_readiness"))
+    if status == "ready_with_limitations" and fixable:
+        # Issue #1209: what to fix, or decline with a reason, before that receipt (required, so a
+        # tight bound keeps at least the first item rather than a bare receipt step).
+        parts.append(Part(fix_or_decline_variants(fixable), required=True, priority=_P_ACTION))
     if refs:
         variants = tuple(
             variant
@@ -2424,6 +2431,7 @@ def _closure_parts(source: Mapping[str, JsonValue]) -> list[Part]:
     if acknowledged == "unavailable":
         return []
     head = f"Closure: {state}."
+    fixable = fix_or_decline_rows(typed)
     sentence = readiness_directive(state, standing=len(standing), acknowledged=acknowledged)
     # ADR-046: the receipt conclusion this frontier would carry (appended after the owner-approved
     # sentence, never edited into it) and the one set of counters every surface prints.
@@ -2445,6 +2453,22 @@ def _closure_parts(source: Mapping[str, JsonValue]) -> list[Part]:
             parts.append(
                 Part(listed("Agent-actionable: ", actionable), required=True, priority=_P_ACTION)
             )
+        return [*parts, *verdict_parts]
+    if state == "ready_with_limitations" and fixable:
+        # Issue #1209: an open fix-or-decline item replaces the stop sentence. Core: the state and
+        # every named item (its shortest rendering is reserved), never "Nothing further to do".
+        variants = fix_or_decline_variants(
+            fixable, standing=len(standing), acknowledged=acknowledged
+        )
+        parts = [
+            Part(
+                tuple(f"{head} {variant}" for variant in variants),
+                required=True,
+                priority=_P_ACTION,
+            )
+        ]
+        if standing:
+            parts.append(Part(listed("Standing limitations: ", standing), priority=_P_BOILERPLATE))
         return [*parts, *verdict_parts]
     if state == "ready_with_limitations":
         # Core: the state and the stop instruction. The counts sentence of the full directive is
@@ -2499,6 +2523,11 @@ def _brief_closure_parts(source: Mapping[str, JsonValue]) -> list[Part]:
                 )
             )
         return parts
+    fixable = fix_or_decline_rows(typed)
+    if state == "ready_with_limitations" and fixable:
+        # Issue #1209: the items are named; a brief body carries no counts, so none is invented.
+        variants = fix_or_decline_variants(fixable)
+        return [Part(tuple(f"{head} {variant}" for variant in variants), required=True)]
     if state == "ready_with_limitations":
         # The full directive's counts sentence needs counts a brief body omits; the stop
         # instruction itself does not.

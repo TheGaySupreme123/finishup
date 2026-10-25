@@ -165,7 +165,11 @@ def _standing_coverage(reason: str) -> bool | None:
     if not reason.startswith(_COVERAGE_PREFIX):
         return None
     row = GAP_EFFECT_TABLE.get(reason[len(_COVERAGE_PREFIX) :])
-    return row is not None and row.readiness is GapClass.STANDING_LIMITATION
+    # A fix-or-decline limit (#1209) is not agent *work* either: it keeps its standing answer here.
+    return row is not None and row.readiness in {
+        GapClass.STANDING_LIMITATION,
+        GapClass.FIX_OR_DECLINE,
+    }
 
 
 def _packet_limit(reason: str) -> bool:

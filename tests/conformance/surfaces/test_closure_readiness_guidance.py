@@ -92,17 +92,38 @@ def test_coverage_guide_explains_the_three_groups_and_the_closed_table() -> None
 def test_receipt_template_stops_at_ready_with_limitations() -> None:
     section = _section(_GUIDANCE / "request-templates.md", "## `receipt`")
     assert (
-        "At `state: ready_with_limitations` nothing further is to do: request the receipt without "
+        "At `state: ready_with_limitations` fix, or decline with a reason, each `fix_or_decline` "
+        "item (receipt.md step 7); otherwise nothing further is to do: request the receipt without "
         "another check" in section
     )
+
+
+def test_a_fix_or_a_decline_is_followed_by_one_more_check() -> None:
+    """#1213 review: a fix or a decline is a new record, so the receipt follows one more check."""
+
+    closing = _section(_GUIDANCE / "receipt.md", "## Closing sequence")
+    assert "run `check` once more, then request the receipt" in closing
+    assert '"Without another check" applies only when nothing new was recorded' in closing
+    text = readiness_directive(
+        "ready_with_limitations",
+        standing=2,
+        fix_or_decline=(
+            ("requested_output_unchanged", "obl_12090000-0000-4000-8000-000000000001"),
+        ),
+    )
+    assert text.endswith("After a fix or a decline, run check once more, then request the receipt.")
+    assert "without another check" not in text
 
 
 @pytest.mark.parametrize("skill", _SKILLS, ids=lambda path: path.parts[-3])
 def test_every_host_skill_names_the_stop_signal(skill: Path) -> None:
     text = _collapsed(skill)
     assert "ready_with_limitations" in text
-    assert "nothing further is to do" in text
     assert "request the receipt without another check" in text
+    # Issue #1209: the fix-or-decline step precedes the receipt on every host (the skill no longer
+    # says "nothing further is to do" there: the product text names what is left).
+    # A fix or a decline supersedes the check (#1213 review): check once more, never straight on.
+    assert "fix/decline `fix_or_decline` items, then check, else request the receipt" in text
     assert "`standing_limitations` are disclosed, never tasks" in text
 
 
