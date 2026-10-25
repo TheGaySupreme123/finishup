@@ -9,6 +9,7 @@ import pytest
 from hypothesis import given
 from hypothesis import strategies as st
 
+from finishup.domain.decision_status import find_status_line
 from finishup.domain.events import (
     ObligationPublishedPayload,
     ObligationStatus,
@@ -211,6 +212,16 @@ def test_no_child_receipt_matches_frozen_pre_lineage_bytes() -> None:
     assert str(sections[0]["body"]).startswith(str(frozen_sections[0]["body"]))
     assert "Why " in str(sections[0]["body"])
     sections[0]["body"] = frozen_sections[0]["body"]
+    # #1205/#1139: the 1.3 evidence section also appends the decision-point ledger line
+    # (``kernel.evidence_basis.decision_status_line``, short receipt form). Strip exactly that one
+    # appended line; the frozen 1.1 sentence before it must stay byte-identical.
+    for section in sections:
+        if section.get("key") != "evidence_and_claim_basis":
+            continue
+        body = str(section["body"])
+        line = find_status_line(body)
+        assert line and body.endswith(" " + line)
+        section["body"] = body.removesuffix(" " + line)
     compatible["sections"] = sections
     versions = dict(cast(dict[str, object], compatible["versions"]))
     schema_versions = [
