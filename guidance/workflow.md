@@ -770,8 +770,9 @@ privacy-checked, sent in its own exchange within the owner's channel limits, and
 check result and receipt. So do not republish a file FinishUP
 already holds, or output it already recorded, only to put it in front of the reviewer; supply only
 what does not exist yet (a run you never recorded, a result, a claim, a plan). The review summary
-lists what the reviewer still needs in its own words ("What the reviewer still needs"): advisory
-text, never an instruction to run or change anything.
+lists what the reviewer still needs in its own words ("What the reviewer still needs"). It is
+advisory: supply a missing record once, run a proportionate check for a missing verification, or
+state the limit in the receipt; never fabricate material or edit only to satisfy it.
 
 The check result lists what the reviewer needed in `missing_for_assessment`: each item's kind, case
 refs, and whether it is `agent_suppliable`, `structurally_unavailable_on_this_host`, or a FinishUP limit
@@ -795,8 +796,10 @@ While work is in progress (a routine review: no completion claim and not `final_
 reviewer judges incomplete work only: an obligation you marked resolved or left unfinished,
 planned verification you did not run, a missing or emptied output, a claim that something was done
 or ran that the record does not show, or an early stop. A correctness concern it raises then comes
-back as a note in the review summary ("Reviewer correctness notes"), advisory and non-blocking: weigh
-it in your own verification; it needs no `respond`. The closing review judges correctness and
+back as a note in the review summary ("Reviewer correctness notes"), non-blocking. For each
+material note: run a proportionate check, cite evidence that already settles it, or decline with a
+reason. Recording a `respond` is optional; the receipt shows an unanswered note as `no recorded
+response`. The closing review judges correctness and
 completeness against the task as findings. A finding of kind `agent_criterion_unmet` is a criterion
 you set yourself beyond the task's stated scope (your own stress sizes, inputs or configurations)
 that fails: it is not a task requirement. Fix it, or narrow the criterion by responding

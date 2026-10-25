@@ -14,7 +14,8 @@ This topic owns the closing procedure. Start with readiness: at `ready_with_limi
 3. Before the final check, answer each unanswered finding; [`review.md`](review.md) has a table
    for each case. Answer each finding once; its `finding_frontier` may be the current status
    frontier, so no historical frontier search is needed. Non-actionable observation-authored
-   findings need no answer. `decision_needed` is an optional advisory decision, not repair work.
+   findings are FinishUP coverage limits the receipt discloses; they need no answer.
+   `decision_needed` is an optional advisory decision, not repair work.
 4. If readiness requires a closing review, check the repaired/current record with
    `final_review: true`. Keep any required review mode; do not downgrade it to finish.
 5. After the check, answer only the findings it returned that remain unanswered. Then read
@@ -49,8 +50,9 @@ The receipt records the assessment; this separate event records closure.
 
 ## Earlier correctness advisories
 
-Routine AI-powered correctness notes do not block FinishUP; recording a response is optional.
-Assess material concerns using [the review guidance](review.md). The receipt counts them
+Routine AI-powered correctness notes are non-blocking. For each material note: run a proportionate
+check, cite evidence that already settles it, or decline with a reason
+([review guidance](review.md)); recording a response is optional. The receipt counts them
 and shows each displayed note as `addressed (agent-reported, linked evidence)`, `declined with
 reason` or `no recorded response`; include the material ones and their status in final prose,
 with their retrieval and evidence links. Silence, a later clean check or a passing count is not
