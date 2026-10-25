@@ -1156,6 +1156,16 @@ async def _operation_check_outcome(
         )
         wire = check_internal_json(replayed)
         outcome = {name: _thawed(wire[name]) for name in _CHECK_OUTCOME_FIELDS if name in wire}
+        advice = wire.get("correctness_advisories")
+        if isinstance(advice, tuple | list) and advice:
+            # #1162 tracked advice (PR #1214 review): identities only; prose stays elsewhere.
+            outcome["correctness_advisories"] = tuple(
+                {
+                    key: _thawed(cast(Mapping[str, JsonValue], row)[key])
+                    for key in ("advisory_id", "origin", "subject_refs")
+                }
+                for row in cast(Sequence[JsonValue], advice)
+            )
         StatusCheckOutcomeModel.model_validate(outcome)
         return outcome
     except Exception as exc:  # noqa: BLE001 - the outcome enriches recovery, never blocks it

@@ -10296,6 +10296,29 @@ async def test_tracked_reviewer_advice_is_answered_once_and_not_raised_again(
     text = render_check_reviewer_output(wire)
     assert "Tracked reviewer advice" in text
     assert f"- {advisory_id} (reviewer row not_supported; {obligation})" in text
+    # A lost check response is recovered with its advisory identities (PR #1214 review).
+    operation = await app.status(
+        StatusRequest.model_validate(
+            {
+                **_request_base(protocol_id("req_", seed + 15)),
+                "session_id": started.session_id,
+                "writer_id": started.writer_id,
+                "view": "operation",
+                "filter": {"operation_request_id": checked.request_id},
+                "limit": "100",
+            }
+        )
+    )
+    assert type(operation.page) is StatusOperationPageModel
+    outcome = operation.page.check_outcome
+    assert outcome is not None
+    assert [row.model_dump(mode="json") for row in outcome.correctness_advisories] == [
+        {
+            "advisory_id": advisory_id,
+            "origin": "verified_not_supported",
+            "subject_refs": [obligation],
+        }
+    ]
     readiness = cast(Mapping[str, Any], checked.closure_readiness)
     assert readiness["correctness_advisory_counts"] == {
         "total": "1",

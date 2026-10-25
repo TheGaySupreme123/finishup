@@ -2484,6 +2484,16 @@ def _correctness_advisories_schema(*, history: bool = False) -> dict[str, JsonVa
     }
 
 
+def _outcome_correctness_advisories_schema() -> dict[str, JsonValue]:
+    """The check result's advisory rows without the reviewer's summary (status operation view)."""
+
+    document = _check_correctness_advisories_schema()
+    items = cast(dict[str, JsonValue], document["items"])
+    cast(dict[str, JsonValue], items["properties"]).pop("summary")
+    items["required"] = ["advisory_id", "origin", "subject_refs"]
+    return document
+
+
 def _check_correctness_advisories_schema() -> dict[str, JsonValue]:
     """#1162 tracked advice: a check's advisory rows with identities (check-result 1.6.0, in place).
 
@@ -4481,6 +4491,9 @@ def _add_status_check_outcome(definitions: dict[str, JsonValue]) -> None:
         "additionalProperties": False,
         "properties": {
             "agent_next": dict(_AGENT_NEXT_TEXT),
+            # #1162 tracked advice (PR #1214 review): the check's advisory identities,
+            # structural only, so a recovered outcome keeps what respond answers.
+            "correctness_advisories": _outcome_correctness_advisories_schema(),
             "missing_for_assessment": {
                 "items": {"$ref": "#/$defs/check_missing_item"},
                 "maxItems": 8,

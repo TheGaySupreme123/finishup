@@ -3928,6 +3928,17 @@ def _validate_reviewer_snippets(
 
     from finishup.application.review_quotes import prove_quote
 
+    # #1162 review (PR #1214): a recovered response has no text index. Its strongest check is
+    # fenced to the refs the recorded disclosure carried (``included_refs``) within the
+    # advertised set, whether or not any row carries a quote, so recovery keeps exactly what was
+    # recorded as sent and never an unsent citation a fresh run would remove.
+    recorded_sent = (
+        citable_refs
+        if included_refs is None
+        else included_refs
+        if citable_refs is None
+        else citable_refs & included_refs
+    )
     # A recovered response from before the exact provider-bound text index existed has no proof
     # for a newly added quote. Keep legacy judgments without snippets readable.
     if (
@@ -3938,18 +3949,12 @@ def _validate_reviewer_snippets(
         remaining = judgment.strongest_remaining_check
         if remaining is None:
             return _ReviewerQuoteFence(judgment)
-        # #1162 review (PR #1214): a recovered response has no text index. Its strongest check
-        # is fenced to the refs the recorded disclosure carried (``included_refs``) within the
-        # advertised set, so recovery never keeps an unsent citation a fresh run would remove;
-        # one left with no such ref is removed and disclosed the same way.
-        known = (
-            citable_refs
-            if included_refs is None
-            else included_refs
-            if citable_refs is None
-            else citable_refs & included_refs
+        # One left with no recorded-sent ref is removed and disclosed, as on a fresh run.
+        kept_refs = tuple(
+            ref
+            for ref in remaining.cited_refs
+            if recorded_sent is not None and ref in recorded_sent
         )
-        kept_refs = tuple(ref for ref in remaining.cited_refs if known is not None and ref in known)
         if len(kept_refs) == len(remaining.cited_refs):
             return _ReviewerQuoteFence(judgment)
         return _ReviewerQuoteFence(
@@ -4017,7 +4022,12 @@ def _validate_reviewer_snippets(
     # challenge; one left with none is removed (no identity on unsent material) and disclosed.
     remaining = judgment.strongest_remaining_check
     if remaining is not None:
-        kept_remaining = tuple(ref for ref in remaining.cited_refs if ref in carried)
+        # The fresh run's proof is the text index; a recovered one has only the recorded
+        # disclosure (above), checked independently of the quote path.
+        remaining_carried = (
+            carried if provider_input_text_by_ref is not None else (recorded_sent or frozenset())
+        )
+        kept_remaining = tuple(ref for ref in remaining.cited_refs if ref in remaining_carried)
         if len(kept_remaining) != len(remaining.cited_refs):
             refs_reduced += 1
             remaining = replace(remaining, cited_refs=kept_remaining) if kept_remaining else None

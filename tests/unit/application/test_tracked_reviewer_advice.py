@@ -297,6 +297,28 @@ def test_a_recovered_response_fences_the_strongest_check_like_a_fresh_run() -> N
         (str(_OBLIGATION),)
     ]
     assert recovered.refs_reduced == fresh.refs_reduced == 1
+    # A quote-bearing row takes the full fence path; the strongest check is still checked
+    # against the recorded refs, never dropped because no text index exists (PR #1214 review).
+    quoted = SemanticJudgment(
+        "no_material_discrepancy",
+        (),
+        verified=(VerifiedReviewItem("Streams decrypt", "supported", (str(_OBLIGATION),), _TEXT),),
+        strongest_remaining_check=judgment.strongest_remaining_check,
+    )
+    recovered_quoted = validate_semantic_judgment(
+        case,
+        (),
+        quoted,
+        _provenance(),
+        expected_frontier=case.frontier,
+        citable_refs=citable,
+        review_phase="final",
+        provider_input_text_by_ref=None,
+        included_refs=frozenset({str(_OBLIGATION)}),
+    )
+    assert [row["subject_refs"] for row in recovered_quoted.correctness_advisories] == [
+        (str(_OBLIGATION),)
+    ]
     # Nothing recorded as sent: the check is removed and disclosed, never kept unfenced.
     unsent = review(provider_input_text_by_ref=None, included_refs=frozenset({"evt_x"}))
     assert unsent.correctness_advisories == ()

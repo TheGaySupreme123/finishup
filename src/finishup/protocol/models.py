@@ -7144,6 +7144,24 @@ class StatusCheckAdmissionModel(_ClosedModel):
         return self
 
 
+class StatusCheckOutcomeAdvisoryModel(_ClosedModel):
+    """One advisory identity a finished check recorded, structural only (#1162)."""
+
+    advisory_id: Annotated[str, Field(pattern=ADVISORY_ID_PATTERN)]
+    origin: Literal[
+        "routine_correctness_note",
+        "strongest_remaining_check",
+        "verified_not_assessable",
+        "verified_not_supported",
+    ]
+    subject_refs: tuple[Annotated[str, Field(pattern=_ADVISORY_SUBJECT_REF_PATTERN)], ...]
+
+    @model_validator(mode="after")
+    def _validate_outcome_advisory(self) -> StatusCheckOutcomeAdvisoryModel:
+        _require_unique(self.subject_refs, limit=64)
+        return self
+
+
 class StatusCheckOutcomeModel(_ClosedModel):
     """A finished check's outcome on its operation page (W6): what the result's lead said.
 
@@ -7157,6 +7175,12 @@ class StatusCheckOutcomeModel(_ClosedModel):
         "action_required", "incomplete_check", "insufficient_coverage", "no_issue_detected"
     ]
     agent_next: AgentNextTextWire | None = None
+    # #1162 tracked advice (PR #1214 review): the check's advisory identities, structural only
+    # (identity, closed origin, subjects), so recovery after a lost result keeps what respond
+    # answers. The reviewer's words stay on the check result, history and receipt.
+    correctness_advisories: tuple[StatusCheckOutcomeAdvisoryModel, ...] = Field(
+        default=(), max_length=10
+    )
     overall_next: CheckOverallNextModel | None = None
     missing_for_assessment: tuple[CheckMissingItemModel, ...] = ()
     semantic_status: SemanticStatusWire
@@ -9058,6 +9082,10 @@ _STATUS_OPERATION_STRUCTURAL_POINTERS: Final = (
         "/page/check_outcome/missing_for_assessment/*",
         ("availability", "kind", "target_refs/*"),
     )
+    + _prefix_leaf_patterns(
+        "/page/check_outcome/correctness_advisories/*",
+        ("advisory_id", "origin", "subject_refs/*"),
+    )
     + _prefix_leaf_patterns("/page/check_outcome/result_frontier", FRONTIER_LEAVES)
 )
 
@@ -9633,7 +9661,7 @@ def _build_result_leaf_rules() -> tuple[_ResultLeafRule, ...]:
         ):
             raise RuntimeError("invalid_result_leaf_classification")
     if (
-        len(result) != 2060
+        len(result) != 2063
     ):  # ... #1017 +3, #1027 +5, tb4n3 LO +9, W2-A +46, LF +34 (fact_lineage), W2-B +2,
         # tb4n4 #1044 +7 (closure_readiness.undeclared_references), #1048 +38 (inspection),
         # #1047 +2 (follow_up_round), tb4n5 +3 (publish action_notices),
@@ -9650,7 +9678,8 @@ def _build_result_leaf_rules() -> tuple[_ResultLeafRule, ...]:
         # #1205 +64 (evidence links and separately categorized prose), #1194 +2 witness freshness,
         # #1207 +1 fixed review guidance; #1209 +8 fix_or_decline (check and status readiness,
         # brief closure_state, check inspection);
-        # #1162 tracked advice +13 (check advisory rows; readiness counts on check and status);
+        # #1162 tracked advice +13 (check advisory rows; readiness counts on check and status),
+        # +3 (operation check_outcome advisory identities, PR #1214 review);
         # #975 +46 draft receipt (21 structural and 2 content leaves, each on check and status).
         raise RuntimeError("incomplete_result_leaf_registry")
     return result
