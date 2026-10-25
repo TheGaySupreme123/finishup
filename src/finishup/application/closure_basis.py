@@ -30,7 +30,12 @@ from finishup.domain.receipts import (
 from finishup.domain.values import Frontier
 from finishup.kernel.check_standing import check_standing
 from finishup.kernel.closure_class import finding_closures
-from finishup.kernel.deterministic_checks import CaseGap, build_deterministic_case, case_coverage
+from finishup.kernel.deterministic_checks import (
+    CaseGap,
+    DeterministicCase,
+    build_deterministic_case,
+    case_coverage,
+)
 from finishup.kernel.finding_resolution import unverified_resolution_finding_ids
 from finishup.kernel.finding_todo import (
     FindingTodoState,
@@ -76,6 +81,10 @@ class LoadedClosureBasis:
     records: tuple[LedgerRecord, ...]
     context: ReceiptBuildContext
     basis: ClosureBasis
+    # The deterministic case the context was built from (its frozen evidence view and
+    # verification freshness), so a reader at this frontier reuses them instead of re-deriving
+    # them (#975 draft receipt). ``None`` only for a hand-built basis.
+    case: DeterministicCase | None = None
 
 
 # A tiny derivation memo (ADR-046). Status is read about once per write and ``closure_prepare``
@@ -142,7 +151,7 @@ async def load_closure_basis(runtime: TaskRuntime, frontier: Frontier) -> Loaded
         basis = closure_basis_from_context(context)
     except ValueError as exc:
         raise ClosureBasisUnavailable("closure_basis_invalid") from exc
-    loaded = LoadedClosureBasis(projection, records, context, basis)
+    loaded = LoadedClosureBasis(projection, records, context, basis, case)
     if trusted is not None:
         _MEMO[key] = loaded
         while len(_MEMO) > _MEMO_LIMIT:

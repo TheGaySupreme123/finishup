@@ -378,6 +378,8 @@ async def test_the_smallest_channel_limits_leave_room_for_fewer_content_reads(
         pytest.param(None, {"linked_verification": True}, id="linked-check"),
         pytest.param(None, {"test_manifests": True, "linked_verification": True}, id="both"),
         pytest.param("final", {"linked_verification": True}, id="closing-linked-check"),
+        # #975: the withheld-output question rides only a closing review after an earlier one.
+        pytest.param("final", {"prior_review": True}, id="closing-after-review"),
     ],
 )
 async def test_the_test_quality_question_costs_one_content_read_at_the_minimal_policy(

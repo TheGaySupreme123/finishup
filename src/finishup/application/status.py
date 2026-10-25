@@ -136,6 +136,7 @@ from finishup.protocol.coverage import (
 )
 from finishup.protocol.errors import PublicErrorCode, PublicOperationError
 from finishup.protocol.models import (
+    DraftReceiptModel,
     FactLineageModel,
     SemanticProgressPhase,
     StatusAcceptanceRiskModel,
@@ -2187,6 +2188,22 @@ async def _closure_readiness(
 
         if summary := evidence_basis_summary(loaded.projection):
             optional_fields["evidence_basis_summary"] = summary
+    predicted = optional_fields.get("predicted_receipt")
+    if (
+        loaded is not None
+        and type(predicted) is StatusPredictedReceiptModel
+        and checklist.state in {"ready", "ready_with_limitations"}
+    ):
+        # Issue #975: the draft of what the receipt will say, while the agent can still act on it.
+        draft = await _draft_receipt(
+            loaded,
+            predicted,
+            checklist,
+            advisory_ids=_unanswered_advisory_ids(loaded),
+            request_id=request_id,
+        )
+        if draft is not None:
+            optional_fields["draft_receipt"] = draft
     model = StatusClosureReadinessModel(
         declared_obligation_count=str(declared_obligations),
         no_obligations_reason=no_obligations_reason,
@@ -2239,6 +2256,108 @@ async def _closure_readiness(
         ),
     )
     return _ClosureReadinessRead(model, frontier, page, lineage_gaps, lineage_self_verified)
+
+
+def _unanswered_advisory_ids(loaded: LoadedClosureBasis) -> tuple[str, ...]:
+    """Tracked advice with no recorded response, newest first (#1162; the draft names them)."""
+
+    from finishup.kernel.correctness_advisories import correctness_advisory_index
+
+    rows = correctness_advisory_index(loaded.records).rows
+    return tuple(row.advisory_id for row in reversed(rows) if row.response is None)
+
+
+def _draft_criteria_json(loaded: LoadedClosureBasis) -> dict[str, Any]:
+    """Classify the task's quoted criteria against the record at the basis frontier (#975)."""
+
+    from finishup.kernel.draft_receipt import draft_criteria
+    from finishup.kernel.evidence_basis import build_evidence_view, evidence_view_from_json
+
+    case = loaded.case
+    projection, records = loaded.projection, loaded.records
+    if case is not None:
+        # The case built at this very frontier: its frozen task text, freshness and evidence view.
+        coverage = build_verification_coverage(
+            projection,
+            records,
+            task_statement=None if case.task_statement is None else case.task_statement.text,
+            unchanged_action_ids=case.verification_unchanged_action_ids,
+            workspace_verification_edit_frontier=case.workspace_verification_edit_frontier,
+            freshness=case.verification_freshness,
+            tracked_runs=case.verification_tracked_runs,
+        )
+        evidence = (
+            build_evidence_view(projection, records)
+            if case.evidence_view is None
+            else evidence_view_from_json(case.evidence_view)
+        )
+    else:
+        coverage = build_verification_coverage(projection, records)
+        evidence = build_evidence_view(projection, records)
+    criteria = draft_criteria(projection, records, coverage, evidence)
+    rows = tuple(
+        {
+            (
+                "obligation_criterion_excerpt"
+                if row.source == "obligation"
+                else "task_criterion_excerpt"
+            ): row.excerpt,
+            "source": row.source,
+            "standing": row.standing,
+            "refs": row.refs,
+        }
+        for row in criteria.rows
+    )
+    return {
+        "criteria": rows,
+        "criteria_counts": {
+            "linked_pass_current": str(criteria.linked_pass_current),
+            "agent_claim_only": str(criteria.agent_claim_only),
+            "none": str(criteria.none),
+        },
+        "criteria_total": str(criteria.total),
+    }
+
+
+async def _draft_receipt(
+    loaded: LoadedClosureBasis,
+    predicted: StatusPredictedReceiptModel,
+    checklist: ClosureReadinessSplit,
+    *,
+    advisory_ids: tuple[str, ...],
+    request_id: str | None,
+) -> DraftReceiptModel | None:
+    """The draft receipt (#975): the prediction's own conclusion and reasons, plus criteria.
+
+    Built from the same prediction model status prints beside it, so the draft can never read a
+    different conclusion than the receipt (ADR-046). Total: a failure to classify the criteria
+    omits the draft with a bounded diagnostic rather than guess one.
+    """
+
+    try:
+        criteria = await asyncio.to_thread(_draft_criteria_json, loaded)
+        standing = checklist.standing_limitations
+        return DraftReceiptModel.model_validate(
+            {
+                "label": "draft_records_not_correctness",
+                "conclusion": predicted.conclusion,
+                "reasons": tuple(reason.code for reason in predicted.reasons),
+                **criteria,
+                "fix_or_decline_count": str(len(checklist.fix_or_decline[:64])),
+                "advice_unanswered": advisory_ids[:4],
+                "advice_unanswered_count": str(len(advisory_ids)),
+                "limitations": standing[:8],
+                "limitation_count": str(len(standing)),
+            }
+        )
+    except (AttributeError, KeyError, TypeError, ValueError) as exc:
+        record_unexpected_exception_without_raising(
+            exc,
+            component="application.status",
+            operation="status_draft_receipt_unavailable",
+            request_id=request_id,
+        )
+        return None
 
 
 async def _check_in_flight(runtime: TaskRuntime) -> bool:

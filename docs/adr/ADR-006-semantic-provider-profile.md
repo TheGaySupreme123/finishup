@@ -3465,3 +3465,31 @@ Wire changes are in place on unreleased versions under the rule above: check-rec
 provider-judgment 1.2.0 (and reviewer-reply 1.0.0, which embeds it), check-result 1.6.0/1.7.0 and
 status-result 1.4.0/1.5.0. History rows keep their first shape. Older ledgers' rows keep reading as
 routine notes.
+
+### 2026-10-25 amendment — a closing review asks whether a repair withholds an output (#975)
+
+Maintainer acknowledgement: the 2026-10-25 comment on #975 requests this scoped work ("the closing
+review asks whether any repair withholds a requested output for some inputs") as part of the
+completion-integrity plan. It is advisory only and grants no new network, credential, runtime or
+disclosure authority.
+
+In TB4 (Bun a1) a review reproduced a shipped private constant, and the agent's "repair" made the
+build refuse the affected apps; its own tests passed and the later reviews did not notice that a
+requested output was now withheld. A final-phase review whose frozen case records an earlier
+AI-powered review (`repair_review_asked`: one of its findings in the projection, or a reviewer
+assessment or advisory note in the frozen evidence view; a pure function of the frozen case, so
+recovery rebuilds the same set) adds one question to the packet's `question_set`
+(`WITHHELD_OUTPUT_QUESTION`, about 200 bytes): does any repair since the last review withhold or
+refuse a requested output for some inputs (a build that refuses affected apps, an empty-file
+fallback); challenge each, quoting the criterion it fails. The existing kinds carry the answer as
+an AI-powered finding with its `fnd_…` id. No finding kind, schema field or review round is added.
+
+Trade-off: the question is in the packet, never the always-sent instruction, so the cached prefix
+is unchanged (#1172). A first closing review does not ask it (there is no repair since a review),
+so the pinned minimal-policy budget of `closing-linked-check` is unchanged. A closing review after
+an earlier one asks it and still fits one content read at the minimal policy
+(`closing-after-review`). On a channel whose prepared ceiling is at most 16,384 bytes (the minimal
+policy's 4,096 tokens) it is not asked when the linked-check or manifest question rides: that
+packet has about 25 bytes to spare, and the extra question would end the review as
+`case_capacity_exceeded`. Changing the question set changes the case digest of reviews that now
+ask it, with the same fail-closed effect on a pending approval as #1145 above.
