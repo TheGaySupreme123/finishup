@@ -256,6 +256,8 @@ def _delivery_groups(
         "agent_next",
         "overall_next",
         "review_guidance",
+        # #1162 tracked advice: the advisory identities respond answers are actionable.
+        "correctness_advisories",
         "review_summary",
         "missing_for_assessment",
         "human_text",

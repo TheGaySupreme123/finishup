@@ -263,3 +263,76 @@ def test_a_strongest_check_repeating_this_reviews_note_is_not_raised_twice() -> 
     review = _review(case, judgment, phase="routine")
     assert [row.get("origin") for row in review.correctness_advisories] == [None]
     assert "repeat a correctness note or finding of this review" in review.review_summary
+
+
+def test_a_recovered_response_fences_the_strongest_check_like_a_fresh_run() -> None:
+    """PR #1214 review: recovery has no text index; the recorded disclosure fences the check."""
+
+    case, plan_event = _case()
+    judgment = SemanticJudgment(
+        "no_material_discrepancy",
+        (),
+        strongest_remaining_check=RemainingCheck(
+            "Decrypt a 32-character seed.", (str(_OBLIGATION), plan_event)
+        ),
+    )
+    citable = frozenset({str(_OBLIGATION), plan_event})
+
+    def review(**kwargs: object) -> SemanticJudgmentReview:
+        return validate_semantic_judgment(
+            case,
+            (),
+            judgment,
+            _provenance(),
+            expected_frontier=case.frontier,
+            citable_refs=citable,
+            review_phase="final",
+            **kwargs,  # type: ignore[arg-type]
+        )
+
+    fresh = review(provider_input_text_by_ref={str(_OBLIGATION): (_TEXT,)})
+    recovered = review(provider_input_text_by_ref=None, included_refs=frozenset({str(_OBLIGATION)}))
+    assert recovered.correctness_advisories == fresh.correctness_advisories
+    assert [row["subject_refs"] for row in recovered.correctness_advisories] == [
+        (str(_OBLIGATION),)
+    ]
+    assert recovered.refs_reduced == fresh.refs_reduced == 1
+    # Nothing recorded as sent: the check is removed and disclosed, never kept unfenced.
+    unsent = review(provider_input_text_by_ref=None, included_refs=frozenset({"evt_x"}))
+    assert unsent.correctness_advisories == ()
+    assert unsent.refs_reduced == 1
+
+
+def test_fixed_notes_survive_a_summary_at_its_bound() -> None:
+    """PR #1214 review: the reviewer prose is shortened first; FinishUP's notes always remain."""
+
+    from finishup.application.check import (
+        _summary_with_fixed_notes,  # pyright: ignore[reportPrivateUsage]
+    )
+    from finishup.ports.semantic import MAX_REVIEW_TEXT_BYTES
+
+    case, _event = _case()
+    at_bound = "x" * MAX_REVIEW_TEXT_BYTES
+    judgment = SemanticJudgment(
+        "no_material_discrepancy",
+        (),
+        review_summary=at_bound,
+        verified=tuple(
+            VerifiedReviewItem(f"Seed length {n} decrypts", "not_assessable", (str(_OBLIGATION),))
+            for n in range(11)
+        ),
+    )
+    review = _review(case, judgment)
+    assert len(review.correctness_advisories) == 10
+    assert len(review.review_summary.encode("utf-8")) <= MAX_REVIEW_TEXT_BYTES
+    assert review.review_summary.endswith(
+        "FinishUP note: 1 reviewer item(s) had no room for an advisory identity on this check "
+        "(at most ten); they remain in this review's verified rows or summary only."
+    )
+    assert "[truncated]" in review.review_summary
+    earlier = "evt_00000000-0000-4000-8000-000000000042:3"
+    folded = _summary_with_fixed_notes(
+        at_bound, (f"FinishUP note: 1 reviewer item(s) ... not raised again: {earlier}.",)
+    )
+    assert len(folded.encode("utf-8")) <= MAX_REVIEW_TEXT_BYTES
+    assert folded.endswith(f"not raised again: {earlier}.")

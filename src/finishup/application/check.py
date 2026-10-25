@@ -3899,6 +3899,7 @@ def _validate_reviewer_snippets(
     *,
     citable_refs: frozenset[str] | None,
     provider_input_text_by_ref: Mapping[str, tuple[str, ...]] | None,
+    included_refs: frozenset[str] | None = None,
 ) -> _ReviewerQuoteFence:
     """Fence reviewer citations and quotes to what the provider was actually sent.
 
@@ -3930,7 +3931,32 @@ def _validate_reviewer_snippets(
         and not any(challenge.snippet is not None for challenge in judgment.challenges)
         and not any(item.snippet is not None for item in judgment.verified)
     ):
-        return _ReviewerQuoteFence(judgment)
+        remaining = judgment.strongest_remaining_check
+        if remaining is None:
+            return _ReviewerQuoteFence(judgment)
+        # #1162 review (PR #1214): a recovered response has no text index. Its strongest check
+        # is fenced to the refs the recorded disclosure carried (``included_refs``) within the
+        # advertised set, so recovery never keeps an unsent citation a fresh run would remove;
+        # one left with no such ref is removed and disclosed the same way.
+        known = (
+            citable_refs
+            if included_refs is None
+            else included_refs
+            if citable_refs is None
+            else citable_refs & included_refs
+        )
+        kept_refs = tuple(ref for ref in remaining.cited_refs if known is not None and ref in known)
+        if len(kept_refs) == len(remaining.cited_refs):
+            return _ReviewerQuoteFence(judgment)
+        return _ReviewerQuoteFence(
+            replace(
+                judgment,
+                strongest_remaining_check=(
+                    replace(remaining, cited_refs=kept_refs) if kept_refs else None
+                ),
+            ),
+            refs_reduced=1,
+        )
 
     # Without the text index nothing is proven sent.
     sent = frozenset(() if provider_input_text_by_ref is None else provider_input_text_by_ref)
@@ -4616,6 +4642,7 @@ def validate_semantic_judgment(
     review_phase: Literal["routine", "final"] | None = None,
     agent_linked_runs: frozenset[EventId] | None = frozenset(),
     prior_advisories: tuple[CorrectnessAdvisory, ...] = (),
+    included_refs: frozenset[str] | None = None,
 ) -> SemanticJudgmentReview:
     """Fence AI-powered challenges to the exact frozen refs, coverage, and final provenance.
 
@@ -4687,6 +4714,7 @@ def validate_semantic_judgment(
         judgment,
         citable_refs=advertised_refs,
         provider_input_text_by_ref=provider_input_text_by_ref,
+        included_refs=included_refs,
     )
     judgment = fence.judgment
     # Every dropped quote is disclosed through the snippet gap (including verified rows the
@@ -4709,14 +4737,14 @@ def validate_semantic_judgment(
             citable_refs if citable_refs is not None else frozenset(map(str, case.allowed_ids)),
         )
     if judgment.conclusion != "challenges_returned":
-        tracked_rows, review_summary = _with_tracked_advice(
+        tracked_rows, tracked_notes = _with_tracked_advice(
             case,
             deterministic,
             judgment,
-            review_summary,
             room=MAX_ADVISORIES_PER_CHECK,
             prior=prior_advisories,
         )
+        review_summary = _summary_with_fixed_notes(review_summary, tracked_notes)
         return _judgment_review(
             (),
             returned_challenges,
@@ -5008,11 +5036,10 @@ def validate_semantic_judgment(
                 )
             )
         )
-    tracked_rows, advisory_summary = _with_tracked_advice(
+    tracked_rows, tracked_notes = _with_tracked_advice(
         case,
         deterministic,
         judgment,
-        advisory_summary,
         room=MAX_ADVISORIES_PER_CHECK - len(advisory_rows),
         prior=prior_advisories,
         # #1211 counter-example notes and this review's findings already carry an identity: a
@@ -5030,26 +5057,29 @@ def validate_semantic_judgment(
         verdicts_unsupported,
         restatements,
         verdicts_set_aside,
-        _summary_with_re_raised(
-            _summary_with_agent_criteria(advisory_summary, agent_criteria),
-            tuple(re_raised),
-            frozenset(
-                restated
-                for restated, _challenge in re_raised
-                if (
-                    (ruling := admitted.get(str(restated))) is not None
-                    and ruling.verdict == DISPUTED_AFTER_REBUTTAL_VERDICT
-                )
-                or finding_todo_state(case.projection, restated)
-                is FindingTodoState.DISPUTED_AFTER_REBUTTAL
+        _summary_with_fixed_notes(
+            _summary_with_re_raised(
+                _summary_with_agent_criteria(advisory_summary, agent_criteria),
+                tuple(re_raised),
+                frozenset(
+                    restated
+                    for restated, _challenge in re_raised
+                    if (
+                        (ruling := admitted.get(str(restated))) is not None
+                        and ruling.verdict == DISPUTED_AFTER_REBUTTAL_VERDICT
+                    )
+                    or finding_todo_state(case.projection, restated)
+                    is FindingTodoState.DISPUTED_AFTER_REBUTTAL
+                ),
+                frozenset(
+                    restated
+                    for restated, _challenge in re_raised
+                    if finding_todo_state(case.projection, restated)
+                    in {FindingTodoState.ACKNOWLEDGED_NOT_DONE, FindingTodoState.SELF_VERIFIED}
+                    or _limitation_disclosed(case, restated)
+                ),
             ),
-            frozenset(
-                restated
-                for restated, _challenge in re_raised
-                if finding_todo_state(case.projection, restated)
-                in {FindingTodoState.ACKNOWLEDGED_NOT_DONE, FindingTodoState.SELF_VERIFIED}
-                or _limitation_disclosed(case, restated)
-            ),
+            tracked_notes,
         ),
         judgment.verified,
         snippets_rejected,
@@ -5118,13 +5148,12 @@ def _with_tracked_advice(
     case: DeterministicCase,
     deterministic: tuple[Finding, ...],
     judgment: SemanticJudgment,
-    review_summary: str,
     *,
     room: int,
     prior: tuple[CorrectnessAdvisory, ...],
     same_review: tuple[tuple[str, ...], ...] = (),
-) -> tuple[tuple[JsonObject, ...], str]:
-    """Tracked advice rows (#1162) for a fenced judgment, and the summary with their notes.
+) -> tuple[tuple[JsonObject, ...], tuple[str, ...]]:
+    """Tracked advice rows (#1162) for a fenced judgment, and FinishUP's fixed notes about them.
 
     A verified row marked ``not_supported`` or ``not_assessable`` whose fence-resolved subjects
     name an obligation or claim, and the reviewer's single strongest remaining check, each become
@@ -5215,9 +5244,21 @@ def _with_tracked_advice(
         notes.append(_TRACKED_ADVICE_SAME_REVIEW_NOTE.format(count=repeated_here))
     if overflow:
         notes.append(_TRACKED_ADVICE_NO_ROOM_NOTE.format(count=overflow))
-    if notes:
-        review_summary = _bounded_review_text("\n".join((review_summary, "", *notes)))
-    return tuple(rows), review_summary
+    return tuple(rows), tuple(notes)
+
+
+def _summary_with_fixed_notes(summary: str, notes: tuple[str, ...]) -> str:
+    """Append FinishUP's fixed notes last, shortening the reviewer prose first (PR #1214 review).
+
+    The notes name earlier advisory identities and counts; clipping from the end would drop them
+    from a summary at its bound, so their room is reserved and only the prose before is cut.
+    """
+
+    if not notes:
+        return summary
+    tail = "\n".join(("", "", *notes))
+    room = MAX_REVIEW_TEXT_BYTES - len(tail.encode("utf-8"))
+    return _bounded_review_text(summary, max(0, room)) + tail
 
 
 _VERIFICATION_RERUN_SUMMARY: Final = "Is a verification rerun needed after these changes?"
@@ -6813,6 +6854,8 @@ async def execute_check_commit(
                     # #1162 tracked advice: the frozen prefix's advisory rows, so a repeat with
                     # no newer material folds onto its earlier identity (replay-pure).
                     prior_advisories=correctness_advisory_index(prefix_records).rows,
+                    # The recorded disclosure, which a recovered response keeps (#1214 review).
+                    included_refs=semantic_result.case_included_refs,
                 )
             except SemanticJudgmentRejected as exc:
                 # The reviewer's answer is unusable, so the check has no AI-powered review result — but the
