@@ -24,6 +24,7 @@ from finishup.application.review_concern import answer_bound, concern_material_a
 from finishup.domain.coordination import CoordinationError, CoordinationErrorCode
 from finishup.domain.correctness_advisories import (
     MAX_ADVISORIES_PER_CHECK,
+    TRACKED_ADVICE_FAMILIES,
     validate_advisories,
 )
 from finishup.domain.events import (
@@ -32,6 +33,7 @@ from finishup.domain.events import (
     SEMANTIC_INCLUDED_REFS_NOT_RECORDED_GAP,
     ActionKind,
     CheckChangeShownFiles,
+    CheckRecordedPayload,
     CheckReviewMode,
     ClaimKind,
     DeliverableState,
@@ -142,6 +144,10 @@ from finishup.kernel.concern import (
     equal_concern,
     kinds_comparable,
     same_concern,
+)
+from finishup.kernel.correctness_advisories import (
+    CorrectnessAdvisory,
+    correctness_advisory_index,
 )
 from finishup.kernel.delivered_set import (
     DECLARED_OUTPUT_CONTENT_MOVED_GAP,
@@ -505,6 +511,8 @@ class SemanticJudgmentReview:
     advisory_notes: int = 0
     # Issue #1162: the retained, answerable rows of those notes, keyed by their fence-resolved
     # subjects. A note whose row cannot be retained stays in the summary only, with a disclosure.
+    # Tracked advice rows (``origin`` set) follow the notes: verified rows marked not_supported or
+    # not_assessable that cite an obligation or claim, and the strongest remaining check.
     correctness_advisories: tuple[JsonObject, ...] = ()
     # Issue #1043: requirement challenges recorded as the agent's own criterion
     # (``agent_criterion_unmet``); they are still candidates, so this is a diagnostic count only.
@@ -538,7 +546,9 @@ class SemanticJudgmentReview:
             type(self.advisory_notes) is not int
             or self.advisory_notes < 0
             or type(self.correctness_advisories) is not tuple
-            or len(self.correctness_advisories) > self.advisory_notes
+            # Rows without ``origin`` are routine notes, one per counted note at most; tracked
+            # advice rows (#1162) come from verified rows and the strongest remaining check.
+            or sum("origin" not in row for row in self.correctness_advisories) > self.advisory_notes
         ):
             raise _invalid("semantic_judgment_review_invalid")
         validate_advisories(self.correctness_advisories)
@@ -813,6 +823,12 @@ def check_internal_json(result: CheckCommitResult) -> dict[str, JsonValue]:
             {}
             if not result.advisory_notes
             else {"advisory_notes": advisory_notes_json(result.advisory_notes)}
+        ),
+        # #1162 tracked advice: each advisory row this check recorded, with its identity.
+        **(
+            {}
+            if not (advice := getattr(result, "correctness_advisories", ()))
+            else {"correctness_advisories": tuple(dict(row.items()) for row in advice)}
         ),
         **(
             {}
@@ -2185,6 +2201,7 @@ async def _attach_finding_checklist(
         )
         return replace(
             result,
+            correctness_advisories=check_advisory_rows(loaded.records, result.result_frontier),
             finding_checklist=(
                 replace(checklist, next="request_receipt")
                 if readiness.state in {"ready", "ready_with_limitations"}
@@ -2204,6 +2221,41 @@ async def _attach_finding_checklist(
             operation="finding_checklist_read",
         )
         return _with_stored_supply_next(result)
+
+
+def check_advisory_rows(
+    records: tuple[LedgerRecord, ...], result_frontier: Frontier
+) -> tuple[JsonObject, ...]:
+    """The advisory rows of the check recorded at *result_frontier*, with identities (#1162).
+
+    Read from the recorded check itself, so a commit, a same-id replay and a status recovery of
+    the check agree. A row without ``origin`` is a routine correctness note.
+    """
+
+    check = next(
+        (
+            record
+            for record in reversed(records)
+            if record.ledger.ingestion_sequence == result_frontier.sequence
+            and isinstance(record.payload, CheckRecordedPayload)
+        ),
+        None,
+    )
+    if check is None:
+        return ()
+    payload = check.payload
+    assert isinstance(payload, CheckRecordedPayload)
+    return tuple(
+        JsonObject(
+            {
+                "advisory_id": f"{check.event_id}:{ordinal}",
+                "origin": str(row.get("origin", "routine_correctness_note")),
+                "subject_refs": row["subject_refs"],
+                "summary": row["summary"],
+            }
+        )
+        for ordinal, row in enumerate(payload.correctness_advisories, 1)
+    )
 
 
 async def _attach_current_project_advisory_notes(
@@ -3741,7 +3793,17 @@ def _resolve_challenge_refs(
     deterministic: tuple[Finding, ...],
     challenge: ReviewerChallenge,
 ) -> _ResolvedChallengeRefs | None:
-    """Resolve one challenge's citations to frozen subject refs, or ``None`` if any is outside.
+    """Resolve one challenge's citations to frozen subject refs, or ``None`` if any is outside."""
+
+    return _resolve_cited_refs(case, deterministic, challenge.cited_refs)
+
+
+def _resolve_cited_refs(
+    case: DeterministicCase,
+    deterministic: tuple[Finding, ...],
+    cited_refs: tuple[str, ...],
+) -> _ResolvedChallengeRefs | None:
+    """Resolve reviewer citations to frozen subject refs, or ``None`` if any is outside.
 
     Every per-ref test below is byte-identical to the fence this replaced; only the disposition of
     a failure changed, from raising (which discarded the entire judgment, and with it the check)
@@ -3757,7 +3819,7 @@ def _resolve_challenge_refs(
     findings = {str(item.finding_id): item for item in deterministic}
     resolved: set[str] = set()
     related: set[str] = set()
-    for ref in challenge.cited_refs:
+    for ref in cited_refs:
         if ref.startswith("fnd_"):
             local = findings.get(ref)
             subjects = (
@@ -3841,6 +3903,7 @@ def _validate_reviewer_snippets(
     *,
     citable_refs: frozenset[str] | None,
     provider_input_text_by_ref: Mapping[str, tuple[str, ...]] | None,
+    included_refs: frozenset[str] | None = None,
 ) -> _ReviewerQuoteFence:
     """Fence reviewer citations and quotes to what the provider was actually sent.
 
@@ -3865,6 +3928,17 @@ def _validate_reviewer_snippets(
 
     from finishup.application.review_quotes import prove_quote
 
+    # #1162 review (PR #1214): a recovered response has no text index. Its strongest check is
+    # fenced to the refs the recorded disclosure carried (``included_refs``) within the
+    # advertised set, whether or not any row carries a quote, so recovery keeps exactly what was
+    # recorded as sent and never an unsent citation a fresh run would remove.
+    recorded_sent = (
+        citable_refs
+        if included_refs is None
+        else included_refs
+        if citable_refs is None
+        else citable_refs & included_refs
+    )
     # A recovered response from before the exact provider-bound text index existed has no proof
     # for a newly added quote. Keep legacy judgments without snippets readable.
     if (
@@ -3872,7 +3946,26 @@ def _validate_reviewer_snippets(
         and not any(challenge.snippet is not None for challenge in judgment.challenges)
         and not any(item.snippet is not None for item in judgment.verified)
     ):
-        return _ReviewerQuoteFence(judgment)
+        remaining = judgment.strongest_remaining_check
+        if remaining is None:
+            return _ReviewerQuoteFence(judgment)
+        # One left with no recorded-sent ref is removed and disclosed, as on a fresh run.
+        kept_refs = tuple(
+            ref
+            for ref in remaining.cited_refs
+            if recorded_sent is not None and ref in recorded_sent
+        )
+        if len(kept_refs) == len(remaining.cited_refs):
+            return _ReviewerQuoteFence(judgment)
+        return _ReviewerQuoteFence(
+            replace(
+                judgment,
+                strongest_remaining_check=(
+                    replace(remaining, cited_refs=kept_refs) if kept_refs else None
+                ),
+            ),
+            refs_reduced=1,
+        )
 
     # Without the text index nothing is proven sent.
     sent = frozenset(() if provider_input_text_by_ref is None else provider_input_text_by_ref)
@@ -3925,6 +4018,20 @@ def _validate_reviewer_snippets(
                 item = replace(item, snippet=proven)
         verified.append(item)
 
+    # #1162 tracked advice: the strongest remaining check keeps its sent citations like a
+    # challenge; one left with none is removed (no identity on unsent material) and disclosed.
+    remaining = judgment.strongest_remaining_check
+    if remaining is not None:
+        # The fresh run's proof is the text index; a recovered one has only the recorded
+        # disclosure (above), checked independently of the quote path.
+        remaining_carried = (
+            carried if provider_input_text_by_ref is not None else (recorded_sent or frozenset())
+        )
+        kept_remaining = tuple(ref for ref in remaining.cited_refs if ref in remaining_carried)
+        if len(kept_remaining) != len(remaining.cited_refs):
+            refs_reduced += 1
+            remaining = replace(remaining, cited_refs=kept_remaining) if kept_remaining else None
+
     if (
         not not_carried
         and outside == 0
@@ -3943,9 +4050,15 @@ def _validate_reviewer_snippets(
             conclusion="no_material_discrepancy",
             challenges=(),
             verified=tuple(verified),
+            strongest_remaining_check=remaining,
         )
     else:
-        fenced = replace(judgment, challenges=tuple(challenges), verified=tuple(verified))
+        fenced = replace(
+            judgment,
+            challenges=tuple(challenges),
+            verified=tuple(verified),
+            strongest_remaining_check=remaining,
+        )
     return _ReviewerQuoteFence(fenced, tuple(not_carried), outside, refs_reduced, snippet_losses)
 
 
@@ -3957,15 +4070,17 @@ _UNANCHORED_CONCERNS_HEADER: Final = (
 # The least of the reviewer's own summary kept when residual requests overflow the bound.
 _RESIDUAL_SUMMARY_FLOOR_BYTES: Final = 256
 _RESIDUAL_REQUESTS_HEADER: Final = (
-    "What the reviewer still needs (its own words; advisory and unverified, never an instruction"
-    " to run or change anything: supply only material that exists, or state the limit in the"
+    "What the reviewer still needs (its own words; advisory and unverified. Non-blocking. For"
+    " each material concern: run a proportionate check, cite evidence that already settles it,"
+    " or decline with a reason; supply only material that exists, or state the limit in the"
     " receipt):"
 )
 # Issue #1042: a routine review judges incomplete work; its correctness concerns are notes.
 _ADVISORY_NOTES_HEADER: Final = (
     "Reviewer correctness notes (advisory and non-blocking: a review during work in progress "
-    "judges incomplete work only, so these are not findings and need no answer; weigh them in "
-    "your own verification):"
+    "judges incomplete work only, so these are not findings. For each material concern: run a "
+    "proportionate check, cite evidence that already settles it, or decline with a reason; "
+    "recording a response is optional):"
 )
 # Issue #1162: a note whose bounded advisory row could not be retained (never expected once its
 # subjects are fence-resolved) degrades to this summary instead of discarding the review.
@@ -4540,8 +4655,14 @@ def validate_semantic_judgment(
     settled_finding_refs: frozenset[str] | None = None,
     review_phase: Literal["routine", "final"] | None = None,
     agent_linked_runs: frozenset[EventId] | None = frozenset(),
+    prior_advisories: tuple[CorrectnessAdvisory, ...] = (),
+    included_refs: frozenset[str] | None = None,
 ) -> SemanticJudgmentReview:
     """Fence AI-powered challenges to the exact frozen refs, coverage, and final provenance.
+
+    ``prior_advisories`` are the task's advisory rows in the frozen prefix (#1162 tracked
+    advice): a verified row or strongest remaining check that repeats one of them with no newer
+    concern material is folded onto it and disclosed, never given a second identity.
 
     ``review_phase`` is the phase the packet's question set named (``select_semantic_budget_profile``).
     A routine review judges incomplete work only (issue #1042): a ``code_defect`` it returns is a
@@ -4607,6 +4728,7 @@ def validate_semantic_judgment(
         judgment,
         citable_refs=advertised_refs,
         provider_input_text_by_ref=provider_input_text_by_ref,
+        included_refs=included_refs,
     )
     judgment = fence.judgment
     # Every dropped quote is disclosed through the snippet gap (including verified rows the
@@ -4629,6 +4751,14 @@ def validate_semantic_judgment(
             citable_refs if citable_refs is not None else frozenset(map(str, case.allowed_ids)),
         )
     if judgment.conclusion != "challenges_returned":
+        tracked_rows, tracked_notes = _with_tracked_advice(
+            case,
+            deterministic,
+            judgment,
+            room=MAX_ADVISORIES_PER_CHECK,
+            prior=prior_advisories,
+        )
+        review_summary = _summary_with_fixed_notes(review_summary, tracked_notes)
         return _judgment_review(
             (),
             returned_challenges,
@@ -4640,6 +4770,7 @@ def validate_semantic_judgment(
             verified=judgment.verified,
             snippets_rejected=snippets_rejected,
             refs_reduced=fence.refs_reduced,
+            correctness_advisories=tracked_rows,
         )
     coverage = case_coverage(case, semantic=True)
     if not capture_baseline_gaps <= SEMANTIC_FINDING_CAPTURE_BASELINE_GAPS:
@@ -4919,6 +5050,19 @@ def validate_semantic_judgment(
                 )
             )
         )
+    tracked_rows, tracked_notes = _with_tracked_advice(
+        case,
+        deterministic,
+        judgment,
+        room=MAX_ADVISORIES_PER_CHECK - len(advisory_rows),
+        prior=prior_advisories,
+        # #1211 counter-example notes and this review's findings already carry an identity: a
+        # tracked candidate about the same concern is not raised twice.
+        same_review=(
+            *(refs for _challenge, refs in advisory),
+            *(tuple(map(str, candidate.subject_refs)) for candidate in candidates),
+        ),
+    )
     return _judgment_review(
         tuple(candidates),
         returned_challenges,
@@ -4927,32 +5071,35 @@ def validate_semantic_judgment(
         verdicts_unsupported,
         restatements,
         verdicts_set_aside,
-        _summary_with_re_raised(
-            _summary_with_agent_criteria(advisory_summary, agent_criteria),
-            tuple(re_raised),
-            frozenset(
-                restated
-                for restated, _challenge in re_raised
-                if (
-                    (ruling := admitted.get(str(restated))) is not None
-                    and ruling.verdict == DISPUTED_AFTER_REBUTTAL_VERDICT
-                )
-                or finding_todo_state(case.projection, restated)
-                is FindingTodoState.DISPUTED_AFTER_REBUTTAL
+        _summary_with_fixed_notes(
+            _summary_with_re_raised(
+                _summary_with_agent_criteria(advisory_summary, agent_criteria),
+                tuple(re_raised),
+                frozenset(
+                    restated
+                    for restated, _challenge in re_raised
+                    if (
+                        (ruling := admitted.get(str(restated))) is not None
+                        and ruling.verdict == DISPUTED_AFTER_REBUTTAL_VERDICT
+                    )
+                    or finding_todo_state(case.projection, restated)
+                    is FindingTodoState.DISPUTED_AFTER_REBUTTAL
+                ),
+                frozenset(
+                    restated
+                    for restated, _challenge in re_raised
+                    if finding_todo_state(case.projection, restated)
+                    in {FindingTodoState.ACKNOWLEDGED_NOT_DONE, FindingTodoState.SELF_VERIFIED}
+                    or _limitation_disclosed(case, restated)
+                ),
             ),
-            frozenset(
-                restated
-                for restated, _challenge in re_raised
-                if finding_todo_state(case.projection, restated)
-                in {FindingTodoState.ACKNOWLEDGED_NOT_DONE, FindingTodoState.SELF_VERIFIED}
-                or _limitation_disclosed(case, restated)
-            ),
+            tracked_notes,
         ),
         judgment.verified,
         snippets_rejected,
         fence.refs_reduced,
         advisory_notes=len(advisory),
-        correctness_advisories=advisory_rows,
+        correctness_advisories=(*advisory_rows, *tracked_rows),
         agent_criteria=agent_criteria,
     )
 
@@ -4984,6 +5131,148 @@ def _correctness_advisory_rows(
             continue
         rows.append(row)
     return tuple(rows)
+
+
+# #1162 tracked advice: fixed FinishUP words and identities only; the rows carry reviewer text.
+_TRACKED_ADVICE_FOLDED_NOTE: Final = (
+    "FinishUP note: {count} reviewer item(s) repeat tracked advice with no newer material and "
+    "were not raised again: {ids}."
+)
+_TRACKED_ADVICE_SAME_REVIEW_NOTE: Final = (
+    "FinishUP note: {count} reviewer item(s) repeat a correctness note or finding of this review "
+    "and were not raised twice."
+)
+_TRACKED_ADVICE_NO_ROOM_NOTE: Final = (
+    "FinishUP note: {count} reviewer item(s) had no room for an advisory identity on this check "
+    "(at most ten); they remain in this review's verified rows or summary only."
+)
+
+
+def _tracked_advice_bound(row: CorrectnessAdvisory) -> int:
+    """The frontier newer material must beat for one tracked row: its answer, else its review."""
+
+    if row.response is not None:
+        return row.response.ledger.ingestion_sequence
+    payload = row.check.payload
+    assert isinstance(payload, CheckRecordedPayload)
+    return payload.subject_frontier.sequence
+
+
+def _with_tracked_advice(
+    case: DeterministicCase,
+    deterministic: tuple[Finding, ...],
+    judgment: SemanticJudgment,
+    *,
+    room: int,
+    prior: tuple[CorrectnessAdvisory, ...],
+    same_review: tuple[tuple[str, ...], ...] = (),
+) -> tuple[tuple[JsonObject, ...], tuple[str, ...]]:
+    """Tracked advice rows (#1162) for a fenced judgment, and FinishUP's fixed notes about them.
+
+    A verified row marked ``not_supported`` or ``not_assessable`` whose fence-resolved subjects
+    name an obligation or claim, and the reviewer's single strongest remaining check, each become
+    an advisory row (non-blocking; answered once through ``respond``). One that repeats an
+    earlier tracked row of the same family about the same concern, citing no concern material
+    newer than that row's answer (or, unanswered, its review), is folded onto it: the answer
+    stands and no second identity is minted. The fold and any overflow are disclosed in fixed words.
+    """
+
+    candidates: list[tuple[str, str, tuple[str, ...]]] = []
+    remaining = judgment.strongest_remaining_check
+    if remaining is not None:
+        candidates.append(("strongest_remaining_check", remaining.check, remaining.cited_refs))
+    for verdict in ("not_supported", "not_assessable"):
+        candidates.extend(
+            (f"verified_{verdict}", item.requirement_or_claim, item.cited_refs)
+            for item in judgment.verified
+            if item.verdict == verdict
+        )
+    rows: list[JsonObject] = []
+    folded: list[str] = []
+    folded_items = 0
+    overflow = 0
+    repeated_here = 0
+    review_concerns = tuple(concern_key(case.projection, refs) for refs in same_review)
+    for origin, text, cited in candidates:
+        resolution = _resolve_cited_refs(case, deterministic, cited)
+        if resolution is None:
+            continue
+        subjects = resolution.subject_refs
+        if origin != "strongest_remaining_check" and not any(
+            ref.startswith(("obl_", "clm_")) for ref in subjects
+        ):
+            # A verified row about an event alone stays a plain verified row.
+            continue
+        family = TRACKED_ADVICE_FAMILIES[origin]
+        wanted = concern_key(case.projection, subjects)
+        if any(same_concern(wanted, concern) for concern in review_concerns):
+            # A correctness note (with its #1211 counter-example) or a finding of this same
+            # review already names the concern with an identity.
+            repeated_here += 1
+            continue
+        earlier = next(
+            (
+                row
+                for row in prior
+                if TRACKED_ADVICE_FAMILIES.get(str(row.concern.get("origin", ""))) == family
+                and same_concern(
+                    wanted,
+                    concern_key(
+                        case.projection,
+                        (str(ref) for ref in cast(tuple[str, ...], row.concern["subject_refs"])),
+                    ),
+                )
+                and not concern_material_after(
+                    case, wanted, (*cited, *subjects), _tracked_advice_bound(row)
+                )
+            ),
+            None,
+        )
+        if earlier is not None:
+            folded_items += 1
+            if earlier.advisory_id not in folded:
+                folded.append(earlier.advisory_id)
+            continue
+        if len(rows) >= room:
+            overflow += 1
+            continue
+        bounded = _bounded_review_text(text)
+        row = JsonObject(
+            {
+                "summary": bounded,
+                "detail": bounded,
+                "subject_refs": subjects,
+                "origin": origin,
+            }
+        )
+        try:
+            validate_advisories((row,))
+        except ValueError:
+            overflow += 1
+            continue
+        rows.append(row)
+    notes: list[str] = []
+    if folded:
+        notes.append(_TRACKED_ADVICE_FOLDED_NOTE.format(count=folded_items, ids=", ".join(folded)))
+    if repeated_here:
+        notes.append(_TRACKED_ADVICE_SAME_REVIEW_NOTE.format(count=repeated_here))
+    if overflow:
+        notes.append(_TRACKED_ADVICE_NO_ROOM_NOTE.format(count=overflow))
+    return tuple(rows), tuple(notes)
+
+
+def _summary_with_fixed_notes(summary: str, notes: tuple[str, ...]) -> str:
+    """Append FinishUP's fixed notes last, shortening the reviewer prose first (PR #1214 review).
+
+    The notes name earlier advisory identities and counts; clipping from the end would drop them
+    from a summary at its bound, so their room is reserved and only the prose before is cut.
+    """
+
+    if not notes:
+        return summary
+    tail = "\n".join(("", "", *notes))
+    room = MAX_REVIEW_TEXT_BYTES - len(tail.encode("utf-8"))
+    return _bounded_review_text(summary, max(0, room)) + tail
 
 
 _VERIFICATION_RERUN_SUMMARY: Final = "Is a verification rerun needed after these changes?"
@@ -6576,6 +6865,11 @@ async def execute_check_commit(
                         if prefix_records
                         else None
                     ),
+                    # #1162 tracked advice: the frozen prefix's advisory rows, so a repeat with
+                    # no newer material folds onto its earlier identity (replay-pure).
+                    prior_advisories=correctness_advisory_index(prefix_records).rows,
+                    # The recorded disclosure, which a recovered response keeps (#1214 review).
+                    included_refs=semantic_result.case_included_refs,
                 )
             except SemanticJudgmentRejected as exc:
                 # The reviewer's answer is unusable, so the check has no AI-powered review result — but the

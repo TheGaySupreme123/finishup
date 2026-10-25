@@ -4011,6 +4011,12 @@ def _judgment_to_response_json(judgment: object) -> dict[str, CanonicalJsonValue
         body["prior_finding_verdicts_dropped"] = judgment.prior_finding_verdicts_dropped
     if judgment.verified_dropped:
         body["verified_dropped"] = judgment.verified_dropped
+    # #1162 tracked advice: emitted only when present, so earlier stored judgments keep their bytes.
+    if judgment.strongest_remaining_check is not None:
+        body["strongest_remaining_check"] = {
+            "check": judgment.strongest_remaining_check.check,
+            "cited_refs": list(judgment.strongest_remaining_check.cited_refs),
+        }
     if judgment.missing_for_assessment:
         # Issue #907: the named missing items, reviewer reason included, live only in this
         # encrypted durable response object; the check record keeps the structural fields.
@@ -4030,6 +4036,7 @@ def _judgment_from_response_json(value: object) -> object:
         MissingForAssessmentKind,
         PriorFindingVerdict,
         PriorFindingVerdictKind,
+        RemainingCheck,
         ReviewerChallenge,
         ReviewerNextStep,
         SemanticConclusion,
@@ -4165,6 +4172,24 @@ def _judgment_from_response_json(value: object) -> object:
     review_summary = source.get("review_summary", "No review summary recorded.")
     if type(review_summary) is not str:
         raise ValueError("semantic_response_judgment_invalid")
+    remaining: RemainingCheck | None = None
+    raw_remaining = source.get("strongest_remaining_check")
+    if raw_remaining is not None:
+        if type(raw_remaining) is not dict:
+            raise ValueError("semantic_response_judgment_invalid")
+        remaining_row = cast(dict[str, object], raw_remaining)
+        cited = remaining_row.get("cited_refs")
+        check_text = remaining_row.get("check")
+        if (
+            type(cited) is not list
+            or any(type(ref) is not str for ref in cast(list[object], cited))
+            or type(check_text) is not str
+        ):
+            raise ValueError("semantic_response_judgment_invalid")
+        try:
+            remaining = RemainingCheck(check_text, tuple(cast(list[str], cited)))
+        except ValueError as exc:
+            raise ValueError("semantic_response_judgment_invalid") from exc
     try:
         return SemanticJudgment(
             cast(SemanticConclusion, conclusion_raw),
@@ -4175,6 +4200,7 @@ def _judgment_from_response_json(value: object) -> object:
             review_summary=review_summary,
             verified=tuple(verified),
             verified_dropped=cast(int, source.get("verified_dropped", 0)),
+            strongest_remaining_check=remaining,
         )
     except ValueError as exc:
         raise ValueError("semantic_response_judgment_invalid") from exc

@@ -13,6 +13,19 @@ MAX_ADVISORIES_PER_CHECK = 10
 # A note keeps the fence-resolved subjects of its challenge, which a finding bounds the same way.
 MAX_ADVISORY_SUBJECT_REFS = 64
 ADVISORY_RESPONSE_STATEMENT = "Correctness advisory disposition (agent-reported; non-blocking)."
+# #1162 tracked advice: where a retained row came from. A row without ``origin`` is a routine
+# ``code_defect`` note (the first shape, kept byte-identical). The others come from the reviewer's
+# verified rows that cite an obligation or claim, and from its single strongest remaining check.
+ADVISORY_ORIGINS = frozenset(
+    {"verified_not_supported", "verified_not_assessable", "strongest_remaining_check"}
+)
+# Origins whose re-raise without new material is folded onto the earlier row (finding_frontier
+# and concern identity), never minted again: both ``verified_*`` origins are one family.
+TRACKED_ADVICE_FAMILIES = {
+    "verified_not_supported": "verified",
+    "verified_not_assessable": "verified",
+    "strongest_remaining_check": "strongest_remaining_check",
+}
 
 
 def is_advisory_id(value: str) -> bool:
@@ -23,7 +36,13 @@ def validate_advisories(rows: tuple[JsonObject, ...]) -> None:
     if type(rows) is not tuple or len(rows) > MAX_ADVISORIES_PER_CHECK:
         raise ProtocolValueError("invalid_event_value_type")
     for row in rows:
-        if type(row) is not JsonObject or set(row) != {"summary", "detail", "subject_refs"}:
+        if type(row) is not JsonObject or set(row) - {"origin"} != {
+            "summary",
+            "detail",
+            "subject_refs",
+        }:
+            raise ProtocolValueError("invalid_event_value_type")
+        if "origin" in row and row["origin"] not in ADVISORY_ORIGINS:
             raise ProtocolValueError("invalid_event_value_type")
         for key in ("summary", "detail"):
             value = row[key]

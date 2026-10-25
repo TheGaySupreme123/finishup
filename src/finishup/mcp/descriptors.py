@@ -2078,10 +2078,13 @@ _POLICY_TOOL_DESCRIPTORS: Final = (
         "if the requirement may be met but cannot be confirmed here; acknowledged_not_done says it "
         "is not met. Only if a new finding restates the SAME issue as an earlier one you answered, respond "
         "duplicate_of with duplicate_of_finding_id; linking never resolves the new finding. "
-        "A correctness advisory needs no answer; to record one, put its check-event-id:ordinal "
-        "in finding_id and respond addressed (reason, and evidence_refs with at least one recorded "
-        "after the note's check) or declined (reason). That appends a non-blocking decision "
-        "record, not a finding response, and needs no recheck. "
+        "A correctness advisory (a routine note, a reviewer row or its strongest remaining check) "
+        "is non-blocking: for each material concern, run a proportionate check, cite evidence "
+        "that already settles it, or decline with a reason. Recording a response is optional; to "
+        "record one, put its check-event-id:ordinal in finding_id and respond addressed (reason, "
+        "and evidence_refs with at least one recorded after the note's check) or declined "
+        "(reason). One response closes it unless new material arrives. That appends a "
+        "non-blocking decision record, not a finding response, and needs no recheck. "
         "This appends one "
         "finding-response record to the local FinishUP ledger; it does not publish to GitHub or run an "
         "AI-powered evaluation. It does not resolve other findings or establish that underlying work "
@@ -2252,7 +2255,7 @@ TOOL_DESCRIPTOR_DIGESTS: Final[Mapping[McpRouteProfile, Mapping[str, str]]] = Ma
                 "start": "sha256:4f0882901380efe04aa96f066a0bd56cd7511b091f0b5728d0efa02ef86a4499",
                 "publish_work": "sha256:0818149f507547dbdd4d3d0c37761e09978ad3c46b699df5a3c635093cdd6e2a",
                 "check": "sha256:48dfd8224c245f8af98e833046ae1e56f5c2e44b25b937c8ce1bf399fe230246",
-                "respond": "sha256:302f82a565c2a19dadfd0f59dcf237ef953636c7bb3008c93df7b01843e1a928",
+                "respond": "sha256:86282954f4302443e5b5ab53218d4f9608d21f377a1f6cc55feeb557d580b105",
                 "status": "sha256:b5b522c70143921055c1260c3e4a9bb35c8efd6208fc65cef55b84605519d5e4",
                 "receipt": "sha256:af7788b3708ecd6ff952a4debd7969547ca2b4396d4046df488567a2a51ba9f2",
                 "read_guidance": "sha256:dbcb10d90771cbf18e469e9646127d7966fd54771f360cdff77759d740efeb08",
@@ -2264,7 +2267,7 @@ TOOL_DESCRIPTOR_DIGESTS: Final[Mapping[McpRouteProfile, Mapping[str, str]]] = Ma
                 "start": "sha256:4f0882901380efe04aa96f066a0bd56cd7511b091f0b5728d0efa02ef86a4499",
                 "publish_work": "sha256:0818149f507547dbdd4d3d0c37761e09978ad3c46b699df5a3c635093cdd6e2a",
                 "check": "sha256:50a1fbc793d1b55f8cec40ff8408795ad8523ca3fb0eda9837606c3b6ec4b2df",
-                "respond": "sha256:302f82a565c2a19dadfd0f59dcf237ef953636c7bb3008c93df7b01843e1a928",
+                "respond": "sha256:86282954f4302443e5b5ab53218d4f9608d21f377a1f6cc55feeb557d580b105",
                 "status": "sha256:b5b522c70143921055c1260c3e4a9bb35c8efd6208fc65cef55b84605519d5e4",
                 "receipt": "sha256:af7788b3708ecd6ff952a4debd7969547ca2b4396d4046df488567a2a51ba9f2",
                 "read_guidance": "sha256:dbcb10d90771cbf18e469e9646127d7966fd54771f360cdff77759d740efeb08",
@@ -2275,8 +2278,8 @@ TOOL_DESCRIPTOR_DIGESTS: Final[Mapping[McpRouteProfile, Mapping[str, str]]] = Ma
 )
 TOOL_DESCRIPTOR_SET_DIGEST: Final[Mapping[McpRouteProfile, str]] = MappingProxyType(
     {
-        "policy": "sha256:e51bc3f3eca314bc40fd91ada60cd51e65ee9a98f7deaef1bca07a54e13c7b73",
-        "strict": "sha256:39a3422abaf937402ae55b400a967eb940ce4523fb3c15ce78b5edf23e4fa635",
+        "policy": "sha256:ac6d5d04b14e6a4a9458f506d05bd6fbda5c9741dbc53ed68a414218cc371383",
+        "strict": "sha256:ab6ed584a9e3b1fb66ddf46457c6d1deb83497c9ef4cc8fa83a326904190efd6",
     }
 )
 

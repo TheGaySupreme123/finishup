@@ -12781,6 +12781,50 @@ fixed owner-facing notice only when the set changed, never on a `stop_hook_activ
 `advisory_subject_frontier`) is refused with `invalid_frontier` at `/finding_frontier`, naming
 the check's sequence; an unknown identity is `response_fields_invalid` at `/finding_id`.
 
+**Tracked reviewer advice (#1162, 2026-10-25).** Besides routine `code_defect` notes, the same
+rows record two more kinds of reviewer advice, told apart by an optional closed `origin` on the
+check-recorded 1.6.0 row (in place, unreleased; a row without it is a routine note and keeps its
+first shape):
+
+- `verified_not_supported` / `verified_not_assessable`: a fenced `verified` row with that verdict
+  whose fence-resolved subjects name an `obl_` or `clm_`. A row about events alone stays a plain
+  verified row. Summary and detail are the row's `requirement_or_claim`.
+- `strongest_remaining_check`: the reviewer's single strongest remaining check, from the optional
+  nullable `strongest_remaining_check` (`check`, 1–16 `cited_refs`) on every provider-judgment
+  1.2.0 branch (in place, unreleased; the reviewer-reply schema follows). Its citations are
+  fenced like a challenge's (unsent refs removed and counted in `refs_reduced`; none left removes
+  it); a malformed one is dropped without failing the judgment. The field's guidance rides the
+  schema glossary, not the always-sent instructions, so the instruction bytes are unchanged; the
+  schema digest changes once, which resets a provider prompt cache once.
+
+Ordinals continue after the routine notes (strongest check first, then `not_supported`, then
+`not_assessable`) within the ten-row bound; overflow is disclosed in the review summary in fixed
+words. A candidate is folded, never minted again, when an earlier row of the same family
+(`verified_*` together, or the strongest check) has the same concern (`kernel.concern.same_concern`
+over fence-resolved subjects) and the candidate cites no concern material
+(`review_concern.concern_material_after`) newer than that row's recorded response, or, while
+unanswered, its check's subject frontier. The fold names the earlier identity in a fixed FinishUP
+line of the review summary. The prior rows come from the frozen prefix, so recovery folds the same way.
+
+The check result (check-result 1.6.0 success, in place; 1.7.0 follows) carries
+`correctness_advisories`: each row this check recorded, as `advisory_id`, `origin`
+(`routine_correctness_note` for a row without one), `subject_refs` and the privacy-projected
+`summary` (`finding_summary`). It is derived from the recorded check after commit, so a commit and a
+same-id replay agree, and it is paged with the actionable fields. `status view=operation`
+carries the same rows in `check_outcome.correctness_advisories` without the summary (identity,
+origin, subjects; structural only, status-result 1.4.0/1.5.0 in place), so recovering a lost
+check response keeps the identities `respond` answers. CLI
+and MCP text list the rows under a fixed "Tracked reviewer advice" header. Closure readiness
+(status-result 1.4.0, in place; check embeds it) carries `correctness_advisory_counts` (the
+receipt's `total`/`no_recorded_response`/`withheld_may_answer`) whenever the task has advice, and
+`correctness_advisory_summary` labels each named identity with its origin and first two
+subjects. History rows keep their first shape (no `origin`); receipt rows carry the origin label.
+The texts on this path use the owner-approved wording ("Non-blocking. For each material concern:
+run a proportionate check, cite evidence that already settles it, or decline with a reason.
+Recording a response is optional; ..."). One optional `respond` response (addressed with evidence
+recorded after the note, or declined with a reason) closes an item; nothing blocks, and Stop is
+unchanged.
+
 ### Shared recorded evidence links (#1205)
 
 The optional `status(view=obligations)` item member `evidence_basis` is a bounded derived read

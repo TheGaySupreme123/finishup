@@ -67,6 +67,41 @@ def test_review_guidance_reaches_the_model_before_paged_summary(
     assert reassemble_delivery(pages)["review_guidance"] == guidance
 
 
+def test_advisory_identities_are_paged_with_the_actionable_fields() -> None:
+    """#1162 tracked advice: an oversized check never reports actionable_complete before its IDs."""
+
+    source = _source()
+    advisory_ids = [f"evt_00000000-0000-4000-8000-000000000042:{n}" for n in range(1, 11)]
+    source["correctness_advisories"] = [
+        {
+            "advisory_id": advisory_id,
+            "origin": "strongest_remaining_check",
+            "subject_refs": ["obl_00000000-0000-4000-8000-000000000005"],
+            "summary": "Decrypt a 32-character seed and compare with the reference. " * 6,
+        }
+        for advisory_id in advisory_ids
+    ]
+    source["verified"] = [
+        {"requirement_or_claim": f"criterion-{n}", "verdict": "supported", "snippet": "x" * 1000}
+        for n in range(24)
+    ]
+    pages = _pages(source)
+    assert len(pages) > 1
+    last_actionable = next(index for index, page in enumerate(pages) if page["actionable_complete"])
+    actionable = canonical_encode(
+        cast(Any, [item for page in pages[: last_actionable + 1] for item in page["items"]])
+    )
+    for advisory_id in advisory_ids:
+        assert advisory_id.encode() in actionable
+    assert reassemble_delivery(pages)["correctness_advisories"] == source["correctness_advisories"]
+    # The verified rows stay optional provenance after the actionable fields.
+    assert any(
+        str(item["path"]).startswith("/verified")
+        for page in pages[last_actionable + 1 :]
+        for item in page["items"]
+    )
+
+
 @pytest.mark.anyio
 @pytest.mark.parametrize("mode", ["optional", "disabled"])
 async def test_guidance_originates_in_successful_review_projection_only(

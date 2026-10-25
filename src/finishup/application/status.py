@@ -1155,6 +1155,16 @@ async def _operation_check_outcome(
         )
         wire = check_internal_json(replayed)
         outcome = {name: _thawed(wire[name]) for name in _CHECK_OUTCOME_FIELDS if name in wire}
+        advice = wire.get("correctness_advisories")
+        if isinstance(advice, tuple | list) and advice:
+            # #1162 tracked advice (PR #1214 review): identities only; prose stays elsewhere.
+            outcome["correctness_advisories"] = tuple(
+                {
+                    key: _thawed(cast(Mapping[str, JsonValue], row)[key])
+                    for key in ("advisory_id", "origin", "subject_refs")
+                }
+                for row in cast(Sequence[JsonValue], advice)
+            )
         StatusCheckOutcomeModel.model_validate(outcome)
         return outcome
     except Exception as exc:  # noqa: BLE001 - the outcome enriches recovery, never blocks it
@@ -2113,10 +2123,17 @@ async def _closure_readiness(
     if loaded is not None:
         from finishup.kernel.correctness_advisories import (
             advisory_closing_text,
+            advisory_counts,
             correctness_advisory_index,
         )
 
         advisory_index = correctness_advisory_index(loaded.records)
+        # #1162 tracked advice: the structural counts (the receipt's own triple) whenever the
+        # task has advice, so a status line counts unanswered items without reading prose.
+        if advisory_index.rows:
+            optional_fields["correctness_advisory_counts"] = dict(
+                advisory_counts(advisory_index).items()
+            )
         # #1162: readiness names what is still open, so the summary is present only while some
         # note has no recorded response. Hooks read its presence (never its text) to decide the
         # owner-facing Stop notice; the receipt and history keep every note and its status.

@@ -232,6 +232,55 @@ def test_correctness_advisory_rows_use_1_6_and_keep_original_concern() -> None:
             _decode(version, body)
 
 
+def test_tracked_advice_rows_carry_a_closed_origin_on_1_6_and_the_check_result() -> None:
+    """#1162 tracked advice: the golden rows validate on check-recorded and check-result 1.6.0."""
+
+    from finishup.adapters.providers.openai_responses import normalize_judgment
+    from finishup.domain.correctness_advisories import validate_advisories
+
+    tracked = json.loads(_FIXTURE.read_bytes())["input"]["tracked_advice"]
+    body = _event_body()
+    body["correctness_advisories"] = tracked["check_recorded_rows"]
+    validate_schema_instance("check-recorded", "1.6.0", body)
+    decoded = _decode("1.6.0", body)
+    assert (
+        json.loads(canonical_encode(encode_payload(decoded)))["correctness_advisories"]
+        == tracked["check_recorded_rows"]
+    )
+    validate_advisories(
+        tuple(cast(JsonObject, freeze_json(row)) for row in tracked["check_recorded_rows"])
+    )
+    invented: dict[str, Any] = {
+        **body,
+        "correctness_advisories": [{**tracked["check_recorded_rows"][0], "origin": "invented"}],
+    }
+    with pytest.raises(SchemaInstanceInvalid):
+        validate_schema_instance("check-recorded", "1.6.0", invented)
+    instance = {**cast(dict[str, Any], json.loads(json.dumps(_check_result_wire())))}
+    instance["correctness_advisories"] = [tracked["check_result_row"]]
+    for version in ("1.6.0", "1.7.0"):
+        validate_schema_instance("check-result", version, instance)
+    with pytest.raises(SchemaInstanceInvalid):
+        validate_schema_instance("check-result", "1.5.0", instance)
+    CheckResult.model_validate(instance)
+    judgment = normalize_judgment(
+        {
+            "conclusion": "no_material_discrepancy",
+            "review_summary": "Checked.",
+            "verified": [],
+            "reviewer_challenges": [],
+            "prior_finding_verdicts": [],
+            "strongest_remaining_check": tracked["provider_strongest_remaining_check"],
+        },
+        require_part2=True,
+    )
+    assert judgment.strongest_remaining_check is not None
+    assert (
+        judgment.strongest_remaining_check.check
+        == (tracked["provider_strongest_remaining_check"]["check"])
+    )
+
+
 def test_advisory_decisions_are_typed_and_never_switch_review_mode() -> None:
     from finishup.domain.events import EventSchema, decode_payload
 

@@ -209,6 +209,34 @@ def document() -> dict[str, JsonValue]:
                 "disposition": "declined",
                 "evidence_refs": [],
             },
+            # #1162 tracked advice: a verified row and the strongest remaining check, recorded
+            # with a closed origin, and the check result's row with the identity respond answers.
+            "tracked_advice": {
+                "provider_strongest_remaining_check": {
+                    "check": "Run the placement on a receptacle rotated by 90 degrees.",
+                    "cited_refs": ["obl_00000000-0000-4000-8000-000000000003"],
+                },
+                "check_recorded_rows": [
+                    {
+                        "summary": "Run the placement on a receptacle rotated by 90 degrees.",
+                        "detail": "Run the placement on a receptacle rotated by 90 degrees.",
+                        "subject_refs": ["obl_00000000-0000-4000-8000-000000000003"],
+                        "origin": "strongest_remaining_check",
+                    },
+                    {
+                        "summary": "Objects are placed inside rotated receptacles.",
+                        "detail": "Objects are placed inside rotated receptacles.",
+                        "subject_refs": ["obl_00000000-0000-4000-8000-000000000003"],
+                        "origin": "verified_not_assessable",
+                    },
+                ],
+                "check_result_row": {
+                    "advisory_id": "evt_00000000-0000-4000-8000-000000000002:2",
+                    "origin": "verified_not_assessable",
+                    "subject_refs": ["obl_00000000-0000-4000-8000-000000000003"],
+                    "summary": "Objects are placed inside rotated receptacles.",
+                },
+            },
             "result_delivery": _result_delivery_vector(),
             "stopped_review": {
                 "semantic_status": "unavailable",
@@ -226,6 +254,7 @@ def document() -> dict[str, JsonValue]:
             "ADR-040:requested-review-stopped",
             "ISSUE-1139:bounded-review-delivery",
             "ISSUE-1162:non-blocking-advisory-disposition",
+            "ISSUE-1162:tracked-reviewer-advice",
         ],
         "purpose": (
             "Freeze the reviewer conversation record. check-recorded 1.6.0 and the check-result "

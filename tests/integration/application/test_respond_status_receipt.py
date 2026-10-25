@@ -150,6 +150,7 @@ from finishup.ports.semantic import (
     SamplingParams,
     SemanticCase,
     SemanticJudgment,
+    VerifiedReviewItem,
 )
 from finishup.protocol.canonical import JsonValue, canonical_digest, canonical_encode
 from finishup.protocol.coverage import (
@@ -10185,3 +10186,265 @@ async def test_an_advisory_response_needs_respond_and_evidence_recorded_after_th
     after = tuple([r async for r in ledger.load_events(started.session_id)])
     assert len(after) == len(records)
     assert correctness_advisories(after)[0].response is None
+
+
+# --- #1162 tracked reviewer advice ----------------------------------------------------------------
+
+
+def _tracked_reviewer(
+    rounds: list[Callable[[FrozenCase], SemanticJudgment]],
+    text_by_ref: Mapping[str, tuple[str, ...]],
+) -> Callable[..., Awaitable[object]]:
+    """Answer each check with the next scripted whole judgment, over a provider-bound text index."""
+
+    async def evaluate(
+        frozen: object,
+        findings: object,
+        runtime: object | None = None,
+        lineage_evaluation: object | None = None,
+    ) -> object:
+        succeeded = cast(FinalSemanticEvaluation, await _semantic_succeeds(frozen, findings))
+        return replace(
+            succeeded,
+            judgment=rounds.pop(0)(cast(FrozenCase, frozen)),
+            provider_input_text_by_ref=text_by_ref,
+        )
+
+    return evaluate
+
+
+@pytest.mark.parametrize("backend", ["memory", "sqlite"])
+async def test_tracked_reviewer_advice_is_answered_once_and_not_raised_again(
+    backend: Literal["memory", "sqlite"],
+) -> None:
+    """#1162 tracked advice end to end, through the production fence, respond and receipt.
+
+    A verified row marked not_supported that cites the obligation gets an advisory identity on
+    the check's structured result and text; a not_assessable row citing only an event stays plain.
+    Readiness counts it, the receipt lists it unanswered, ``respond declined`` with a reason
+    closes it and the receipt shows the reason, and a later review that repeats it with no newer
+    material folds onto the same identity instead of raising it again.
+    """
+
+    from finishup.application.check import check_internal_json
+    from finishup.kernel.correctness_advisories import correctness_advisories
+    from finishup.mcp.summaries import render_check_reviewer_output
+
+    seed = 216600
+    obligation = protocol_id("obl_", seed + 1)
+    action_event = protocol_id("evt_", seed + 2)
+    statement = "Place objects inside rotated receptacles"
+
+    def not_supported(_frozen: FrozenCase) -> SemanticJudgment:
+        return SemanticJudgment(
+            "no_material_discrepancy",
+            (),
+            review_summary="Placement traced for axis-aligned receptacles only.",
+            verified=(
+                VerifiedReviewItem(
+                    "Rotated receptacles are handled", "not_supported", (obligation,), statement
+                ),
+                VerifiedReviewItem("The edit is complete", "not_assessable", (action_event,)),
+            ),
+        )
+
+    new_result = protocol_id("res_", seed + 53)
+
+    def with_new_material(_frozen: FrozenCase) -> SemanticJudgment:
+        return SemanticJudgment(
+            "no_material_discrepancy",
+            (),
+            verified=(
+                VerifiedReviewItem(
+                    "Rotated receptacles are handled",
+                    "not_supported",
+                    (new_result, obligation),
+                    statement,
+                ),
+            ),
+        )
+
+    app, runtime, _ = _build_app(
+        semantic="required",
+        ledger_backend=backend,
+        semantic_evaluator=_tracked_reviewer(
+            [not_supported, not_supported, with_new_material],
+            {
+                obligation: (statement + ".",),
+                action_event: ("Edit the placement geometry.",),
+                new_result: ("Rotated placement probe failed.",),
+            },
+        ),
+    )
+    started, checked, _refs = await _routine_advisory_task(app, seed=seed)
+    assert checked.semantic_status is SemanticStatus.SUCCEEDED
+    ledger, _objects = runtime.resources[started.task_id]
+    records = tuple([r async for r in ledger.load_events(started.session_id)])
+    notes = correctness_advisories(records)
+    assert [note.concern.get("origin") for note in notes] == ["verified_not_supported"]
+    advisory_id = notes[0].advisory_id
+    # The check's structured result carries the identity, its origin and subjects.
+    wire = check_internal_json(checked)
+    assert wire["correctness_advisories"] == (
+        {
+            "advisory_id": advisory_id,
+            "origin": "verified_not_supported",
+            "subject_refs": (obligation,),
+            "summary": "Rotated receptacles are handled",
+        },
+    )
+    text = render_check_reviewer_output(wire)
+    assert "Tracked reviewer advice" in text
+    assert f"- {advisory_id} (reviewer row not_supported; {obligation})" in text
+    # A lost check response is recovered with its advisory identities (PR #1214 review).
+    operation = await app.status(
+        StatusRequest.model_validate(
+            {
+                **_request_base(protocol_id("req_", seed + 15)),
+                "session_id": started.session_id,
+                "writer_id": started.writer_id,
+                "view": "operation",
+                "filter": {"operation_request_id": checked.request_id},
+                "limit": "100",
+            }
+        )
+    )
+    assert type(operation.page) is StatusOperationPageModel
+    outcome = operation.page.check_outcome
+    assert outcome is not None
+    assert [row.model_dump(mode="json") for row in outcome.correctness_advisories] == [
+        {
+            "advisory_id": advisory_id,
+            "origin": "verified_not_supported",
+            "subject_refs": [obligation],
+        }
+    ]
+    readiness = cast(Mapping[str, Any], checked.closure_readiness)
+    assert readiness["correctness_advisory_counts"] == {
+        "total": "1",
+        "no_recorded_response": "1",
+        "withheld_may_answer": "0",
+    }
+    assert advisory_id in readiness["correctness_advisory_summary"]
+
+    async def receipt_text(
+        request_seed: int, frontier: Frontier | FrontierModel
+    ) -> tuple[str, Frontier]:
+        receipt = await app.receipt(
+            ReceiptRequest.model_validate(
+                {
+                    **_receipt_wire(
+                        request_seed=request_seed,
+                        task_id=started.task_id,
+                        session=started.session_id,
+                        writer=started.writer_id,
+                        frontier=frontier,
+                    ),
+                    "format": "text",
+                    "include": "summary",
+                }
+            )
+        )
+        return str(receipt.as_json()), receipt.result_frontier
+
+    unanswered, head = await receipt_text(seed + 20, checked.result_frontier)
+    assert "Earlier correctness advisories: 1; no recorded response: 1" in unanswered
+    assert f"Correctness advisory {advisory_id} (reviewer row not_supported): no recorded" in (
+        unanswered
+    )
+    answered = await app.respond(
+        RespondRequest.model_validate(
+            {
+                **_request_base(protocol_id("req_", seed + 30)),
+                "session_id": started.session_id,
+                "writer_id": started.writer_id,
+                "expected_frontier": _frontier(head),
+                "finding_id": advisory_id,
+                "finding_frontier": _frontier(checked.result_frontier),
+                "disposition": "declined",
+                "reason": "Rotation is outside the task's stated receptacle set.",
+                "evidence_refs": [],
+            }
+        )
+    )
+    closed, head = await receipt_text(seed + 31, answered.result_frontier)
+    assert "Earlier correctness advisories: 1; no recorded response: 0" in closed
+    assert "declined with reason" in closed
+    assert "Rotation is outside the task's stated receptacle set." in closed
+    # A later review repeats the row with no newer material: folded, never a second identity.
+    later = await app.check(
+        CheckRequest.model_validate(
+            {
+                **_request_base(protocol_id("req_", seed + 40)),
+                "session_id": started.session_id,
+                "writer_id": started.writer_id,
+                "expected_frontier": _frontier(head),
+                "mode": "semantic_required",
+            }
+        )
+    )
+    assert isinstance(later, CheckCommitResult)
+    assert later.correctness_advisories == ()
+    assert f"not raised again: {advisory_id}." in str(later.review_summary)
+    after = correctness_advisories(tuple([r async for r in ledger.load_events(started.session_id)]))
+    assert [note.advisory_id for note in after] == [advisory_id]
+    assert after[0].disposition == "declined"
+    later_readiness = cast(Mapping[str, Any], later.closure_readiness)
+    assert later_readiness["correctness_advisory_counts"]["no_recorded_response"] == "0"
+    assert "correctness_advisory_summary" not in later_readiness
+    # New concern material (a result linked to the obligation, recorded after the answer) that
+    # the next review cites makes the repeat new advice with its own identity.
+    published = await app.publish_work(
+        PublishWorkRequest.model_validate(
+            {
+                **_request_base(protocol_id("req_", seed + 50)),
+                "session_id": started.session_id,
+                "writer_id": started.writer_id,
+                "expected_frontier": _frontier(later.result_frontier),
+                "event_drafts": [
+                    {
+                        "event_id": protocol_id("evt_", seed + 51),
+                        "schema": {"name": "action_recorded", "version": "1.0.0"},
+                        "occurred_at": "2026-07-19T12:00:05.000Z",
+                        "causal_parents": [],
+                        "payload": {
+                            "action_id": protocol_id("act_", seed + 52),
+                            "action_kind": "edit",
+                            "description": "Probe rotated placement.",
+                            "obligation_refs": [obligation],
+                        },
+                        "artifact_refs": [],
+                        "evidence_refs": [],
+                    },
+                    {
+                        "event_id": protocol_id("evt_", seed + 54),
+                        "schema": {"name": "result_recorded", "version": "1.0.0"},
+                        "occurred_at": "2026-07-19T12:00:06.000Z",
+                        "causal_parents": [protocol_id("evt_", seed + 51)],
+                        "payload": {
+                            "result_id": new_result,
+                            "action_id": protocol_id("act_", seed + 52),
+                            "outcome": "failure",
+                            "summary": "Rotated placement probe failed.",
+                        },
+                        "artifact_refs": [],
+                        "evidence_refs": [],
+                    },
+                ],
+            }
+        )
+    )
+    reopened = await app.check(
+        CheckRequest.model_validate(
+            {
+                **_request_base(protocol_id("req_", seed + 60)),
+                "session_id": started.session_id,
+                "writer_id": started.writer_id,
+                "expected_frontier": _frontier(published.result_frontier),
+                "mode": "semantic_required",
+            }
+        )
+    )
+    assert isinstance(reopened, CheckCommitResult)
+    assert [row["origin"] for row in reopened.correctness_advisories] == ["verified_not_supported"]
+    assert reopened.correctness_advisories[0]["advisory_id"] != advisory_id

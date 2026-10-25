@@ -44,6 +44,7 @@ from finishup.ports.semantic import (
     MissingForAssessment,
     PriorFindingVerdict,
     ProviderAttemptProvenance,
+    RemainingCheck,
     ReviewerChallenge,
     ReviewerExchange,
     ReviewerReplySchemas,
@@ -77,6 +78,7 @@ from finishup.protocol.models import (
     ProviderJudgmentNoDiscrepancyModel,
     ProviderMissingItemModel,
     ProviderPriorFindingVerdictModel,
+    ProviderRemainingCheckModel,
     ProviderVerifiedItemModel,
     SemanticStatus,
 )
@@ -1223,6 +1225,29 @@ VERIFIED_FIELD_GLOSSARY: Final[dict[str, str]] = {
     ),
 }
 
+# #1162 tracked advice: the reviewer's one strongest remaining check, recorded with an advisory
+# identity the agent answers once. It rides the schema, never the always-sent instructions, so
+# the instruction bytes (and the minimal policy's read room) are unchanged; the schema digest
+# changes once, which resets a provider prompt cache once.
+REMAINING_CHECK_DESCRIPTION: Final = (
+    "Your single strongest remaining check, or null when no material check remains: the one "
+    "cheap, discriminating check you would still run on the requirement or claim you could least "
+    "confirm. FinishUP records it as non-blocking advice with an identity the agent may answer "
+    "once (run it, cite evidence that settles it, or decline with a reason). Do not repeat a check the packet shows "
+    "was run or answered unless newer material bears on it."
+)
+
+REMAINING_CHECK_FIELD_GLOSSARY: Final[dict[str, str]] = {
+    "check": (
+        "The check itself, concrete enough to run: the command, input or comparison, and the "
+        "result that would settle it either way."
+    ),
+    "cited_refs": (
+        "The packet refs the check would settle, each from citable_refs: cite the obligation or "
+        "claim it is about; never an items[].item_id."
+    ),
+}
+
 
 VERDICT_FIELD_GLOSSARY: Final[dict[str, str]] = {
     "finding_id": (
@@ -1338,6 +1363,14 @@ def _apply_reviewer_glossary(schema: dict[str, JsonValue]) -> dict[str, JsonValu
     _gloss_properties(definitions, "ProviderVerifiedItem", VERIFIED_FIELD_GLOSSARY)
     _gloss_properties(definitions, "ProviderPriorFindingVerdict", VERDICT_FIELD_GLOSSARY)
     _gloss_properties(definitions, "ProviderMissingItem", MISSING_ITEM_FIELD_GLOSSARY)
+    _gloss_properties(definitions, "ProviderRemainingCheck", REMAINING_CHECK_FIELD_GLOSSARY)
+    remaining = definitions.get("ProviderRemainingCheck")
+    if type(remaining) is not dict:
+        raise RuntimeError("provider_judgment_schema_invalid")
+    definitions["ProviderRemainingCheck"] = cast(
+        JsonValue,
+        {**cast(dict[str, JsonValue], remaining), "description": REMAINING_CHECK_DESCRIPTION},
+    )
     return schema
 
 
@@ -1818,6 +1851,10 @@ def _verified_from_model(item: ProviderVerifiedItemModel) -> VerifiedReviewItem:
     )
 
 
+def _remaining_check_from_model(item: ProviderRemainingCheckModel | None) -> RemainingCheck | None:
+    return None if item is None else RemainingCheck(item.check, item.cited_refs)
+
+
 def _missing_item_from_model(item: ProviderMissingItemModel) -> MissingForAssessment:
     return MissingForAssessment(item.kind, item.target_refs, item.reason)
 
@@ -1887,6 +1924,7 @@ def normalize_judgment(parsed: JsonValue, *, require_part2: bool = False) -> Sem
     if type(body) is dict:
         body_object = cast(dict[str, JsonValue], body)
         body_object, verified_dropped = _separate_verified(body_object)
+        body_object = _separate_remaining_check(body_object)
         if require_part2 and body_object.get("conclusion") in {
             "no_material_discrepancy",
             "challenges_returned",
@@ -1948,7 +1986,30 @@ def normalize_judgment(parsed: JsonValue, *, require_part2: bool = False) -> Sem
         review_summary=model.review_summary,
         verified=verified,
         verified_dropped=verified_dropped,
+        strongest_remaining_check=_remaining_check_from_model(model.strongest_remaining_check),
     )
+
+
+_REMAINING_CHECK_ADAPTER: Final[TypeAdapter[ProviderRemainingCheckModel]] = TypeAdapter(
+    ProviderRemainingCheckModel
+)
+
+
+def _separate_remaining_check(body: dict[str, JsonValue]) -> dict[str, JsonValue]:
+    """Drop a malformed optional strongest check instead of failing the whole judgment (#1162).
+
+    The check is advisory and optional: one that does not fit its bounded shape costs only itself,
+    never the challenges and rows beside it. A strict provider sends an absent one as null.
+    """
+
+    raw = body.get("strongest_remaining_check")
+    if raw is None:
+        return body
+    try:
+        _REMAINING_CHECK_ADAPTER.validate_python(raw)
+    except ValidationError:
+        return {**body, "strongest_remaining_check": None}
+    return body
 
 
 def _separate_verified(body: dict[str, JsonValue]) -> tuple[dict[str, JsonValue], int]:
