@@ -97,7 +97,8 @@ def test_step_zero_does_not_use_resources_list_for_discovery() -> None:
     assert "Do not call `resources/list` or `list_mcp_resources`" in collapsed
     # #1054 dropped "The five index URIs are the complete legacy catalog" from the card; the
     # initialize bodies name every URI and say not to list resources (re-pinned in tb4n5, P11).
-    assert "Focused topics by trigger:" in collapsed
+    # #1210 shortened the card's routing line to "By trigger:" to stay within the startup budget.
+    assert "By trigger: failure `recovery.md`" in collapsed
     assert "a list failure is not a missing server or reason to read product source" in collapsed
 
 
@@ -152,7 +153,9 @@ def test_installed_guidance_links_and_explicit_anchors_resolve(host: str, tmp_pa
         card = " ".join(documents[str(root / "agent-instructions.md")].split())
         for surface in (skill, card, review):
             assert "A finding is evidence, not an order." in surface
-        assert "follow [the finding procedure](review.md)" in card
+        # #1210 dropped the inline link to fit the startup budget; the card still routes findings
+        # to the procedure through its "By trigger" line.
+        assert "finding, deadline, `delivery_page` or `not_in_frozen_case` `review.md`" in card
         for directive in (
             "1. Re-read the task and supplied inputs.",
             "2. Read both interpretations and their evidence.",
@@ -170,7 +173,8 @@ def test_installed_guidance_links_and_explicit_anchors_resolve(host: str, tmp_pa
             "**Done.** Stop when outcomes",
             "A signal does not prove completion or verification.",
             "Use only stated timing.",
-            "a finding prefers a reference the task did not supply",
+            # #1210 dropped the illustrative example ("a finding prefers a reference the task did not
+            # supply") to keep review.md within its one-page bound; directive 4 above pins the rule.
         ):
             assert required in review
     for name, text in documents.items():
