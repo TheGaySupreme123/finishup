@@ -1037,6 +1037,19 @@ String1To32768 = Annotated[str, Field(min_length=1, max_length=32768)]
 # W6 (ADR-043 amendment): the service-composed lead of a check result. One printable ASCII line
 # of closed sentences and admitted ids, at most 2,048 bytes, so it stays in Codex's head window.
 AgentNextTextWire = Annotated[str, Field(min_length=1, max_length=2048, pattern=r"^[ -~]+$")]
+# #1139: the counted decision-point ledger line (``domain.decision_status``): fixed words, counts and
+# service-minted obligation ids, never participant text.
+AgentStatusLineWire = Annotated[
+    str,
+    Field(
+        min_length=1,
+        max_length=2048,
+        pattern=(
+            r"^Ledger \(records, not correctness\): [a-z0-9_ ,;:()+-]{1,1900}"
+            r"per-obligation detail: status view=obligations\.$"
+        ),
+    ),
+]
 TaskStatementWire = Annotated[str, Field(min_length=1, max_length=MAX_TASK_STATEMENT_BYTES)]
 CursorWire = Annotated[str, Field(min_length=1, max_length=4096, pattern=r"^[A-Za-z0-9_-]+$")]
 SchemaNameWire = Annotated[str, Field(pattern=r"^[a-z][a-z0-9_]{0,63}$")]
@@ -4720,6 +4733,7 @@ class CheckSuccessModel(_ClosedModel):
         {
             "review_delivery",
             "agent_next",
+            "agent_status_line",
             "observations_awaited",
             "children",
             "advisory_notes",
@@ -4765,6 +4779,9 @@ class CheckSuccessModel(_ClosedModel):
     # keeps this declaration order and Codex shows a model only the head and tail of a large
     # structured result. A new bulky field goes after ``missing_for_assessment``.
     agent_next: AgentNextTextWire | None = None
+    # #1139: the counted ledger line at the decision point (a copy of
+    # ``closure_readiness.evidence_basis_summary``), early in wire order and in sorted order.
+    agent_status_line: AgentStatusLineWire | None = None
     overall_next: CheckOverallNextModel | None = None
     # Fixed FinishUP wording, never reviewer prose; keep it ahead of bulky review fields.
     review_guidance: Annotated[ReviewGuidance, Field(strict=False)] | None = None
@@ -7382,6 +7399,9 @@ class StatusSuccessModel(_ClosedModel):
         "results",
         "versions",
     ]
+    # #1139: the counted ledger line at the decision point (a copy of
+    # ``closure_readiness.evidence_basis_summary``), early in wire order and in sorted order.
+    agent_status_line: AgentStatusLineWire | None = None
     requested_frontier: FrontierModel
     head_frontier: FrontierModel
     subject_frontier: FrontierModel
@@ -7473,6 +7493,7 @@ class StatusBriefSuccessModel(_ClosedModel):
 
     optional_non_null_fields = frozenset(
         {
+            "agent_status_line",
             "requested_frontier",
             "head_frontier",
             "subject_frontier",
@@ -7512,6 +7533,7 @@ class StatusBriefSuccessModel(_ClosedModel):
         "results",
         "versions",
     ]
+    agent_status_line: AgentStatusLineWire | None = None
     requested_frontier: FrontierModel | None = None
     head_frontier: FrontierModel | None = None
     subject_frontier: FrontierModel | None = None
@@ -8269,6 +8291,7 @@ _CHECK_STRUCTURAL_POINTERS: Final = (
         # W6 (ADR-043 amendment): service-composed from closed sentences and admitted ids, like
         # ``/continuation/instruction``; never reviewer prose, task text, paths or commands.
         "/agent_next",
+        "/agent_status_line",
         "/review_guidance",
         "/overall_next/action",
         "/overall_next/acknowledged_incomplete_endpoint",
@@ -8491,6 +8514,8 @@ _STATUS_COMMON_STRUCTURAL_POINTERS: Final = (
         "/closure_state/fix_or_decline/*/obligation_id",
         "/closure_state/state",
         "/detail",
+        # #1139: fixed words, counts and service-minted obligation ids only.
+        "/agent_status_line",
         "/gaps/*",
         "/projection_lag",
         "/projection_version",
@@ -9661,7 +9686,7 @@ def _build_result_leaf_rules() -> tuple[_ResultLeafRule, ...]:
         ):
             raise RuntimeError("invalid_result_leaf_classification")
     if (
-        len(result) != 2063
+        len(result) != 2065
     ):  # ... #1017 +3, #1027 +5, tb4n3 LO +9, W2-A +46, LF +34 (fact_lineage), W2-B +2,
         # tb4n4 #1044 +7 (closure_readiness.undeclared_references), #1048 +38 (inspection),
         # #1047 +2 (follow_up_round), tb4n5 +3 (publish action_notices),
@@ -9681,6 +9706,7 @@ def _build_result_leaf_rules() -> tuple[_ResultLeafRule, ...]:
         # #1162 tracked advice +13 (check advisory rows; readiness counts on check and status),
         # +3 (operation check_outcome advisory identities, PR #1214 review);
         # #975 +46 draft receipt (21 structural and 2 content leaves, each on check and status).
+        # #1139 +2 agent_status_line (check and status).
         raise RuntimeError("incomplete_result_leaf_registry")
     return result
 

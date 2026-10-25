@@ -43,8 +43,8 @@ _STATUS_LIVE_FIELDS: Final = (
 _REQUIRED_NEXT_STEP: Final = (
     "Until actionable_complete=true, call status view=compact delivery_cursor=next_cursor with "
     "the same session_id/writer_id. Rebuild containers and fragments (path, offsets, digest) "
-    "before acting; then follow agent_next and inventory_read. Later pages are optional "
-    "provenance. AI-powered review is advisory, not proof."
+    "before acting; then follow agent_next and inventory_read. Pages after actionable_complete "
+    "hold provenance. AI-powered review is advisory, not proof."
 )
 _ACTION_KEYS: Final = (
     "finding_id",
@@ -235,6 +235,31 @@ def _page_projection(projection: Mapping[str, JsonValue]) -> dict[str, JsonValue
     return carried
 
 
+# A readiness field at most this size is a decision field (state, counts, the ledger line).
+_DECISION_FIELD_BYTES: Final = 512
+
+
+def _small_fields_first(
+    path: str, value: Mapping[str, JsonValue], limit: int
+) -> list[dict[str, JsonValue]]:
+    """An oversized object's small fields before its large ones (#1139), each group in key order.
+
+    Object members reassemble in any order after the container marker; the order depends only on
+    content, so the page partition stays independent of mapping insertion order.
+    """
+
+    atoms = _atoms(path, value, limit)
+    if len(atoms) == 1:
+        return atoms
+    keys = sorted(value, key=str.encode)
+    ordered = sorted(
+        keys, key=lambda k: len(canonical_encode(value[k])) > _DECISION_FIELD_BYTES
+    )  # stable: key order within each group
+    return [atoms[0]] + [
+        atom for k in ordered for atom in _atoms(path + "/" + _pointer(k), value[k], limit)
+    ]
+
+
 def _delivery_groups(
     source: Mapping[str, JsonValue], limit: int = _ATOM_BYTES, *, top: bool = True
 ) -> tuple[list[dict[str, JsonValue]], int]:
@@ -254,8 +279,15 @@ def _delivery_groups(
         "semantic_status",
         "semantic_reason",
         "agent_next",
+        # #1139: the counted ledger line, readiness and totals are what the agent decides on, so
+        # they precede reviewer prose. The small ones lead; readiness's large lists (64 obligations
+        # with every acceptance-risk reason can pass a page) follow, still actionable.
+        "agent_status_line",
         "overall_next",
         "review_guidance",
+        "closure_state",
+        "totals",
+        "closure_readiness",
         # #1162 tracked advice: the advisory identities respond answers are actionable.
         "correctness_advisories",
         "review_summary",
@@ -263,16 +295,19 @@ def _delivery_groups(
         "human_text",
         "coverage",
         "gaps",
-        "closure_readiness",
-        "closure_state",
         "finding_checklist",
         "suppressed_count",
         "suppressed_finding_count",
         "semantic_withheld_items",
         "semantic_redacted_values",
     ):
-        if key in source:
-            primary.extend(atoms("/" + key, source[key]))
+        if key not in source:
+            continue
+        value = source[key]
+        if key == "closure_readiness" and isinstance(value, Mapping):
+            primary.extend(_small_fields_first("/" + key, value, limit))
+        else:
+            primary.extend(atoms("/" + key, value))
     handled = {atom["path"].split("/")[1] for atom in primary if isinstance(atom["path"], str)}
     for key in sorted(source, key=str.encode):
         value = source[key]

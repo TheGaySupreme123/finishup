@@ -27,6 +27,7 @@ from finishup.domain.correctness_advisories import (
     TRACKED_ADVICE_FAMILIES,
     validate_advisories,
 )
+from finishup.domain.decision_status import safe_status_line
 from finishup.domain.events import (
     MAX_SEMANTIC_INCLUDED_REFS,
     MAX_UNDECLARED_REFERENCES,
@@ -862,6 +863,13 @@ def check_internal_json(result: CheckCommitResult) -> dict[str, JsonValue]:
         # W6 (ADR-043 amendment): the bounded lead every host reads first, derived here so the
         # MCP result, CLI JSON, an import's check result and a status recovery read agree.
         **({} if not (agent_next := _agent_next(result)) else {"agent_next": agent_next}),
+        # #1139: the counted ledger line from the attached readiness, early for every host.
+        **(
+            {"agent_status_line": line}
+            if result.closure_readiness is not None
+            and (line := safe_status_line(result.closure_readiness.get("evidence_basis_summary")))
+            else {}
+        ),
         **(
             {}
             if result.review_input_manifest is None

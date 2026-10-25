@@ -478,6 +478,9 @@ def render_human_check(result: CheckSuccessModel) -> str:
                 else "Hook observations awaited: unavailable (local outbox not readable)"
             ),
         )
+    if result.closure_readiness is not None and result.closure_readiness.evidence_basis_summary:
+        # #1139: the counted ledger line leads, after the verdict and before findings and prose.
+        lines.insert(2, result.closure_readiness.evidence_basis_summary)
     if result.review_input_manifest is not None:
         compat_line = render_review_input_manifest_compat_line(
             result.review_input_manifest.model_dump(mode="json", by_alias=True)
@@ -505,8 +508,6 @@ def render_human_check(result: CheckSuccessModel) -> str:
         # #1145: a routine note's id (a reviewer counter-example) is named only here on a check.
         if result.closure_readiness.correctness_advisory_summary:
             lines.append(result.closure_readiness.correctness_advisory_summary)
-        if result.closure_readiness.evidence_basis_summary:
-            lines.append(result.closure_readiness.evidence_basis_summary)
         # Issue #975: the draft receipt a ready check shows before the final receipt.
         lines.extend(draft_receipt_lines(result.closure_readiness))
     if result.finding_checklist is not None:
@@ -695,6 +696,8 @@ def render_closure_readiness_lines(readiness: StatusClosureReadinessModel) -> tu
         return ()  # A result shaped by an earlier build carries no checklist.
     lines = [
         f"Closure: {readiness.state}",
+        # #1139: the counted ledger line first, then the directive, then the draft receipt.
+        readiness.evidence_basis_summary or "",
         readiness_directive(
             readiness.state,
             standing=len(readiness.standing_limitations),
@@ -776,9 +779,7 @@ def render_closure_readiness_lines(readiness: StatusClosureReadinessModel) -> tu
         )
     if readiness.correctness_advisory_summary:
         lines.append(readiness.correctness_advisory_summary)
-    if readiness.evidence_basis_summary:
-        lines.append(readiness.evidence_basis_summary)
-    return tuple(lines)
+    return tuple(line for line in lines if line)
 
 
 _FILTER_WORDS: Final = {"enforced": "on", "disabled": "off", "unknown": "unknown"}

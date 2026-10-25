@@ -3087,6 +3087,13 @@ keep the full local view. Restart expires cursors; recover through current statu
 starting a new review. A revoked route, changed sink/content, or expired retained source also
 requires current status.
 
+
+**Decision-point ledger line (#1139, 2026-10-25). Host decision: supported.** Cursor reads the
+sorted canonical copy: `agent_status_line` sorts right after `agent_next` on a check and first on
+status, ahead of every reviewer field; paging places it, `closure_readiness` and `totals` before
+reviewer prose (`tests/unit/mcp/test_codex_structured_head.py::test_ledger_line_leads_status_text_and_sorted_copy`).
+Not re-dogfooded natively; offline emulation only.
+
 ### Verification freshness decisions (#1143)
 
 All hosts use ADR-042's per-verification input rule. A trusted workspace comparison retains

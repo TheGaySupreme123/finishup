@@ -18,6 +18,7 @@ from finishup.domain.bounded_text import (
     list_variants,
 )
 from finishup.domain.closure import PREPARATION_REMEDIATIONS
+from finishup.domain.decision_status import find_status_line
 from finishup.domain.findings import FINDING_KIND_TRAITS, FindingKind
 from finishup.domain.receipts import (
     COORDINATOR_FAILURE_LIMITATION,
@@ -1721,14 +1722,18 @@ def _evidence_basis_variants(source: Mapping[str, JsonValue]) -> tuple[str, ...]
     document = source.get("document")
     if isinstance(document, Mapping):
         sections = document.get("sections")
-        if isinstance(sections, list | tuple) and any(
-            isinstance(row, Mapping)
-            and row.get("key") == "evidence_and_claim_basis"
-            and isinstance(row.get("body"), str)
-            and "Recorded evidence links: status view=obligations." in str(row.get("body"))
-            for row in sections
-        ):
-            return variants
+        for row in sections if isinstance(sections, list | tuple) else ():
+            if not isinstance(row, Mapping) or row.get("key") != "evidence_and_claim_basis":
+                continue
+            body = row.get("body")
+            # #1139: the receipt's counted ledger line, re-gated before it is echoed.
+            if line := find_status_line(body):
+                return (line, *variants)
+            if (
+                isinstance(body, str)
+                and "Recorded evidence links: status view=obligations." in body
+            ):
+                return variants
     return ()
 
 

@@ -10823,9 +10823,16 @@ Wire (the earlier checklist fields remain available in their original versions):
   instruction (`domain.review_input_render.OVERALL_NEXT_INSTRUCTIONS`, also the CLI's `Overall
   next` line) and its targets. It is absent whenever `overall_next` is absent, and omitted (never
   null) if composition fails.
-  Field order on the MCP wire is `... verdict, agent_next, overall_next, missing_for_assessment,
-  findings, ...`: the continuation precedes every bulky field (Codex shows a model only the head and
-  tail of a large structured result), and a new bulky field goes after `missing_for_assessment`.
+  Field order on the MCP wire is `... verdict, agent_next, agent_status_line, overall_next,
+  missing_for_assessment, findings, ...`: the continuation precedes every bulky field (Codex shows a
+  model only the head and tail of a large structured result), and a new bulky field goes after
+  `missing_for_assessment`.
+- `agent_status_line` (check-result 1.6.0/1.7.0 and status-result 1.4.0/1.5.0 full and brief
+  successes, optional, omitted rather than null; #1139, ADR-043 amendment of 2026-10-25) repeats
+  `closure_readiness.evidence_basis_summary`, the counted decision-point ledger line, early in wire
+  order and in sorted order. Its pattern admits only `Ledger (records, not correctness): ` + closed
+  lower-case words, counts and `obl_` ids + `per-obligation detail: status view=obligations.`; it
+  states records, never correctness.
   Canonical vectors: `fixtures/canonical/check-agent-next-1.5.0.case.json` (AGN-001).
 - Stable identity: a challenge whose kind matches a recorded AI-powered finding, whose subject
   set is exactly that finding's (the receipt's issue key), and none of whose subjects was recorded
@@ -12761,8 +12768,9 @@ its complete `value`. A `container` marker initializes an object or array before
 paths; its `value=null` is a marker, not the original field value. An optional `fragment` identifies an oversized scalar's Unicode scalar
 offsets (`unit=unicode_scalar`), original length, digest and final fragment. Reconstruct it before acting; a fragment is never a preview.
 `truncated=true` reports deferred source content; `complete=true` and `next_cursor=null` mark the
-last emitted page of this source result. `actionable_complete` ends its action fields; remaining
-result pages are optional provenance. `inventory_read`, when present, names the required separate
+last emitted page of this source result. `actionable_complete` ends its action fields (since #1139's 2026-10-25 amendment
+these include `agent_status_line`, `closure_state`, `totals` and then `closure_readiness`, whose
+small fields precede its large lists, all ahead of reviewer prose); remaining result pages hold provenance. `inventory_read`, when present, names the required separate
 findings read or next inventory page. Inspect the original `suppressed_count`, receipt inventory
 limits, and `/page/next_cursor` separately: result delivery does not erase inventory pagination.
 
@@ -12907,8 +12915,16 @@ Reviewer obligation metadata yields at 4 KiB without replacing the criterion; pa
 shares the existing prior-history budget and discloses selection omissions. Freshness uses the
 existing judged-run set and per-run rows; an unjudged run remains `legacy`, never implicitly current.
 
-Shared closure readiness supplies the compact `evidence_basis_summary` pointer for CLI/MCP check
-and status, TUI closure views, and an already-required Stop continuation. Current receipt JSON,
-markdown and text carry it in their evidence section. It creates no calls, events, storage or Stop
+Shared closure readiness supplies `evidence_basis_summary` for CLI/MCP check and status, TUI
+closure views, and an already-required Stop continuation. Since #1139 (ADR-043 amendment of
+2026-10-25) it is a counted line, not a fixed pointer: obligations by status, each one's newest
+linked result (success, failed or partial, stale, possibly stale, unknown outcome, no linked run),
+requested items unattempted (the `requested_item_never_attempted` attempt test: same-path files
+and hook-observed planned commands count, input items are never owed; `totals` keeps its exact-value
+count), every `not_supported`/`not_assessable` verified row of the current check (uncapped),
+unanswered advice and open `fix_or_decline` items, zero-count parts omitted and at most two
+obligation ids per part, ending with this view as the detail pointer; check and status successes
+also carry it as `agent_status_line`. Current receipt JSON, markdown and text carry its short form
+(ledger counts only) in their evidence section. It creates no calls, events, storage or Stop
 condition. Codex, Claude Code and Cursor consume these same result paths; offline fixtures do not
 establish native host execution or platform parity.

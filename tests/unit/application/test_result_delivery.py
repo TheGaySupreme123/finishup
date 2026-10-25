@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import copy
+import json
 from typing import Any, Literal, cast
 
 import pytest
@@ -1394,3 +1395,121 @@ async def test_brief_status_pages_survive_an_append_between_reads(view: str) -> 
         } | {"request_id": rebuilt["request_id"]}
     finally:
         await daemon.close()
+
+
+_LEDGER_LINE = (
+    "Ledger (records, not correctness): 7 obligations (5 resolved, 2 open); latest linked run: "
+    "5 success, 1 failed or partial (obl_00000000-0000-4000-8000-000000000c04), 1 stale "
+    "(obl_00000000-0000-4000-8000-000000000c02); 1 requested item unattempted "
+    "(obl_00000000-0000-4000-8000-000000000c02); reviewer (current check): 1 not supported, "
+    "2 not assessable; advice unanswered: 2; fix-or-decline: 2; per-obligation detail: status "
+    "view=obligations."
+)
+
+
+@pytest.mark.parametrize("host", ["codex", "claude", "cursor", "generic"])
+def test_ledger_line_readiness_and_totals_lead_the_first_page(host: McpHostProfile) -> None:
+    """#1139: what the agent decides on precedes reviewer prose and stays on page one."""
+
+    source = _source()
+    source["agent_status_line"] = _LEDGER_LINE
+    source["closure_readiness"] = {
+        "state": "action_required",
+        "evidence_basis_summary": _LEDGER_LINE,
+        "fact_lineage": [{"code": f"gap_{n}", "rule": "deliverable_read"} for n in range(40)],
+    }
+    source["totals"] = {"obligations": {"declared": "7", "resolved": "5", "open": "2"}}
+    source["correctness_advisories"] = [
+        {
+            "advisory_id": "evt_00000000-0000-4000-8000-000000000042:1",
+            "origin": "strongest_remaining_check",
+            "subject_refs": ["obl_00000000-0000-4000-8000-000000000c04"],
+            "summary": "Run the discriminating probe. " * 30,
+        }
+    ]
+    source["review_summary"] = "Reviewer prose. " * 400
+    pages = _pages(source)
+    assert len(pages) > 1
+    first = pages[0]
+    paths = [str(item["path"]) for item in first["items"]]
+
+    def at(prefix: str) -> int:
+        return next(index for index, path in enumerate(paths) if path.startswith(prefix))
+
+    assert at("/agent_next") < at("/agent_status_line") < at("/totals")
+    assert at("/totals") < at("/closure_readiness") < at("/correctness_advisories")
+    assert "/review_summary" not in paths or at("/totals") < at("/review_summary")
+    assert "optional" not in first["required_next_step"]
+    result = result_from_public_model(CheckResultModel.model_validate(first), host_profile=host)
+    structured = cast(dict[str, Any], result.structuredContent)
+    text = "".join(cast(Any, block).text for block in result.content)
+    codex = json.dumps(structured, separators=(",", ":"), ensure_ascii=False)
+    # Within Codex's 6,000-byte head (the page itself fits its 12,000-byte window) and the text.
+    assert json.dumps(_LEDGER_LINE) in (_CODEX_HEADER + codex)[:6_000]
+    assert _LEDGER_LINE in text
+    assert reassemble_delivery(pages)["agent_status_line"] == _LEDGER_LINE
+
+
+def test_decision_fields_stay_on_page_one_beside_a_maximal_readiness() -> None:
+    """#1139 (PR #1216 review): 64 resolved obligations each with all three acceptance-risk
+    reasons push readiness past a page; the ledger line, totals and readiness's small fields stay
+    on page one, and advisory ids still arrive by ``actionable_complete``."""
+
+    source = _source()
+    source["agent_status_line"] = _LEDGER_LINE
+    reasons = [
+        "requested_item_never_attempted",
+        "evidence_not_linked_to_declared_items",
+        "evidence_self_asserted_only",
+    ]
+    source["closure_readiness"] = {
+        "state": "ready_with_limitations",
+        "evidence_basis_summary": _LEDGER_LINE,
+        "open_obligation_count": "0",
+        "acceptance_risk": [
+            {"obligation_id": f"obl_00000000-0000-4000-8000-{n:012x}", "reasons": reasons}
+            for n in range(1, 65)
+        ],
+        "fix_or_decline": [
+            {
+                "code": "requested_output_unchanged",
+                "obligation_id": f"obl_00000000-0000-4000-8000-{n:012x}",
+            }
+            for n in range(1, 65)
+        ],
+    }
+    assert len(canonical_encode(cast(Any, source["closure_readiness"]))) > 12_000
+    groups = ("obligations", "requested_items", "commands", "findings")
+    source["totals"] = {group: {"declared": "64", "open": "0"} for group in groups}
+    advisory_ids = [f"evt_00000000-0000-4000-8000-000000000042:{n}" for n in range(1, 11)]
+    source["correctness_advisories"] = [
+        {
+            "advisory_id": advisory_id,
+            "origin": "verified_not_supported",
+            "subject_refs": ["obl_00000000-0000-4000-8000-000000000005"],
+            "summary": "Run the discriminating probe. " * 6,
+        }
+        for advisory_id in advisory_ids
+    ]
+    pages = _pages(source)
+    first = [str(item["path"]) for item in pages[0]["items"]]
+    for path in (
+        "/agent_status_line",
+        "/totals",
+        "/closure_readiness",
+        "/closure_readiness/state",
+        "/closure_readiness/evidence_basis_summary",
+        "/closure_readiness/open_obligation_count",
+    ):
+        assert path in first, path
+    assert first.index("/totals") < first.index("/closure_readiness")
+    last_actionable = next(index for index, page in enumerate(pages) if page["actionable_complete"])
+    assert last_actionable > 0  # the readiness list really spans pages
+    actionable = canonical_encode(
+        cast(Any, [item for page in pages[: last_actionable + 1] for item in page["items"]])
+    )
+    for advisory_id in advisory_ids:
+        assert advisory_id.encode() in actionable
+    rebuilt = reassemble_delivery(pages)
+    assert rebuilt["closure_readiness"] == source["closure_readiness"]
+    assert rebuilt["totals"] == source["totals"]

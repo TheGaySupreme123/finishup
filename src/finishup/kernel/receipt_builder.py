@@ -156,7 +156,7 @@ from finishup.kernel.deterministic_checks import (
     CaseGap,
 )
 from finishup.kernel.deterministic_scope import commands_complete
-from finishup.kernel.evidence_basis import evidence_basis_summary
+from finishup.kernel.evidence_basis import decision_status_line
 from finishup.kernel.fact_lineage import FactLineage, lineage_texts
 from finishup.kernel.finding_resolution import (
     finding_resolution_explanation,
@@ -3128,8 +3128,11 @@ def build_receipt(
             else ""
         ),
         correctness_advisory_items=advisory_render[0],
+        # #1139: the short counted ledger line; the receipt's own sections carry the rest.
         evidence_basis_summary=(
-            evidence_basis_summary(context.projection) if settles_rejections else ""
+            decision_status_line(context.projection, context.records, reviewer=False)
+            if settles_rejections
+            else ""
         ),
         correctness_advisory_omitted=advisory_render[1],
         attempt_explanations=tuple(

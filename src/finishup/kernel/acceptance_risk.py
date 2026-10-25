@@ -63,6 +63,7 @@ __all__ = [
     "EVIDENCE_SELF_ASSERTED_ONLY",
     "ITEM_NEVER_ATTEMPTED",
     "acceptance_risk",
+    "unattempted_requested_items",
 ]
 
 ITEM_NEVER_ATTEMPTED: Final = "requested_item_never_attempted"
@@ -184,6 +185,45 @@ def _read_index(projection: ProjectionState, records: tuple[LedgerRecord, ...]) 
     )
 
 
+def _unattempted_count(
+    index: _ReadIndex, obligation: ObligationId, payload: ObligationPublishedPayload
+) -> int:
+    """Requested non-input items the ``requested_item_never_attempted`` rule finds unattempted."""
+
+    attempted = index.global_attempted | index.attempted_by_obligation.get(obligation, frozenset())
+    return sum(
+        not _item_attempted(item, attempted, index.matched_commands)
+        for item in payload.requested_items
+        if item.role is not RequestedItemRole.INPUT
+    )
+
+
+def unattempted_requested_items(
+    projection: ProjectionState,
+    records: tuple[LedgerRecord, ...],
+    obligations: Iterable[ObligationId],
+) -> tuple[tuple[ObligationId, int], ...]:
+    """``(obligation, count)`` of unattempted requested items, by the rule above (#1139).
+
+    The same attempt test as ``requested_item_never_attempted``: an exact or same-path attempted
+    item, or for a command an observed planned-command match; an input item is never owed. Only
+    obligations with a count are listed, in the given order; unreadable payloads are skipped.
+    """
+
+    counted: list[tuple[ObligationId, int]] = []
+    index: _ReadIndex | None = None
+    for obligation in obligations:
+        record = projection.obligations.get(obligation)
+        payload = None if record is None else record.payload
+        if payload is None or not payload.requested_items:
+            continue
+        if index is None:
+            index = _read_index(projection, records)
+        if missing := _unattempted_count(index, obligation, payload):
+            counted.append((obligation, missing))
+    return tuple(counted)
+
+
 def _reasons(
     projection: ProjectionState,
     records: tuple[LedgerRecord, ...],
@@ -192,12 +232,7 @@ def _reasons(
     payload: ObligationPublishedPayload,
 ) -> tuple[str, ...]:
     reasons: list[str] = []
-    attempted = index.global_attempted | index.attempted_by_obligation.get(obligation, frozenset())
-    if any(
-        not _item_attempted(item, attempted, index.matched_commands)
-        for item in payload.requested_items
-        if item.role is not RequestedItemRole.INPUT
-    ):
+    if _unattempted_count(index, obligation, payload):
         reasons.append(ITEM_NEVER_ATTEMPTED)
     declared = declared_items(payload)
     sources = evidence_sources(

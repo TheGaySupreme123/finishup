@@ -40,6 +40,7 @@ from finishup.application.status_faults import (
     status_stage,
 )
 from finishup.application.task_views import LineageStatusSnapshot, ProjectStatusSnapshot
+from finishup.domain.decision_status import safe_status_line
 from finishup.domain.events import (
     AcceptedEvent,
     ActionRecordedPayload,
@@ -339,6 +340,12 @@ class StatusInternalResult:
             "session_id": self.session_id,
             "writer_id": self.writer_id,
             "view": self.view,
+            # #1139: the counted ledger line, early for every host (a readiness copy).
+            **(
+                {"agent_status_line": self.closure_readiness.evidence_basis_summary}
+                if safe_status_line(self.closure_readiness.evidence_basis_summary)
+                else {}
+            ),
             "requested_frontier": dict(self.requested_frontier.as_wire().items()),
             "head_frontier": dict(self.head_frontier.as_wire().items()),
             "subject_frontier": dict(self.subject_frontier.as_wire().items()),
@@ -408,6 +415,8 @@ def brief_status_body(full: Mapping[str, JsonValue]) -> dict[str, JsonValue]:
 
     body: dict[str, JsonValue] = {key: full[key] for key in _BRIEF_ALWAYS}
     body["detail"] = "brief"
+    if "agent_status_line" in full:
+        body["agent_status_line"] = full["agent_status_line"]
     result_frontier = full["result_frontier"]
     for key in ("requested_frontier", "head_frontier", "subject_frontier"):
         if full.get(key) != result_frontier:
@@ -2194,10 +2203,18 @@ async def _closure_readiness(
         )
     )
     if loaded is not None:
-        from finishup.kernel.evidence_basis import evidence_basis_summary
+        from finishup.kernel.evidence_basis import decision_status_line
 
-        if summary := evidence_basis_summary(loaded.projection):
-            optional_fields["evidence_basis_summary"] = summary
+        # #1139: the counted decision-point line (records, not correctness); the result also
+        # carries it early as ``agent_status_line``.
+        counts = cast(Mapping[str, str], optional_fields.get("correctness_advisory_counts", {}))
+        if line := decision_status_line(
+            loaded.projection,
+            loaded.records,
+            fix_or_decline=len(checklist.fix_or_decline),
+            advice_unanswered=int(counts.get("no_recorded_response", "0")),
+        ):
+            optional_fields["evidence_basis_summary"] = line
     predicted = optional_fields.get("predicted_receipt")
     if (
         loaded is not None
