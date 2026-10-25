@@ -309,7 +309,7 @@ SUPPLY_COUNTS_SENTENCE: Final = (
     "reviewer. A respond to anything else, a description, or citing the old record again does "
     "not count. Without a target, publish new material of the requested kind."
 )
-SUPPLY_COUNTS_SHORT: Final = "Only new material counts; tie it to any named target."
+SUPPLY_COUNTS_SHORT: Final = "Only new material counts."
 # The same sentence as the operating card, the receipt topic and the coverage page (issue #1079).
 MISSING_SUPPLY_SENTENCE: Final = (
     "If `missing_for_assessment` names an `agent_suppliable` item you can supply, publish "
