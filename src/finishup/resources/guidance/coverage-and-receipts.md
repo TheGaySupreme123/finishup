@@ -647,7 +647,7 @@ clean verification; existing findings and coverage limitations remain.
 If `missing_for_assessment` names an `agent_suppliable` item you can supply, publish exactly that
 item once, linked to any named target, then `check` again. If it is already supplied, or it is a
 packet, type or authority limit, go to the receipt and state that specific limit. Only new material
-counts; tie it to any named target. The item classes are `agent_suppliable`, `structurally_unavailable_on_this_host` and FinishUP
+counts. The item classes are `agent_suppliable`, `structurally_unavailable_on_this_host` and FinishUP
 limits (`semantic_missing_agent_suppliable`, `semantic_missing_structurally_unavailable`,
 `semantic_missing_yoetz_limit`). A `yoetz_limit_*` item is not repair work or a blocker.
 Never reshape a deliverable for review or use a `deterministic_only` fallback for
