@@ -3183,6 +3183,8 @@ records, not correctness. Cursor reads it in the alphabetically sorted JSON unde
 earlier review also asks whether a repair withholds a requested output (an ID'd finding).
 See [the result recipe](../../guidance/request-templates.md#publish-work-result).
 
+**Declared test reads (#1220, 2026-10-25). Host decision: shared service support.** When a manifest names its `test_file`, the closing review (and the first review after that file is new or changed) lists up to three such files by path, check-time digest and criterion ref, and the reviewer may read one through `read_file` root `t1` (`path=dt<n>`, at most 4 KiB, refused if the file changed), even outside the workspace. Nothing here is host-specific: Cursor needs no new capture or setting, and the check result's review input manifest says `test_check_offered` on every host. Listed only when the review offers reads, repository excerpts are allowed and the list fits (never at the minimal policy). See ADR-006 and ADR-009, 2026-10-25 (#1220).
+
 This shared transport decision applies on macOS, Linux and Windows through WSL 2. Native host and
 platform execution is not established by the shared contract tests; issue #1182 owns that follow-up.
 

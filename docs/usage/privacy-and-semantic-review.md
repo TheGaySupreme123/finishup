@@ -247,6 +247,26 @@ is now because no copy exists, the check and the receipt say so with
 `task_input_baseline_unavailable`. Removing a folder also stops its copies and any already-read
 bytes from being sent, including for a check already under way, unless they had already left.
 
+#### Test files your agent declares
+
+When your agent records a test result and names the test file that produced it, the closing
+review (and the first review after that file appears or changes) lists up to three such files:
+their path, a fingerprint of their content taken when the check ran, and the requirement they
+test. The reviewer can then read one of them, in pieces of at most 4 KB, to judge whether the
+test's expected values come from the task or merely copy the implementation. This works even when
+the file is outside your repository, for example in `/tmp`, because your agent named that exact
+file; it is the only kind of file outside your repository that review reads without an admitted
+folder.
+
+The same limits as every other file apply: never a hidden, credential-named, system or FinishUP
+file, never through a link, only text, and always the same redaction and never-send checks; a read
+that holds anything that looks like a secret is withheld whole. If the file has changed since it
+was listed, nothing of it is sent and the reviewer is told it could not see the file. It happens
+only when your review policy already lets the reviewer read repository files and does not ask you
+before every request, and only when the review has room for it, so the smallest policies never
+list these files. Receipts show such a read as its own category, `declared_test_excerpt`. To stop
+it, turn off AI-powered review or withhold repository excerpts; there is no separate switch.
+
 When the task names a file or folder outside your workspace that you have not admitted, and
 FinishUP can tell it is an input, the check and the receipt say so with
 `task_input_outside_not_admitted`: the reviewer judged the work without it. FinishUP can tell only

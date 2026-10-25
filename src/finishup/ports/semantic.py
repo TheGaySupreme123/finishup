@@ -38,6 +38,7 @@ from finishup.domain.values import (
     validate_commitment,
     validate_sha256_digest,
 )
+from finishup.kernel.declared_tests import MAX_DECLARED_TESTS, DeclaredTest
 from finishup.kernel.deterministic_checks import (
     DeterministicAssessment,
     FindingFact,
@@ -421,6 +422,9 @@ _ASSESSMENT_KIND_ORDER: Final = {
 
 if frozenset(VALID_SEMANTIC_REASONS) != frozenset(SemanticStatus):
     raise RuntimeError("semantic_status_registry_incomplete")
+
+
+_SHA256: Final = re.compile(r"sha256:[0-9a-f]{64}")
 
 
 def _invalid_case() -> ValueError:
@@ -1209,9 +1213,24 @@ class ReviewInputManifest:
     # ``MAX_REVIEW_FOLLOW_UP_ROUNDS``); ``None`` for the check's own first packet. A follow-up
     # manifest's ``missing_inputs`` lists the reviewer's request FinishUP answered from its records.
     follow_up_round: int | None = None
+    # Issue #1220: this packet listed the agent's declared tests and asked the declared-test
+    # question; ``test_check_digests`` are the listed files' pinned digests, so a later review
+    # never offers an unchanged one again. Both absent on every other manifest.
+    test_check_offered: bool = False
+    test_check_digests: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         if self.schema != "yoetz.review-input-manifest/1":
+            raise _invalid_case()
+        if (
+            type(self.test_check_offered) is not bool
+            or type(self.test_check_digests) is not tuple
+            or self.test_check_offered != bool(self.test_check_digests)
+            or len(self.test_check_digests) > MAX_DECLARED_TESTS
+            or self.test_check_digests
+            != tuple(sorted(set(self.test_check_digests), key=str.encode))
+            or any(_SHA256.fullmatch(str(value)) is None for value in self.test_check_digests)
+        ):
             raise _invalid_case()
         if self.review_phase not in {None, "routine", "final"}:
             raise _invalid_case()
@@ -1335,8 +1354,17 @@ class ReviewPacket:
     # Metadata-only coverage for the exact input families considered by this check (#951).
     input_manifest: ReviewInputManifest | None = None
     verification_coverage_item_ids: tuple[str, ...] = ()
+    # Issue #1220: the agent's declared tests this packet lists (structural metadata: path,
+    # pinned digest, criterion ref; never content). Empty on every packet that offers none.
+    declared_tests: tuple[DeclaredTest, ...] = ()
 
     def __post_init__(self) -> None:
+        if (
+            type(self.declared_tests) is not tuple
+            or len(self.declared_tests) > MAX_DECLARED_TESTS
+            or any(type(item) is not DeclaredTest for item in self.declared_tests)
+        ):
+            raise _invalid_case()
         object.__setattr__(
             self,
             "verification_coverage_item_ids",

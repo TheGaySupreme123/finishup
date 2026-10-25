@@ -1525,3 +1525,55 @@ admit a root. ADR-031's amendment of the same date holds the read; ADR-006's hol
 
 The behaviour is service-side and identical for Codex, Claude Code and Cursor on macOS, Linux and
 Windows through WSL 2.
+
+## The reviewer may read the agent's declared test files (2026-10-25, issue #1220)
+
+Maintainer approved on 2026-10-25 (#1220, option "Declared file only, scanned"): a scanned excerpt
+of a test file the agent itself declared may reach the reviewer, even outside the workspace. This
+narrows the 2026-10-16 rule that an agent-mentioned path is never read outside the workspace for
+exactly one kind of path: the `test_file` of the agent's own `result_recorded` manifest. It adds
+no way to admit a root, no unattended consent and no policy field.
+
+- **What may leave.** The packet lists at most three declared test paths with the SHA-256 FinishUP
+  observed when the check ran and a criterion ref: structural metadata in the envelope, never file
+  content. The content leaves only when the reviewer asks for it with `read_file` beneath `t1`,
+  as a span of at most 4,096 bytes per read, within the existing three reads and 24 KiB.
+- **Which files.** Only a listed path, refused by shape before any probe: an empty, `.`, `..` or
+  hidden component, a backslash or control character, a credential-named component, a path longer
+  than 256 bytes, a path the shared sensitive-content scanner flags (it would travel in the
+  envelope), or anything beneath `/boot`, `/dev`, `/etc`, `/proc`, `/run`, `/sys`, `/var/run` or
+  their `/private` forms. The read is the outside read's walk from `/`, every directory and the
+  file passing the same trust test (owned by the service user or root, writable by no other
+  account unless sticky), with FinishUP's own bundle and state directories excluded by path and by
+  device and inode; beneath the home directory its private trees and files are refused too. A
+  top-level link that root owns (`/tmp` and `/var` on macOS) is replaced by its target; no other
+  link is followed. Only UTF-8 text without NUL, at most 1 MiB, is read; the workspace's ignore
+  rules do not apply to a file the agent declared.
+- **Hash pin.** Every read re-reads the file and is refused (`declared_test_changed`) unless its
+  bytes still match the listed digest; nothing of a changed file is sent.
+- **Scanning.** The span passes the same admission as any reviewer read: classification,
+  minimization, the never-send scan and the credential heuristic per the owner's setting, then the
+  exact result envelope's scan. Any hit withholds the whole read (`privacy_withheld`).
+- **When.** Only when AI-powered review runs, the review offers reads (never under ask-every-time),
+  the policy offers `read_file` at all (repository excerpts not withheld, a workspace, the home
+  rule), and a reviewer read of repository content is admissible on every destination of the
+  review (`reviewer_history_admissible` with `repository_excerpt` and ordinary user content, the
+  primary and any fallback). Otherwise nothing is listed and the review is the one it was before.
+  Removing `repository_excerpt` from the channel stops it, as for any file read: an already
+  admitted read joins the conversation's retained categories and the next exchange is refused.
+- **Category.** `declared_test_excerpt` is a receipt-only `DataCategory`. The read is admitted
+  under `repository_excerpt` (the same grant and ceilings as a workspace read), and every
+  exchange that carries a declared-test read lists `declared_test_excerpt` among its receipt's
+  `approved_categories`, so the receipt shows the disclosure distinctly. No privacy policy names
+  it: a policy category set is read without it (`tuple(DataCategory)` keeps meaning every
+  grantable category), so every policy keeps its bytes, digest and schema; the privacy-policy
+  schemas are unchanged. egress-receipt 1.1.0 (unreleased) gains its own receipt category set in
+  place; 1.0.0 is unchanged.
+- **Limit.** A listed test that is gone, unreadable or no longer text is
+  `declared_test_not_visible`, with a fixed continuation telling the reviewer to judge without it
+  and say it was not visible. Owners who allow repository excerpts to the reviewer cannot turn off
+  declared-test reads separately; turning off AI-powered review, withholding repository excerpts
+  or ask-every-time does.
+
+The behaviour is service-side and identical for Codex, Claude Code and Cursor on macOS, Linux and
+Windows through WSL 2.

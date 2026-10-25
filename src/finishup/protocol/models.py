@@ -321,6 +321,9 @@ class DataCategory(str, Enum):  # noqa: UP042 - exact public wire enum base
     REPOSITORY_EXCERPT = "repository_excerpt"
     TRANSCRIPT_EXCERPT = "transcript_excerpt"
     DIAGNOSTIC_METADATA = "diagnostic_metadata"
+    # #1220: a receipt-only label for a reviewer read of an agent-declared test file. No policy
+    # names it: the read is admitted under ``repository_excerpt`` and egress receipts show this.
+    DECLARED_TEST_EXCERPT = "declared_test_excerpt"
 
 
 class ClientKind(str, Enum):  # noqa: UP042 - exact public wire enum base
@@ -3929,7 +3932,15 @@ class ReviewInputMissingModel(_ClosedModel):
 
 
 class ReviewInputManifestModel(_ClosedModel):
-    optional_non_null_fields = frozenset({"review_phase", "omitted_item_total", "follow_up_round"})
+    optional_non_null_fields = frozenset(
+        {
+            "review_phase",
+            "omitted_item_total",
+            "follow_up_round",
+            "test_check_offered",
+            "test_check_digests",
+        }
+    )
 
     # Frozen legacy identifier (ADR-048): the recorded review-input manifest tag.
     schema_: Literal["yoetz.review-input-manifest/1"] = Field(alias="schema")
@@ -3951,6 +3962,21 @@ class ReviewInputManifestModel(_ClosedModel):
     # Issue #1047, optional in place: this packet is the Nth in-check follow-up, sent after FinishUP
     # added recorded excerpts the reviewer asked for; ``missing_inputs`` then lists that request.
     follow_up_round: int | None = Field(default=None, ge=1, le=MAX_REVIEW_FOLLOW_UP_ROUNDS)
+    # Issue #1220, optional in place: the packet listed the agent's declared tests and asked the
+    # declared-test question; the listed files' pinned digests (metadata only, never paths).
+    test_check_offered: Literal[True] | None = None
+    test_check_digests: tuple[Sha256Digest, ...] | None = Field(
+        default=None, min_length=1, max_length=3
+    )
+
+    @model_validator(mode="after")
+    def _validate_test_check(self) -> ReviewInputManifestModel:
+        if (self.test_check_offered is None) != (self.test_check_digests is None):
+            raise ValueError("review_input_manifest_test_check_mismatch")
+        digests = self.test_check_digests or ()
+        if list(digests) != sorted(set(digests), key=str.encode):
+            raise ValueError("review_input_manifest_test_check_digests_unsorted")
+        return self
 
 
 class CheckAwaitingHumanModel(_ClosedModel):
@@ -7937,6 +7963,8 @@ _REVIEW_INPUT_MANIFEST_LEAVES: Final = (
     "specification/revision",
     "specification/source_refs/*",
     "specification/status",
+    "test_check_digests/*",
+    "test_check_offered",
 )
 _BASIC_VERSION_LEAVES: Final = (
     "engine_version",
@@ -9686,7 +9714,7 @@ def _build_result_leaf_rules() -> tuple[_ResultLeafRule, ...]:
         ):
             raise RuntimeError("invalid_result_leaf_classification")
     if (
-        len(result) != 2065
+        len(result) != 2069
     ):  # ... #1017 +3, #1027 +5, tb4n3 LO +9, W2-A +46, LF +34 (fact_lineage), W2-B +2,
         # tb4n4 #1044 +7 (closure_readiness.undeclared_references), #1048 +38 (inspection),
         # #1047 +2 (follow_up_round), tb4n5 +3 (publish action_notices),
@@ -9707,6 +9735,7 @@ def _build_result_leaf_rules() -> tuple[_ResultLeafRule, ...]:
         # +3 (operation check_outcome advisory identities, PR #1214 review);
         # #975 +46 draft receipt (21 structural and 2 content leaves, each on check and status).
         # #1139 +2 agent_status_line (check and status).
+        # #1220 +4 review_input_manifest test_check_offered/test_check_digests (check, status).
         raise RuntimeError("incomplete_result_leaf_registry")
     return result
 

@@ -10,10 +10,15 @@ come from what was fitted and sent, nothing else. A read that completes past its
 discarded, not used; that is a check after each blocking call, not preemption of one. At most three
 content-bearing reads and five attempts, 8 KiB each and 24 KiB in all. Attempts and bytes are
 reserved durably and never refunded; refused/empty results do not spend a content read.
+
+The ``t1`` root (issue #1220) serves only the agent's declared tests the packet lists, by their
+``dt<n>`` ref: each read re-reads the file and is refused unless its bytes still match the digest
+pinned when the check ran; a result is at most 4 KiB and counts against the same allowance.
 """
 
 from __future__ import annotations
 
+import hashlib
 import re
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass, field
@@ -24,9 +29,11 @@ from finishup.adapters.task_input_read import (
     ReadDeadline,
     clear_cut,
     list_beneath,
+    read_declared_test,
     read_text_beneath,
 )
 from finishup.domain.reviewer_reads import MAX_REVIEWER_READ_ATTEMPTS, MAX_REVIEWER_READS
+from finishup.kernel.declared_tests import DECLARED_TEST_READ_BYTES
 from finishup.ports.change_capture import TaskInputSnapshotSet
 from finishup.ports.semantic import (
     ReviewStepRefused,
@@ -92,6 +99,18 @@ _PATH_CORRECTIONS: Final = {
     "be checked; no root serves it. Do not retry it; choose another file or judge without it.",
     "outside_scope": "This root serves only the task-declared paths listed in its catalog "
     "covers. Choose a path from that list.",
+    # #1220: the declared-test root names files by ref only, never by filesystem path.
+    "declared_test": "This root serves only the packet's declared_tests, by ref: path=dt1 (or "
+    "dt2, dt3), mode=text. No listing and no other path.",
+}
+# #1220: a listed declared test the service could not show; fixed text, never the path.
+_DECLARED_TEST_LIMITS: Final = {
+    "declared_test_changed": "This declared test's content no longer matches the digest the "
+    "packet lists, so it is not visible to this review. Judge without it and say it was not "
+    "visible; do not ask the agent to copy it.",
+    "declared_test_not_visible": "This declared test is not visible to this review (not "
+    "readable as text where it was declared). Judge without it and say it was not visible; do "
+    "not ask the agent to copy it.",
 }
 _NO_ROOT: Final = (
     "No file root is available in this review. Use packet/ledger catalog selectors or "
@@ -153,6 +172,9 @@ class ReadRoot:
     subject_refs: tuple[str, ...] = ()
     snapshot: TaskInputSnapshotSet | None = None
     refuse: Callable[[str], bool] | None = None
+    # #1220: ``(ref, absolute path, pinned digest, criterion ref)`` of each declared test this
+    # root serves; a read is citable for its criterion ref when the case lets it be cited.
+    pinned: tuple[tuple[str, str, str, str], ...] = ()
 
 
 @dataclass(slots=True)
@@ -286,6 +308,8 @@ class ReviewerBroker:
             usage["reason"] = "deadline"
             raise ReadDeadline("reviewer_read_deadline")
         room = min(MAX_RESULT_BYTES, args.max_bytes, self.total - self.used)
+        if isinstance(action, ReviewerFileActionModel) and self._pinned(action.args.root_id):
+            room = min(room, DECLARED_TEST_READ_BYTES)  # #1220: at most 4 KiB per declared read
         # The read itself finished before its local stop (checked above). Admission is local and
         # never ends the review: a result admitted after the stop is still sent, as before #1173,
         # and the next turn's reserve check decides whether another read is offered. Only a
@@ -475,7 +499,9 @@ class ReviewerBroker:
                 fixed: dict[str, JsonValue] = {"continuation": _NO_ROOT, "allowed_root_ids": []}
                 return fixed, (), fixed
             cause = (
-                "outside_scope"
+                "declared_test"
+                if root is not None and root.pinned
+                else "outside_scope"
                 if reason == "outside_scope"
                 else None
                 if args is None
@@ -489,6 +515,9 @@ class ReviewerBroker:
             return fixed, (), fixed
         if reason == "not_recorded":
             fixed = {"continuation": _NOT_RECORDED}
+            return fixed, (), fixed
+        if reason in _DECLARED_TEST_LIMITS:
+            fixed = {"continuation": _DECLARED_TEST_LIMITS[reason]}
             return fixed, (), fixed
         if reason not in {"not_in_frozen_case", "not_retained"} or action is None:
             return {}, (), {}
@@ -624,6 +653,8 @@ class ReviewerBroker:
         root, path = self._roots.get(args.root_id), _file_path(args.path)
         if root is None or _path_refusal(root, path) is not None:
             return ("denied", "forbidden_path")
+        if root.pinned:
+            return self._declared(root, args, path, expired, tool_ref)
         refused = self._refused(root, path)
         if refused is not None:
             return ("denied", refused)
@@ -709,6 +740,53 @@ class ReviewerBroker:
         if b"\0" in data[:8000]:
             return ("unavailable", "unsupported_type")
         piece = _Piece(data, starts[first], stop, refs, prov, "", args.start_line, root.input_root)
+        return ("text", [piece], None, 0)
+
+    def _pinned(self, alias: str) -> bool:
+        root = self._roots.get(alias)
+        return root is not None and bool(root.pinned)
+
+    def _declared(
+        self,
+        root: ReadRoot,
+        args: ReadFileTextArgsModel | ReadFileListArgsModel,
+        path: str,
+        expired: Callable[[], bool],
+        tool_ref: str,
+    ) -> _Selected:
+        """One declared test by ref (#1220): re-read, refused unless still the pinned bytes."""
+
+        entry = next((row for row in root.pinned if row[0] == path), None)
+        if isinstance(args, ReadFileListArgsModel) or entry is None:
+            return ("denied", "outside_scope")
+        _ref, location, digest, criterion = entry
+        data = read_declared_test(location, excluded=root.excluded, expired=expired)
+        if data is None:
+            return ("unavailable", "declared_test_not_visible")
+        if "sha256:" + hashlib.sha256(data).hexdigest() != digest:
+            return ("unavailable", "declared_test_changed")
+        starts = [0, *(m.end() for m in re.finditer(b"\n", data))]
+        first, last = args.start_line - 1, args.start_line - 1 + args.line_count
+        if first >= len(starts) or starts[first] >= len(data):
+            return ("unavailable", "not_recorded")
+        stop = starts[last] if last < len(starts) else len(data)
+        prov: dict[str, JsonValue] = {
+            "source_ref": tool_ref,
+            "root_id": root.alias,
+            "baseline": "check_time",
+            "standing": "declared_test",
+        }
+        piece = _Piece(
+            data,
+            starts[first],
+            stop,
+            (criterion,) if criterion in self._allowed else (),
+            prov,
+            "",
+            args.start_line,
+            None,
+            DataCategory.DECLARED_TEST_EXCERPT,
+        )
         return ("text", [piece], None, 0)
 
 

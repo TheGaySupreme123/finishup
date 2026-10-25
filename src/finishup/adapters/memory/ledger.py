@@ -63,6 +63,7 @@ from finishup.domain.events import (
     public_error_for_no_obligations_reason_mismatch,
     public_error_for_obligation_resolution_mismatch,
     redaction_targets,
+    review_manifest_offers_test_check,
 )
 from finishup.domain.findings import (
     FindingKind,
@@ -4446,6 +4447,7 @@ class MemoryLedgerAdapter:
                 if check_payload.reviewer is not None
                 or correctness_advisories
                 or check_payload.semantic_reason is SemanticReason.ROUND_LIMIT_UNASSESSABLE
+                or review_manifest_offers_test_check(check_payload.review_input_manifest)
                 else DEFERRED_CHECK_EVENT_SCHEMA_VERSION
                 if check_payload.semantic_reason is SemanticReason.DEFERRED_BEFORE_FIRST_EDIT
                 else REVIEW_CHECK_EVENT_SCHEMA_VERSION
