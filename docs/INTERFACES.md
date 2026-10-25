@@ -12769,8 +12769,8 @@ paths; its `value=null` is a marker, not the original field value. An optional `
 offsets (`unit=unicode_scalar`), original length, digest and final fragment. Reconstruct it before acting; a fragment is never a preview.
 `truncated=true` reports deferred source content; `complete=true` and `next_cursor=null` mark the
 last emitted page of this source result. `actionable_complete` ends its action fields (since #1139's 2026-10-25 amendment
-these include `agent_status_line`, `closure_readiness`, `closure_state` and `totals`, ahead of
-reviewer prose); remaining result pages hold provenance. `inventory_read`, when present, names the required separate
+these include `agent_status_line`, `closure_state`, `totals` and then `closure_readiness`, whose
+small fields precede its large lists, all ahead of reviewer prose); remaining result pages hold provenance. `inventory_read`, when present, names the required separate
 findings read or next inventory page. Inspect the original `suppressed_count`, receipt inventory
 limits, and `/page/next_cursor` separately: result delivery does not erase inventory pagination.
 

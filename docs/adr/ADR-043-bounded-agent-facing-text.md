@@ -377,8 +377,10 @@ review summary, `totals` sat in the pages the continuation called optional prove
   check and right under the closure state of status and the TUI closure view, ahead of the readiness
   directive and the draft receipt (ADR-046, #975). A Stop
   continuation that already fires appends it when it fits, else the earlier fixed pointer.
-- Paging: `agent_status_line`, `closure_readiness`, `closure_state` and `totals` are action
-  fields, ahead of `correctness_advisories` and `review_summary`. `required_next_step` no longer
+- Paging: `agent_status_line`, `closure_state`, `totals` and then `closure_readiness` are action
+  fields, ahead of `correctness_advisories` and `review_summary`. An oversized `closure_readiness`
+  pages its small fields (at most 512 canonical bytes: state, counts, the line) before its large
+  lists, so the decision fields stay on the first page even with 64 flagged obligations. `required_next_step` no longer
   calls later pages optional; it says they hold provenance.
 - Current receipts (JSON, markdown, text) carry a short form in the evidence section: the ledger
   counts only, since reviewer and advice counts have their own sections.
