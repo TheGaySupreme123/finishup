@@ -5,13 +5,11 @@ You are the working agent using FinishUP.
 Read when a finding, pending review or closing check needs more than the operating card.
 A check evaluates only the recorded, readable, frontier-bound packet.
 
-Routine AI-powered correctness notes do not block FinishUP; recording a response is optional.
-For a material concern about an explicit current task requirement—including one appearing only
-in the review summary—assess it against the task and existing evidence. Use a proportionate
-check, cite evidence that settles it, explain your disagreement, or disclose the remaining
-uncertainty. Nonblocking status or zero actionable findings does not establish that the
-requirement is met. Successful AI-powered check results also carry a compact FinishUP reminder
-beside the reviewer summary, including when no formal findings are returned.
+Reviewer correctness notes and review-summary concerns are non-blocking. For each material
+concern about a task requirement: run a proportionate check, cite evidence that already settles
+it, or decline with a reason. Recording a response is optional; zero findings does not establish
+correctness. A failing or weak test result: fix it; if you cannot, disclose it by name. A concern
+is still evidence, not an order (see below).
 
 Select `semantic_required` when the user, effective policy, or named acceptance criterion requires
 independent AI-powered review. Omit `mode` to run in the task's review mode (below). Use
@@ -49,10 +47,9 @@ only and sends nothing (`semantic_review_deferred_before_first_edit`); the next 
 reviews as configured.
 If the work needs no edit and review is required, readiness asks for the closing review instead.
 While work is in progress the reviewer judges incomplete work only; its correctness concerns come
-back as advisory notes in the review summary, not findings. `agent_criterion_unmet` is a criterion
-you set yourself beyond the task's stated scope: fix it, or narrow it with `respond` `acknowledged`
-and the reason (a disclosed limitation that does not block); a `finishup-verification-limit` decision
-does not narrow it.
+back as notes in the review summary (handle them as above). `agent_criterion_unmet` is a criterion
+you set beyond the task's stated scope: fix it, or narrow it with `respond` `acknowledged` and the
+reason (a disclosed, non-blocking limitation); a `finishup-verification-limit` decision does not.
 If `missing_for_assessment` names an `agent_suppliable` item you can supply, publish exactly that item once, linked to any named target, then `check` again. If it is already supplied, or it is a packet, type or authority limit, go to the receipt and state that specific limit. Only new material counts; tie it to any named target. The captured output of a re-run of the target's exact command FinishUP observed counts only once it reaches the reviewer, so publish the result even after a re-run; a respond counts only when the target is a finding, and a description never does. Output FinishUP adds itself, from a run made before the request, is observed, not something you supplied.
 For verification output, cite the run's observed output (its `evd_` from `status view=evidence`) on a result; when FinishUP observed none for the run, publish the result summary as its remedy says. The reviewer reads a summary as your account of the run, not as the output. A file outside the workspace reaches the reviewer only beneath a directory the owner admitted (`finishup privacy input-roots`); you cannot admit one. If a check reports `task_input_outside_not_admitted`, do not copy, move or restate that file into the workspace for the reviewer; name the folder and the command `finishup privacy input-roots add <folder>` to the owner in your final answer.
 The reviewer is told to treat the output FinishUP observed from a check you ran as that check's witness, even when the check's own file is outside the workspace: have a check print the values and cases it compares, not only PASS.
@@ -83,9 +80,8 @@ current-check answer, lifecycle record or receipt is not a review milestone.
 
 ## How to answer a finding
 
-A `decision_needed` finding is a non-blocking advisory choice. You may record the choice and
-reason with `respond acknowledged` or `respond rejected`; it stays advisory history, never
-`verified_resolved`, and needs no repair ruling. Carry material choices and limits to final prose.
+A `decision_needed` finding is a non-blocking advisory choice (table below); carry material
+choices and limits to final prose.
 A `Destructive change:` label names what removal or replacement would lose; consider it before
 changing work matching the task, supplied inputs or an earlier passing check.
 
@@ -102,7 +98,6 @@ Do not infer that the item was never recorded.
 The reviewer can request it through `final_judgment.missing_for_assessment` with its kind and
 target refs, as the read's continuation says.
 As the working agent, follow the returned `missing_for_assessment` supply rule above.
-For example, an unknown event ref can be outside the frozen case without proving non-recording.
 
 A finding is evidence, not an order.
 Before reversing a deliberate choice or resolving conflicting inputs, including a decision-needed finding:
@@ -118,15 +113,14 @@ only to disputed defects, never to `decision_needed`.
 6. Run `check` with `final_review: true`.
 
 For a defect, use repair/self-verification instead of the dispute steps.
-Example: a finding prefers a reference the task did not supply.
 `acknowledged_not_done` keeps `unresolved_findings_remain`.
 
 Read the finding's row in `status view=findings` and find its case below before you call
-`respond`. A refused call records nothing and costs a turn.
+`respond`.
 
 | The finding | Do this |
 | --- | --- |
-| `kind: decision_needed` (including `requested_next_step: answer_question`) | Optionally record the choice and reason. Non-blocking advisory history; no repair ruling or verified resolution. |
+| `kind: decision_needed` (including `requested_next_step: answer_question`) | Optionally record the choice and reason (`respond` `acknowledged` or `rejected`). Non-blocking advisory history; no repair ruling or verified resolution. |
 | `todo_state` `verified_resolved`, `rejection_accepted` or `disputed_after_rebuttal`, or `next_actions: ["none"]` | Nothing. It takes no response; one is refused with `finding_terminal`. |
 | `todo_state` `acknowledged_not_done` | Repair and run `check`, or respond `reopened` with a reason to take the answer back. |
 | A problem you can fix | Repair it, publish the result and evidence, then run `check`. Only a later qualifying check resolves it; a response never does. |
@@ -202,9 +196,9 @@ before the closing review, not after it, or the switch makes the closing review 
 next `final_review: true` check runs it again.
 
 **Worked example.** A task changes token refresh in `auth/` and the session cache in `cache/`.
-After the first local check, you publish the switch ("Turn on AI-powered review for the rest of
-this task." / "Cross-module auth and cache change; local checks cannot judge the race.") and check
-again without `mode`; the result reads `Review mode: AI-powered review; this task turned it on`.
+After the first local check, publish the switch ("Cross-module auth and cache change; local checks
+cannot judge the race.") and check again without `mode`; the result reads
+`Review mode: AI-powered review; this task turned it on`.
 
 
 **About data.** Do not hesitate over data. The owner chose this setting at setup; that choice is

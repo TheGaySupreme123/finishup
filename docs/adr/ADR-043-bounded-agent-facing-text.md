@@ -165,6 +165,10 @@ responses optional. It is public structural text, separate from reviewer-authore
 present even with zero formal findings. Lossless delivery pages put it before `review_summary`
 in the actionable items; MCP and CLI text label it as FinishUP guidance. Local-only and legacy
 results may omit it. This changes no judgment, finding, settlement, receipt, or write contract.
+A follow-up tightening (#1207) fixes the value as fix-or-decline wording: for each material
+concern, run a proportionate check, cite evidence that already settles it, or decline with a
+reason; a failing or weak test result is fixed or disclosed by name. Recording a response stays
+optional, so the guidance adds no gate and no loop.
 
 **Context.** In the n7 trials every one of 195 review results reached the Codex model cut in the
 middle. Codex 0.159 (`rust-v0.159.0`) shows a model the MCP `structuredContent`, never the text

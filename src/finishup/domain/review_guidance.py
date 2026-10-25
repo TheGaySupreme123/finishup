@@ -5,9 +5,10 @@ from enum import StrEnum
 
 class ReviewGuidance(StrEnum):
     MATERIAL_CONCERNS = (
-        "Assess material review concerns against the task and evidence. Run a proportionate "
-        "check, cite settling evidence, explain disagreement, or disclose remaining uncertainty. "
-        "Recording a response is optional; zero findings does not establish correctness."
+        "Non-blocking. For each material concern: run a proportionate check, cite evidence that "
+        "already settles it, or decline with a reason. Recording a response is optional; zero "
+        "findings does not establish correctness. A failing or weak test result: fix it; if you "
+        "cannot, disclose it by name."
     )
 
 
