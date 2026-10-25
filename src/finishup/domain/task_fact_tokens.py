@@ -26,6 +26,7 @@ __all__ = [
     "DELIVERABLE_REFERENCES_UNDECLARED_FILE_GAP",
     "EDITED_AFTER_LAST_VERIFICATION_GAP",
     "FINDING_REJECTION_AWAITING_RULING_GAP",
+    "FIX_OR_DECLINE_TASK_FACT_GAPS",
     "INSTALL_INTO_PRIVATE_ENV_GAP",
     "INSTALL_INTO_FINISHUP_RUNTIME_GAP",
     "OBLIGATION_BLOCKED_GAP",
@@ -142,6 +143,16 @@ STANDING_TASK_FACT_GAPS: Final = frozenset(
     }
 )
 TASK_FACT_GAPS: Final = AGENT_ACTIONABLE_TASK_FACT_GAPS | STANDING_TASK_FACT_GAPS
+# Issue #1209 (ADR-032 amendment): the standing task facts an agent action removes. They stay
+# disclosures (never a finding, never a Stop-gate token, never bounding); readiness names each one
+# with its obligation as "fix, or decline with a reason" (gap table rule G4f).
+FIX_OR_DECLINE_TASK_FACT_GAPS: Final = frozenset(
+    {
+        PLANNED_VERIFICATION_AGENT_LINKED_GAP,
+        PLANNED_VERIFICATION_OUTCOME_UNKNOWN_GAP,
+        REQUESTED_OUTPUT_UNCHANGED_GAP,
+    }
+)
 # The closure-readiness items that make the Stop-time gate continue the agent once: work the
 # agent owes (open obligations, a receipt-blocking finding) and the task facts it can repair.
 STOP_GATE_TOKENS: Final = (

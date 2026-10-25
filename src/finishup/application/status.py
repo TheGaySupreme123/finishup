@@ -160,6 +160,7 @@ from finishup.protocol.models import (
     StatusFindingCountsModel,
     StatusFindingsFilterModel,
     StatusFindingsPageModel,
+    StatusFixOrDeclineModel,
     StatusHistoryFilterModel,
     StatusHistoryPageModel,
     StatusImportStatusModel,
@@ -398,8 +399,9 @@ def brief_status_body(full: Mapping[str, JsonValue]) -> dict[str, JsonValue]:
     Only omission, never a new value: a frontier equal to ``result_frontier`` is dropped, as are
     projection metadata at their current/zero defaults, an empty import status and an enforced
     credential filter. The compact view keeps ``coverage`` and the full ``closure_readiness``;
-    every other view keeps ``closure_state`` (readiness state, blocking conditions and the
-    agent-actionable tokens), which is what the next step needs from it. Status reads made
+    every other view keeps ``closure_state`` (readiness state, blocking conditions, the
+    agent-actionable tokens and the open fix-or-decline items, #1209), which is what the next step
+    needs from it. Status reads made
     ~36% of the N6 trials' extra uncached input, and these envelope fields half of each page.
     """
 
@@ -422,7 +424,7 @@ def brief_status_body(full: Mapping[str, JsonValue]) -> dict[str, JsonValue]:
     else:
         body["closure_state"] = {
             key: readiness[key]
-            for key in ("blocking_conditions", "state", "agent_actionable")
+            for key in ("blocking_conditions", "state", "agent_actionable", "fix_or_decline")
             if key in readiness
         }
     import_status = full.get("import_status")
@@ -2146,6 +2148,14 @@ async def _closure_readiness(
                 {"obligation_id": str(obligation), "reasons": reasons}
             )
             for obligation, reasons in facts.unresolved_acceptance_risk[:64]
+        )
+    if checklist.fix_or_decline:
+        # Issue #1209: the open limitations an agent action removes, by code and obligation, so
+        # no surface says "Nothing further to do" while one is open. Never a Stop item; omitted
+        # when none, so a status without it keeps its bytes.
+        optional_fields["fix_or_decline"] = tuple(
+            StatusFixOrDeclineModel.model_validate({"code": code, "obligation_id": obligation})
+            for code, obligation in checklist.fix_or_decline[:64]
         )
     if facts.closing_material_frontier is not None:
         # Including "0": the Stop gate tells a computed empty frontier from an omitted field.

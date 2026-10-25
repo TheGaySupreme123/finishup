@@ -14,7 +14,7 @@ from dataclasses import dataclass
 from typing import Final, cast
 
 from finishup.protocol.canonical import JsonValue
-from finishup.protocol.readiness_text import readiness_directive
+from finishup.protocol.readiness_text import fix_or_decline_rows, readiness_directive
 
 __all__ = ["INSPECTION_BOUNDS", "InspectionText", "inspection_text"]
 
@@ -127,7 +127,14 @@ def _remaining_lines(remaining: Mapping[str, JsonValue]) -> tuple[list[str], lis
         1 for row in (*obligations, *findings) if row.get("closure_class") == "settled_unmet"
     )
     if state in {"action_required", "ready", "ready_with_limitations", "unknown"}:
-        lead.append(readiness_directive(state, standing=len(standing), acknowledged=acknowledged))
+        lead.append(
+            readiness_directive(
+                state,
+                standing=len(standing),
+                acknowledged=acknowledged,
+                fix_or_decline=fix_or_decline_rows(remaining),
+            )
+        )
     details: list[str] = []
     lead.append(
         f"Unresolved obligations: {_num(remaining.get('obligation_count'))}; "

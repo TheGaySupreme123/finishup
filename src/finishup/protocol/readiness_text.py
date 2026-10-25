@@ -8,7 +8,10 @@ Nothing here is derived from a caller, a payload or model output.
 The ``ready_with_limitations`` sentence is the owner-approved wording. It is an instruction to
 stop and request the receipt, never a claim about the work: a standing limitation or an
 acknowledged item is disclosed on the receipt exactly as recorded, and the receipt's verdict and
-coverage stay bounded by them.
+coverage stay bounded by them. Since issue #1209 (ADR-032 amendment, owner-approved) it is said
+only when no fix-or-decline item is open: while one is, the directive names each one with its
+obligation ("Before the receipt: fix, or decline with a reason: ...") instead. Those items are
+never a Stop item.
 """
 
 from __future__ import annotations
@@ -34,6 +37,9 @@ __all__ = [
     "closure_counts_variants",
     "closing_review_limit_note",
     "coordinator_failure_note",
+    "FIX_OR_DECLINE_CODES",
+    "fix_or_decline_rows",
+    "fix_or_decline_variants",
     "obligation_resolve_recipe_variants",
     "predicted_receipt_variants",
     "readiness_directive",
@@ -217,9 +223,127 @@ def closing_review_limit_note(readiness: object) -> str | None:
 coordinator_failure_note = closing_review_limit_note
 
 
-def readiness_directive(state: str, *, standing: object = 0, acknowledged: object = 0) -> str:
-    """Return the frozen sentence for one readiness state, filled only with service counts."""
+# Issue #1209 (ADR-032 amendment): the gap table's fix-or-decline codes (rule G4f), repeated here
+# so this module stays free of kernel imports; a test pins the two together.
+FIX_OR_DECLINE_CODES: Final = (
+    "planned_verification_agent_linked",
+    "planned_verification_outcome_unknown",
+    "requested_output_unchanged",
+)
+# The check records this code without its obligation, so readiness names every obligation it can
+# concern: the fact holds for at least one of them.
+_ANY_OF_CODE: Final = "requested_output_unchanged"
+_MAX_NAMED_FIX_OR_DECLINE: Final = 6
+_FIX_OR_DECLINE_LEAD: Final = "Before the receipt: fix, or decline with a reason: "
+_FIX_OR_DECLINE_HOW: Final = (
+    " To decline one, publish decision_recorded whose statement holds the line"
+    " finishup-assumption:<obligation id> and whose rationale gives the reason; the receipt"
+    " lists that decision. These are not Stop items."
+)
+# A fix or a decline is a new record that supersedes the check (#1213 review): the receipt then
+# follows one more check, never directly.
+_FIX_OR_DECLINE_THEN: Final = (
+    " After a fix or a decline, run check once more, then request the receipt."
+)
 
+
+def fix_or_decline_rows(readiness: object) -> tuple[tuple[str, str], ...]:
+    """``(code, obligation id)`` from ``closure_readiness.fix_or_decline``, validated.
+
+    Only rows with a closed fix-or-decline code and an obligation id are copied, once each, in
+    their wire order. A missing list (an earlier 0.3 service, or nothing open) adds nothing.
+    """
+
+    raw = _field(readiness, "fix_or_decline")
+    if not isinstance(raw, (tuple, list)):
+        return ()
+    rows: list[tuple[str, str]] = []
+    for item in tuple(cast("tuple[object, ...] | list[object]", raw)):
+        code = _field(item, "code")
+        obligation = _field(item, "obligation_id")
+        if (
+            type(code) is str
+            and code in FIX_OR_DECLINE_CODES
+            and type(obligation) is str
+            and _OBLIGATION_ID.fullmatch(obligation) is not None
+            and (code, obligation) not in rows
+        ):
+            rows.append((code, obligation))
+    return tuple(rows)
+
+
+def fix_or_decline_variants(
+    rows: tuple[tuple[str, str], ...], *, standing: object = None, acknowledged: object = 0
+) -> tuple[str, ...]:
+    """The fix-or-decline directive, longest variant first, or ``()`` when nothing is open.
+
+    Grouped by code in the closed code order, each with its obligation ids (at most six named,
+    then "and N more"); ``requested_output_unchanged`` joins its ids with "or" (the check
+    recorded the code, not which of them). ``standing`` counts every standing limitation, the
+    fix-or-decline codes included, and the sentence names the others as the limitations the
+    receipt will disclose; ``None`` (a brief body carries no counts) leaves the count out.
+    """
+
+    if not rows:
+        return ()
+    grouped: dict[str, list[str]] = {}
+    for code, obligation in rows:
+        grouped.setdefault(code, []).append(obligation)
+    named: list[str] = []
+    shown = 0
+    for code in FIX_OR_DECLINE_CODES:
+        ids = grouped.get(code)
+        if not ids:
+            continue
+        room = max(_MAX_NAMED_FIX_OR_DECLINE - shown, 1)
+        listed = ids[:room]
+        shown += len(listed)
+        joiner = " or " if code == _ANY_OF_CODE else ", "
+        more = f" and {len(ids) - len(listed)} more" if len(ids) > len(listed) else ""
+        named.append(f"{code} ({joiner.join(listed)}{more})")
+    head = _FIX_OR_DECLINE_LEAD + ", ".join(named) + "."
+    first = (
+        _FIX_OR_DECLINE_LEAD
+        + named[0]
+        + (f" and {len(named) - 1} more code(s)." if len(named) > 1 else ".")
+    )
+    if standing is None:
+        then = _FIX_OR_DECLINE_THEN
+        return tuple(dict.fromkeys((head + _FIX_OR_DECLINE_HOW + then, head + then, first + then)))
+    other = max(_count(standing) - len(grouped), 0)
+    tail = (
+        f" {other} other limitation(s) and {_count(acknowledged)} acknowledged item(s) will be"
+        " disclosed on the receipt." + _FIX_OR_DECLINE_THEN
+    )
+    return tuple(
+        dict.fromkeys(
+            (
+                head + _FIX_OR_DECLINE_HOW + tail,
+                head + tail,
+                first + _FIX_OR_DECLINE_THEN,
+            )
+        )
+    )
+
+
+def readiness_directive(
+    state: str,
+    *,
+    standing: object = 0,
+    acknowledged: object = 0,
+    fix_or_decline: tuple[tuple[str, str], ...] = (),
+) -> str:
+    """Return the frozen sentence for one readiness state, filled only with service counts.
+
+    ``fix_or_decline`` holds the open ``(code, obligation id)`` items (``fix_or_decline_rows``):
+    while one is open at ``ready_with_limitations`` the directive names them instead of
+    "Nothing further to do" (issue #1209).
+    """
+
+    if state == "ready_with_limitations" and fix_or_decline:
+        return fix_or_decline_variants(
+            fix_or_decline, standing=standing, acknowledged=acknowledged
+        )[0]
     if state == "ready_with_limitations":
         return (
             f"Nothing further to do. {_count(standing)} standing limitation(s) and "

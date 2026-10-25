@@ -278,6 +278,12 @@ def inspection_remaining(
     predicted = readiness.predicted_receipt
     if predicted is not None:
         remaining["predicted_conclusion"] = predicted.conclusion
+    if readiness.fix_or_decline:
+        # Issue #1209: status's open fix-or-decline items, so the inspection names them too.
+        remaining["fix_or_decline"] = [
+            {"code": item.code, "obligation_id": str(item.obligation_id)}
+            for item in readiness.fix_or_decline
+        ]
     return remaining
 
 

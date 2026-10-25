@@ -326,6 +326,7 @@ from finishup.protocol.policy_packs import (
     WORK_INTEGRITY_POLICY_ID,
     current_policy_pack,
 )
+from finishup.protocol.readiness_text import fix_or_decline_rows
 from finishup.protocol.redacted_values import (
     SemanticRedactedValue,
     validate_semantic_redacted_values,
@@ -905,6 +906,9 @@ def _agent_next(result: CheckCommitResult) -> str:
         result.overall_next,
         result.missing_for_assessment,
         limitation_requests=limitation_requests,
+        # Issue #1209: the attached readiness's open fix-or-decline items (absent on a replay
+        # that carries no readiness, which then names none rather than guessing).
+        fix_or_decline=fix_or_decline_rows(result.closure_readiness),
     )
 
 

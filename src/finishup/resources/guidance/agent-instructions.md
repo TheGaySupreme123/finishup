@@ -59,7 +59,7 @@ What is left and why: `check` `mode: inspect` (records nothing).
 `insufficient_packet`: If `missing_for_assessment` names an `agent_suppliable`
 item you can supply, publish exactly that item once, linked to any named target, then `check`
 again. If it is already supplied, or it is a packet, type or authority limit, go to the receipt
-and state that specific limit. Only new material counts; tie it to any named target. Observed test,
+and state that specific limit. Only new material counts. Observed test,
 build, lint, or typecheck output reaches the reviewer only when a repository excerpt would be sent. Never republish retained files/output for review.
 
 ## Read more

@@ -43,6 +43,7 @@ from finishup.kernel.reducers import replay
 from finishup.kernel.task_facts import (
     AGENT_ACTIONABLE_TASK_FACT_GAPS,
     EDITED_AFTER_LAST_VERIFICATION_GAP,
+    FIX_OR_DECLINE_TASK_FACT_GAPS,
     INSTALL_INTO_FINISHUP_RUNTIME_GAP,
     INSTALL_INTO_PRIVATE_ENV_GAP,
     OBLIGATION_BLOCKED_GAP,
@@ -63,6 +64,7 @@ from finishup.kernel.task_facts import (
     VERIFICATION_ONLY_AS_ROOT_GAP,
     WRITE_OUTSIDE_WORKSPACE_GAP,
     RequestedOutputState,
+    TaskFactSignals,
     acting_started,
     blocked_obligations,
     blocker_declarations,
@@ -140,8 +142,12 @@ def test_every_task_fact_code_is_classified_once() -> None:
     assert AGENT_ACTIONABLE_TASK_FACT_GAPS.isdisjoint(STANDING_TASK_FACT_GAPS)
     for code in AGENT_ACTIONABLE_TASK_FACT_GAPS:
         assert GAP_CLASSIFICATION[code] is GapClass.AGENT_ACTIONABLE
-    for code in STANDING_TASK_FACT_GAPS:
+    for code in STANDING_TASK_FACT_GAPS - FIX_OR_DECLINE_TASK_FACT_GAPS:
         assert GAP_CLASSIFICATION[code] is GapClass.STANDING_LIMITATION
+    # #1209: the standing facts an agent action removes form the fix-or-decline group.
+    assert FIX_OR_DECLINE_TASK_FACT_GAPS < STANDING_TASK_FACT_GAPS
+    for code in FIX_OR_DECLINE_TASK_FACT_GAPS:
+        assert GAP_CLASSIFICATION[code] is GapClass.FIX_OR_DECLINE
     assert TASK_FACT_GAPS == AGENT_ACTIONABLE_TASK_FACT_GAPS | STANDING_TASK_FACT_GAPS
 
 
@@ -1439,6 +1445,54 @@ def test_a_direct_match_needs_no_link_disclosure() -> None:
     parent = _observed_run(ledger, "pytest tests/test_x.py", ResultOutcome.SUCCESS)
     _link(ledger, "pytest tests/test_x.py", parent, number=1)
     assert _codes(ledger) & _LINKED_GAPS == set()
+
+
+def test_a_link_after_a_failed_direct_run_is_disclosed_and_named_to_fix() -> None:
+    """#1209 / #1003: a later linked green run never silently turns a red direct run green."""
+
+    ledger = ObservedLedger()
+    _planned(ledger, _command("pytest tests/test_x.py"))
+    _plan(ledger, _OBLIGATION)
+    _observed_run(ledger, "pytest tests/test_x.py", ResultOutcome.FAILURE)
+    parent = _observed_run(ledger, "python run_tests.py", ResultOutcome.SUCCESS)
+    _link(ledger, "pytest tests/test_x.py", parent, number=1)
+    prefix = ledger.prefix
+    signals = task_fact_signals(replay(prefix), prefix)
+    assert set(signals.codes) & _LINKED_GAPS == {PLANNED_VERIFICATION_AGENT_LINKED_GAP}
+    assert signals.fix_or_decline == ((PLANNED_VERIFICATION_AGENT_LINKED_GAP, _OBLIGATION),)
+
+
+def test_a_direct_run_after_a_link_decides_and_needs_no_link_disclosure() -> None:
+    ledger = ObservedLedger()
+    _planned(ledger, _command("pytest tests/test_x.py"))
+    _plan(ledger, _OBLIGATION)
+    parent = _observed_run(ledger, "python run_tests.py", ResultOutcome.SUCCESS)
+    _link(ledger, "pytest tests/test_x.py", parent, number=1)
+    _observed_run(ledger, "pytest tests/test_x.py", ResultOutcome.SUCCESS)
+    assert _codes(ledger) & _LINKED_GAPS == set()
+
+
+def _unknown_signals(command: str, outcome: ResultOutcome) -> TaskFactSignals:
+    ledger = ObservedLedger()
+    _planned(ledger, _command("pytest -q"))
+    _plan(ledger, _OBLIGATION)
+    ledger.run(command, outcome, exit_status=None if outcome is ResultOutcome.UNKNOWN else 0)
+    prefix = ledger.prefix
+    return task_fact_signals(replay(prefix), prefix)
+
+
+def test_an_unknown_part_of_a_host_stated_run_is_fix_or_decline() -> None:
+    """#1209: the host stated the run's outcome; running the planned command alone settles it."""
+
+    signals = _unknown_signals("pytest -q | tee log.txt", ResultOutcome.SUCCESS)
+    assert PLANNED_VERIFICATION_OUTCOME_UNKNOWN_GAP in signals.codes
+    assert signals.fix_or_decline == ((PLANNED_VERIFICATION_OUTCOME_UNKNOWN_GAP, _OBLIGATION),)
+
+
+def test_an_outcome_the_host_never_stated_stays_a_plain_disclosure() -> None:
+    signals = _unknown_signals("pytest -q", ResultOutcome.UNKNOWN)
+    assert PLANNED_VERIFICATION_OUTCOME_UNKNOWN_GAP in signals.codes
+    assert signals.fix_or_decline == ()
 
 
 def test_a_placeholder_item_stays_unobservable_even_when_linked() -> None:

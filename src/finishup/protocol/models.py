@@ -4492,10 +4492,48 @@ class CheckInspectionFindingModel(_ClosedModel):
     ]
 
 
+FixOrDeclineCodeWire = Literal[
+    "planned_verification_agent_linked",
+    "planned_verification_outcome_unknown",
+    "requested_output_unchanged",
+]
+
+
+class StatusFixOrDeclineModel(_ClosedModel):
+    """One limitation an agent action removes, named before the receipt (issue #1209, ADR-032).
+
+    A closed gap code from the gap table's fix-or-decline group and the obligation it concerns.
+    The agent fixes it, or declines it with a reason: a decision whose statement holds the line
+    ``finishup-assumption:<obligation id>`` (or ``finishup-verification-limit:<obligation id>``)
+    and whose rationale gives the reason. Never a Stop item and never agent-actionable; the code
+    is also a standing limitation, which the receipt discloses unless the agent fixes it. The
+    check records ``requested_output_unchanged`` without its obligation, so that code names every
+    obligation it can concern, and holds for at least one of them.
+    """
+
+    code: FixOrDeclineCodeWire
+    obligation_id: ObligationIdWire
+
+
+def _validate_fix_or_decline(
+    items: tuple[StatusFixOrDeclineModel, ...] | None, standing: tuple[str, ...] | None
+) -> None:
+    if items is None:
+        return
+    keys = tuple((item.code, item.obligation_id) for item in items)
+    if len(set(keys)) != len(keys) or keys != tuple(
+        sorted(keys, key=lambda key: (key[0].encode(), key[1].encode()))
+    ):
+        raise ValueError("closure_readiness_fix_or_decline_invalid")
+    # One verdict (ADR-046): an item to fix is a limitation the receipt would disclose.
+    if standing is not None and any(item.code not in standing for item in items):
+        raise ValueError("closure_readiness_fix_or_decline_unlisted")
+
+
 class CheckInspectionRemainingModel(_ClosedModel):
     """What is left to close and why: the closure verdict status prints (ADR-046)."""
 
-    optional_non_null_fields = frozenset({"predicted_conclusion"})
+    optional_non_null_fields = frozenset({"predicted_conclusion", "fix_or_decline"})
 
     readiness: Literal["action_required", "ready", "ready_with_limitations", "unknown"]
     predicted_conclusion: (
@@ -4512,11 +4550,14 @@ class CheckInspectionRemainingModel(_ClosedModel):
     obligation_count: CanonicalUInt64Wire
     findings: Annotated[tuple[CheckInspectionFindingModel, ...], Field(max_length=64)]
     finding_count: CanonicalUInt64Wire
+    # Issue #1209: status's open fix-or-decline items. Omitted when none.
+    fix_or_decline: tuple[StatusFixOrDeclineModel, ...] | None = Field(default=None, max_length=64)
 
     @model_validator(mode="after")
     def _validate_inspection_remaining(self) -> CheckInspectionRemainingModel:
         _require_unique(self.agent_actionable, limit=128)
         _require_unique(self.standing_limitations, limit=128)
+        _validate_fix_or_decline(self.fix_or_decline, self.standing_limitations)
         return self
 
 
@@ -5937,7 +5978,7 @@ class StatusClosureReadinessModel(_ClosedModel):
     # on the unreleased 1.4.0 wire so a result shaped by an earlier 0.3 build still validates; it
     # is then absent as a whole, never partially present and never null.
     state: Literal["action_required", "ready", "ready_with_limitations", "unknown"] | None = None
-    gap_classification_version: Literal["1", "2", "3", "4", "5", "6", "7", "8"] | None = None
+    gap_classification_version: Literal["1", "2", "3", "4", "5", "6", "7", "8", "9"] | None = None
     agent_actionable: tuple[ReadinessItemWire, ...] | None = None
     standing_limitations: tuple[CodeWire, ...] | None = None
     acknowledged_not_done: tuple[AcknowledgedItemIdWire, ...] | None = None
@@ -5996,11 +6037,17 @@ class StatusClosureReadinessModel(_ClosedModel):
     acceptance_risk: tuple[StatusAcceptanceRiskModel, ...] | None = Field(
         default=None, max_length=64
     )
+    # Issue #1209 (ADR-032 amendment): the open limitations an agent action removes, by code and
+    # obligation, sorted (at most 64). While any is listed no surface says "Nothing further to do":
+    # each is fixed, or declined with a reason, before the receipt. Optional on the unreleased
+    # 1.4.0 wire: omitted when none, and from an earlier 0.3 build. Never a Stop item.
+    fix_or_decline: tuple[StatusFixOrDeclineModel, ...] | None = Field(default=None, max_length=64)
 
     optional_non_null_fields = frozenset(
         {
             "correctness_advisory_summary",
             "correctness_advisory_counts",
+            "fix_or_decline",
             "evidence_basis_summary",
             "check_cause",
             "predicted_receipt",
@@ -6061,6 +6108,7 @@ class StatusClosureReadinessModel(_ClosedModel):
             ):
                 raise ValueError("closure_readiness_acceptance_risk_unbounded")
         _validate_fact_lineage_models(self.fact_lineage)
+        _validate_fix_or_decline(self.fix_or_decline, self.standing_limitations)
         self._validate_checklist()
         # Absent counts mean the compact singleton could not be read (an unreadable task title
         # omits it). Reporting zero there would assert "nothing is open" from missing data, so
@@ -7239,7 +7287,7 @@ class StatusClosureStateModel(_ClosedModel):
     ``closure_readiness``.
     """
 
-    optional_non_null_fields = frozenset({"state", "agent_actionable"})
+    optional_non_null_fields = frozenset({"state", "agent_actionable", "fix_or_decline"})
 
     blocking_conditions: tuple[
         Literal[
@@ -7256,6 +7304,13 @@ class StatusClosureStateModel(_ClosedModel):
     ]
     state: Literal["action_required", "ready", "ready_with_limitations", "unknown"] | None = None
     agent_actionable: tuple[ReadinessItemWire, ...] | None = None
+    # Issue #1209: the open fix-or-decline items, so a brief body never reads "nothing further".
+    fix_or_decline: tuple[StatusFixOrDeclineModel, ...] | None = Field(default=None, max_length=64)
+
+    @model_validator(mode="after")
+    def _validate_closure_state(self) -> StatusClosureStateModel:
+        _validate_fix_or_decline(self.fix_or_decline, None)
+        return self
 
 
 class StatusBriefSuccessModel(_ClosedModel):
@@ -8167,6 +8222,8 @@ _CHECK_STRUCTURAL_POINTERS: Final = (
         (
             "agent_actionable/*",
             "finding_count",
+            "fix_or_decline/*/code",
+            "fix_or_decline/*/obligation_id",
             "obligation_count",
             "predicted_conclusion",
             "readiness",
@@ -8261,6 +8318,8 @@ _STATUS_COMMON_STRUCTURAL_POINTERS: Final = (
         # Issue #1084: the brief detail marker and its closure state, closed tokens only.
         "/closure_state/agent_actionable/*",
         "/closure_state/blocking_conditions/*",
+        "/closure_state/fix_or_decline/*/code",
+        "/closure_state/fix_or_decline/*/obligation_id",
         "/closure_state/state",
         "/detail",
         "/gaps/*",
@@ -8367,6 +8426,9 @@ _STATUS_COMMON_STRUCTURAL_POINTERS: Final = (
             # ADR-033 (D1): service-minted obligation ids and closed reason tokens only.
             "acceptance_risk/*/obligation_id",
             "acceptance_risk/*/reasons/*",
+            # Issue #1209: closed fix-or-decline codes and service-minted obligation ids only.
+            "fix_or_decline/*/code",
+            "fix_or_decline/*/obligation_id",
             "undeclared_references/*/obligation_id",
             "undeclared_references/*/item_index",
             "undeclared_references/*/total",
@@ -9413,7 +9475,7 @@ def _build_result_leaf_rules() -> tuple[_ResultLeafRule, ...]:
         ):
             raise RuntimeError("invalid_result_leaf_classification")
     if (
-        len(result) != 2006
+        len(result) != 2014
     ):  # ... #1017 +3, #1027 +5, tb4n3 LO +9, W2-A +46, LF +34 (fact_lineage), W2-B +2,
         # tb4n4 #1044 +7 (closure_readiness.undeclared_references), #1048 +38 (inspection),
         # #1047 +2 (follow_up_round), tb4n5 +3 (publish action_notices),
@@ -9428,7 +9490,8 @@ def _build_result_leaf_rules() -> tuple[_ResultLeafRule, ...]:
         # #1144/#1149 +3 receipt (disproved ids and stopped status/reason),
         # #1162 +95 (advisory history, readiness summary, receipt counts; +1 provenance container)
         # #1205 +64 (evidence links and separately categorized prose), #1194 +2 witness freshness,
-        # #1207 +1 fixed review guidance,
+        # #1207 +1 fixed review guidance; #1209 +8 fix_or_decline (check and status readiness,
+        # brief closure_state, check inspection);
         # #1162 tracked advice +13 (check advisory rows; readiness counts on check and status).
         raise RuntimeError("incomplete_result_leaf_registry")
     return result
