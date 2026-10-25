@@ -72,6 +72,8 @@ class _Reviewer:
     obligation: str
     result: str
     seed: int = 9750
+    # Greptile P1 on #1217: an earlier review that raised nothing is still an earlier review.
+    first_clean: bool = False
     cases: list[SemanticCase] = field(default_factory=lambda: [])
     frozen: list[FrozenCase] = field(default_factory=lambda: [])
 
@@ -122,7 +124,12 @@ class _Reviewer:
                 "The bundle output is in the packet.",
             )
         )
-        step = scripted_success(SemanticJudgment("challenges_returned", (challenge,)))
+        judgment = (
+            SemanticJudgment("no_material_discrepancy", ())
+            if self.first_clean and not final
+            else SemanticJudgment("challenges_returned", (challenge,))
+        )
+        step = scripted_success(judgment)
         view = semantic_case_packet_view(case)
         return FinalSemanticEvaluation(
             SemanticStatus.SUCCEEDED,
@@ -147,14 +154,15 @@ def _draft(event_id: str, name: str, payload: Mapping[str, JsonValue]) -> dict[s
     }
 
 
-async def test_a_closing_review_after_a_review_asks_and_the_withheld_output_finding_has_an_id() -> (
-    None
-):
-    seed = 9700
+@pytest.mark.parametrize("first_clean", [False, True], ids=["after-advice", "after-clean-review"])
+async def test_a_closing_review_after_a_review_asks_and_the_withheld_output_finding_has_an_id(
+    first_clean: bool,
+) -> None:
+    seed = 9700 + 100 * first_clean
     obligation = protocol_id("obl_", seed + 1)
     command = protocol_id("act_", seed + 3)
     result = protocol_id("res_", seed + 5)
-    reviewer = _Reviewer(obligation, result)
+    reviewer = _Reviewer(obligation, result, first_clean=first_clean)
     app, _policy = await build_projection_application("optional", seed=seed, max_findings=5)
     app = replace(app, semantic_evaluator=reviewer)
     started = await app.start(start_request(seed, title="Strip the private constant"))
@@ -172,7 +180,7 @@ async def test_a_closing_review_after_a_review_asks_and_the_withheld_output_find
             )
         )
 
-    async def check(serial: int, frontier: Any, *, final: bool) -> tuple[Any, dict[str, Any]]:
+    async def check(serial: int, frontier: Any, *, final: bool) -> tuple[Any, Mapping[str, Any]]:
         body: dict[str, JsonValue] = {
             **request_base(protocol_id("req_", seed + serial)),
             **ids,
@@ -249,7 +257,17 @@ async def test_a_closing_review_after_a_review_asks_and_the_withheld_output_find
     # The closing review after that one asks, before the linked-check question (kept last).
     closing = reviewer.cases[1]
     assert closing.question_set[0].startswith("Review phase: final.")
-    assert repair_review_asked(reviewer.frozen[1].case)
+    frozen_case = reviewer.frozen[1].case
+    assert repair_review_asked(frozen_case)
+    # The frozen record of the earlier review itself decides, not whether it raised anything.
+    assert frozen_case.prior_review_recorded
+    assert not reviewer.frozen[0].case.prior_review_recorded
+    if first_clean:
+        assert not any(
+            row.payload is not None and row.payload.origin is FindingOrigin.SEMANTIC_MODEL_DERIVED
+            for row in frozen_case.projection.findings.values()
+        )
+        assert repair_review_asked(replace(frozen_case, prior_review_recorded=False)) is False
     assert WITHHELD_OUTPUT_QUESTION in closing.question_set
     assert "Counter-example" in closing.question_set[-1]
     assert closing.question_set.index(WITHHELD_OUTPUT_QUESTION) == len(closing.question_set) - 2
@@ -292,3 +310,21 @@ async def test_a_closing_review_after_a_review_asks_and_the_withheld_output_find
     assert type(model) is CheckSuccessModel
     cli = render_human_check(model)
     assert finding_id in cli and _CRITERION in cli
+
+
+async def test_the_prior_review_fact_round_trips_with_the_frozen_case() -> None:
+    from finishup.kernel.deterministic_checks import (
+        CaseAvailabilityFacts,
+        build_deterministic_case,
+        deterministic_case_from_json,
+        deterministic_case_to_json,
+    )
+    from finishup.kernel.reducers import replay
+
+    case = build_deterministic_case(replay(()), (), CaseAvailabilityFacts())
+    assert not case.prior_review_recorded
+    assert "prior_review_recorded" not in cast(Mapping[str, Any], deterministic_case_to_json(case))
+    marked = replace(case, prior_review_recorded=True)
+    wire = deterministic_case_to_json(marked)
+    assert cast(Mapping[str, Any], wire)["prior_review_recorded"] is True
+    assert deterministic_case_from_json(wire).prior_review_recorded

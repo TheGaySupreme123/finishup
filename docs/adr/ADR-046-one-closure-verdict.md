@@ -533,7 +533,9 @@ draft by construction: the draft, the prediction and the receipt are one functio
 The draft adds what the prediction does not say, from records only and labelled "records, not
 correctness": each quoted task criterion of the declared-coverage index (task statement sentences
 and obligation acceptance criteria, no new text matching) classified by
-`kernel.draft_receipt.draft_criteria` as `linked_pass_current` (a current, hook-observed passing
+`kernel.draft_receipt.draft_criteria` (over the whole explicit relation index,
+`evidence_scopes`, never the display-bounded evidence view, so a link past a listing bound still
+counts) as `linked_pass_current` (a current, hook-observed passing
 run linked to it), `agent_claim_only` (only the agent's own claim, reported result or resolution)
 or `none`, gaps first and at most six rows; the open fix-or-decline count (ADR-032 amendment,
 #1209); the tracked advice with no recorded response (#1162, ids); and the standing limitations

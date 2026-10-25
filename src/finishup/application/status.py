@@ -2281,12 +2281,11 @@ def _draft_criteria_json(loaded: LoadedClosureBasis) -> dict[str, Any]:
     """Classify the task's quoted criteria against the record at the basis frontier (#975)."""
 
     from finishup.kernel.draft_receipt import draft_criteria
-    from finishup.kernel.evidence_basis import build_evidence_view, evidence_view_from_json
 
     case = loaded.case
     projection, records = loaded.projection, loaded.records
     if case is not None:
-        # The case built at this very frontier: its frozen task text, freshness and evidence view.
+        # The case built at this very frontier: its frozen task text and verification freshness.
         coverage = build_verification_coverage(
             projection,
             records,
@@ -2296,15 +2295,17 @@ def _draft_criteria_json(loaded: LoadedClosureBasis) -> dict[str, Any]:
             freshness=case.verification_freshness,
             tracked_runs=case.verification_tracked_runs,
         )
-        evidence = (
-            build_evidence_view(projection, records)
-            if case.evidence_view is None
-            else evidence_view_from_json(case.evidence_view)
+        criteria = draft_criteria(
+            projection,
+            records,
+            coverage,
+            freshness=case.verification_freshness,
+            tracked_runs=case.verification_tracked_runs,
         )
     else:
-        coverage = build_verification_coverage(projection, records)
-        evidence = build_evidence_view(projection, records)
-    criteria = draft_criteria(projection, records, coverage, evidence)
+        criteria = draft_criteria(
+            projection, records, build_verification_coverage(projection, records)
+        )
     rows = tuple(
         {
             (

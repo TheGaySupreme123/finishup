@@ -27,6 +27,7 @@ from finishup.kernel.verification_coverage import (
     build_verification_coverage,
     criterion_obligations,
 )
+from finishup.protocol.models import FrozenEvidenceViewModel
 
 _TASK = (
     "The tool must write out.txt. Every row must be sorted by id. The report must list each "
@@ -85,8 +86,7 @@ def _draft(ledger: ObservedLedger):  # noqa: ANN202
     records = tuple(ledger.records)
     projection = replay(records)
     coverage = build_verification_coverage(projection, records, task_statement=_TASK)
-    evidence = build_evidence_view(projection, records)
-    return projection, draft_criteria(projection, records, coverage, evidence)
+    return projection, draft_criteria(projection, records, coverage)
 
 
 def _plan(ledger: ObservedLedger, *obligations: object) -> None:
@@ -161,3 +161,52 @@ def test_a_long_criterion_is_clipped_for_display_only() -> None:
     (row,) = [row for row in draft.rows if row.source == "obligation"]
     assert len(row.excerpt) <= 160 and row.excerpt.endswith("[cut]")
     assert row.refs == (str(identifier),)
+
+
+def _linked(view: FrozenEvidenceViewModel, obligation: object) -> tuple[set[str], set[str]]:
+    rows = {row.obligation_id: row.basis for row in view.obligations}
+    basis = rows.get(str(obligation))
+    if basis is None:
+        return set(), set()
+    return {item.result_ref for item in basis.results}, {item.claim_ref for item in basis.claims}
+
+
+def test_a_pass_past_the_listing_bound_of_eight_results_still_counts() -> None:
+    """Greptile P1 on #1217: the view lists eight results per obligation; links are uncapped."""
+
+    ledger = ObservedLedger()
+    target = _obligation(ledger, 1, _SORTED)
+    _plan(ledger, target)
+    run = ledger.passes("pytest -q")
+    _claim(ledger, 1, target, run)
+    for number in range(2, 12):  # ten newer agent-reported results on the same obligation
+        reported = ledger.run(
+            f"make part-{number}", ResultOutcome.SUCCESS, exit_status=0, observed=False
+        )
+        _claim(ledger, number, target, reported)
+    records = tuple(ledger.records)
+    projection = replay(records)
+    listed, _claims = _linked(build_evidence_view(projection, records), target)
+    assert len(listed) == 8 and str(run) not in listed  # the display bound drops the pass
+    _projection, draft = _draft(ledger)
+    (row,) = [row for row in draft.rows if row.excerpt == _SORTED]
+    assert row.standing == "linked_pass_current" and row.refs == (str(run),)
+
+
+def test_a_claim_past_the_listing_bound_of_sixty_four_obligations_still_counts() -> None:
+    """Greptile P1 on #1217: the view keeps the newest 64 obligations; links are uncapped."""
+
+    ledger = ObservedLedger()
+    target = _obligation(ledger, 1, _SORTED)
+    _plan(ledger, target)
+    claim = _claim(ledger, 1, target)
+    for number in range(2, 70):  # newer obligations outside the plan push it past the bound
+        _obligation(ledger, number, f"Part {number} must exist.")
+    records = tuple(ledger.records)
+    projection = replay(records)
+    view = build_evidence_view(projection, records)
+    assert len(view.obligations) == 64
+    assert str(target) not in {row.obligation_id for row in view.obligations}
+    _projection, draft = _draft(ledger)
+    (row,) = [row for row in draft.rows if row.excerpt == _SORTED]
+    assert row.standing == "agent_claim_only" and str(claim) in row.refs

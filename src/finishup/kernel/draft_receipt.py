@@ -14,9 +14,9 @@ say: for each quoted task criterion, what the record links to it.
 * ``none``: neither.
 
 The criteria are the declared-coverage index's own (``build_verification_coverage``: the task
-statement's sentences and the obligations' acceptance criteria). Links are the explicit relations
-the evidence view indexes (``build_evidence_view``) and the manifests that quote the criterion;
-no text similarity links anything. A linked passing run says nothing about whether the run
+statement's sentences and the obligations' acceptance criteria). Links are the whole explicit
+relation index the evidence view is built from (``evidence_scopes``, read before any display
+bound) and the manifests that quote the criterion; no text similarity links anything. A linked passing run says nothing about whether the run
 measures the criterion, so no surface calls a row verified.
 """
 
@@ -30,11 +30,15 @@ from finishup.domain.bounded_text import clip_to_limit
 from finishup.domain.events import LedgerRecord, ObligationStatus, ResultOutcome
 from finishup.domain.values import ResultId
 from finishup.domain.verification_coverage import CriterionSource, VerificationCoverage
-from finishup.kernel.evidence_basis import evidence_basis_by_obligation
+from finishup.kernel.evidence_basis import evidence_scopes
 from finishup.kernel.observed_failures import is_observed_run_record
 from finishup.kernel.projections import ProjectionState
 from finishup.kernel.verification_coverage import criterion_obligations
-from finishup.protocol.models import FrozenEvidenceViewModel
+from finishup.kernel.verification_freshness import (
+    VerificationFreshness,
+    verification_freshness,
+    verification_tracked_runs,
+)
 
 __all__ = [
     "DRAFT_STANDINGS",
@@ -88,11 +92,26 @@ def draft_criteria(
     projection: ProjectionState,
     records: tuple[LedgerRecord, ...],
     coverage: VerificationCoverage,
-    evidence: FrozenEvidenceViewModel,
+    *,
+    freshness: tuple[VerificationFreshness, ...] | None = None,
+    tracked_runs: tuple[ResultId, ...] | None = None,
 ) -> DraftCriteria:
-    """Classify each criterion of *coverage* by what the record links to it (pure, bounded)."""
+    """Classify each criterion of *coverage* by what the record links to it (pure).
 
-    by_event = {str(record.event_id): record for record in records}
+    Links are read from the whole explicit relation index (``evidence_scopes``), never from a
+    display-bounded view: a claim or a passing run past any listing bound still counts, so a
+    criterion never reads ``none`` (or a pass ``agent_claim_only``) because a list was capped.
+    Only the output rows and refs are bounded. Freshness is the evidence view's own rule: a
+    tracked run without a stale row is current; an untracked run is never current.
+    """
+
+    index = evidence_scopes(projection, records)
+    prefix = index.prefix
+    rows_by_run = verification_freshness(projection, prefix) if freshness is None else freshness
+    tracked = frozenset(
+        verification_tracked_runs(projection, prefix) if tracked_runs is None else tracked_runs
+    )
+    fresh_by_run = {row.run_ref: row.state for row in rows_by_run}
 
     def observed(result: ResultId) -> bool:
         row = projection.results.get(result)
@@ -100,20 +119,41 @@ def draft_criteria(
             return False
         action = projection.actions.get(row.payload.action_id)
         sources = (
-            by_event.get(str(row.source_event_id)),
-            None if action is None else by_event.get(str(action.source_event_id)),
+            index.by_event.get(str(row.source_event_id)),
+            None if action is None else index.by_event.get(str(action.source_event_id)),
         )
         return any(record is not None and is_observed_run_record(record) for record in sources)
+
+    def current(result: ResultId) -> bool:
+        return result in tracked and fresh_by_run.get(result, "current") == "current"
 
     def succeeded(result: ResultId) -> bool:
         row = projection.results.get(result)
         return (
             row is not None
             and row.payload is not None
-            and (row.payload.outcome is ResultOutcome.SUCCESS)
+            and row.payload.outcome is ResultOutcome.SUCCESS
         )
 
-    bases = evidence_basis_by_obligation(evidence)
+    def no_failing_case(result: ResultId) -> bool:
+        row = projection.results.get(result)
+        manifest = None if row is None or row.payload is None else row.payload.verification
+        return manifest is None or not manifest.failing
+
+    # Every readable claim and result, by the obligations it explicitly concerns (uncapped).
+    claims_by: dict[str, list[str]] = {}
+    for key, row in index.claims:
+        if row.payload is not None and str(key) in index.readable:
+            for obligation in index.scopes.get(str(key), ()):
+                claims_by.setdefault(str(obligation), []).append(str(key))
+    results_by: dict[str, list[ResultId]] = {}
+    for key, row in sorted(
+        projection.results.items(), key=lambda item: (-item[1].source_frontier, str(item[0]))
+    ):
+        if row.payload is not None and str(key) in index.readable:
+            for obligation in index.scopes.get(str(key), ()):
+                results_by.setdefault(str(obligation), []).append(key)
+
     rows: list[DraftCriterion] = []
     for criterion in coverage.criteria:
         passing: list[str] = []
@@ -131,20 +171,15 @@ def draft_criteria(
                 vouched.append(str(witness.result_id))
         obligations = criterion_obligations(projection, criterion.criterion_quote)
         for obligation in obligations:
-            basis = bases.get(str(obligation))
-            if basis is not None:
-                for result in basis.results:
-                    failing = result.verification is not None and result.verification.failing
-                    if (
-                        result.observed
-                        and result.outcome == "success"
-                        and result.freshness == "current"
-                        and not failing
-                    ):
-                        passing.append(result.result_ref)
-                    elif not result.observed and result.outcome == "success":
-                        vouched.append(result.result_ref)
-                vouched.extend(claim.claim_ref for claim in basis.claims)
+            for result in results_by.get(str(obligation), ()):
+                if not succeeded(result):
+                    continue
+                if observed(result):
+                    if current(result) and no_failing_case(result):
+                        passing.append(str(result))
+                else:
+                    vouched.append(str(result))
+            vouched.extend(claims_by.get(str(obligation), ()))
             payload = projection.obligations[obligation].payload
             if payload is not None and payload.status is ObligationStatus.RESOLVED:
                 vouched.append(str(obligation))

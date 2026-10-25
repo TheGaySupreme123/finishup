@@ -3476,9 +3476,11 @@ disclosure authority.
 In TB4 (Bun a1) a review reproduced a shipped private constant, and the agent's "repair" made the
 build refuse the affected apps; its own tests passed and the later reviews did not notice that a
 requested output was now withheld. A final-phase review whose frozen case records an earlier
-AI-powered review (`repair_review_asked`: one of its findings in the projection, or a reviewer
-assessment or advisory note in the frozen evidence view; a pure function of the frozen case, so
-recovery rebuilds the same set) adds one question to the packet's `question_set`
+AI-powered review (`repair_review_asked`: the frozen case's `prior_review_recorded`, set when an
+earlier check in the prefix recorded a successful review, whatever it raised; a case frozen before
+the field falls back to one of its findings, or a reviewer assessment or advisory note in the
+frozen evidence view; a pure function of the frozen case, so recovery rebuilds the same set; the
+case JSON carries the field only when true, so earlier case bytes are unchanged) adds one question to the packet's `question_set`
 (`WITHHELD_OUTPUT_QUESTION`, about 200 bytes): does any repair since the last review withhold or
 refuse a requested output for some inputs (a build that refuses affected apps, an empty-file
 fallback); challenge each, quoting the criterion it fails. The existing kinds carry the answer as

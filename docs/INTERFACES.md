@@ -8432,8 +8432,10 @@ and `reasons` are `predicted_receipt`'s own conclusion and reason codes (the mod
 other), so the draft and the receipt cannot disagree. `criteria` are the declared-coverage index's
 criteria (`kernel.verification_coverage.build_verification_coverage`: the task statement's
 sentences and the obligations' acceptance criteria), each classified by
-`kernel.draft_receipt.draft_criteria` from explicit relations only (the evidence view's links and
-the verification manifests that quote the criterion; an obligation states a criterion when the
+`kernel.draft_receipt.draft_criteria` from explicit relations only (the whole relation index the
+evidence view is built from, `kernel.evidence_basis.evidence_scopes`, read before the view's 64
+obligation and eight-result display bounds, and the verification manifests that quote the
+criterion; an obligation states a criterion when the
 quote occurs in its acceptance criteria or a candidate sentence is the same criterion,
 `criterion_obligations`): `linked_pass_current` (a hook-observed, current, successful run with no
 failing case), `agent_claim_only` (a claim, an agent-reported result, a manifest whose run is no
@@ -12739,8 +12741,10 @@ AI-powered finding (`fnd_…`, its `detail`). The always-sent reviewer instructi
 these rules.
 Issue #975 (ADR-006 amendment of 2026-10-25) adds one more final-phase question,
 `semantic_case.WITHHELD_OUTPUT_QUESTION`, when the frozen case records an earlier AI-powered review
-(`repair_review_asked`: one of its findings in the projection, or a reviewer assessment or advisory
-note in the frozen evidence view): does any repair since the last review withhold or refuse a
+(`repair_review_asked`: the case's `prior_review_recorded`, frozen when an earlier
+`check_recorded` in the prefix carries `semantic_status: succeeded`, whatever that review raised;
+a case frozen before the field falls back to one of its findings in the projection, or a reviewer
+assessment or advisory note in the frozen evidence view): does any repair since the last review withhold or refuse a
 requested output for some inputs (a build that refuses affected apps, an empty-file fallback),
 answered as a challenge that quotes the criterion it fails (an AI-powered finding, `fnd_…`). It
 sits before the linked-check question, which stays last. On a channel whose prepared ceiling is at

@@ -643,11 +643,15 @@ def review_question_set(
 def repair_review_asked(case: DeterministicCase) -> bool:
     """Whether an earlier AI-powered review is on record in the frozen case (#975).
 
-    One of its findings is in the projection, or the frozen evidence view carries a reviewer
-    assessment or an advisory note (both only ever come from a recorded AI-powered review). A
-    pure function of the frozen case, so recovery rebuilds the same question set.
+    The record of the review itself decides: an earlier check that recorded a successful
+    AI-powered review (``prior_review_recorded``, frozen with the case), whether or not it raised
+    anything. A case frozen before that field falls back to what such a review leaves behind: one
+    of its findings in the projection, or a reviewer assessment or advisory note in the frozen
+    evidence view. A pure function of the frozen case, so recovery rebuilds the same set.
     """
 
+    if case.prior_review_recorded:
+        return True
     if any(
         row.payload is not None and row.payload.origin is FindingOrigin.SEMANTIC_MODEL_DERIVED
         for row in case.projection.findings.values()
