@@ -8420,6 +8420,40 @@ item(s) will be disclosed on the receipt. After a fix or a decline, run check on
 request the receipt." on status text, the CLI, the
 terminal interface, the check's text, `agent_next` and the `mode: inspect` text, and a brief body's
 `closure_state` carries the same rows.
+`closure_readiness.draft_receipt` is optional on the same wire (issue #975, ADR-046 amendment of
+2026-10-25): present only on a `ready` or `ready_with_limitations` readiness that carries
+`predicted_receipt`, and omitted otherwise (and from an earlier 0.3 build, and when the criteria
+cannot be read: status then records the diagnostic `status_draft_receipt_unavailable` and never
+guesses). It is a draft of what the receipt will say, records and not correctness:
+`{label: "draft_records_not_correctness", conclusion, reasons[<=8], criteria[<=6],
+criteria_counts {linked_pass_current, agent_claim_only, none}, criteria_total, fix_or_decline_count,
+advice_unanswered[<=4], advice_unanswered_count, limitations[<=8], limitation_count}`. `conclusion`
+and `reasons` are `predicted_receipt`'s own conclusion and reason codes (the model refuses any
+other), so the draft and the receipt cannot disagree. `criteria` are the declared-coverage index's
+criteria (`kernel.verification_coverage.build_verification_coverage`: the task statement's
+sentences and the obligations' acceptance criteria), each classified by
+`kernel.draft_receipt.draft_criteria` from explicit relations only (the whole relation index the
+evidence view is built from, `kernel.evidence_basis.evidence_scopes`, read before the view's 64
+obligation and eight-result display bounds, and the verification manifests that quote the
+criterion; an obligation states a criterion when the
+quote occurs in its acceptance criteria or a candidate sentence is the same criterion,
+`criterion_obligations`): `linked_pass_current` (a hook-observed, current, successful run with no
+failing case), `agent_claim_only` (a claim, an agent-reported result, a manifest whose run is no
+current observed pass, or the agent marking the obligation resolved) or `none`. Each row is
+`{task_criterion_excerpt | obligation_criterion_excerpt (<=160 characters, a display clip of the
+quoted sentence; task-description or obligation-text content that a privacy policy may withhold as
+the omission marker), source, standing, refs[<=3]}` with `none` rows first; `refs` are
+service-minted ids (the linked runs, the agent's claims, results or resolved obligations, or for
+`none` the obligations that state the criterion). `fix_or_decline_count` is the length of
+`fix_or_decline`, `advice_unanswered` the tracked advice ids with no recorded response (newest
+first; the count equals `correctness_advisory_counts.no_recorded_response`) and `limitations` the
+first eight `standing_limitations` (their count is `limitation_count`). The MCP status and check
+text, the CLI status and check text and the terminal panel print "Draft receipt (records, not
+correctness): <conclusion>; task criteria (N): ... If it shows a problem, keep working and check
+again; then request the final receipt." (`protocol.readiness_text.draft_receipt_variants`), and
+the CLI and terminal list each criterion with its excerpt (`draft_receipt_criterion_lines`). It is
+never a Stop item: a Stop-gate text that fires anyway for a re-check ends, when it fits, with a
+pointer to it (`cli.closure_gate.DRAFT_RECEIPT_POINTER`).
 Beside the
 unchanged `blocking_conditions` it carries `state` (`action_required|ready|ready_with_limitations|unknown`),
 `gap_classification_version` (`"9"` since `requested_output_unchanged`,
@@ -12705,6 +12739,18 @@ kinds and ids: a routine `code_defect` correctness advisory (`evt_…:N`, named 
 `closure_readiness.correctness_advisory_summary`, which CLI check text now prints) or a final
 AI-powered finding (`fnd_…`, its `detail`). The always-sent reviewer instructions carry none of
 these rules.
+Issue #975 (ADR-006 amendment of 2026-10-25) adds one more final-phase question,
+`semantic_case.WITHHELD_OUTPUT_QUESTION`, when the frozen case records an earlier AI-powered review
+(`repair_review_asked`: the case's `prior_review_recorded`, frozen when an earlier
+`check_recorded` in the prefix carries `semantic_status: succeeded`, whatever that review raised;
+a case frozen before the field falls back to one of its findings in the projection, or a reviewer
+assessment or advisory note in the frozen evidence view): does any repair since the last review withhold or refuse a
+requested output for some inputs (a build that refuses affected apps, an empty-file fallback),
+answered as a challenge that quotes the criterion it fails (an AI-powered finding, `fnd_…`). It
+sits before the linked-check question, which stays last. On a channel whose prepared ceiling is at
+most `SMALL_REVIEW_CHANNEL_BYTES` (16,384, the minimal policy's 4,096 tokens) it is not asked when
+the test-quality question rides, because that packet already has no room left (#1173). It is
+bound into `case_digest` with the rest of the question set and is never in the cached instruction.
 
 ## Lossless result delivery (issue #1139)
 

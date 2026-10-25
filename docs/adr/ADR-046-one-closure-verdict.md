@@ -515,3 +515,43 @@ a standing disclosure that freshness relied on a caller-asserted complete input 
 never agent work, a receipt blocker or a Stop item, and it is proof-tolerated. ADR-042 owns the
 input/change and declaration rules. Actual failed and missing required checks keep their existing
 gap effects.
+
+## Amendment 2026-10-25 (issue #975): the draft receipt, before the receipt
+
+Maintainer acknowledgement (TheGaySupreme123, 2026-10-25 comment on #975, completion-integrity
+plan, owner decision F "extend the existing preview path; no new tool"): when readiness is ready,
+check and status show a draft of what the receipt will say, so the agent can keep working when the
+draft shows a problem and then request the final receipt. It adds one optional field to the
+unreleased `status-result` 1.4.0 (and so to 1.5.0 and to `check-result`, which embeds the same
+readiness) and changes no released wire shape. It grants no runtime, credential, disclosure or
+destructive-action authority.
+
+`closure_readiness.draft_receipt` is present only on a `ready` or `ready_with_limitations`
+readiness that carries `predicted_receipt`. Its `conclusion` and `reasons` are copied from that
+prediction and the model refuses a draft that differs, so the equality of section 3 extends to the
+draft by construction: the draft, the prediction and the receipt are one function over one context.
+The draft adds what the prediction does not say, from records only and labelled "records, not
+correctness": each quoted task criterion of the declared-coverage index (task statement sentences
+and obligation acceptance criteria, no new text matching) classified by
+`kernel.draft_receipt.draft_criteria` (over the whole explicit relation index,
+`evidence_scopes`, never the display-bounded evidence view, so a link past a listing bound still
+counts) as `linked_pass_current` (a current, hook-observed passing
+run linked to it), `agent_claim_only` (only the agent's own claim, reported result or resolution)
+or `none`, gaps first and at most six rows; the open fix-or-decline count (ADR-032 amendment,
+#1209); the tracked advice with no recorded response (#1162, ids); and the standing limitations
+the receipt will disclose. A linked passing run is not proof a criterion is met, so no surface
+calls a row verified. Status, the check, the MCP text, the CLI and the terminal panel print it; the
+Stop gate never asks for it (ADR-033 D1) and only points to it at the end of a gate text that
+fires anyway. A status read that cannot classify the criteria omits the draft with the diagnostic
+`status_draft_receipt_unavailable` instead of guessing.
+
+The closing review asks one more question after an earlier AI-powered review: whether any repair
+since withholds or refuses a requested output for some inputs (ADR-006 amendment of the same date).
+
+Verification: `tests/unit/kernel/test_draft_receipt.py`,
+`tests/unit/protocol/test_draft_receipt_text.py`,
+`tests/integration/closure/test_draft_receipt_shape.py`,
+`tests/integration/application/test_withheld_output_review.py`; `assert_surfaces_agree`
+(`tests/integration/closure/test_closure_shapes.py`, and with it the property test
+`tests/property/test_closure_verdict_properties.py`) now also requires every ready status view to
+carry the draft and the draft's conclusion to be the receipt's.

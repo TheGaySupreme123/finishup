@@ -409,6 +409,14 @@ def assert_surfaces_agree(
         assert int(readiness.receipt_blocking_finding_count or "0") == counts[0] + counts[2], view
         # State and actionable list agree on every view.
         assert (readiness.state == "action_required") == bool(readiness.agent_actionable), view
+        # #975: a ready readiness carries the draft receipt, whose conclusion is the receipt's.
+        draft = readiness.draft_receipt
+        if readiness.state in {"ready", "ready_with_limitations"}:
+            assert draft is not None, view
+            assert draft.conclusion == conclusion, view
+            assert draft.label == "draft_records_not_correctness", view
+        else:
+            assert draft is None, view
         mcp = summary_for_status(status.as_json())
         assert _TEXT_CONCLUSION.search(mcp) is not None and (
             _TEXT_CONCLUSION.search(mcp).group(1) == conclusion  # type: ignore[union-attr]
@@ -450,8 +458,11 @@ def assert_surfaces_agree(
             wire.to_disclose,
         ) == counts
 
+    drafted = gathered.status["compact"].closure_readiness.draft_receipt
     for fmt, receipt in gathered.receipts.items():
         assert receipt.conclusion == conclusion, fmt
+        # #975 (ADR-046 amendment): the draft shown before the receipt reads what the receipt says.
+        assert drafted is None or drafted.conclusion == receipt.conclusion, fmt
         if receipt.document is not None:
             document = receipt.document
             assert document["conclusion"] == conclusion
