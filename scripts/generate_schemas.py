@@ -27,6 +27,7 @@ from typing import Final, cast
 from pydantic import TypeAdapter
 from pydantic_core import core_schema
 
+from finishup.domain.review_guidance import ReviewGuidance
 from finishup.protocol.canonical import JsonValue, canonical_encode
 from finishup.protocol.models import MAX_REVIEW_EXCERPTS
 
@@ -4200,7 +4201,22 @@ def _check_result_v1_6_schema(entry: _RegistryEntry) -> dict[str, JsonValue]:
     cast(list[JsonValue], cast(dict[str, JsonValue], checklist_properties["next"])["enum"]).append(
         "follow_overall_next"
     )
+    # Issue #1209: status's open fix-or-decline items on the inspection's ``remaining`` (optional,
+    # omitted when none); historical 1.4/1.5 bytes stay frozen.
+    remaining = cast(dict[str, JsonValue], definitions["inspection_remaining"])
+    inspected_obligation = cast(dict[str, JsonValue], definitions["inspection_obligation"])
+    cast(dict[str, JsonValue], remaining["properties"])["fix_or_decline"] = _fix_or_decline_array(
+        json.loads(
+            json.dumps(
+                cast(dict[str, JsonValue], inspected_obligation["properties"])["obligation_id"]
+            )
+        )
+    )
     success = cast(dict[str, JsonValue], definitions["success"])
+    cast(dict[str, JsonValue], success["properties"])["review_guidance"] = {
+        "type": "string",
+        "const": ReviewGuidance.MATERIAL_CONCERNS.value,
+    }
     cast(dict[str, JsonValue], success["properties"])["closure_readiness"] = {
         "$ref": SCHEMA_NAMESPACE
         + "operations/status-result-1.4.0.schema.json#/$defs/closure_readiness"
@@ -4558,8 +4574,6 @@ def _add_check_inspection(document: dict[str, JsonValue]) -> None:
             "predicted_conclusion": enum(_RECEIPT_CONCLUSIONS),
             "readiness": enum(("action_required", "ready", "ready_with_limitations", "unknown")),
             "standing_limitations": gap_codes,
-            # Issue #1209: status's open fix-or-decline items; omitted when none.
-            "fix_or_decline": _fix_or_decline_array(id_pattern("obl")),
         },
         "required": [
             "agent_actionable",

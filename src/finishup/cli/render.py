@@ -20,6 +20,7 @@ from finishup.domain.receipts import (
     review_deferred_before_first_edit,
     semantic_redacted_value_text,
 )
+from finishup.domain.review_guidance import review_guidance_line
 from finishup.domain.review_input_render import (
     has_agent_suppliable_missing,
     overall_next_instruction,
@@ -498,8 +499,12 @@ def render_human_check(result: CheckSuccessModel) -> str:
         lines.append(f"Suppressed findings: {suppressed}")
     if result.overall_next is not None:
         lines.append(_render_overall_next(result.overall_next, result.finding_checklist))
-    if result.closure_readiness is not None and result.closure_readiness.evidence_basis_summary:
-        lines.append(result.closure_readiness.evidence_basis_summary)
+    if result.closure_readiness is not None:
+        # #1145: a routine note's id (a reviewer counter-example) is named only here on a check.
+        if result.closure_readiness.correctness_advisory_summary:
+            lines.append(result.closure_readiness.correctness_advisory_summary)
+        if result.closure_readiness.evidence_basis_summary:
+            lines.append(result.closure_readiness.evidence_basis_summary)
     if result.finding_checklist is not None:
         lines.extend(
             _render_checklist(
@@ -578,7 +583,8 @@ def render_check_review_lines(result: CheckSuccessModel) -> tuple[str, ...]:
     never as an instruction; the read lines carry only closed tokens and opaque identities.
     """
 
-    lines: list[str] = []
+    guidance = review_guidance_line(result.review_guidance)
+    lines: list[str] = [guidance] if guidance else []
     if result.reviewer is not None:
         lines.extend(
             render_reviewer_lines(

@@ -19,10 +19,8 @@ Deliver work, evidence and closure.
 
 # Done
 
-At `ready_with_limitations`, first fix, or decline with a reason, each `fix_or_decline` item status
-names (guidance `receipt.md`; never a Stop item); then nothing further is to do: request the receipt
-without another check; `standing_limitations` are disclosed, never tasks. Then `work_closed` if
-complete.
+At `ready_with_limitations`, fix/decline `fix_or_decline` items, then request the receipt without
+another check; `standing_limitations` are disclosed, never tasks. Then `work_closed` if complete.
 
 # Evidence
 

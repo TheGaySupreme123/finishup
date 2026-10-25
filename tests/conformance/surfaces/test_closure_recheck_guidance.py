@@ -174,7 +174,10 @@ def test_the_initialize_safety_floor_carries_the_closure_order() -> None:
     assert "answer only the findings it returned that remain unanswered" in text
     assert "a material repair needs a qualifying recheck" in text
     assert "and `work_closed` do not need a recheck" in text
-    assert "Non-actionable observation-authored findings need no answer." in text
+    assert (
+        "Non-actionable observation-authored findings are FinishUP coverage limits the receipt "
+        "discloses; they need no answer." in text
+    )
 
 
 @pytest.mark.parametrize("path", _SKILLS, ids=lambda path: path.parent.parent.name)

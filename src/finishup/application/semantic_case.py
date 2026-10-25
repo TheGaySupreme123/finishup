@@ -398,18 +398,39 @@ REVIEW_PHASE_QUESTIONS: Final[Mapping[SemanticBudgetProfile, str]] = MappingProx
         ),
     }
 )
-# Asked only when the packet carries the agent-declared coverage index, so a review that cannot see
-# a manifest never pays for these rules in every exchange (the #1173 read budget, ADR-006).
+# Issue #1145 (TB4: an oracle repeating the implementation's stopping rule, a validator sharing
+# the generator's window, a check walking the same file glob): a check whose expected value
+# shares the implementation's derivation cannot fail when the implementation is wrong. Asked when
+# an obligation row the packet carries links a command result or observed verification, or the
+# packet carries the coverage index. The reviewer raises such a check as one ID'd challenge with
+# a counter-example the agent can run, through the existing kinds: a routine ``code_defect``
+# becomes an advisory note (#1042, #1162), a final challenge an AI-powered finding; both are
+# advisory. It is short because every exchange of such a review carries it: at the minimal policy
+# a longer question leaves a closing review no room for even one content read (the #1173 read
+# budget, ADR-006).
 _TEST_QUALITY_QUESTION: Final = (
+    "Say where each decisive linked check gets its expected value. One sharing the "
+    "implementation's code path, convention, glob, predicate, clock start or sampling window "
+    "cannot fail: challenge it (at most two, task criteria first), message_to_main_agent ending "
+    "'Counter-example: <an input or probe to run>'."
+)
+# Added before it only when the packet carries the agent-declared coverage index (#1170), so a
+# review that cannot see a manifest never pays for these rules.
+_TEST_MANIFEST_RULES: Final = (
     "The coverage index lists agent-declared test manifests: judge whether each check measures "
     "its quoted criterion, uses independent data and expectations, and ran on the shipped state; "
-    "an agent-declared manifest is not independent proof. Name circular, tuned, hard-coded or "
-    "redundant checks and any expected value copied from the answer; test volume is not evidence "
-    "quality. If a useful check remains, begin the first line of review_summary with "
-    "'Discriminating check: <one concrete check>'; do not invent a test when no useful "
-    "discriminator exists. Do not request another unchanged run or more tests merely to fill a "
-    "gap."
+    "an agent-declared manifest is not independent proof. Name tuned, hard-coded or redundant "
+    "checks and any expected value copied from the answer; test volume is not evidence quality. "
+    "If a useful check remains, begin the first line of review_summary with 'Discriminating "
+    "check: <one concrete check>'; do not invent a test when no useful discriminator exists. Do "
+    "not request another unchanged run or more tests merely to fill a gap. "
 )
+
+
+def _test_quality_question(*, test_manifests: bool) -> str:
+    return (_TEST_MANIFEST_RULES if test_manifests else "") + _TEST_QUALITY_QUESTION
+
+
 # Asked only when the frozen case records a verification with later changes (#1143): AI review
 # never blocks on staleness; it weighs the verification against those changes and asks.
 FRESHNESS_REVIEW_QUESTION: Final = (
@@ -567,13 +588,16 @@ def review_question_set(
     *,
     freshness: bool = False,
     test_manifests: bool = False,
+    linked_verification: bool = False,
 ) -> tuple[str, ...]:
     """Return the closed question set for one review phase.
 
     The final phase adds one blocker question when ``blockers`` (``recorded_blockers``) is not
     empty; the routine phase never judges blockers. ``freshness`` adds the advisory freshness
     question when a recorded verification has later changes (``verification_freshness_asked``);
-    ``test_manifests`` appends the test-quality question when the packet carries the coverage index.
+    ``test_manifests`` (the packet carries the coverage index) or ``linked_verification`` (an
+    obligation row in the packet links a command result or observed verification, #1145) appends
+    the test-quality question, last, with the manifest rule only when the index is carried.
     """
 
     parsed = parse_semantic_budget_profile(phase)
@@ -587,7 +611,11 @@ def review_question_set(
         *((FRESHNESS_REVIEW_QUESTION,) if freshness else ()),
         *_REVIEW_QUESTIONS,
         *extra,
-        *((_TEST_QUALITY_QUESTION,) if test_manifests else ()),
+        *(
+            (_test_quality_question(test_manifests=test_manifests),)
+            if test_manifests or linked_verification
+            else ()
+        ),
     )
 
 
@@ -6600,6 +6628,52 @@ def _observed_evidence(record: EvidenceProjectionRecord) -> bool:
     )
 
 
+def _links_verification(obligation: Mapping[str, JsonValue], projection: ProjectionState) -> bool:
+    """Whether a sent obligation row links a check the reviewer can name (#1145).
+
+    Reads only the refs the row itself carries: a linked result of a command action, or an
+    observed verification ref, from its ``evidence_basis`` or ``resolved_basis``. An edit's result
+    or a row whose links were withheld is no check to judge.
+    """
+
+    results: list[JsonValue] = []
+    for key, result_key, observed_key in (
+        ("evidence_basis", "results", "observed_refs"),
+        ("resolved_basis", "claimed_result_refs", "latest_observed_verification_refs"),
+    ):
+        basis = obligation.get(key)
+        if not isinstance(basis, Mapping):
+            continue
+        basis = cast(Mapping[str, JsonValue], basis)
+        if basis.get(observed_key):
+            return True
+        listed = basis.get(result_key)
+        if isinstance(listed, list):
+            results.extend(cast(list[JsonValue], listed))
+    for row in results:
+        token = (
+            cast(Mapping[str, JsonValue], row).get("result_ref")
+            if isinstance(row, Mapping)
+            else row
+        )
+        if type(token) is not str:
+            continue
+        try:
+            result = projection.results.get(validate_result_id(token))
+        except (TypeError, ValueError):
+            continue
+        if result is None or result.payload is None:
+            continue
+        action = projection.actions.get(result.payload.action_id)
+        if (
+            action is not None
+            and action.payload is not None
+            and action.payload.action_kind is ActionKind.COMMAND
+        ):
+            return True
+    return False
+
+
 def _resolved_criterion_basis(
     payload: ObligationPublishedPayload,
     projection: ProjectionState,
@@ -7466,6 +7540,8 @@ def _build_semantic_case_once(
     disclosures = _obligation_disclosures(projection, allowed)
     # The disclosures of the obligations this packet carries; they travel in their own row.
     carried_disclosures: dict[str, tuple[str, dict[str, JsonValue]]] = {}
+    # Obligation rows that link a command result or observed verification as sent (#1145).
+    verification_linked_item_ids: set[str] = set()
     for obligation_id, record in sorted(
         projection.obligations.items(), key=lambda pair: str(pair[0])
     ):
@@ -7558,6 +7634,8 @@ def _build_semantic_case_once(
         obligation_ids.append(item.item_id)
         if fit != "whole":
             over_limit.add(item.item_id)
+        if fit != "replaced" and _links_verification(obligation_json, projection):
+            verification_linked_item_ids.add(item.item_id)
         if fit == "replaced":
             omissions.append(
                 _omit(source_ref, DataCategory.OBLIGATION_TEXT, "obligation", "not_selected")
@@ -9130,6 +9208,9 @@ def _build_semantic_case_once(
             item.item_id in packet.verification_coverage_item_ids and item.linked_subject_refs
             for item in items
         ),
+        # #1145: an obligation row the packet still carries that links a check the reviewer can
+        # name; a row the obligation cap or byte bound dropped asks nothing.
+        linked_verification=any(item.item_id in verification_linked_item_ids for item in items),
     )
     # tb4n5: which excerpts supply the follow-up beyond the first packet, so the provider-bound
     # manifest recomputes ``supplied`` from the ones admission kept. Bound into the digest only for

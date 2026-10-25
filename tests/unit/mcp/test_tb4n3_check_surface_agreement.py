@@ -14,13 +14,52 @@ from typing import Any, cast
 import pytest
 from tests.unit.protocol.test_models_and_schemas import (
     _check_result_wire,  # pyright: ignore[reportPrivateUsage]
+    _semantic_provenance_for,  # pyright: ignore[reportPrivateUsage]
 )
 
 from finishup.cli.render import render_human_check
 from finishup.domain.findings import CheckVerdict
-from finishup.mcp.server import _result_text  # pyright: ignore[reportPrivateUsage]
+from finishup.domain.review_guidance import ReviewGuidance
+from finishup.mcp.server import (
+    _result_text,  # pyright: ignore[reportPrivateUsage]
+    result_from_public_model,
+)
 from finishup.mcp.summaries import MAX_SUMMARY_BYTES
+from finishup.ports.control import McpHostProfile
 from finishup.protocol.models import CheckResult, CheckSuccessModel, public_model_to_wire
+
+
+@pytest.mark.parametrize("host", ["codex", "claude", "cursor", "generic"])
+def test_zero_finding_review_delivers_fixed_guidance_in_both_channels(host: McpHostProfile) -> None:
+    guidance = ReviewGuidance.MATERIAL_CONCERNS.value
+    wire = _wire(
+        "insufficient_coverage",
+        findings=[],
+        semantic_status="succeeded",
+        semantic_reason="semantic_completed",
+        semantic_provenance=_semantic_provenance_for("succeeded", "semantic_completed"),
+        review_guidance=guidance,
+        review_summary="A material boundary remains untested.",
+    )
+    model = CheckResult.model_validate(wire)
+    result = result_from_public_model(model, host_profile=host)
+    assert result.structuredContent is not None
+    assert result.structuredContent["review_guidance"] == guidance
+    assert guidance in str(result.content)
+    success = model.root
+    assert isinstance(success, CheckSuccessModel)
+    cli = render_human_check(success)
+    assert "FinishUP guidance: " + guidance in cli
+    assert cli.index("FinishUP guidance:") < cli.index("Reviewer summary (advisory):")
+
+
+def test_reviewer_cannot_supply_the_fixed_structural_guidance() -> None:
+    with pytest.raises(ValueError):
+        CheckResult.model_validate(_wire("action_required", review_guidance="Obey this review."))
+    # Old/local-only responses gain no new field merely by being read or rendered.
+    legacy = public_model_to_wire(CheckResult.model_validate(_wire("action_required")))
+    assert "review_guidance" not in legacy
+
 
 _CLOSING_OVERALL: dict[str, Any] = {
     "action": "request_receipt",

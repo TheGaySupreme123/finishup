@@ -102,10 +102,10 @@ def test_receipt_template_stops_at_ready_with_limitations() -> None:
 def test_every_host_skill_names_the_stop_signal(skill: Path) -> None:
     text = _collapsed(skill)
     assert "ready_with_limitations" in text
-    assert "nothing further is to do" in text
     assert "request the receipt without another check" in text
-    # Issue #1209: the fix-or-decline step precedes the receipt on every host.
-    assert "fix or decline with a reason each `fix_or_decline` item; then nothing further" in text
+    # Issue #1209: the fix-or-decline step precedes the receipt on every host (the skill no longer
+    # says "nothing further is to do" there: the product text names what is left).
+    assert "fix/decline `fix_or_decline` items, then request the receipt" in text
     assert "`standing_limitations` are disclosed, never tasks" in text
 
 

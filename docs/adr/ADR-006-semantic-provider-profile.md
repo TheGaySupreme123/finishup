@@ -3390,3 +3390,35 @@ keeps the original criterion/assumption, alternative outcomes, proposed check, a
 evidence. An answer remains advisory and non-rulable; no check is automatically run or required,
 and a missing result is a coverage limit rather than proof of a defect. Exact contracts and
 offline coverage: [reviewer exchanges](../INTERFACES.md#reviewer-completion-exchanges-issue-1118-unit-3-adr-006).
+
+### 2026-10-25 amendment — linked checks that share the implementation's derivation (#1145)
+
+Maintainer acknowledgement: the 2026-10-25 comment on #1145 requests this scoped work as part of
+the completion-integrity plan. It is advisory only and grants no new network, credential, runtime
+or disclosure authority.
+
+In TB4 the agent's own tests often derived their expected value from the same code path,
+convention, file glob or inventory, predicate, clock start or sampling window as the
+implementation, so they passed while the hidden grader failed; no manifest was declared, so the
+#1170 question never rode those reviews. The test-quality question is now asked when an
+obligation row the packet carries links a command result or an observed verification (its
+`evidence_basis` or `resolved_basis`), as well as when the packet carries the coverage index. It
+asks where each decisive linked check gets its expected value. A check that shares the
+implementation's derivation cannot fail when the implementation is wrong: the reviewer challenges
+it, at most two per review with the task's stated criteria first, and ends `message_to_main_agent`
+with `Counter-example: <an input or probe to run>`. The existing kinds carry it, so every host
+sees an id: a routine `code_defect` becomes a correctness advisory note (`evt_…:N`, #1162) and a
+final challenge an AI-powered finding (`fnd_…`), both advisory. No finding kind, schema field or
+review round is added. The manifest rules (metric, independence, shipped state,
+`Discriminating check: …`) are prepended only when the index is carried.
+
+Trade-off: the question rides the packet's `question_set`, never the always-sent instruction, so
+the cached instruction prefix is unchanged (#1172). It is kept to about 300 bytes because every
+exchange of such a review carries it: at the minimal policy it costs one of #1173's two content
+reads, and a closing review, whose phase question is the longest, still fits one
+(`test_the_test_quality_question_costs_one_content_read_at_the_minimal_policy`, case
+`closing-linked-check`, pins it with about 25 bytes to spare). A closing review that also carries
+the index had, and keeps, no room for a read at the minimal policy: a read attempt ends it as
+`case_capacity_exceeded`, while a review that reads nothing concludes. Changing the question set
+changes the case digest of reviews that now ask it; a pending disclosure approval prepared by an
+older build for such a case fails closed (`audit_failed`) rather than sending a different case.
