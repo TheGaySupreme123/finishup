@@ -12809,8 +12809,11 @@ line of the review summary. The prior rows come from the frozen prefix, so recov
 The check result (check-result 1.6.0 success, in place; 1.7.0 follows) carries
 `correctness_advisories`: each row this check recorded, as `advisory_id`, `origin`
 (`routine_correctness_note` for a row without one), `subject_refs` and the privacy-projected
-`summary` (`finding_summary`). It is derived from the recorded check after commit, so a commit, a
-same-id replay and `status view=operation` agree, and it is paged with the actionable fields. CLI
+`summary` (`finding_summary`). It is derived from the recorded check after commit, so a commit and a
+same-id replay agree, and it is paged with the actionable fields. `status view=operation`
+carries the same rows in `check_outcome.correctness_advisories` without the summary (identity,
+origin, subjects; structural only, status-result 1.4.0/1.5.0 in place), so recovering a lost
+check response keeps the identities `respond` answers. CLI
 and MCP text list the rows under a fixed "Tracked reviewer advice" header. Closure readiness
 (status-result 1.4.0, in place; check embeds it) carries `correctness_advisory_counts` (the
 receipt's `total`/`no_recorded_response`/`withheld_may_answer`) whenever the task has advice, and
