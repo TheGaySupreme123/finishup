@@ -23,7 +23,6 @@ from finishup.domain.events import (
 from finishup.domain.values import JsonObject, ObligationId, ResultId
 from finishup.kernel.check_standing import check_standing
 from finishup.kernel.claims import effective_claim_items
-from finishup.kernel.command_attempts import attempted_items_for_obligation
 from finishup.kernel.correctness_advisories import correctness_advisory_index
 from finishup.kernel.observed_failures import is_observed_run_record
 from finishup.kernel.plan_scope import current_plan_scope
@@ -536,6 +535,35 @@ def _latest_run(basis: StatusObligationEvidenceModel | None) -> str:
     return "possibly_stale" if latest.freshness == "unknown" else "success"
 
 
+def _current_check_verdicts(
+    state: ProjectionState, prefix: tuple[LedgerRecord, ...]
+) -> Counter[str]:
+    """Every verified row of the current check, once each by its row identity, before caps.
+
+    "Current" is the evidence view's applicability rule: the standing check, not superseded, not
+    bounded by an earlier frontier, on a current projection. The view keeps four assessments per
+    obligation for display; a count must not hide a later negative row behind that bound.
+    """
+
+    standing = check_standing(state, prefix)
+    record = standing.check_record
+    if (
+        record is None
+        or standing.superseded
+        or standing.bounds_conclusion
+        or state.freshness is not LedgerFreshness.CURRENT
+        or record.redaction is not RedactionState.PRESENT
+        or record.event_id in redaction_targets(prefix)[0]
+        or not isinstance(record.payload, CheckRecordedPayload)
+    ):
+        return Counter()
+    rows = {
+        (str(record.event_id), index): str(row["verdict"])
+        for index, row in enumerate(record.payload.verified)
+    }
+    return Counter(rows.values())
+
+
 def decision_status_line(
     state: ProjectionState,
     records: tuple[LedgerRecord, ...],
@@ -550,8 +578,9 @@ def decision_status_line(
 
     Records, not correctness: the obligations in the current plan by status, each one's newest
     linked result by outcome and freshness (``build_evidence_view``, as ``status
-    view=obligations`` shows it), requested items with no recorded attempt, the current check's
-    reviewer assessments that were not supported or not assessable, unanswered advice and open
+    view=obligations`` shows it), requested items unattempted by the
+    ``requested_item_never_attempted`` test, every verified row of the current check that was not
+    supported or not assessable (before display bounds), unanswered advice and open
     fix-or-decline items. Zero-count parts are omitted and at most two ids are named per part.
     Closed words, counts and service-minted ids only. ``reviewer=False`` keeps only the ledger
     counts (the receipt carries the rest in its own sections).
@@ -559,8 +588,9 @@ def decision_status_line(
 
     if not state.obligations:
         return ""
+    prefix = tuple(row for row in records if row.ledger.ingestion_sequence <= state.frontier)
     view = build_evidence_view(
-        state, records, freshness=freshness, tracked_runs=tracked_runs, resolution=False
+        state, prefix, freshness=freshness, tracked_runs=tracked_runs, resolution=False
     )
     bases = evidence_basis_by_obligation(view)
     scope = current_plan_scope(state.plans, state.coverage_gaps)
@@ -574,8 +604,6 @@ def decision_status_line(
     )
     statuses: Counter[str] = Counter()
     runs: dict[str, list[str]] = {key: [] for key, _ in _RUN_PARTS}
-    unattempted_items = 0
-    unattempted: list[str] = []
     for ref in active:
         record = state.obligations.get(ObligationId(ref))
         payload = None if record is None else record.payload
@@ -584,11 +612,13 @@ def decision_status_line(
             continue
         statuses[payload.status.value] += 1
         runs[_latest_run(bases.get(ref))].append(ref)
-        attempted = attempted_items_for_obligation(state, ObligationId(ref))
-        missing = sum(item.value not in attempted for item in payload.requested_items)
-        if missing:
-            unattempted_items += missing
-            unattempted.append(ref)
+    # The work-integrity attempt rule (same-path files, observed planned commands, inputs never
+    # owed), never a plain string match.
+    from finishup.kernel.acceptance_risk import unattempted_requested_items
+
+    missing = unattempted_requested_items(state, prefix, tuple(ObligationId(ref) for ref in active))
+    unattempted_items = sum(count for _, count in missing)
+    unattempted = [str(obligation) for obligation, _ in missing]
     status_text = ", ".join(
         f"{statuses[key]} {label}"
         for key, label in (
@@ -615,17 +645,7 @@ def decision_status_line(
         ),
     ]
     if reviewer:
-        assessed: dict[tuple[str, str, str], str] = {}
-        for row in view.obligations:
-            for assessment in row.basis.assessments:
-                if assessment.applicability == "current":
-                    key = (
-                        str(assessment.check_event_id),
-                        str(assessment.requirement_or_claim),
-                        ",".join(assessment.cited_refs),
-                    )
-                    assessed[key] = assessment.verdict
-        verdicts = Counter(assessed.values())
+        verdicts = _current_check_verdicts(state, prefix)
         reviewer_text = ", ".join(
             f"{verdicts[key]} {label}"
             for key, label in (

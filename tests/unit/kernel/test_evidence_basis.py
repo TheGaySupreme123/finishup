@@ -1037,3 +1037,44 @@ def test_decision_status_line_names_at_most_two_ids_and_rejects_foreign_text() -
         assert safe_status_line(f"Ledger (records, not correctness): {foreign}; ") == ""
     assert find_status_line(f"The receipt retains 1 claim reference. {line} Later.") == line
     assert find_status_line("Recorded evidence links: status view=obligations.") == ""
+
+
+def test_decision_line_counts_a_negative_row_past_the_display_bound() -> None:
+    """#1139 (PR #1216 review): four supported rows then a negative one on one obligation.
+
+    The evidence view shows four assessments per obligation; the line counts every row of the
+    current check by its identity, so the fifth, negative row is not hidden.
+    """
+
+    from finishup.kernel.evidence_basis import decision_status_line
+
+    case, records = _case()
+    check = cast(Any, records[4].payload)
+    rows = tuple(
+        JsonObject(
+            {
+                "requirement_or_claim": f"Supported claim {n}",
+                "verdict": "supported",
+                "cited_refs": (obl(1),),
+                "snippet": "The probe passed",
+            }
+        )
+        for n in range(4)
+    ) + (
+        JsonObject(
+            {
+                "requirement_or_claim": "The probe distinguishes outcomes",
+                "verdict": "not_supported",
+                "cited_refs": (obl(1),),
+                "snippet": "The probe passed",
+            }
+        ),
+    )
+    payload = replace(check, verified=rows)
+    records = (*records[:4], _envelope(30, "check_recorded", payload), records[5])
+    shown = evidence_basis_by_obligation(
+        build_evidence_view(case.projection, records, freshness=(), tracked_runs=())
+    )[str(obl(1))].assessments
+    assert [row.verdict for row in shown] == ["supported"] * 4  # the display bound
+    line = decision_status_line(case.projection, records, freshness=(), tracked_runs=())
+    assert "reviewer (current check): 1 not supported;" in line

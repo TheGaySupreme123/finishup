@@ -354,8 +354,10 @@ review summary, `totals` sat in the pages the continuation called optional prove
 - `evidence_basis_summary` is now a counted line composed by `kernel.evidence_basis.
   decision_status_line` from existing projections: the current plan's obligations by status, each
   one's newest linked result by outcome and freshness (the same `build_evidence_view` that
-  `status view=obligations` shows), requested items with no recorded attempt, the current check's
-  reviewer assessments that were `not_supported` or `not_assessable`, unanswered advice
+  `status view=obligations` shows), requested items with no recorded attempt by the
+  `requested_item_never_attempted` test (same-path files and hook-observed planned commands count;
+  input items are never owed), every verified row of the current check that was `not_supported` or
+  `not_assessable` (counted once per row before the view's display bounds), unanswered advice
   (`correctness_advisory_counts.no_recorded_response`) and open `fix_or_decline` items. It begins
   `Ledger (records, not correctness): `, omits zero-count parts, names at most two obligation ids
   per part (`+N more` for the rest) and ends `per-obligation detail: status view=obligations.`

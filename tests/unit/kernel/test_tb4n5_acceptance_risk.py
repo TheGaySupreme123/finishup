@@ -423,3 +423,65 @@ def test_an_empty_scope_claim_does_not_lend_its_ids() -> None:
         str(foreign) not in refs for obligation, refs in admitted.items() if obligation != _NEVER
     )
     assert all(_NOTE not in refs for refs in admitted.values())
+
+
+def test_decision_line_counts_unattempted_items_by_the_work_integrity_rule() -> None:
+    """#1139 (PR #1216 review): the ledger line uses ``requested_item_never_attempted``'s test.
+
+    ``_CLEAN``'s command is credited by the hook-observed ``pytest -q`` run alone (no attempted
+    item names it), and a ``./``-prefixed attempted path is the same requested file. Only
+    ``_NEVER``'s output stays unattempted, so the line and the acceptance flag agree.
+    """
+
+    from finishup.kernel.acceptance_risk import unattempted_requested_items
+    from finishup.kernel.evidence_basis import decision_status_line
+
+    ledger = _ledger()
+    ledger.append(
+        _ACTION,
+        ActionRecordedPayload(
+            action_id("act_00000000-0000-4000-8000-00000000d009"),
+            ActionKind.EDIT,
+            "Wrote the summary again",
+            obligation_refs=(_OFF,),
+            attempted_items=("./out/summary.md",),
+        ),
+        observed=False,
+    )
+    state = replay(ledger.prefix)
+    obligations = (_CLEAN, _SELF, _NEVER, _OFF)
+    assert unattempted_requested_items(state, ledger.prefix, obligations) == ((_NEVER, 1),)
+    flagged = dict(acceptance_risk(state, ledger.prefix, obligations))
+    assert ITEM_NEVER_ATTEMPTED in flagged[_NEVER]
+    assert all(ITEM_NEVER_ATTEMPTED not in flagged.get(key, ()) for key in (_CLEAN, _OFF))
+    line = decision_status_line(state, ledger.prefix, reviewer=False)
+    assert f"1 requested item unattempted ({_NEVER})" in line
+
+
+def test_a_same_path_attempt_is_not_unattempted() -> None:
+    """``solve.sage`` requested, ``./solve.sage`` attempted: the same file (ADR-045)."""
+
+    from finishup.kernel.acceptance_risk import unattempted_requested_items
+
+    ledger = ObservedLedger()
+    ledger.append(_OBLIGATION_V1_1, _obligation(_NEVER, (_output("solve.sage"),)), observed=False)
+    ledger.append(
+        EventSchema("plan_published", "1.0.0"),
+        PlanPublishedPayload(1, "Plan", (_NEVER,)),
+        observed=False,
+    )
+    state = replay(ledger.prefix)
+    assert unattempted_requested_items(state, ledger.prefix, (_NEVER,)) == ((_NEVER, 1),)
+    ledger.append(
+        _ACTION,
+        ActionRecordedPayload(
+            action_id("act_00000000-0000-4000-8000-00000000d010"),
+            ActionKind.EDIT,
+            "Wrote the solver",
+            obligation_refs=(_NEVER,),
+            attempted_items=("./solve.sage",),
+        ),
+        observed=False,
+    )
+    state = replay(ledger.prefix)
+    assert unattempted_requested_items(state, ledger.prefix, (_NEVER,)) == ()

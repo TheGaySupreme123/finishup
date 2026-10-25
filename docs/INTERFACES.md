@@ -12873,7 +12873,9 @@ Shared closure readiness supplies `evidence_basis_summary` for CLI/MCP check and
 closure views, and an already-required Stop continuation. Since #1139 (ADR-043 amendment of
 2026-10-25) it is a counted line, not a fixed pointer: obligations by status, each one's newest
 linked result (success, failed or partial, stale, possibly stale, unknown outcome, no linked run),
-requested items unattempted, the current check's `not_supported`/`not_assessable` assessments,
+requested items unattempted (the `requested_item_never_attempted` attempt test: same-path files
+and hook-observed planned commands count, input items are never owed; `totals` keeps its exact-value
+count), every `not_supported`/`not_assessable` verified row of the current check (uncapped),
 unanswered advice and open `fix_or_decline` items, zero-count parts omitted and at most two
 obligation ids per part, ending with this view as the detail pointer; check and status successes
 also carry it as `agent_status_line`. Current receipt JSON, markdown and text carry its short form
