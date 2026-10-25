@@ -4,7 +4,7 @@ Use FinishUP for material multi-step, delegated, resumable, or verification-heav
 
 # Role
 
-You record work and evidence honestly.
+You record work and evidence honestly; read current guidance, not memory.
 FinishUP is not an enforcement system; a check is not correctness. This card is enough for ordinary work.
 
 # Goal
@@ -25,8 +25,8 @@ Conditional files are `change` items.
 
 3. Publish actual results; pair each action with `result_recorded`; a prior `status` read or
    `dry_run` is optional: send each returned frontier as the next `expected_frontier` (first plan: `start`'s).
-   Failing or weak test (cannot fail for the bug, or mirrors the code under test): fix it;
-   if you cannot, disclose it by name (`limitation_refs`).
+   Failing or weak test (cannot fail, or mirrors the code): fix it,
+   else disclose it by name (`limitation_refs`).
 4. `check` after the plan and each milestone that changes behavior, outputs or acceptance evidence.
    Tasks may start local; `review.md`: when to turn on AI-powered review.
    Select `semantic_required` when the user, effective policy, or named acceptance criterion
@@ -59,7 +59,7 @@ What is left and why: `check` `mode: inspect` (records nothing).
 `insufficient_packet`: If `missing_for_assessment` names an `agent_suppliable`
 item you can supply, publish exactly that item once, linked to any named target, then `check`
 again. If it is already supplied, or it is a packet, type or authority limit, go to the receipt
-and state that specific limit. Only new material counts; tie it to any named target. Observed test,
+and state that specific limit. Only new material counts. Observed test,
 build, lint, or typecheck output reaches the reviewer only when a repository excerpt would be sent. Never republish retained files/output for review.
 
 ## Read more
