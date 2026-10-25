@@ -501,11 +501,13 @@ vocabulary had no group for "removable, but not required".
    are not findings (no finding id; minting findings would add receipt-blocking state and Stop
    items); `acknowledged_not_done` was rejected because it says the obligation is not done, which
    is false for an output that was already correct, and it would move the receipt. A decision is
-   material, so the agent checks again after declining; the decline stays recorded for that check.
+   material, and so is a repair, so the agent checks once more after either (the decline stays
+   recorded for that check); "without another check" holds only when nothing new was recorded.
 4. **The directive.** While any row is open, every surface (MCP status and check text, the CLI, the
    terminal interface, `agent_next`, the `mode: inspect` text, a brief body) says "Before the
    receipt: fix, or decline with a reason: <code> (<obligation id>) ... N other limitation(s) and M
-   acknowledged item(s) will be disclosed on the receipt. Then request the receipt." instead of
+   acknowledged item(s) will be disclosed on the receipt. After a fix or a decline, run check once
+   more, then request the receipt." instead of
    "Nothing further to do". The frozen sentence is unchanged, byte for byte, for every state with
    no open row.
 

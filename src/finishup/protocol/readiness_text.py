@@ -240,6 +240,11 @@ _FIX_OR_DECLINE_HOW: Final = (
     " finishup-assumption:<obligation id> and whose rationale gives the reason; the receipt"
     " lists that decision. These are not Stop items."
 )
+# A fix or a decline is a new record that supersedes the check (#1213 review): the receipt then
+# follows one more check, never directly.
+_FIX_OR_DECLINE_THEN: Final = (
+    " After a fix or a decline, run check once more, then request the receipt."
+)
 
 
 def fix_or_decline_rows(readiness: object) -> tuple[tuple[str, str], ...]:
@@ -303,19 +308,19 @@ def fix_or_decline_variants(
         + (f" and {len(named) - 1} more code(s)." if len(named) > 1 else ".")
     )
     if standing is None:
-        then = " Then request the receipt."
+        then = _FIX_OR_DECLINE_THEN
         return tuple(dict.fromkeys((head + _FIX_OR_DECLINE_HOW + then, head + then, first + then)))
     other = max(_count(standing) - len(grouped), 0)
     tail = (
         f" {other} other limitation(s) and {_count(acknowledged)} acknowledged item(s) will be"
-        " disclosed on the receipt. Then request the receipt."
+        " disclosed on the receipt." + _FIX_OR_DECLINE_THEN
     )
     return tuple(
         dict.fromkeys(
             (
                 head + _FIX_OR_DECLINE_HOW + tail,
                 head + tail,
-                first + f" {other} other limitation(s) will be disclosed.",
+                first + _FIX_OR_DECLINE_THEN,
             )
         )
     )

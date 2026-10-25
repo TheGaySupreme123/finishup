@@ -6,8 +6,8 @@ it. A receipt reports the recorded scope and its limits; it is not a pass and ne
 ## Closing sequence
 
 This topic owns the closing procedure. Start with readiness: at `ready_with_limitations`, request
-`receipt` now, after you fix or decline each `closure_readiness.fix_or_decline` item it names; do
-not restart the check sequence. Otherwise follow the steps for the work still due.
+`receipt` now; if it names `closure_readiness.fix_or_decline` items, fix or decline each and run
+`check` once more first (step 7). Do not restart the check sequence. Otherwise follow the steps for the work still due.
 
 1. Publish the completion claim and current evidence. When hooks observe your work, cite a
    verification run made after your last edit (`status view=results`).
@@ -30,8 +30,10 @@ not restart the check sequence. Otherwise follow the steps for the work still du
    is to do: request the receipt without another check and disclose its standing limitations. A
    `fix_or_decline` item (a code and its obligation) is never a Stop item: fix it, or decline it by
    publishing `decision_recorded` with the statement line `finishup-assumption:<obligation id>` and
-   the reason as its rationale (a decision is material: check again after it). The status sentence after the stop
-   instruction says what the receipt will read (`predicted_receipt`).
+   the reason as its rationale. A fix or a decline is a new record that supersedes the check: run
+   `check` once more, then request the receipt. "Without another check" applies only when nothing
+   new was recorded. The status sentence after the stop instruction says what the receipt will read
+   (`predicted_receipt`).
 8. A receipt never closes work. If the work is complete, publish `work_closed` from the task's
    active session; it needs no recheck. Only `open` work closes: `lineage_work_transition` means
    the task already ended (cancelled, written off, or abandoned after lost contact outlasted the

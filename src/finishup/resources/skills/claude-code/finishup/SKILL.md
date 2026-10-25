@@ -19,7 +19,7 @@ Deliver work, evidence and closure.
 
 # Done
 
-At `ready_with_limitations`, fix/decline `fix_or_decline` items, then request the receipt without
+At `ready_with_limitations`, fix/decline `fix_or_decline` items, then check, else request the receipt without
 another check; `standing_limitations` are disclosed, never tasks. Then `work_closed` if complete.
 
 # Evidence

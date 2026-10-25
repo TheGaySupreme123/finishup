@@ -362,7 +362,8 @@ the receipt: fix, or decline with a reason: ..." instead of "Nothing further to 
 limitation you can remove (a requested output left unchanged, a planned verification matched only
 through your own link, or a planned part whose outcome the run does not establish). Fix it, or
 decline it with a decision whose statement holds `finishup-assumption:<obligation id>` and whose
-rationale gives the reason; the receipt lists that decision. Otherwise every
+rationale gives the reason; the receipt lists that decision. A fix or a decline is a new record,
+so run `check` once more before you request the receipt. Otherwise every
 remaining condition is either a `standing_limitations` code that this assistant, capture profile
 or privacy policy always has (for example `host_outcome_unavailable`) or an item in
 `acknowledged_not_done` (obligations and

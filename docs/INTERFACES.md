@@ -8412,10 +8412,12 @@ listed, once a readable, unsuperseded `decision_recorded` whose statement holds
 `finishup-assumption:<obligation id>` or `finishup-verification-limit:<obligation id>` names its
 obligation (for `requested_output_unchanged`, any obligation it names); the decision's rationale is
 the reason and the receipt lists the decision under its disclosed assumptions. A decision is
-material, so the agent checks again after it. The rows are never a Stop-gate item and never make
+material, and so is a repair: after either the agent checks once more, and "request the receipt
+without another check" applies only when nothing new was recorded. The rows are never a Stop-gate item and never make
 the state `action_required`; while any is listed the directive is "Before the receipt: fix, or
 decline with a reason: <code> (<obligation id>) ... N other limitation(s) and M acknowledged
-item(s) will be disclosed on the receipt. Then request the receipt." on status text, the CLI, the
+item(s) will be disclosed on the receipt. After a fix or a decline, run check once more, then
+request the receipt." on status text, the CLI, the
 terminal interface, the check's text, `agent_next` and the `mode: inspect` text, and a brief body's
 `closure_state` carries the same rows.
 Beside the
