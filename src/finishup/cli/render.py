@@ -20,6 +20,7 @@ from finishup.domain.receipts import (
     review_deferred_before_first_edit,
     semantic_redacted_value_text,
 )
+from finishup.domain.review_guidance import review_guidance_line
 from finishup.domain.review_input_render import (
     has_agent_suppliable_missing,
     overall_next_instruction,
@@ -577,7 +578,8 @@ def render_check_review_lines(result: CheckSuccessModel) -> tuple[str, ...]:
     never as an instruction; the read lines carry only closed tokens and opaque identities.
     """
 
-    lines: list[str] = []
+    guidance = review_guidance_line(result.review_guidance)
+    lines: list[str] = [guidance] if guidance else []
     if result.reviewer is not None:
         lines.extend(
             render_reviewer_lines(
