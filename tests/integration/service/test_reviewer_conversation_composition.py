@@ -371,17 +371,33 @@ async def test_the_smallest_channel_limits_leave_room_for_fewer_content_reads(
 
 
 @pytest.mark.anyio
+@pytest.mark.parametrize(
+    ("phase", "asked_for"),
+    [
+        pytest.param(None, {"test_manifests": True}, id="manifest"),
+        pytest.param(None, {"linked_verification": True}, id="linked-check"),
+        pytest.param(None, {"test_manifests": True, "linked_verification": True}, id="both"),
+        pytest.param("final", {"linked_verification": True}, id="closing-linked-check"),
+    ],
+)
 async def test_the_test_quality_question_costs_one_content_read_at_the_minimal_policy(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    phase: str | None,
+    asked_for: dict[str, bool],
 ) -> None:
-    """#1170 (ADR-006): a packet that carries the test-quality question fits one content read at
-    the minimal policy where #1173 fits two. Only a packet whose coverage index shows a witness
-    asks it, so every other review keeps both reads (the test above)."""
+    """#1170, #1145 (ADR-006): a packet that carries the test-quality question fits one content
+    read at the minimal policy where #1173 fits two. Only a packet whose coverage index shows a
+    witness, or whose obligation row links a command result, asks it, so every other review keeps
+    both reads (the test above). The linked-check question is short enough that a closing review,
+    whose phase question is the longest, still fits that one read."""
 
     asked = semantic_case_module.review_question_set
 
     def with_question(*args: Any, **kwargs: Any) -> tuple[str, ...]:
-        return asked(*args, **{**kwargs, "test_manifests": True})
+        if phase is not None:
+            args = (phase, *args[1:])
+        return asked(*args, **{**kwargs, **asked_for})
 
     monkeypatch.setattr(semantic_case_module, "review_question_set", with_question)
     replies = [_read_file("calc.py")] * 2
