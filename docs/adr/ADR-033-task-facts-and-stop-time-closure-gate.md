@@ -86,8 +86,12 @@ agent must not be able to stop silently with known work left.
      obligation as `attempted_items_for_obligation` does. Only an observed command action parent
      counts (never a cooperative action or result); the linked run's observed outcome and position
      decide not_observed, failed, stale and outcome_unknown exactly like a direct match, and a
-     placeholder or prose item stays unobservable. When an item matches only through such a link
-     the standing code `planned_verification_agent_linked` discloses it. No wire change. The service registers the key at composition; a process without it computes
+     placeholder or prose item stays unobservable. When the run that decides an item's outcome
+     (the latest matched or linked run) is such a link, `planned_verification_agent_linked`
+     discloses it, also when an earlier direct run matched: a later linked run can turn a failed
+     direct run green, so the equivalence is never silent (#1209; earlier the code fired only when
+     no direct run matched). Since #1209 it is a fix-or-decline item (see the amendment below).
+     No wire change. The service registers the key at composition; a process without it computes
      no planned fact rather than claiming a command never ran.
    - `planned_verification_outcome_unknown` and `planned_verification_unobservable` (standing): a
      matching run stated no outcome; or no keyed observed command exists to match against, or the
@@ -1606,3 +1610,15 @@ complete input declaration. AI-route freshness is always advisory, with recorded
 known changed paths and short change summaries presented for the agent's rerun or reasoned
 `respond` decision. Actual failures, missing verification and unrelated obligation/finding gates
 retain their rules.
+
+## Amendment (2026-10-25, issue #1209): agent-removable disclosures are fix or decline
+
+`requested_output_unchanged`, `planned_verification_agent_linked` and
+`planned_verification_outcome_unknown` (the last only where the host stated the deciding run's
+outcome) form the `fix_or_decline` readiness group (ADR-032 amendment of the same date). They stay
+standing task facts here: never a finding, never a Stop-gate token (D1 holds), never bounding.
+`planned_verification_agent_linked` now fires whenever the run that decides the planned
+verification is the agent's link, including after an earlier direct run (a later linked green run
+could otherwise silently replace a red direct run; #1003). Readiness names each open row with its
+obligation before the receipt; a `finishup-assumption:` or `finishup-verification-limit:` decision
+on that obligation declines it, with its rationale as the reason.

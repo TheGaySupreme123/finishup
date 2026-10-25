@@ -356,7 +356,13 @@ a cursor, stays on that frontier; if it is no longer a safe basis, the predictio
 work in `agent_actionable`: open obligations, unanswered findings, an unresolved finding you can
 still repair, a rejected finding awaiting a ruling (`finding_rejection_awaiting_ruling`: run
 `check` so the reviewer rules), a missing or out-of-date check, or a gap you can repair such as
-`completion_plan_not_claimed`. `ready_with_limitations` means nothing further to do: every
+`completion_plan_not_claimed`. `ready_with_limitations` means nothing further is required (the
+Stop gate never asks for more), but while `fix_or_decline` names items the sentence says "Before
+the receipt: fix, or decline with a reason: ..." instead of "Nothing further to do": each is a
+limitation you can remove (a requested output left unchanged, a planned verification matched only
+through your own link, or a planned part whose outcome the run does not establish). Fix it, or
+decline it with a decision whose statement holds `finishup-assumption:<obligation id>` and whose
+rationale gives the reason; the receipt lists that decision. Otherwise every
 remaining condition is either a `standing_limitations` code that this assistant, capture profile
 or privacy policy always has (for example `host_outcome_unavailable`) or an item in
 `acknowledged_not_done` (obligations and

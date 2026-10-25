@@ -4558,6 +4558,8 @@ def _add_check_inspection(document: dict[str, JsonValue]) -> None:
             "predicted_conclusion": enum(_RECEIPT_CONCLUSIONS),
             "readiness": enum(("action_required", "ready", "ready_with_limitations", "unknown")),
             "standing_limitations": gap_codes,
+            # Issue #1209: status's open fix-or-decline items; omitted when none.
+            "fix_or_decline": _fix_or_decline_array(id_pattern("obl")),
         },
         "required": [
             "agent_actionable",
@@ -5893,7 +5895,8 @@ def _add_status_brief_success(document: dict[str, JsonValue]) -> None:
         "additionalProperties": False,
         "properties": {
             name: json.loads(json.dumps(readiness_properties[name]))
-            for name in ("agent_actionable", "blocking_conditions", "state")
+            for name in ("agent_actionable", "blocking_conditions", "fix_or_decline", "state")
+            if name in readiness_properties
         },
         "required": ["blocking_conditions"],
         "type": "object",
@@ -6044,6 +6047,35 @@ def _add_status_requested_item_role(definitions: dict[str, JsonValue]) -> None:
     obligation_properties["in_current_plan"] = {"type": "boolean"}
 
 
+def _fix_or_decline_array(
+    obligation: JsonValue | None = None,
+) -> dict[str, JsonValue]:
+    """Issue #1209: the open fix-or-decline items (a closed code and an obligation id)."""
+
+    return {
+        "items": {
+            "additionalProperties": False,
+            "properties": {
+                "code": {
+                    "enum": [
+                        "planned_verification_agent_linked",
+                        "planned_verification_outcome_unknown",
+                        "requested_output_unchanged",
+                    ],
+                    "type": "string",
+                },
+                "obligation_id": (
+                    {"$ref": "#/$defs/obligation_id"} if obligation is None else obligation
+                ),
+            },
+            "required": ["code", "obligation_id"],
+            "type": "object",
+        },
+        "maxItems": 64,
+        "type": "array",
+    }
+
+
 def _add_status_closure_checklist(definitions: dict[str, JsonValue]) -> None:
     """Split closure readiness into a checklist with a stop state (issue #913, ADR-032)."""
 
@@ -6123,11 +6155,15 @@ def _add_status_closure_checklist(definitions: dict[str, JsonValue]) -> None:
             # ``finding_rejection_awaiting_ruling`` readiness token, and adds
             # ``planned_verification_matched_by_prefix`` and ``declared_output_not_reviewable``
             # (tb4n3 RC-5, ADR-045); "8" makes ``deliverable_references_undeclared_file``
-            # agent-actionable (#1044).
+            # agent-actionable (#1044); "9" adds the ``fix_or_decline`` readiness group (#1209).
             "gap_classification_version": {
-                "enum": ["1", "2", "3", "4", "5", "6", "7", "8"],
+                "enum": ["1", "2", "3", "4", "5", "6", "7", "8", "9"],
                 "type": "string",
             },
+            # Issue #1209 (ADR-032 amendment): the open limitations an agent action removes, by
+            # closed code and obligation id, sorted. Each code is also a standing limitation.
+            # Optional on the unreleased 1.4.0 wire; omitted when none. Never a Stop item.
+            "fix_or_decline": _fix_or_decline_array(),
             "standing_limitations": {
                 "items": {"$ref": "#/$defs/code"},
                 "maxItems": 128,

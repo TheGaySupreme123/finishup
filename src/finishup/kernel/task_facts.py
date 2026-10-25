@@ -109,6 +109,9 @@ from finishup.domain.task_fact_tokens import (
     EDITED_AFTER_LAST_VERIFICATION_GAP as EDITED_AFTER_LAST_VERIFICATION_GAP,
 )
 from finishup.domain.task_fact_tokens import (
+    FIX_OR_DECLINE_TASK_FACT_GAPS as FIX_OR_DECLINE_TASK_FACT_GAPS,
+)
+from finishup.domain.task_fact_tokens import (
     INSTALL_INTO_FINISHUP_RUNTIME_GAP as INSTALL_INTO_FINISHUP_RUNTIME_GAP,
 )
 from finishup.domain.task_fact_tokens import (
@@ -230,6 +233,7 @@ __all__ = [
     "DELIVERABLE_REFERENCES_AMBIGUOUS_NAME_GAP",
     "DELIVERABLE_REFERENCES_UNDECLARED_FILE_GAP",
     "EDITED_AFTER_LAST_VERIFICATION_GAP",
+    "FIX_OR_DECLINE_TASK_FACT_GAPS",
     "INSTALL_INTO_PRIVATE_ENV_GAP",
     "INSTALL_INTO_FINISHUP_RUNTIME_GAP",
     "OBLIGATION_BLOCKED_GAP",
@@ -255,6 +259,7 @@ __all__ = [
     "PlannedCommand",
     "PlannedMatch",
     "RequestedOutputState",
+    "requested_output_unchanged_candidates",
     "TaskFactSignals",
     "BlockerDeclaration",
     "acting_started",
@@ -1900,9 +1905,18 @@ class TaskFactSignals:
     # (a pending or unreadable result): its action event and the later edit. On the AI route the
     # check asks about them, since no freshness row can carry the question.
     unjudged_stale_events: tuple[EventId, ...] = ()
+    # Issue #1209 (ADR-032 amendment): the ``(code, obligation)`` markers an agent action removes
+    # (``FIX_OR_DECLINE_TASK_FACT_GAPS``), sorted. Every agent-linked match is one; an unknown
+    # planned outcome is one only where the host stated the deciding run's own outcome (the run
+    # composed the planned command with others, so its part's outcome is not established: running
+    # the planned command alone settles it). Where the host stated no outcome it is not listed and
+    # stays a plain disclosure: no agent action supplies a host's missing outcome.
+    fix_or_decline: tuple[tuple[str, ObligationId], ...] = ()
 
     def __post_init__(self) -> None:
         if not set(self.codes) <= TASK_FACT_GAPS:
+            raise ValueError("task_fact_code_invalid")
+        if any(code not in FIX_OR_DECLINE_TASK_FACT_GAPS for code, _ in self.fix_or_decline):
             raise ValueError("task_fact_code_invalid")
 
 
@@ -1984,6 +1998,7 @@ def task_fact_signals(
     blocked = blocked_obligations(projection, batches)
     acknowledged = acknowledged_obligation_ids(projection)
     markers: set[tuple[str, ObligationId | None]] = set()
+    fixable: set[tuple[str, ObligationId]] = set()
 
     # Planned verification.
     lineage: list[FactLineage] = []
@@ -2038,9 +2053,13 @@ def task_fact_signals(
                         )
                     )
                     continue
-                if not matching:
-                    markers.add((PLANNED_VERIFICATION_AGENT_LINKED_GAP, obligation))
                 latest, outcome, kind = max(matching + linked, key=lambda row: row[0].position)
+                if kind == "agent_link":
+                    # The run that decides the outcome is the agent's own link, whether or not a
+                    # direct run matched earlier (#1209, #1003): a later linked run can turn a red
+                    # direct run green, so the equivalence is disclosed and named to fix.
+                    markers.add((PLANNED_VERIFICATION_AGENT_LINKED_GAP, obligation))
+                    fixable.add((PLANNED_VERIFICATION_AGENT_LINKED_GAP, obligation))
                 match_state = {
                     MATCH_EXACT: "matched_exact",
                     MATCH_NORMALIZED: "matched_normalized",
@@ -2080,6 +2099,10 @@ def task_fact_signals(
                     )
                 elif outcome is ResultOutcome.UNKNOWN:
                     markers.add((PLANNED_VERIFICATION_OUTCOME_UNKNOWN_GAP, obligation))
+                    if latest.outcome is not ResultOutcome.UNKNOWN:
+                        # The host stated the run's outcome; only the planned part's is not
+                        # established (#1209): running the planned command alone settles it.
+                        fixable.add((PLANNED_VERIFICATION_OUTCOME_UNKNOWN_GAP, obligation))
                 delta = by_event.get(latest.action_event)
                 if delta is not None and delta.state == "unknown":
                     markers.add((RERUN_QUESTION, obligation))
@@ -2222,6 +2245,9 @@ def task_fact_signals(
         unjudged_stale_events=tuple(
             sorted((event for event in unjudged if event is not None), key=str.encode)
         ),
+        fix_or_decline=tuple(
+            sorted(fixable, key=lambda item: (item[0].encode(), item[1].encode()))
+        ),
     )
 
 
@@ -2349,6 +2375,58 @@ def requested_output_facts(
     return tuple(absent), tuple(
         sorted(markers, key=lambda item: (item[0].encode(), item[1].encode()))
     )
+
+
+# The check-time read's own "one literal path" rule (``check_change._plain_path``), repeated so
+# the kernel names the same items without importing the application layer.
+_NOT_A_PLAIN_PATH: Final = re.compile(r"[\s*?\[\]{}~$`]|://")
+
+
+def requested_output_unchanged_candidates(
+    projection: ProjectionState, *, blocked: Iterable[ObligationId]
+) -> tuple[ObligationId, ...]:
+    """Obligations a recorded ``requested_output_unchanged`` can name (issue #1209).
+
+    The check records that code without its obligation (codes only leave the check-time read).
+    These are the obligations ``requested_output_facts`` could have reported it for at this
+    prefix: an effective obligation (or one a plan correction dropped without naming its output),
+    not acknowledged as not done and not confirmed blocked, with a requested ``file`` or
+    ``directory`` item that is one literal path, is not ``role: input`` and counts as written
+    (``role: output``, or an ``edit`` action naming that exact value). Every obligation the code
+    can concern is named; when more than one qualifies, the fact holds for at least one of them.
+    Sorted by id.
+    """
+
+    skipped = frozenset(blocked) | acknowledged_obligation_ids(projection)
+    pairs: list[tuple[ObligationId, int]] = []
+    for obligation in effective_obligations(projection):
+        payload = projection.obligations[obligation].payload
+        if payload is not None:
+            pairs.extend((obligation, index) for index in range(len(payload.requested_items)))
+    pairs.extend(superseded_unnamed_outputs(projection))
+    found: set[ObligationId] = set()
+    edited: dict[ObligationId, frozenset[str]] = {}
+    for obligation, index in pairs:
+        if obligation in skipped or obligation in found:
+            continue
+        item = _requested_item(projection, obligation, index)
+        if (
+            item is None
+            or item.item_kind not in _DECLARED_OUTPUT_KINDS
+            or item.role is RequestedItemRole.INPUT
+            or not item.value
+            or _NOT_A_PLAIN_PATH.search(item.value) is not None
+        ):
+            continue
+        if item.role is not RequestedItemRole.OUTPUT:
+            if obligation not in edited:
+                edited[obligation] = attempted_items_for_obligation(
+                    projection, obligation, action_kind=ActionKind.EDIT
+                )
+            if item.value not in edited[obligation]:
+                continue
+        found.add(obligation)
+    return tuple(sorted(found, key=str.encode))
 
 
 def _requested_item(

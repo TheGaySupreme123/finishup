@@ -15,6 +15,12 @@ only through this table. Each code the product can emit is assigned exactly once
   AI-powered review (ADR-018) whatever the repository policy says. It is actionable only on a
   route that requires AI-powered review and can dispatch it, when none has completed since the
   last material change (remedy: run it).
+* ``fix_or_decline`` (issue #1209) — an agent action removes it, but nothing requires one: a
+  requested file the record says was written is unchanged, a planned verification matched only
+  through the agent's own link, or a planned part whose outcome the host-stated run does not
+  establish. Disclosed on the receipt like a standing limitation and never a Stop item (ADR-033
+  D1); readiness names each open item with its obligation so the agent fixes it or declines it
+  with a recorded reason before the receipt.
 
 The table is a closed, versioned vocabulary rather than a heuristic. A conformance test
 (``tests/conformance/honesty/test_gap_classification_completeness.py``) enumerates every gap-code
@@ -97,11 +103,15 @@ from finishup.kernel.review_round import review_round_stopped
 from finishup.kernel.task_facts import (
     OBLIGATION_BLOCKED_GAP,
     OBLIGATION_BLOCKER_UNCONFIRMED_GAP,
+    REQUESTED_OUTPUT_UNCHANGED_GAP,
+    TaskFactSignals,
     acknowledged_obligation_ids,
+    blocked_obligations,
     blocker_declarations,
     decision_batches,
     disclosure_declarations,
     open_effective_obligations,
+    requested_output_unchanged_candidates,
     task_fact_signals,
 )
 from finishup.protocol.models import SemanticReason, SemanticStatus
@@ -164,8 +174,12 @@ __all__ = [
 # Stop-gate token (issue #1044, ADR-035 amendment); the standing disclosure
 # ``semantic_process_state_filtered`` (issue #1042) and the standing limit
 # ``semantic_review_deferred_before_first_edit`` (issue #1046; disclosed where the deferred check's
-# route did not require review, gap table G7) were added (ADR-040 amendment).
-GAP_CLASSIFICATION_VERSION: Final = "8"
+# route did not require review, gap table G7) were added (ADR-040 amendment). "9" (issue #1209,
+# ADR-032 amendment): the standing disclosures ``requested_output_unchanged``,
+# ``planned_verification_agent_linked`` and ``planned_verification_outcome_unknown`` joined the
+# new ``fix_or_decline`` readiness group (gap table G4f): still disclosed and never bounding or a
+# Stop item, but named to the agent as "fix, or decline with a reason" before the receipt.
+GAP_CLASSIFICATION_VERSION: Final = "9"
 # Issue #1020 (ADR-040): a current AI-powered finding the reviewer repeated over the agent's
 # reasoned rejection without newer material. A standing disagreement; never agent work.
 FINDING_DISPUTED_AFTER_REBUTTAL_GAP: Final = "finding_disputed_after_rebuttal"
@@ -194,6 +208,12 @@ _CODE_RE: Final = re.compile(r"^[a-z][a-z0-9_]{0,127}$", re.ASCII)
 _A: Final = GapClass.AGENT_ACTIONABLE
 _S: Final = GapClass.STANDING_LIMITATION
 _R: Final = GapClass.ROUTE_DEPENDENT
+_F: Final = GapClass.FIX_OR_DECLINE
+
+
+def _fix_or_decline_key(item: tuple[str, str]) -> tuple[bytes, bytes]:
+    return item[0].encode(), item[1].encode()
+
 
 # The ADR-032 readiness group of every code, derived from the one table of gap effects
 # (``kernel.gap_effect``, ADR-046): who owes the next move. What a code does to the receipt is the
@@ -215,7 +235,7 @@ def classify_gap(
     semantic_review_required: bool,
     semantic_review_current: bool,
 ) -> GapClass | None:
-    """Resolve one gap to ``agent_actionable`` or ``standing_limitation``; ``None`` if unknown.
+    """Resolve one gap's readiness group (ADR-032, #1209); ``None`` if the code is unknown.
 
     ``semantic_review_required`` is true only on a route whose verification policy requires
     AI-powered review and which can dispatch it (never a strict MCP route, ADR-018).
@@ -253,7 +273,10 @@ def split_gaps(
 ) -> GapSplit:
     """Split gap markers into agent-actionable and standing groups by their base codes.
 
-    An unknown base code lands in the agent-actionable group as ``unclassified_gap:<code>``.
+    An unknown base code lands in the agent-actionable group as ``unclassified_gap:<code>``. A
+    fix-or-decline code (#1209) is never agent work: it is split with the standing limitations,
+    which the receipt discloses, and readiness names its open items separately
+    (``ClosureReadinessFacts.fix_or_decline``).
     """
 
     actionable: set[str] = set()
@@ -432,6 +455,13 @@ class ClosureReadinessFacts:
     # acknowledgement re-check does not challenge them: the status note invites exactly that
     # downgrade for an output that does not meet its criteria.
     downgraded_obligation_ids: tuple[ObligationId, ...] = ()
+    # Issue #1209 (ADR-032 amendment): the open ``(code, obligation)`` items an agent action
+    # removes (gap table rule G4f), sorted: fix it, or decline it with a reason. An item is
+    # declined, and no longer listed, once a readable, unsuperseded disclosure decision
+    # (``finishup-assumption:`` or ``finishup-verification-limit:``, #995) names its obligation;
+    # the receipt then lists that decision, whose rationale holds the reason, beside the code.
+    # Never a Stop item and never agent work. A hand-built fact set lists none.
+    fix_or_decline: tuple[tuple[str, ObligationId], ...] = ()
 
     def __post_init__(self) -> None:
         if (
@@ -543,6 +573,18 @@ class ClosureReadinessFacts:
         downgraded = self.downgraded_obligation_ids
         if type(downgraded) is not tuple or downgraded != tuple(
             sorted(set(downgraded), key=str.encode)
+        ):
+            raise ValueError("closure_readiness_facts_invalid")
+        fixable = self.fix_or_decline
+        if (
+            type(fixable) is not tuple
+            or any(
+                type(item) is not tuple
+                or len(item) != 2
+                or GAP_CLASSIFICATION.get(item[0]) is not _F
+                for item in fixable
+            )
+            or fixable != tuple(sorted(set(fixable), key=_fix_or_decline_key))
         ):
             raise ValueError("closure_readiness_facts_invalid")
 
@@ -1063,6 +1105,8 @@ def closure_readiness_facts(
         _closing_review_facts(state, records, limitations)
     )
     applicability, standing = _check_applicability(state, records)
+    signals = task_fact_signals(state, records)
+    disclosures = disclosure_declarations(state)
     risky_pairs = acceptance_risk(
         state,
         records,
@@ -1096,8 +1140,7 @@ def closure_readiness_facts(
             required_limitation_ids_for_projection(state, observed_event_ids_from_records(records))
         ),
         disclosed_obligations=tuple(
-            (item.obligation_id, item.kind, item.decision_event_id)
-            for item in disclosure_declarations(state)
+            (item.obligation_id, item.kind, item.decision_event_id) for item in disclosures
         ),
         premise_disputed_finding_ids=premise_disputed_finding_ids(state),
         finding_closures=tuple(
@@ -1106,7 +1149,7 @@ def closure_readiness_facts(
         obligation_closures=tuple(
             obligation_classes[key] for key in sorted(obligation_classes, key=str.encode)
         ),
-        fact_lineage=current_fact_lineage(state, records, applicability),
+        fact_lineage=current_fact_lineage(state, records, applicability, signals=signals),
         undeclared_references=current_undeclared_references(state, records, applicability),
         acceptance_risk_obligation_ids=tuple(obligation for obligation, _reasons in risky_pairs),
         coordinator_failure_unchanged=coordinator_failure,
@@ -1117,13 +1160,50 @@ def closure_readiness_facts(
         downgraded_obligation_ids=_downgraded_from_resolved(
             state, records, acknowledged_obligations
         ),
+        fix_or_decline=_open_fix_or_decline(
+            state,
+            records,
+            applicability,
+            signals.fix_or_decline,
+            declined={item.obligation_id for item in disclosures},
+        ),
     )
+
+
+def _open_fix_or_decline(
+    state: ProjectionState,
+    records: tuple[LedgerRecord, ...],
+    applicability: CheckApplicability,
+    planned: Iterable[tuple[str, ObligationId]],
+    *,
+    declined: set[ObligationId],
+) -> tuple[tuple[str, ObligationId], ...]:
+    """The fix-or-decline items still open at this prefix (issue #1209), sorted.
+
+    The planned-verification items are the ledger-derived task facts' own
+    (``TaskFactSignals.fix_or_decline``). ``requested_output_unchanged`` is recorded by the
+    applicable check without its obligation, so it names every obligation it can concern
+    (``requested_output_unchanged_candidates``) and is declined as a whole once any of them is.
+    An item whose obligation a disclosure decision names is declined.
+    """
+
+    items = {item for item in planned if item[1] not in declined}
+    found = _applicable_check_payload(state, records, applicability)
+    if found is not None and REQUESTED_OUTPUT_UNCHANGED_GAP in found[1].coverage.known_gaps:
+        candidates = requested_output_unchanged_candidates(
+            state, blocked=blocked_obligations(state, decision_batches(records))
+        )
+        if not declined.intersection(candidates):
+            items.update((REQUESTED_OUTPUT_UNCHANGED_GAP, item) for item in candidates)
+    return tuple(sorted(items, key=_fix_or_decline_key))
 
 
 def current_fact_lineage(
     state: ProjectionState,
     records: tuple[LedgerRecord, ...],
     applicability: CheckApplicability,
+    *,
+    signals: TaskFactSignals | None = None,
 ) -> tuple[FactLineage, ...]:
     """Where every derived task fact in force at this prefix came from (ADR-045).
 
@@ -1146,7 +1226,7 @@ def current_fact_lineage(
                 payload.deliverable_states,
             )
         )
-    items.extend(task_fact_signals(state, records).lineage)
+    items.extend((task_fact_signals(state, records) if signals is None else signals).lineage)
     ordered = sorted(dict.fromkeys(items), key=lambda item: item.sort_key)
     return tuple(ordered[:MAX_FACT_LINEAGE_ITEMS])
 
@@ -1196,6 +1276,10 @@ class ClosureReadinessSplit:
     standing_limitations: tuple[str, ...]
     acknowledged_not_done: tuple[str, ...]
     acknowledged_not_done_count: int
+    # Issue #1209: the open fix-or-decline ``(code, obligation)`` items, each code also listed in
+    # ``standing_limitations`` (the receipt discloses it unless the agent fixes it). Never makes
+    # the state ``action_required`` and never a Stop item (ADR-033 D1).
+    fix_or_decline: tuple[tuple[str, str], ...] = ()
 
 
 def derive_closure_readiness(
@@ -1408,10 +1492,16 @@ def derive_closure_readiness(
         state = "ready_with_limitations"
     else:
         state = "ready"
+    fixable: tuple[tuple[str, str], ...] = ()
+    if facts is not None:
+        # Only a code the receipt will disclose is named: a check that no longer applies, or a
+        # code a later check cleared, names nothing to fix (the readiness lists that instead).
+        fixable = tuple(item for item in facts.fix_or_decline if item[0] in standing)
     return ClosureReadinessSplit(
         state=state,
         agent_actionable=tuple(actionable),
         standing_limitations=tuple(sorted(standing, key=str.encode)),
         acknowledged_not_done=acknowledged[:MAX_ACKNOWLEDGED_READINESS_ITEMS],
         acknowledged_not_done_count=len(acknowledged),
+        fix_or_decline=fixable,
     )

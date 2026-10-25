@@ -6,7 +6,8 @@ it. A receipt reports the recorded scope and its limits; it is not a pass and ne
 ## Closing sequence
 
 This topic owns the closing procedure. Start with readiness: at `ready_with_limitations`, request
-`receipt` now; do not restart the check sequence. Otherwise follow the steps for the work still due.
+`receipt` now, after you fix or decline each `closure_readiness.fix_or_decline` item it names; do
+not restart the check sequence. Otherwise follow the steps for the work still due.
 
 1. Publish the completion claim and current evidence. When hooks observe your work, cite a
    verification run made after your last edit (`status view=results`).
@@ -24,8 +25,11 @@ This topic owns the closing procedure. Start with readiness: at `ready_with_limi
    material repair needs a qualifying recheck. Responses to the check's own findings,
    acknowledgement of an observation-authored non-actionable finding, and `work_closed` do not need
    a recheck when the response is readable. A redacted or unreadable response does need one.
-7. Request `receipt`. At `ready_with_limitations`, nothing further is to do: request the receipt
-   without another check and disclose its standing limitations. The status sentence after the stop
+7. Request `receipt`. At `ready_with_limitations` with no `fix_or_decline` item, nothing further
+   is to do: request the receipt without another check and disclose its standing limitations. A
+   `fix_or_decline` item (a code and its obligation) is never a Stop item: fix it, or decline it by
+   publishing `decision_recorded` with the statement line `finishup-assumption:<obligation id>` and
+   the reason as its rationale (a decision is material: check again after it). The status sentence after the stop
    instruction says what the receipt will read (`predicted_receipt`).
 8. A receipt never closes work. If the work is complete, publish `work_closed` from the task's
    active session; it needs no recheck. Only `open` work closes: `lineage_work_transition` means

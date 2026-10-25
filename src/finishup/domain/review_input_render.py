@@ -15,7 +15,7 @@ from typing import Final, cast
 
 from finishup.domain.bounded_text import Part, compose_parts, list_variants
 from finishup.protocol.models import MAX_REVIEW_FOLLOW_UP_ROUNDS
-from finishup.protocol.readiness_text import predicted_receipt_variants
+from finishup.protocol.readiness_text import fix_or_decline_variants, predicted_receipt_variants
 
 __all__ = [
     "FINISHUP_LIMIT_MISSING_TEXT",
@@ -571,23 +571,40 @@ def _compose_agent_next(parts: list[Part], items: list[tuple[int, str, tuple[str
 
 
 def render_agent_next(
-    overall_next: object, missing: object = (), *, limitation_requests: bool = False
+    overall_next: object,
+    missing: object = (),
+    *,
+    limitation_requests: bool = False,
+    fix_or_decline: tuple[tuple[str, str], ...] = (),
 ) -> str:
     """The bounded first instruction of a check result for every host (W6, ADR-043 amendment).
 
     Closed tokens, fixed sentences and admitted subject ids only: never reviewer prose, task text,
     paths or command text. One ASCII line of at most ``MAX_AGENT_NEXT_BYTES``. ``overall_next``
-    and ``missing`` may be JSON mappings or typed rows. Returns ``""`` when there is no
-    continuation (``overall_next`` absent or malformed) and never raises.
+    and ``missing`` may be JSON mappings or typed rows. ``fix_or_decline`` holds the open
+    ``(code, obligation id)`` items readiness names (``fix_or_decline_rows``, issue #1209): on a
+    ``ready_with_limitations`` receipt step they are named before the receipt. Returns ``""``
+    when there is no continuation (``overall_next`` absent or malformed) and never raises.
     """
 
     try:
-        return _render_agent_next(overall_next, missing, limitation_requests=limitation_requests)
+        return _render_agent_next(
+            overall_next,
+            missing,
+            limitation_requests=limitation_requests,
+            fix_or_decline=fix_or_decline,
+        )
     except Exception:
         return ""
 
 
-def _render_agent_next(overall_next: object, missing: object, *, limitation_requests: bool) -> str:
+def _render_agent_next(
+    overall_next: object,
+    missing: object,
+    *,
+    limitation_requests: bool,
+    fix_or_decline: tuple[tuple[str, str], ...] = (),
+) -> str:
     action = _field(overall_next, "action")
     status = _field(overall_next, "status")
     if (
@@ -657,6 +674,9 @@ def _render_agent_next(overall_next: object, missing: object, *, limitation_requ
             action, status, limitation_requests=limitation_requests
         )
         parts.append(Part((instruction + ".",), required=True, priority=0))
+        if status == "ready_with_limitations" and fix_or_decline:
+            # Issue #1209: what to fix, or decline with a reason, before that receipt.
+            parts.append(Part(fix_or_decline_variants(fix_or_decline), required=True, priority=1))
         if targets:
             parts.append(
                 Part(

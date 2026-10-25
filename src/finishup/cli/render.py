@@ -75,6 +75,7 @@ from finishup.protocol.readiness_text import (
     check_cause_sentence,
     closure_counts_variants,
     coordinator_failure_note,
+    fix_or_decline_rows,
     obligation_resolve_recipe_variants,
     predicted_receipt_variants,
     readiness_directive,
@@ -669,6 +670,8 @@ def render_closure_readiness_lines(readiness: StatusClosureReadinessModel) -> tu
             readiness.state,
             standing=len(readiness.standing_limitations),
             acknowledged=readiness.acknowledged_not_done_count,
+            # Issue #1209: open fix-or-decline items replace "Nothing further to do".
+            fix_or_decline=fix_or_decline_rows(readiness),
         ),
     ]
     if readiness.state != "unknown":

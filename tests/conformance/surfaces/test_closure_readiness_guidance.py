@@ -92,7 +92,8 @@ def test_coverage_guide_explains_the_three_groups_and_the_closed_table() -> None
 def test_receipt_template_stops_at_ready_with_limitations() -> None:
     section = _section(_GUIDANCE / "request-templates.md", "## `receipt`")
     assert (
-        "At `state: ready_with_limitations` nothing further is to do: request the receipt without "
+        "At `state: ready_with_limitations` fix, or decline with a reason, each `fix_or_decline` "
+        "item (receipt.md step 7); otherwise nothing further is to do: request the receipt without "
         "another check" in section
     )
 
@@ -103,6 +104,8 @@ def test_every_host_skill_names_the_stop_signal(skill: Path) -> None:
     assert "ready_with_limitations" in text
     assert "nothing further is to do" in text
     assert "request the receipt without another check" in text
+    # Issue #1209: the fix-or-decline step precedes the receipt on every host.
+    assert "fix or decline with a reason each `fix_or_decline` item; then nothing further" in text
     assert "`standing_limitations` are disclosed, never tasks" in text
 
 

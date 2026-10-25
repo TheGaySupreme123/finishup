@@ -464,3 +464,50 @@ recorded work. Status, receipt prediction and Stop retain the same verdict. A wr
 retained-only or outside-root assessment target is a structural limit, not an instruction to
 republish or move private content. Outside-root classification remains conservative when the
 classification context cannot establish the owner's admitted roots.
+
+## Amendment (2026-10-25): fix or decline before the receipt (#1209)
+
+**Context.** In the TB4 pilots an attempt's final status listed `requested_output_unchanged` and
+`planned_verification_agent_linked` under the frozen `ready_with_limitations` sentence ("Nothing
+further to do ... Request the receipt."), and the agent closed with a requested output it never
+changed. The G4 disclosure family held limitations the agent itself can remove, and the readiness
+vocabulary had no group for "removable, but not required".
+
+**Decision.** The owner approved changing the frozen sentence in this one case.
+
+1. **A fourth readiness group, `fix_or_decline`** (gap table rule G4f, `GapClass.FIX_OR_DECLINE`,
+   `gap_classification_version` `"9"`). Only `requested_output_unchanged`,
+   `planned_verification_agent_linked` and `planned_verification_outcome_unknown` move into it.
+   Their receipt effect is unchanged (disclosed, never bounding, on both routes), so the receipt
+   conclusion and the ADR-046 prediction are unchanged; only who owes the next move changes. The
+   `preexisting_test_*` counts (an unjustified edit is already G0 work), plan drift,
+   `obligation_evidence_stale_after_scope_edit` and outside-control blockers stay disclosures.
+2. **Named per obligation, never blocking.** Status carries `closure_readiness.fix_or_decline`, the
+   open `{code, obligation_id}` rows; each code stays in `standing_limitations` (the receipt
+   discloses it unless it is fixed) and the state stays `ready_with_limitations`. The rows are
+   never `agent_actionable` and never a Stop-gate item (ADR-033 D1: Stop prompts for provenance
+   produced ritual re-attestation). `planned_verification_outcome_unknown` is a row only where the
+   host stated the deciding run's outcome (the run composed the planned command with others, so
+   running it alone settles it); where the host stated none it stays a plain disclosure.
+   `planned_verification_agent_linked` is raised whenever the deciding run is the agent's own link,
+   also after a direct run (ADR-033 amendment of the same date). The check records
+   `requested_output_unchanged` without its obligation, so readiness names every obligation the
+   code can concern; the fact holds for at least one of them.
+3. **Declining reuses the #995 disclosure decision.** A row is declined once a readable,
+   unsuperseded `decision_recorded` whose statement holds `finishup-assumption:<obligation id>` (or
+   `finishup-verification-limit:<obligation id>`) names its obligation; the rationale is the reason.
+   The receipt already lists that decision (obligation, kind and decision id; the decision holds
+   the agent's text) beside the still-disclosed code. `respond` was rejected because these facts
+   are not findings (no finding id; minting findings would add receipt-blocking state and Stop
+   items); `acknowledged_not_done` was rejected because it says the obligation is not done, which
+   is false for an output that was already correct, and it would move the receipt. A decision is
+   material, so the agent checks again after declining; the decline stays recorded for that check.
+4. **The directive.** While any row is open, every surface (MCP status and check text, the CLI, the
+   terminal interface, `agent_next`, the `mode: inspect` text, a brief body) says "Before the
+   receipt: fix, or decline with a reason: <code> (<obligation id>) ... N other limitation(s) and M
+   acknowledged item(s) will be disclosed on the receipt. Then request the receipt." instead of
+   "Nothing further to do". The frozen sentence is unchanged, byte for byte, for every state with
+   no open row.
+
+**Consequences.** Check, status, Stop and the receipt agree: the state, the Stop decision and the
+receipt conclusion are those of version `"8"`; only the directive and the new optional rows differ.

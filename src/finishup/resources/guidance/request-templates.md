@@ -1007,7 +1007,8 @@ proves the issue absent resolves the finding by itself.
 ## `receipt`
 
 Read `status.closure_readiness` before requesting a receipt. At `state: ready_with_limitations`
-nothing further is to do: request the receipt without another check; `standing_limitations` and
+fix, or decline with a reason, each `fix_or_decline` item (receipt.md step 7); otherwise nothing
+further is to do: request the receipt without another check; `standing_limitations` and
 `acknowledged_not_done` are disclosed on it. Respond while
 `findings_unanswered` is present. A remaining `receipt_findings_unresolved` condition means an
 actionable finding is still current: repair the record and recheck if you can, because only a later
