@@ -23,6 +23,7 @@ from finishup.application.semantic_case import (
     _auto_supply_refusal,  # pyright: ignore[reportPrivateUsage]
     build_semantic_case,
     check_time_change_floor_bytes_carried,
+    review_question_set,
     semantic_case_to_prepared_payload,
 )
 from finishup.cli.test_record import prepare_test_record
@@ -161,6 +162,97 @@ def test_only_a_review_that_sees_the_coverage_index_asks_the_test_quality_questi
         assert asked == []
     plain = _build(ReviewSelectionPolicy.for_profile(profile), frozen=_case(manifest=False))
     assert not any("Discriminating check" in text for text in plain.question_set)
+
+
+def _linked_case(kind: ActionKind = ActionKind.COMMAND) -> DeterministicCase:
+    """A resolved obligation citing one recorded result and no manifest (#1145)."""
+
+    criterion = "Generation stops at the first EOS token once min_new_tokens is reached."
+    case = make_case(
+        plans={1: plan_record(PlanPublishedPayload(1, "Batched eval parity", (obl(1),)), 1)},
+        obligations={
+            obl(1): obligation_record(
+                ObligationPublishedPayload(
+                    obl(1),
+                    "Batched generation matches single-sequence generation",
+                    criterion,
+                    ObligationStatus.RESOLVED,
+                    resolution_evidence_refs=(res(1),),
+                ),
+                2,
+            )
+        },
+        actions={
+            act(1): record(
+                ActionRecordedPayload(
+                    act(1),
+                    kind,
+                    "Run the parity test",
+                    "pytest tests/test_parity.py" if kind is ActionKind.COMMAND else None,
+                ),
+                3,
+            )
+        },
+        results={
+            res(1): record(
+                ResultRecordedPayload(res(1), act(1), ResultOutcome.SUCCESS, summary="4 passed."),
+                4,
+            )
+        },
+        extra_refs=(obl(1), act(1), res(1), evt(1)),
+    )
+    return replace(
+        case, task_statement=RecordedTaskStatement(criterion, evt(1), "plan_published", 1)
+    )
+
+
+@pytest.mark.parametrize("profile", PROFILES)
+def test_a_linked_check_without_a_manifest_asks_how_it_gets_its_expected_value(
+    profile: ReviewContextProfile,
+) -> None:
+    """#1145: every obligation row that links a command result asks the test-quality question.
+
+    TB4 agents' own tests derived their expected value from the implementation (an oracle that
+    repeats its stopping rule, a validator sharing its window, the same file glob) and no manifest
+    was declared, so the question never rode their reviews.
+    """
+
+    case = _build(ReviewSelectionPolicy.for_profile(profile), frozen=_linked_case())
+    assert case.packet.verification_coverage_item_ids == ()
+    obligation = next((item for item in case.items if item.item_id == f"obligation-{obl(1)}"), None)
+    if obligation is None:
+        # Structural sends no obligation row, so its reviewer sees no linked check to judge.
+        assert profile is ReviewContextProfile.STRUCTURAL
+        assert not any("Counter-example:" in text for text in case.question_set)
+        return
+    assert str(res(1)).encode() in obligation.content
+    (question,) = [text for text in case.question_set if "Counter-example:" in text]
+    assert question == case.question_set[-1]
+    assert question == review_question_set("final", linked_verification=True)[-1]
+    for rule in (
+        "Say where each decisive linked check gets its expected value",
+        "code path, convention, glob, predicate, clock start or sampling window cannot fail",
+        "challenge it (at most two, task criteria first)",
+        "message_to_main_agent ending 'Counter-example: <an input or probe to run>'",
+    ):
+        assert rule in question
+    # The manifest rules ride only a packet that carries the coverage index.
+    assert "agent-declared manifest" not in question
+    # An edit's result is no check to judge: the question is not asked for it.
+    edit = _build(ReviewSelectionPolicy.for_profile(profile), frozen=_linked_case(ActionKind.EDIT))
+    assert not any("Counter-example:" in text for text in edit.question_set)
+
+
+def test_the_manifest_rules_lead_the_same_linked_check_question_in_every_phase() -> None:
+    for phase in ("routine", "final"):
+        linked = review_question_set(phase, linked_verification=True)[-1]
+        manifests = review_question_set(phase, test_manifests=True)[-1]
+        assert manifests.startswith("The coverage index lists agent-declared test manifests")
+        assert manifests.endswith(" " + linked)
+        assert review_question_set(phase, test_manifests=True, linked_verification=True)[-1] == (
+            manifests
+        )
+        assert not any("Counter-example:" in text for text in review_question_set(phase))
 
 
 @pytest.mark.parametrize("profile", PROFILES)

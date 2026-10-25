@@ -498,8 +498,12 @@ def render_human_check(result: CheckSuccessModel) -> str:
         lines.append(f"Suppressed findings: {suppressed}")
     if result.overall_next is not None:
         lines.append(_render_overall_next(result.overall_next, result.finding_checklist))
-    if result.closure_readiness is not None and result.closure_readiness.evidence_basis_summary:
-        lines.append(result.closure_readiness.evidence_basis_summary)
+    if result.closure_readiness is not None:
+        # #1145: a routine note's id (a reviewer counter-example) is named only here on a check.
+        if result.closure_readiness.correctness_advisory_summary:
+            lines.append(result.closure_readiness.correctness_advisory_summary)
+        if result.closure_readiness.evidence_basis_summary:
+            lines.append(result.closure_readiness.evidence_basis_summary)
     if result.finding_checklist is not None:
         lines.extend(
             _render_checklist(

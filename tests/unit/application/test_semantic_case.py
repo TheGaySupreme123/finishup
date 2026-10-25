@@ -2047,7 +2047,8 @@ def test_recorded_history_packet_keeps_process_rows_and_the_final_phase() -> Non
     case = build_deterministic_case(replay(records), records, CaseAvailabilityFacts())
     semantic = _build(case, ReviewContextProfile.GOAL_AWARE)
     phase = select_semantic_budget_profile(case.projection)
-    assert semantic.question_set == review_question_set(phase)
+    # The vector's obligation links a command result, so the #1145 linked-check question rides.
+    assert semantic.question_set == review_question_set(phase, linked_verification=True)
     kinds: set[str] = set()
     for item in semantic.items:
         if item.item_id in semantic.packet.timeline_item_ids and item.item_id.startswith(

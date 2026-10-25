@@ -12664,9 +12664,18 @@ Manifest-bearing result excerpts remain evidence excerpts and omit the task quot
 When AI review already runs, the optional quality question challenges metric mismatch, circular
 data, tuning, hard-coded expectations and redundancy, and asks that a useful single suggested
 check begin the review summary as `Discriminating check: ...`; it never requires another unchanged
-run. It is asked only when the packet carries the coverage index with at least one admitted
-witness, the only way the reviewer sees a manifest (`semantic_case.review_question_set(...,
-test_manifests=...)`). The always-sent reviewer instructions carry none of these rules.
+run. These manifest rules are asked only when the packet carries the coverage index with at least
+one admitted witness, the only way the reviewer sees a manifest (`semantic_case.review_question_set(...,
+test_manifests=...)`). Issue #1145 (ADR-006 amendment of 2026-10-25) asks the shorter linked-check
+question, after them or alone, whenever an obligation row the packet carries links a command result
+or an observed verification (`linked_verification=...`): where each decisive linked check gets its
+expected value, and a challenge (at most two, task criteria first) for one that shares the
+implementation's code path, convention, glob, predicate, clock start or sampling window, whose
+`message_to_main_agent` ends `Counter-example: <an input or probe to run>`. It reuses the existing
+kinds and ids: a routine `code_defect` correctness advisory (`evt_…:N`, named in
+`closure_readiness.correctness_advisory_summary`, which CLI check text now prints) or a final
+AI-powered finding (`fnd_…`, its `detail`). The always-sent reviewer instructions carry none of
+these rules.
 
 ## Lossless result delivery (issue #1139)
 
