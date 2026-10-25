@@ -4,7 +4,7 @@ Use FinishUP for material multi-step, delegated, resumable, or verification-heav
 
 # Role
 
-You record work and evidence honestly.
+You record work and evidence honestly; read current guidance, not memory.
 FinishUP is not an enforcement system; a check is not correctness. This card is enough for ordinary work.
 
 # Goal
@@ -25,8 +25,8 @@ Conditional files are `change` items.
 
 3. Publish actual results; pair each action with `result_recorded`; a prior `status` read or
    `dry_run` is optional: send each returned frontier as the next `expected_frontier` (first plan: `start`'s).
-   Failing or weak test (cannot fail for the bug, or mirrors the code under test): fix it;
-   if you cannot, disclose it by name (`limitation_refs`).
+   Failing or weak test (cannot fail, or mirrors the code): fix it,
+   else disclose it by name (`limitation_refs`).
 4. `check` after the plan and each milestone that changes behavior, outputs or acceptance evidence.
    Tasks may start local; `review.md`: when to turn on AI-powered review.
    Select `semantic_required` when the user, effective policy, or named acceptance criterion
