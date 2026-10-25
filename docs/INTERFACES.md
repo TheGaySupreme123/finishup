@@ -12314,7 +12314,35 @@ as `outcome_unknown` and is never resent. For it, `operation_max_retries` is `0`
   `ignored=False`, citable under the packet's excerpt refs; `o<n>` an admitted outside root with the
   task-declared paths beneath it (`declared`), and `s<n>` the same root served from the first kept
   snapshot set with files beneath it, citable under the task statement's refs. None when the policy
-  withholds `repository_excerpt`.
+  withholds `repository_excerpt`. `t1` (#1220, `DECLARED_TEST_ROOT`) serves the packet's
+  `declared_tests` by ref only (`ReadRoot.pinned`: `(ref, absolute path, digest, criterion ref)`;
+  catalog row `standing: declared_test`, `baseline: check_time`, `covers: ["dt1", …]`): text mode,
+  `path=dt<n>`; a listing, another ref or any path is `denied/outside_scope` with the fixed
+  `declared_test` correction. Each read re-reads through `adapters.task_input_read.
+  read_declared_test` and returns `unavailable/declared_test_changed` unless the bytes hash to the
+  listed digest, or `unavailable/declared_test_not_visible`; the result room is
+  `min(…, DECLARED_TEST_READ_BYTES)` (4,096) and its element category is `declared_test_excerpt`,
+  which `PrivacyCoordinator.admit_reviewer_read` admits as `repository_excerpt` and records on
+  `ReviewerHistory.declared_tests`; each later exchange's minimized disclosure (and so its proposal
+  and receipt) then adds `declared_test_excerpt` to `approved_categories`.
+- Declared tests (#1220, `kernel.declared_tests`): `declared_test_candidates(projection,
+  task_statement)` (at most `MAX_DECLARED_TESTS` = 3 `DeclaredTestCandidate(path, criterion_ref)`),
+  `declared_test_location(path, workspace_root)` (absolute path or `None` by shape alone),
+  `DeclaredTest(ref, path, content_digest, criterion_ref)` with `to_json()` (keys `content_digest`,
+  `criterion_ref`, `path`, `ref`) and `declared_tests_to_json` / `declared_tests_from_json` (the
+  job case object's `declared_tests`), `offered_declared_tests(tests, final=, offered=)` and
+  `DECLARED_TEST_QUESTION`. `build_semantic_case(..., declared_tests=)` lists them as
+  `ReviewPacket.declared_tests` (packet JSON `declared_tests`, emitted only when non-empty) when
+  `review_phase == "final"` or a digest is outside `DeterministicCase.offered_test_digests`
+  (derived at freeze from succeeded `check_recorded` manifests' `test_check_digests`; case JSON key
+  `offered_test_digests` only when non-empty). `ReviewInputManifest.test_check_offered` /
+  `test_check_digests` (wire: `test_check_offered: true` with one to three sorted digests, both or
+  neither, optional in place on every manifest schema). The composition lists them only when the
+  planned first exchange fits `reviewer_exchange_limit` with them
+  (`semantic_ceiling.planned_exchange_size`), else plans without them.
+- `domain.privacy.RECEIPT_ONLY_CATEGORIES` = `{declared_test_excerpt}`: dropped from every policy
+  category set when a `ChannelPolicy`, `PrivacyPolicy` or effective policy is built;
+  `system_directory_path(value)` is the shared system-directory refusal.
 - `domain.reviewer_reads.ReviewerRecord(exchanges, reads, ended, cleanup)` and
   `ReviewerRead(call, action, status, reason, source, root, standing, baseline, lines,
   result_bytes, result_digest, disclosure)`; `as_wire()` gives canonical decimal-string counts;

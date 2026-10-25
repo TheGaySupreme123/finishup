@@ -3503,3 +3503,70 @@ policy's 4,096 tokens) it is not asked when the linked-check or manifest questio
 packet has about 25 bytes to spare, and the extra question would end the review as
 `case_capacity_exceeded`. Changing the question set changes the case digest of reviews that now
 ask it, with the same fail-closed effect on a pending approval as #1145 above.
+
+### 2026-10-25 amendment — the reviewer reads the agent's declared tests (#1220)
+
+Maintainer acknowledgement: on 2026-10-25 the maintainer approved, on #1220, sending a scanned
+excerpt of the agent-declared test file only ("Declared file only, scanned"), the closing-review
+and changed-test timing, and the constraint not to break anything or explode tokens. ADR-009's
+amendment of the same date holds the disclosure rule; this one holds the packet, the question and
+the read. No credential, billing or unrelated runtime authority is granted.
+
+The #1145/#1211 test-quality question produced no counter-example in 10 of 10 pilot attempts. The
+capacity narrowing (`primary_material_selection`) drops the goal, obligation and claim rows its
+gate depends on in about 140 of 142 reviews, and the decisive tests usually lived in `/tmp`,
+outside every reviewer root.
+
+- **The list.** `kernel.declared_tests.declared_test_candidates` names at most three distinct
+  `test_file`s of `result_recorded` manifests (#1170) whose criterion quote the task statement (or,
+  second, an effective obligation's criteria) still states, task criteria first, then the newest.
+  Each entry's `criterion_ref` is the first obligation stating the quote, else the declaring
+  result. The service reads each file once when a new job is composed (`_pin_declared_tests`),
+  lists only those it could read as text (1 MiB at most), and pins the SHA-256 of their bytes. The
+  pinned list is stored in the job's case object, so recovery rebuilds the same case without a
+  read. In the packet the list is `review_packet.declared_tests`:
+  `{"ref": "dt1", "path": <as declared>, "content_digest": "sha256:…", "criterion_ref": …}`, about
+  170 bytes each. It is structural metadata in the envelope, not a case item, so no narrowing
+  removes it, and its entries are objects so later manifest fields (#1219 `checks`,
+  `expected_from`) can join them.
+- **The question.** Beside the list only, `DECLARED_TEST_QUESTION` (212 bytes) is appended last to
+  the question set: for each listed declared test, read it if needed and judge whether its expected
+  value comes from the task or an independent source, or from the implementation.
+- **Timing.** The list and question are offered at the closing review (final phase) and at a
+  routine review where a listed digest is one no earlier successful review was offered. The frozen
+  case's `offered_test_digests` (from earlier succeeded `check_recorded` manifests'
+  `test_check_digests`; absent from the case JSON when empty) decides it, so recovery agrees and an
+  unchanged digest is never offered again before the closing review.
+- **The read.** A `t1` root (catalog row `standing: declared_test`, `baseline: check_time`,
+  `covers: ["dt1", …]`) serves the listed refs only: `path=dt<n>`, `mode=text`. Each read re-reads
+  the file through the outside read's trusted walk and is refused as `declared_test_changed`
+  unless its bytes still hash to the listed digest, or `declared_test_not_visible` when it is no
+  longer readable text; both carry a fixed continuation telling the reviewer to judge without it
+  and say so. A listing, another ref or any path is `outside_scope` with a fixed correction. A
+  result is at most 4,096 bytes and spends one of the review's three content reads and its byte
+  allowance (#1173). It is citable under its criterion ref when the case allows that ref.
+- **Fit.** The list is offered only when the planned first exchange still fits its limit with it,
+  so the frame left for replies and reads stays whole; excerpt bytes give way first. Otherwise the
+  review is planned exactly as before and nothing is listed. At the minimal policy (4,096 tokens)
+  the fixed packet already fills the first exchange's plan, so the list is never offered there and
+  the #1173 budgets are unchanged; a probe that listed it anyway ended a closing review with the
+  linked-check question as `case_capacity_exceeded`.
+- **Audit.** The review input manifest carries `test_check_offered: true` and
+  `test_check_digests` (both or neither, optional in place), on the composed and provider-bound
+  manifests, the recorded check and every manifest renderer ("declared tests offered N").
+  `ReviewerRead.standing` gains `declared_test`.
+
+Byte identity: a packet with no listed test is byte-identical to before (golden case digests and
+prepared-payload digests in `tests/unit/application/test_declared_test_packet.py`, and the whole
+first exchange in `tests/integration/service/test_declared_test_reads.py`). Measured on the
+composition harness with paths of about 95 bytes: one listed test adds 886 bytes to every exchange
+of that review (about 220 estimated tokens: the entry, the two manifests' fields, the question as
+escaped in the packet string, and an 85-byte catalog row); three add 1,480 bytes (about 370
+tokens). A declared read adds at most 4,096 bytes to the exchanges after it, inside the existing
+read allowance. Changing the question set or packet changes the case digest
+of reviews that list tests, with the same fail-closed effect on a pending approval as #1145.
+
+Wire changes are in place on unreleased versions: check-result 1.3.0 to 1.7.0, check-recorded 1.3.0
+to 1.6.0, status-result 1.4.0/1.5.0 and outbound-case 1.2.0 (manifest fields, `declared_tests`),
+the reviewer record's `standing` enum, and egress-receipt 1.1.0 (ADR-009). The behaviour is
+service-side and identical for Codex, Claude Code and Cursor.

@@ -138,6 +138,12 @@ from finishup.domain.verification_coverage import (
     verification_coverage_to_json,
 )
 from finishup.kernel.claims import effective_claim_items
+from finishup.kernel.declared_tests import (
+    DECLARED_TEST_QUESTION,
+    DeclaredTest,
+    declared_tests_to_json,
+    offered_declared_tests,
+)
 from finishup.kernel.delivered_set import declared_delivered_items
 from finishup.kernel.deterministic_checks import (
     REQUESTED_OUTPUT_ABSENT_FACT,
@@ -7204,6 +7210,7 @@ def build_semantic_case(
     check_time_change_unavailable_reason: str | None = None,
     final_review: bool = False,
     follow_up: ReviewFollowUp | None = None,
+    declared_tests: Sequence[DeclaredTest] = (),
 ) -> SemanticCase:
     """Build one pre-egress AI-powered review case from frozen authority only.
 
@@ -7232,6 +7239,12 @@ def build_semantic_case(
     excerpts the reviewer asked for ranked first within ``follow_up_byte_budget``, and an input
     manifest whose ``follow_up_round`` and ``missing_inputs`` say what FinishUP added. Without it the
     case is built exactly as before.
+
+    ``declared_tests`` (issue #1220) are the agent's declared test files with the digests the
+    service pinned when this check ran (``kernel.declared_tests``). They are listed in the packet,
+    with the declared-test question, only at the closing review or when a digest is one no earlier
+    successful review was offered (``DeterministicCase.offered_test_digests``); otherwise, and
+    when empty, the case is built exactly as before.
     """
 
     if prepared_byte_ceiling is not None and (
@@ -7277,6 +7290,7 @@ def build_semantic_case(
             follow_up=follow_up,
             small_channel=prepared_byte_ceiling is not None
             and prepared_byte_ceiling <= SMALL_REVIEW_CHANNEL_BYTES,
+            declared_tests=tuple(declared_tests),
         )
 
     def fits(candidate: SemanticCase) -> bool | None:
@@ -7358,12 +7372,24 @@ def _build_semantic_case_once(
     final_review: bool = False,
     follow_up: ReviewFollowUp | None = None,
     small_channel: bool = False,
+    declared_tests: tuple[DeclaredTest, ...] = (),
 ) -> SemanticCase:
     if type(frozen_case) is not DeterministicCase:
         raise TypeError("deterministic_case_invalid")
     if follow_up is not None and type(follow_up) is not ReviewFollowUp:
         raise TypeError("semantic_case_follow_up_invalid")
     review_phase = select_semantic_budget_profile(frozen_case.projection, final_review=final_review)
+    # Issue #1220: the declared tests this packet lists, if it lists any. A pure function of the
+    # frozen case, the phase and the digests the caller pinned (recovery passes the same ones).
+    if type(declared_tests) is not tuple or any(
+        type(item) is not DeclaredTest for item in declared_tests
+    ):
+        raise TypeError("semantic_case_declared_tests_invalid")
+    offered_tests = offered_declared_tests(
+        declared_tests,
+        final=review_phase == "final",
+        offered=frozenset(frozen_case.offered_test_digests),
+    )
     if type(review_context_profile) is not ReviewContextProfile:
         raise TypeError("review_context_profile_invalid")
     if type(review_selection) is not ReviewSelectionPolicy:
@@ -9125,6 +9151,7 @@ def _build_semantic_case_once(
                 key=str.encode,
             )
         ),
+        test_check_digests=tuple(test.content_digest for test in offered_tests),
     )
     packet = ReviewPacket(
         verification_coverage_item_ids=tuple(verification_coverage_ids),
@@ -9142,6 +9169,7 @@ def _build_semantic_case_once(
         prior_finding_item_ids=tuple(prior_finding_ids),
         prior_finding_refs=tuple(prior_finding_refs),
         input_manifest=input_manifest,
+        declared_tests=offered_tests,
     )
 
     # The local case owns the complete frontier. The reviewer needs the dependency
@@ -9271,7 +9299,7 @@ def _build_semantic_case_once(
         and not (small_channel and (test_manifests or linked_verification)),
         test_manifests=test_manifests,
         linked_verification=linked_verification,
-    )
+    ) + ((DECLARED_TEST_QUESTION,) if offered_tests else ())
     # tb4n5: which excerpts supply the follow-up beyond the first packet, so the provider-bound
     # manifest recomputes ``supplied`` from the ones admission kept. Bound into the digest only for
     # a follow-up case, so every other case digest is unchanged.
@@ -9453,6 +9481,13 @@ def _packet_to_json(packet: ReviewPacket) -> dict[str, JsonValue]:
             ],
             "claim_item_ids": list(packet.claim_item_ids),
             "coverage": coverage_to_json(packet.coverage),
+            # Issue #1220: emitted only when the packet lists declared tests, so every other
+            # packet keeps its exact bytes and digest.
+            **(
+                {"declared_tests": declared_tests_to_json(packet.declared_tests)}
+                if packet.declared_tests
+                else {}
+            ),
             "decision_item_ids": list(packet.decision_item_ids),
             "deterministic_assessments": [
                 _assessment_to_json(item) for item in packet.deterministic_assessments
@@ -9539,6 +9574,14 @@ def review_input_manifest_to_json(manifest: ReviewInputManifest) -> dict[str, Js
             {}
             if manifest.omitted_item_total is None
             else {"omitted_item_total": manifest.omitted_item_total}
+        ),
+        **(
+            {
+                "test_check_digests": list(manifest.test_check_digests),
+                "test_check_offered": True,
+            }
+            if manifest.test_check_offered
+            else {}
         ),
         "phase": manifest.phase,
         "prior_finding_context": _review_input_section_to_json(manifest.prior_finding_context),
@@ -9663,6 +9706,7 @@ def review_input_manifest(
     review_phase: SemanticBudgetProfile | None = None,
     follow_up: ReviewFollowUp | None = None,
     excerpt_parts: Mapping[str, Sequence[str]] | None = None,
+    test_check_digests: Sequence[str] = (),
 ) -> ReviewInputManifest:
     """Build the bounded per-check input manifest from frozen case material.
 
@@ -10013,6 +10057,9 @@ def review_input_manifest(
         omitted_item_total=omitted_total,
         review_phase=review_phase,
         follow_up_round=None if follow_up is None else follow_up.round,
+        # Issue #1220: the digests of the declared tests this packet lists, when it lists any.
+        test_check_offered=bool(test_check_digests),
+        test_check_digests=tuple(sorted(set(test_check_digests), key=str.encode)),
     )
 
 
@@ -10725,6 +10772,10 @@ def _provider_bound_input_manifest(
     if type(composed.get("follow_up_round")) is int:
         # Issue #1047: the round is the packet's own fact; its rows are fenced below like any.
         projected["follow_up_round"] = composed["follow_up_round"]
+    if composed.get("test_check_offered") is True:
+        # Issue #1220: the declared-test list travels in the packet envelope, never in a row.
+        projected["test_check_offered"] = True
+        projected["test_check_digests"] = composed.get("test_check_digests")
     section_names = (
         "specification",
         "current_diff",
@@ -10993,6 +11044,17 @@ _REVIEW_INPUT_MANIFEST_KEYS: Final = frozenset(
         "specification",
     }
 )
+# Optional in place: #976 (review_phase, omitted_item_total), #1047 (follow_up_round) and #1220
+# (test_check_offered with test_check_digests, both or neither).
+_OPTIONAL_REVIEW_INPUT_MANIFEST_KEYS: Final = frozenset(
+    {
+        "follow_up_round",
+        "omitted_item_total",
+        "review_phase",
+        "test_check_digests",
+        "test_check_offered",
+    }
+)
 _REVIEW_INPUT_SECTION_KEYS: Final = frozenset(
     {
         "content_bytes",
@@ -11036,8 +11098,10 @@ def _decode_review_input_manifest(
     body = cast(Mapping[str, object], raw)
     if (
         any(type(key) is not str for key in body)
-        or frozenset(body) - {"review_phase", "omitted_item_total", "follow_up_round"}
-        != _REVIEW_INPUT_MANIFEST_KEYS
+        or frozenset(body) - _OPTIONAL_REVIEW_INPUT_MANIFEST_KEYS != _REVIEW_INPUT_MANIFEST_KEYS
+        or ("test_check_offered" in body) != ("test_check_digests" in body)
+        or body.get("test_check_offered", True) is not True
+        or type(body.get("test_check_digests", [])) is not list
         or body.get("review_phase", "routine") not in {"routine", "final"}
     ):
         return None
@@ -11166,6 +11230,8 @@ def _decode_review_input_manifest(
             omitted_item_total=omitted_item_total,
             review_phase=cast(Literal["routine", "final"] | None, body.get("review_phase")),
             follow_up_round=cast(int | None, body.get("follow_up_round")),
+            test_check_offered="test_check_offered" in body,
+            test_check_digests=tuple(cast(list[str], body.get("test_check_digests", []))),
         )
     except (KeyError, TypeError, ValueError):
         return None

@@ -37,6 +37,8 @@ _STANDINGS: Final = frozenset(
         "workspace_content",
         "outside_input_mutable",
         "outside_input_snapshot",
+        # #1220: an agent-declared test file, read only while it matches its pinned digest.
+        "declared_test",
     }
 )
 _BASELINES: Final = frozenset({"task_start", "admission_time", "check_time", "read_time"})

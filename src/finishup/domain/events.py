@@ -3945,6 +3945,19 @@ _REVIEW_INPUT_OMISSION_REASONS: Final = frozenset(
 )
 
 
+def review_manifest_offers_test_check(manifest: object) -> bool:
+    """Whether a recorded review input manifest listed declared tests (#1220).
+
+    Such a check is recorded as check-recorded 1.6.0 (``REVIEWER_CHECK_EVENT_SCHEMA_VERSION``):
+    the earlier versions' schemas are frozen and do not carry the fields.
+    """
+
+    return (
+        isinstance(manifest, Mapping)
+        and cast(Mapping[str, object], manifest).get("test_check_offered") is True
+    )
+
+
 def _review_input_manifest_from_json(value: JsonValue | None) -> JsonObject | None:
     """Validate and freeze the metadata-only per-check input manifest."""
 
@@ -3967,10 +3980,33 @@ def _review_input_manifest_from_json(value: JsonValue | None) -> JsonObject | No
                 "omitted_item_count",
             }
         ),
-        optional=frozenset({"review_phase", "omitted_item_total", "follow_up_round"}),
+        optional=frozenset(
+            {
+                "review_phase",
+                "omitted_item_total",
+                "follow_up_round",
+                "test_check_offered",
+                "test_check_digests",
+            }
+        ),
     )
     if _field(source, "schema") != "yoetz.review-input-manifest/1":
         raise ProtocolValueError("invalid_event_value_type")
+    # Issue #1220: both or neither; one to three sorted, unique SHA-256 digests.
+    if ("test_check_offered" in source) != ("test_check_digests" in source):
+        raise ProtocolValueError("invalid_event_value_type")
+    if "test_check_offered" in source:
+        digests = tuple(_array(source["test_check_digests"]))
+        if (
+            source["test_check_offered"] is not True
+            or not 1 <= len(digests) <= 3
+            or any(
+                type(value) is not str or re.fullmatch(r"sha256:[0-9a-f]{64}", value) is None
+                for value in digests
+            )
+            or list(digests) != sorted(set(cast(tuple[str, ...], digests)), key=str.encode)
+        ):
+            raise ProtocolValueError("invalid_event_value_type")
     if "review_phase" in source and source["review_phase"] not in {"routine", "final"}:
         raise ProtocolValueError("invalid_event_value_type")
     if "follow_up_round" in source:
@@ -5928,12 +5964,14 @@ def _validate_event_schema_payload(
             payload.reviewer is not None
             or payload.correctness_advisories
             or payload.semantic_reason is SemanticReason.ROUND_LIMIT_UNASSESSABLE
+            or review_manifest_offers_test_check(payload.review_input_manifest)
             or schema.version == REVIEWER_CHECK_EVENT_SCHEMA_VERSION
         ):
             if schema.version != REVIEWER_CHECK_EVENT_SCHEMA_VERSION or (
                 payload.reviewer is None
                 and not payload.correctness_advisories
                 and payload.semantic_reason is not SemanticReason.ROUND_LIMIT_UNASSESSABLE
+                and not review_manifest_offers_test_check(payload.review_input_manifest)
             ):
                 raise ProtocolValueError("invalid_event_schema")
         elif payload.semantic_reason is SemanticReason.DEFERRED_BEFORE_FIRST_EDIT:

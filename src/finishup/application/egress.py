@@ -422,6 +422,10 @@ class ReviewerHistory:
 
     policy: tuple[int, str] | None = None
     images: bool = False
+    # #1220: the conversation carries a read of an agent-declared test file. Admitted under the
+    # ``repository_excerpt`` grant; each later exchange's receipt also shows
+    # ``declared_test_excerpt`` among its approved categories.
+    declared_tests: bool = False
     retained: set[tuple[DataCategory, DataClass]] = field(
         default_factory=set[tuple[DataCategory, DataClass]]
     )
@@ -1349,8 +1353,20 @@ class PrivacyCoordinator:
         policy they were admitted under, which every later read and exchange must still match.
         """
 
+        # #1220: a declared-test read is repository content to the policy: the same grant, the
+        # same classification, minimization and scans as any file read. Only its label differs.
+        declared = any(kind is DataCategory.DECLARED_TEST_EXCERPT for kind, _t, _r in elements)
         items = tuple(
-            CandidateContextItem(f"read-{n}", kind, scope, f"/reviewer/{n}", text, input_root=root)
+            CandidateContextItem(
+                f"read-{n}",
+                DataCategory.REPOSITORY_EXCERPT
+                if kind is DataCategory.DECLARED_TEST_EXCERPT
+                else kind,
+                scope,
+                f"/reviewer/{n}",
+                text,
+                input_root=root,
+            )
             for n, (kind, text, root) in enumerate(elements)
         )
         channel, purpose = EgressChannel.LLM_INFERENCE, "semantic-review-read"
@@ -1393,6 +1409,7 @@ class PrivacyCoordinator:
             return "privacy_withheld"
         if history is not None:
             history.images = history.images or image is not None
+            history.declared_tests = history.declared_tests or declared
             history.retained.update(
                 (item.candidate.category, item.data_class) for item in classified.items
             )
@@ -2213,6 +2230,17 @@ class PrivacyCoordinator:
                 token_count=estimated_token_count(len(payload)),
                 case_digest=f"sha256:{hashlib.sha256(payload).hexdigest()}",
             )
+            if frame.history is not None and frame.history.declared_tests:
+                # #1220: this exchange carries a declared-test read; its receipt says so.
+                minimized = replace(
+                    minimized,
+                    approved_categories=tuple(
+                        sorted(
+                            {*minimized.approved_categories, DataCategory.DECLARED_TEST_EXCERPT},
+                            key=lambda value: value.value.encode(),
+                        )
+                    ),
+                )
         # Channel ceilings are operator-visible policy dimensions; fail closed when exceeded.
         llm = next(
             item
