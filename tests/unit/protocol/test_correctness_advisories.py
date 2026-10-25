@@ -213,7 +213,11 @@ def test_a_withheld_decision_is_disclosed_as_one_that_may_answer_a_note() -> Non
     }
     # Readiness names only what is still open: the two unanswered notes, newest first.
     closing = advisory_closing_text(index.rows)
-    assert f"no recorded response: 2, newest {_CHECK_EVENT}:3, {_CHECK_EVENT}:2." in closing
+    assert f"no recorded response: 2, newest {_CHECK_EVENT}:3 (routine correctness note" in closing
+    assert f"; {_CHECK_EVENT}:2 (routine correctness note" in closing
+    # #1162 tracked advice: the owner-approved wording; a response stays optional.
+    assert "Non-blocking. For each material concern: run a proportionate check" in closing
+    assert "Recording a response is optional" in closing
     assert f"{_CHECK_EVENT}:1" not in closing
     # More withheld decisions than unanswered notes never count past those notes.
     capped = _index(_noted_check(2), _answer(7, 1), _withheld(8), _withheld(9), _withheld(10))
@@ -250,7 +254,9 @@ def test_readiness_text_changes_exactly_when_the_unanswered_set_does() -> None:
     # An answer to an open note, or a new open note, changes it.
     assert text(_noted_check(2), _answer(7, 1)) != open_two
     assert text(_noted_check(2), later) != open_two
-    assert f"newest {later_check}:1, {_CHECK_EVENT}:2" in text(_noted_check(2), later)
+    newest = text(_noted_check(2), later)
+    assert f"newest {later_check}:1 (" in newest
+    assert newest.index(f"{later_check}:1") < newest.index(f"{_CHECK_EVENT}:2")
 
 
 def test_the_history_continuation_names_each_recording_session() -> None:

@@ -1075,8 +1075,14 @@ class CheckCommitResult:
     # ADR-045: where each derived task fact this check carries came from; derived by the caller
     # (never recorded), bounded and sorted.
     fact_lineage: tuple[FactLineage, ...] = ()
+    # #1162 tracked advice: this check's recorded advisory rows with their identities
+    # (``advisory_id``, ``origin``, ``subject_refs``, ``summary``), derived by the caller from the
+    # recorded check (never a second record), at most ten.
+    correctness_advisories: tuple[JsonObject, ...] = ()
 
     def __post_init__(self) -> None:
+        if type(self.correctness_advisories) is not tuple or len(self.correctness_advisories) > 10:
+            raise _invalid()
         if type(self.outcome) is not str or self.outcome not in {"committed", "replayed"}:
             raise _invalid()
         _id(IdKind.TASK, self.task_id)

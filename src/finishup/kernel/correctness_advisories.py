@@ -31,6 +31,21 @@ class CorrectnessAdvisory:
         return str(payload.advisory_response["disposition"])
 
 
+# #1162 tracked advice: fixed words for each closed row origin (a row without one is a note).
+_ORIGIN_LABELS = {
+    "": "routine correctness note",
+    "verified_not_supported": "reviewer row not_supported",
+    "verified_not_assessable": "reviewer row not_assessable",
+    "strongest_remaining_check": "reviewer's strongest remaining check",
+}
+
+
+def advisory_origin_label(row: CorrectnessAdvisory) -> str:
+    """FinishUP's fixed label for where an advisory row came from, never reviewer prose."""
+
+    return _ORIGIN_LABELS.get(str(row.concern.get("origin", "")), _ORIGIN_LABELS[""])
+
+
 # Status history is session-scoped, so the continuation names the sessions that recorded the checks.
 _NAMED_SESSIONS = 3
 
@@ -124,6 +139,12 @@ def advisory_counts(index: CorrectnessAdvisoryIndex) -> JsonObject:
     )
 
 
+def unanswered_advisory_count(index: CorrectnessAdvisoryIndex) -> int:
+    """How many advisory rows have no readable recorded response (a status-line count)."""
+
+    return sum(row.response is None for row in index.rows)
+
+
 def advisory_closing_text(rows: tuple[CorrectnessAdvisory, ...]) -> str:
     """Closure-readiness text: only the notes that still have no recorded response.
 
@@ -135,12 +156,21 @@ def advisory_closing_text(rows: tuple[CorrectnessAdvisory, ...]) -> str:
 
     unanswered = tuple(row for row in rows if row.response is None)
     newest = tuple(reversed(unanswered))
-    named = ", ".join(row.advisory_id for row in newest[:3])
+
+    def named_row(row: CorrectnessAdvisory) -> str:
+        subjects = cast(tuple[str, ...], row.concern["subject_refs"])
+        shown = ", ".join(subjects[:2]) + (f" +{len(subjects) - 2}" if len(subjects) > 2 else "")
+        return f"{row.advisory_id} ({advisory_origin_label(row)}{'; ' + shown if shown else ''})"
+
+    named = "; ".join(named_row(row) for row in newest[:3])
     if len(newest) > 3:
         named += f" (+{len(newest) - 3} earlier)"
     return (
         f"Earlier correctness advisories with no recorded response: {len(unanswered)}, newest "
-        f"{named}. Non-blocking: no answer is required; disclose material ones in final prose. "
+        f"{named}. Non-blocking. For each material concern: run a proportionate check, cite "
+        "evidence that already settles it, or decline with a reason. Recording a response is "
+        "optional (respond finding_id=<id>: addressed with newly recorded evidence, or declined "
+        "with a reason); one response closes it unless new material arrives. "
         + advisory_history_continuation(unanswered)
     )
 
@@ -167,7 +197,7 @@ def advisory_item(row: CorrectnessAdvisory, profile: ReceiptRedactionProfile) ->
     payload = row.check.payload
     assert isinstance(payload, CheckRecordedPayload)
     prefix = (
-        f"Correctness advisory {row.advisory_id}: {status}. "
+        f"Correctness advisory {row.advisory_id} ({advisory_origin_label(row)}): {status}. "
         f"Check {row.check.event_id} in session {row.check.session_id}; "
         f"subject frontier {payload.subject_frontier.sequence}; "
         f"subjects: {', '.join(str(ref) for ref in cast(tuple[str, ...], row.concern['subject_refs']))}."
@@ -202,7 +232,8 @@ def advisory_item(row: CorrectnessAdvisory, profile: ReceiptRedactionProfile) ->
             answer.rationale, 1024, marker=" [response cut; retrieve history]", ascii_only=False
         )
         text += f"\nAgent response (self-reported): {reason}"
-    text += f"\nAI-powered reviewer detail (advisory): {row.concern['detail']}"
+    if row.concern["detail"] != row.concern["summary"]:
+        text += f"\nAI-powered reviewer detail (advisory): {row.concern['detail']}"
     return clip_to_limit(
         text, 8192, marker=" [advisory detail cut; retrieve history]", ascii_only=False
     )

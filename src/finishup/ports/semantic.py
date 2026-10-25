@@ -85,6 +85,7 @@ if TYPE_CHECKING:
     )
 
 __all__ = [
+    "RemainingCheck",
     "MAX_PRIOR_FINDING_ITEMS",
     "MAX_PRIOR_FINDING_REFS",
     "MAX_REVIEW_INPUT_SECTION_ITEMS",
@@ -1823,6 +1824,39 @@ class VerifiedReviewItem:
             )
 
 
+@dataclass(frozen=True, slots=True)
+class RemainingCheck:
+    """The reviewer's single strongest remaining check (#1162 tracked advice).
+
+    One concrete, cheap check the reviewer would still run, and the refs it would settle. It is
+    advisory: FinishUP gives it an advisory identity so the agent can answer it once.
+    """
+
+    check: str
+    cited_refs: tuple[str, ...]
+
+    def __post_init__(self) -> None:
+        object.__setattr__(
+            self,
+            "check",
+            _snapshot_text(
+                self.check, maximum_bytes=MAX_REVIEW_TEXT_BYTES, error=_invalid_judgment()
+            ),
+        )
+        object.__setattr__(
+            self,
+            "cited_refs",
+            _validated_ref_tuple(
+                self.cited_refs,
+                minimum=1,
+                maximum=_MAX_SUBJECT_REFS,
+                public_only=False,
+                error=_invalid_judgment(),
+                canonicalize=True,
+            ),
+        )
+
+
 type PriorFindingVerdictKind = Literal[
     "fixed", "still_present", "answered_not_fixed", "unassessable", "withdrawn"
 ]
@@ -1918,9 +1952,16 @@ class SemanticJudgment:
     # Verified rows the normalizer dropped because their quote did not match their verdict
     # (supported/not_supported without a quote). Disclosed through the snippet gap.
     verified_dropped: int = 0
+    # Optional from provider-judgment 1.2.0 (#1162 tracked advice): absent on older responses.
+    strongest_remaining_check: RemainingCheck | None = None
 
     def __post_init__(self) -> None:
         if type(self.conclusion) is not str or self.conclusion not in _CONCLUSIONS:
+            raise _invalid_judgment()
+        if (
+            self.strongest_remaining_check is not None
+            and type(self.strongest_remaining_check) is not RemainingCheck
+        ):
             raise _invalid_judgment()
         object.__setattr__(
             self,

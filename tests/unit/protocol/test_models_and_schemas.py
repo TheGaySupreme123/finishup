@@ -319,7 +319,7 @@ _EXPECTED_RESULT_PATTERN_COUNTS: dict[tuple[str, str | None], int] = {
     (
         "check",
         None,
-    ): 550,  # #1205 +1 evidence summary; #1162 +1 advisory readiness; #1140 +83 shared readiness; #1139 +4 review_delivery; #1118 +18 reviewer; tb4n2 LA: counts/disputed_after_rebuttal; W2-A +8; tb4n3 LF +17; #1048 +38 inspection;
+    ): 560,  # #1162 tracked advice +10 (advisory rows, readiness counts); #1205 +1 evidence summary; #1162 +1 advisory readiness; #1140 +83 shared readiness; #1139 +4 review_delivery; #1118 +18 reviewer; tb4n2 LA: counts/disputed_after_rebuttal; W2-A +8; tb4n3 LF +17; #1048 +38 inspection;
     # #1047 +1 follow_up_round; ADR-049 +4 review_mode; W6 #1107 +1 agent_next
     ("publish_work", None): 67,  # #1084 +3 server_filled
     (
@@ -331,7 +331,7 @@ _EXPECTED_RESULT_PATTERN_COUNTS: dict[tuple[str, str | None], int] = {
     (
         "status",
         None,
-    ): 140,  # #1205 +1 evidence summary; #1162 +1 advisory readiness; +9 tb4n3 LO: check_cause; W2-A +25 closure verdict; +17 LF: fact_lineage;
+    ): 143,  # #1162 tracked advice +3 readiness counts; #1205 +1 evidence summary; #1162 +1 advisory readiness; +9 tb4n3 LO: check_cause; W2-A +25 closure verdict; +17 LF: fact_lineage;
     # tb4n4 #1044 +7: closure_readiness.undeclared_references; ADR-049 +8 review_mode;
     # #1079 +2 admissible_verification, +1 closing_material_frontier;
     # #1084 +4 brief detail and closure_state; W5/D1 +2 closure_readiness.acceptance_risk
@@ -2616,8 +2616,8 @@ def test_result_leaf_registry_has_exhaustive_schema_parity() -> None:
 
     derived_patterns = _derived_result_success_patterns(catalog)
     assert (
-        len(derived_patterns) == 1961
-    )  # #1140/#1144/#1149 +86 readiness/receipt; #1139 +8 delivery; #1118 +18 check reviewer, +9 LO check_cause, W2-A +46 closure verdict, +34 LF fact_lineage, W2-B +2 closure_after,
+        len(derived_patterns) == 1974
+    )  # #1162 tracked advice +13 (check advisory rows, readiness counts); #1140/#1144/#1149 +86 readiness/receipt; #1139 +8 delivery; #1118 +18 check reviewer, +9 LO check_cause, W2-A +46 closure verdict, +34 LF fact_lineage, W2-B +2 closure_after,
     # W6 #1107 +1 check agent_next, +15 status operation check_outcome,
     # tb4n4 #1044 +7 closure_readiness.undeclared_references, #1048 +38 inspection, #1047 +2,
     # tb4n5 +3 publish action_notices, #1079 +2 admissible_verification,
@@ -2634,7 +2634,7 @@ def test_result_leaf_registry_has_exhaustive_schema_parity() -> None:
     assert type(rules) is tuple
     assert (
         len(rules)
-        == 1992  # #1205 +64 evidence leaves, #1194 +2 freshness; #1170 +58 coverage and manifest-summary privacy leaves; #1162 +95 advisory history and readiness leaves, +1 model-opaque advisory_provenance container; #1140/#1144/#1149 +86 readiness and receipt; #1139 +8 check/status review_delivery; #1118 +18 check reviewer, +1 check_recorded 1.6.0; n6 item 4: check_recorded 1.5.0; #1079 +2 admissible_verification;
+        == 2005  # #1162 tracked advice +13; #1205 +64 evidence leaves, #1194 +2 freshness; #1170 +58 coverage and manifest-summary privacy leaves; #1162 +95 advisory history and readiness leaves, +1 model-opaque advisory_provenance container; #1140/#1144/#1149 +86 readiness and receipt; #1139 +8 check/status review_delivery; #1118 +18 check reviewer, +1 check_recorded 1.6.0; n6 item 4: check_recorded 1.5.0; #1079 +2 admissible_verification;
         # W6 #1107 +16 (check agent_next, status operation check_outcome);
         # +1 closing_material_frontier; #1084 +10 server_filled and brief status,
         # +1 history occurred_at_source (review R7), -2 replay_notice retired (round 2),
@@ -2651,7 +2651,7 @@ def test_result_leaf_registry_has_exhaustive_schema_parity() -> None:
 
     registry_patterns = {(rule.method, rule.status_view, rule.segments) for rule in rules}
     assert (
-        len(registry_patterns) == 1962
+        len(registry_patterns) == 1975
     )  # #1170 +57 coverage and manifest-summary leaves; #1162 +1 model-opaque container; #1140/#1144/#1149 +86 readiness/receipt; #1139 +8 delivery; #1118 +18 check reviewer, W6 #1107 +16, #1084 review R7 +1, #1027 +5, LO +9, W2-A +46, LF +34, W2-B +2, #1044 +7,
     # #1048 +38, #1047 +2, tb4n5 +3, ADR-049 +12 review_mode, #1079 +2 admissible_verification,
     # W5/D1 +2 closure_readiness.acceptance_risk; #1205 +64 evidence leaves, #1194 +2 freshness
@@ -3103,6 +3103,7 @@ def _expected_nonpublish_content_rules(
         ("check", None, "/review_summary", finding_summary),
         ("check", None, "/verified/*/requirement_or_claim", finding_summary),
         ("check", None, "/verified/*/snippet", finding_summary),
+        ("check", None, "/correctness_advisories/*/summary", finding_summary),
         ("respond", None, "/response/evidence/*/description", evidence_excerpt),
         ("respond", None, "/response/reason", finding_summary),
         ("status", "advice", "/page/items/*/coordination_resource_paths/*", repository_excerpt),
@@ -3473,8 +3474,9 @@ def test_schema_catalog_record_shape_and_indexes_are_exact() -> None:
     # #1118: privacy-policy 1.3.0 (its 1.2.0 refs plus the 524,288 bound) and its control 2.9.0
     # admissions add 96.
     assert (
-        sum(_count_refs(document.json_schema) for document in catalog.documents) == 9_266
-    )  # #1170 +15 coverage/result-verification references, +7 inherited by status-result 1.5.0;
+        sum(_count_refs(document.json_schema) for document in catalog.documents) == 9_274
+    )  # #1162 tracked advice +8 (provider-judgment and reviewer-reply strongest check refs);
+    # #1170 +15 coverage/result-verification references, +7 inherited by status-result 1.5.0;
     # #1205 +60 evidence references across both status contracts;
     # #1162 +14 advisory references (respond request/result +1 each, status-result 1.4.0 +6
     # and the same +6 in status-result 1.5.0, which #1139 derives from it);

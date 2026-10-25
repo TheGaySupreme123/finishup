@@ -591,6 +591,10 @@ def render_check_review_lines(result: CheckSuccessModel) -> tuple[str, ...]:
         for item in result.verified:
             claim = item.requirement_or_claim
             lines.append(f"- {item.verdict}: {claim if isinstance(claim, str) else '[omitted]'}")
+    # #1162 tracked advice: each advisory row with the identity respond answers.
+    from finishup.mcp.summaries import render_check_advice_lines
+
+    lines.extend(render_check_advice_lines(result.model_dump(mode="json", exclude_unset=True)))
     return tuple(lines)
 
 

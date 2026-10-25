@@ -3068,6 +3068,17 @@ receipt and `status view=history` filtered to `check_recorded`. Model receipt of
 diagnostics and live host/OS parity have not been established by unit hook-contract tests.
 Follow-up owner for any richer non-continuing host channel: issue #1162.
 
+**Tracked reviewer advice (#1162, 2026-10-25).** The same advisory rows also record the
+reviewer's verified rows marked `not_supported` or `not_assessable` that cite an obligation or
+claim, and its single strongest remaining check, each with a closed `origin`. A check result lists
+the rows it recorded in `correctness_advisories` (identity, origin, subjects, reviewer summary),
+and closure readiness carries `correctness_advisory_counts`. Claude Code's MCP text lists the rows under a fixed "Tracked reviewer advice" header before the compact summary, and its structured JSON carries them too (a result over 12 KB falls back to that JSON). The CLI check text uses the
+same header. Recording a response stays optional; one `respond` response (addressed with newly
+recorded evidence, or declined with a reason) closes an item; a later review that repeats it with no newer material folds onto it
+instead of raising it again. Nothing blocks, and the Stop behaviour above is unchanged. Decision
+for Claude Code: supported through the shared MCP and CLI surfaces, with no host-specific channel;
+verified by unit and in-process integration tests, not by a live Claude Code run.
+
 The non-continuing owner notice uses the documented common output field: [upstream hook reference](https://code.claude.com/docs/en/hooks).
 
 ## Test manifests and verification quality (issue #1170)

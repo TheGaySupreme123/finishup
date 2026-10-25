@@ -2111,10 +2111,17 @@ async def _closure_readiness(
     if loaded is not None:
         from finishup.kernel.correctness_advisories import (
             advisory_closing_text,
+            advisory_counts,
             correctness_advisory_index,
         )
 
         advisory_index = correctness_advisory_index(loaded.records)
+        # #1162 tracked advice: the structural counts (the receipt's own triple) whenever the
+        # task has advice, so a status line counts unanswered items without reading prose.
+        if advisory_index.rows:
+            optional_fields["correctness_advisory_counts"] = dict(
+                advisory_counts(advisory_index).items()
+            )
         # #1162: readiness names what is still open, so the summary is present only while some
         # note has no recorded response. Hooks read its presence (never its text) to decide the
         # owner-facing Stop notice; the receipt and history keep every note and its status.

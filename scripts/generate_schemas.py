@@ -2428,6 +2428,15 @@ def _correctness_advisories_schema(*, history: bool = False) -> dict[str, JsonVa
         },
     }
     required: list[JsonValue] = ["summary", "detail", "subject_refs"]
+    if not history:
+        # #1162 tracked advice (in place on the unreleased 1.6.0): where the row came from. A row
+        # without it is a routine correctness note, so the first shape stays valid unchanged.
+        from finishup.domain.correctness_advisories import ADVISORY_ORIGINS
+
+        properties["origin"] = {
+            "type": "string",
+            "enum": cast(list[JsonValue], sorted(ADVISORY_ORIGINS, key=str.encode)),
+        }
     if history:
         for key in ("summary", "detail"):
             properties[key] = {"anyOf": [properties[key], {"$ref": "#/$defs/finding_omission"}]}
@@ -2470,6 +2479,58 @@ def _correctness_advisories_schema(*, history: bool = False) -> dict[str, JsonVa
             "additionalProperties": False,
             "properties": properties,
             "required": required,
+        },
+    }
+
+
+def _check_correctness_advisories_schema() -> dict[str, JsonValue]:
+    """#1162 tracked advice: a check's advisory rows with identities (check-result 1.6.0, in place).
+
+    Identity, closed origin and subjects are structural; the summary is the reviewer's
+    privacy-projected words. A routine note's row has no stored origin and reads as
+    ``routine_correctness_note`` here.
+    """
+
+    from finishup.domain.correctness_advisories import (
+        ADVISORY_ID_PATTERN,
+        MAX_ADVISORIES_PER_CHECK,
+        MAX_ADVISORY_SUBJECT_REFS,
+    )
+
+    return {
+        "type": "array",
+        "maxItems": MAX_ADVISORIES_PER_CHECK,
+        "items": {
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {
+                "advisory_id": {"type": "string", "pattern": ADVISORY_ID_PATTERN},
+                "origin": {
+                    "type": "string",
+                    "enum": [
+                        "routine_correctness_note",
+                        "strongest_remaining_check",
+                        "verified_not_assessable",
+                        "verified_not_supported",
+                    ],
+                },
+                "subject_refs": {
+                    "type": "array",
+                    "maxItems": MAX_ADVISORY_SUBJECT_REFS,
+                    "uniqueItems": True,
+                    "items": {
+                        "type": "string",
+                        "pattern": r"^(?:evt|obl|clm)_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                    },
+                },
+                "summary": {
+                    "oneOf": [
+                        {"type": "string", "minLength": 1, "maxLength": 8192},
+                        {"$ref": "#/$defs/finding_omission"},
+                    ]
+                },
+            },
+            "required": ["advisory_id", "origin", "subject_refs", "summary"],
         },
     }
 
@@ -4211,6 +4272,9 @@ def _check_result_v1_6_schema(entry: _RegistryEntry) -> dict[str, JsonValue]:
             {"$ref": "#/$defs/finding_omission"},
         ]
     }
+    cast(dict[str, JsonValue], success["properties"])["correctness_advisories"] = (
+        _check_correctness_advisories_schema()
+    )
     document["$id"] = SCHEMA_NAMESPACE + entry.relative_path
     document["title"] = f"FinishUP check result {entry.schema_version}"
     return document
@@ -5254,6 +5318,12 @@ def _status_result_v1_4_schema(entry: _RegistryEntry) -> dict[str, JsonValue]:
         dict[str, JsonValue],
         cast(dict[str, JsonValue], definitions["closure_readiness"])["properties"],
     )["correctness_advisory_summary"] = {"type": "string", "minLength": 1, "maxLength": 4096}
+    # #1162 tracked advice (unreleased, in place): the receipt's own advisory counts, so a
+    # status line counts unanswered advice without parsing prose. Omitted while there is none.
+    cast(
+        dict[str, JsonValue],
+        cast(dict[str, JsonValue], definitions["closure_readiness"])["properties"],
+    )["correctness_advisory_counts"] = _advisory_counts_schema()
     cast(
         dict[str, JsonValue],
         cast(dict[str, JsonValue], definitions["closure_readiness"])["properties"],

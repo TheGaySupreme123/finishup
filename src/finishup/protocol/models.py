@@ -2577,6 +2577,27 @@ class ProviderVerifiedItemModel(_ClosedModel):
         return self
 
 
+class ProviderRemainingCheckModel(_ClosedModel):
+    """The reviewer's single strongest remaining check (#1162 tracked advice).
+
+    Optional and nullable on every conclusion branch: one concrete, cheap check the reviewer would
+    still run, citing the obligation, claim or record it would settle. FinishUP records it as
+    advisory, non-blocking advice with an identity the agent can answer once.
+    """
+
+    check: ProviderReviewTextWire
+    cited_refs: Annotated[
+        tuple[SubjectIdWire, ...],
+        Field(min_length=1, max_length=16, json_schema_extra={"uniqueItems": True}),
+    ]
+
+    @model_validator(mode="after")
+    def _validate_remaining_check(self) -> ProviderRemainingCheckModel:
+        _require_unique(self.cited_refs, limit=16)
+        _require_review_text_utf8_bytes(self.check)
+        return self
+
+
 # Issue #905: one ruling per earlier AI-powered finding the packet's prior-findings section
 # carries. ``withdrawn`` accepts the main agent's rejection; ``unassessable`` speaks only for its
 # own finding. The section carries at most sixteen findings (issue #976).
@@ -2626,6 +2647,7 @@ class ProviderJudgmentNoDiscrepancyModel(_ClosedModel):
         tuple[ProviderChallengeModel, ...], Field(min_length=0, max_length=0)
     ]
     prior_finding_verdicts: PriorFindingVerdictsWire
+    strongest_remaining_check: ProviderRemainingCheckModel | None = None
 
 
 class ProviderJudgmentChallengesModel(_ClosedModel):
@@ -2637,6 +2659,7 @@ class ProviderJudgmentChallengesModel(_ClosedModel):
         Field(min_length=1, max_length=MAX_REVIEW_CHALLENGES),
     ]
     prior_finding_verdicts: PriorFindingVerdictsWire
+    strongest_remaining_check: ProviderRemainingCheckModel | None = None
 
 
 class ProviderMissingItemModel(_ClosedModel):
@@ -2672,6 +2695,7 @@ class ProviderJudgmentInsufficientModel(_ClosedModel):
     # A whole-packet ``insufficient_packet`` may still rule on individual earlier findings the
     # reviewer could judge (issue #905); it vetoes only those it leaves without a verdict.
     prior_finding_verdicts: PriorFindingVerdictsWire
+    strongest_remaining_check: ProviderRemainingCheckModel | None = None
     # Required from provider-judgment 1.1.0: an unassessable packet must say what was missing,
     # or the agent can only add excerpts blind and recheck (issue #907).
     missing_for_assessment: Annotated[
@@ -3595,6 +3619,40 @@ class CheckVerifiedItemModel(_ClosedModel):
             raise ValueError("verified_snippet_invalid")
         if self.verdict != "not_assessable" and self.snippet is None:
             raise ValueError("verified_snippet_missing")
+        return self
+
+
+_ADVISORY_SUBJECT_REF_PATTERN: Final = (
+    r"^(?:evt|obl|clm)_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+)
+
+
+class CheckCorrectnessAdvisoryModel(_ClosedModel):
+    """One advisory row this check recorded, with the identity ``respond`` answers (#1162).
+
+    ``origin`` names where it came from: a routine correctness note, a verified row marked
+    not_supported or not_assessable that cites an obligation or claim, or the reviewer's
+    strongest remaining check. Non-blocking; the summary is the reviewer's privacy-projected words.
+    """
+
+    advisory_id: Annotated[str, Field(pattern=ADVISORY_ID_PATTERN)]
+    origin: Literal[
+        "routine_correctness_note",
+        "strongest_remaining_check",
+        "verified_not_assessable",
+        "verified_not_supported",
+    ]
+    subject_refs: tuple[Annotated[str, Field(pattern=_ADVISORY_SUBJECT_REF_PATTERN)], ...]
+    summary: String1To8192 | OmittedContentModel
+
+    @model_validator(mode="after")
+    def _validate_check_correctness_advisory(self) -> CheckCorrectnessAdvisoryModel:
+        _require_unique(self.subject_refs, limit=64)
+        if (
+            isinstance(self.summary, OmittedContentModel)
+            and self.summary.category is not DataCategory.FINDING_SUMMARY
+        ):
+            raise ValueError("advisory_omission_category_invalid")
         return self
 
 
@@ -4624,6 +4682,7 @@ class CheckSuccessModel(_ClosedModel):
             "children",
             "advisory_notes",
             "missing_for_assessment",
+            "correctness_advisories",
             "finding_checklist",
             "closure_readiness",
             "overall_next",
@@ -4665,6 +4724,11 @@ class CheckSuccessModel(_ClosedModel):
     agent_next: AgentNextTextWire | None = None
     overall_next: CheckOverallNextModel | None = None
     missing_for_assessment: tuple[CheckMissingItemModel, ...] = ()
+    # #1162 tracked advice: the advisory rows this check recorded, each with its identity. Early
+    # so the head-and-tail Codex view keeps the identities beside the continuation.
+    correctness_advisories: tuple[CheckCorrectnessAdvisoryModel, ...] = Field(
+        default=(), max_length=10
+    )
     findings: tuple[CheckProjectedFindingModel, ...]
     suppressed_count: CanonicalUInt64Wire
     policy_executions: tuple[CheckPolicyExecutionModel, ...]
@@ -5459,9 +5523,6 @@ class StatusHistoryItemModel(_ClosedModel):
     ]
 
 
-_ADVISORY_SUBJECT_REF_PATTERN: Final = (
-    r"^(?:evt|obl|clm)_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
-)
 _ADVISORY_EVIDENCE_REF_PATTERN: Final = (
     r"^(?:evd|res)_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
 )
@@ -5817,6 +5878,12 @@ class StatusAcceptanceRiskModel(_ClosedModel):
         return self
 
 
+class CorrectnessAdvisoryCountsModel(_ClosedModel):
+    total: CanonicalUInt64Wire
+    no_recorded_response: CanonicalUInt64Wire
+    withheld_may_answer: CanonicalUInt64Wire
+
+
 class StatusClosureReadinessModel(_ClosedModel):
     """What currently bounds a completion conclusion, before a check or receipt is spent.
 
@@ -5833,6 +5900,9 @@ class StatusClosureReadinessModel(_ClosedModel):
     """
 
     correctness_advisory_summary: String1To4096 | None = None
+    # #1162 tracked advice: the task's advisory counts (the receipt's own triple), so a status
+    # line can count unanswered advice without parsing prose. Omitted while the task has none.
+    correctness_advisory_counts: CorrectnessAdvisoryCountsModel | None = None
     evidence_basis_summary: String1To4096 | None = None
     declared_obligation_count: CanonicalUInt64Wire | None
     no_obligations_reason: (
@@ -5926,6 +5996,7 @@ class StatusClosureReadinessModel(_ClosedModel):
     optional_non_null_fields = frozenset(
         {
             "correctness_advisory_summary",
+            "correctness_advisory_counts",
             "evidence_basis_summary",
             "check_cause",
             "predicted_receipt",
@@ -7384,12 +7455,6 @@ class ReceiptChildrenModel(_ClosedModel):
         return self
 
 
-class CorrectnessAdvisoryCountsModel(_ClosedModel):
-    total: CanonicalUInt64Wire
-    no_recorded_response: CanonicalUInt64Wire
-    withheld_may_answer: CanonicalUInt64Wire
-
-
 class ReceiptSuccessModel(_ClosedModel):
     optional_non_null_fields = frozenset({"correctness_advisory_counts"})
     correctness_advisory_counts: CorrectnessAdvisoryCountsModel | None = None
@@ -8044,6 +8109,12 @@ _CHECK_STRUCTURAL_POINTERS: Final = (
     + _prefix_leaf_patterns("/verified/*", ("cited_refs/*", "verdict"))
     + _prefix_leaf_patterns("/verified/*/requirement_or_claim", _OMITTED_CONTENT_LEAVES)
     + _prefix_leaf_patterns("/verified/*/snippet", _OMITTED_CONTENT_LEAVES)
+    # #1162 tracked advice: identity, closed origin and subjects are structural; the summary is
+    # the reviewer's words.
+    + _prefix_leaf_patterns(
+        "/correctness_advisories/*", ("advisory_id", "origin", "subject_refs/*")
+    )
+    + _prefix_leaf_patterns("/correctness_advisories/*/summary", _OMITTED_CONTENT_LEAVES)
     + _prefix_leaf_patterns(
         "/totals",
         (
@@ -8215,6 +8286,9 @@ _STATUS_COMMON_STRUCTURAL_POINTERS: Final = (
         (
             "blocking_conditions/*",
             "correctness_advisory_summary",
+            "correctness_advisory_counts/total",
+            "correctness_advisory_counts/no_recorded_response",
+            "correctness_advisory_counts/withheld_may_answer",
             "evidence_basis_summary",
             "declared_obligation_count",
             "no_obligations_reason",
@@ -9009,6 +9083,7 @@ _CHECK_CONTENT_RULES: Final[tuple[tuple[str, DataCategory], ...]] = (
     ("/review_summary", DataCategory.FINDING_SUMMARY),
     ("/verified/*/requirement_or_claim", DataCategory.FINDING_SUMMARY),
     ("/verified/*/snippet", DataCategory.FINDING_SUMMARY),
+    ("/correctness_advisories/*/summary", DataCategory.FINDING_SUMMARY),
 )
 _RESPOND_CONTENT_RULES: Final[tuple[tuple[str, DataCategory], ...]] = (
     ("/response/evidence/*/description", DataCategory.EVIDENCE_EXCERPT),
@@ -9333,7 +9408,7 @@ def _build_result_leaf_rules() -> tuple[_ResultLeafRule, ...]:
         ):
             raise RuntimeError("invalid_result_leaf_classification")
     if (
-        len(result) != 1992
+        len(result) != 2005
     ):  # ... #1017 +3, #1027 +5, tb4n3 LO +9, W2-A +46, LF +34 (fact_lineage), W2-B +2,
         # tb4n4 #1044 +7 (closure_readiness.undeclared_references), #1048 +38 (inspection),
         # #1047 +2 (follow_up_round), tb4n5 +3 (publish action_notices),
@@ -9347,7 +9422,8 @@ def _build_result_leaf_rules() -> tuple[_ResultLeafRule, ...]:
         # #1140 +83 check (shared readiness, including one repository-excerpt leaf),
         # #1144/#1149 +3 receipt (disproved ids and stopped status/reason),
         # #1162 +95 (advisory history, readiness summary, receipt counts; +1 provenance container)
-        # #1205 +64 (evidence links and separately categorized prose), #1194 +2 witness freshness.
+        # #1205 +64 (evidence links and separately categorized prose), #1194 +2 witness freshness,
+        # #1162 tracked advice +13 (check advisory rows; readiness counts on check and status).
         raise RuntimeError("incomplete_result_leaf_registry")
     return result
 

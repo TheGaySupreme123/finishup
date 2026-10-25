@@ -83,6 +83,7 @@ __all__ = [
     "SummaryRender",
     "render_safe_compact_summary",
     "render_safe_compact_summary_detailed",
+    "render_check_advice_lines",
     "render_check_reviewer_output",
     "render_check_review_delivery",
     "summary_for_check",
@@ -1037,6 +1038,46 @@ def render_check_review_delivery(envelope: object) -> str:
     return "\n".join(lines)
 
 
+_ADVICE_ORIGIN_LABELS: Final = {
+    "routine_correctness_note": "routine correctness note",
+    "verified_not_supported": "reviewer row not_supported",
+    "verified_not_assessable": "reviewer row not_assessable",
+    "strongest_remaining_check": "reviewer's strongest remaining check",
+}
+_ADVICE_ID: Final = re.compile(
+    r"evt_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}:(?:[1-9]|10)"
+)
+# #1162 tracked advice: FinishUP's fixed words; the rows carry the reviewer's own text.
+CHECK_ADVICE_HEADER: Final = (
+    "Tracked reviewer advice (advisory). Non-blocking. For each material concern: run a "
+    "proportionate check, cite evidence that already settles it, or decline with a reason. "
+    "Recording a response is optional (respond finding_id=<id>); zero findings does not "
+    "establish correctness:"
+)
+
+
+def render_check_advice_lines(envelope: object) -> tuple[str, ...]:
+    """The advisory rows a check recorded, each with its identity, for every text surface."""
+
+    source = _mapping(envelope)
+    raw = source.get("correctness_advisories")
+    rows = cast(Sequence[JsonValue], raw) if isinstance(raw, (list, tuple)) else ()
+    lines: list[str] = []
+    for item in rows:
+        if not isinstance(item, Mapping):
+            continue
+        row = cast(Mapping[str, JsonValue], item)
+        advisory_id = row.get("advisory_id")
+        label = _ADVICE_ORIGIN_LABELS.get(cast(str, row.get("origin")))
+        if type(advisory_id) is not str or not _ADVICE_ID.fullmatch(advisory_id) or label is None:
+            continue
+        refs = _review_refs(row.get("subject_refs"))
+        ref_clause = f"; {', '.join(refs)}" if refs else ""
+        summary = _review_text(row.get("summary")) or "[advice omitted by privacy policy]"
+        lines.append(f"- {advisory_id} ({label}{ref_clause}): {summary}")
+    return (CHECK_ADVICE_HEADER, *lines) if lines else ()
+
+
 def render_check_reviewer_output(envelope: object) -> str:
     """Render authorized reviewer prose after the structural MCP summary.
 
@@ -1051,6 +1092,7 @@ def render_check_reviewer_output(envelope: object) -> str:
     delivery = render_check_review_delivery(source)
     if delivery:
         lines.append(delivery)
+    lines.extend(render_check_advice_lines(source))
 
     raw_verified = source.get("verified")
     verified = (

@@ -28,6 +28,8 @@ from finishup.adapters.providers.openai_responses import (
     JUDGMENT_JSON_SCHEMA,
     MISSING_ITEM_FIELD_GLOSSARY,
     MISSING_ITEM_KIND_GLOSSARY,
+    REMAINING_CHECK_DESCRIPTION,
+    REMAINING_CHECK_FIELD_GLOSSARY,
     STRICT_JUDGMENT_JSON_SCHEMA,
     VERDICT_FIELD_GLOSSARY,
     VERIFIED_FIELD_GLOSSARY,
@@ -288,6 +290,10 @@ def test_request_schema_root_is_an_object_never_a_union() -> None:
                 # a required nullable field (``strict_output_schema``).
                 if path.endswith("ProviderChallenge"):
                     optional.add("restates")
+                # #1162 tracked advice: the strongest remaining check is optional on every
+                # conclusion branch, sent by strict output as a required nullable field.
+                if ".ProviderJudgment" in path:
+                    optional.add("strongest_remaining_check")
                 assert set(properties) - optional == set(required), path
             for key, value in source.items():
                 if key in {"properties", "$defs"}:
@@ -347,6 +353,8 @@ def test_strict_wire_output_with_null_snippet_decodes_under_the_contract() -> No
             "review_summary": "Checked both rows.",
             "prior_finding_verdicts": [],
             "reviewer_challenges": [],
+            # Strict output sends every optional field, null when absent (#1162).
+            "strongest_remaining_check": None,
             "verified": [
                 {
                     "requirement_or_claim": "Supported row",
@@ -402,6 +410,8 @@ def test_request_schema_carries_no_docstring_commentary() -> None:
         | set(VERIFIED_FIELD_GLOSSARY.values())
         | set(VERDICT_FIELD_GLOSSARY.values())
         | set(MISSING_ITEM_FIELD_GLOSSARY.values())
+        | set(REMAINING_CHECK_FIELD_GLOSSARY.values())
+        | {REMAINING_CHECK_DESCRIPTION}
     )
     descriptions = _annotations(JUDGMENT_JSON_SCHEMA, "description")
     assert descriptions

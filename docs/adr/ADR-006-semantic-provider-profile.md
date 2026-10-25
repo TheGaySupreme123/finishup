@@ -3390,3 +3390,46 @@ keeps the original criterion/assumption, alternative outcomes, proposed check, a
 evidence. An answer remains advisory and non-rulable; no check is automatically run or required,
 and a missing result is a coverage limit rather than proof of a defect. Exact contracts and
 offline coverage: [reviewer exchanges](../INTERFACES.md#reviewer-completion-exchanges-issue-1118-unit-3-adr-006).
+
+## Amendment — 2026-10-25: tracked reviewer advice (#1162)
+
+Maintainer acknowledgement: recorded on #1162 (2026-10-25) for this scoped schema change. It
+grants no new network, credential, runtime or disclosure authority.
+
+Funnel evidence from the 2026-10 pilots: reviewer advice that carried an identity and a concrete
+witness was acted on 14 of 18 times; probes left in review-summary prose, 8 of 46. Verified rows
+marked `not_supported` or `not_assessable` and the reviewer's strongest remaining check had no
+identity and no consumer.
+
+Decision. The advisory rows of the 2026-10-21 amendment also record, with an optional closed
+`origin` on the check-recorded 1.6.0 row (a row without one is a routine note):
+
+- a fenced verified row marked `not_supported` or `not_assessable` whose fence-resolved subjects
+  name an obligation or claim (`verified_not_supported`, `verified_not_assessable`);
+- the reviewer's single strongest remaining check (`strongest_remaining_check`), from a new
+  optional, nullable `strongest_remaining_check` object (`check`, 1–16 `cited_refs`) on every
+  provider-judgment 1.2.0 branch. Its citations are fenced like a challenge's; a malformed one is
+  dropped alone. Its guidance is in the schema glossary, not the always-sent instructions, which
+  keep their byte budget. The provider prompt prefix stays static per release, so the schema
+  change resets a prompt cache once (#1172 stays satisfied).
+
+The owner-locked contract, in the owner-approved wording: "Non-blocking. For each material
+concern: run a proportionate check, cite evidence that already settles it, or decline with a
+reason. Recording a response is optional; zero findings does not establish correctness." A
+response uses the existing `respond` pairing with its rules unchanged (`addressed` cites evidence
+recorded after the note; `declined` gives a reason). One response closes the item. A later review does not raise the same item again without new material: a candidate of the
+same family about the same concern that cites no concern material newer than the earlier row's
+answer (or, unanswered, its review) is folded onto that row and named in a fixed summary line.
+Answers stay non-blocking: no Stop gate, no closure-readiness state, no receipt conclusion
+change. Unanswered items are counted (`correctness_advisory_counts` on closure readiness, the
+receipt's triple) and listed on the receipt with an origin label. The check result carries the
+rows it recorded with identities (`correctness_advisories`), early in field order so every host
+sees them. The runtime texts on this path (the readiness summary, the routine-notes and
+residual-requests summary headers, the check's advice header and the `respond` tool description)
+use the owner-approved wording above instead of saying advice needs no answer or is never an
+instruction; the Stop notice and its once-per-set rule are unchanged.
+
+Wire changes are in place on unreleased versions under the rule above: check-recorded 1.6.0,
+provider-judgment 1.2.0 (and reviewer-reply 1.0.0, which embeds it), check-result 1.6.0/1.7.0 and
+status-result 1.4.0/1.5.0. History rows keep their first shape. Older ledgers' rows keep reading as
+routine notes.
