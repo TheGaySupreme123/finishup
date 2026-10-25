@@ -3176,6 +3176,11 @@ When a packet's obligation links a command result, with or without a manifest, t
 asks where each decisive check gets its expected value and challenges one that shares the
 implementation's derivation with a runnable `Counter-example:` under an advisory note or
 finding id (#1145); the shared MCP and CLI renderings carry both on every host.
+On a ready readiness, status and check carry a draft of what the receipt will say (#975):
+the predicted conclusion and reasons, each quoted task criterion as a linked passing current run,
+the agent's claim only or none, open fix-or-decline items and unanswered advice ids, labelled
+records, not correctness. Cursor reads it in the alphabetically sorted JSON under `closure_readiness.draft_receipt`. It is never a Stop item. A closing review after an
+earlier review also asks whether a repair withholds a requested output (an ID'd finding).
 See [the result recipe](../../guidance/request-templates.md#publish-work-result).
 
 This shared transport decision applies on macOS, Linux and Windows through WSL 2. Native host and

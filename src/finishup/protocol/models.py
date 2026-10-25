@@ -5946,6 +5946,101 @@ class CorrectnessAdvisoryCountsModel(_ClosedModel):
     withheld_may_answer: CanonicalUInt64Wire
 
 
+DraftCriterionStandingWire = Literal["linked_pass_current", "agent_claim_only", "none"]
+
+
+class DraftReceiptCriterionModel(_ClosedModel):
+    """One quoted task criterion and what the record links to it (#975, ``kernel.draft_receipt``).
+
+    The excerpt is the criterion's quoted sentence, clipped for display (``status view=coverage``
+    carries it whole): task text under ``task_criterion_excerpt``, an obligation's acceptance
+    criteria under ``obligation_criterion_excerpt``, exactly one of them, and either may be
+    withheld by the privacy policy. ``refs`` are service-minted ids: the linked passing runs, the
+    agent's own claims, results or resolved obligations, or (for ``none``) the obligations that
+    state the criterion. Records only: a linked passing run is not proof the criterion is met.
+    """
+
+    optional_non_null_fields = frozenset({"task_criterion_excerpt", "obligation_criterion_excerpt"})
+
+    task_criterion_excerpt: (
+        Annotated[str, Field(min_length=1, max_length=160)] | OmittedContentModel | None
+    ) = None
+    obligation_criterion_excerpt: (
+        Annotated[str, Field(min_length=1, max_length=160)] | OmittedContentModel | None
+    ) = None
+    source: Literal["task_statement", "obligation", "manifest_quote"]
+    standing: DraftCriterionStandingWire
+    refs: Annotated[tuple[SubjectIdWire, ...], Field(max_length=3)]
+
+    @model_validator(mode="after")
+    def _validate_draft_criterion(self) -> DraftReceiptCriterionModel:
+        _require_unique(self.refs, limit=3)
+        if (self.obligation_criterion_excerpt is not None) != (self.source == "obligation") or (
+            self.task_criterion_excerpt is not None
+        ) != (self.source != "obligation"):
+            raise ValueError("draft_receipt_criterion_excerpt_source")
+        for value, category in (
+            (self.task_criterion_excerpt, DataCategory.TASK_DESCRIPTION),
+            (self.obligation_criterion_excerpt, DataCategory.OBLIGATION_TEXT),
+        ):
+            if isinstance(value, OmittedContentModel) and value.category is not category:
+                raise ValueError("draft_receipt_criterion_omission_category_invalid")
+        if self.standing != "none" and not self.refs:
+            raise ValueError("draft_receipt_criterion_refs_missing")
+        return self
+
+
+class DraftCriteriaCountsModel(_ClosedModel):
+    linked_pass_current: CanonicalUInt64Wire
+    agent_claim_only: CanonicalUInt64Wire
+    none: CanonicalUInt64Wire
+
+
+class DraftReceiptModel(_ClosedModel):
+    """What the receipt will say if requested now: a draft, records not correctness (#975).
+
+    Present on a ``ready`` or ``ready_with_limitations`` readiness that carries a prediction, so
+    the agent can keep working when the draft shows a problem and then request the final receipt.
+    ``conclusion`` and ``reasons`` are ``predicted_receipt``'s own (the receipt's conclusion
+    function over the receipt's context, ADR-046), so the draft and the receipt cannot disagree.
+    ``criteria`` lists at most six quoted task criteria, gaps first, and ``criteria_counts``
+    counts every assessed one (``criteria_total`` also counts those the coverage index's bound
+    omitted). The open fix-or-decline items (``fix_or_decline``), the tracked advice with no
+    recorded response (ids, at most four) and the standing limitations the receipt will disclose
+    (at most eight codes) close it. Never a Stop item and never a gate.
+    """
+
+    label: Literal["draft_records_not_correctness"]
+    conclusion: ReceiptConclusionLiteral
+    reasons: Annotated[tuple[PredictionReasonCodeLiteral, ...], Field(max_length=8)]
+    criteria: Annotated[tuple[DraftReceiptCriterionModel, ...], Field(max_length=6)]
+    criteria_counts: DraftCriteriaCountsModel
+    criteria_total: CanonicalUInt64Wire
+    fix_or_decline_count: CanonicalUInt64Wire
+    advice_unanswered: Annotated[
+        tuple[Annotated[str, Field(pattern=ADVISORY_ID_PATTERN)], ...], Field(max_length=4)
+    ]
+    advice_unanswered_count: CanonicalUInt64Wire
+    limitations: Annotated[tuple[CodeWire, ...], Field(max_length=8)]
+    limitation_count: CanonicalUInt64Wire
+
+    @model_validator(mode="after")
+    def _validate_draft_receipt(self) -> DraftReceiptModel:
+        _require_unique(self.reasons, limit=8)
+        _require_unique(self.advice_unanswered, limit=4)
+        _require_unique(self.limitations, limit=8)
+        counts = self.criteria_counts
+        assessed = int(counts.linked_pass_current) + int(counts.agent_claim_only) + int(counts.none)
+        if (
+            len(self.criteria) > assessed
+            or assessed > int(self.criteria_total)
+            or len(self.advice_unanswered) != min(int(self.advice_unanswered_count), 4)
+            or len(self.limitations) != min(int(self.limitation_count), 8)
+        ):
+            raise ValueError("draft_receipt_counts_invalid")
+        return self
+
+
 class StatusClosureReadinessModel(_ClosedModel):
     """What currently bounds a completion conclusion, before a check or receipt is spent.
 
@@ -6059,11 +6154,16 @@ class StatusClosureReadinessModel(_ClosedModel):
     # each is fixed, or declined with a reason, before the receipt. Optional on the unreleased
     # 1.4.0 wire: omitted when none, and from an earlier 0.3 build. Never a Stop item.
     fix_or_decline: tuple[StatusFixOrDeclineModel, ...] | None = Field(default=None, max_length=64)
+    # Issue #975 (ADR-046 amendment): the draft of what the receipt will say, on a ready or
+    # ready-with-limitations readiness that carries a prediction. Optional on the unreleased 1.4.0
+    # wire: omitted otherwise, and from an earlier 0.3 build. Never a Stop item.
+    draft_receipt: DraftReceiptModel | None = None
 
     optional_non_null_fields = frozenset(
         {
             "correctness_advisory_summary",
             "correctness_advisory_counts",
+            "draft_receipt",
             "fix_or_decline",
             "evidence_basis_summary",
             "check_cause",
@@ -6127,6 +6227,7 @@ class StatusClosureReadinessModel(_ClosedModel):
         _validate_fact_lineage_models(self.fact_lineage)
         _validate_fix_or_decline(self.fix_or_decline, self.standing_limitations)
         self._validate_checklist()
+        self._validate_draft_receipt()
         # Absent counts mean the compact singleton could not be read (an unreadable task title
         # omits it). Reporting zero there would assert "nothing is open" from missing data, so
         # unknown must be null and must say so rather than look like a clean record.
@@ -6184,6 +6285,30 @@ class StatusClosureReadinessModel(_ClosedModel):
             if no_plan and (declared != 0 or self.no_obligations_reason is not None):
                 raise ValueError("closure_readiness_no_plan_blocker_mismatch")
         return self
+
+    def _validate_draft_receipt(self) -> None:
+        """One verdict (ADR-046): the draft repeats the prediction and readiness it sits beside."""
+
+        draft = self.draft_receipt
+        if draft is None:
+            return
+        predicted = self.predicted_receipt
+        standing = self.standing_limitations or ()
+        if (
+            self.state not in {"ready", "ready_with_limitations"}
+            or predicted is None
+            or draft.conclusion != predicted.conclusion
+            or draft.reasons != tuple(reason.code for reason in predicted.reasons)
+            or int(draft.fix_or_decline_count) != len(self.fix_or_decline or ())
+            or int(draft.limitation_count) != len(standing)
+            or draft.limitations != standing[:8]
+        ):
+            raise ValueError("closure_readiness_draft_receipt_mismatch")
+        counts = self.correctness_advisory_counts
+        if int(draft.advice_unanswered_count) != (
+            0 if counts is None else int(counts.no_recorded_response)
+        ):
+            raise ValueError("closure_readiness_draft_receipt_mismatch")
 
     def _validate_checklist(self) -> None:
         checklist = (
@@ -7739,6 +7864,26 @@ _PRIVACY_PROJECTION_LEAVES: Final = (
     "sink",
 )
 _OMITTED_CONTENT_LEAVES: Final = ("category", "omitted", "reason")
+# Issue #975: the draft receipt's structural leaves under ``closure_readiness/draft_receipt``.
+_DRAFT_RECEIPT_STRUCTURAL_LEAVES: Final = (
+    "label",
+    "conclusion",
+    "reasons/*",
+    "criteria/*/source",
+    "criteria/*/standing",
+    "criteria/*/refs/*",
+    *(f"criteria/*/task_criterion_excerpt/{leaf}" for leaf in _OMITTED_CONTENT_LEAVES),
+    *(f"criteria/*/obligation_criterion_excerpt/{leaf}" for leaf in _OMITTED_CONTENT_LEAVES),
+    "criteria_counts/linked_pass_current",
+    "criteria_counts/agent_claim_only",
+    "criteria_counts/none",
+    "criteria_total",
+    "fix_or_decline_count",
+    "advice_unanswered/*",
+    "advice_unanswered_count",
+    "limitations/*",
+    "limitation_count",
+)
 _REVIEW_INPUT_MANIFEST_LEAVES: Final = (
     "caller_evidence/content_bytes",
     "caller_evidence/content_digest",
@@ -8478,6 +8623,10 @@ _STATUS_COMMON_STRUCTURAL_POINTERS: Final = (
             # Issue #1209: closed fix-or-decline codes and service-minted obligation ids only.
             "fix_or_decline/*/code",
             "fix_or_decline/*/obligation_id",
+            # Issue #975: the draft receipt's closed tokens, counts and service-minted ids; each
+            # criterion excerpt is content (``_STATUS_COMMON_CONTENT_RULES``) and a withheld one
+            # is the omission marker.
+            *(f"draft_receipt/{leaf}" for leaf in _DRAFT_RECEIPT_STRUCTURAL_LEAVES),
             "undeclared_references/*/obligation_id",
             "undeclared_references/*/item_index",
             "undeclared_references/*/total",
@@ -9320,6 +9469,15 @@ _STATUS_COMMON_CONTENT_RULES: Final[tuple[tuple[str, DataCategory], ...]] = (
         "/closure_readiness/undeclared_references/*/paths/*",
         DataCategory.REPOSITORY_EXCERPT,
     ),
+    # Issue #975: the draft receipt quotes the criterion it classifies (task or obligation text).
+    (
+        "/closure_readiness/draft_receipt/criteria/*/task_criterion_excerpt",
+        DataCategory.TASK_DESCRIPTION,
+    ),
+    (
+        "/closure_readiness/draft_receipt/criteria/*/obligation_criterion_excerpt",
+        DataCategory.OBLIGATION_TEXT,
+    ),
 )
 _ADVISORY_RECEIPT_STRUCTURAL_POINTERS: Final = (
     "/correctness_advisory_counts/total",
@@ -9528,7 +9686,7 @@ def _build_result_leaf_rules() -> tuple[_ResultLeafRule, ...]:
         ):
             raise RuntimeError("invalid_result_leaf_classification")
     if (
-        len(result) != 2019
+        len(result) != 2065
     ):  # ... #1017 +3, #1027 +5, tb4n3 LO +9, W2-A +46, LF +34 (fact_lineage), W2-B +2,
         # tb4n4 #1044 +7 (closure_readiness.undeclared_references), #1048 +38 (inspection),
         # #1047 +2 (follow_up_round), tb4n5 +3 (publish action_notices),
@@ -9546,7 +9704,8 @@ def _build_result_leaf_rules() -> tuple[_ResultLeafRule, ...]:
         # #1207 +1 fixed review guidance; #1209 +8 fix_or_decline (check and status readiness,
         # brief closure_state, check inspection);
         # #1162 tracked advice +13 (check advisory rows; readiness counts on check and status),
-        # +3 (operation check_outcome advisory identities, PR #1214 review).
+        # +3 (operation check_outcome advisory identities, PR #1214 review);
+        # #975 +46 draft receipt (21 structural and 2 content leaves, each on check and status).
         # #1139 +2 agent_status_line (check and status).
         raise RuntimeError("incomplete_result_leaf_registry")
     return result

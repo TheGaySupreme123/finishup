@@ -384,6 +384,17 @@ If an output does not meet its acceptance criteria, republish that obligation
 `ready` means
 nothing remains at all, and `unknown` means read status again once it is readable.
 
+When the state is `ready` or `ready_with_limitations`, status and `check` also show
+`draft_receipt`: a draft of what the receipt will say, from the records only ("records, not
+correctness"). It carries the receipt's own predicted conclusion and reasons, and lists each
+requirement quoted from your task statement or an obligation's acceptance criteria as
+`linked_pass_current` (an observed, current passing run is linked to it), `agent_claim_only` (only
+your own claim, reported result or resolution stands behind it) or `none` (nothing does), gaps
+first. It also counts the open fix-or-decline items, names the reviewer advice you have not
+answered and lists the limitations the receipt will disclose. A linked passing run does not prove
+the requirement is met. Read the draft before you request the receipt: if it shows a problem, keep
+working and check again; then request the final receipt. It is never a Stop question.
+
 Local checks also report facts about the task's own work: a planned verification command (an
 obligation's requested command) that was not matched to an observed run, failed on its latest
 run, or had a recorded input change after it ran; a recorded input that changed after your last

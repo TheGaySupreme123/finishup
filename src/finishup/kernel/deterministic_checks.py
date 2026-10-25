@@ -12,6 +12,7 @@ from typing import Final, Literal, cast
 from finishup.domain.events import (
     MAX_REF_LIST,
     AcceptedEvent,
+    CheckRecordedPayload,
     ClaimKind,
     ClaimRecordedPayloadV1_1,
     EventSchema,
@@ -103,6 +104,7 @@ from finishup.protocol.coverage import (
     coverage_to_json,
     weakest,
 )
+from finishup.protocol.models import SemanticStatus
 from finishup.protocol.policy_packs import (
     RESEARCH_EVIDENCE_POLICY_ID,
     RESEARCH_EVIDENCE_POLICY_VERSION,
@@ -1195,8 +1197,14 @@ class DeterministicCase:
     # #1205: bounded linked facts and paired routine advice, independent of the history window.
     # None is a legacy case with no recorded basis, never an empty/current evidence claim.
     evidence_view: JsonObject | None = None
+    # #975: an earlier check in this prefix recorded a successful AI-powered review, whatever it
+    # raised. Frozen with the case (absent, ``False``, on a case frozen before the field), so the
+    # closing review's question set is rebuilt identically on recovery.
+    prior_review_recorded: bool = False
 
     def __post_init__(self) -> None:
+        if type(self.prior_review_recorded) is not bool:
+            raise _invalid_case()
         if self.evidence_view is not None:
             from finishup.kernel.evidence_basis import (
                 MAX_EVIDENCE_VIEW_BYTES,
@@ -1640,6 +1648,7 @@ def deterministic_case_to_json(case: DeterministicCase) -> dict[str, JsonValue]:
             else {}
         ),
         **({"verification_advisory": True} if case.verification_advisory else {}),
+        **({"prior_review_recorded": True} if case.prior_review_recorded else {}),
         **({"evidence_view": case.evidence_view} if case.evidence_view is not None else {}),
         **(
             {
@@ -1693,6 +1702,10 @@ def deterministic_case_from_json(value: JsonValue) -> DeterministicCase:
         source_keys -= {"evidence_view"}
         advisory = source.get("verification_advisory", False)
         source_keys -= {"verification_advisory"}
+        prior_review = source.get("prior_review_recorded", False)
+        if prior_review is not True and prior_review is not False:
+            raise _invalid_case()
+        source_keys -= {"prior_review_recorded"}
         freshness = None
         if "verification_freshness" in source:
             freshness_rows: list[VerificationFreshness] = []
@@ -1902,6 +1915,7 @@ def deterministic_case_from_json(value: JsonValue) -> DeterministicCase:
             verification_unchanged_action_ids=unchanged_actions,
             verification_freshness=freshness,
             verification_advisory=cast(bool, advisory),
+            prior_review_recorded=prior_review,
             verification_tracked_runs=tracked_runs,
             verification_unjudged_stale=unjudged_stale,
             evidence_view=None
@@ -2670,6 +2684,12 @@ def build_deterministic_case(
             evidence_view_json(evidence_view)
             if evidence_view.obligations or evidence_view.advisories or evidence_view.omitted
             else None
+        ),
+        prior_review_recorded=any(
+            type(record) is AcceptedEvent
+            and isinstance(record.payload, CheckRecordedPayload)
+            and record.payload.semantic_status is SemanticStatus.SUCCEEDED
+            for record in accepted_prefix
         ),
     )
 

@@ -270,6 +270,7 @@ __all__ = [
     "OVER_CASE_ITEM_LIMIT_REASON",
     "REVIEW_PACKET_ITEM_ID",
     "REVIEW_PHASE_QUESTIONS",
+    "WITHHELD_OUTPUT_QUESTION",
     "SEMANTIC_REVIEW_PURPOSE",
     "assemble_filtered_review_packet",
     "build_semantic_case",
@@ -285,6 +286,7 @@ __all__ = [
     "acknowledged_obligation_rows",
     "BLOCKER_REVIEW_INSTRUCTION",
     "review_question_set",
+    "repair_review_asked",
     "verification_freshness_asked",
     "captured_edit_paths",
     "review_selection_digest",
@@ -361,6 +363,20 @@ _MAX_PRIOR_FINDING_LISTED_REFS: Final = MAX_PRIOR_FINDING_LISTED_REFS
 _CANONICAL_PACKS: Final = (
     current_policy_pack(RESEARCH_EVIDENCE_POLICY_ID),
     current_policy_pack(WORK_INTEGRITY_POLICY_ID),
+)
+# Issue #975 (TB4 Bun a1): a repair that "fixed" a reproduced leak by refusing to build the
+# affected apps passed the agent's own tests, and later reviews missed it. A closing review after
+# an earlier AI-powered review (``repair_review_asked``) asks once, as an ID'd challenge naming the
+# criterion. Not asked otherwise: at the minimal policy a first closing review with a linked check
+# has no room left for it (the #1173 read budget, ADR-006). It rides the packet's question set,
+# never the cached reviewer instruction.
+# The minimal policy's channel (4,096 tokens at four bytes each): at or below it the fixed
+# question set of a closing review with a linked check already fills the room (#1173).
+SMALL_REVIEW_CHANNEL_BYTES: Final = 16_384
+WITHHELD_OUTPUT_QUESTION: Final = (
+    "Does any repair since the last review withhold or refuse a requested output for some inputs "
+    "(a build that refuses affected apps, an empty-file fallback)? Challenge each, quoting the "
+    "criterion it fails."
 )
 # The question set leads with the review phase, taken from the same pure selector that picks the
 # check's budget profile, so the reviewer judges in-progress work as in progress and a completion
@@ -589,8 +605,12 @@ def review_question_set(
     freshness: bool = False,
     test_manifests: bool = False,
     linked_verification: bool = False,
+    prior_review: bool = False,
 ) -> tuple[str, ...]:
     """Return the closed question set for one review phase.
+
+    ``prior_review`` (``repair_review_asked``, #975) adds the withheld-output question to the
+    final phase only, before the test-quality question.
 
     The final phase adds one blocker question when ``blockers`` (``recorded_blockers``) is not
     empty; the routine phase never judges blockers. ``freshness`` adds the advisory freshness
@@ -611,11 +631,39 @@ def review_question_set(
         *((FRESHNESS_REVIEW_QUESTION,) if freshness else ()),
         *_REVIEW_QUESTIONS,
         *extra,
+        *((WITHHELD_OUTPUT_QUESTION,) if parsed == "final" and prior_review else ()),
         *(
             (_test_quality_question(test_manifests=test_manifests),)
             if test_manifests or linked_verification
             else ()
         ),
+    )
+
+
+def repair_review_asked(case: DeterministicCase) -> bool:
+    """Whether an earlier AI-powered review is on record in the frozen case (#975).
+
+    The record of the review itself decides: an earlier check that recorded a successful
+    AI-powered review (``prior_review_recorded``, frozen with the case), whether or not it raised
+    anything. A case frozen before that field falls back to what such a review leaves behind: one
+    of its findings in the projection, or a reviewer assessment or advisory note in the frozen
+    evidence view. A pure function of the frozen case, so recovery rebuilds the same set.
+    """
+
+    if case.prior_review_recorded:
+        return True
+    if any(
+        row.payload is not None and row.payload.origin is FindingOrigin.SEMANTIC_MODEL_DERIVED
+        for row in case.projection.findings.values()
+    ):
+        return True
+    if case.evidence_view is None:
+        return False
+    from finishup.kernel.evidence_basis import evidence_view_from_json
+
+    view = evidence_view_from_json(case.evidence_view)
+    return bool(view.advisories) or any(
+        row.basis.assessments or row.basis.advisories for row in view.obligations
     )
 
 
@@ -7224,6 +7272,8 @@ def build_semantic_case(
             check_time_change_unavailable_reason=check_time_change_unavailable_reason,
             final_review=final_review,
             follow_up=follow_up,
+            small_channel=prepared_byte_ceiling is not None
+            and prepared_byte_ceiling <= SMALL_REVIEW_CHANNEL_BYTES,
         )
 
     def fits(candidate: SemanticCase) -> bool | None:
@@ -7304,6 +7354,7 @@ def _build_semantic_case_once(
     check_time_change_unavailable_reason: str | None = None,
     final_review: bool = False,
     follow_up: ReviewFollowUp | None = None,
+    small_channel: bool = False,
 ) -> SemanticCase:
     if type(frozen_case) is not DeterministicCase:
         raise TypeError("deterministic_case_invalid")
@@ -9197,20 +9248,26 @@ def _build_semantic_case_once(
             ),
         }
     # A pure function of the frozen projection, so recovery rebuilds the same phase and digest.
+    # Only a carried coverage index with a witness row lets the reviewer see a manifest (#1170):
+    # its subject refs are exactly the admitted witnesses' result and action ids.
+    test_manifests = any(
+        item.item_id in packet.verification_coverage_item_ids and item.linked_subject_refs
+        for item in items
+    )
+    # #1145: an obligation row the packet still carries that links a check the reviewer can name;
+    # a row the obligation cap or byte bound dropped asks nothing.
+    linked_verification = any(item.item_id in verification_linked_item_ids for item in items)
     question_set = review_question_set(
         review_phase,
         recorded_blockers(frozen_case.projection),
         acknowledged_obligation_rows(frozen_case.projection),
         freshness=verification_freshness_asked(frozen_case),
-        # Only a carried coverage index with a witness row lets the reviewer see a manifest
-        # (#1170): its subject refs are exactly the admitted witnesses' result and action ids.
-        test_manifests=any(
-            item.item_id in packet.verification_coverage_item_ids and item.linked_subject_refs
-            for item in items
-        ),
-        # #1145: an obligation row the packet still carries that links a check the reviewer can
-        # name; a row the obligation cap or byte bound dropped asks nothing.
-        linked_verification=any(item.item_id in verification_linked_item_ids for item in items),
+        # #975: on a channel no larger than the minimal policy's, a closing review that already
+        # carries the test-quality question has no room left for this one (#1173).
+        prior_review=repair_review_asked(frozen_case)
+        and not (small_channel and (test_manifests or linked_verification)),
+        test_manifests=test_manifests,
+        linked_verification=linked_verification,
     )
     # tb4n5: which excerpts supply the follow-up beyond the first packet, so the provider-bound
     # manifest recomputes ``supplied`` from the ones admission kept. Bound into the digest only for

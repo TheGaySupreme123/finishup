@@ -301,6 +301,11 @@ _CLOSE_TEXT_CODEX: Final = (
 )
 
 
+DRAFT_RECEIPT_POINTER: Final = (
+    "Draft receipt (records, not correctness): status, closure_readiness.draft_receipt."
+)
+
+
 def _code_mode_observed(readiness: object, code_mode: bool) -> bool:
     """Whether this Stop has positive evidence of a code-mode ``exec`` cell.
 
@@ -1031,6 +1036,15 @@ def closure_gate_from_readiness(
             if len(chosen) == wanted
             else ""
         )
+        # Issue #975: a pointer to the draft receipt status carries, only after the prediction
+        # and only when it fits; the draft itself never rides the gate and is never a Stop item.
+        pointer = (
+            DRAFT_RECEIPT_POINTER
+            if tail
+            and getattr(readiness, "draft_receipt", None) is not None
+            and used + 2 + len(tail) + len(DRAFT_RECEIPT_POINTER) <= _MAX_TEXT_CHARS
+            else ""
+        )
         short_text = " ".join(
             sentence
             for name, sentence in (
@@ -1040,8 +1054,9 @@ def closure_gate_from_readiness(
                 ("ack", ack_text),
                 ("moved", moved),
                 ("prediction", tail),
+                ("pointer", pointer),
             )
-            if sentence and (name in {"opener", "prediction"} or name in chosen)
+            if sentence and (name in {"opener", "prediction", "pointer"} or name in chosen)
         )
         return ClosureGate(
             identity,

@@ -66,6 +66,7 @@ from finishup.protocol.readiness_text import (
     check_cause_sentence,
     closure_counts_variants,
     coordinator_failure_note,
+    draft_receipt_variants,
     fix_or_decline_rows,
     fix_or_decline_variants,
     obligation_resolve_recipe_variants,
@@ -1822,6 +1823,7 @@ def summary_for_check(envelope: object) -> str:
         render.guarded_one("redacted_values", lambda: _semantic_redacted_values_part(source))
     )
     parts.append(render.guarded_one("finding_ids", lambda: _finding_identity_part(source)))
+    parts.append(render.guarded_one("draft_receipt", lambda: _draft_receipt_part(source)))
     parts.append(render.guarded_one("missing_items", lambda: _missing_items_part(source)))
     parts.append(
         render.guarded_one("withheld_items", lambda: _semantic_withheld_items_part(source))
@@ -1873,6 +1875,16 @@ def summary_for_check(envelope: object) -> str:
         )
     )
     return _compose(parts)
+
+
+def _draft_receipt_part(source: Mapping[str, JsonValue]) -> Part | None:
+    """Issue #975: the check's draft receipt sentence, from its attached closure readiness."""
+
+    readiness = source.get("closure_readiness")
+    if not isinstance(readiness, Mapping):
+        return None
+    variants = draft_receipt_variants(cast(Mapping[str, JsonValue], readiness).get("draft_receipt"))
+    return Part(variants, priority=_P_STATE) if variants else None
 
 
 def _review_mode_clause(source: Mapping[str, JsonValue]) -> str:
@@ -2589,6 +2601,10 @@ def _verdict_parts(readiness: Mapping[str, JsonValue], state: str) -> list[Part]
     predicted = _predicted_variants(readiness.get("predicted_receipt"), state)
     if predicted:
         parts.append(Part(predicted, priority=_P_BOILERPLATE))
+    # Issue #975: the draft receipt on a ready readiness (records, not correctness).
+    draft = draft_receipt_variants(readiness.get("draft_receipt"))
+    if draft:
+        parts.append(Part(draft, priority=_P_STATE))
     # The rejected findings that wait for a reviewer ruling, by id and rejection frontier, and the
     # once-per-frontier re-reads a Stop will ask (tb4n3 RC-8): a "nothing further to do" is never
     # followed by a gate for an item this text did not announce.

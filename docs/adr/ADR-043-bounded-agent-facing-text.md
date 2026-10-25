@@ -361,6 +361,8 @@ review summary, `totals` sat in the pages the continuation called optional prove
   (`correctness_advisory_counts.no_recorded_response`) and open `fix_or_decline` items. It begins
   `Ledger (records, not correctness): `, omits zero-count parts, names at most two obligation ids
   per part (`+N more` for the rest) and ends `per-obligation detail: status view=obligations.`
+  A task with no obligations (`single_atomic_change`) still gets the reviewer, advice and
+  fix-or-decline parts.
   Fixed lower-case words, counts and service-minted `obl_` ids only; it never says verified and
   states no correctness.
 - Check and status successes (full and brief bodies) carry the same line as the optional
@@ -372,7 +374,8 @@ review summary, `totals` sat in the pages the continuation called optional prove
 - The MCP text channel (Claude Code, generic hosts) leads with the line, ahead of reviewer
   guidance and prose; above the budget the text falls back to the sorted canonical copy, where it
   is still among the first keys. The CLI puts it right after the verdict and review lines of a
-  check and right under the closure directive of status and the TUI closure view. A Stop
+  check and right under the closure state of status and the TUI closure view, ahead of the readiness
+  directive and the draft receipt (ADR-046, #975). A Stop
   continuation that already fires appends it when it fits, else the earlier fixed pointer.
 - Paging: `agent_status_line`, `closure_readiness`, `closure_state` and `totals` are action
   fields, ahead of `correctness_advisories` and `review_summary`. `required_next_step` no longer

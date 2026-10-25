@@ -15,7 +15,7 @@ from typing import Final
 
 from finishup.domain.events import ActionKind, LedgerRecord, ResultOutcome, ResultRecordedPayload
 from finishup.domain.task_statement import current_task_statement
-from finishup.domain.values import ActionId, EventId, ResultId
+from finishup.domain.values import ActionId, EventId, ObligationId, ResultId
 from finishup.domain.verification_coverage import (
     MAX_COVERAGE_CRITERIA,
     MAX_CRITERION_WITNESSES,
@@ -51,7 +51,11 @@ from finishup.kernel.verification_freshness import (
     verification_tracked_runs,
 )
 
-__all__ = ["build_verification_coverage", "verification_coverage_to_json"]
+__all__ = [
+    "build_verification_coverage",
+    "criterion_obligations",
+    "verification_coverage_to_json",
+]
 
 # Case-tolerant, with present-tense and plural forms: "Outputs", "returns" and "labels" state
 # conditions as plainly as their base forms (#1170 pilot wording). Past tenses and participles
@@ -150,6 +154,30 @@ def _outside_quotes(candidate: str, quotes: Collection[str]) -> str:
         flags=re.IGNORECASE,
     )
     return re.sub(r"\b(?:every|each)\s*(?=\x00)", " ", remainder, flags=re.IGNORECASE)
+
+
+def criterion_obligations(projection: ProjectionState, quote: str) -> tuple[ObligationId, ...]:
+    """Effective obligations whose acceptance criteria state *quote*, sorted (#975 draft receipt).
+
+    The index's own matching only: the quote occurs in the criteria text (the admission rule,
+    ``_occurs``), or one of its candidate sentences is the same criterion however cased, spaced
+    or ended (``_criterion_key``, the rule that merges a restated sentence into the task's). No
+    other text similarity links an obligation to a criterion.
+    """
+
+    key = _criterion_key(quote)
+    found: list[ObligationId] = []
+    for obligation in effective_obligations(projection):
+        payload = projection.obligations[obligation].payload
+        text = None if payload is None else payload.acceptance_criteria
+        if not text:
+            continue
+        if _occurs(quote, text) or any(
+            _criterion_key(sentence) == key
+            for sentence in _candidate_sentences(text, explicit=True)
+        ):
+            found.append(obligation)
+    return tuple(sorted(found, key=str.encode))
 
 
 def _strength(run: _Run) -> tuple[int, int, int, int]:

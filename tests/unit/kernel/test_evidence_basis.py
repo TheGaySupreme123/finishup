@@ -722,8 +722,9 @@ def test_memory_status_and_compact_delivery_share_the_bounded_detail(
         open_obligation_count="1",
         receipt_blocking_finding_count="0",
     )
-    # TUI uses this same renderer; #1139: the line sits right under the directive.
-    assert render_closure_readiness_lines(readiness).index(summary) == 2
+    # TUI uses this same renderer; #1139: the line sits right under the state, before the
+    # directive (and before any draft receipt).
+    assert render_closure_readiness_lines(readiness).index(summary) == 1
     check = CheckSuccessModel.model_construct(
         verdict="no_issue_detected",
         semantic_status="not_requested",
@@ -1078,3 +1079,35 @@ def test_decision_line_counts_a_negative_row_past_the_display_bound() -> None:
     assert [row.verdict for row in shown] == ["supported"] * 4  # the display bound
     line = decision_status_line(case.projection, records, freshness=(), tracked_runs=())
     assert "reviewer (current check): 1 not supported;" in line
+
+
+def test_decision_line_without_obligations_keeps_reviewer_and_advice_counts() -> None:
+    """#1139 (PR #1216 review): a ``single_atomic_change`` task has no obligations, but a
+    ``not_supported`` row on a standalone claim and unanswered advice still reach the line."""
+
+    from finishup.kernel.evidence_basis import decision_status_line
+
+    case, records = _case()
+    check = cast(Any, records[4].payload)
+    payload = replace(
+        check,
+        verified=(
+            JsonObject(
+                {
+                    "requirement_or_claim": "The standalone claim holds",
+                    "verdict": "not_supported",
+                    "cited_refs": (clm(2),),
+                    "snippet": "General task assertion",
+                }
+            ),
+        ),
+    )
+    records = (*records[:4], _envelope(30, "check_recorded", payload), records[5])
+    state = replace(case.projection, obligations={})
+    line = decision_status_line(state, records, advice_unanswered=1)
+    assert line == (
+        "Ledger (records, not correctness): reviewer (current check): 1 not supported; "
+        "advice unanswered: 1; per-obligation detail: status view=obligations."
+    )
+    # The receipt's short form has only obligation counts, so it stays empty here.
+    assert decision_status_line(state, records, reviewer=False) == ""

@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 from collections import Counter
-from collections.abc import Iterable, Sequence
+from collections.abc import Iterable, Mapping, Sequence
+from dataclasses import dataclass
 from typing import Final, cast
 
 from finishup.domain.bounded_text import clip_to_limit
@@ -20,9 +21,9 @@ from finishup.domain.events import (
     ResultRecordedPayload,
     redaction_targets,
 )
-from finishup.domain.values import JsonObject, ObligationId, ResultId
+from finishup.domain.values import ClaimId, JsonObject, ObligationId, ResultId
 from finishup.kernel.check_standing import check_standing
-from finishup.kernel.claims import effective_claim_items
+from finishup.kernel.claims import ClaimRecord, effective_claim_items
 from finishup.kernel.correctness_advisories import correctness_advisory_index
 from finishup.kernel.observed_failures import is_observed_run_record
 from finishup.kernel.plan_scope import current_plan_scope
@@ -100,23 +101,42 @@ def evidence_basis_by_obligation(
     return {row.obligation_id: row.basis for row in view.obligations}
 
 
-def build_evidence_view(
+@dataclass(frozen=True, slots=True)
+class EvidenceScopes:
+    """The explicit readable relations of one prefix, before any display bound (#1205, #975).
+
+    ``scopes`` maps every readable claim, action, result, evidence and obligation id (and the
+    source event of each) to the obligations it explicitly concerns; ``omissions`` counts links
+    to unreadable records per obligation. Bounded displays (``build_evidence_view``) and the draft
+    receipt's criteria (``kernel.draft_receipt``) read the same index.
+    """
+
+    prefix: tuple[LedgerRecord, ...]
+    excluded: frozenset[str]
+    visible_prefix: tuple[LedgerRecord, ...]
+    readable_events: frozenset[str]
+    by_event: Mapping[str, LedgerRecord]
+    readable: frozenset[str]
+    events: Mapping[str, str]
+    obligations: frozenset[ObligationId]
+    scopes: Mapping[str, frozenset[ObligationId]]
+    omissions: Counter[ObligationId]
+    claims: tuple[tuple[ClaimId, ClaimRecord], ...]
+    current_sources: frozenset[str]
+
+
+def evidence_scopes(
     state: ProjectionState,
     records: tuple[LedgerRecord, ...],
     *,
     unavailable_event_ids: frozenset[str] = frozenset(),
-    freshness: tuple[VerificationFreshness, ...] | None = None,
-    tracked_runs: tuple[ResultId, ...] | None = None,
-    resolution: bool = True,
-) -> FrozenEvidenceViewModel:
-    """Index explicit readable relations once, then bound display independently of closure.
+) -> EvidenceScopes:
+    """Index explicit readable relations (claims, resolution refs, actions, results, evidence).
 
     General task events, unscoped claims, prose similarity and nearby runs confer no scope.
-    Many-to-many links keep all their declared obligations. The observation predicate is the
-    existing verification-link evaluator; it certifies recorded observation, never adequacy.
-    ``resolution=False`` skips the per-finding resolution evaluators (their rows stay empty) for
-    a reader that needs only the run and assessment links, such as the decision line (#1139).
+    Many-to-many links keep all their declared obligations. Nothing here is bounded.
     """
+
     prefix = tuple(row for row in records if row.ledger.ingestion_sequence <= state.frontier)
     redacted_events, redacted_objects = redaction_targets(prefix)
     excluded = (
@@ -136,11 +156,6 @@ def build_evidence_view(
     visible_prefix = tuple(row for row in prefix if str(row.event_id) not in excluded)
     readable_events = {str(row.event_id) for row in visible_prefix if row.payload is not None}
     by_event = {str(row.event_id): row for row in visible_prefix}
-    freshness_rows = verification_freshness(state, prefix) if freshness is None else freshness
-    tracked = frozenset(
-        verification_tracked_runs(state, prefix) if tracked_runs is None else tracked_runs
-    )
-    fresh_by_run = {row.run_ref: row.state for row in freshness_rows}
     readable: set[str] = set()
     events: dict[str, str] = {}
     for family in (state.obligations, state.actions, state.results, state.evidence, state.claims):
@@ -207,6 +222,50 @@ def build_evidence_view(
         scopes.setdefault(str(row.event_id), set()).update(
             key for key in targets if key in obligations
         )
+
+    return EvidenceScopes(
+        prefix,
+        frozenset(excluded),
+        visible_prefix,
+        frozenset(readable_events),
+        by_event,
+        frozenset(readable),
+        events,
+        frozenset(obligations),
+        {ref: frozenset(targets) for ref, targets in scopes.items()},
+        omissions,
+        claims,
+        current_sources,
+    )
+
+
+def build_evidence_view(
+    state: ProjectionState,
+    records: tuple[LedgerRecord, ...],
+    *,
+    unavailable_event_ids: frozenset[str] = frozenset(),
+    freshness: tuple[VerificationFreshness, ...] | None = None,
+    tracked_runs: tuple[ResultId, ...] | None = None,
+    resolution: bool = True,
+) -> FrozenEvidenceViewModel:
+    """Index explicit readable relations once, then bound display independently of closure.
+
+    General task events, unscoped claims, prose similarity and nearby runs confer no scope.
+    Many-to-many links keep all their declared obligations. The observation predicate is the
+    existing verification-link evaluator; it certifies recorded observation, never adequacy.
+    ``resolution=False`` skips the per-finding resolution evaluators (their rows stay empty) for
+    a reader that needs only the run and assessment links, such as the decision line (#1139).
+    """
+    index = evidence_scopes(state, records, unavailable_event_ids=unavailable_event_ids)
+    prefix, excluded, visible_prefix = index.prefix, index.excluded, index.visible_prefix
+    readable_events, by_event, readable = index.readable_events, index.by_event, index.readable
+    obligations, scopes, omissions = index.obligations, index.scopes, index.omissions
+    claims, current_sources = index.claims, index.current_sources
+    freshness_rows = verification_freshness(state, prefix) if freshness is None else freshness
+    tracked = frozenset(
+        verification_tracked_runs(state, prefix) if tracked_runs is None else tracked_runs
+    )
+    fresh_by_run = {row.run_ref: row.state for row in freshness_rows}
 
     def subjects(refs: Iterable[str]) -> set[ObligationId]:
         found: set[ObligationId] = set()
@@ -564,31 +623,14 @@ def _current_check_verdicts(
     return Counter(rows.values())
 
 
-def decision_status_line(
+def _obligation_parts(
     state: ProjectionState,
-    records: tuple[LedgerRecord, ...],
-    *,
-    fix_or_decline: int = 0,
-    advice_unanswered: int = 0,
-    reviewer: bool = True,
-    freshness: tuple[VerificationFreshness, ...] | None = None,
-    tracked_runs: tuple[ResultId, ...] | None = None,
-) -> str:
-    """One counted line of what the ledger records at the decision point (#1139).
+    prefix: tuple[LedgerRecord, ...],
+    freshness: tuple[VerificationFreshness, ...] | None,
+    tracked_runs: tuple[ResultId, ...] | None,
+) -> list[str]:
+    """The decision line's obligation, latest-run and unattempted-item parts (#1139)."""
 
-    Records, not correctness: the obligations in the current plan by status, each one's newest
-    linked result by outcome and freshness (``build_evidence_view``, as ``status
-    view=obligations`` shows it), requested items unattempted by the
-    ``requested_item_never_attempted`` test, every verified row of the current check that was not
-    supported or not assessable (before display bounds), unanswered advice and open
-    fix-or-decline items. Zero-count parts are omitted and at most two ids are named per part.
-    Closed words, counts and service-minted ids only. ``reviewer=False`` keeps only the ledger
-    counts (the receipt carries the rest in its own sections).
-    """
-
-    if not state.obligations:
-        return ""
-    prefix = tuple(row for row in records if row.ledger.ingestion_sequence <= state.frontier)
     view = build_evidence_view(
         state, prefix, freshness=freshness, tracked_runs=tracked_runs, resolution=False
     )
@@ -634,7 +676,7 @@ def decision_status_line(
         for key, label in _RUN_PARTS
         if (part := named(len(runs[key]), label, () if key == "success" else runs[key]))
     )
-    parts = [
+    return [
         f"{len(active)} obligation{'' if len(active) == 1 else 's'}"
         + (f" ({status_text})" if status_text else ""),
         f"latest linked run: {run_text}" if run_text else "",
@@ -644,6 +686,34 @@ def decision_status_line(
             unattempted,
         ),
     ]
+
+
+def decision_status_line(
+    state: ProjectionState,
+    records: tuple[LedgerRecord, ...],
+    *,
+    fix_or_decline: int = 0,
+    advice_unanswered: int = 0,
+    reviewer: bool = True,
+    freshness: tuple[VerificationFreshness, ...] | None = None,
+    tracked_runs: tuple[ResultId, ...] | None = None,
+) -> str:
+    """One counted line of what the ledger records at the decision point (#1139).
+
+    Records, not correctness: the obligations in the current plan by status, each one's newest
+    linked result by outcome and freshness (``build_evidence_view``, as ``status
+    view=obligations`` shows it), requested items unattempted by the
+    ``requested_item_never_attempted`` test, every verified row of the current check that was not
+    supported or not assessable (before display bounds), unanswered advice and open
+    fix-or-decline items. Zero-count parts are omitted and at most two ids are named per part.
+    Closed words, counts and service-minted ids only. ``reviewer=False`` keeps only the ledger
+    counts (the receipt carries the rest in its own sections).
+    """
+
+    prefix = tuple(row for row in records if row.ledger.ingestion_sequence <= state.frontier)
+    # A task with no obligations (a ``single_atomic_change`` plan) skips only the obligation
+    # parts; reviewer rows, advice and fix-or-decline items still count.
+    parts = _obligation_parts(state, prefix, freshness, tracked_runs) if state.obligations else []
     if reviewer:
         verdicts = _current_check_verdicts(state, prefix)
         reviewer_text = ", ".join(

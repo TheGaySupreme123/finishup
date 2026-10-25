@@ -37,6 +37,8 @@ __all__ = [
     "closure_counts_variants",
     "closing_review_limit_note",
     "coordinator_failure_note",
+    "draft_receipt_criterion_lines",
+    "draft_receipt_variants",
     "FIX_OR_DECLINE_CODES",
     "fix_or_decline_rows",
     "fix_or_decline_variants",
@@ -523,6 +525,123 @@ def predicted_receipt_variants(prediction: object, *, state: str = "ready") -> t
     if tail:
         variants.append(f"{lead}.")
     return tuple(dict.fromkeys(variants))
+
+
+_DRAFT_STANDING_WORDS: Final = {
+    "linked_pass_current": "linked passing current run",
+    "agent_claim_only": "agent claim only",
+    "none": "none",
+}
+_DRAFT_REF: Final = re.compile(r"^(?:clm|obl|res)_[0-9a-f-]{36}$", re.ASCII)
+_DRAFT_ADVICE: Final = re.compile(r"^evt_[0-9a-f-]{36}:[1-9][0-9]{0,3}$", re.ASCII)
+_DRAFT_CODE: Final = re.compile(r"^[a-z][a-z0-9_]{0,127}$", re.ASCII)
+DRAFT_RECEIPT_CLOSE: Final = (
+    "If it shows a problem, keep working and check again; then request the final receipt."
+)
+
+
+def _items(value: object) -> tuple[object, ...]:
+    return (
+        tuple(cast("tuple[object, ...] | list[object]", value))
+        if isinstance(value, (tuple, list))
+        else ()
+    )
+
+
+def draft_receipt_variants(draft: object) -> tuple[str, ...]:
+    """The draft receipt sentence (#975), longest variant first; ``()`` when absent or malformed.
+
+    Closed tokens, counts and service-minted ids only (criterion text is rendered separately, by
+    ``draft_receipt_criterion_lines``, where a surface carries content). Labelled a draft of the
+    records, never a statement that the work is correct.
+    """
+
+    conclusion = _field(draft, "conclusion")
+    if type(conclusion) is not str or conclusion not in _CONCLUSIONS:
+        return ()
+    head = f"Draft receipt (records, not correctness): {conclusion}"
+    counts = _field(draft, "criteria_counts")
+    named: dict[str, list[str]] = {"agent_claim_only": [], "none": []}
+    for row in _items(_field(draft, "criteria")):
+        standing = _field(row, "standing")
+        if type(standing) is str and standing in named:
+            for ref in _items(_field(row, "refs")):
+                if type(ref) is str and _DRAFT_REF.fullmatch(ref) and ref not in named[standing]:
+                    named[standing].append(ref)
+    groups: list[str] = []
+    short_groups: list[str] = []
+    for standing, words in _DRAFT_STANDING_WORDS.items():
+        number = _count(_field(counts, standing))
+        refs = named.get(standing, [])[:3]
+        short_groups.append(f"{number} {words}")
+        groups.append(f"{number} {words}" + (f" ({', '.join(refs)})" if number and refs else ""))
+    total = _count(_field(draft, "criteria_total"))
+    criteria = f"task criteria ({total}): " if total else "task criteria: "
+    tail: list[str] = []
+    fixable = _count(_field(draft, "fix_or_decline_count"))
+    if fixable:
+        tail.append(f"fix or decline: {fixable}")
+    advice = [
+        item
+        for item in _items(_field(draft, "advice_unanswered"))
+        if type(item) is str and _DRAFT_ADVICE.fullmatch(item)
+    ]
+    unanswered = _count(_field(draft, "advice_unanswered_count"))
+    if unanswered:
+        tail.append(
+            f"unanswered advice: {unanswered}" + (f" ({', '.join(advice[:2])})" if advice else "")
+        )
+    limitations = [
+        item
+        for item in _items(_field(draft, "limitations"))
+        if type(item) is str and _DRAFT_CODE.fullmatch(item)
+    ]
+    limitation_count = _count(_field(draft, "limitation_count"))
+    if limitation_count:
+        hidden = limitation_count - len(limitations)
+        tail.append(
+            "will disclose: "
+            + ", ".join(limitations)
+            + (f" (+{hidden} more)" if hidden > 0 else "")
+        )
+    rest = "".join(f"; {item}" for item in tail)
+    full = f"{head}; {criteria}{', '.join(groups)}{rest}. {DRAFT_RECEIPT_CLOSE}"
+    shorter = f"{head}; {criteria}{', '.join(short_groups)}{rest}."
+    shortest = f"{head}; {criteria}{', '.join(short_groups)}."
+    return tuple(dict.fromkeys((full, shorter, shortest)))
+
+
+def draft_receipt_criterion_lines(draft: object) -> tuple[str, ...]:
+    """One line per listed draft criterion with its quoted excerpt (CLI and terminal panel).
+
+    A withheld excerpt (an omission marker) is named as withheld, never recovered.
+    """
+
+    lines: list[str] = []
+    for row in _items(_field(draft, "criteria")):
+        standing = _field(row, "standing")
+        source = _field(row, "source")
+        if type(standing) is not str or standing not in _DRAFT_STANDING_WORDS:
+            continue
+        excerpt = _field(row, "obligation_criterion_excerpt")
+        if excerpt is None:
+            excerpt = _field(row, "task_criterion_excerpt")
+        text = (
+            f'"{excerpt}"'
+            if type(excerpt) is str
+            else "(criterion text withheld by the privacy policy)"
+        )
+        refs = [
+            ref
+            for ref in _items(_field(row, "refs"))
+            if type(ref) is str and _DRAFT_REF.fullmatch(ref)
+        ]
+        where = "obligation" if source == "obligation" else "task statement"
+        lines.append(
+            f"  {_DRAFT_STANDING_WORDS[standing]}: {text} ({where})"
+            + (f" [{', '.join(refs)}]" if refs else "")
+        )
+    return tuple(lines)
 
 
 def closure_counts_variants(finding_counts: object, obligation_counts: object) -> tuple[str, ...]:

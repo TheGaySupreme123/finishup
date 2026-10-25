@@ -76,6 +76,8 @@ from finishup.protocol.readiness_text import (
     check_cause_sentence,
     closure_counts_variants,
     coordinator_failure_note,
+    draft_receipt_criterion_lines,
+    draft_receipt_variants,
     fix_or_decline_rows,
     obligation_resolve_recipe_variants,
     predicted_receipt_variants,
@@ -506,6 +508,8 @@ def render_human_check(result: CheckSuccessModel) -> str:
         # #1145: a routine note's id (a reviewer counter-example) is named only here on a check.
         if result.closure_readiness.correctness_advisory_summary:
             lines.append(result.closure_readiness.correctness_advisory_summary)
+        # Issue #975: the draft receipt a ready check shows before the final receipt.
+        lines.extend(draft_receipt_lines(result.closure_readiness))
     if result.finding_checklist is not None:
         lines.extend(
             _render_checklist(
@@ -662,6 +666,16 @@ def render_check_admission_lines(admission: StatusCheckAdmissionModel) -> tuple[
     )
 
 
+def draft_receipt_lines(readiness: StatusClosureReadinessModel) -> tuple[str, ...]:
+    """The draft receipt sentence and one line per listed criterion (#975); empty when absent."""
+
+    draft = readiness.draft_receipt
+    if draft is None:
+        return ()
+    head = draft_receipt_variants(draft)[:1]
+    return (*head, *draft_receipt_criterion_lines(draft)) if head else ()
+
+
 def render_closure_readiness_lines(readiness: StatusClosureReadinessModel) -> tuple[str, ...]:
     """Render the closure checklist: its state, the frozen directive, and each named group.
 
@@ -682,6 +696,8 @@ def render_closure_readiness_lines(readiness: StatusClosureReadinessModel) -> tu
         return ()  # A result shaped by an earlier build carries no checklist.
     lines = [
         f"Closure: {readiness.state}",
+        # #1139: the counted ledger line first, then the directive, then the draft receipt.
+        readiness.evidence_basis_summary or "",
         readiness_directive(
             readiness.state,
             standing=len(readiness.standing_limitations),
@@ -689,8 +705,6 @@ def render_closure_readiness_lines(readiness: StatusClosureReadinessModel) -> tu
             # Issue #1209: open fix-or-decline items replace "Nothing further to do".
             fix_or_decline=fix_or_decline_rows(readiness),
         ),
-        # #1139: the counted ledger line, right under the directive.
-        readiness.evidence_basis_summary or "",
     ]
     if readiness.state != "unknown":
         # ADR-046: the receipt conclusion this frontier would carry, appended after the
@@ -703,6 +717,8 @@ def render_closure_readiness_lines(readiness: StatusClosureReadinessModel) -> tu
         lines.extend(
             closure_counts_variants(readiness.finding_counts, readiness.obligation_counts)[:1]
         )
+        # Issue #975: the draft receipt and its quoted criteria (records, not correctness).
+        lines.extend(draft_receipt_lines(readiness))
         # The rejected findings that wait for a reviewer ruling and the re-reads a Stop will ask
         # once (tb4n3 RC-8), so "nothing further to do" is never followed by a surprise gate.
         lines.extend(awaiting_ruling_variants(readiness)[:1])

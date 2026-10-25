@@ -6623,6 +6623,118 @@ def _predicted_receipt_schema() -> dict[str, JsonValue]:
     }
 
 
+def _draft_receipt_schema() -> dict[str, JsonValue]:
+    """Issue #975 (ADR-046 amendment): what the receipt will say, as a draft (records only)."""
+
+    from finishup.domain.correctness_advisories import ADVISORY_ID_PATTERN
+
+    def excerpt(category: str) -> dict[str, JsonValue]:
+        return {
+            "oneOf": [
+                {"type": "string", "minLength": 1, "maxLength": 160},
+                {
+                    "allOf": [
+                        {
+                            "$ref": SCHEMA_NAMESPACE
+                            + "common/operation-result-1.0.0.schema.json#/$defs/omitted_content"
+                        },
+                        {"properties": {"category": {"const": category}}, "required": ["category"]},
+                    ]
+                },
+            ]
+        }
+
+    criterion: dict[str, JsonValue] = {
+        "additionalProperties": False,
+        "allOf": [
+            {
+                "if": {"properties": {"source": {"const": "obligation"}}, "required": ["source"]},
+                "then": {
+                    "required": ["obligation_criterion_excerpt"],
+                    "not": {"required": ["task_criterion_excerpt"]},
+                },
+                "else": {
+                    "required": ["task_criterion_excerpt"],
+                    "not": {"required": ["obligation_criterion_excerpt"]},
+                },
+            }
+        ],
+        "properties": {
+            "obligation_criterion_excerpt": excerpt("obligation_text"),
+            "refs": {
+                "items": {"$ref": "#/$defs/subject_id"},
+                "maxItems": 3,
+                "type": "array",
+                "uniqueItems": True,
+            },
+            "source": {
+                "enum": ["task_statement", "obligation", "manifest_quote"],
+                "type": "string",
+            },
+            "standing": {
+                "enum": ["linked_pass_current", "agent_claim_only", "none"],
+                "type": "string",
+            },
+            "task_criterion_excerpt": excerpt("task_description"),
+        },
+        "required": ["refs", "source", "standing"],
+        "type": "object",
+    }
+    return {
+        "additionalProperties": False,
+        "properties": {
+            "advice_unanswered": {
+                "items": {"pattern": ADVISORY_ID_PATTERN, "type": "string"},
+                "maxItems": 4,
+                "type": "array",
+                "uniqueItems": True,
+            },
+            "advice_unanswered_count": {"$ref": "#/$defs/canonical_uint"},
+            "conclusion": {"enum": list(_RECEIPT_CONCLUSIONS), "type": "string"},
+            "criteria": {"items": criterion, "maxItems": 6, "type": "array"},
+            "criteria_counts": {
+                "additionalProperties": False,
+                "properties": {
+                    name: {"$ref": "#/$defs/canonical_uint"}
+                    for name in ("agent_claim_only", "linked_pass_current", "none")
+                },
+                "required": ["agent_claim_only", "linked_pass_current", "none"],
+                "type": "object",
+            },
+            "criteria_total": {"$ref": "#/$defs/canonical_uint"},
+            "fix_or_decline_count": {"$ref": "#/$defs/canonical_uint"},
+            "label": {"const": "draft_records_not_correctness"},
+            "limitation_count": {"$ref": "#/$defs/canonical_uint"},
+            "limitations": {
+                "items": {"$ref": "#/$defs/code"},
+                "maxItems": 8,
+                "type": "array",
+                "uniqueItems": True,
+            },
+            "reasons": {
+                "items": {"enum": list(_PREDICTION_REASON_CODES), "type": "string"},
+                "maxItems": 8,
+                "type": "array",
+                "uniqueItems": True,
+            },
+        },
+        "required": [
+            "advice_unanswered",
+            "advice_unanswered_count",
+            "conclusion",
+            "criteria",
+            "criteria_counts",
+            "criteria_total",
+            "fix_or_decline_count",
+            "label",
+            "limitation_count",
+            "limitations",
+            "reasons",
+        ],
+        "type": "object",
+    }
+
+
 def _add_status_closure_verdict(definitions: dict[str, JsonValue]) -> None:
     """The one closure verdict on status-result 1.4.0 (tb4n3 RC-3, issue #1026, ADR-046).
 
@@ -6669,6 +6781,9 @@ def _add_status_closure_verdict(definitions: dict[str, JsonValue]) -> None:
                 "type": "object",
             },
             "predicted_receipt": _predicted_receipt_schema(),
+            # Issue #975 (ADR-046 amendment), optional, in place on the unreleased wire: the draft
+            # receipt on a ready readiness (the prediction's own conclusion and reasons).
+            "draft_receipt": _draft_receipt_schema(),
             "rechecks": {
                 "items": {
                     "additionalProperties": False,
