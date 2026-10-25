@@ -442,7 +442,7 @@ def test_untargeted_other_request_has_a_usable_closed_remedy_on_every_text_surfa
     receipt_note = render_review_input_manifest_coverage_note(_manifest(), review.items)
     assert receipt_note is not None and remedy in receipt_note
     assert "Supply the schema" not in receipt_note
-    assert "Only new material counts; tie it to any named target." in (
+    assert "Only new material counts." in (
         render_missing_for_assessment_next(review.items)
     )
     # The same remedy keeps the reference binding for a targeted or mixed request.
