@@ -19,6 +19,7 @@ from finishup.domain.events import (
     ResultRecordedPayload,
     ResultVerification,
     VerificationDataSource,
+    VerificationExpectedFrom,
     encode_payload,
 )
 from finishup.domain.values import (
@@ -48,6 +49,7 @@ from finishup.kernel.verification_coverage import build_verification_coverage
 from finishup.kernel.verification_freshness import VerificationFreshness
 from finishup.protocol.canonical import canonical_digest
 from finishup.protocol.errors import ProtocolValueError
+from finishup.protocol.models import StatusVerificationCoverageModel
 
 _QUOTE = "Every prediction must meet the bound"
 _OBLIGATION = obligation_id("obl_00000000-0000-4000-8000-000000001170")
@@ -89,15 +91,9 @@ def _run(
         failing,
         "105.61 mm",
         tuned,
-        **(
-            {}
-            if test_file is None
-            else {
-                "test_file": test_file,
-                "results_file": "results.json",
-                "report_digest": "sha256:" + "a" * 64,
-            }
-        ),
+        test_file=test_file,
+        results_file=None if test_file is None else "results.json",
+        report_digest=None if test_file is None else "sha256:" + "a" * 64,
     )
     result = ResultRecordedPayload(
         result_id(f"res_00000000-0000-4000-8000-{number:012x}"),
@@ -764,3 +760,65 @@ def test_freshness_witness_rejects_contradictory_stale_boolean(state: str, stale
     witness = build_verification_coverage(_projection(_run(1))).criteria[0].witnesses[0]
     with pytest.raises(ProtocolValueError):
         replace(witness, freshness=state, stale=stale)
+
+
+def _tagged(
+    run: tuple[ActionRecordedPayload, ResultRecordedPayload], checks: str, expected_from: str
+) -> tuple[ActionRecordedPayload, ResultRecordedPayload]:
+    action, result = run
+    assert result.verification is not None
+    manifest = replace(
+        result.verification,
+        checks=checks,
+        expected_from=VerificationExpectedFrom(expected_from),
+    )
+    return action, replace(result, verification=manifest)
+
+
+def test_declared_checks_and_expected_from_reach_the_witness_without_changing_flags() -> None:
+    # Issue #1219: display-only declarations. Flags, counts, ordering and the selected witnesses
+    # are the same with and without them, and the untagged wire keeps its earlier keys.
+    plain_runs = (_run(1, failing=6, source="own_generated"), _run(2, command="python oracle.py"))
+    tagged_runs = (
+        _tagged(plain_runs[0], "parses every named date", "implementation_output"),
+        _tagged(plain_runs[1], "an  independent\noracle", "independent_source"),
+    )
+    plain = build_verification_coverage(_projection(*plain_runs))
+    tagged = build_verification_coverage(_projection(*tagged_runs))
+    strip = [
+        replace(
+            row,
+            witnesses=tuple(
+                replace(item, checks=None, expected_from=None) for item in row.witnesses
+            ),
+        )
+        for row in tagged.criteria
+    ]
+    assert tuple(strip) == plain.criteria
+    witnesses = tagged.criteria[0].witnesses
+    assert [(item.expected_from, item.checks) for item in witnesses] == [
+        ("independent_source", "an  independent\noracle"),
+        ("implementation_output", "parses every named date"),
+    ]
+    plain_wire = verification_coverage_to_json(plain)
+    assert "checks" not in str(plain_wire) and "expected_from" not in str(plain_wire)
+    wire = verification_coverage_to_json(tagged)
+    assert verification_coverage_to_json(verification_coverage_from_json(wire)) == wire
+    StatusVerificationCoverageModel.model_validate(wire)
+    local = "\n".join(verification_coverage_lines(tagged))
+    assert "expected from independent source; checks=an independent oracle" in local
+    exported = "\n".join(verification_coverage_lines(tagged, include_content=False))
+    assert "expected from implementation output" in exported
+    assert "parses every named date" not in exported
+    rows = wire["criteria"]
+    assert isinstance(rows, list) and isinstance(rows[0], dict)
+    first = rows[0]["witnesses"]
+    assert isinstance(first, list) and isinstance(first[0], dict)
+    first[0]["checks"] = {"omitted": True, "category": "command_metadata", "reason": "not_selected"}
+    projected = "\n".join(verification_coverage_wire_lines(wire))
+    assert "independent oracle" not in projected
+    assert "checks text withheld" in projected
+    assert "checks=parses every named date" in projected
+    first[0]["expected_from"] = "from_memory"
+    with pytest.raises(ValueError):
+        StatusVerificationCoverageModel.model_validate(wire)

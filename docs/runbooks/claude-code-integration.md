@@ -3095,6 +3095,8 @@ local `finishup record-test` helper for an already-run script and its small JSON
 The optional result manifest quotes a recorded criterion and declares data source, counts,
 failures, optional worst value and tuning. The helper reads files and records their digests; it
 does not execute tests or copy the files' text into the result.
+Optional `checks` and `expected_from` (#1219) ride the same shared path, including
+`record-test --checks/--expected-from`; there is no host-specific behavior.
 Parsed counts and coverage remain agent-declared; a digest never proves execution or correctness.
 The shared guidance asks for one discriminating independent check per criterion, visible failures
 and a rerun of the shipped revision. Repeated unchanged runs and redundant tests add no coverage.

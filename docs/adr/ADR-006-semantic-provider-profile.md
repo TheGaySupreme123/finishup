@@ -3323,6 +3323,14 @@ every detailed review timeline, Goal-aware included, so the source and failing-c
 the workspace (independent review of #1174). Direct MCP and CLI publication can carry the complete manifest.
 Parsed counts, data-source labels and coverage remain **agent-declared**. A digest is byte identity,
 not proof of execution, independence or correctness.
+Issue #1219 (maintainer request of 2026-10-25) adds two optional manifest declarations in place
+on the unreleased `result_recorded/1.1.0`: `checks`, at most 200 characters naming what the test
+exercises, and `expected_from`, a closed label for where its expected value comes from
+(`task_text`, `independent_source`, `own_reimplementation`, `implementation_output`,
+`hand_computed`). Both are self-reports carried to coverage witnesses for display; neither enters a
+flag, run identity, ranking or gate, and an absent pair leaves every existing byte unchanged.
+`checks` is result command metadata like `worst`; only the closed label enters the structural
+coverage index.
 
 The deterministic coverage projection reports absent, failing, own-generated or tuned-only,
 stale, repeated and redundant witnesses within its recorded scope. It is advisory and

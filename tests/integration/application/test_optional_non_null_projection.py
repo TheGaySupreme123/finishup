@@ -231,7 +231,10 @@ _RESULT_OPTIONAL_NON_NULL: tuple[tuple[type[BaseModel], frozenset[str]], ...] = 
     (CheckContinuationModel, frozenset({"pending_id", "expires_at"})),
     # #1170: declared coverage rows carry only the quote their source owns and only the
     # worst value / tuning answer the agent declared.
-    (StatusVerificationWitnessModel, frozenset({"worst", "tuned_on_these_cases"})),
+    (
+        StatusVerificationWitnessModel,
+        frozenset({"worst", "tuned_on_these_cases", "checks", "expected_from"}),
+    ),
     (
         StatusVerificationCriterionModel,
         frozenset({"task_criterion_quote", "obligation_criterion_quote"}),
@@ -1888,11 +1891,21 @@ def test_declared_coverage_rows_omit_unset_fields_and_refuse_null() -> None:
     task_row, obligation_row = wire["verification_coverage"]["criteria"]
     assert "obligation_criterion_quote" not in task_row
     assert "task_criterion_quote" not in obligation_row
-    assert not {"worst", "tuned_on_these_cases"} & task_row["witnesses"][0].keys()
+    assert (
+        not {
+            "worst",
+            "tuned_on_these_cases",
+            "checks",
+            "expected_from",
+        }
+        & task_row["witnesses"][0].keys()
+    )
     assert StatusCoveragePageModel.model_validate(wire) == page
     for row, field in (
         (task_row["witnesses"][0], "worst"),
         (task_row["witnesses"][0], "tuned_on_these_cases"),
+        (task_row["witnesses"][0], "checks"),
+        (task_row["witnesses"][0], "expected_from"),
     ):
         with pytest.raises(ValidationError, match="optional_field_must_not_be_null"):
             StatusVerificationWitnessModel.model_validate({**row, field: None})
@@ -1969,6 +1982,8 @@ def test_every_result_optional_non_null_field_has_an_unset_projection_case() -> 
             for model, field in (
                 ("StatusVerificationWitnessModel", "worst"),
                 ("StatusVerificationWitnessModel", "tuned_on_these_cases"),
+                ("StatusVerificationWitnessModel", "checks"),
+                ("StatusVerificationWitnessModel", "expected_from"),
                 ("StatusVerificationCriterionModel", "task_criterion_quote"),
                 ("StatusVerificationCriterionModel", "obligation_criterion_quote"),
             )

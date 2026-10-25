@@ -246,6 +246,7 @@ __all__ = [
     "ResultRecordedPayload",
     "ResultVerification",
     "VerificationDataSource",
+    "VerificationExpectedFrom",
     "RESULT_VERIFICATION_SCHEMA_VERSION",
     "RuntimeProfile",
     "RESPONSE_EVENT_SCHEMA_VERSION",
@@ -2330,6 +2331,16 @@ class VerificationDataSource(str, Enum):  # noqa: UP042 - exact wire enum base
     UNKNOWN = "unknown"
 
 
+class VerificationExpectedFrom(str, Enum):  # noqa: UP042 - exact wire enum base
+    """Where the test's expected value comes from (#1219); agent-declared, never checked."""
+
+    TASK_TEXT = "task_text"
+    INDEPENDENT_SOURCE = "independent_source"
+    OWN_REIMPLEMENTATION = "own_reimplementation"
+    IMPLEMENTATION_OUTPUT = "implementation_output"
+    HAND_COMPUTED = "hand_computed"
+
+
 @dataclass(frozen=True, slots=True)
 class ResultVerification:
     """Agent-declared test scope and counts, never an independent verification claim."""
@@ -2343,6 +2354,10 @@ class ResultVerification:
     test_file: str | None = None
     results_file: str | None = None
     report_digest: str | None = None
+    # Issue #1219: what the test exercises and where its expected value comes from. Both are
+    # optional agent declarations; neither changes coverage flags, identity or any gate.
+    checks: str | None = None
+    expected_from: VerificationExpectedFrom | None = None
 
     def __post_init__(self) -> None:
         _bounded_text(self.criterion_quote, 240, minimum=1)
@@ -2351,6 +2366,7 @@ class ResultVerification:
             ("worst", 64),
             ("test_file", 1024),
             ("results_file", 1024),
+            ("checks", 200),
         ):
             value = getattr(self, name)
             if value is not None and (
@@ -2362,6 +2378,10 @@ class ResultVerification:
         object.__setattr__(
             self, "data_source", _exact_enum(self.data_source, VerificationDataSource)
         )
+        if self.expected_from is not None:
+            object.__setattr__(
+                self, "expected_from", _exact_enum(self.expected_from, VerificationExpectedFrom)
+            )
         object.__setattr__(self, "cases", _bounded_integer(self.cases, 0, _MAX_SAFE_INTEGER))
         object.__setattr__(self, "failing", _bounded_integer(self.failing, 0, self.cases))
         if self.tuned_on_these_cases is not None and type(self.tuned_on_these_cases) is not bool:
@@ -4964,9 +4984,18 @@ def decode_payload(schema: EventSchema, payload: JsonValue) -> EventPayload:
                 raw_verification,
                 required=frozenset({"criterion_quote", "data_source", "cases", "failing"}),
                 optional=frozenset(
-                    {"worst", "tuned_on_these_cases", "test_file", "results_file", "report_digest"}
+                    {
+                        "worst",
+                        "tuned_on_these_cases",
+                        "test_file",
+                        "results_file",
+                        "report_digest",
+                        "checks",
+                        "expected_from",
+                    }
                 ),
             )
+            expected_from = _optional(manifest, "expected_from")
             verification = ResultVerification(
                 criterion_quote=cast(str, _field(manifest, "criterion_quote")),
                 data_source=_enum_from_json(
@@ -4979,6 +5008,12 @@ def decode_payload(schema: EventSchema, payload: JsonValue) -> EventPayload:
                 test_file=cast(str | None, _optional(manifest, "test_file")),
                 results_file=cast(str | None, _optional(manifest, "results_file")),
                 report_digest=cast(str | None, _optional(manifest, "report_digest")),
+                checks=cast(str | None, _optional(manifest, "checks")),
+                expected_from=(
+                    None
+                    if expected_from is None
+                    else _enum_from_json(expected_from, VerificationExpectedFrom)
+                ),
             )
         return ResultRecordedPayload(
             result_id=result_id(_field(source, "result_id")),
@@ -5598,8 +5633,11 @@ def encode_payload(payload: EventPayload) -> JsonValue:
                 "test_file",
                 "results_file",
                 "report_digest",
+                "checks",
             ):
                 _optional_value(verification_json, name, getattr(manifest, name))
+            if manifest.expected_from is not None:
+                verification_json["expected_from"] = manifest.expected_from.value
             result["verification"] = verification_json
         return _json_object(result)
     if payload_type is EvidenceRecordedPayload:

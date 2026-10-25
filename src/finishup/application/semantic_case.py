@@ -2446,7 +2446,10 @@ def _verification_coverage_item(
                         break
         witnesses = cast(list[JsonValue], row["witnesses"])
         for witness in witnesses:
+            # Agent-written metric and test-description text stay out of this structural index;
+            # the closed ``expected_from`` label is structural and stays (#1219).
             cast(dict[str, JsonValue], witness).pop("worst", None)
+            cast(dict[str, JsonValue], witness).pop("checks", None)
         row["witnesses"] = [
             witness
             for witness in witnesses

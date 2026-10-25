@@ -12625,6 +12625,14 @@ recomputation solely because the finding names paths.
 `cases`/`failing` (0..2^53-1, `failing <= cases`). Optional `worst` is nonblank text of at most
 64 characters; optional `tuned_on_these_cases` is a boolean. Optional `test_file`, `results_file`
 (nonblank paths of at most 1,024 characters) and `report_digest` (`sha256:` digest) travel together.
+Issue #1219 adds two optional declarations in place on this unreleased version: `checks` (nonblank
+text of at most 200 characters naming what the test exercises) and `expected_from`
+(`task_text|independent_source|own_reimplementation|implementation_output|hand_computed`, where the
+expected value comes from). Neither is checked, joins a run identity, ranks a witness, sets a flag
+or gates anything; a manifest without them keeps its bytes on every surface. `record-test` accepts
+`--checks` and `--expected-from`, refusing a value that contradicts the request's manifest. The
+compact MCP payload hint omits both to stay within the advertised-schema byte budget; the full
+event schema and the request template name them.
 The publication validator checks the quote against the current recorded task statement, including
 an earlier statement revision in the same atomic batch. The quote must occur verbatim on whole-word
 boundaries (`1` inside `1.06` or `atio` inside `ratio` does not count) and name at least three
@@ -12712,7 +12720,8 @@ The unreleased `status-request/1.2.0` / `status-result/1.4.0` admit `view=covera
 `1.3.0`, carried by receipt-result `1.3.0` and `1.4.0`, optionally carries `verification_coverage`. CLI status, TUI `/coverage`
 and receipt JSON/markdown/text share the projection. Wire quote leaves are separated into
 `task_criterion_quote` (`task_description`) and `obligation_criterion_quote` (`obligation_text`);
-`worst` uses command metadata. Human receipt prose carries ordinal/source/refs/counts so the
+`worst` and `checks` use command metadata; `expected_from` is a closed structural label shown on
+witness rows when declared. Human receipt prose carries ordinal/source/refs/counts so the
 legacy `human_text` category cannot export task text indirectly. JSON preserves categorized text
 only when the selected receipt profile and disclosure policy admit it.
 
@@ -12726,7 +12735,8 @@ under command metadata. Adding the index to either profile would widen what they
 a separate privacy decision. Local status, TUI `/coverage` and receipts show the projection under
 every review profile. Its structural item contains closed
 flags, counts, result/action refs, and character spans pointing to separately authorized task or
-obligation text; it contains no criterion quote or worst-value prose. It uses the existing
+obligation text, plus a witness's declared `expected_from` label (#1219); it contains no criterion
+quote, worst-value or `checks` prose. It uses the existing
 bounded-structural-metadata category under the existing selection and whole-packet byte limits;
 the reserved diff and decisive-verification excerpt budgets retain their original floors.
 The owning outbound-case generator includes the new section and optional member.

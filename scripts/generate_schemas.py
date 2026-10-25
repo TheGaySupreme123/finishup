@@ -28,6 +28,7 @@ from pydantic import TypeAdapter
 from pydantic_core import core_schema
 
 from finishup.domain.review_guidance import ReviewGuidance
+from finishup.domain.verification_coverage import VERIFICATION_EXPECTED_FROM
 from finishup.protocol.canonical import JsonValue, canonical_encode
 from finishup.protocol.models import MAX_REVIEW_EXCERPTS
 
@@ -5051,6 +5052,8 @@ def _verification_coverage_schema() -> dict[str, JsonValue]:
             "freshness": {"type": "string", "enum": ["current", "stale", "unknown", "legacy"]},
             "tuned_on_these_cases": {"type": "boolean"},
             "worst": text("command_metadata", 64),
+            "checks": text("command_metadata", 200),
+            "expected_from": {"enum": list(VERIFICATION_EXPECTED_FROM)},
         },
         "required": ["result_id", "action_id", "data_source", "cases", "failing", "stale"],
         "allOf": [
@@ -7599,6 +7602,10 @@ def _result_recorded_v1_1_schema(entry: _RegistryEntry) -> dict[str, JsonValue]:
             "test_file": {"type": "string", "minLength": 1, "maxLength": 1024, "pattern": r"\S"},
             "results_file": {"type": "string", "minLength": 1, "maxLength": 1024, "pattern": r"\S"},
             "report_digest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+            # Issue #1219: optional agent declarations, admitted in place on this unreleased
+            # version. Absent, the manifest and every projection keep their earlier bytes.
+            "checks": {"type": "string", "minLength": 1, "maxLength": 200, "pattern": r"\S"},
+            "expected_from": {"type": "string", "enum": list(VERIFICATION_EXPECTED_FROM)},
         },
         "dependentRequired": {
             "test_file": ["results_file", "report_digest"],

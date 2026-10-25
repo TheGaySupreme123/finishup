@@ -92,6 +92,8 @@ Quote one criterion verbatim, as whole words, from the recorded task statement i
 `criterion_quote`; a quote of only punctuation or common words is refused.
 FinishUP checks the quote, not whether the test establishes it.
 Declare `data_source`, `cases` and `failing`; add `worst` and `tuned_on_these_cases` when useful.
+On the test that decides a criterion, add `checks` (what it exercises, at most 200 characters) and
+`expected_from`: `task_text`, `independent_source`, `own_reimplementation`, `implementation_output` or `hand_computed`.
 Keep known failing cases visible in the result's bounded summary or evidence.
 Follow [design verification](workflow.md#design-verification) before adding another test.
 

@@ -627,6 +627,9 @@ Replace the criterion with an exact whole-word quote of one criterion from this 
 For this failing example, set the result's `outcome` to `failure` and describe the six
 failing cases. Declare the actual data source: `task_public`, `own_generated`, `independent`,
 `held_out`, `stated_environment` or `unknown`. `worst` and `tuned_on_these_cases` are optional.
+On the test that decides a criterion, also add `checks` (at most 200 characters) and `expected_from`
+(`task_text`, `independent_source`, `own_reimplementation`, `implementation_output` or `hand_computed`);
+`finishup record-test` takes them as `--checks` and `--expected-from`.
 Counts and data-source labels remain agent-declared, including counts read from a digested file.
 
 For a test you already ran, save a small UTF-8 JSON results file such as

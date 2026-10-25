@@ -6724,7 +6724,9 @@ class StatusResultsPageModel(_ClosedModel):
 
 
 class StatusVerificationWitnessModel(_ClosedModel):
-    optional_non_null_fields = frozenset({"worst", "tuned_on_these_cases", "freshness"})
+    optional_non_null_fields = frozenset(
+        {"worst", "tuned_on_these_cases", "freshness", "checks", "expected_from"}
+    )
 
     result_id: ResultIdWire
     action_id: ActionIdWire
@@ -6737,6 +6739,18 @@ class StatusVerificationWitnessModel(_ClosedModel):
     freshness: Literal["current", "stale", "unknown", "legacy"] | None = None
     tuned_on_these_cases: bool | None = None
     worst: Annotated[str, Field(min_length=1, max_length=64)] | OmittedContentModel | None = None
+    # Issue #1219: agent-declared test description (command metadata) and expectation origin.
+    checks: Annotated[str, Field(min_length=1, max_length=200)] | OmittedContentModel | None = None
+    expected_from: (
+        Literal[
+            "task_text",
+            "independent_source",
+            "own_reimplementation",
+            "implementation_output",
+            "hand_computed",
+        ]
+        | None
+    ) = None
 
     @model_validator(mode="after")
     def _validate_freshness(self) -> StatusVerificationWitnessModel:
@@ -8704,6 +8718,7 @@ _VERIFICATION_COVERAGE_STRUCTURAL_LEAVES: Final = (
     "criteria/*/witnesses/*/stale",
     "criteria/*/witnesses/*/freshness",
     "criteria/*/witnesses/*/tuned_on_these_cases",
+    "criteria/*/witnesses/*/expected_from",
     "criteria/*/task_criterion_quote/category",
     "criteria/*/task_criterion_quote/omitted",
     "criteria/*/task_criterion_quote/reason",
@@ -8713,6 +8728,9 @@ _VERIFICATION_COVERAGE_STRUCTURAL_LEAVES: Final = (
     "criteria/*/witnesses/*/worst/category",
     "criteria/*/witnesses/*/worst/omitted",
     "criteria/*/witnesses/*/worst/reason",
+    "criteria/*/witnesses/*/checks/category",
+    "criteria/*/witnesses/*/checks/omitted",
+    "criteria/*/witnesses/*/checks/reason",
 )
 
 _STATUS_CANDIDATE_FINDINGS_STRUCTURAL_POINTERS: Final = (
@@ -9374,6 +9392,11 @@ _STATUS_CONTENT_RULES: Final[tuple[tuple[str, str, DataCategory], ...]] = (
         "/page/verification_coverage/criteria/*/witnesses/*/worst",
         DataCategory.COMMAND_METADATA,
     ),
+    (
+        "coverage",
+        "/page/verification_coverage/criteria/*/witnesses/*/checks",
+        DataCategory.COMMAND_METADATA,
+    ),
     ("history", "/page/items/*/correctness_advisories/*/summary", DataCategory.FINDING_SUMMARY),
     ("history", "/page/items/*/correctness_advisories/*/detail", DataCategory.FINDING_SUMMARY),
     ("history", "/page/items/*/correctness_advisories/*/reason", DataCategory.FINDING_SUMMARY),
@@ -9497,6 +9520,10 @@ _RECEIPT_CONTENT_RULES: Final[tuple[tuple[str, DataCategory], ...]] = (
         DataCategory.OBLIGATION_TEXT,
     ),
     ("/document/verification_coverage/criteria/*/witnesses/*/worst", DataCategory.COMMAND_METADATA),
+    (
+        "/document/verification_coverage/criteria/*/witnesses/*/checks",
+        DataCategory.COMMAND_METADATA,
+    ),
     ("/document/gaps/*/detail", DataCategory.FINDING_SUMMARY),
     ("/document/findings/*/detail", DataCategory.FINDING_SUMMARY),
     ("/document/findings/*/summary", DataCategory.FINDING_SUMMARY),
@@ -9686,7 +9713,7 @@ def _build_result_leaf_rules() -> tuple[_ResultLeafRule, ...]:
         ):
             raise RuntimeError("invalid_result_leaf_classification")
     if (
-        len(result) != 2065
+        len(result) != 2075
     ):  # ... #1017 +3, #1027 +5, tb4n3 LO +9, W2-A +46, LF +34 (fact_lineage), W2-B +2,
         # tb4n4 #1044 +7 (closure_readiness.undeclared_references), #1048 +38 (inspection),
         # #1047 +2 (follow_up_round), tb4n5 +3 (publish action_notices),
@@ -9707,6 +9734,8 @@ def _build_result_leaf_rules() -> tuple[_ResultLeafRule, ...]:
         # +3 (operation check_outcome advisory identities, PR #1214 review);
         # #975 +46 draft receipt (21 structural and 2 content leaves, each on check and status).
         # #1139 +2 agent_status_line (check and status).
+        # #1219 +10 witness checks/expected_from (4 structural and 1 content leaf, on status
+        # coverage and the receipt document).
         raise RuntimeError("incomplete_result_leaf_registry")
     return result
 
