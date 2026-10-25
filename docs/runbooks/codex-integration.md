@@ -4232,6 +4232,10 @@ and a rerun of the shipped revision. Repeated unchanged runs and redundant tests
 Coverage advice is non-blocking and does not activate AI review. When AI review is already in use
 and its packet shows a declared witness (the Assisted and Expanded profiles), the reviewer
 scrutinizes circular tests and places a useful discriminating check first in its summary.
+When a packet's obligation links a command result, with or without a manifest, the reviewer
+asks where each decisive check gets its expected value and challenges one that shares the
+implementation's derivation with a runnable `Counter-example:` under an advisory note or
+finding id (#1145); the shared MCP and CLI renderings carry both on every host.
 See [the result recipe](../../guidance/request-templates.md#publish-work-result).
 
 This shared transport decision applies on macOS, Linux and Windows through WSL 2. Native host and

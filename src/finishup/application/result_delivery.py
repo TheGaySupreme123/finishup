@@ -255,6 +255,7 @@ def _delivery_groups(
         "semantic_reason",
         "agent_next",
         "overall_next",
+        "review_guidance",
         "review_summary",
         "missing_for_assessment",
         "human_text",

@@ -61,9 +61,12 @@ def test_test_quality_advice_preserves_optional_discriminating_checks() -> None:
     for instruction in (REVIEWER_LOOP_INSTRUCTION, SEMANTIC_REVIEW_INSTRUCTION):
         assert "Discriminating check" not in instruction
         assert "agent-declared manifest" not in instruction
+        # #1145: the linked-check rule rides the question too, so the cached prefix is unchanged.
+        assert "Counter-example" not in instruction
     question = " ".join(review_question_set("final", test_manifests=True)[-1].split())
     for rule in (
         "begin the first line of review_summary with 'Discriminating check: <one concrete check>'",
+        "message_to_main_agent ending 'Counter-example: <an input or probe to run>'",
         "do not invent a test when no useful discriminator exists",
         "an agent-declared manifest is not independent proof",
         "any expected value copied from the answer",

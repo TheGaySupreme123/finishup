@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import copy
-from typing import Any, cast
+from typing import Any, Literal, cast
 
 import pytest
 
@@ -20,6 +20,7 @@ from finishup.domain.result_delivery import (
     collect_status_delivery,
     reassemble_delivery,
 )
+from finishup.domain.review_guidance import ReviewGuidance
 from finishup.mcp.server import result_from_public_model
 from finishup.ports.control import McpHostProfile
 from finishup.protocol.canonical import canonical_digest, canonical_encode
@@ -31,6 +32,58 @@ _SESSION = "ses_00000000-0000-4000-8000-000000000001"
 _WRITER = "wri_00000000-0000-4000-8000-000000000002"
 # What Codex 0.159 prefixes to the structured JSON it shows a model (test_codex_structured_head).
 _CODEX_HEADER = "Wall time: 0.0000 seconds\nOutput:\n"
+
+
+@pytest.mark.parametrize("with_findings", [False, True])
+@pytest.mark.parametrize("host", ["codex", "claude", "cursor", "generic"])
+def test_review_guidance_reaches_the_model_before_paged_summary(
+    with_findings: bool, host: McpHostProfile
+) -> None:
+    source = _source()
+    guidance = ReviewGuidance.MATERIAL_CONCERNS.value
+    source["review_guidance"] = guidance
+    if not with_findings:
+        source["findings"] = []
+    source["verified"] = [
+        {"requirement_or_claim": f"criterion-{n}", "verdict": "supported", "snippet": "x" * 1000}
+        for n in range(24)
+    ]
+    pages = _pages(source)
+    assert len(pages) > 1
+    first = pages[0]
+    paths = [item["path"] for item in first["items"]]
+    assert paths.index("/review_guidance") < paths.index("/review_summary")
+    result = result_from_public_model(CheckResultModel.model_validate(first), host_profile=host)
+    assert result.structuredContent is not None
+    structured = canonical_encode(cast(Any, result.structuredContent))
+    text = "".join(cast(Any, block).text for block in result.content).encode()
+    # Actual channels read by Codex and text-only hosts, including framing and byte budget.
+    assert guidance.encode() in structured and guidance.encode() in text
+    assert len(_CODEX_HEADER.encode()) + len(structured) <= CODEX_FALLBACK_WINDOW_BYTES
+    assert (
+        mcp_delivery_bytes(cast(Any, result.structuredContent), text=text.decode())
+        <= HOST_RESULT_BUDGET_BYTES
+    )
+    assert reassemble_delivery(pages)["review_guidance"] == guidance
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("mode", ["optional", "disabled"])
+async def test_guidance_originates_in_successful_review_projection_only(
+    mode: Literal["optional", "disabled"],
+) -> None:
+    from builders.projection_workflow import run_projection_workflow
+    from finishup.application.check import check_internal_json
+    from finishup.ports.ledger import CheckCommitResult
+
+    workflow = await run_projection_workflow(mode)
+    internal = workflow.case("check").internal
+    assert isinstance(internal, CheckCommitResult)
+    wire = check_internal_json(internal)
+    if mode == "optional":
+        assert wire["review_guidance"] == ReviewGuidance.MATERIAL_CONCERNS.value
+    else:
+        assert "review_guidance" not in wire
 
 
 def _projection(read: int = 1, omitted: tuple[str, ...] = ()) -> dict[str, Any]:

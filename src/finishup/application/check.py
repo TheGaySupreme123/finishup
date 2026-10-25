@@ -99,6 +99,7 @@ from finishup.domain.receipts import (
     check_time_change_unavailable_reason_gap,
     semantic_coverage_gap_code,
 )
+from finishup.domain.review_guidance import ReviewGuidance
 from finishup.domain.review_input_render import render_agent_next
 from finishup.domain.reviewer_reads import ReviewerRecord
 from finishup.domain.task_statement import TASK_STATEMENT_GAPS, SpecificationPreflight
@@ -811,6 +812,7 @@ def check_internal_json(result: CheckCommitResult) -> dict[str, JsonValue]:
             {}
             if result.semantic_status is not SemanticStatus.SUCCEEDED
             else {
+                "review_guidance": ReviewGuidance.MATERIAL_CONCERNS.value,
                 "review_summary": (result.review_summary or "No review summary recorded."),
                 "verified": tuple(dict(item.items()) for item in result.verified),
             }
@@ -5013,6 +5015,12 @@ def validate_semantic_judgment(
         advisory_summary,
         room=MAX_ADVISORIES_PER_CHECK - len(advisory_rows),
         prior=prior_advisories,
+        # #1211 counter-example notes and this review's findings already carry an identity: a
+        # tracked candidate about the same concern is not raised twice.
+        same_review=(
+            *(refs for _challenge, refs in advisory),
+            *(tuple(map(str, candidate.subject_refs)) for candidate in candidates),
+        ),
     )
     return _judgment_review(
         tuple(candidates),
@@ -5086,6 +5094,10 @@ _TRACKED_ADVICE_FOLDED_NOTE: Final = (
     "FinishUP note: {count} reviewer item(s) repeat tracked advice with no newer material and "
     "were not raised again: {ids}."
 )
+_TRACKED_ADVICE_SAME_REVIEW_NOTE: Final = (
+    "FinishUP note: {count} reviewer item(s) repeat a correctness note or finding of this review "
+    "and were not raised twice."
+)
 _TRACKED_ADVICE_NO_ROOM_NOTE: Final = (
     "FinishUP note: {count} reviewer item(s) had no room for an advisory identity on this check "
     "(at most ten); they remain in this review's verified rows or summary only."
@@ -5110,6 +5122,7 @@ def _with_tracked_advice(
     *,
     room: int,
     prior: tuple[CorrectnessAdvisory, ...],
+    same_review: tuple[tuple[str, ...], ...] = (),
 ) -> tuple[tuple[JsonObject, ...], str]:
     """Tracked advice rows (#1162) for a fenced judgment, and the summary with their notes.
 
@@ -5135,6 +5148,8 @@ def _with_tracked_advice(
     folded: list[str] = []
     folded_items = 0
     overflow = 0
+    repeated_here = 0
+    review_concerns = tuple(concern_key(case.projection, refs) for refs in same_review)
     for origin, text, cited in candidates:
         resolution = _resolve_cited_refs(case, deterministic, cited)
         if resolution is None:
@@ -5147,6 +5162,11 @@ def _with_tracked_advice(
             continue
         family = TRACKED_ADVICE_FAMILIES[origin]
         wanted = concern_key(case.projection, subjects)
+        if any(same_concern(wanted, concern) for concern in review_concerns):
+            # A correctness note (with its #1211 counter-example) or a finding of this same
+            # review already names the concern with an identity.
+            repeated_here += 1
+            continue
         earlier = next(
             (
                 row
@@ -5191,6 +5211,8 @@ def _with_tracked_advice(
     notes: list[str] = []
     if folded:
         notes.append(_TRACKED_ADVICE_FOLDED_NOTE.format(count=folded_items, ids=", ".join(folded)))
+    if repeated_here:
+        notes.append(_TRACKED_ADVICE_SAME_REVIEW_NOTE.format(count=repeated_here))
     if overflow:
         notes.append(_TRACKED_ADVICE_NO_ROOM_NOTE.format(count=overflow))
     if notes:

@@ -44,6 +44,7 @@ from finishup.domain.coordination import (
     WorkState,
 )
 from finishup.domain.correctness_advisories import ADVISORY_ID_PATTERN
+from finishup.domain.review_guidance import ReviewGuidance
 from finishup.legacy_names import LAUNCHER_NAMES
 from finishup.protocol.canonical import JsonValue, parse_canonical_integer_string
 from finishup.protocol.coverage import (
@@ -4695,6 +4696,7 @@ class CheckSuccessModel(_ClosedModel):
             "reviewer",
             "semantic_conclusion",
             "review_summary",
+            "review_guidance",
             "verified",
             "totals",
         }
@@ -4723,6 +4725,8 @@ class CheckSuccessModel(_ClosedModel):
     # structured result. A new bulky field goes after ``missing_for_assessment``.
     agent_next: AgentNextTextWire | None = None
     overall_next: CheckOverallNextModel | None = None
+    # Fixed FinishUP wording, never reviewer prose; keep it ahead of bulky review fields.
+    review_guidance: Annotated[ReviewGuidance, Field(strict=False)] | None = None
     missing_for_assessment: tuple[CheckMissingItemModel, ...] = ()
     # #1162 tracked advice: the advisory rows this check recorded, each with its identity. Early
     # so the head-and-tail Codex view keeps the identities beside the continuation.
@@ -8041,6 +8045,7 @@ _CHECK_STRUCTURAL_POINTERS: Final = (
         # W6 (ADR-043 amendment): service-composed from closed sentences and admitted ids, like
         # ``/continuation/instruction``; never reviewer prose, task text, paths or commands.
         "/agent_next",
+        "/review_guidance",
         "/overall_next/action",
         "/overall_next/acknowledged_incomplete_endpoint",
         "/overall_next/predicted_conclusion",
@@ -9408,7 +9413,7 @@ def _build_result_leaf_rules() -> tuple[_ResultLeafRule, ...]:
         ):
             raise RuntimeError("invalid_result_leaf_classification")
     if (
-        len(result) != 2005
+        len(result) != 2006
     ):  # ... #1017 +3, #1027 +5, tb4n3 LO +9, W2-A +46, LF +34 (fact_lineage), W2-B +2,
         # tb4n4 #1044 +7 (closure_readiness.undeclared_references), #1048 +38 (inspection),
         # #1047 +2 (follow_up_round), tb4n5 +3 (publish action_notices),
@@ -9423,6 +9428,7 @@ def _build_result_leaf_rules() -> tuple[_ResultLeafRule, ...]:
         # #1144/#1149 +3 receipt (disproved ids and stopped status/reason),
         # #1162 +95 (advisory history, readiness summary, receipt counts; +1 provenance container)
         # #1205 +64 (evidence links and separately categorized prose), #1194 +2 witness freshness,
+        # #1207 +1 fixed review guidance,
         # #1162 tracked advice +13 (check advisory rows; readiness counts on check and status).
         raise RuntimeError("incomplete_result_leaf_registry")
     return result

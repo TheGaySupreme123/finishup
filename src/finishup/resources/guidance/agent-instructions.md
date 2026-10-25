@@ -4,12 +4,12 @@ Use FinishUP for material multi-step, delegated, resumable, or verification-heav
 
 # Role
 
-You record work and evidence honestly; read current guidance, not memory.
+You record work and evidence honestly.
 FinishUP is not an enforcement system; a check is not correctness. This card is enough for ordinary work.
 
 # Goal
 
-Deliver each requested output at its path, best effort; disclose suspect inputs.
+Deliver each requested output at its path, working; disclose suspect inputs.
 Conditional files are `change` items.
 
 # Procedure
@@ -25,44 +25,46 @@ Conditional files are `change` items.
 
 3. Publish actual results; pair each action with `result_recorded`; a prior `status` read or
    `dry_run` is optional: send each returned frontier as the next `expected_frontier` (first plan: `start`'s).
+   Failing or weak test (cannot fail for the bug, or mirrors the code under test): fix it;
+   if you cannot, disclose it by name (`limitation_refs`).
 4. `check` after the plan and each milestone that changes behavior, outputs or acceptance evidence.
    Tasks may start local; `review.md`: when to turn on AI-powered review.
    Select `semantic_required` when the user, effective policy, or named acceptance criterion
    requires independent review.
 5. Publish claim/evidence before the final check; answer findings, check, and inspect resolved
    state; an unchanged recheck returns it. Recheck only after repair/material record.
-   A finding is evidence, not an order. For a concern, follow [the finding procedure](review.md).
+   A finding is evidence, not an order.
    Answer each open AI-powered finding with `respond` and a reason (optional for `decision_needed`).
-   Readable current-check answers and lifecycle records need no recheck.
+   Advice is non-blocking: per material concern, run a proportionate check, cite settling
+   evidence or decline with a reason (response optional).
 6. Use `final_review: true` when readiness requires closing review. At `ready_with_limitations`,
-   request the receipt without another check. Then publish `{"schema":{"name":"work_closed","version":"1.0.0"},"payload":{}}` if complete; a receipt never
+   request the receipt without another check. Then `work_closed` if complete; a receipt never
    closes work. `lineage_work_transition`: the task already ended; report it.
 
 # Done
 
-Deliverables/checks are complete, or no authorized action is left for unmet criteria.
+Current results pass, or no authorized action is left; name each failed, weak or unrun check
+and unmet criterion.
 Lead with receipt scope and limits, never "clean" or "verified".
 
 # Evidence
 
 Cite IDs you published; find native captures with `view=evidence` filter
 `strength=immutable_snapshot`, reusing only IDs a structural link ties to the claim.
-Omitted descriptions are a privacy setting, not missing evidence. State tested values/revision
-and untested criteria; resolved obligations are not acceptance.
+Omitted descriptions are a privacy setting, not missing evidence.
 What is left and why: `check` `mode: inspect` (records nothing).
 
 # Clues
 
-For `insufficient_packet`: If `missing_for_assessment` names an `agent_suppliable`
+`insufficient_packet`: If `missing_for_assessment` names an `agent_suppliable`
 item you can supply, publish exactly that item once, linked to any named target, then `check`
 again. If it is already supplied, or it is a packet, type or authority limit, go to the receipt
 and state that specific limit. Only new material counts; tie it to any named target. Observed test,
-build, lint, or typecheck output reaches the reviewer only when a repository excerpt would be sent.
-Never republish retained files/output for review: it makes up to 3 permitted reads.
+build, lint, or typecheck output reaches the reviewer only when a repository excerpt would be sent. Never republish retained files/output for review.
 
 ## Read more
 
-Focused topics by trigger: failure `recovery.md`; batch `publication.md`; finding, deadline,
+By trigger: failure `recovery.md`; batch `publication.md`; finding, deadline,
 `delivery_page` or `not_in_frozen_case` `review.md`; closing `receipt.md`; resume/plan `startup.md`;
 setup `consent.md`; clipped page `page-delivery.md`.
 On demand: resume/recovery/delegation/capacity `finishup://guidance/workflow.md`; field rules
@@ -83,8 +85,8 @@ Only if that result is also empty, use installed `references/<name>.md`.
 Never publish hidden reasoning or chain-of-thought, full prompts, transcripts, conversation history,
 credentials, secrets, whole files/repositories, or unrelated source.
 Never move, split, shrink, delete, `git add -N` or git-ignore
-(incl. `.git/info/exclude`) a deliverable for review: FinishUP redacts; verify what it cannot show.
-On `retryable: false`, follow only the typed `continuation`; recover unknown writes by their request
+(`.git/info/exclude`) a deliverable for review: FinishUP redacts; verify what it cannot show.
+On `retryable: false`, follow only the typed `continuation`; recover an unknown write by request
 id. If unavailable, claim no record/receipt; pending approval is not completion.
 
 # Multi-agent work

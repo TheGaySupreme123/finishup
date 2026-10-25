@@ -234,3 +234,32 @@ def test_the_durable_response_keeps_the_strongest_check_and_old_bytes() -> None:
     )
     encoded = _judgment_to_response_json(tracked)
     assert _judgment_from_response_json(encoded) == tracked
+
+
+def test_a_strongest_check_repeating_this_reviews_note_is_not_raised_twice() -> None:
+    """#1211 counter-example notes and tracked advice coexist without duplicate rows."""
+
+    from finishup.domain.findings import FindingKind
+    from finishup.ports.semantic import ReviewerChallenge
+
+    case, _event = _case()
+    note = ReviewerChallenge(
+        FindingKind.CODE_DEFECT,
+        "Long seeds overflow the key schedule",
+        (str(_OBLIGATION),),
+        "The schedule truncates seeds past 16 characters.",
+        "Seeds may never exceed 16 characters.",
+        "Counter-example: decrypt with a 32-character seed.",
+        "act",
+        "No long-seed run is in the packet.",
+    )
+    judgment = SemanticJudgment(
+        "challenges_returned",
+        (note,),
+        strongest_remaining_check=RemainingCheck(
+            "Decrypt with a 32-character seed.", (str(_OBLIGATION),)
+        ),
+    )
+    review = _review(case, judgment, phase="routine")
+    assert [row.get("origin") for row in review.correctness_advisories] == [None]
+    assert "repeat a correctness note or finding of this review" in review.review_summary
