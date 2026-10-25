@@ -4301,6 +4301,9 @@ def _check_result_v1_6_schema(entry: _RegistryEntry) -> dict[str, JsonValue]:
     cast(dict[str, JsonValue], success["properties"])["correctness_advisories"] = (
         _check_correctness_advisories_schema()
     )
+    cast(dict[str, JsonValue], success["properties"])["agent_status_line"] = dict(
+        _AGENT_STATUS_LINE
+    )
     document["$id"] = SCHEMA_NAMESPACE + entry.relative_path
     document["title"] = f"FinishUP check result {entry.schema_version}"
     return document
@@ -4368,6 +4371,22 @@ def _admit_stopped_review(document: dict[str, JsonValue]) -> None:
 # W6 (ADR-043 amendment): the service-composed lead of a check result, one printable ASCII line.
 _AGENT_NEXT_TEXT: Final[Mapping[str, JsonValue]] = MappingProxyType(
     {"maxLength": 2048, "minLength": 1, "pattern": "^[ -~]+$", "type": "string"}
+)
+
+
+# #1139: the counted decision-point ledger line (``domain.decision_status``), fixed words, counts
+# and service-minted obligation ids only. Additive and optional on the unreleased check-result
+# 1.6.0 and status-result 1.4.0 (in place), so 1.7.0 and 1.5.0 inherit it.
+_AGENT_STATUS_LINE: Final[Mapping[str, JsonValue]] = MappingProxyType(
+    {
+        "maxLength": 2048,
+        "minLength": 1,
+        "pattern": (
+            r"^Ledger \(records, not correctness\): [a-z0-9_ ,;:()+-]{1,1900}"
+            r"per-obligation detail: status view=obligations\.$"
+        ),
+        "type": "string",
+    }
 )
 
 
@@ -5932,6 +5951,9 @@ def _status_result_v1_4_schema(entry: _RegistryEntry) -> dict[str, JsonValue]:
     _add_status_requested_item_role(definitions)
     _add_status_operation_server_filled(definitions)
     _add_status_check_outcome(definitions)
+    cast(dict[str, JsonValue], cast(dict[str, JsonValue], definitions["success"])["properties"])[
+        "agent_status_line"
+    ] = dict(_AGENT_STATUS_LINE)
     _add_status_brief_success(document)
     document["$id"] = SCHEMA_NAMESPACE + entry.relative_path
     _admit_recorded_policy_identities(document)

@@ -341,3 +341,42 @@ fragment size when that overhead needs more room, measuring every atom against t
 envelope. Mapping traversal is canonical, so reloads with different insertion order keep the
 same partition. The authenticated cursor index stays outside compression to make its maximum
 serialized length exact.
+
+### Decision-point ledger line (issue #1139, 2026-10-25)
+
+The owner acknowledged this scoped follow-up on #1139 (completion-integrity plan, PR-B). At the
+decision point an agent could not see in one place what the ledger records as done and not done:
+Codex reads only the structured JSON, Cursor reads it with sorted keys, and Claude Code's text led
+with reviewer prose; `closure_readiness` followed every reviewer field, paging placed it after the
+review summary, `totals` sat in the pages the continuation called optional provenance, and
+`closure_readiness.evidence_basis_summary` was one fixed pointer sentence.
+
+- `evidence_basis_summary` is now a counted line composed by `kernel.evidence_basis.
+  decision_status_line` from existing projections: the current plan's obligations by status, each
+  one's newest linked result by outcome and freshness (the same `build_evidence_view` that
+  `status view=obligations` shows), requested items with no recorded attempt, the current check's
+  reviewer assessments that were `not_supported` or `not_assessable`, unanswered advice
+  (`correctness_advisory_counts.no_recorded_response`) and open `fix_or_decline` items. It begins
+  `Ledger (records, not correctness): `, omits zero-count parts, names at most two obligation ids
+  per part (`+N more` for the rest) and ends `per-obligation detail: status view=obligations.`
+  Fixed lower-case words, counts and service-minted `obl_` ids only; it never says verified and
+  states no correctness.
+- Check and status successes (full and brief bodies) carry the same line as the optional
+  top-level `agent_status_line` (check-result 1.6.0/1.7.0, status-result 1.4.0/1.5.0, additive on
+  unreleased versions). Its wire pattern admits only that grammar, and every reader re-gates it
+  (`domain.decision_status.safe_status_line`). It follows `agent_next` on the check wire and
+  `view` on the status wire, so it stays in Codex's head window, and its name sorts immediately
+  after `agent_next` (first on status) in Cursor's sorted copy.
+- The MCP text channel (Claude Code, generic hosts) leads with the line, ahead of reviewer
+  guidance and prose; above the budget the text falls back to the sorted canonical copy, where it
+  is still among the first keys. The CLI puts it right after the verdict and review lines of a
+  check and right under the closure directive of status and the TUI closure view. A Stop
+  continuation that already fires appends it when it fits, else the earlier fixed pointer.
+- Paging: `agent_status_line`, `closure_readiness`, `closure_state` and `totals` are action
+  fields, ahead of `correctness_advisories` and `review_summary`. `required_next_step` no longer
+  calls later pages optional; it says they hold provenance.
+- Current receipts (JSON, markdown, text) carry a short form in the evidence section: the ledger
+  counts only, since reviewer and advice counts have their own sections.
+
+Limits: the line counts records. A linked success can still come from a weak test; the reviewer and
+the receipt keep their own wording, and the line adds no Stop condition, event or storage.

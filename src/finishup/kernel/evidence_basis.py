@@ -4,9 +4,10 @@ from __future__ import annotations
 
 from collections import Counter
 from collections.abc import Iterable, Sequence
-from typing import cast
+from typing import Final, cast
 
 from finishup.domain.bounded_text import clip_to_limit
+from finishup.domain.decision_status import compose_status_line, named
 from finishup.domain.events import (
     ActionRecordedPayload,
     CheckRecordedPayload,
@@ -22,8 +23,10 @@ from finishup.domain.events import (
 from finishup.domain.values import JsonObject, ObligationId, ResultId
 from finishup.kernel.check_standing import check_standing
 from finishup.kernel.claims import effective_claim_items
+from finishup.kernel.command_attempts import attempted_items_for_obligation
 from finishup.kernel.correctness_advisories import correctness_advisory_index
 from finishup.kernel.observed_failures import is_observed_run_record
+from finishup.kernel.plan_scope import current_plan_scope
 from finishup.kernel.projections import ProjectionState
 from finishup.kernel.verification_freshness import (
     VerificationFreshness,
@@ -105,12 +108,15 @@ def build_evidence_view(
     unavailable_event_ids: frozenset[str] = frozenset(),
     freshness: tuple[VerificationFreshness, ...] | None = None,
     tracked_runs: tuple[ResultId, ...] | None = None,
+    resolution: bool = True,
 ) -> FrozenEvidenceViewModel:
     """Index explicit readable relations once, then bound display independently of closure.
 
     General task events, unscoped claims, prose similarity and nearby runs confer no scope.
     Many-to-many links keep all their declared obligations. The observation predicate is the
     existing verification-link evaluator; it certifies recorded observation, never adequacy.
+    ``resolution=False`` skips the per-finding resolution evaluators (their rows stay empty) for
+    a reader that needs only the run and assessment links, such as the decision line (#1139).
     """
     prefix = tuple(row for row in records if row.ledger.ingestion_sequence <= state.frontier)
     redacted_events, redacted_objects = redaction_targets(prefix)
@@ -348,7 +354,8 @@ def build_evidence_view(
     resolution_counts: Counter[ObligationId] = Counter()
     selected_obligations = frozenset(selected)
     for key, row in sorted(
-        state.findings.items(), key=lambda item: (-item[1].source_frontier, str(item[0]))
+        state.findings.items() if resolution else (),
+        key=lambda item: (-item[1].source_frontier, str(item[0])),
     ):
         if row.payload is None or row.redacted or row.source_frontier > state.frontier:
             continue
@@ -502,11 +509,136 @@ def build_evidence_view(
         omitted += 1
 
 
-def evidence_basis_summary(state: ProjectionState) -> str:
+# Each linked obligation's newest linked result, in display order (#1139).
+_RUN_PARTS: Final = (
+    ("success", "success"),
+    ("failure", "failed or partial"),
+    ("stale", "stale"),
+    ("possibly_stale", "possibly stale"),
+    ("unknown", "unknown outcome"),
+    ("none", "no linked run"),
+    ("unlisted", "not listed here"),
+)
+
+
+def _latest_run(basis: StatusObligationEvidenceModel | None) -> str:
+    if basis is None:
+        return "unlisted"
+    if not basis.results:
+        return "none"
+    latest = basis.results[0]  # The view lists linked results newest first.
+    if latest.outcome in {"failure", "partial"}:
+        return "failure"
+    if latest.freshness == "stale":
+        return "stale"
+    if latest.outcome == "unknown":
+        return "unknown"
+    return "possibly_stale" if latest.freshness == "unknown" else "success"
+
+
+def decision_status_line(
+    state: ProjectionState,
+    records: tuple[LedgerRecord, ...],
+    *,
+    fix_or_decline: int = 0,
+    advice_unanswered: int = 0,
+    reviewer: bool = True,
+    freshness: tuple[VerificationFreshness, ...] | None = None,
+    tracked_runs: tuple[ResultId, ...] | None = None,
+) -> str:
+    """One counted line of what the ledger records at the decision point (#1139).
+
+    Records, not correctness: the obligations in the current plan by status, each one's newest
+    linked result by outcome and freshness (``build_evidence_view``, as ``status
+    view=obligations`` shows it), requested items with no recorded attempt, the current check's
+    reviewer assessments that were not supported or not assessable, unanswered advice and open
+    fix-or-decline items. Zero-count parts are omitted and at most two ids are named per part.
+    Closed words, counts and service-minted ids only. ``reviewer=False`` keeps only the ledger
+    counts (the receipt carries the rest in its own sections).
+    """
+
     if not state.obligations:
         return ""
-    return (
-        "Recorded evidence links: status view=obligations. Claims, observed runs, agent responses, "
-        "AI assessments and resolution are separate facts; a proposal or response proves no repair "
-        "or test adequacy. Missing and capped links are disclosed in that detail."
+    view = build_evidence_view(
+        state, records, freshness=freshness, tracked_runs=tracked_runs, resolution=False
     )
+    bases = evidence_basis_by_obligation(view)
+    scope = current_plan_scope(state.plans, state.coverage_gaps)
+    active = sorted(
+        str(key)
+        for key in (
+            scope.effective_obligation_refs
+            if scope.has_plan and scope.effective_obligation_refs is not None
+            else state.obligations
+        )
+    )
+    statuses: Counter[str] = Counter()
+    runs: dict[str, list[str]] = {key: [] for key, _ in _RUN_PARTS}
+    unattempted_items = 0
+    unattempted: list[str] = []
+    for ref in active:
+        record = state.obligations.get(ObligationId(ref))
+        payload = None if record is None else record.payload
+        if payload is None:
+            statuses["unreadable"] += 1
+            continue
+        statuses[payload.status.value] += 1
+        runs[_latest_run(bases.get(ref))].append(ref)
+        attempted = attempted_items_for_obligation(state, ObligationId(ref))
+        missing = sum(item.value not in attempted for item in payload.requested_items)
+        if missing:
+            unattempted_items += missing
+            unattempted.append(ref)
+    status_text = ", ".join(
+        f"{statuses[key]} {label}"
+        for key, label in (
+            ("resolved", "resolved"),
+            ("open", "open"),
+            ("acknowledged_not_done", "acknowledged not done"),
+            ("unreadable", "unreadable"),
+        )
+        if statuses[key]
+    )
+    run_text = ", ".join(
+        part
+        for key, label in _RUN_PARTS
+        if (part := named(len(runs[key]), label, () if key == "success" else runs[key]))
+    )
+    parts = [
+        f"{len(active)} obligation{'' if len(active) == 1 else 's'}"
+        + (f" ({status_text})" if status_text else ""),
+        f"latest linked run: {run_text}" if run_text else "",
+        named(
+            unattempted_items,
+            "requested item" + ("" if unattempted_items == 1 else "s") + " unattempted",
+            unattempted,
+        ),
+    ]
+    if reviewer:
+        assessed: dict[tuple[str, str, str], str] = {}
+        for row in view.obligations:
+            for assessment in row.basis.assessments:
+                if assessment.applicability == "current":
+                    key = (
+                        str(assessment.check_event_id),
+                        str(assessment.requirement_or_claim),
+                        ",".join(assessment.cited_refs),
+                    )
+                    assessed[key] = assessment.verdict
+        verdicts = Counter(assessed.values())
+        reviewer_text = ", ".join(
+            f"{verdicts[key]} {label}"
+            for key, label in (
+                ("not_supported", "not supported"),
+                ("not_assessable", "not assessable"),
+            )
+            if verdicts[key]
+        )
+        parts.extend(
+            (
+                f"reviewer (current check): {reviewer_text}" if reviewer_text else "",
+                f"advice unanswered: {advice_unanswered}" if advice_unanswered > 0 else "",
+                f"fix-or-decline: {fix_or_decline}" if fix_or_decline > 0 else "",
+            )
+        )
+    return compose_status_line(parts)

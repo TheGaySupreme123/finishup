@@ -43,8 +43,8 @@ _STATUS_LIVE_FIELDS: Final = (
 _REQUIRED_NEXT_STEP: Final = (
     "Until actionable_complete=true, call status view=compact delivery_cursor=next_cursor with "
     "the same session_id/writer_id. Rebuild containers and fragments (path, offsets, digest) "
-    "before acting; then follow agent_next and inventory_read. Later pages are optional "
-    "provenance. AI-powered review is advisory, not proof."
+    "before acting; then follow agent_next and inventory_read. Pages after actionable_complete "
+    "hold provenance. AI-powered review is advisory, not proof."
 )
 _ACTION_KEYS: Final = (
     "finding_id",
@@ -254,8 +254,14 @@ def _delivery_groups(
         "semantic_status",
         "semantic_reason",
         "agent_next",
+        # #1139: the counted ledger line, readiness and totals are what the agent decides on, so
+        # they precede reviewer prose and stay on the first page.
+        "agent_status_line",
         "overall_next",
         "review_guidance",
+        "closure_readiness",
+        "closure_state",
+        "totals",
         # #1162 tracked advice: the advisory identities respond answers are actionable.
         "correctness_advisories",
         "review_summary",
@@ -263,8 +269,6 @@ def _delivery_groups(
         "human_text",
         "coverage",
         "gaps",
-        "closure_readiness",
-        "closure_state",
         "finding_checklist",
         "suppressed_count",
         "suppressed_finding_count",

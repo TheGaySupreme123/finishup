@@ -10326,6 +10326,27 @@ async def test_tracked_reviewer_advice_is_answered_once_and_not_raised_again(
         "withheld_may_answer": "0",
     }
     assert advisory_id in readiness["correctness_advisory_summary"]
+    # #1139: the counted ledger line, early on the result and the same as readiness's copy.
+    line = cast(str, wire["agent_status_line"])
+    assert line == readiness["evidence_basis_summary"]
+    assert line.startswith("Ledger (records, not correctness): ")
+    assert "advice unanswered: 1" in line and "Rotated" not in line
+    for view, detail in (("compact", "brief"), ("findings", "brief"), ("compact", "full")):
+        status = await app.status(
+            StatusRequest.model_validate(
+                {
+                    **_request_base(protocol_id("req_", seed + 10 + len(view) + len(detail))),
+                    "session_id": started.session_id,
+                    "writer_id": started.writer_id,
+                    "view": view,
+                    "detail": detail,
+                    "at_frontier": str(checked.result_frontier.sequence),
+                }
+            )
+        )
+        body = status.as_json()
+        assert body["agent_status_line"] == line
+        assert list(body).index("agent_status_line") < list(body).index("page")
 
     async def receipt_text(
         request_seed: int, frontier: Frontier | FrontierModel
@@ -10392,6 +10413,7 @@ async def test_tracked_reviewer_advice_is_answered_once_and_not_raised_again(
     later_readiness = cast(Mapping[str, Any], later.closure_readiness)
     assert later_readiness["correctness_advisory_counts"]["no_recorded_response"] == "0"
     assert "correctness_advisory_summary" not in later_readiness
+    assert "advice unanswered" not in later_readiness["evidence_basis_summary"]
     # New concern material (a result linked to the obligation, recorded after the answer) that
     # the next review cites makes the repeat new advice with its own identity.
     published = await app.publish_work(

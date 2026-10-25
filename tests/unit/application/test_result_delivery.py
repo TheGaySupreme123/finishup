@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import copy
+import json
 from typing import Any, Literal, cast
 
 import pytest
@@ -1394,3 +1395,56 @@ async def test_brief_status_pages_survive_an_append_between_reads(view: str) -> 
         } | {"request_id": rebuilt["request_id"]}
     finally:
         await daemon.close()
+
+
+_LEDGER_LINE = (
+    "Ledger (records, not correctness): 7 obligations (5 resolved, 2 open); latest linked run: "
+    "5 success, 1 failed or partial (obl_00000000-0000-4000-8000-000000000c04), 1 stale "
+    "(obl_00000000-0000-4000-8000-000000000c02); 1 requested item unattempted "
+    "(obl_00000000-0000-4000-8000-000000000c02); reviewer (current check): 1 not supported, "
+    "2 not assessable; advice unanswered: 2; fix-or-decline: 2; per-obligation detail: status "
+    "view=obligations."
+)
+
+
+@pytest.mark.parametrize("host", ["codex", "claude", "cursor", "generic"])
+def test_ledger_line_readiness_and_totals_lead_the_first_page(host: McpHostProfile) -> None:
+    """#1139: what the agent decides on precedes reviewer prose and stays on page one."""
+
+    source = _source()
+    source["agent_status_line"] = _LEDGER_LINE
+    source["closure_readiness"] = {
+        "state": "action_required",
+        "evidence_basis_summary": _LEDGER_LINE,
+        "fact_lineage": [{"code": f"gap_{n}", "rule": "deliverable_read"} for n in range(40)],
+    }
+    source["totals"] = {"obligations": {"declared": "7", "resolved": "5", "open": "2"}}
+    source["correctness_advisories"] = [
+        {
+            "advisory_id": "evt_00000000-0000-4000-8000-000000000042:1",
+            "origin": "strongest_remaining_check",
+            "subject_refs": ["obl_00000000-0000-4000-8000-000000000c04"],
+            "summary": "Run the discriminating probe. " * 30,
+        }
+    ]
+    source["review_summary"] = "Reviewer prose. " * 400
+    pages = _pages(source)
+    assert len(pages) > 1
+    first = pages[0]
+    paths = [str(item["path"]) for item in first["items"]]
+
+    def at(prefix: str) -> int:
+        return next(index for index, path in enumerate(paths) if path.startswith(prefix))
+
+    assert at("/agent_next") < at("/agent_status_line") < at("/closure_readiness")
+    assert at("/closure_readiness") < at("/totals") < at("/correctness_advisories")
+    assert "/review_summary" not in paths or at("/totals") < at("/review_summary")
+    assert "optional" not in first["required_next_step"]
+    result = result_from_public_model(CheckResultModel.model_validate(first), host_profile=host)
+    structured = cast(dict[str, Any], result.structuredContent)
+    text = "".join(cast(Any, block).text for block in result.content)
+    codex = json.dumps(structured, separators=(",", ":"), ensure_ascii=False)
+    # Within Codex's 6,000-byte head (the page itself fits its 12,000-byte window) and the text.
+    assert json.dumps(_LEDGER_LINE) in (_CODEX_HEADER + codex)[:6_000]
+    assert _LEDGER_LINE in text
+    assert reassemble_delivery(pages)["agent_status_line"] == _LEDGER_LINE

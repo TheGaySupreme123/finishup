@@ -4147,6 +4147,16 @@ keep the full local view. Restart expires cursors; recover through current statu
 starting a new review. A revoked route, changed sink/content, or expired retained source also
 requires current status.
 
+
+**Decision-point ledger line (#1139, 2026-10-25). Host decision: supported.** Codex reads only
+`structuredContent`. Check and status successes carry `agent_status_line` (the counted
+`Ledger (records, not correctness): ...` line, ADR-043 amendment) right after `agent_next` on a
+check and right after `view` on status, so it stays in the 6,000-byte head of an unpaged result;
+on a paged result it, `closure_readiness`, `closure_state` and `totals` are first-page action
+fields ahead of reviewer prose
+(`tests/unit/application/test_result_delivery.py::test_ledger_line_readiness_and_totals_lead_the_first_page`).
+Not re-dogfooded natively; offline emulation only.
+
 ### Verification freshness decisions (#1143)
 
 All hosts use ADR-042's per-verification input rule. A trusted workspace comparison retains

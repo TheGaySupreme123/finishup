@@ -46,6 +46,7 @@ from finishup.config.models import ConfigError, LoggingConfig
 from finishup.config.paths import PathSafetyError, isolated_root_variable
 from finishup.domain.check_totals import render_check_totals
 from finishup.domain.closure import PREPARATION_REMEDIATIONS, prepare_closure
+from finishup.domain.decision_status import safe_status_line
 from finishup.domain.result_delivery import HOST_RESULT_BUDGET_BYTES, mcp_delivery_bytes
 from finishup.domain.review_input_render import render_review_input_manifest_compact
 from finishup.mcp.descriptors import (
@@ -1113,7 +1114,18 @@ def _result_text(
         action_notices = _guarded_text(
             "action_notices", lambda: render_publish_action_notices(wire), failures
         )
-        parts = (reviewer, compact, totals, manifest, blocker_notices, action_notices)
+        # #1139: the counted ledger line leads, ahead of reviewer prose (re-gated: fixed words,
+        # counts and service-minted ids only).
+        status_line = safe_status_line(wire.get("agent_status_line"))
+        parts = (
+            status_line,
+            reviewer,
+            compact,
+            totals,
+            manifest,
+            blocker_notices,
+            action_notices,
+        )
     note = (
         _record_summary_degradation(failures, request_id=request_id, operation=operation)
         if failures

@@ -3009,6 +3009,13 @@ keep the full local view. Restart expires cursors; recover through current statu
 starting a new review. A revoked route, changed sink/content, or expired retained source also
 requires current status.
 
+
+**Decision-point ledger line (#1139, 2026-10-25). Host decision: supported.** The text channel
+leads with the counted `Ledger (records, not correctness): ...` line (`agent_status_line`), ahead of
+the reviewer guidance and prose; above the 12,000-byte budget the text is the sorted canonical copy,
+where the field is still among the first keys. A Stop continuation that already fires appends the
+same line when it fits. Not re-dogfooded natively; offline emulation only.
+
 ### Verification freshness decisions (#1143)
 
 All hosts use ADR-042's per-verification input rule. A trusted workspace comparison retains

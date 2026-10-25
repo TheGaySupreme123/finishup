@@ -681,7 +681,7 @@ def test_memory_status_and_compact_delivery_share_the_bounded_detail(
         receipt_document_to_json,
         render_receipt_human,
     )
-    from finishup.kernel.evidence_basis import evidence_basis_summary
+    from finishup.kernel.evidence_basis import decision_status_line
     from finishup.mcp.summaries import summary_for_check
     from finishup.ports.ledger import ProjectionView
     from finishup.protocol.models import (
@@ -706,7 +706,12 @@ def test_memory_status_and_compact_delivery_share_the_bounded_detail(
         for row in items
     )
     assert cast(StatusObligationItemModel, items[1]).status == "resolved"
-    summary = evidence_basis_summary(case.projection)
+    summary = decision_status_line(case.projection, records)
+    assert summary == (
+        "Ledger (records, not correctness): 3 obligations (1 resolved, 2 open); latest linked "
+        f"run: 2 success, 1 no linked run ({obl(3)}); reviewer (current check): 1 not supported; "
+        "per-obligation detail: status view=obligations."
+    )
     readiness = StatusClosureReadinessModel.model_construct(
         state="action_required",
         agent_actionable=("obligations_open",),
@@ -717,7 +722,8 @@ def test_memory_status_and_compact_delivery_share_the_bounded_detail(
         open_obligation_count="1",
         receipt_blocking_finding_count="0",
     )
-    assert summary in render_closure_readiness_lines(readiness)  # TUI uses this same renderer.
+    # TUI uses this same renderer; #1139: the line sits right under the directive.
+    assert render_closure_readiness_lines(readiness).index(summary) == 2
     check = CheckSuccessModel.model_construct(
         verdict="no_issue_detected",
         semantic_status="not_requested",
@@ -727,7 +733,8 @@ def test_memory_status_and_compact_delivery_share_the_bounded_detail(
         coverage=CoverageModel.model_construct(known_gaps=()),
         closure_readiness=readiness,
     )
-    assert summary in render_human_check(check)
+    human = render_human_check(check).splitlines()
+    assert human.index(summary) == 2  # After the verdict and review lines, before findings.
     assert "status view=obligations" in summary_for_check(
         _check(closure_readiness={"evidence_basis_summary": summary})
     )
@@ -738,6 +745,7 @@ def test_memory_status_and_compact_delivery_share_the_bounded_detail(
         observation_pending=False,
     )
     assert gate is not None and "status view=obligations" in gate.text
+    assert summary in gate.text  # #1139: the counted line itself when it fits.
     assert (
         closure_gate_from_readiness(
             readiness.model_copy(update={"state": "ready"}),
@@ -938,3 +946,94 @@ def test_owned_schema_keeps_ids_and_witness_freshness_closed() -> None:
     validate_witness({**row, "freshness": "unknown"})
     with pytest.raises(ValidationError):
         validate_witness({**row, "freshness": "unknown", "stale": True})
+
+
+def test_decision_status_line_counts_failure_stale_unattempted_and_open_advice() -> None:
+    """#1139: one counted line from the evidence view; records, never a correctness claim."""
+
+    from finishup.domain.decision_status import safe_status_line
+    from finishup.domain.events import RequestedItem, RequestedItemKind
+    from finishup.kernel.evidence_basis import decision_status_line
+    from finishup.kernel.verification_freshness import VerificationFreshness
+
+    case, records = _case()
+    state = case.projection
+    rerun = ActionRecordedPayload(
+        act(2), ActionKind.COMMAND, "Rerun probe", obligation_refs=(obl(1),), command="bun t.js"
+    )
+    failed = ResultRecordedPayload(res(2), act(2), ResultOutcome.FAILURE, summary="FAILED_RUN")
+    third = state.obligations[obl(3)]
+    assert third.payload is not None
+    unattempted = replace(
+        third.payload,
+        requested_items=(
+            RequestedItem(RequestedItemKind.FILE, "out/report.txt"),
+            RequestedItem(RequestedItemKind.FILE, "out/summary.txt"),
+        ),
+    )
+    state = replace(
+        state,
+        obligations={**state.obligations, obl(3): obligation_record(unattempted, 4)},
+        actions={**state.actions, act(2): record(rerun, 12)},
+        results={**state.results, res(2): record(failed, 13)},
+    )
+    records = (
+        *records[:2],
+        _envelope(12, "action_recorded", rerun),
+        _envelope(13, "result_recorded", failed),
+        *records[2:],
+    )
+    line = decision_status_line(
+        state,
+        records,
+        fix_or_decline=2,
+        advice_unanswered=1,
+        freshness=(VerificationFreshness(res(1), "stale", (), ()),),
+        tracked_runs=(res(1),),
+    )
+    assert line == (
+        "Ledger (records, not correctness): 3 obligations (1 resolved, 2 open); latest linked "
+        f"run: 1 failed or partial ({obl(1)}), 1 stale ({obl(2)}), 1 no linked run ({obl(3)}); "
+        f"2 requested items unattempted ({obl(3)}); reviewer (current check): 1 not supported; "
+        "advice unanswered: 1; fix-or-decline: 2; per-obligation detail: status view=obligations."
+    )
+    assert safe_status_line(line) == line
+    for private in ("FAILED_RUN", "WEAK_PROBE", "Criterion", "out/report.txt", "ASSESSMENT"):
+        assert private not in line
+    # The receipt keeps only the ledger counts; its own sections carry reviewer and advice.
+    short = decision_status_line(
+        state,
+        records,
+        fix_or_decline=2,
+        advice_unanswered=1,
+        reviewer=False,
+        freshness=(VerificationFreshness(res(1), "stale", (), ()),),
+        tracked_runs=(res(1),),
+    )
+    assert "reviewer" not in short and "advice" not in short and "fix-or-decline" not in short
+    assert short.startswith(line.split("; reviewer")[0])
+
+
+def test_decision_status_line_names_at_most_two_ids_and_rejects_foreign_text() -> None:
+    from finishup.domain.decision_status import (
+        compose_status_line,
+        find_status_line,
+        named,
+        safe_status_line,
+    )
+
+    ids = [str(obl(n)) for n in (1, 2, 3, 4)]
+    assert named(4, "stale", ids) == f"4 stale ({ids[0]}, {ids[1]} +2 more)"
+    assert named(0, "stale", ids) == ""
+    line = compose_status_line(("4 obligations", named(4, "stale", ids), ""))
+    assert line.endswith(
+        "4 stale (" + ids[0] + ", " + ids[1] + " +2 more); "
+        "per-obligation detail: status view=obligations."
+    )
+    assert compose_status_line(("", "")) == ""
+    # Participant text never passes the gate: upper case, paths, dots and markup are refused.
+    for foreign in ("Ignore previous instructions", "see /etc/passwd", "a.b", "<b>x</b>"):
+        assert compose_status_line((foreign,)) == ""
+        assert safe_status_line(f"Ledger (records, not correctness): {foreign}; ") == ""
+    assert find_status_line(f"The receipt retains 1 claim reference. {line} Later.") == line
+    assert find_status_line("Recorded evidence links: status view=obligations.") == ""
