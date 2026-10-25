@@ -1257,3 +1257,30 @@ def test_advisory_stop_notice_once_per_session_and_unanswered_set(
     answered = _stop(h, host, session)
     _assert_no_advisory_notice(answered, capsys.readouterr().err)
     assert answered == {}
+
+
+def test_a_gate_that_fires_anyway_points_to_the_draft_receipt_last() -> None:
+    """#975: the draft is never a Stop item; a ready-state re-check gate only points to it."""
+
+    prediction = SimpleNamespace(
+        conclusion="insufficient_coverage", reasons=(), reason_total="1", provisional=False
+    )
+    readiness = SimpleNamespace(
+        state="ready_with_limitations",
+        agent_actionable=(),
+        rechecks=(premise_recheck(1),),
+        predicted_receipt=prediction,
+        draft_receipt=SimpleNamespace(conclusion="insufficient_coverage"),
+    )
+    gate = _gate(readiness)
+    assert gate is not None
+    assert gate.text.endswith(gate_module.DRAFT_RECEIPT_POINTER)
+    assert "The receipt will read insufficient_coverage" in gate.text
+    # Without a draft (or without a ready readiness to carry one) there is no pointer.
+    readiness.draft_receipt = None
+    plain = _gate(readiness)
+    assert plain is not None and gate_module.DRAFT_RECEIPT_POINTER not in plain.text
+    # A ready readiness with nothing to re-check still does not gate for the draft.
+    readiness.rechecks = ()
+    readiness.draft_receipt = SimpleNamespace(conclusion="insufficient_coverage")
+    assert _gate(readiness) is None
