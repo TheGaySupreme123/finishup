@@ -31,10 +31,12 @@ _DIGEST: Final = "sha256:" + "e" * 64
 _TOKENS: Final = gate._GATE_TOKENS  # pyright: ignore[reportPrivateUsage]
 
 
-def test_the_pragma_is_the_bridge_check_deadline_and_the_startup_example() -> None:
+def test_the_pragma_waits_past_the_bridge_check_deadline_and_is_the_startup_example() -> None:
     deadlines = bridge._DEFAULT_RPC_DEADLINES_MS  # pyright: ignore[reportPrivateUsage]
-    assert CODEX_CHECK_YIELD_TIME_MS == deadlines["check"]
-    assert CODEX_CHECK_CELL_PRAGMA == f'// @exec: {{"yield_time_ms": {deadlines["check"]}}}'
+    host_limit = bridge._HOST_TOOL_CALL_LIMIT_MS  # pyright: ignore[reportPrivateUsage]
+    # #1226: the cell outwaits the bridge's typed check timeout, and never the host's own limit.
+    assert deadlines["check"] < CODEX_CHECK_YIELD_TIME_MS == host_limit
+    assert CODEX_CHECK_CELL_PRAGMA == f'// @exec: {{"yield_time_ms": {CODEX_CHECK_YIELD_TIME_MS}}}'
     startup = (_REPO_ROOT / "guidance" / "startup.md").read_text(encoding="utf-8")
     assert re.search(rf"^{re.escape(CODEX_CHECK_CELL_PRAGMA)}$", startup, re.MULTILINE)
 

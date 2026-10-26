@@ -90,7 +90,7 @@ b[6]=b[6]&15|64;b[8]=b[8]&63|128;const h=[...b].map(x=>x.toString(16).padStart(2
 ```
 
 Use the bridge deadline for each cell: `start`, `publish_work` and `status` 30000 each; `respond`
-and `receipt` 50000; `check` 300000, or 30000 with `mode: inspect` (a read). Set `yield_time_ms`
+and `receipt` 50000; `check` 280000, or 30000 with `mode: inspect` (a read). Set `yield_time_ms`
 at or above the call deadline; keep builds, tests and other non-FinishUP work in separate cells, not
 a series of short waits.
 

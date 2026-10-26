@@ -3634,11 +3634,12 @@ preview|install`, and `cli/host_connection.apply_selected` for a connect); disco
 their previews and status never consult it. The MCP bridge supplies a
 default **30-second** call deadline for `start`, `publish_work`, and `status`, a default
 **50-second** deadline for `respond` and `receipt` (below the common 60-second host MCP tool
-limit, so the bridge's typed timeout reaches the agent first), and a default **300-second**
-deadline for `check` (a `check` with `mode: inspect` is a read and takes the `status` deadline,
-ADR-047); these use the existing private `deadline_ms` envelope field and do not
+limit, so the bridge's typed timeout reaches the agent first), and a default **280-second**
+deadline for `check`, below Codex's 300-second tool-call limit so the typed timeout and its
+`replay_request_id` reach the agent before the host abandons the call (#1226; a `check` with
+`mode: inspect` is a read and takes the `status` deadline, ADR-047); these use the existing private `deadline_ms` envelope field and do not
 change the public workflow-tool schemas. The bridge environment may override them in integer
-milliseconds, clamped to 1,000-900,000: `FINISHUP_MCP_DEADLINE_MS_<TOOL>` (for example
+milliseconds, clamped to 1,000-285,000 so no override reaches that 300-second limit: `FINISHUP_MCP_DEADLINE_MS_<TOOL>` (for example
 `FINISHUP_MCP_DEADLINE_MS_RECEIPT`) sets one tool, and `FINISHUP_MCP_DEADLINE_MS` sets every tool except
 `check` (an inspection follows `FINISHUP_MCP_DEADLINE_MS_STATUS` and the global variable, never
 `FINISHUP_MCP_DEADLINE_MS_CHECK`); an unparsable value keeps the default. Raising a deadline above the host's own MCP tool
@@ -11865,8 +11866,8 @@ is withheld whole), recorded as a bounded `semantic_composition/check_time_chang
   When the gate fires and readiness `standing_limitations` lists `declared_output_content_moved`, the text
   carries one informational note; that code alone never fires the gate.
   Both decision functions take `code_mode=` (tb4n5 P6, #1079). The required close instruction asks for the `check` with the cell's deadline
-  pragma, `readiness_text.CODEX_CHECK_CELL_PRAGMA` (`// @exec: {"yield_time_ms": 300000}`, the
-  bridge's `check` deadline), only when code mode was positively observed: `code_mode` is true
+  pragma, `readiness_text.CODEX_CHECK_CELL_PRAGMA` (`// @exec: {"yield_time_ms": 300000}`, Codex's
+  tool-call limit, above the bridge's 280-second `check` deadline), only when code mode was positively observed: `code_mode` is true
   (the hook saw a recorded `exec` cell for this session via
   `LocalObservationStore.session_observed_code_mode`) or `check_cause.tool` is `exec`. Otherwise
   the neutral sentence is used, including on Codex (plain `exec_command` /

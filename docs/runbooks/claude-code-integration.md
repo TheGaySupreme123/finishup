@@ -2207,11 +2207,11 @@ write.
 
 The shared MCP bridge allows 50 seconds for `respond` and `receipt` by default, below the
 common 60-second host MCP tool limit; `start`, `publish_work` and `status` keep 30 seconds and
-`check` keeps 300 seconds (a `check` with `mode: inspect` is a read and takes the `status`
-deadline). Set `FINISHUP_MCP_DEADLINE_MS_<TOOL>` (one tool) or
+`check` keeps 280 seconds, below Codex's 300-second tool-call limit (a `check` with
+`mode: inspect` is a read and takes the `status` deadline). Set `FINISHUP_MCP_DEADLINE_MS_<TOOL>` (one tool) or
 `FINISHUP_MCP_DEADLINE_MS` (every tool except `check`; an inspection follows the `status` variables) in
 the MCP server environment to change them;
-values are milliseconds, clamped to 1,000-900,000. Keep them below the host's own tool timeout.
+values are milliseconds, clamped to 1,000-285,000. Keep them below the host's own tool timeout.
 A timeout may follow a committed write. For `publish_work`, `respond` and `receipt` the bridge
 checks `status view=operation` once and, when the write already completed, returns its stored
 outcome directly. Otherwise use the timeout's pollable handle: `safe_details.replay_request_id`

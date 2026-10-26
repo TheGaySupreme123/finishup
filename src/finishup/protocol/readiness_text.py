@@ -66,7 +66,8 @@ _READY: Final = "Nothing further to do. Request the receipt."
 # cell lands after the check and makes it stale. `startup.md` states the pragma for a JavaScript
 # `exec` cell. The status sentence repeats it only when the cause's tool is that cell (`exec`),
 # and the Stop gate repeats it only when code mode was positively observed (#1079). The value is
-# the bridge's `check` call deadline (a test pins the two together).
+# Codex's 300-second tool-call limit, above the bridge's `check` call deadline, so the cell is
+# still waiting when the bridge's typed timeout arrives (#1226; a test pins the relation).
 CODEX_CHECK_YIELD_TIME_MS: Final = 300_000
 CODEX_CHECK_CELL_PRAGMA: Final = '// @exec: {"yield_time_ms": 300000}'
 # The tool name a code-mode cell records. Direct ``exec_command`` is a shell tool, not this.

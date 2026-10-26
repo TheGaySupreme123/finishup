@@ -202,7 +202,13 @@ _WORKFLOW_RPC_DEADLINE_MS: Final = 30_000
 # below the common 60-second host MCP tool limit (Codex ``tool_timeout_sec``) so the bridge's own
 # typed timeout, with its operation handle, reaches the agent before the host gives up.
 _RECEIPT_RESPONSE_RPC_DEADLINE_MS: Final = 50_000
-_SEMANTIC_CHECK_RPC_DEADLINE_MS: Final = 300_000
+# Codex gives up on any MCP tool call after 300 seconds. A ``check`` that may run an AI-powered
+# review keeps its deadline below that limit, so the bridge's typed timeout, with its
+# ``replay_request_id`` recovery handle, reaches the agent before the host abandons the call
+# (issue #1226). Every override is clamped below it too, leaving room for a timed-out write's
+# operation probe.
+_HOST_TOOL_CALL_LIMIT_MS: Final = 300_000
+_SEMANTIC_CHECK_RPC_DEADLINE_MS: Final = 280_000
 _DEFAULT_RPC_DEADLINES_MS: Final = MappingProxyType(
     {
         "start": _WORKFLOW_RPC_DEADLINE_MS,
@@ -220,9 +226,9 @@ _DEFAULT_RPC_DEADLINES_MS: Final = MappingProxyType(
 # set to different values is ambiguous and refuses the operation before discovery (ADR-048).
 _RPC_DEADLINE_ENV_SUFFIX: Final = "MCP_DEADLINE_MS"
 _MIN_RPC_DEADLINE_MS: Final = 1_000
-_MAX_RPC_DEADLINE_MS: Final = 900_000
 # A write that timed out is probed once for its durable operation state with this budget.
 _TIMEOUT_PROBE_DEADLINE_MS: Final = 5_000
+_MAX_RPC_DEADLINE_MS: Final = 285_000
 _CURSOR_ROOTS_REQUEST_TIMEOUT_SECONDS: Final = 5.0
 _MAX_CURSOR_ROOTS: Final = 32
 _MAX_CURSOR_ROOT_URI_BYTES: Final = MAX_WORKSPACE_LOCATOR_BYTES * 2
