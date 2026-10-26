@@ -2615,6 +2615,30 @@ class ProviderRemainingCheckModel(_ClosedModel):
         return self
 
 
+class ProviderDeclaredTestVerdictModel(_ClosedModel):
+    """The reviewer's reading of one listed declared test (#1145; optional, advisory).
+
+    ``test_ref`` names a ``declared_tests`` entry; ``expected_from_observed`` is where the reviewer
+    saw its expected value come from; ``counter_example`` is one runnable input or probe the test
+    would get wrong or never check (empty when none applies).
+    """
+
+    test_ref: Literal["dt1", "dt2", "dt3"]
+    expected_from_observed: Literal[
+        "task_text",
+        "independent_source",
+        "shared_with_implementation",
+        "cannot_fail",
+        "not_visible",
+    ]
+    counter_example: Annotated[str, Field(max_length=300)]
+
+
+DeclaredTestVerdictsWire = Annotated[
+    tuple[ProviderDeclaredTestVerdictModel, ...], Field(max_length=2)
+]
+
+
 # Issue #905: one ruling per earlier AI-powered finding the packet's prior-findings section
 # carries. ``withdrawn`` accepts the main agent's rejection; ``unassessable`` speaks only for its
 # own finding. The section carries at most sixteen findings (issue #976).
@@ -2665,6 +2689,8 @@ class ProviderJudgmentNoDiscrepancyModel(_ClosedModel):
     ]
     prior_finding_verdicts: PriorFindingVerdictsWire
     strongest_remaining_check: ProviderRemainingCheckModel | None = None
+    # #1145: optional; strict output sends it as null, which the decoder reads as absent.
+    declared_test_verdicts: DeclaredTestVerdictsWire = ()
 
 
 class ProviderJudgmentChallengesModel(_ClosedModel):
@@ -2677,6 +2703,8 @@ class ProviderJudgmentChallengesModel(_ClosedModel):
     ]
     prior_finding_verdicts: PriorFindingVerdictsWire
     strongest_remaining_check: ProviderRemainingCheckModel | None = None
+    # #1145: optional; strict output sends it as null, which the decoder reads as absent.
+    declared_test_verdicts: DeclaredTestVerdictsWire = ()
 
 
 class ProviderMissingItemModel(_ClosedModel):
@@ -2713,6 +2741,8 @@ class ProviderJudgmentInsufficientModel(_ClosedModel):
     # reviewer could judge (issue #905); it vetoes only those it leaves without a verdict.
     prior_finding_verdicts: PriorFindingVerdictsWire
     strongest_remaining_check: ProviderRemainingCheckModel | None = None
+    # #1145: optional; strict output sends it as null, which the decoder reads as absent.
+    declared_test_verdicts: DeclaredTestVerdictsWire = ()
     # Required from provider-judgment 1.1.0: an unassessable packet must say what was missing,
     # or the agent can only add excerpts blind and recheck (issue #907).
     missing_for_assessment: Annotated[
@@ -3654,6 +3684,7 @@ class CheckCorrectnessAdvisoryModel(_ClosedModel):
 
     advisory_id: Annotated[str, Field(pattern=ADVISORY_ID_PATTERN)]
     origin: Literal[
+        "declared_test_verdict",
         "routine_correctness_note",
         "strongest_remaining_check",
         "verified_not_assessable",
@@ -7206,6 +7237,7 @@ class StatusCheckOutcomeAdvisoryModel(_ClosedModel):
 
     advisory_id: Annotated[str, Field(pattern=ADVISORY_ID_PATTERN)]
     origin: Literal[
+        "declared_test_verdict",
         "routine_correctness_note",
         "strongest_remaining_check",
         "verified_not_assessable",

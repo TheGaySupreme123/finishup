@@ -4046,6 +4046,16 @@ def _judgment_to_response_json(judgment: object) -> dict[str, CanonicalJsonValue
             "check": judgment.strongest_remaining_check.check,
             "cited_refs": list(judgment.strongest_remaining_check.cited_refs),
         }
+    # #1145: emitted only when present, so every earlier stored judgment keeps its bytes.
+    if judgment.declared_test_verdicts:
+        body["declared_test_verdicts"] = [
+            {
+                "counter_example": row.counter_example,
+                "expected_from_observed": row.expected_from_observed,
+                "test_ref": row.test_ref,
+            }
+            for row in judgment.declared_test_verdicts
+        ]
     if judgment.missing_for_assessment:
         # Issue #907: the named missing items, reviewer reason included, live only in this
         # encrypted durable response object; the check record keeps the structural fields.
@@ -4061,6 +4071,7 @@ def _judgment_from_response_json(value: object) -> object:
 
     from finishup.domain.findings import FindingKind
     from finishup.ports.semantic import (
+        DeclaredTestVerdict,
         MissingForAssessment,
         MissingForAssessmentKind,
         PriorFindingVerdict,
@@ -4219,6 +4230,28 @@ def _judgment_from_response_json(value: object) -> object:
             remaining = RemainingCheck(check_text, tuple(cast(list[str], cited)))
         except ValueError as exc:
             raise ValueError("semantic_response_judgment_invalid") from exc
+    test_verdicts: list[DeclaredTestVerdict] = []
+    raw_test_verdicts = source.get("declared_test_verdicts", [])
+    if type(raw_test_verdicts) is not list:
+        raise ValueError("semantic_response_judgment_invalid")
+    for raw_verdict in cast(list[object], raw_test_verdicts):
+        if type(raw_verdict) is not dict or set(cast(dict[str, object], raw_verdict)) != {
+            "counter_example",
+            "expected_from_observed",
+            "test_ref",
+        }:
+            raise ValueError("semantic_response_judgment_invalid")
+        verdict_row = cast(dict[str, object], raw_verdict)
+        try:
+            test_verdicts.append(
+                DeclaredTestVerdict(
+                    cast(str, verdict_row["test_ref"]),
+                    cast(str, verdict_row["expected_from_observed"]),
+                    cast(str, verdict_row["counter_example"]),
+                )
+            )
+        except ValueError as exc:
+            raise ValueError("semantic_response_judgment_invalid") from exc
     try:
         return SemanticJudgment(
             cast(SemanticConclusion, conclusion_raw),
@@ -4230,6 +4263,7 @@ def _judgment_from_response_json(value: object) -> object:
             verified=tuple(verified),
             verified_dropped=cast(int, source.get("verified_dropped", 0)),
             strongest_remaining_check=remaining,
+            declared_test_verdicts=tuple(test_verdicts),
         )
     except ValueError as exc:
         raise ValueError("semantic_response_judgment_invalid") from exc
@@ -5152,6 +5186,8 @@ def _pin_declared_tests(
                 candidate.path,
                 "sha256:" + hashlib.sha256(data).hexdigest(),
                 candidate.criterion_ref,
+                # #1145: the agent's own tag rides the entry, so the reviewer checks the claim.
+                candidate.expected_from,
             )
         )
     return tuple(tests)
@@ -6015,6 +6051,7 @@ def _privacy_gated_semantic_evaluator(
                     case_prior_finding_refs=packet_prior_refs,
                     case_settled_finding_refs=packet_settled_refs,
                     case_citable_refs=packet_citable_refs,
+                    case_declared_tests=semantic_case.packet.declared_tests,
                     case_captured_edit_paths=packet_edit_paths,
                     case_binary_paths=packet_binary_paths,
                     case_text_paths=packet_text_paths,
@@ -6456,6 +6493,9 @@ def _privacy_gated_semantic_evaluator(
                     case_prior_finding_refs=packet_prior_refs,
                     case_settled_finding_refs=packet_settled_refs,
                     case_citable_refs=packet_citable_refs | reviewer_refs,
+                    # #1145: the declared tests this packet listed (rebuilt identically on
+                    # recovery from the job's own case object), so verdicts fence to them.
+                    case_declared_tests=semantic_case.packet.declared_tests,
                     case_captured_edit_paths=packet_edit_paths,
                     case_binary_paths=packet_binary_paths,
                     case_text_paths=packet_text_paths,

@@ -12328,8 +12328,9 @@ as `outcome_unknown` and is never resent. For it, `operation_max_retries` is `0`
 - Declared tests (#1220, `kernel.declared_tests`): `declared_test_candidates(projection,
   task_statement)` (at most `MAX_DECLARED_TESTS` = 3 `DeclaredTestCandidate(path, criterion_ref)`),
   `declared_test_location(path, workspace_root)` (absolute path or `None` by shape alone),
-  `DeclaredTest(ref, path, content_digest, criterion_ref)` with `to_json()` (keys `content_digest`,
-  `criterion_ref`, `path`, `ref`) and `declared_tests_to_json` / `declared_tests_from_json` (the
+  `DeclaredTest(ref, path, content_digest, criterion_ref, expected_from=None)` with `to_json()`
+  (keys `content_digest`, `criterion_ref`, `path`, `ref`, plus `expected_from` only when the
+  declaring manifest carried the #1219 tag, #1145; outbound-case 1.2.0 in place) and `declared_tests_to_json` / `declared_tests_from_json` (the
   job case object's `declared_tests`), `offered_declared_tests(tests, final=, offered=)` and
   `DECLARED_TEST_QUESTION`. `build_semantic_case(..., declared_tests=)` lists them as
   `ReviewPacket.declared_tests` (packet JSON `declared_tests`, emitted only when non-empty): all of
@@ -12917,6 +12918,32 @@ run a proportionate check, cite evidence that already settles it, or decline wit
 Recording a response is optional; ..."). One optional `respond` response (addressed with evidence
 recorded after the note, or declined with a reason) closes an item; nothing blocks, and Stop is
 unchanged.
+
+**Declared-test verdicts (#1145, 2026-10-26).** Every provider-judgment 1.2.0 branch (in place;
+reviewer-reply 1.0.0 follows) gains the optional, nullable `declared_test_verdicts`: at most two
+rows `{test_ref: dt1|dt2|dt3, expected_from_observed: task_text | independent_source |
+shared_with_implementation | cannot_fail | not_visible, counter_example: ≤ 300 characters}`
+(`ports.semantic.DeclaredTestVerdict`, `SemanticJudgment.declared_test_verdicts`). The decoder
+keeps the first two well-formed rows, one per ref, and drops the rest alone; the durable response
+object stores them only when present. Guidance rides the schema description and the
+`DECLARED_TEST_QUESTION` (241 bytes), never the always-sent instruction. The check reads them only
+against `FinalSemanticEvaluation.case_declared_tests` (the sent packet's list, rebuilt from the
+job's case object on recovery). A row on a listed test observing `shared_with_implementation` or
+`cannot_fail` with a non-blank counter-example becomes an advisory row with `origin:
+declared_test_verdict` and `test_digest` (the test's pinned digest; check-recorded 1.6.0 in place,
+present on exactly those rows). Its summary is FinishUP's fixed sentence around the agent's path
+and criterion quote (newest manifest naming the path, at most 120 characters), the agent's own tag
+beside the reviewer's observation when tagged, and the reviewer's probe: "Your test <path> for
+'<criterion>' takes its expected value from the implementation | cannot fail as written (you
+tagged expected_from=<tag>; the reviewer observed <observation>). Run: <probe>, or show it fails
+on a deliberately broken scratch copy, or decline with a reason." Subjects: the criterion ref
+when it is an obligation or claim, the declaring result's recording event otherwise. A digest an
+earlier row of this origin carries is never advised again, whatever the answer (a fixed summary
+line names the earlier identity); a task carries at most `MAX_DECLARED_TEST_ADVICE_PER_TASK` = 2
+such rows (overflow is a fixed summary line). Check-result and status `origin` enums gain
+`declared_test_verdict`; labels read "reviewer's declared-test verdict". Rows, counts, `respond`
+pairing, receipt listing and history projection (which drops `test_digest` with `origin`) are
+the #1162 ones.
 
 ### Shared recorded evidence links (#1205)
 

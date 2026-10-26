@@ -38,7 +38,13 @@ from finishup.domain.values import (
     validate_commitment,
     validate_sha256_digest,
 )
-from finishup.kernel.declared_tests import MAX_DECLARED_TESTS, DeclaredTest
+from finishup.kernel.declared_tests import (
+    DECLARED_TEST_VERDICT_OBSERVATIONS,
+    MAX_COUNTER_EXAMPLE_CHARS,
+    MAX_DECLARED_TEST_VERDICTS,
+    MAX_DECLARED_TESTS,
+    DeclaredTest,
+)
 from finishup.kernel.deterministic_checks import (
     DeterministicAssessment,
     FindingFact,
@@ -86,6 +92,7 @@ if TYPE_CHECKING:
     )
 
 __all__ = [
+    "DeclaredTestVerdict",
     "RemainingCheck",
     "MAX_PRIOR_FINDING_ITEMS",
     "MAX_PRIOR_FINDING_REFS",
@@ -1885,6 +1892,31 @@ class RemainingCheck:
         )
 
 
+@dataclass(frozen=True, slots=True)
+class DeclaredTestVerdict:
+    """The reviewer's reading of one listed declared test (#1145; advisory, never a finding).
+
+    ``test_ref`` is the packet's ``dt<n>`` ref; ``expected_from_observed`` where the reviewer saw
+    the test's expected value come from; ``counter_example`` one runnable input or probe, possibly
+    empty. FinishUP fences the ref to the tests the packet listed before anything is recorded.
+    """
+
+    test_ref: str
+    expected_from_observed: str
+    counter_example: str
+
+    def __post_init__(self) -> None:
+        if (
+            type(self.test_ref) is not str
+            or self.test_ref not in {f"dt{n}" for n in range(1, MAX_DECLARED_TESTS + 1)}
+            or type(self.expected_from_observed) is not str
+            or self.expected_from_observed not in DECLARED_TEST_VERDICT_OBSERVATIONS
+            or type(self.counter_example) is not str
+            or len(self.counter_example) > MAX_COUNTER_EXAMPLE_CHARS
+        ):
+            raise _invalid_judgment()
+
+
 type PriorFindingVerdictKind = Literal[
     "fixed", "still_present", "answered_not_fixed", "unassessable", "withdrawn"
 ]
@@ -1982,9 +2014,18 @@ class SemanticJudgment:
     verified_dropped: int = 0
     # Optional from provider-judgment 1.2.0 (#1162 tracked advice): absent on older responses.
     strongest_remaining_check: RemainingCheck | None = None
+    # Optional (#1145): the reviewer's verdicts on listed declared tests, at most two; absent on
+    # older responses and on every review that listed none.
+    declared_test_verdicts: tuple[DeclaredTestVerdict, ...] = ()
 
     def __post_init__(self) -> None:
         if type(self.conclusion) is not str or self.conclusion not in _CONCLUSIONS:
+            raise _invalid_judgment()
+        if (
+            type(self.declared_test_verdicts) is not tuple
+            or len(self.declared_test_verdicts) > MAX_DECLARED_TEST_VERDICTS
+            or any(type(item) is not DeclaredTestVerdict for item in self.declared_test_verdicts)
+        ):
             raise _invalid_judgment()
         if (
             self.strongest_remaining_check is not None

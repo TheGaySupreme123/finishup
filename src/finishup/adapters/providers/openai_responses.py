@@ -36,11 +36,13 @@ from finishup.domain.privacy import (
     ProviderDataUseProfile,
 )
 from finishup.domain.values import validate_sha256_digest
+from finishup.kernel.declared_tests import MAX_DECLARED_TEST_VERDICTS
 from finishup.ports.clock import ClockPort
 from finishup.ports.secret_memory import ProviderAttemptAuthBinding, ProviderCredentialHandle
 from finishup.ports.semantic import (
     CURRENT_REVIEWER_SESSION,
     Deadline,
+    DeclaredTestVerdict,
     MissingForAssessment,
     PriorFindingVerdict,
     ProviderAttemptProvenance,
@@ -71,6 +73,7 @@ from finishup.protocol.models import (
     MAX_PROVIDER_REVIEW_TEXT_CHARS,
     MAX_REVIEW_CHALLENGES,
     ProviderChallengeModel,
+    ProviderDeclaredTestVerdictModel,
     ProviderJudgmentChallengesModel,
     ProviderJudgmentEnvelopeModel,
     ProviderJudgmentInsufficientModel,
@@ -1248,6 +1251,25 @@ REMAINING_CHECK_FIELD_GLOSSARY: Final[dict[str, str]] = {
     ),
 }
 
+# #1145: the reviewer's verdicts on the agent's listed declared tests. Like the strongest check,
+# the guidance rides the schema (the stable instruction is unchanged, #1172); the packet's
+# declared-test question names the field only where the packet lists tests.
+DECLARED_TEST_VERDICT_DESCRIPTION: Final = (
+    "Only if the packet lists declared_tests, else null; at most 2 rows, most doubtful first. A "
+    "shared_with_implementation or cannot_fail row with a counter_example becomes non-blocking "
+    "advice the agent answers once."
+)
+
+DECLARED_TEST_VERDICT_FIELD_GLOSSARY: Final[dict[str, str]] = {
+    "test_ref": "The declared_tests ref judged.",
+    "expected_from_observed": (
+        "Its expected value's source as you read it, versus any expected_from tag. "
+        "shared_with_implementation: same code, glob, predicate, clock origin or sampling window "
+        "as the implementation; cannot_fail: passes whatever the implementation does."
+    ),
+    "counter_example": "A runnable input or probe the test gets wrong or never checks; else empty.",
+}
+
 
 VERDICT_FIELD_GLOSSARY: Final[dict[str, str]] = {
     "finding_id": (
@@ -1370,6 +1392,19 @@ def _apply_reviewer_glossary(schema: dict[str, JsonValue]) -> dict[str, JsonValu
     definitions["ProviderRemainingCheck"] = cast(
         JsonValue,
         {**cast(dict[str, JsonValue], remaining), "description": REMAINING_CHECK_DESCRIPTION},
+    )
+    _gloss_properties(
+        definitions, "ProviderDeclaredTestVerdict", DECLARED_TEST_VERDICT_FIELD_GLOSSARY
+    )
+    test_verdict = definitions.get("ProviderDeclaredTestVerdict")
+    if type(test_verdict) is not dict:
+        raise RuntimeError("provider_judgment_schema_invalid")
+    definitions["ProviderDeclaredTestVerdict"] = cast(
+        JsonValue,
+        {
+            **cast(dict[str, JsonValue], test_verdict),
+            "description": DECLARED_TEST_VERDICT_DESCRIPTION,
+        },
     )
     return schema
 
@@ -1855,6 +1890,15 @@ def _remaining_check_from_model(item: ProviderRemainingCheckModel | None) -> Rem
     return None if item is None else RemainingCheck(item.check, item.cited_refs)
 
 
+def _test_verdicts_from_model(
+    rows: tuple[ProviderDeclaredTestVerdictModel, ...],
+) -> tuple[DeclaredTestVerdict, ...]:
+    return tuple(
+        DeclaredTestVerdict(row.test_ref, row.expected_from_observed, row.counter_example)
+        for row in rows
+    )
+
+
 def _missing_item_from_model(item: ProviderMissingItemModel) -> MissingForAssessment:
     return MissingForAssessment(item.kind, item.target_refs, item.reason)
 
@@ -1925,6 +1969,7 @@ def normalize_judgment(parsed: JsonValue, *, require_part2: bool = False) -> Sem
         body_object = cast(dict[str, JsonValue], body)
         body_object, verified_dropped = _separate_verified(body_object)
         body_object = _separate_remaining_check(body_object)
+        body_object = _separate_declared_test_verdicts(body_object)
         if require_part2 and body_object.get("conclusion") in {
             "no_material_discrepancy",
             "challenges_returned",
@@ -1987,6 +2032,7 @@ def normalize_judgment(parsed: JsonValue, *, require_part2: bool = False) -> Sem
         verified=verified,
         verified_dropped=verified_dropped,
         strongest_remaining_check=_remaining_check_from_model(model.strongest_remaining_check),
+        declared_test_verdicts=_test_verdicts_from_model(model.declared_test_verdicts),
     )
 
 
@@ -2010,6 +2056,36 @@ def _separate_remaining_check(body: dict[str, JsonValue]) -> dict[str, JsonValue
     except ValidationError:
         return {**body, "strongest_remaining_check": None}
     return body
+
+
+_TEST_VERDICT_ADAPTER: Final[TypeAdapter[ProviderDeclaredTestVerdictModel]] = TypeAdapter(
+    ProviderDeclaredTestVerdictModel
+)
+
+
+def _separate_declared_test_verdicts(body: dict[str, JsonValue]) -> dict[str, JsonValue]:
+    """Keep the first two well-formed declared-test verdicts, one per ref (#1145).
+
+    Optional and advisory like the strongest check: a malformed or repeated row, or one past the
+    cap, costs only itself, never the judgment beside it. Absent and null read as no rows.
+    """
+
+    if "declared_test_verdicts" not in body:
+        return body
+    raw = body["declared_test_verdicts"]
+    kept: list[JsonValue] = []
+    seen: set[str] = set()
+    for row in cast(list[JsonValue], raw) if type(raw) is list else ():
+        try:
+            parsed = _TEST_VERDICT_ADAPTER.validate_python(row)
+        except ValidationError:
+            continue
+        if parsed.test_ref in seen or len(kept) >= MAX_DECLARED_TEST_VERDICTS:
+            continue
+        seen.add(parsed.test_ref)
+        kept.append(row)
+    rest = {key: value for key, value in body.items() if key != "declared_test_verdicts"}
+    return {**rest, "declared_test_verdicts": kept} if kept else rest
 
 
 def _separate_verified(body: dict[str, JsonValue]) -> tuple[dict[str, JsonValue], int]:

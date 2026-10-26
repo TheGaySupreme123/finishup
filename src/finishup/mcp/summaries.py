@@ -1055,6 +1055,7 @@ _ADVICE_ORIGIN_LABELS: Final = {
     "verified_not_supported": "reviewer row not_supported",
     "verified_not_assessable": "reviewer row not_assessable",
     "strongest_remaining_check": "reviewer's strongest remaining check",
+    "declared_test_verdict": "reviewer's declared-test verdict",
 }
 _ADVICE_ID: Final = re.compile(
     r"evt_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}:(?:[1-9]|10)"

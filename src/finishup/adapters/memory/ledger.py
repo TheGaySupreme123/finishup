@@ -1673,6 +1673,7 @@ def _projection_items(
                     # #1162 tracked advice: the row's closed origin rides the check result and
                     # the receipt label; the history row keeps its first shape.
                     entry.pop("origin", None)
+                    entry.pop("test_digest", None)
                     entry.update(
                         {
                             "advisory_id": note.advisory_id,
