@@ -1358,8 +1358,14 @@ _MAX_PROJECTED_OBJECT_LOCATIONS: Final = 8
 # rejected key names are caller-controlled and never leave the validator (issue #240).
 _INSTANCE_REASON_EXTRA_FORBIDDEN: Final = "extra_forbidden"
 _INSTANCE_REASON_CONDITIONAL_FIELD_REQUIRED: Final = "conditional_field_required"
+# A nested ``dependentRequired`` failure (result_recorded ``verification.results_file`` without
+# ``report_digest``, #1226) names the same closed token a root-level pairing rule does.
 _INSTANCE_REASONS: Final = frozenset(
-    {_INSTANCE_REASON_EXTRA_FORBIDDEN, _INSTANCE_REASON_CONDITIONAL_FIELD_REQUIRED}
+    {
+        _INSTANCE_REASON_EXTRA_FORBIDDEN,
+        _INSTANCE_REASON_CONDITIONAL_FIELD_REQUIRED,
+        _OBJECT_RULE_PAIRED,
+    }
 )
 MAX_UNKNOWN_PROPERTY_COUNT: Final = 32
 _UNKNOWN_PROPERTY_COUNT_OVERFLOW: Final = MAX_UNKNOWN_PROPERTY_COUNT + 1
@@ -1543,8 +1549,9 @@ def validate_schema_instance(name: str, version: str, value: JsonValue) -> None:
                 if reason is not None or best.validator == "required"
                 else None
             )
-            if identity is None and reason is None:
-                # A nested value failure (an id pattern inside ``limitation_refs``) carries no
+            if identity is None and reason in {None, _OBJECT_RULE_PAIRED}:
+                # A nested value failure (an id pattern inside ``limitation_refs``), or a nested
+                # pairing rule (``verification``'s report pair, #1226), carries no
                 # ``$id`` of its own. The draft's admitted schema identity selected the branch
                 # that rejected it, so name that family and version: several families share a
                 # field name with different admitted shapes (tb4n1: result ``evidence_refs``).
@@ -1564,7 +1571,7 @@ def validate_schema_instance(name: str, version: str, value: JsonValue) -> None:
                 family_version=identity[1] if identity is not None else None,
                 unknown_count=_unknown_property_count(best) if reason is not None else 0,
                 misplaced_field=_misplaced_known_field(best) if reason is not None else None,
-                missing_fields=_missing_required_fields(best),
+                missing_fields=_missing_required_fields(best) or _missing_dependent_fields(best),
                 condition_field=condition[0] if condition is not None else None,
                 condition_value=condition[1] if condition is not None else None,
             ) from None
@@ -1610,6 +1617,37 @@ def _missing_required_fields(error: ValidationError) -> tuple[str, ...]:
             missing.append(name)
         if len(missing) == _MAX_PROJECTED_OBJECT_LOCATIONS:
             break
+    return tuple(missing)
+
+
+def _missing_dependent_fields(error: ValidationError) -> tuple[str, ...]:
+    """Name the ``dependentRequired`` peers the instance lacks, in schema order (#1226).
+
+    Each name is read from the failing schema's own pairing map, and only for a schema key the
+    instance holds, so it is frozen schema vocabulary and never a caller-invented key.
+    """
+
+    if error.validator != "dependentRequired":
+        return ()
+    deps = error.validator_value
+    instance = error.instance
+    if not isinstance(deps, Mapping) or not isinstance(instance, Mapping):
+        return ()
+    present = cast(Mapping[object, object], instance)
+    missing: list[str] = []
+    for key, peers in cast(Mapping[object, object], deps).items():
+        if type(key) is not str or key not in present or not isinstance(peers, list):
+            continue
+        for name in cast(list[object], peers):
+            if (
+                type(name) is str
+                and EVENT_FAMILY_NAME_PATTERN.fullmatch(name) is not None
+                and name not in present
+                and name not in missing
+            ):
+                missing.append(name)
+            if len(missing) == _MAX_PROJECTED_OBJECT_LOCATIONS:
+                return tuple(missing)
     return tuple(missing)
 
 
@@ -2421,6 +2459,8 @@ def _instance_reason_for(error: ValidationError) -> str | None:
 
     if error.validator == "additionalProperties":
         return _INSTANCE_REASON_EXTRA_FORBIDDEN
+    if error.validator == "dependentRequired" and _missing_dependent_fields(error):
+        return _OBJECT_RULE_PAIRED
     return None
 
 

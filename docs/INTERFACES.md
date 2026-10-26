@@ -224,7 +224,12 @@ unknown or hostile property names are never echoed. Closed reason tokens are:
 - `paired_field_required` — a schema `dependentRequired` pair is incomplete (for example `start`
   with `workspace_ref` present and `external_ref` absent, or the inverse). Both the present field
   and the required peer are named; the authoring hint states the schema peer rule (e.g.
-  `workspace_ref requires external_ref`) without echoing submitted values;
+  `workspace_ref requires external_ref`) without echoing submitted values. A pairing rule nested in
+  a selected event payload object (`result_recorded` 1.1.0 `verification`, #1226) names the object
+  (`/event_drafts/<n>/payload/verification`) with this token, and the hint names the object, its
+  dependent key and the absent peers from the frozen pairing map (e.g.
+  `verification.results_file requires report_digest; declare report_digest too, or omit
+  verification.results_file`);
 - `conditional_field_required` — a root-level schema `if`/`then` (or equivalent closed object rule)
   activated required alternatives, a selected const-discriminated `oneOf` branch has a missing
   required peer or `anyOf`-of-`required` alternative (for example `start` with `mode` `attach`
@@ -12662,7 +12667,15 @@ recomputation solely because the finding names paths.
 (`task_public|own_generated|independent|held_out|stated_environment|unknown`), and integer
 `cases`/`failing` (0..2^53-1, `failing <= cases`). Optional `worst` is nonblank text of at most
 64 characters; optional `tuned_on_these_cases` is a boolean. Optional `test_file`, `results_file`
-(nonblank paths of at most 1,024 characters) and `report_digest` (`sha256:` digest) travel together.
+(nonblank paths of at most 1,024 characters) and `report_digest` (`sha256:` digest): `test_file` may
+stand alone and declares the test the closing reviewer may be offered (ADR-006, #1220);
+`results_file` and `report_digest` bind a report to it and require each other and `test_file`
+(schema `dependentRequired`; owner decision on #1226, admitted in place on this unreleased version,
+so every earlier all-three-or-none manifest keeps its bytes and meaning). A manifest that breaks the
+pairing is refused before publication with the closed location reason `paired_field_required` at
+`/event_drafts/<n>/payload/verification`; the MCP hint names the rule from the frozen pairing map
+only (for example `verification.results_file requires report_digest; declare report_digest too, or
+omit verification.results_file`), never a caller value. `record-test` still binds all three.
 Issue #1219 adds two optional declarations in place on this unreleased version: `checks` (nonblank
 text of at most 200 characters naming what the test exercises) and `expected_from`
 (`task_text|independent_source|own_reimplementation|implementation_output|hand_computed`, where the

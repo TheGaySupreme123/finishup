@@ -7631,8 +7631,10 @@ def _result_recorded_v1_1_schema(entry: _RegistryEntry) -> dict[str, JsonValue]:
             "checks": {"type": "string", "minLength": 1, "maxLength": 200, "pattern": r"\S"},
             "expected_from": {"type": "string", "enum": list(VERIFICATION_EXPECTED_FROM)},
         },
+        # Issue #1226 (owner decision, in place on this unreleased version): ``test_file`` alone
+        # declares the test the reviewer may be offered; ``results_file`` and ``report_digest``
+        # bind a report to it and stay paired with each other (both or neither).
         "dependentRequired": {
-            "test_file": ["results_file", "report_digest"],
             "results_file": ["test_file", "report_digest"],
             "report_digest": ["test_file", "results_file"],
         },

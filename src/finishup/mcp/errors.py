@@ -304,6 +304,11 @@ _EVENT_DRAFT_PAYLOAD_ITEM_FIELD_POINTER: Final = re.compile(
     r"/event_drafts/[0-9]{1,3}/payload/([a-z][a-z0-9_]{0,63})/[0-9]{1,3}/([a-z][a-z0-9_]{0,63})",
     re.ASCII,
 )
+# ``/event_drafts/N/payload/<object>``: a payload object whose own pairing rule failed (#1226).
+_EVENT_DRAFT_PAYLOAD_OBJECT_POINTER: Final = re.compile(
+    r"/event_drafts/[0-9]{1,3}/payload/([a-z][a-z0-9_]{0,63})", re.ASCII
+)
+_PAIRED_FIELD_REQUIRED_REASON: Final = "paired_field_required"
 _REASON_CODE: Final = re.compile(r"^[a-z][a-z0-9_]{0,63}$", re.ASCII)
 # A closed registry of checked-in corrective sentences for facts that are true of the contract but
 # are not expressible as a JSON Schema keyword, so no hint built from the schema alone can state
@@ -743,6 +748,21 @@ def safe_validation_locations(exc: object) -> tuple[dict[str, str], ...]:
                 if condition is not None:
                     entry["condition_field"] = condition[0]
                     entry["condition_value"] = condition[1]
+        elif (
+            reason == _PAIRED_FIELD_REQUIRED_REASON
+            and _EVENT_DRAFT_PAYLOAD_OBJECT_POINTER.fullmatch(pointer) is not None
+        ):
+            # #1226: a nested pairing rule (``verification.results_file`` without
+            # ``report_digest``). The family and the absent schema-listed peers let the hint name
+            # the rule from the frozen pairing map; nothing the caller sent rides along.
+            family = _family_from_validation_item(source)
+            family_version = _family_version_from_validation_item(source)
+            if family is not None and family_version is not None:
+                entry["family"] = family
+                entry["family_version"] = family_version
+                missing_fields = _missing_fields_from_validation_item(source)
+                if missing_fields:
+                    entry["missing_fields"] = ",".join(missing_fields)
         elif reason == _CONDITIONAL_FIELD_REQUIRED_REASON:
             family = _family_from_validation_item(source)
             family_version = _family_version_from_validation_item(source)
@@ -825,6 +845,7 @@ def authoring_hint(
             *_unknown_payload_key_hint_parts(document, locations),
             *_conditional_requirement_hint_parts(document, locations),
             *((text, (text, "")) for text in _object_rule_hint_parts(document, locations)),
+            *((text, (text, "")) for text in _nested_paired_field_hint_parts(document, locations)),
             *_event_draft_hint_parts(document, locations),
             *((text, (text, "")) for text in _corrective_hint_parts(tool, locations)),
             *((text, (text, "")) for text in _reference_list_hint_parts(locations)),
@@ -1823,6 +1844,69 @@ def _required_peer_hint_parts(
             parts.append(text)
         if len(parts) == _MAX_HINT_FIELDS:
             break
+    return parts
+
+
+def _nested_paired_field_hint_parts(
+    document: Mapping[str, JsonValue], locations: Sequence[Mapping[str, str]]
+) -> list[str]:
+    """Name a payload object's failed pairing rule from its frozen ``dependentRequired`` (#1226).
+
+    tq6: ``verification`` rejected for its report pair surfaced only as ``invalid_type_or_value``
+    and an agent gave up declaring its test. Every name comes from the selected family's frozen
+    schema: the object, a dependent key and the peers the validator found absent (themselves
+    schema-listed). A dependent key is named when it requires an absent peer and is not absent
+    itself. No caller value enters the text.
+    """
+
+    parts: list[str] = []
+    for location in locations:
+        if location.get("reason", "") != _PAIRED_FIELD_REQUIRED_REASON:
+            continue
+        pointer = location.get("field", "")
+        match = (
+            _EVENT_DRAFT_PAYLOAD_OBJECT_POINTER.fullmatch(pointer) if type(pointer) is str else None
+        )
+        if match is None or match.group(1) not in _SAFE_LOCATION_SEGMENTS:
+            continue
+        name = match.group(1)
+        family = location.get("family")
+        family_version = location.get("family_version")
+        raw_missing = location.get("missing_fields")
+        payload = _payload_schema(
+            document,
+            family if type(family) is str else None,
+            family_version if type(family_version) is str else None,
+        )
+        if payload is None or type(raw_missing) is not str or not raw_missing:
+            continue
+        payload_properties = payload.get("properties")
+        if not isinstance(payload_properties, Mapping):
+            continue
+        node = _resolve_local(document, cast(Mapping[str, JsonValue], payload_properties).get(name))
+        if not isinstance(node, Mapping):
+            continue
+        source = cast(Mapping[str, JsonValue], node)
+        deps = source.get("dependentRequired")
+        properties = source.get("properties")
+        if not isinstance(deps, Mapping) or not isinstance(properties, Mapping):
+            continue
+        prop_names = cast(Mapping[str, JsonValue], properties)
+        missing = [field for field in raw_missing.split(",") if field in prop_names]
+        for key, peers in cast(Mapping[object, object], deps).items():
+            if type(key) is not str or key not in prop_names or key in missing:
+                continue
+            if not isinstance(peers, list):
+                continue
+            lacking = [peer for peer in cast(list[object], peers) if peer in missing]
+            names = _format_required_list(cast(JsonValue, lacking), prop_names)
+            if not names:
+                continue
+            text = f"{name}.{key} requires {names}; declare {names} too, or omit {name}.{key}"
+            if text not in parts:
+                parts.append(text)
+            if len(parts) == _MAX_HINT_FIELDS:
+                return parts
     return parts
 
 

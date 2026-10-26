@@ -68,8 +68,11 @@ def test_manifest_golden_vectors_and_frozen_legacy_contract() -> None:
         {"cases": 1, "failing": 2},
         {"worst": "x" * 65},
         {"tuned_on_these_cases": 1},
-        {"test_file": "test.py"},
         {"report_digest": "sha256:" + "a" * 64},
+        {"results_file": "results.json"},
+        {"test_file": "test.py", "results_file": "results.json"},
+        {"test_file": "test.py", "report_digest": "sha256:" + "a" * 64},
+        {"results_file": "results.json", "report_digest": "sha256:" + "a" * 64},
         {"test_file": "test.py", "results_file": "results.json", "report_digest": "bad"},
         {"checks": ""},
         {"checks": " "},
@@ -173,3 +176,27 @@ def test_bad_checks_or_expected_from_is_refused_by_schema_and_domain(
         validate_schema_instance("result-recorded", "1.1.0", wire)
     with pytest.raises(ProtocolValueError):
         decode_payload(EventSchema("result_recorded", "1.1.0"), cast(JsonValue, wire))
+
+
+def test_a_test_file_alone_declares_the_test() -> None:
+    """#1226 (owner decision): the reviewer can be offered a test declared without a report."""
+
+    manifest = ResultVerification(
+        "condition", VerificationDataSource.OWN_GENERATED, 2, 0, test_file="tests/test_rule.py"
+    )
+    assert manifest.results_file is None and manifest.report_digest is None
+    wire: dict[str, Any] = {
+        "result_id": "res_00000000-0000-4000-8000-000000001226",
+        "action_id": "act_00000000-0000-4000-8000-000000001226",
+        "outcome": "success",
+        "verification": {
+            "criterion_quote": "condition",
+            "data_source": "own_generated",
+            "cases": 2,
+            "failing": 0,
+            "test_file": "tests/test_rule.py",
+        },
+    }
+    validate_schema_instance("result-recorded", "1.1.0", wire)
+    payload = decode_payload(EventSchema("result_recorded", "1.1.0"), cast(JsonValue, wire))
+    assert canonical_encode(encode_payload(payload)) == canonical_encode(wire)
