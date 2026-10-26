@@ -43,7 +43,7 @@ from finishup.domain.events import (
 from finishup.domain.privacy import ReviewContextProfile, ReviewSelectionPolicy
 from finishup.domain.review_input_render import render_review_input_manifest_lines
 from finishup.domain.task_statement import RecordedTaskStatement
-from finishup.kernel.declared_tests import (
+from finishup.kernel.declared_checks import (
     DECLARED_TEST_QUESTION,
     DeclaredTest,
     declared_test_candidates,

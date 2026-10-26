@@ -38,7 +38,7 @@ from finishup.domain.values import (
     validate_commitment,
     validate_sha256_digest,
 )
-from finishup.kernel.declared_tests import (
+from finishup.kernel.declared_checks import (
     DECLARED_TEST_VERDICT_OBSERVATIONS,
     MAX_COUNTER_EXAMPLE_CHARS,
     MAX_DECLARED_TEST_VERDICTS,

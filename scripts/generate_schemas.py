@@ -8167,7 +8167,7 @@ def _outbound_case_v1_2_schema(entry: _RegistryEntry) -> dict[str, JsonValue]:
         packet_required.append("prior_finding_refs")
     # Issue #1220, optional in place: the agent's declared tests the packet lists, as structural
     # metadata (the declared path, the digest pinned at check time and the criterion ref).
-    from finishup.kernel.declared_tests import DECLARED_TEST_EXPECTED_FROM
+    from finishup.kernel.declared_checks import DECLARED_TEST_EXPECTED_FROM
 
     packet_properties["declared_tests"] = {
         "items": {

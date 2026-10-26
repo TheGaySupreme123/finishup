@@ -25,7 +25,7 @@ from finishup.application.semantic_case import (
 from finishup.domain.findings import Finding
 from finishup.domain.privacy import ReviewContextProfile, ReviewSelectionPolicy
 from finishup.domain.values import JsonObject, freeze_json
-from finishup.kernel.declared_tests import DECLARED_TEST_QUESTION, DeclaredTest
+from finishup.kernel.declared_checks import DECLARED_TEST_QUESTION, DeclaredTest
 from finishup.ports.ledger import CheckCommitResult, FrozenCase
 from finishup.ports.semantic import SemanticCase, SemanticJudgment
 from finishup.protocol.models import (

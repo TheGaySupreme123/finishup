@@ -16,7 +16,7 @@ from finishup.adapters.providers.openai_responses import normalize_judgment
 from finishup.domain.correctness_advisories import validate_advisories
 from finishup.domain.events import VerificationExpectedFrom
 from finishup.domain.values import JsonObject
-from finishup.kernel.declared_tests import (
+from finishup.kernel.declared_checks import (
     DECLARED_TEST_EXPECTED_FROM,
     DECLARED_TEST_QUESTION,
     DeclaredTest,

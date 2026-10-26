@@ -69,8 +69,8 @@ def home_private_location(path: str) -> bool:
     """Whether absolute ``path`` lies in the home directory's private state (#1220 review).
 
     Unlike ``home_private_path`` this decides by identity, not spelling: the home directory is
-    found among ``path``'s ancestors by device and inode, so another spelling of it (``/Users/ALICE``
-    on a case-insensitive volume, a bind mount) still counts. Each directory beneath it whose name
+    found among ``path``'s ancestors by device and inode, so another spelling of it (``<HOME>`` in
+    another case on a case-insensitive volume, a bind mount) still counts. Each directory beneath it whose name
     folds to a private tree's is compared by identity with the tree's exact spelling and, when it
     is that tree, judged under that spelling. Ancestors are examined without following a link;
     a read beneath one never follows it either. An ancestor that cannot be examined (other than

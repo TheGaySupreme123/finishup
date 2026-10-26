@@ -33,7 +33,7 @@ from finishup.adapters.task_input_read import (
     read_text_beneath,
 )
 from finishup.domain.reviewer_reads import MAX_REVIEWER_READ_ATTEMPTS, MAX_REVIEWER_READS
-from finishup.kernel.declared_tests import DECLARED_TEST_READ_BYTES
+from finishup.kernel.declared_checks import DECLARED_TEST_READ_BYTES
 from finishup.ports.change_capture import TaskInputSnapshotSet
 from finishup.ports.semantic import (
     ReviewStepRefused,

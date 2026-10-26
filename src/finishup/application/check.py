@@ -155,7 +155,7 @@ from finishup.kernel.correctness_advisories import (
     CorrectnessAdvisory,
     correctness_advisory_index,
 )
-from finishup.kernel.declared_tests import (
+from finishup.kernel.declared_checks import (
     ADVISED_TEST_VERDICTS,
     MAX_DECLARED_TEST_ADVICE_PER_TASK,
     DeclaredTest,

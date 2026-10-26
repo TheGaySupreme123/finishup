@@ -138,7 +138,7 @@ from finishup.domain.verification_coverage import (
     verification_coverage_to_json,
 )
 from finishup.kernel.claims import effective_claim_items
-from finishup.kernel.declared_tests import (
+from finishup.kernel.declared_checks import (
     DECLARED_TEST_QUESTION,
     DeclaredTest,
     declared_tests_to_json,
@@ -7241,7 +7241,7 @@ def build_semantic_case(
     case is built exactly as before.
 
     ``declared_tests`` (issue #1220) are the agent's declared test files with the digests the
-    service pinned when this check ran (``kernel.declared_tests``). They are listed in the packet,
+    service pinned when this check ran (``kernel.declared_checks``). They are listed in the packet,
     with the declared-test question, only at the closing review or when a digest is one no earlier
     successful review was offered (``DeterministicCase.offered_test_digests``); otherwise, and
     when empty, the case is built exactly as before.

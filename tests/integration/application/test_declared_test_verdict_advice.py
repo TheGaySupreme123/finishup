@@ -35,7 +35,7 @@ from finishup.cli.render import render_human_check
 from finishup.domain.findings import Finding
 from finishup.domain.privacy import ReviewContextProfile, ReviewSelectionPolicy
 from finishup.domain.reviewer_reads import ReviewerRecord
-from finishup.kernel.declared_tests import DeclaredTest, declared_test_candidates
+from finishup.kernel.declared_checks import DeclaredTest, declared_test_candidates
 from finishup.mcp.server import _result_text  # pyright: ignore[reportPrivateUsage]
 from finishup.ports.control import ControlMethod
 from finishup.ports.ledger import CheckCommitResult, FrozenCase

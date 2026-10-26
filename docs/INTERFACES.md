@@ -12325,7 +12325,7 @@ as `outcome_unknown` and is never resent. For it, `operation_max_retries` is `0`
   which `PrivacyCoordinator.admit_reviewer_read` admits as `repository_excerpt` and records on
   `ReviewerHistory.declared_tests`; each later exchange's minimized disclosure (and so its proposal
   and receipt) then adds `declared_test_excerpt` to `approved_categories`.
-- Declared tests (#1220, `kernel.declared_tests`): `declared_test_candidates(projection,
+- Declared tests (#1220, `kernel.declared_checks`): `declared_test_candidates(projection,
   task_statement)` (at most `MAX_DECLARED_TESTS` = 3 `DeclaredTestCandidate(path, criterion_ref)`),
   `declared_test_location(path, workspace_root)` (absolute path or `None` by shape alone),
   `DeclaredTest(ref, path, content_digest, criterion_ref, expected_from=None)` with `to_json()`

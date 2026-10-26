@@ -36,7 +36,7 @@ from finishup.domain.privacy import (
     ProviderDataUseProfile,
 )
 from finishup.domain.values import validate_sha256_digest
-from finishup.kernel.declared_tests import MAX_DECLARED_TEST_VERDICTS
+from finishup.kernel.declared_checks import MAX_DECLARED_TEST_VERDICTS
 from finishup.ports.clock import ClockPort
 from finishup.ports.secret_memory import ProviderAttemptAuthBinding, ProviderCredentialHandle
 from finishup.ports.semantic import (
