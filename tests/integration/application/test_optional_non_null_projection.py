@@ -86,6 +86,7 @@ from finishup.protocol.models import (
     ChildFindingSnapshotModel,
     DataCategory,
     DeliveryItemModel,
+    DraftReceiptCriterionModel,
     FactLineageModel,
     ProjectTextRefModel,
     PublicErrorModel,
@@ -113,12 +114,16 @@ from finishup.protocol.models import (
     StatusCompactItemModel,
     StatusCompactObligationModel,
     StatusCoveragePageModel,
+    StatusEvidenceAdviceModel,
+    StatusEvidenceAssessmentModel,
     StatusEvidenceItemModel,
+    StatusEvidenceResultModel,
     StatusFindingItemModel,
     StatusFindingsPageModel,
     StatusHistoryCorrectnessAdvisoryModel,
     StatusHistoryItemV14Model,
     StatusLineageChildModel,
+    StatusObligationEvidenceModel,
     StatusObligationItemModel,
     StatusObservedRunModel,
     StatusOperationPageModel,
@@ -230,8 +235,8 @@ def _status_history_v14_payload() -> dict[str, object]:
 _RESULT_OPTIONAL_NON_NULL: tuple[tuple[type[BaseModel], frozenset[str]], ...] = (
     (CheckContinuationModel, frozenset({"pending_id", "expires_at"})),
     # #1170: declared coverage rows carry only the quote their source owns and only the
-    # worst value / tuning answer the agent declared.
-    (StatusVerificationWitnessModel, frozenset({"worst", "tuned_on_these_cases"})),
+    # worst value / tuning answer the agent declared; #1205: freshness only when it was derived.
+    (StatusVerificationWitnessModel, frozenset({"worst", "tuned_on_these_cases", "freshness"})),
     (
         StatusVerificationCriterionModel,
         frozenset({"task_criterion_quote", "obligation_criterion_quote"}),
@@ -271,6 +276,12 @@ _RESULT_OPTIONAL_NON_NULL: tuple[tuple[type[BaseModel], frozenset[str]], ...] = 
                 "closure_readiness",
                 # #1139: a legacy MCP-only advisory preview; current bridges never synthesize it.
                 "review_delivery",
+                # #1139: a copy of ``closure_readiness.evidence_basis_summary``, absent with it.
+                "agent_status_line",
+                # #1162: absent unless this check recorded an advisory row.
+                "correctness_advisories",
+                # #1207: fixed wording, absent unless the check delivers reviewer guidance.
+                "review_guidance",
             }
         ),
     ),
@@ -281,7 +292,8 @@ _RESULT_OPTIONAL_NON_NULL: tuple[tuple[type[BaseModel], frozenset[str]], ...] = 
     (CheckAwaitingHumanModel, frozenset({"specification_preflight"})),
     # Issue #1048 (ADR-047): the read-only inspection branch.
     (CheckInspectionModel, frozenset({"observations_awaited"})),
-    (CheckInspectionRemainingModel, frozenset({"predicted_conclusion"})),
+    # #1209: absent when no fix-or-decline item is open.
+    (CheckInspectionRemainingModel, frozenset({"predicted_conclusion", "fix_or_decline"})),
     (CheckInspectionMissingModel, frozenset({"item_indexes"})),
     (CheckInspectionObservedModel, frozenset({"last_check_frontier"})),
     (
@@ -351,10 +363,13 @@ _RESULT_OPTIONAL_NON_NULL: tuple[tuple[type[BaseModel], frozenset[str]], ...] = 
                 "closure_state",
                 "credential_heuristic",
                 "review_mode",
+                # #1139: absent when the decision-point line counts nothing.
+                "agent_status_line",
             }
         ),
     ),
-    (StatusClosureStateModel, frozenset({"state", "agent_actionable"})),
+    # #1209: fix_or_decline is absent when no item is open.
+    (StatusClosureStateModel, frozenset({"state", "agent_actionable", "fix_or_decline"})),
     (StatusBlockedObligationModel, frozenset({"confirmation", "confirmation_event_id"})),
     (StatusCheckCauseModel, frozenset({"tool"})),
     (PublicErrorModel, frozenset({"safe_details"})),
@@ -419,8 +434,21 @@ _RESULT_OPTIONAL_NON_NULL: tuple[tuple[type[BaseModel], frozenset[str]], ...] = 
                 "acceptance_risk",
                 # #1162: absent unless an earlier correctness note has no recorded response.
                 "correctness_advisory_summary",
+                # #1162: absent while the task has no correctness advisory.
+                "correctness_advisory_counts",
+                # #975: absent unless the readiness is ready (or with limitations) and predicted.
+                "draft_receipt",
+                # #1139: absent when the decision-point line counts nothing.
+                "evidence_basis_summary",
+                # #1209: absent when no fix-or-decline item is open.
+                "fix_or_decline",
             }
         ),
+    ),
+    # #975: a draft criterion quotes exactly one source; the other excerpt is absent.
+    (
+        DraftReceiptCriterionModel,
+        frozenset({"task_criterion_excerpt", "obligation_criterion_excerpt"}),
     ),
     (
         FactLineageModel,
@@ -499,9 +527,17 @@ _RESULT_OPTIONAL_NON_NULL: tuple[tuple[type[BaseModel], frozenset[str]], ...] = 
                 "in_current_plan",
                 "closure_class",
                 "closure_basis",
+                # #1205: every current row carries it; absent on a row an earlier build shaped.
+                "evidence_basis",
             }
         ),
     ),
+    # #1205/#1194: the per-obligation evidence basis rows. A result's verification is absent when
+    # none was declared; an advice row's response fields while it has none; an assessment keeps
+    # the verified row's required claim and its snippet only when assessable.
+    (StatusEvidenceResultModel, frozenset({"verification"})),
+    (StatusEvidenceAdviceModel, frozenset({"reason", "response_event_id", "evidence_refs"})),
+    (StatusEvidenceAssessmentModel, frozenset({"requirement_or_claim", "snippet"})),
     (StatusRequestedItemModel, frozenset({"role"})),
     (StatusObservedRunModel, frozenset({"tool_name", "command_commitment", "exit_status"})),
     (StatusResultItemModel, frozenset({"observed_run"})),
@@ -1888,11 +1924,12 @@ def test_declared_coverage_rows_omit_unset_fields_and_refuse_null() -> None:
     task_row, obligation_row = wire["verification_coverage"]["criteria"]
     assert "obligation_criterion_quote" not in task_row
     assert "task_criterion_quote" not in obligation_row
-    assert not {"worst", "tuned_on_these_cases"} & task_row["witnesses"][0].keys()
+    assert not {"worst", "tuned_on_these_cases", "freshness"} & task_row["witnesses"][0].keys()
     assert StatusCoveragePageModel.model_validate(wire) == page
     for row, field in (
         (task_row["witnesses"][0], "worst"),
         (task_row["witnesses"][0], "tuned_on_these_cases"),
+        (task_row["witnesses"][0], "freshness"),
     ):
         with pytest.raises(ValidationError, match="optional_field_must_not_be_null"):
             StatusVerificationWitnessModel.model_validate({**row, field: None})
@@ -1969,6 +2006,7 @@ def test_every_result_optional_non_null_field_has_an_unset_projection_case() -> 
             for model, field in (
                 ("StatusVerificationWitnessModel", "worst"),
                 ("StatusVerificationWitnessModel", "tuned_on_these_cases"),
+                ("StatusVerificationWitnessModel", "freshness"),
                 ("StatusVerificationCriterionModel", "task_criterion_quote"),
                 ("StatusVerificationCriterionModel", "obligation_criterion_quote"),
             )
@@ -2256,7 +2294,7 @@ def test_every_result_optional_non_null_field_has_an_unset_projection_case() -> 
     )
     for model_type, fields in (
         (CheckInspectionModel, ("observations_awaited",)),
-        (CheckInspectionRemainingModel, ("predicted_conclusion",)),
+        (CheckInspectionRemainingModel, ("predicted_conclusion", "fix_or_decline")),
         (CheckInspectionMissingModel, ("item_indexes",)),
         (CheckInspectionObservedModel, ("last_check_frontier",)),
         (
@@ -2286,6 +2324,36 @@ def test_every_result_optional_non_null_field_has_an_unset_projection_case() -> 
     ):
         covered["ReadGuidanceSuccessModel", field] = (
             "test_legacy_guidance_result_omits_unset_paging_metadata"
+        )
+    # The completion-integrity series (#1222): each field projected unset on check and status.
+    for model, field in (
+        ("CheckSuccessModel", "agent_status_line"),
+        ("CheckSuccessModel", "correctness_advisories"),
+        ("CheckSuccessModel", "review_guidance"),
+        ("StatusBriefSuccessModel", "agent_status_line"),
+        ("StatusClosureStateModel", "fix_or_decline"),
+        *(
+            ("StatusClosureReadinessModel", field)
+            for field in (
+                "correctness_advisory_counts",
+                "draft_receipt",
+                "evidence_basis_summary",
+                "fix_or_decline",
+            )
+        ),
+    ):
+        covered[model, field] = "test_completion_integrity_fields_omit_when_unset"
+    for model, fields in (
+        ("StatusObligationItemModel", ("evidence_basis",)),
+        ("StatusEvidenceResultModel", ("verification",)),
+        ("StatusEvidenceAdviceModel", ("reason", "response_event_id", "evidence_refs")),
+        ("StatusEvidenceAssessmentModel", ("requirement_or_claim", "snippet")),
+    ):
+        for field in fields:
+            covered[model, field] = "test_obligation_evidence_basis_omits_unset_fields"
+    for field in DraftReceiptCriterionModel.optional_non_null_fields:
+        covered["DraftReceiptCriterionModel", field] = (
+            "test_draft_receipt_criterion_omits_the_other_source_excerpt"
         )
     expected = {
         (model_type.__name__, field)
@@ -2513,7 +2581,7 @@ def test_inspection_omits_every_unset_optional_field() -> None:
                 "findings": (),
                 "finding_count": "0",
             },
-            ("predicted_conclusion",),
+            ("predicted_conclusion", "fix_or_decline"),
         ),
         (
             CheckInspectionMissingModel,
@@ -2607,3 +2675,182 @@ def test_check_lead_and_check_outcome_omit_when_unset() -> None:
         assert field not in dumped
         with pytest.raises(ValidationError, match="optional_field_must_not_be_null"):
             StatusCheckOutcomeModel.model_validate({**outcome_body, field: None})
+
+
+_COMPLETION_INTEGRITY_READINESS_FIELDS = (
+    "correctness_advisory_counts",
+    "draft_receipt",
+    "evidence_basis_summary",
+    "fix_or_decline",
+)
+
+
+async def test_completion_integrity_fields_omit_when_unset() -> None:
+    """#1222: a task with no obligation, finding or advice counts nothing at the decision point.
+
+    The check result, the full and brief status bodies, the readiness each carries and the brief
+    closure state omit the status line, the advisory rows and counts, the reviewer guidance, the
+    draft receipt and the fix-or-decline list; every closed model refuses each as null.
+    """
+
+    app, _policy = await build_projection_application(seed=12220)
+    try:
+        started = await app.start(start_request(12221, title="Nothing counted yet"))
+        body = {
+            **request_base(protocol_id("req_", 12222)),
+            "session_id": started.session_id,
+            "writer_id": started.writer_id,
+            "expected_frontier": frontier_json(started.frontier),
+            "mode": "deterministic_only",
+        }
+        checked = await app.check(CheckRequest.model_validate(body))
+        assert isinstance(checked, CheckCommitResult)
+        check_wire = dict(
+            await project_case(
+                app, ProjectionCase("check", ControlMethod.CHECK, body, checked), 12223
+            )
+        )
+        readinesses = [cast(dict[str, JsonValue], check_wire["closure_readiness"])]
+        for field in ("agent_status_line", "correctness_advisories", "review_guidance"):
+            assert field not in check_wire, field
+            with pytest.raises(ValidationError, match="optional_field_must_not_be_null"):
+                CheckSuccessModel.model_validate({**check_wire, field: None})
+        bodies: dict[tuple[str, str], dict[str, JsonValue]] = {}
+        for seed, (view, detail) in enumerate(
+            (("compact", "full"), ("compact", "brief"), ("obligations", "brief")), start=12230
+        ):
+            status_body: dict[str, JsonValue] = {
+                **request_base(protocol_id("req_", seed)),
+                "session_id": started.session_id,
+                "writer_id": started.writer_id,
+                "view": view,
+                **({"detail": "brief"} if detail == "brief" else {}),
+            }
+            status = await app.status(StatusRequest.model_validate(status_body))
+            projected = await project_case(
+                app,
+                ProjectionCase(f"status/{view}", ControlMethod.STATUS, status_body, status),
+                seed,
+            )
+            bodies[view, detail] = dict(projected)
+            # StatusSuccessModel (full) and StatusBriefSuccessModel share the line's absence.
+            assert "agent_status_line" not in projected, (view, detail)
+        readinesses.append(
+            cast(dict[str, JsonValue], bodies["compact", "full"]["closure_readiness"])
+        )
+        readinesses.append(
+            cast(dict[str, JsonValue], bodies["compact", "brief"]["closure_readiness"])
+        )
+        for readiness in readinesses:
+            for field in _COMPLETION_INTEGRITY_READINESS_FIELDS:
+                assert field not in readiness, field
+                with pytest.raises(ValidationError, match="optional_field_must_not_be_null"):
+                    StatusClosureReadinessModel.model_validate({**readiness, field: None})
+        brief = bodies["obligations", "brief"]
+        with pytest.raises(ValidationError, match="optional_field_must_not_be_null"):
+            StatusBriefSuccessModel.model_validate({**brief, "agent_status_line": None})
+        state = cast(dict[str, JsonValue], brief["closure_state"])
+        assert "fix_or_decline" not in state
+        with pytest.raises(ValidationError, match="optional_field_must_not_be_null"):
+            StatusClosureStateModel.model_validate({**state, "fix_or_decline": None})
+    finally:
+        await app.close()
+
+
+async def test_obligation_evidence_basis_omits_unset_fields() -> None:
+    """#1205/#1194: the per-obligation evidence basis omits what was never recorded.
+
+    The current service fills ``evidence_basis`` on every obligation row (``not_selected`` when
+    the evidence view has no entry for it), so its absence is only an earlier build's row; that
+    row still validates and an explicit null is refused. A result without declared verification, an advice row with
+    no recorded response and a not-assessable assessment omit those fields. An assessment's
+    ``requirement_or_claim`` is required (the reviewer's own row), so it is never omitted: it is
+    listed only so the closed model refuses it as null.
+    """
+
+    app, session_id, writer_id = await _publish_obligation(12240, acceptance_criteria=None)
+    try:
+        projected = await _project_status(
+            app, session_id=session_id, writer_id=writer_id, view="obligations", seed=12250
+        )
+    finally:
+        await app.close()
+    row = dict(_obligation_from_projected(projected, "obligations"))
+    assert "evidence_basis" in row
+    earlier = {key: value for key, value in row.items() if key != "evidence_basis"}
+    parsed = StatusObligationItemModel.model_validate(earlier)
+    assert "evidence_basis" not in parsed.model_dump(mode="json", exclude_unset=True)
+    with pytest.raises(ValidationError, match="optional_field_must_not_be_null"):
+        StatusObligationItemModel.model_validate({**earlier, "evidence_basis": None})
+
+    result: dict[str, object] = {
+        "result_ref": protocol_id("res_", 12260),
+        "action_ref": protocol_id("act_", 12261),
+        "outcome": "success",
+        "evidence_refs": (),
+        "observed": True,
+        "verification_declared": False,
+        "freshness": "current",
+    }
+    advice: dict[str, object] = {
+        "summary": "Check the rotated case.",
+        "detail": "Add a rotated-receptacle case.",
+        "subject_refs": (protocol_id("obl_", 12262),),
+        "advisory_id": protocol_id("evt_", 12263) + ":1",
+        "disposition": "no_recorded_response",
+    }
+    assessment: dict[str, object] = {
+        "requirement_or_claim": "Every row is sorted by id.",
+        "verdict": "not_assessable",
+        "cited_refs": (protocol_id("obl_", 12262),),
+        "check_event_id": protocol_id("evt_", 12264),
+        "checked_frontier": "3",
+        "applicability": "current",
+    }
+    basis = StatusObligationEvidenceModel.model_validate(
+        {
+            "availability": "recorded",
+            "results": (result,),
+            "advisories": (advice,),
+            "assessments": (assessment,),
+        }
+    ).model_dump(mode="json", exclude_unset=True)
+    rows: tuple[tuple[type[BaseModel], dict[str, object], dict[str, Any], tuple[str, ...]], ...] = (
+        (StatusEvidenceResultModel, result, basis["results"][0], ("verification",)),
+        (
+            StatusEvidenceAdviceModel,
+            advice,
+            basis["advisories"][0],
+            ("reason", "response_event_id", "evidence_refs"),
+        ),
+        (StatusEvidenceAssessmentModel, assessment, basis["assessments"][0], ("snippet",)),
+    )
+    for model_type, payload, dumped, absent in rows:
+        for field in absent:
+            assert field not in dumped, (model_type.__name__, field)
+        for field in cast(frozenset[str], getattr(model_type, "optional_non_null_fields")):
+            with pytest.raises(ValidationError, match="optional_field_must_not_be_null"):
+                model_type.model_validate({**payload, field: None})
+    assert basis["assessments"][0]["requirement_or_claim"] == "Every row is sorted by id."
+
+
+def test_draft_receipt_criterion_omits_the_other_source_excerpt() -> None:
+    """#975: a draft criterion quotes exactly one source; the other excerpt is absent, never null."""
+
+    for source, present, absent in (
+        ("task_statement", "task_criterion_excerpt", "obligation_criterion_excerpt"),
+        ("obligation", "obligation_criterion_excerpt", "task_criterion_excerpt"),
+    ):
+        payload = {
+            present: "Every row must be sorted by id.",
+            "source": source,
+            "standing": "none",
+            "refs": (),
+        }
+        dumped = DraftReceiptCriterionModel.model_validate(payload).model_dump(
+            mode="json", exclude_unset=True
+        )
+        assert absent not in dumped
+        assert dumped[present] == "Every row must be sorted by id."
+        with pytest.raises(ValidationError, match="optional_field_must_not_be_null"):
+            DraftReceiptCriterionModel.model_validate({**payload, absent: None})
