@@ -24,6 +24,8 @@ from finishup.adapters.providers.openai_chat_completions import (
 )
 from finishup.adapters.providers.openai_responses import (
     CHALLENGE_FIELD_GLOSSARY,
+    DECLARED_TEST_VERDICT_DESCRIPTION,
+    DECLARED_TEST_VERDICT_FIELD_GLOSSARY,
     FINDING_KIND_GLOSSARY,
     JUDGMENT_JSON_SCHEMA,
     MISSING_ITEM_FIELD_GLOSSARY,
@@ -294,6 +296,8 @@ def test_request_schema_root_is_an_object_never_a_union() -> None:
                 # conclusion branch, sent by strict output as a required nullable field.
                 if ".ProviderJudgment" in path:
                     optional.add("strongest_remaining_check")
+                    # #1145: declared-test verdicts are optional the same way.
+                    optional.add("declared_test_verdicts")
                 assert set(properties) - optional == set(required), path
             for key, value in source.items():
                 if key in {"properties", "$defs"}:
@@ -355,6 +359,7 @@ def test_strict_wire_output_with_null_snippet_decodes_under_the_contract() -> No
             "reviewer_challenges": [],
             # Strict output sends every optional field, null when absent (#1162).
             "strongest_remaining_check": None,
+            "declared_test_verdicts": None,
             "verified": [
                 {
                     "requirement_or_claim": "Supported row",
@@ -412,6 +417,8 @@ def test_request_schema_carries_no_docstring_commentary() -> None:
         | set(MISSING_ITEM_FIELD_GLOSSARY.values())
         | set(REMAINING_CHECK_FIELD_GLOSSARY.values())
         | {REMAINING_CHECK_DESCRIPTION}
+        | set(DECLARED_TEST_VERDICT_FIELD_GLOSSARY.values())
+        | {DECLARED_TEST_VERDICT_DESCRIPTION}
     )
     descriptions = _annotations(JUDGMENT_JSON_SCHEMA, "description")
     assert descriptions

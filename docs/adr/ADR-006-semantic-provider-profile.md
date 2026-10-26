@@ -3529,9 +3529,10 @@ outside every reviewer root.
   170 bytes each. It is structural metadata in the envelope, not a case item, so no narrowing
   removes it, and its entries are objects so later manifest fields (#1219 `checks`,
   `expected_from`) can join them.
-- **The question.** Beside the list only, `DECLARED_TEST_QUESTION` (212 bytes) is appended last to
-  the question set: for each listed declared test, read it if needed and judge whether its expected
-  value comes from the task or an independent source, or from the implementation.
+- **The question.** Beside the list only, `DECLARED_TEST_QUESTION` (212 bytes; 241 since the #1145
+  amendment below) is appended last to the question set: for each listed declared test, read it if
+  needed and judge whether its expected value comes from the task or an independent source, or
+  from the implementation.
 - **Timing.** The whole list and the question are offered at the closing review (final phase). At
   a routine review only the tests whose digest no earlier successful review was offered are
   listed, each under the ref it was pinned with (PR #1221 review), with the question when any
@@ -3575,3 +3576,62 @@ Wire changes are in place on unreleased versions: check-result 1.3.0 to 1.7.0, c
 to 1.6.0, status-result 1.4.0/1.5.0 and outbound-case 1.2.0 (manifest fields, `declared_tests`),
 the reviewer record's `standing` enum, and egress-receipt 1.1.0 (ADR-009). The behaviour is
 service-side and identical for Codex, Claude Code and Cursor.
+
+### 2026-10-26 amendment — declared-test verdicts become tracked advice (#1145)
+
+Maintainer acknowledgement: recorded on #1145 (2026-10-25) for this scoped, advisory-only work
+(R3 of the test-quality series). It grants no credential, billing, disclosure or unrelated runtime
+authority.
+
+The #1220 list lets the closing reviewer read the agent's decisive test, but its judgment had no
+structured place to land and no identity the agent could answer. Reviewer research proposal P3:
+structured verdict rows, with a shared or vacuous expected value becoming tracked advice.
+
+- **The tag rides the entry.** A listed `declared_tests` entry carries the agent's own #1219
+  `expected_from` tag when the declaring manifest has one, so the reviewer checks the agent's claim
+  rather than guessing it. An untagged entry keeps its #1220 bytes, and a packet that lists no test
+  is byte-identical (the #1220 golden digests are unchanged).
+- **The reply field.** Every provider-judgment 1.2.0 branch gains the optional, nullable
+  `declared_test_verdicts`: at most two rows of `test_ref` (`dt1`–`dt3`), `expected_from_observed`
+  (`task_text`, `independent_source`, `shared_with_implementation`, `cannot_fail`, `not_visible`)
+  and `counter_example` (at most 300 characters, one runnable input or probe; empty when none
+  applies). Its guidance rides the schema description and glossary; the stable loop instruction is
+  unchanged (#1172). The question now names the tag and the field ("…versus its expected_from tag;
+  answer in declared_test_verdicts", 241 of its 250 bytes), still only beside the list. A malformed,
+  repeated or third row is dropped alone.
+- **Advice.** A row on a test the sent packet listed that observes `shared_with_implementation` or
+  `cannot_fail` with a non-blank counter-example becomes one #1162 advisory row (`origin:
+  declared_test_verdict`, with the test's pinned `test_digest`). Its text is FinishUP's fixed
+  sentence around the agent's path and criterion and the reviewer's probe, and it shows the agent's
+  tag beside the reviewer's observation, so a contradiction is visible: "Your test <path> for
+  '<criterion>' takes its expected value from the implementation (you tagged
+  expected_from=task_text; the reviewer observed shared_with_implementation). Run: <probe>, or show
+  it fails on a deliberately broken scratch copy, or decline with a reason." The probe is runnable,
+  so it is kept verbatim (only control characters other than newline and tab are dropped); a
+  multi-line probe follows the sentence in a fenced block (PR #1224 review). Every other verdict
+  stays in the encrypted review response only. The row is non-blocking and answered once through
+  `respond`, like every advisory row.
+- **The small-channel gate.** A review on a channel no larger than the minimal policy's lists no
+  declared test and asks no declared-test question (PR #1221 review), so it never names the field
+  and no verdict is read there: its packet and first exchange stay byte-identical, tagged test or
+  not. The reply schema stays one per release (#1172), so it carries the nullable field there too.
+- **Never twice, at most two.** The key is the digest: a test whose bytes an earlier
+  `declared_test_verdict` row already carries is never advised again, answered or not (a fixed
+  summary line names the earlier identity); a changed test may be advised again. A task carries at
+  most two such rows; further ones are named only as a count in a fixed summary line. Both rules
+  read the frozen prefix, so recovery mints identically.
+
+Cost (measured, compact JSON). With no listed test the packet and the first exchange are
+unchanged. With a listed test, a tagged entry is 40 bytes longer than an untagged one (203 to 243
+bytes with a 30-byte path) and the question 29 bytes longer (212 to 241), on every exchange of
+that review before JSON-string escaping. The strict reply schema, sent beside every exchange of
+every review but outside the exchange's byte plan (and part of the static, cacheable prefix), grows
+from 18,708 to 20,170 bytes (+1,462, about 365 tokens); its digest changes once, which resets a
+provider prompt cache once. The loop instruction stays 7,634 bytes. A strict reply always carries
+`"declared_test_verdicts":null` (30 bytes); two verdict rows cost the reviewer at most about 800
+output bytes.
+
+Wire changes are in place on unreleased versions: provider-judgment 1.2.0 and reviewer-reply 1.0.0
+(`declared_test_verdicts`), check-recorded 1.6.0 (`origin` enum, `test_digest`), check-result
+1.6.0/1.7.0 and status-result 1.4.0/1.5.0 (`origin` enum), outbound-case 1.2.0 (`expected_from` on
+a listed entry). The behaviour is service-side and identical for Codex, Claude Code and Cursor.

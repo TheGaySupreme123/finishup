@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import inspect
+import re
+import unicodedata
 from collections.abc import Awaitable, Callable, Iterable, Mapping
 from dataclasses import dataclass, replace
 from functools import partial
@@ -21,8 +23,10 @@ from finishup.application.missing_for_assessment import (
     unsupported_data_type,
 )
 from finishup.application.review_concern import answer_bound, concern_material_after
+from finishup.domain.bounded_text import clip_to_limit
 from finishup.domain.coordination import CoordinationError, CoordinationErrorCode
 from finishup.domain.correctness_advisories import (
+    DECLARED_TEST_VERDICT_ORIGIN,
     MAX_ADVISORIES_PER_CHECK,
     TRACKED_ADVICE_FAMILIES,
     validate_advisories,
@@ -113,6 +117,7 @@ from finishup.domain.values import (
     Frontier,
     JsonObject,
     ObligationId,
+    ResultId,
     SemanticContinuation,
     claim_id,
     event_id,
@@ -149,6 +154,12 @@ from finishup.kernel.concern import (
 from finishup.kernel.correctness_advisories import (
     CorrectnessAdvisory,
     correctness_advisory_index,
+)
+from finishup.kernel.declared_tests import (
+    ADVISED_TEST_VERDICTS,
+    MAX_DECLARED_TEST_ADVICE_PER_TASK,
+    DeclaredTest,
+    declared_test_criterion_quote,
 )
 from finishup.kernel.delivered_set import (
     DECLARED_OUTPUT_CONTENT_MOVED_GAP,
@@ -2418,6 +2429,9 @@ class FinalSemanticEvaluation:
     reviewer_citable_refs: frozenset[str] = frozenset()
     # Each file read's ``alias:path`` by call, kept only in the encrypted review response.
     reviewer_paths: Mapping[int, str] | None = None
+    # #1145: the declared tests the sent packet listed (``dt<n>`` refs, paths, pinned digests,
+    # the agent's tags), so the reviewer's verdicts fence to them. In process only.
+    case_declared_tests: tuple[DeclaredTest, ...] = ()
     # Selector-only diagnostics; private payload in the encrypted attempt response, never public.
     reviewer_read_usage: tuple[Mapping[str, JsonValue], ...] | None = None
 
@@ -4665,8 +4679,12 @@ def validate_semantic_judgment(
     agent_linked_runs: frozenset[EventId] | None = frozenset(),
     prior_advisories: tuple[CorrectnessAdvisory, ...] = (),
     included_refs: frozenset[str] | None = None,
+    declared_tests: tuple[DeclaredTest, ...] = (),
 ) -> SemanticJudgmentReview:
     """Fence AI-powered challenges to the exact frozen refs, coverage, and final provenance.
+
+    ``declared_tests`` are the tests the sent packet listed (#1145): a declared-test verdict is
+    read only for one of them, and becomes tracked advice per ``_declared_test_advice``.
 
     ``prior_advisories`` are the task's advisory rows in the frozen prefix (#1162 tracked
     advice): a verified row or strongest remaining check that repeats one of them with no newer
@@ -4765,6 +4783,7 @@ def validate_semantic_judgment(
             judgment,
             room=MAX_ADVISORIES_PER_CHECK,
             prior=prior_advisories,
+            declared_tests=declared_tests,
         )
         review_summary = _summary_with_fixed_notes(review_summary, tracked_notes)
         return _judgment_review(
@@ -5064,6 +5083,7 @@ def validate_semantic_judgment(
         judgment,
         room=MAX_ADVISORIES_PER_CHECK - len(advisory_rows),
         prior=prior_advisories,
+        declared_tests=declared_tests,
         # #1211 counter-example notes and this review's findings already carry an identity: a
         # tracked candidate about the same concern is not raised twice.
         same_review=(
@@ -5174,6 +5194,7 @@ def _with_tracked_advice(
     room: int,
     prior: tuple[CorrectnessAdvisory, ...],
     same_review: tuple[tuple[str, ...], ...] = (),
+    declared_tests: tuple[DeclaredTest, ...] = (),
 ) -> tuple[tuple[JsonObject, ...], tuple[str, ...]]:
     """Tracked advice rows (#1162) for a fenced judgment, and FinishUP's fixed notes about them.
 
@@ -5259,6 +5280,11 @@ def _with_tracked_advice(
             overflow += 1
             continue
         rows.append(row)
+    test_rows, test_notes, test_overflow = _declared_test_advice(
+        case, judgment, declared_tests, room=room - len(rows), prior=prior
+    )
+    rows.extend(test_rows)
+    overflow += test_overflow
     notes: list[str] = []
     if folded:
         notes.append(_TRACKED_ADVICE_FOLDED_NOTE.format(count=folded_items, ids=", ".join(folded)))
@@ -5266,7 +5292,167 @@ def _with_tracked_advice(
         notes.append(_TRACKED_ADVICE_SAME_REVIEW_NOTE.format(count=repeated_here))
     if overflow:
         notes.append(_TRACKED_ADVICE_NO_ROOM_NOTE.format(count=overflow))
+    notes.extend(test_notes)
     return tuple(rows), tuple(notes)
+
+
+# #1145: FinishUP's fixed words around a declared-test verdict; the path and criterion quote are
+# the agent's own, the counter-example the reviewer's (bounded to 300 characters by the schema).
+_TEST_VERDICT_PHRASES: Final = {
+    "shared_with_implementation": "takes its expected value from the implementation",
+    "cannot_fail": "cannot fail as written",
+}
+_TEST_VERDICT_ADVICE: Final = (
+    "Your test {path} for {criterion} {phrase}{tag}. Run: {probe}, or show it fails on a "
+    "deliberately broken scratch copy, or decline with a reason."
+)
+# A multi-line probe is shown verbatim in a fenced block after the sentence (PR #1224 review).
+_TEST_VERDICT_ADVICE_BLOCK: Final = (
+    "Your test {path} for {criterion} {phrase}{tag}. Run the reviewer's probe below, or show it "
+    "fails on a deliberately broken scratch copy, or decline with a reason.\n{fence}\n{probe}\n"
+    "{fence}"
+)
+_TEST_VERDICT_TAG: Final = " (you tagged expected_from={tag}; the reviewer observed {observed})"
+_TEST_VERDICT_FOLDED_NOTE: Final = (
+    "FinishUP note: {count} declared-test verdict(s) concern test bytes already advised and were "
+    "not raised again: {ids}."
+)
+_TEST_VERDICT_CAPPED_NOTE: Final = (
+    "FinishUP note: {count} declared-test verdict(s) were not raised: at most "
+    f"{MAX_DECLARED_TEST_ADVICE_PER_TASK} per task."
+)
+_MAX_ADVICE_CRITERION_CHARS: Final = 120
+
+
+def _verbatim_probe(value: str) -> str:
+    """The reviewer's counter-example exactly as sent (spacing and line breaks are part of a
+    runnable probe), less control characters other than newline and tab; ``\r\n`` reads as a
+    newline."""
+
+    text = value.replace("\r\n", "\n")
+    return "".join(
+        character
+        for character in text
+        if character in "\n\t" or unicodedata.category(character) != "Cc"
+    )
+
+
+def _probe_fence(probe: str) -> str:
+    """A backtick fence longer than any backtick run in ``probe``, so the block stays closed."""
+
+    longest = max((len(run) for run in re.findall(r"`+", probe)), default=0)
+    return "`" * max(3, longest + 1)
+
+
+def _declared_test_subjects(case: DeterministicCase, criterion_ref: str) -> tuple[str, ...]:
+    """The advisory subject a listed test's criterion ref names: an obligation or claim as is, a
+    declaring result as its recording event, anything else none."""
+
+    if criterion_ref.startswith(("obl_", "clm_")):
+        return (criterion_ref,)
+    row = case.projection.results.get(cast(ResultId, criterion_ref))
+    return () if row is None else (str(row.source_event_id),)
+
+
+def _declared_test_advice(
+    case: DeterministicCase,
+    judgment: SemanticJudgment,
+    declared_tests: tuple[DeclaredTest, ...],
+    *,
+    room: int,
+    prior: tuple[CorrectnessAdvisory, ...],
+) -> tuple[tuple[JsonObject, ...], tuple[str, ...], int]:
+    """Tracked advice for the reviewer's declared-test verdicts (#1145), its notes and overflow.
+
+    Only a verdict on a test the sent packet listed, observing ``shared_with_implementation`` or
+    ``cannot_fail`` with a non-empty counter-example, becomes an advisory row, keyed on the
+    test's pinned digest: a digest any earlier row of this origin carries is never advised again
+    (whatever the answer), and a task carries at most two such rows. Every other verdict stays in
+    the encrypted review response only. Pure over the frozen case and prefix, so recovery agrees.
+    """
+
+    if not declared_tests or not judgment.declared_test_verdicts:
+        return (), (), 0
+    listed = {test.ref: test for test in declared_tests}
+    earlier = tuple(
+        row for row in prior if row.concern.get("origin") == DECLARED_TEST_VERDICT_ORIGIN
+    )
+    advised = {str(row.concern.get("test_digest")): row.advisory_id for row in earlier}
+    allowance = max(0, MAX_DECLARED_TEST_ADVICE_PER_TASK - len(earlier))
+    rows: list[JsonObject] = []
+    minted: set[str] = set()
+    folded: list[str] = []
+    capped = 0
+    overflow = 0
+    for verdict in judgment.declared_test_verdicts:
+        test = listed.get(verdict.test_ref)
+        probe = _verbatim_probe(verdict.counter_example)
+        if (
+            test is None
+            or verdict.expected_from_observed not in ADVISED_TEST_VERDICTS
+            or not probe.strip()
+        ):
+            continue
+        if test.content_digest in minted:
+            continue
+        if test.content_digest in advised:
+            if advised[test.content_digest] not in folded:
+                folded.append(advised[test.content_digest])
+            continue
+        if len(rows) >= allowance:
+            capped += 1
+            continue
+        if len(rows) >= room:
+            overflow += 1
+            continue
+        quote = declared_test_criterion_quote(case.projection, test.path)
+        criterion = (
+            test.criterion_ref
+            if quote is None
+            else "'"
+            + clip_to_limit(
+                " ".join(quote.split()), _MAX_ADVICE_CRITERION_CHARS, marker="...", ascii_only=False
+            )
+            + "'"
+        )
+        multi_line = "\n" in probe
+        text = (_TEST_VERDICT_ADVICE_BLOCK if multi_line else _TEST_VERDICT_ADVICE).format(
+            path=test.path,
+            criterion=criterion,
+            phrase=_TEST_VERDICT_PHRASES[verdict.expected_from_observed],
+            tag=(
+                ""
+                if test.expected_from is None
+                else _TEST_VERDICT_TAG.format(
+                    tag=test.expected_from, observed=verdict.expected_from_observed
+                )
+            ),
+            probe=probe,
+            fence=_probe_fence(probe),
+        )
+        bounded = _bounded_review_text(text)
+        row = JsonObject(
+            {
+                "summary": bounded,
+                "detail": bounded,
+                "subject_refs": _declared_test_subjects(case, test.criterion_ref),
+                "origin": DECLARED_TEST_VERDICT_ORIGIN,
+                "test_digest": test.content_digest,
+            }
+        )
+        try:
+            validate_advisories((row,))
+        except ValueError:
+            overflow += 1
+            continue
+        rows.append(row)
+        minted.add(test.content_digest)
+    notes: list[str] = []
+    if folded:
+        notes.append(_TEST_VERDICT_FOLDED_NOTE.format(count=len(folded), ids=", ".join(folded)))
+    if capped:
+        notes.append(_TEST_VERDICT_CAPPED_NOTE.format(count=capped))
+    return tuple(rows), tuple(notes), overflow
 
 
 def _summary_with_fixed_notes(summary: str, notes: tuple[str, ...]) -> str:
@@ -6878,6 +7064,8 @@ async def execute_check_commit(
                     prior_advisories=correctness_advisory_index(prefix_records).rows,
                     # The recorded disclosure, which a recovered response keeps (#1214 review).
                     included_refs=semantic_result.case_included_refs,
+                    # #1145: the declared tests the sent packet listed.
+                    declared_tests=semantic_result.case_declared_tests,
                 )
             except SemanticJudgmentRejected as exc:
                 # The reviewer's answer is unusable, so the check has no AI-powered review result — but the

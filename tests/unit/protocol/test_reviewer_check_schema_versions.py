@@ -281,6 +281,40 @@ def test_tracked_advice_rows_carry_a_closed_origin_on_1_6_and_the_check_result()
     )
 
 
+def test_declared_test_verdict_rows_carry_their_digest_on_1_6_and_the_check_result() -> None:
+    """#1145: the golden verdict rows decode, and the advisory row they become validates."""
+
+    from finishup.adapters.providers.openai_responses import normalize_judgment
+    from finishup.domain.correctness_advisories import validate_advisories
+
+    vector = json.loads(_FIXTURE.read_bytes())["input"]["declared_test_advice"]
+    body = _event_body()
+    body["correctness_advisories"] = [vector["check_recorded_row"]]
+    validate_schema_instance("check-recorded", "1.6.0", body)
+    decoded = _decode("1.6.0", body)
+    assert json.loads(canonical_encode(encode_payload(decoded)))["correctness_advisories"] == [
+        vector["check_recorded_row"]
+    ]
+    validate_advisories((cast(JsonObject, freeze_json(vector["check_recorded_row"])),))
+    instance = {**cast(dict[str, Any], json.loads(json.dumps(_check_result_wire())))}
+    instance["correctness_advisories"] = [vector["check_result_row"]]
+    for version in ("1.6.0", "1.7.0"):
+        validate_schema_instance("check-result", version, instance)
+    CheckResult.model_validate(instance)
+    judgment = normalize_judgment(
+        {
+            "conclusion": "no_material_discrepancy",
+            "review_summary": "Checked.",
+            "verified": [],
+            "reviewer_challenges": [],
+            "prior_finding_verdicts": [],
+            "declared_test_verdicts": vector["provider_declared_test_verdicts"],
+        },
+        require_part2=True,
+    )
+    assert [row.test_ref for row in judgment.declared_test_verdicts] == ["dt1", "dt2"]
+
+
 def test_advisory_decisions_are_typed_and_never_switch_review_mode() -> None:
     from finishup.domain.events import EventSchema, decode_payload
 

@@ -237,6 +237,35 @@ def document() -> dict[str, JsonValue]:
                     "summary": "Objects are placed inside rotated receptacles.",
                 },
             },
+            # #1145: the reviewer's declared-test verdict rows, and the tracked advisory row the
+            # shared_with_implementation one becomes (keyed on the listed test's pinned digest).
+            "declared_test_advice": {
+                "provider_declared_test_verdicts": [
+                    {
+                        "test_ref": "dt1",
+                        "expected_from_observed": "shared_with_implementation",
+                        "counter_example": "place((0, 0), rotation=90) against a hand-computed corner",
+                    },
+                    {
+                        "test_ref": "dt2",
+                        "expected_from_observed": "task_text",
+                        "counter_example": "",
+                    },
+                ],
+                "check_recorded_row": {
+                    "summary": "Your test tests/test_rotate.py for 'objects are placed inside rotated receptacles' takes its expected value from the implementation (you tagged expected_from=task_text; the reviewer observed shared_with_implementation). Run: place((0, 0), rotation=90) against a hand-computed corner, or show it fails on a deliberately broken scratch copy, or decline with a reason.",
+                    "detail": "Your test tests/test_rotate.py for 'objects are placed inside rotated receptacles' takes its expected value from the implementation (you tagged expected_from=task_text; the reviewer observed shared_with_implementation). Run: place((0, 0), rotation=90) against a hand-computed corner, or show it fails on a deliberately broken scratch copy, or decline with a reason.",
+                    "subject_refs": ["obl_00000000-0000-4000-8000-000000000003"],
+                    "origin": "declared_test_verdict",
+                    "test_digest": "sha256:" + "ab" * 32,
+                },
+                "check_result_row": {
+                    "advisory_id": "evt_00000000-0000-4000-8000-000000000002:1",
+                    "origin": "declared_test_verdict",
+                    "subject_refs": ["obl_00000000-0000-4000-8000-000000000003"],
+                    "summary": "Your test tests/test_rotate.py for 'objects are placed inside rotated receptacles' takes its expected value from the implementation (you tagged expected_from=task_text; the reviewer observed shared_with_implementation). Run: place((0, 0), rotation=90) against a hand-computed corner, or show it fails on a deliberately broken scratch copy, or decline with a reason.",
+                },
+            },
             "result_delivery": _result_delivery_vector(),
             "stopped_review": {
                 "semantic_status": "unavailable",
@@ -254,6 +283,7 @@ def document() -> dict[str, JsonValue]:
             "ADR-040:requested-review-stopped",
             "ISSUE-1139:bounded-review-delivery",
             "ISSUE-1162:non-blocking-advisory-disposition",
+            "ISSUE-1145:declared-test-verdict-advice",
             "ISSUE-1162:tracked-reviewer-advice",
         ],
         "purpose": (

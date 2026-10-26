@@ -362,3 +362,44 @@ async def test_the_minimal_policy_review_is_planned_exactly_as_before(
     assert result.review_input_manifest is not None
     assert not result.review_input_manifest.test_check_offered
     assert result.reviewer is not None and result.reviewer.as_wire()["reads_used"] == "1"
+
+
+async def test_the_agent_tag_rides_the_entry_and_the_verdict_reaches_the_check(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """#1145: through real egress, the listed entry carries the agent's ``expected_from`` tag; the
+    reviewer's verdict decodes onto the judgment beside the listed tests it fences to, and the
+    job's frozen list (what recovery rebuilds from) keeps the tag."""
+
+    test = _outside(tmp_path)
+    candidate = DeclaredTestCandidate(str(test), "res_criterion", "task_text")
+
+    def declared(_projection: object, _statement: str | None) -> tuple[DeclaredTestCandidate, ...]:
+        return (candidate,)
+
+    monkeypatch.setattr(ready_composition_module, "declared_test_candidates", declared)
+    verdict: dict[str, JsonValue] = {
+        "test_ref": "dt1",
+        "expected_from_observed": "shared_with_implementation",
+        "counter_example": "generate(min_new_tokens=4) where EOS is the 2nd sampled token",
+    }
+    final = cast(dict[str, Any], json.loads(json.dumps(_FINAL)))
+    final["reply"]["final_judgment"]["declared_test_verdicts"] = [verdict]
+    result, gateway, runtime = await composition._run(  # pyright: ignore[reportPrivateUsage]
+        tmp_path, monkeypatch, _declared(), final, policy=_ROOMY
+    )
+    assert result.status is SemanticStatus.SUCCEEDED, (result.status, result.reason)
+    listed = json.loads(_history(gateway, 0)[1][1])["review_packet"]["declared_tests"]
+    assert [(row["ref"], row["expected_from"]) for row in listed] == [("dt1", "task_text")]
+    assert [test.expected_from for test in result.case_declared_tests] == ["task_text"]
+    assert result.judgment is not None
+    (row,) = result.judgment.declared_test_verdicts
+    assert (row.test_ref, row.expected_from_observed) == ("dt1", "shared_with_implementation")
+    job = await runtime.ledger.load_semantic_job(
+        runtime.writer_id or "", composition.frozen_request()
+    )
+    assert job is not None
+    stored = await ready_composition_module._read_semantic_case(  # pyright: ignore[reportPrivateUsage]
+        runtime, job.case_object_ref
+    )
+    assert stored[-1] == listed

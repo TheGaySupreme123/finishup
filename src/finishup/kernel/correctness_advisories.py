@@ -37,6 +37,7 @@ _ORIGIN_LABELS = {
     "verified_not_supported": "reviewer row not_supported",
     "verified_not_assessable": "reviewer row not_assessable",
     "strongest_remaining_check": "reviewer's strongest remaining check",
+    "declared_test_verdict": "reviewer's declared-test verdict",
 }
 
 

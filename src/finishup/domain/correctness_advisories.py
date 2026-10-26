@@ -17,14 +17,23 @@ ADVISORY_RESPONSE_STATEMENT = "Correctness advisory disposition (agent-reported;
 # ``code_defect`` note (the first shape, kept byte-identical). The others come from the reviewer's
 # verified rows that cite an obligation or claim, and from its single strongest remaining check.
 ADVISORY_ORIGINS = frozenset(
-    {"verified_not_supported", "verified_not_assessable", "strongest_remaining_check"}
+    {
+        "verified_not_supported",
+        "verified_not_assessable",
+        "strongest_remaining_check",
+        # #1145: the reviewer found a listed declared test's expected value shared with the
+        # implementation, or the test unable to fail. Such a row also carries ``test_digest``.
+        "declared_test_verdict",
+    }
 )
+DECLARED_TEST_VERDICT_ORIGIN = "declared_test_verdict"
 # Origins whose re-raise without new material is folded onto the earlier row (finding_frontier
 # and concern identity), never minted again: both ``verified_*`` origins are one family.
 TRACKED_ADVICE_FAMILIES = {
     "verified_not_supported": "verified",
     "verified_not_assessable": "verified",
     "strongest_remaining_check": "strongest_remaining_check",
+    "declared_test_verdict": "declared_test_verdict",
 }
 
 
@@ -36,13 +45,23 @@ def validate_advisories(rows: tuple[JsonObject, ...]) -> None:
     if type(rows) is not tuple or len(rows) > MAX_ADVISORIES_PER_CHECK:
         raise ProtocolValueError("invalid_event_value_type")
     for row in rows:
-        if type(row) is not JsonObject or set(row) - {"origin"} != {
+        if type(row) is not JsonObject or set(row) - {"origin", "test_digest"} != {
             "summary",
             "detail",
             "subject_refs",
         }:
             raise ProtocolValueError("invalid_event_value_type")
         if "origin" in row and row["origin"] not in ADVISORY_ORIGINS:
+            raise ProtocolValueError("invalid_event_value_type")
+        # #1145: the pinned digest of the declared test a verdict row is about, on exactly those
+        # rows, so the same test bytes are never advised twice.
+        if (row.get("origin") == DECLARED_TEST_VERDICT_ORIGIN) != ("test_digest" in row) or (
+            "test_digest" in row
+            and (
+                type(row["test_digest"]) is not str
+                or re.fullmatch(r"sha256:[0-9a-f]{64}", cast(str, row["test_digest"])) is None
+            )
+        ):
             raise ProtocolValueError("invalid_event_value_type")
         for key in ("summary", "detail"):
             value = row[key]

@@ -2455,6 +2455,9 @@ def _correctness_advisories_schema(*, history: bool = False) -> dict[str, JsonVa
             "type": "string",
             "enum": cast(list[JsonValue], sorted(ADVISORY_ORIGINS, key=str.encode)),
         }
+        # #1145 (in place): the pinned digest of the declared test a ``declared_test_verdict`` row
+        # is about, present on exactly those rows (the decoder enforces the pairing).
+        properties["test_digest"] = {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"}
     if history:
         for key in ("summary", "detail"):
             properties[key] = {"anyOf": [properties[key], {"$ref": "#/$defs/finding_omission"}]}
@@ -2536,6 +2539,7 @@ def _check_correctness_advisories_schema() -> dict[str, JsonValue]:
                 "origin": {
                     "type": "string",
                     "enum": [
+                        "declared_test_verdict",
                         "routine_correctness_note",
                         "strongest_remaining_check",
                         "verified_not_assessable",
@@ -8163,12 +8167,21 @@ def _outbound_case_v1_2_schema(entry: _RegistryEntry) -> dict[str, JsonValue]:
         packet_required.append("prior_finding_refs")
     # Issue #1220, optional in place: the agent's declared tests the packet lists, as structural
     # metadata (the declared path, the digest pinned at check time and the criterion ref).
+    from finishup.kernel.declared_tests import DECLARED_TEST_EXPECTED_FROM
+
     packet_properties["declared_tests"] = {
         "items": {
             "additionalProperties": False,
             "properties": {
                 "content_digest": {"$ref": "#/$defs/digest"},
                 "criterion_ref": {"maxLength": 64, "minLength": 1, "type": "string"},
+                # #1145, optional in place: the agent's own #1219 tag on the declaring manifest.
+                "expected_from": {
+                    "enum": cast(
+                        list[JsonValue], sorted(DECLARED_TEST_EXPECTED_FROM, key=str.encode)
+                    ),
+                    "type": "string",
+                },
                 "path": {"maxLength": 256, "minLength": 1, "type": "string"},
                 "ref": {"enum": ["dt1", "dt2", "dt3"], "type": "string"},
             },
