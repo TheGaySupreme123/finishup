@@ -3647,8 +3647,16 @@ change the public workflow-tool schemas. The bridge environment may override the
 milliseconds, clamped to 1,000-285,000 so no override reaches that 300-second limit: `FINISHUP_MCP_DEADLINE_MS_<TOOL>` (for example
 `FINISHUP_MCP_DEADLINE_MS_RECEIPT`) sets one tool, and `FINISHUP_MCP_DEADLINE_MS` sets every tool except
 `check` (an inspection follows `FINISHUP_MCP_DEADLINE_MS_STATUS` and the global variable, never
-`FINISHUP_MCP_DEADLINE_MS_CHECK`); an unparsable value keeps the default. Raising a deadline above the host's own MCP tool
-timeout only lets the host give up first. A timed-out write has an unknown outcome: the bridge
+`FINISHUP_MCP_DEADLINE_MS_CHECK`); an unparsable value keeps the default. Each deadline bounds
+the whole tool call, not one stage: service discovery (its own 30-second cap or what remains,
+whichever is less, including a wait on another call's probe), the RPC and any reconnect share one
+monotonic deadline measured from the call's start, a reconnect never gets a fresh budget, and
+running out at any stage is the same typed `request_timeout` with its `replay_request_id` for a
+write (an exhausted discovery is never latched as an availability failure). `closure_prepare`'s
+status reads share the `status` deadline. The post-timeout probe and same-request recovery of a
+write share one 10-second window that ends no later than 295 seconds after the call started
+(#1226). Raising a deadline above the host's own MCP tool timeout only lets the host give up
+first. A timed-out write has an unknown outcome: the bridge
 must preserve its retryable failure shape, say that it may already have committed, and direct the
 caller to retry with the same `request_id` (and operation status where applicable). A timed-out
 read may simply be repeated. For a timed-out `publish_work`, `respond` or `receipt`, the bridge

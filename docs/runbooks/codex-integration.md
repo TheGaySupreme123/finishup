@@ -3319,6 +3319,8 @@ common 60-second host MCP tool limit; `start`, `publish_work` and `status` keep 
 `FINISHUP_MCP_DEADLINE_MS` (every tool except `check`; an inspection follows the `status` variables) in
 the MCP server environment to change them;
 values are milliseconds, clamped to 1,000-285,000. Keep them below the host's own tool timeout.
+Each deadline covers the whole call: connecting to (or starting) the service, the request and any
+reconnect share it, so FinishUP's typed timeout with the request id to replay arrives first.
 A timeout may follow a committed write. For `publish_work`, `respond` and `receipt` the bridge
 checks `status view=operation` once and, when the write already completed, returns its stored
 outcome directly. Otherwise use the timeout's pollable handle: `safe_details.replay_request_id`

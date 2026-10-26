@@ -8,7 +8,9 @@ import os
 import re
 import stat
 import sys
-from collections.abc import Awaitable, Callable, Mapping, Sequence
+import time
+from collections.abc import Awaitable, Callable, Generator, Mapping, Sequence
+from contextvars import ContextVar
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
@@ -229,6 +231,14 @@ _MIN_RPC_DEADLINE_MS: Final = 1_000
 # A write that timed out is probed once for its durable operation state with this budget.
 _TIMEOUT_PROBE_DEADLINE_MS: Final = 5_000
 _MAX_RPC_DEADLINE_MS: Final = 285_000
+# Review of #1226: one monotonic deadline bounds a whole tool call (service discovery, the RPC
+# and any reconnect), never one per stage. Discovery gets its own cap or what remains, whichever
+# is less. After a timeout, the operation probe and same-request recovery of a write share one
+# short window that still ends inside the host limit.
+_SERVICE_DISCOVERY_CAP_SECONDS: Final = 30.0
+_MIN_SERVICE_DISCOVERY_SECONDS: Final = 0.1
+_CALL_CEILING_MS: Final = _HOST_TOOL_CALL_LIMIT_MS - 5_000
+_POST_TIMEOUT_WINDOW_MS: Final = 10_000
 _CURSOR_ROOTS_REQUEST_TIMEOUT_SECONDS: Final = 5.0
 _MAX_CURSOR_ROOTS: Final = 32
 _MAX_CURSOR_ROOT_URI_BYTES: Final = MAX_WORKSPACE_LOCATOR_BYTES * 2
@@ -929,8 +939,43 @@ async def ensure_service_client(
     opts into retaining an availability failure only long enough for ``_latch_availability`` to
     store the shared public result. The original request identity still replays through a latched
     outage (issue #469).
+
+    Inside a tool call's budget (review of #1226) discovery, including a wait on another caller's
+    probe, ends by the call deadline: the on-demand start gets its own cap or what remains,
+    whichever is less, and running out is FinishUP's typed ``request_timeout``, never an
+    availability failure that a later call would inherit.
     """
 
+    budget = _CALL_BUDGET.get()
+    if budget is None:
+        return await _ensure_service_client(
+            runtime,
+            request_id=request_id,
+            retain_availability_failure_for_latch=retain_availability_failure_for_latch,
+            start_timeout_seconds=None,
+        )
+    remaining = budget.remaining_seconds()
+    if remaining < _MIN_SERVICE_DISCOVERY_SECONDS:
+        raise _call_timeout()
+    try:
+        async with asyncio.timeout(remaining):
+            return await _ensure_service_client(
+                runtime,
+                request_id=request_id,
+                retain_availability_failure_for_latch=retain_availability_failure_for_latch,
+                start_timeout_seconds=min(_SERVICE_DISCOVERY_CAP_SECONDS, remaining),
+            )
+    except TimeoutError:
+        raise _call_timeout() from None
+
+
+async def _ensure_service_client(
+    runtime: BridgeRuntime,
+    *,
+    request_id: str | None,
+    retain_availability_failure_for_latch: bool,
+    start_timeout_seconds: float | None,
+) -> ServiceClient:
     slot = runtime._slot  # pyright: ignore[reportPrivateUsage]
     workspace_locator = _workspace_locator_for_runtime(runtime)
     if workspace_locator is None:
@@ -961,15 +1006,33 @@ async def ensure_service_client(
                     slot.attempt_finished = asyncio.Event()
                     connected_attempt: ServiceClient | None = None
                     try:
-                        connected_attempt = await connect_service_on_demand(
-                            ControlClientKind.MCP_BRIDGE,
-                            workspace_locator=workspace_locator,
+                        connected_attempt = (
+                            await connect_service_on_demand(
+                                ControlClientKind.MCP_BRIDGE,
+                                workspace_locator=workspace_locator,
+                            )
+                            if start_timeout_seconds is None
+                            else await connect_service_on_demand(
+                                ControlClientKind.MCP_BRIDGE,
+                                workspace_locator=workspace_locator,
+                                timeout_seconds=start_timeout_seconds,
+                            )
                         )
                         await connected_attempt.connect()
                     except BaseException as exc:
                         slot.client = None
                         if connected_attempt is not None:
                             await _close_client(connected_attempt)
+                        budget = _CALL_BUDGET.get()
+                        if (
+                            budget is not None
+                            and isinstance(exc, ControlError)
+                            and exc.reason == "service_unavailable"
+                            and budget.remaining_seconds() < _MIN_SERVICE_DISCOVERY_SECONDS
+                        ):
+                            # The start ran out of this call's budget, not of its own: a typed
+                            # timeout the caller recovers from, never a latched outage.
+                            raise _call_timeout() from None
                         keep_gate = (
                             retain_availability_failure_for_latch
                             and isinstance(exc, ControlError)
@@ -2380,6 +2443,21 @@ async def _prepare_availability(
     return await _inherit_after_inflight_availability(runtime, request_id)
 
 
+async def _bounded_prepare_availability(
+    runtime: BridgeRuntime, request_id: str | None
+) -> types.CallToolResult | None:
+    """``_prepare_availability`` ended by the call deadline; running out is a typed timeout."""
+
+    budget = _CALL_BUDGET.get()
+    if budget is None:
+        return await _prepare_availability(runtime, request_id)
+    try:
+        async with asyncio.timeout(max(0.0, budget.remaining_seconds())):
+            return await _prepare_availability(runtime, request_id)
+    except TimeoutError:
+        raise _call_timeout() from None
+
+
 async def _inherit_after_inflight_availability(
     runtime: BridgeRuntime, request_id: str | None
 ) -> types.CallToolResult | None:
@@ -2402,6 +2480,91 @@ async def _inherit_after_inflight_availability(
         waited = True
         await waiter.wait()
     return await _inherit_terminal_availability(runtime, request_id, concurrent_waiter=waited)
+
+
+@dataclass(frozen=True, slots=True)
+class _CallBudget:
+    """The monotonic instants one MCP tool call must finish by (review of #1226).
+
+    ``deadline`` ends discovery, invocation and any reconnect; ``ceiling`` is never passed, even
+    by the short post-timeout probe of a write.
+    """
+
+    deadline: float
+    ceiling: float
+
+    def remaining_seconds(self) -> float:
+        return self.deadline - time.monotonic()
+
+
+_CALL_BUDGET: ContextVar[_CallBudget | None] = ContextVar("finishup_mcp_call_budget", default=None)
+
+
+@contextlib.contextmanager
+def _call_budget(tool: str) -> Generator[None]:
+    """Bound everything this tool call does by the tool's deadline, measured from now.
+
+    A nested call keeps the earlier of the two deadlines, so an inner stage never extends the
+    call. An ambiguous deadline configuration sets no budget; the caller refuses it as before.
+    """
+
+    try:
+        configured = _rpc_deadline_ms(tool)
+    except ConfigError:
+        yield
+        return
+    now = time.monotonic()
+    outer = _CALL_BUDGET.get()
+    budget = _CallBudget(now + configured / 1_000, now + _CALL_CEILING_MS / 1_000)
+    if outer is not None:
+        budget = _CallBudget(
+            min(outer.deadline, budget.deadline), min(outer.ceiling, budget.ceiling)
+        )
+    token = _CALL_BUDGET.set(budget)
+    try:
+        yield
+    finally:
+        _CALL_BUDGET.reset(token)
+
+
+@contextlib.contextmanager
+def _post_timeout_window() -> Generator[None]:
+    """A short window for probing and recovering a write whose call deadline expired."""
+
+    outer = _CALL_BUDGET.get()
+    if outer is None:
+        yield
+        return
+    deadline = min(time.monotonic() + _POST_TIMEOUT_WINDOW_MS / 1_000, outer.ceiling)
+    token = _CALL_BUDGET.set(_CallBudget(deadline, outer.ceiling))
+    try:
+        yield
+    finally:
+        _CALL_BUDGET.reset(token)
+
+
+def _call_timeout() -> ControlError:
+    return ControlError("request_timeout", retryable=True)
+
+
+def _bounded_deadline_ms(configured: int) -> int:
+    """One stage's RPC deadline: its configured value or what the call has left, if less.
+
+    An exhausted call raises FinishUP's own typed ``request_timeout``, so the caller still gets
+    its recovery handle instead of a host-side abandonment.
+    """
+
+    budget = _CALL_BUDGET.get()
+    if budget is None:
+        return configured
+    remaining_ms = int(budget.remaining_seconds() * 1_000)
+    if remaining_ms < 1:
+        raise _call_timeout()
+    return min(configured, remaining_ms)
+
+
+def _stage_deadline_ms(tool: str) -> int:
+    return _bounded_deadline_ms(_rpc_deadline_ms(tool))
 
 
 def _rpc_deadline_ms(tool: str, environ: Mapping[str, str] | None = None) -> int:
@@ -2496,7 +2659,7 @@ async def _timeout_operation_state(
             runtime,
             status_request,
             lambda service, request: service.status(
-                request, deadline_ms=_TIMEOUT_PROBE_DEADLINE_MS
+                request, deadline_ms=_bounded_deadline_ms(_TIMEOUT_PROBE_DEADLINE_MS)
             ),
             request_id,
         )
@@ -2557,6 +2720,27 @@ async def _dispatch[RequestT: BaseModel, ResultT: BaseModel](
     runtime: BridgeRuntime,
     operation: str,
 ) -> types.CallToolResult:
+    """Run one workflow tool call inside a single deadline (review of #1226).
+
+    Discovery, invocation and any reconnect share the tool's deadline, so FinishUP's typed
+    timeout, with its recovery handle, always reaches the agent before the host's own limit.
+    """
+
+    mode = arguments.get("mode") if operation == "check" else None
+    with _call_budget("status" if mode in READ_ONLY_CHECK_MODES else operation):
+        return await _dispatch_within_budget(
+            arguments, request_type, result_type, invoke, runtime, operation
+        )
+
+
+async def _dispatch_within_budget[RequestT: BaseModel, ResultT: BaseModel](
+    arguments: Mapping[str, object],
+    request_type: type[RequestT],
+    result_type: type[ResultT],
+    invoke: Callable[[ServiceClient, RequestT], Awaitable[ResultT]],
+    runtime: BridgeRuntime,
+    operation: str,
+) -> types.CallToolResult:
 
     request_id = safe_request_id_from(arguments)
     # ADR-047: a ``check`` whose mode records nothing (``inspect``) fails as a read, like the
@@ -2599,7 +2783,13 @@ async def _dispatch[RequestT: BaseModel, ResultT: BaseModel](
         _rpc_deadline_ms(deadline_tool)
     except ConfigError:
         return _deadline_config_conflict_result(request_id, operation, runtime.host_profile)
-    inherited = await _prepare_availability(runtime, request_id)
+    try:
+        inherited = await _bounded_prepare_availability(runtime, request_id)
+    except ControlError as exc:
+        # The call's budget ran out waiting on another caller's probe; nothing was sent.
+        return _control_error_result(
+            exc, request_id, operation, host_profile=runtime.host_profile, check_mode=check_mode
+        )
     if inherited is not None:
         return inherited
     # Invoke first. Once this returns, a write may already be durable; response shaping must not
@@ -2672,10 +2862,11 @@ async def _dispatch[RequestT: BaseModel, ResultT: BaseModel](
         timeout_handle: dict[str, object] | None = None
         recovered: ResultT | None = None
         if exc.reason == "request_timeout" and operation in _TIMEOUT_PROBED_WRITES:
-            probed = await _timeout_operation_state(arguments, runtime, request_id)
-            if probed is not None:
-                state, session_id, writer_id = probed
-                if state is _TimeoutOperationState.COMPLETE:
+            # The call deadline has passed; the probe and any same-request recovery share one
+            # short window that still ends inside the host limit (review of #1226).
+            with _post_timeout_window():
+                probed = await _timeout_operation_state(arguments, runtime, request_id)
+                if probed is not None and probed[0] is _TimeoutOperationState.COMPLETE:
                     # The write committed after the response deadline. Its same-request replay
                     # is idempotent and returns the stored outcome without appending again.
                     try:
@@ -2684,6 +2875,8 @@ async def _dispatch[RequestT: BaseModel, ResultT: BaseModel](
                         )
                     except Exception:  # noqa: BLE001 - fall back to the typed pollable handle
                         recovered = None
+            if probed is not None:
+                state, session_id, writer_id = probed
                 timeout_handle = {
                     "session_id": session_id,
                     "writer_id": writer_id,
@@ -2766,7 +2959,7 @@ async def dispatch_start(
         arguments,
         StartRequest,
         StartResult,
-        lambda client, request: client.start(request, deadline_ms=_rpc_deadline_ms("start")),
+        lambda client, request: client.start(request, deadline_ms=_stage_deadline_ms("start")),
         runtime,
         "start",
     )
@@ -2924,7 +3117,9 @@ async def _publish_recovery_from_envelope(
         status_result = await _invoke_with_reconnect(
             runtime,
             status_request,
-            lambda service, request: service.status(request, deadline_ms=_WORKFLOW_RPC_DEADLINE_MS),
+            lambda service, request: service.status(
+                request, deadline_ms=_bounded_deadline_ms(_WORKFLOW_RPC_DEADLINE_MS)
+            ),
             recovery_request_id,
         )
     except _CursorWorkspaceBindingError:
@@ -3158,7 +3353,7 @@ async def _dispatch_publish_without_identity(
         )
 
     def invoke(client: ServiceClient, request: PublishWorkRequest) -> Awaitable[PublishWorkResult]:
-        return client.publish_work(request, deadline_ms=_rpc_deadline_ms("publish_work"))
+        return client.publish_work(request, deadline_ms=_stage_deadline_ms("publish_work"))
 
     if _publish_is_declared_dry_run(arguments):
         # A preview appends nothing and consumes no identity.
@@ -3184,6 +3379,14 @@ async def _dispatch_publish_without_identity(
 
 async def dispatch_publish_work(
     arguments: Mapping[str, object], runtime: BridgeRuntime = BRIDGE_RUNTIME
+) -> types.CallToolResult:
+    # One deadline for the whole call, the envelope recovery read included (review of #1226).
+    with _call_budget("publish_work"):
+        return await _dispatch_publish_work_within_budget(arguments, runtime)
+
+
+async def _dispatch_publish_work_within_budget(
+    arguments: Mapping[str, object], runtime: BridgeRuntime
 ) -> types.CallToolResult:
     if "request_id" not in arguments:
         return await _dispatch_publish_without_identity(arguments, runtime)
@@ -3245,7 +3448,7 @@ async def dispatch_publish_work(
         PublishWorkRequest,
         PublishWorkResult,
         lambda client, request: client.publish_work(
-            request, deadline_ms=_rpc_deadline_ms("publish_work")
+            request, deadline_ms=_stage_deadline_ms("publish_work")
         ),
         runtime,
         "publish_work",
@@ -3270,7 +3473,7 @@ async def dispatch_check(
             request,
             # ADR-047: an inspection is a read routed like ``status``, so it takes the status
             # deadline, not the budget of a check that may run an AI-powered review.
-            deadline_ms=_rpc_deadline_ms(
+            deadline_ms=_stage_deadline_ms(
                 "status" if request.mode in READ_ONLY_CHECK_MODES else "check"
             ),
             route_profile=runtime.route_profile,
@@ -3288,7 +3491,7 @@ async def dispatch_respond(
         arguments,
         RespondRequest,
         RespondResult,
-        lambda client, request: client.respond(request, deadline_ms=_rpc_deadline_ms("respond")),
+        lambda client, request: client.respond(request, deadline_ms=_stage_deadline_ms("respond")),
         runtime,
         "respond",
     )
@@ -3312,7 +3515,7 @@ async def dispatch_status(
         StatusResult,
         lambda client, request: client.status(
             request,
-            deadline_ms=_rpc_deadline_ms("status"),
+            deadline_ms=_stage_deadline_ms("status"),
             route_profile=runtime.route_profile,
         ),
         runtime,
@@ -3326,7 +3529,23 @@ async def dispatch_closure_prepare(
     *,
     transport_request_id: types.RequestId | None = None,
 ) -> types.CallToolResult:
-    """Prepare one explicit closure request from a pinned, paginated status inventory."""
+    """Prepare one explicit closure request from a pinned, paginated status inventory.
+
+    Its status reads share one ``status`` deadline for the whole call (review of #1226).
+    """
+
+    with _call_budget("status"):
+        return await _dispatch_closure_prepare_within_budget(
+            arguments, runtime, transport_request_id=transport_request_id
+        )
+
+
+async def _dispatch_closure_prepare_within_budget(
+    arguments: Mapping[str, object],
+    runtime: BridgeRuntime,
+    *,
+    transport_request_id: types.RequestId | None,
+) -> types.CallToolResult:
 
     request_id = safe_request_id_from(arguments)
     try:
@@ -3360,7 +3579,12 @@ async def dispatch_closure_prepare(
         _rpc_deadline_ms("status")
     except ConfigError:
         return _deadline_config_conflict_result(request_id, "closure_prepare", runtime.host_profile)
-    inherited = await _prepare_availability(runtime, request_id)
+    try:
+        inherited = await _bounded_prepare_availability(runtime, request_id)
+    except ControlError as exc:
+        return _control_error_result(
+            exc, request_id, "closure_prepare", host_profile=runtime.host_profile
+        )
     if inherited is not None:
         return inherited
 
@@ -3370,7 +3594,7 @@ async def dispatch_closure_prepare(
             status_request,
             lambda client, current: client.status(
                 current,
-                deadline_ms=_rpc_deadline_ms("status"),
+                deadline_ms=_stage_deadline_ms("status"),
                 route_profile=runtime.route_profile,
             ),
             request_id,
@@ -3538,7 +3762,7 @@ async def dispatch_receipt(
         arguments,
         ReceiptRequest,
         ReceiptResult,
-        lambda client, request: client.receipt(request, deadline_ms=_rpc_deadline_ms("receipt")),
+        lambda client, request: client.receipt(request, deadline_ms=_stage_deadline_ms("receipt")),
         runtime,
         "receipt",
     )

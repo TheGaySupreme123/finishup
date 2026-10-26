@@ -103,8 +103,10 @@ def _wire(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, connections: list[obj
     monkeypatch.setattr(diagnostics, "log_dir", lambda: tmp_path)
     attempts: list[str] = []
 
-    async def on_demand(_kind: object, *, workspace_locator: object = None) -> object:
-        del workspace_locator
+    async def on_demand(
+        _kind: object, *, workspace_locator: object = None, timeout_seconds: float = 30.0
+    ) -> object:
+        del workspace_locator, timeout_seconds
         attempts.append("connect")
         if not connections:
             raise ControlError("service_unavailable", retryable=True)

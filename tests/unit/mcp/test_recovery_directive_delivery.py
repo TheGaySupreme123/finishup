@@ -235,7 +235,9 @@ class TestAnInspectionFailsAsARead:
         finally:
             await bridge.close_bridge_runtime(runtime)
 
-        assert client.deadlines == [deadline]
+        # The RPC gets what remains of the one call deadline (review of #1226), never more.
+        (sent,) = client.deadlines
+        assert sent is not None and deadline - 1_000 < sent <= deadline
         error = _error_of(result)
         assert error["code"] == PublicErrorCode.SERVICE_UNAVAILABLE.value
         assert error["retryable"] is True
