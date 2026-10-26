@@ -4236,6 +4236,8 @@ local `finishup record-test` helper for an already-run script and its small JSON
 The optional result manifest quotes a recorded criterion and declares data source, counts,
 failures, optional worst value and tuning. The helper reads files and records their digests; it
 does not execute tests or copy the files' text into the result.
+Optional `checks` and `expected_from` (#1219) ride the same shared path, including
+`record-test --checks/--expected-from`; there is no host-specific behavior.
 Parsed counts and coverage remain agent-declared; a digest never proves execution or correctness.
 The shared guidance asks for one discriminating independent check per criterion, visible failures
 and a rerun of the shipped revision. Repeated unchanged runs and redundant tests add no coverage.
@@ -4252,6 +4254,8 @@ the agent's claim only or none, open fix-or-decline items and unanswered advice 
 records, not correctness. Codex reads the structured result only, so it reads the draft as `closure_readiness.draft_receipt`. It is never a Stop item. A closing review after an
 earlier review also asks whether a repair withholds a requested output (an ID'd finding).
 See [the result recipe](../../guidance/request-templates.md#publish-work-result).
+
+**Declared test reads (#1220, 2026-10-25). Host decision: shared service support.** When a manifest names its `test_file`, the closing review (and the first review after that file is new or changed) lists up to three such files by path, check-time digest and criterion ref, and the reviewer may read one through `read_file` root `t1` (`path=dt<n>`, at most 4 KiB, refused if the file changed), even outside the workspace. Nothing here is host-specific: Codex needs no new capture or setting, and the check result's review input manifest says `test_check_offered` on every host. Listed only when the review offers reads, repository excerpts are allowed and the list fits (never at the minimal policy). See ADR-006 and ADR-009, 2026-10-25 (#1220).
 
 This shared transport decision applies on macOS, Linux and Windows through WSL 2. Native host and
 platform execution is not established by the shared contract tests; issue #1182 owns that follow-up.

@@ -307,6 +307,11 @@ def build_verification_coverage(
             or freshness_state == "legacy"
             and row.source_frontier < latest_edit,
             freshness_state,
+            # Display-only (#1219): never in a run identity, a flag or the witness ranking.
+            checks=manifest.checks,
+            expected_from=(
+                None if manifest.expected_from is None else manifest.expected_from.value
+            ),
         )
         # A different command, provenance, tuning status, or case count cannot erase a failed
         # condition. Absent a readable command, this run cannot supersede any earlier run.

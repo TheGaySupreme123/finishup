@@ -108,6 +108,15 @@ VERIFICATION_DATA_SOURCES: Final = (
     "stated_environment",
     "unknown",
 )
+# Issue #1219: the closed ``expected_from`` vocabulary (the event enum's exact wire values).
+VERIFICATION_EXPECTED_FROM: Final = (
+    "task_text",
+    "independent_source",
+    "own_reimplementation",
+    "implementation_output",
+    "hand_computed",
+)
+MAX_VERIFICATION_CHECKS_CHARACTERS: Final = 200
 # Human labels. Data scope and tuning are independent axes: public cases the agent tuned on
 # carry both ``public_only`` and ``own_or_tuned_only``, and the labels say so plainly.
 _FLAG_LABELS: Final[Mapping[str, str]] = {
@@ -188,6 +197,9 @@ class VerificationWitness:
     stale: bool = False
     # Absent on issued receipts. Legacy is only a latest-edit candidate, never a per-run verdict.
     freshness: str | None = None
+    # Issue #1219: optional declarations carried for display; never part of a flag or identity.
+    checks: str | None = None
+    expected_from: str | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "result_id", result_id(self.result_id))
@@ -206,6 +218,15 @@ class VerificationWitness:
                 self.worst is not None
                 and (type(self.worst) is not str or not 1 <= len(self.worst) <= 64)
             )
+            or (
+                self.checks is not None
+                and (
+                    type(self.checks) is not str
+                    or not 1 <= len(self.checks) <= MAX_VERIFICATION_CHECKS_CHARACTERS
+                )
+            )
+            or self.expected_from is not None
+            and self.expected_from not in VERIFICATION_EXPECTED_FROM
             or type(self.stale) is not bool
             or self.freshness is not None
             and type(self.freshness) is not str
@@ -302,6 +323,12 @@ def verification_coverage_to_json(value: VerificationCoverage) -> dict[str, Json
                             else {"tuned_on_these_cases": witness.tuned_on_these_cases}
                         ),
                         **({} if witness.worst is None else {"worst": witness.worst}),
+                        **({} if witness.checks is None else {"checks": witness.checks}),
+                        **(
+                            {}
+                            if witness.expected_from is None
+                            else {"expected_from": witness.expected_from}
+                        ),
                     }
                     for witness in row.witnesses
                 ],
@@ -360,7 +387,9 @@ def verification_coverage_from_json(value: object) -> VerificationCoverage:
             required = {"result_id", "action_id", "data_source", "cases", "failing", "stale"}
             if (
                 not required <= set(witness)
-                or set(witness) - required - {"worst", "tuned_on_these_cases", "freshness"}
+                or set(witness)
+                - required
+                - {"worst", "tuned_on_these_cases", "freshness", "checks", "expected_from"}
                 or "freshness" in witness
                 and witness["freshness"] is None
             ):
@@ -376,6 +405,8 @@ def verification_coverage_from_json(value: object) -> VerificationCoverage:
                     freshness=cast(str | None, witness.get("freshness")),
                     worst=cast(str | None, witness.get("worst")),
                     tuned_on_these_cases=cast(bool | None, witness.get("tuned_on_these_cases")),
+                    checks=cast(str | None, witness.get("checks")),
+                    expected_from=cast(str | None, witness.get("expected_from")),
                 )
             )
         rows.append(
@@ -415,6 +446,10 @@ def verification_coverage_lines(
                 detail += "; tuned on these cases"
             elif witness.tuned_on_these_cases is None:
                 detail += "; tuning not declared"
+            if witness.expected_from is not None:
+                detail += "; expected from " + witness.expected_from.replace("_", " ")
+            if witness.checks is not None and include_content:
+                detail += "; checks=" + " ".join(witness.checks.split())
             detail += _freshness_label(witness.freshness, witness.stale)
             lines.append(detail + ".")
         if row.omitted_witnesses:
@@ -466,6 +501,14 @@ def verification_coverage_wire_lines(value: Mapping[str, object]) -> tuple[str, 
                     detail += "; worst value withheld"
                 if witness.get("tuned_on_these_cases") is True:
                     detail += "; tuned on these cases"
+                expected = witness.get("expected_from")
+                if isinstance(expected, str) and expected in VERIFICATION_EXPECTED_FROM:
+                    detail += "; expected from " + expected.replace("_", " ")
+                checks = witness.get("checks")
+                if isinstance(checks, str):
+                    detail += "; checks=" + " ".join(checks.split())
+                elif checks is not None:
+                    detail += "; checks text withheld"
                 detail += _freshness_label(witness.get("freshness"), witness.get("stale") is True)
                 lines.append(detail + ".")
         if row.get("omitted_witnesses"):

@@ -41,10 +41,14 @@ from itertools import islice
 from pathlib import Path
 from typing import Final, Literal
 
-from finishup.adapters.home_project_reads import home_private_path
+from finishup.adapters.home_project_reads import home_private_location, home_private_path
 from finishup.adapters.input_summary import declared_binary_format, summarize_task_input
 from finishup.config.foreign_write import writable_by_others
-from finishup.domain.privacy import admitted_input_root_valid
+from finishup.domain.privacy import (
+    SYSTEM_DIRECTORY_PREFIXES,
+    admitted_input_root_valid,
+    system_directory_path,
+)
 from finishup.domain.repository_excerpt import credential_named_bytes
 from finishup.observability.privacy import scan_for_sensitive_content
 from finishup.ports.change_capture import (
@@ -60,6 +64,7 @@ __all__ = [
     "ReadDeadline",
     "clear_cut",
     "list_beneath",
+    "read_declared_test",
     "read_text_beneath",
     "read_ends_beneath",
     "read_outside_inputs",
@@ -733,6 +738,98 @@ def read_text_beneath(
     if ends is None:
         return None
     return (b"" if ends[2] > len(ends[0]) else ends[0], ends[2])
+
+
+def _beneath_system_directory(path: str) -> bool:
+    """Whether an ancestor of ``path`` is a system directory by device and inode (#1220 review).
+
+    Ancestors are examined without following a link (a read never follows one beneath its root);
+    the system directories are taken both as named and as their link targets. An ancestor that
+    cannot be examined, other than one that does not exist, refuses the path.
+    """
+
+    refused: set[tuple[int, int]] = set()
+    for prefix in SYSTEM_DIRECTORY_PREFIXES:
+        for probe in (os.lstat, os.stat):
+            try:
+                facts = probe(prefix)
+            except OSError:
+                continue
+            refused.add((facts.st_dev, facts.st_ino))
+    parts = path.strip("/").split("/")
+    current = ""
+    for part in parts[:-1]:
+        current += "/" + part
+        try:
+            facts = os.lstat(current)
+        except FileNotFoundError:
+            return False
+        except OSError:
+            return True
+        if (facts.st_dev, facts.st_ino) in refused:
+            return True
+    return False
+
+
+def read_declared_test(
+    location: str, *, excluded: tuple[str, ...], expired: Callable[[], bool] = lambda: False
+) -> bytes | None:
+    """The bytes of one agent-declared test file (issue #1220), or ``None``; never raises.
+
+    ``location`` is the absolute, normalized path ``kernel.declared_tests`` admitted by shape.
+    The read is the outside read's walk with ``/`` plus the first component as its root: every
+    directory on the way and the file pass the same trust test, hidden and credential-named
+    components are refused, ``excluded`` (FinishUP's own directories) is never entered, and a
+    file that changes while it is read is not returned. A first component that is a link root
+    owns (``/tmp`` or ``/var`` on macOS) is replaced by its target first; no other link is
+    followed. Beneath the home directory its private trees and files are refused too. Only UTF-8
+    text of at most 1 MiB with no NUL byte is returned.
+    """
+
+    if (
+        not location.startswith("/")
+        or posixpath.normpath(location) != location
+        or system_directory_path(location)
+    ):
+        return None
+    first, _, rest = location[1:].partition("/")
+    if not first or not rest:
+        return None
+    top = "/" + first
+    try:
+        facts = os.lstat(top)
+        if stat.S_ISLNK(facts.st_mode):
+            target = os.path.realpath(top)
+            if facts.st_uid != 0 or target.count("/") > 2 or not os.path.isdir(target):
+                return None
+            top = target
+    except OSError:
+        return None
+    resolved = f"{top}/{rest}"
+    # By spelling (case-folded too) and by identity (#1220 review): on a case-insensitive volume
+    # ``/ETC`` or ``/Users/ALICE/Library`` names the same directory as the refused spelling.
+    if (
+        system_directory_path(resolved)
+        or system_directory_path(location.casefold())
+        or system_directory_path(resolved.casefold())
+        or _beneath_system_directory(resolved)
+        or home_private_location(resolved)
+    ):
+        return None
+    try:
+        read = read_text_beneath(top, rest, excluded=excluded, expired=expired)
+    except ReadDeadline:
+        return None
+    if read is None:
+        return None
+    data, size = read
+    if not data or size != len(data) or b"\0" in data:
+        return None
+    try:
+        data.decode("utf-8")
+    except UnicodeDecodeError:
+        return None
+    return data
 
 
 def list_beneath(

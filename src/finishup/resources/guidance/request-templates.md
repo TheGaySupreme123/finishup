@@ -619,7 +619,9 @@ Use `result_recorded/1.1.0` to add `verification` to the result payload above:
   "cases": 100,
   "failing": 6,
   "worst": "0.03",
-  "tuned_on_these_cases": false
+  "tuned_on_these_cases": false,
+  "checks": "Exported values match the reference export within 0.01",
+  "expected_from": "independent_source"
 }
 ```
 
@@ -627,6 +629,9 @@ Replace the criterion with an exact whole-word quote of one criterion from this 
 For this failing example, set the result's `outcome` to `failure` and describe the six
 failing cases. Declare the actual data source: `task_public`, `own_generated`, `independent`,
 `held_out`, `stated_environment` or `unknown`. `worst` and `tuned_on_these_cases` are optional.
+On the test that decides a criterion, also add `checks` (at most 200 characters) and `expected_from`
+(`task_text`, `independent_source`, `own_reimplementation`, `implementation_output` or `hand_computed`);
+`finishup record-test` takes them as `--checks` and `--expected-from`.
 Counts and data-source labels remain agent-declared, including counts read from a digested file.
 
 For a test you already ran, save a small UTF-8 JSON results file such as
@@ -636,7 +641,8 @@ For a test you already ran, save a small UTF-8 JSON results file such as
 `criterion_quote` and `data_source`, then run:
 
 ```text
-finishup record-test --input publication.json --test-file checks/export.py --results-file checks/results.json
+finishup record-test --input publication.json --test-file checks/export.py --results-file checks/results.json \
+  --checks "Exported values match the reference export within 0.01" --expected-from independent_source
 ```
 
 The helper reads the script and report immediately, fills the manifest's counts and optional

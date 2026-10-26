@@ -331,9 +331,9 @@ def test_missing_file_is_refused_without_path_or_os_error(tmp_path: Path) -> Non
         _prepare(tmp_path)
 
 
-@pytest.mark.parametrize("refused", [False, True])
+@pytest.mark.parametrize(("refused", "tags"), [(False, False), (True, False), (False, True)])
 def test_record_test_cli_validates_manifest_before_contacting_service(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, refused: bool
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, refused: bool, tags: bool
 ) -> None:
     _files(tmp_path)
     monkeypatch.chdir(tmp_path)
@@ -383,6 +383,11 @@ def test_record_test_cli_validates_manifest_before_contacting_service(
             "--request",
             json.dumps(request),
             "--json",
+            *(
+                ("--checks", "named cases parse", "--expected-from", "independent_source")
+                if tags
+                else ()
+            ),
         ],
     )
     if refused:
@@ -403,3 +408,88 @@ def test_record_test_cli_validates_manifest_before_contacting_service(
         assert verification["results_file"] == "results.json"
         assert verification["report_digest"].startswith("sha256:")
         assert prepared["request_id"] == request["request_id"]
+        tagged = {"checks": "named cases parse", "expected_from": "independent_source"}
+        assert {key: verification.get(key) for key in tagged} == (
+            tagged if tags else dict.fromkeys(tagged)
+        )
+
+
+def test_checks_and_expected_from_fill_the_manifest_and_refuse_contradictions(
+    tmp_path: Path,
+) -> None:
+    # Issue #1219: the helper's optional declarations; neither is read from a file.
+    _files(tmp_path)
+    prepared = prepare_test_record(
+        _request(),
+        test_file="test.py",
+        results_file="results.json",
+        workspace=tmp_path,
+        checks="every named case parses",
+        expected_from="task_text",
+    )
+    payload = cast(dict[str, Any], prepared)["event_drafts"][0]["payload"]
+    result = decode_payload(EventSchema("result_recorded", "1.1.0"), payload)
+    assert isinstance(result, ResultRecordedPayload)
+    assert result.verification is not None
+    assert result.verification.checks == "every named case parses"
+    assert result.verification.expected_from is not None
+    assert result.verification.expected_from.value == "task_text"
+    # Without the options, the helper's output keeps its earlier bytes.
+    assert "checks" not in _prepare(tmp_path)["event_drafts"][0]["payload"]["verification"]
+    agreeing = _request()
+    agreeing["event_drafts"][0]["payload"]["verification"]["expected_from"] = "task_text"
+    assert prepare_test_record(
+        agreeing,
+        test_file="test.py",
+        results_file="results.json",
+        workspace=tmp_path,
+        expected_from="task_text",
+    )
+    for options in (
+        {"expected_from": "hand_computed"},
+        {"expected_from": "from_memory"},
+        {"checks": "x" * 201},
+        {"checks": " "},
+    ):
+        request = _request()
+        request["event_drafts"][0]["payload"]["verification"]["expected_from"] = "task_text"
+        with pytest.raises(TestRecordError, match="^test_record_request_invalid$"):
+            prepare_test_record(
+                request,
+                test_file="test.py",
+                results_file="results.json",
+                workspace=tmp_path,
+                **options,
+            )
+
+
+def test_record_test_cli_rejects_an_unknown_expected_from_before_contacting_service(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _files(tmp_path)
+    monkeypatch.chdir(tmp_path)
+    connections: list[bool] = []
+
+    async def connect() -> object:
+        connections.append(True)
+        raise AssertionError("must not connect")
+
+    monkeypatch.setattr(cli_module, "build_service_client", connect)
+    result = CliRunner().invoke(
+        cli_module.app,
+        [
+            "record-test",
+            "--test-file",
+            "test.py",
+            "--results-file",
+            "results.json",
+            "--expected-from",
+            "from_memory",
+            "--request",
+            json.dumps(_request()),
+        ],
+    )
+    assert result.exit_code == 2
+    assert not connections
+    for choice in ("task_text", "independent_source", "implementation_output", "hand_computed"):
+        assert choice in result.output

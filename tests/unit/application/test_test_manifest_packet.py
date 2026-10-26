@@ -38,6 +38,7 @@ from finishup.domain.events import (
     ResultRecordedPayload,
     ResultVerification,
     VerificationDataSource,
+    VerificationExpectedFrom,
     decode_payload,
     encode_payload,
 )
@@ -422,3 +423,39 @@ def test_declared_custom_output_still_requires_authenticated_context_and_safe_pa
     assert refusal(declared=True) is None
     assert refusal(None, declared=True) == "withheld_by_policy"
     assert refusal("python stress.py ../private", declared=True) == "withheld_by_policy"
+
+
+def _tagged_case(**fields: Any) -> DeterministicCase:
+    frozen = _case()
+    row = frozen.projection.results[res(1)]
+    assert row.payload is not None and row.payload.verification is not None
+    payload = replace(row.payload, verification=replace(row.payload.verification, **fields))
+    tagged = replace(row, payload=payload, payload_digest=canonical_digest(encode_payload(payload)))
+    return replace(frozen, projection=replace(frozen.projection, results={res(1): tagged}))
+
+
+def test_index_carries_the_expected_from_label_but_never_checks_prose() -> None:
+    # Issue #1219: absent declarations leave the packet byte-identical; ``checks`` is command
+    # metadata and stays out of the structural index; the closed label is its only addition.
+    def prepared(frozen: DeterministicCase) -> bytes:
+        case = _build(frozen=frozen)
+        return semantic_case_to_prepared_payload(
+            case, frozenset(item.item_id for item in case.items)
+        )
+
+    baseline = prepared(_case())
+    secret = "PRIVATE-checks-prose"
+    assert prepared(_tagged_case(checks=secret)) == baseline
+    labelled = prepared(
+        _tagged_case(checks=secret, expected_from=VerificationExpectedFrom.IMPLEMENTATION_OUTPUT)
+    )
+    assert secret.encode() not in labelled
+    index = _build(
+        frozen=_tagged_case(expected_from=VerificationExpectedFrom.IMPLEMENTATION_OUTPUT)
+    ).items[0]
+    assert index.section == "verification_coverage"
+    assert index.content.count(b'"expected_from":"implementation_output",') == 1
+    # The packet grows only by the escaped label inside the index item's content string.
+    label = b',\\"expected_from\\":\\"implementation_output\\"'
+    assert labelled.count(label) == 1
+    assert len(labelled) - len(baseline) == len(label) == 44

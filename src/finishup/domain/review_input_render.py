@@ -190,8 +190,19 @@ def render_review_input_manifest_lines(value: object) -> tuple[str, ...]:
     follow_up_clause = (
         "" if not follow_up else f"follow-up round {follow_up} of {MAX_REVIEW_FOLLOW_UP_ROUNDS}; "
     )
+    # Issue #1220: the packet listed the agent's declared tests and asked whether each one's
+    # expected value comes from the task or from the implementation.
+    digests = source.get("test_check_digests")
+    offered = (
+        len(cast(Sequence[object], digests))
+        if source.get("test_check_offered") is True
+        and isinstance(digests, Sequence)
+        and not isinstance(digests, str)
+        else 0
+    )
+    test_clause = "" if not offered else f"declared tests offered {min(offered, 3)}; "
     lines = [
-        f"Review input manifest: {phase}; {phase_clause}{follow_up_clause}"
+        f"Review input manifest: {phase}; {phase_clause}{follow_up_clause}{test_clause}"
         f"selected items {selected}; "
         f"selected excerpt bytes {excerpt_bytes}; {omitted_clause}."
     ]

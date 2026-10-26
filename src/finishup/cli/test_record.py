@@ -13,7 +13,11 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import Final, cast
 
-from finishup.domain.events import ResultVerification, VerificationDataSource
+from finishup.domain.events import (
+    ResultVerification,
+    VerificationDataSource,
+    VerificationExpectedFrom,
+)
 from finishup.domain.repository_excerpt import credential_named_path
 from finishup.protocol.canonical import JsonValue, strict_json_parse
 from finishup.protocol.errors import ProtocolValueError
@@ -153,12 +157,20 @@ def _report(raw: bytes) -> Mapping[str, JsonValue]:
 
 
 def prepare_test_record(
-    request: Mapping[str, JsonValue], *, test_file: str, results_file: str, workspace: Path
+    request: Mapping[str, JsonValue],
+    *,
+    test_file: str,
+    results_file: str,
+    workspace: Path,
+    checks: str | None = None,
+    expected_from: str | None = None,
 ) -> dict[str, JsonValue]:
     """Fill one result draft from local files, preserving all publication identities.
 
     ``verification`` must already contain ``criterion_quote`` and ``data_source``. Counts
-    and ``worst`` come exclusively from the strict report. No input mapping is modified.
+    and ``worst`` come exclusively from the strict report. ``checks`` and ``expected_from``
+    (#1219) fill the optional manifest fields; one that contradicts the request is refused.
+    No input mapping is modified.
     """
 
     drafts = request.get("event_drafts")
@@ -180,6 +192,11 @@ def prepare_test_record(
     verification_value = payload["verification"]
     assert isinstance(verification_value, Mapping)
     verification: dict[str, JsonValue] = dict(verification_value)
+    for name, value in (("checks", checks), ("expected_from", expected_from)):
+        if value is not None:
+            if name in verification and verification[name] != value:
+                raise TestRecordError("test_record_request_invalid")
+            verification[name] = value
     summary = payload.get("summary", "")
     if not isinstance(summary, str):
         raise TestRecordError("test_record_request_invalid")
@@ -210,6 +227,12 @@ def prepare_test_record(
             test_file=test_file,
             results_file=results_file,
             report_digest=report_digest,
+            checks=cast(str | None, verification.get("checks")),
+            expected_from=(
+                None
+                if verification.get("expected_from") is None
+                else VerificationExpectedFrom(cast(str, verification["expected_from"]))
+            ),
         )
         script.decode("utf-8")
     except (ValueError, TypeError, UnicodeError):

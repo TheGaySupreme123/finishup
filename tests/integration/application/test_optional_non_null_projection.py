@@ -235,8 +235,12 @@ def _status_history_v14_payload() -> dict[str, object]:
 _RESULT_OPTIONAL_NON_NULL: tuple[tuple[type[BaseModel], frozenset[str]], ...] = (
     (CheckContinuationModel, frozenset({"pending_id", "expires_at"})),
     # #1170: declared coverage rows carry only the quote their source owns and only the
-    # worst value / tuning answer the agent declared; #1205: freshness only when it was derived.
-    (StatusVerificationWitnessModel, frozenset({"worst", "tuned_on_these_cases", "freshness"})),
+    # worst value / tuning answer the agent declared; #1205: freshness only when it was derived;
+    # #1221: declared checks and expected-from only when the agent named them.
+    (
+        StatusVerificationWitnessModel,
+        frozenset({"worst", "tuned_on_these_cases", "freshness", "checks", "expected_from"}),
+    ),
     (
         StatusVerificationCriterionModel,
         frozenset({"task_criterion_quote", "obligation_criterion_quote"}),
@@ -516,7 +520,16 @@ _RESULT_OPTIONAL_NON_NULL: tuple[tuple[type[BaseModel], frozenset[str]], ...] = 
     (ReceiptSuccessModel, frozenset({"correctness_advisory_counts"})),
     (
         ReviewInputManifestModel,
-        frozenset({"review_phase", "omitted_item_total", "follow_up_round"}),
+        frozenset(
+            {
+                "review_phase",
+                "omitted_item_total",
+                "follow_up_round",
+                # #1220: only a packet that listed declared tests carries the pair.
+                "test_check_offered",
+                "test_check_digests",
+            }
+        ),
     ),
     (
         StatusObligationItemModel,
@@ -1293,6 +1306,22 @@ async def test_review_input_manifest_omits_unset_review_phase() -> None:
     for invalid in (0, 4):
         with pytest.raises(ValueError):
             ReviewInputManifestModel.model_validate({**payload, "follow_up_round": invalid})
+    # Issue #1220: only a packet that listed declared tests carries the pair, both or neither.
+    assert "test_check_offered" not in dumped and "test_check_digests" not in dumped
+    assert model.test_check_offered is None and model.test_check_digests is None
+    digest = "sha256:" + "d" * 64
+    offered = ReviewInputManifestModel.model_validate(
+        {**payload, "test_check_offered": True, "test_check_digests": [digest]}
+    )
+    assert offered.model_dump(mode="json", by_alias=True)["test_check_digests"] == [digest]
+    for broken in (
+        {"test_check_offered": True},
+        {"test_check_digests": [digest]},
+        {"test_check_offered": None, "test_check_digests": [digest]},
+        {"test_check_offered": True, "test_check_digests": None},
+    ):
+        with pytest.raises(ValueError):
+            ReviewInputManifestModel.model_validate({**payload, **broken})
 
 
 @pytest.mark.parametrize(
@@ -1924,12 +1953,23 @@ def test_declared_coverage_rows_omit_unset_fields_and_refuse_null() -> None:
     task_row, obligation_row = wire["verification_coverage"]["criteria"]
     assert "obligation_criterion_quote" not in task_row
     assert "task_criterion_quote" not in obligation_row
-    assert not {"worst", "tuned_on_these_cases", "freshness"} & task_row["witnesses"][0].keys()
+    assert (
+        not {
+            "worst",
+            "tuned_on_these_cases",
+            "freshness",
+            "checks",
+            "expected_from",
+        }
+        & task_row["witnesses"][0].keys()
+    )
     assert StatusCoveragePageModel.model_validate(wire) == page
     for row, field in (
         (task_row["witnesses"][0], "worst"),
         (task_row["witnesses"][0], "tuned_on_these_cases"),
         (task_row["witnesses"][0], "freshness"),
+        (task_row["witnesses"][0], "checks"),
+        (task_row["witnesses"][0], "expected_from"),
     ):
         with pytest.raises(ValidationError, match="optional_field_must_not_be_null"):
             StatusVerificationWitnessModel.model_validate({**row, field: None})
@@ -2007,6 +2047,8 @@ def test_every_result_optional_non_null_field_has_an_unset_projection_case() -> 
                 ("StatusVerificationWitnessModel", "worst"),
                 ("StatusVerificationWitnessModel", "tuned_on_these_cases"),
                 ("StatusVerificationWitnessModel", "freshness"),
+                ("StatusVerificationWitnessModel", "checks"),
+                ("StatusVerificationWitnessModel", "expected_from"),
                 ("StatusVerificationCriterionModel", "task_criterion_quote"),
                 ("StatusVerificationCriterionModel", "obligation_criterion_quote"),
             )
@@ -2236,6 +2278,10 @@ def test_every_result_optional_non_null_field_has_an_unset_projection_case() -> 
     covered["ReviewInputManifestModel", "follow_up_round"] = (
         "test_review_input_manifest_omits_unset_review_phase"
     )
+    for field in ("test_check_offered", "test_check_digests"):
+        covered["ReviewInputManifestModel", field] = (
+            "test_review_input_manifest_omits_unset_review_phase"
+        )
     covered["StatusOperationPageModel", "semantic_withheld_items"] = (
         "test_nested_multi_agent_results_omit_unset_fields"
     )

@@ -246,6 +246,7 @@ __all__ = [
     "ResultRecordedPayload",
     "ResultVerification",
     "VerificationDataSource",
+    "VerificationExpectedFrom",
     "RESULT_VERIFICATION_SCHEMA_VERSION",
     "RuntimeProfile",
     "RESPONSE_EVENT_SCHEMA_VERSION",
@@ -2330,6 +2331,16 @@ class VerificationDataSource(str, Enum):  # noqa: UP042 - exact wire enum base
     UNKNOWN = "unknown"
 
 
+class VerificationExpectedFrom(str, Enum):  # noqa: UP042 - exact wire enum base
+    """Where the test's expected value comes from (#1219); agent-declared, never checked."""
+
+    TASK_TEXT = "task_text"
+    INDEPENDENT_SOURCE = "independent_source"
+    OWN_REIMPLEMENTATION = "own_reimplementation"
+    IMPLEMENTATION_OUTPUT = "implementation_output"
+    HAND_COMPUTED = "hand_computed"
+
+
 @dataclass(frozen=True, slots=True)
 class ResultVerification:
     """Agent-declared test scope and counts, never an independent verification claim."""
@@ -2343,6 +2354,10 @@ class ResultVerification:
     test_file: str | None = None
     results_file: str | None = None
     report_digest: str | None = None
+    # Issue #1219: what the test exercises and where its expected value comes from. Both are
+    # optional agent declarations; neither changes coverage flags, identity or any gate.
+    checks: str | None = None
+    expected_from: VerificationExpectedFrom | None = None
 
     def __post_init__(self) -> None:
         _bounded_text(self.criterion_quote, 240, minimum=1)
@@ -2351,6 +2366,7 @@ class ResultVerification:
             ("worst", 64),
             ("test_file", 1024),
             ("results_file", 1024),
+            ("checks", 200),
         ):
             value = getattr(self, name)
             if value is not None and (
@@ -2362,6 +2378,10 @@ class ResultVerification:
         object.__setattr__(
             self, "data_source", _exact_enum(self.data_source, VerificationDataSource)
         )
+        if self.expected_from is not None:
+            object.__setattr__(
+                self, "expected_from", _exact_enum(self.expected_from, VerificationExpectedFrom)
+            )
         object.__setattr__(self, "cases", _bounded_integer(self.cases, 0, _MAX_SAFE_INTEGER))
         object.__setattr__(self, "failing", _bounded_integer(self.failing, 0, self.cases))
         if self.tuned_on_these_cases is not None and type(self.tuned_on_these_cases) is not bool:
@@ -3925,6 +3945,19 @@ _REVIEW_INPUT_OMISSION_REASONS: Final = frozenset(
 )
 
 
+def review_manifest_offers_test_check(manifest: object) -> bool:
+    """Whether a recorded review input manifest listed declared tests (#1220).
+
+    Such a check is recorded as check-recorded 1.6.0 (``REVIEWER_CHECK_EVENT_SCHEMA_VERSION``):
+    the earlier versions' schemas are frozen and do not carry the fields.
+    """
+
+    return (
+        isinstance(manifest, Mapping)
+        and cast(Mapping[str, object], manifest).get("test_check_offered") is True
+    )
+
+
 def _review_input_manifest_from_json(value: JsonValue | None) -> JsonObject | None:
     """Validate and freeze the metadata-only per-check input manifest."""
 
@@ -3947,10 +3980,33 @@ def _review_input_manifest_from_json(value: JsonValue | None) -> JsonObject | No
                 "omitted_item_count",
             }
         ),
-        optional=frozenset({"review_phase", "omitted_item_total", "follow_up_round"}),
+        optional=frozenset(
+            {
+                "review_phase",
+                "omitted_item_total",
+                "follow_up_round",
+                "test_check_offered",
+                "test_check_digests",
+            }
+        ),
     )
     if _field(source, "schema") != "yoetz.review-input-manifest/1":
         raise ProtocolValueError("invalid_event_value_type")
+    # Issue #1220: both or neither; one to three sorted, unique SHA-256 digests.
+    if ("test_check_offered" in source) != ("test_check_digests" in source):
+        raise ProtocolValueError("invalid_event_value_type")
+    if "test_check_offered" in source:
+        digests = tuple(_array(source["test_check_digests"]))
+        if (
+            source["test_check_offered"] is not True
+            or not 1 <= len(digests) <= 3
+            or any(
+                type(value) is not str or re.fullmatch(r"sha256:[0-9a-f]{64}", value) is None
+                for value in digests
+            )
+            or list(digests) != sorted(set(cast(tuple[str, ...], digests)), key=str.encode)
+        ):
+            raise ProtocolValueError("invalid_event_value_type")
     if "review_phase" in source and source["review_phase"] not in {"routine", "final"}:
         raise ProtocolValueError("invalid_event_value_type")
     if "follow_up_round" in source:
@@ -4964,9 +5020,18 @@ def decode_payload(schema: EventSchema, payload: JsonValue) -> EventPayload:
                 raw_verification,
                 required=frozenset({"criterion_quote", "data_source", "cases", "failing"}),
                 optional=frozenset(
-                    {"worst", "tuned_on_these_cases", "test_file", "results_file", "report_digest"}
+                    {
+                        "worst",
+                        "tuned_on_these_cases",
+                        "test_file",
+                        "results_file",
+                        "report_digest",
+                        "checks",
+                        "expected_from",
+                    }
                 ),
             )
+            expected_from = _optional(manifest, "expected_from")
             verification = ResultVerification(
                 criterion_quote=cast(str, _field(manifest, "criterion_quote")),
                 data_source=_enum_from_json(
@@ -4979,6 +5044,12 @@ def decode_payload(schema: EventSchema, payload: JsonValue) -> EventPayload:
                 test_file=cast(str | None, _optional(manifest, "test_file")),
                 results_file=cast(str | None, _optional(manifest, "results_file")),
                 report_digest=cast(str | None, _optional(manifest, "report_digest")),
+                checks=cast(str | None, _optional(manifest, "checks")),
+                expected_from=(
+                    None
+                    if expected_from is None
+                    else _enum_from_json(expected_from, VerificationExpectedFrom)
+                ),
             )
         return ResultRecordedPayload(
             result_id=result_id(_field(source, "result_id")),
@@ -5598,8 +5669,11 @@ def encode_payload(payload: EventPayload) -> JsonValue:
                 "test_file",
                 "results_file",
                 "report_digest",
+                "checks",
             ):
                 _optional_value(verification_json, name, getattr(manifest, name))
+            if manifest.expected_from is not None:
+                verification_json["expected_from"] = manifest.expected_from.value
             result["verification"] = verification_json
         return _json_object(result)
     if payload_type is EvidenceRecordedPayload:
@@ -5890,12 +5964,14 @@ def _validate_event_schema_payload(
             payload.reviewer is not None
             or payload.correctness_advisories
             or payload.semantic_reason is SemanticReason.ROUND_LIMIT_UNASSESSABLE
+            or review_manifest_offers_test_check(payload.review_input_manifest)
             or schema.version == REVIEWER_CHECK_EVENT_SCHEMA_VERSION
         ):
             if schema.version != REVIEWER_CHECK_EVENT_SCHEMA_VERSION or (
                 payload.reviewer is None
                 and not payload.correctness_advisories
                 and payload.semantic_reason is not SemanticReason.ROUND_LIMIT_UNASSESSABLE
+                and not review_manifest_offers_test_check(payload.review_input_manifest)
             ):
                 raise ProtocolValueError("invalid_event_schema")
         elif payload.semantic_reason is SemanticReason.DEFERRED_BEFORE_FIRST_EDIT:
