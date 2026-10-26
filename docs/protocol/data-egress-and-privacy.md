@@ -188,6 +188,21 @@ task input. Each value it quotes is scanned whole before it is shortened and is 
 redaction marker when flagged, and no head-and-tail cut of a long text splits a recognized
 credential. Nothing here adds a category or raises a ceiling.
 
+### Agent-declared test files (issue #1220)
+
+The one exception to "never a path only an agent-recorded command names": the `test_file` of the
+agent's own `result_recorded` manifest. At most three such paths (with a SHA-256 FinishUP observed
+at check time and a criterion ref) are listed in the review envelope as structural metadata. The
+reviewer may read a listed file beneath the `t1` root by its `dt<n>` ref, in spans of at most
+4,096 bytes within the ordinary three-read and 24 KiB bounds. Each read re-hashes the file and
+sends nothing unless it still matches; the path is refused by shape (hidden, `..`, credential-named,
+system trees, over 256 bytes) and the read uses the outside read's trusted walk with FinishUP's own
+directories excluded. The span is admitted as a `repository_excerpt` read (same grant, scans and
+retained-category fence) and every exchange carrying one adds the receipt-only category
+`declared_test_excerpt` to its receipt's approved categories; no policy names that category.
+Nothing is listed when the review offers no reads, the policy withholds repository excerpts, a
+destination would refuse repository content, or the list does not fit the first exchange's plan.
+
 ## Live harness observation retention
 
 First-party Codex live observation (ADR-010) is local control, not a network egress channel and not

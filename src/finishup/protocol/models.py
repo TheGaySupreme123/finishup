@@ -321,6 +321,9 @@ class DataCategory(str, Enum):  # noqa: UP042 - exact public wire enum base
     REPOSITORY_EXCERPT = "repository_excerpt"
     TRANSCRIPT_EXCERPT = "transcript_excerpt"
     DIAGNOSTIC_METADATA = "diagnostic_metadata"
+    # #1220: a receipt-only label for a reviewer read of an agent-declared test file. No policy
+    # names it: the read is admitted under ``repository_excerpt`` and egress receipts show this.
+    DECLARED_TEST_EXCERPT = "declared_test_excerpt"
 
 
 class ClientKind(str, Enum):  # noqa: UP042 - exact public wire enum base
@@ -3929,7 +3932,15 @@ class ReviewInputMissingModel(_ClosedModel):
 
 
 class ReviewInputManifestModel(_ClosedModel):
-    optional_non_null_fields = frozenset({"review_phase", "omitted_item_total", "follow_up_round"})
+    optional_non_null_fields = frozenset(
+        {
+            "review_phase",
+            "omitted_item_total",
+            "follow_up_round",
+            "test_check_offered",
+            "test_check_digests",
+        }
+    )
 
     # Frozen legacy identifier (ADR-048): the recorded review-input manifest tag.
     schema_: Literal["yoetz.review-input-manifest/1"] = Field(alias="schema")
@@ -3951,6 +3962,21 @@ class ReviewInputManifestModel(_ClosedModel):
     # Issue #1047, optional in place: this packet is the Nth in-check follow-up, sent after FinishUP
     # added recorded excerpts the reviewer asked for; ``missing_inputs`` then lists that request.
     follow_up_round: int | None = Field(default=None, ge=1, le=MAX_REVIEW_FOLLOW_UP_ROUNDS)
+    # Issue #1220, optional in place: the packet listed the agent's declared tests and asked the
+    # declared-test question; the listed files' pinned digests (metadata only, never paths).
+    test_check_offered: Literal[True] | None = None
+    test_check_digests: tuple[Sha256Digest, ...] | None = Field(
+        default=None, min_length=1, max_length=3
+    )
+
+    @model_validator(mode="after")
+    def _validate_test_check(self) -> ReviewInputManifestModel:
+        if (self.test_check_offered is None) != (self.test_check_digests is None):
+            raise ValueError("review_input_manifest_test_check_mismatch")
+        digests = self.test_check_digests or ()
+        if list(digests) != sorted(set(digests), key=str.encode):
+            raise ValueError("review_input_manifest_test_check_digests_unsorted")
+        return self
 
 
 class CheckAwaitingHumanModel(_ClosedModel):
@@ -6724,7 +6750,9 @@ class StatusResultsPageModel(_ClosedModel):
 
 
 class StatusVerificationWitnessModel(_ClosedModel):
-    optional_non_null_fields = frozenset({"worst", "tuned_on_these_cases", "freshness"})
+    optional_non_null_fields = frozenset(
+        {"worst", "tuned_on_these_cases", "freshness", "checks", "expected_from"}
+    )
 
     result_id: ResultIdWire
     action_id: ActionIdWire
@@ -6737,6 +6765,18 @@ class StatusVerificationWitnessModel(_ClosedModel):
     freshness: Literal["current", "stale", "unknown", "legacy"] | None = None
     tuned_on_these_cases: bool | None = None
     worst: Annotated[str, Field(min_length=1, max_length=64)] | OmittedContentModel | None = None
+    # Issue #1219: agent-declared test description (command metadata) and expectation origin.
+    checks: Annotated[str, Field(min_length=1, max_length=200)] | OmittedContentModel | None = None
+    expected_from: (
+        Literal[
+            "task_text",
+            "independent_source",
+            "own_reimplementation",
+            "implementation_output",
+            "hand_computed",
+        ]
+        | None
+    ) = None
 
     @model_validator(mode="after")
     def _validate_freshness(self) -> StatusVerificationWitnessModel:
@@ -7937,6 +7977,8 @@ _REVIEW_INPUT_MANIFEST_LEAVES: Final = (
     "specification/revision",
     "specification/source_refs/*",
     "specification/status",
+    "test_check_digests/*",
+    "test_check_offered",
 )
 _BASIC_VERSION_LEAVES: Final = (
     "engine_version",
@@ -8704,6 +8746,7 @@ _VERIFICATION_COVERAGE_STRUCTURAL_LEAVES: Final = (
     "criteria/*/witnesses/*/stale",
     "criteria/*/witnesses/*/freshness",
     "criteria/*/witnesses/*/tuned_on_these_cases",
+    "criteria/*/witnesses/*/expected_from",
     "criteria/*/task_criterion_quote/category",
     "criteria/*/task_criterion_quote/omitted",
     "criteria/*/task_criterion_quote/reason",
@@ -8713,6 +8756,9 @@ _VERIFICATION_COVERAGE_STRUCTURAL_LEAVES: Final = (
     "criteria/*/witnesses/*/worst/category",
     "criteria/*/witnesses/*/worst/omitted",
     "criteria/*/witnesses/*/worst/reason",
+    "criteria/*/witnesses/*/checks/category",
+    "criteria/*/witnesses/*/checks/omitted",
+    "criteria/*/witnesses/*/checks/reason",
 )
 
 _STATUS_CANDIDATE_FINDINGS_STRUCTURAL_POINTERS: Final = (
@@ -9374,6 +9420,11 @@ _STATUS_CONTENT_RULES: Final[tuple[tuple[str, str, DataCategory], ...]] = (
         "/page/verification_coverage/criteria/*/witnesses/*/worst",
         DataCategory.COMMAND_METADATA,
     ),
+    (
+        "coverage",
+        "/page/verification_coverage/criteria/*/witnesses/*/checks",
+        DataCategory.COMMAND_METADATA,
+    ),
     ("history", "/page/items/*/correctness_advisories/*/summary", DataCategory.FINDING_SUMMARY),
     ("history", "/page/items/*/correctness_advisories/*/detail", DataCategory.FINDING_SUMMARY),
     ("history", "/page/items/*/correctness_advisories/*/reason", DataCategory.FINDING_SUMMARY),
@@ -9497,6 +9548,10 @@ _RECEIPT_CONTENT_RULES: Final[tuple[tuple[str, DataCategory], ...]] = (
         DataCategory.OBLIGATION_TEXT,
     ),
     ("/document/verification_coverage/criteria/*/witnesses/*/worst", DataCategory.COMMAND_METADATA),
+    (
+        "/document/verification_coverage/criteria/*/witnesses/*/checks",
+        DataCategory.COMMAND_METADATA,
+    ),
     ("/document/gaps/*/detail", DataCategory.FINDING_SUMMARY),
     ("/document/findings/*/detail", DataCategory.FINDING_SUMMARY),
     ("/document/findings/*/summary", DataCategory.FINDING_SUMMARY),
@@ -9686,7 +9741,7 @@ def _build_result_leaf_rules() -> tuple[_ResultLeafRule, ...]:
         ):
             raise RuntimeError("invalid_result_leaf_classification")
     if (
-        len(result) != 2065
+        len(result) != 2079
     ):  # ... #1017 +3, #1027 +5, tb4n3 LO +9, W2-A +46, LF +34 (fact_lineage), W2-B +2,
         # tb4n4 #1044 +7 (closure_readiness.undeclared_references), #1048 +38 (inspection),
         # #1047 +2 (follow_up_round), tb4n5 +3 (publish action_notices),
@@ -9707,6 +9762,9 @@ def _build_result_leaf_rules() -> tuple[_ResultLeafRule, ...]:
         # +3 (operation check_outcome advisory identities, PR #1214 review);
         # #975 +46 draft receipt (21 structural and 2 content leaves, each on check and status).
         # #1139 +2 agent_status_line (check and status).
+        # #1219 +10 witness checks/expected_from (4 structural and 1 content leaf, on status
+        # coverage and the receipt document).
+        # #1220 +4 review_input_manifest test_check_offered/test_check_digests (check, status).
         raise RuntimeError("incomplete_result_leaf_registry")
     return result
 

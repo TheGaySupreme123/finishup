@@ -79,7 +79,11 @@ from finishup.adapters.sqlite.migrations import (
 from finishup.adapters.sqlite.project_operations import SqliteProjectOperationJournal
 from finishup.adapters.sqlite.repository import SqliteLedger
 from finishup.adapters.sqlite.start_catalog import SqliteStartCatalog
-from finishup.adapters.task_input_read import read_outside_inputs, snapshot_outside_inputs
+from finishup.adapters.task_input_read import (
+    read_declared_test,
+    read_outside_inputs,
+    snapshot_outside_inputs,
+)
 from finishup.application.check import SEMANTIC_EVALUATION_GAPS, FinalSemanticEvaluation
 from finishup.application.check_change import (
     CheckChangeOutcome,
@@ -107,6 +111,7 @@ from finishup.application.egress import (
     SemanticEgressBlocked,
     SemanticEgressProviderOutcome,
     SemanticEgressSuccess,
+    reviewer_history_admissible,
     semantic_policy_refusal,
     semantic_preview_required,
 )
@@ -183,6 +188,7 @@ from finishup.application.semantic_case import (
     CHECK_TIME_CHANGE_ITEM_PREFIX,
     MAX_CAPTURED_SEMANTIC_CONTENT_PARTS,
     MAX_CAPTURED_SEMANTIC_INPUT_BYTES,
+    SMALL_REVIEW_CHANNEL_BYTES,
     TASK_INPUT_ITEM_PREFIX,
     LineageSemanticCapacityExceeded,
     SemanticCaseCapacityExceeded,
@@ -296,6 +302,14 @@ from finishup.domain.values import (
 from finishup.domain.values import (
     JsonValue as DomainJsonValue,
 )
+from finishup.kernel.declared_tests import (
+    DECLARED_TEST_ROOT,
+    DeclaredTest,
+    declared_test_candidates,
+    declared_test_location,
+    declared_tests_from_json,
+    declared_tests_to_json,
+)
 from finishup.kernel.deterministic_checks import DeterministicCase
 from finishup.kernel.lineage import LineageEvaluation
 from finishup.kernel.policies.observation_advice import ObservationCompositionFact
@@ -308,6 +322,7 @@ from finishup.observability.logging import (
     record_bounded_event_without_raising,
     record_unexpected_exception_without_raising,
 )
+from finishup.observability.privacy import scan_for_sensitive_content
 from finishup.observability.semantic_context import (
     SemanticProgressSink,
     report_semantic_progress,
@@ -439,6 +454,7 @@ from finishup.service.semantic_attention import SemanticAttentionTracker
 from finishup.service.semantic_ceiling import (
     channel_admission,
     plan_under_channel_ceiling,
+    planned_exchange_size,
     reviewer_exchange_budget,
     reviewer_exchange_limit,
     reviewer_exchange_measure,
@@ -3791,14 +3807,15 @@ def _execution_from_json(value: object) -> _SemanticExecution:
     )
 
 
-async def _read_semantic_execution(
+async def _read_semantic_case(
     runtime: TaskRuntime,
     ref: ObjectRef,
-) -> tuple[_SemanticExecution | None, str, str, object | None, str | None]:
+) -> tuple[_SemanticExecution | None, str, str, object | None, str | None, object | None]:
     """The frozen execution, case identity and check-time change pointer of one job's case.
 
-    The last value is the case digest of the check's own first review when this job is an
-    in-check follow-up round (issue #1047), else ``None``.
+    The fifth value is the case digest of the check's own first review when this job is an
+    in-check follow-up round (issue #1047), else ``None``; the last the declared tests the job
+    pinned (issue #1220), else ``None``.
     """
 
     from finishup.protocol.canonical import strict_json_parse
@@ -3833,8 +3850,16 @@ async def _read_semantic_execution(
             raise ValueError("semantic_execution_invalid")
         base_digest = base
     # Absent on jobs created before ADR-031 or without a trusted workspace source: such a job
-    # rebuilds its case without a check-time change, exactly as it was first built.
-    return execution, case_id, case_digest, body.get("check_change"), base_digest
+    # rebuilds its case without a check-time change, exactly as it was first built. The declared
+    # tests (#1220) are absent on a job that pinned none, and it rebuilds without them.
+    return (
+        execution,
+        case_id,
+        case_digest,
+        body.get("check_change"),
+        base_digest,
+        body.get("declared_tests"),
+    )
 
 
 def _without_provider_provenance(
@@ -3914,6 +3939,7 @@ async def _publish_semantic_case_object(
     clock: ClockPort,
     execution: _SemanticExecution,
     check_change: CanonicalJsonValue | None = None,
+    declared_tests: CanonicalJsonValue | None = None,
 ) -> ObjectRef:
     """Persist a structural SEMANTIC_CASE object bound into the durable job row.
 
@@ -3932,6 +3958,10 @@ async def _publish_semantic_case_object(
     }
     if check_change is not None:
         body["check_change"] = check_change
+    if declared_tests is not None:
+        # #1220: the declared tests' paths and pinned digests, so recovery rebuilds the same case
+        # without reading a file that may have changed since.
+        body["declared_tests"] = declared_tests
     payload = canonical_encode(cast(CanonicalJsonValue, body))
     staged = await runtime.objects.stage(
         ObjectSource(data=payload, declared_size=len(payload)),
@@ -4992,12 +5022,9 @@ async def _reviewer_read_roots(
     the task-declared paths beneath it, current (``o``) and as kept at task start or first
     admission (``s``). Never this service's own bundle or state, by path or identity."""
 
-    if DataCategory.REPOSITORY_EXCERPT.value in withheld or workspace_root is None:
-        return ()
-    # A public start's workspace_ref is a task selector, not read authority. HOME reads
-    # require the current connection's selected locator and task repository binding below;
-    # a claimed HOME in session history must never acquire the service adapter's exception.
-    if Path(workspace_root) == Path.home() and not admitted_home_project:
+    if workspace_root is None or not _file_reads_offered(
+        workspace_root, withheld, admitted_home_project
+    ):
         return ()
     probe = getattr(change_capture, "probe_requested_paths", None)
 
@@ -5033,6 +5060,15 @@ async def _reviewer_read_roots(
             refuse=ignored if callable(probe) else (lambda _path: True),
         )
     ]
+    # Issue #1220: the declared tests the packet lists, by ref, wherever they were declared;
+    # each read is pinned to the digest the packet lists. Never FinishUP's own directories.
+    pinned = tuple(
+        (test.ref, location, test.content_digest, test.criterion_ref)
+        for test in case.packet.declared_tests
+        if (location := declared_test_location(test.path, workspace_root)) is not None
+    )
+    if pinned:
+        roots.append(ReadRoot(DECLARED_TEST_ROOT, "/", excluded=protected, pinned=pinned))
     snapshots = await load_input_snapshots(runtime, request_id) if outside else ()
     for index, root in enumerate(outside, start=1):
         prefix = root.rstrip("/") + "/"
@@ -5064,6 +5100,75 @@ async def _reviewer_read_roots(
                 )
             )
     return tuple(roots)
+
+
+def _file_reads_offered(
+    workspace_root: str | None, withheld: tuple[str, ...], admitted_home_project: bool
+) -> bool:
+    """Whether a review may offer ``read_file`` at all (#1118): never where repository excerpts
+    are withheld or there is no workspace, nor in HOME without the admitted project binding."""
+
+    if DataCategory.REPOSITORY_EXCERPT.value in withheld or workspace_root is None:
+        return False
+    # A public start's workspace_ref is a task selector, not read authority. HOME reads
+    # require the current connection's selected locator and task repository binding below;
+    # a claimed HOME in session history must never acquire the service adapter's exception.
+    return Path(workspace_root) != Path.home() or admitted_home_project
+
+
+def _admitted_home_project(workspace_root: str | None, repository: str) -> bool:
+    source = current_check_workspace_source()
+    return (
+        source is not None
+        and workspace_root is not None
+        and Path(source.workspace) == Path(workspace_root)
+        and source.repository_commitment == repository
+    )
+
+
+def _small_review_channel(
+    policy: PrivacyPolicy, bindings: tuple[ProviderBinding | None, ProviderBinding | None]
+) -> bool:
+    """A channel no larger than the minimal policy's, by the case builder's prepared ceiling
+    (``SMALL_REVIEW_CHANNEL_BYTES``) or by either destination's exchange byte limit (#1220)."""
+
+    ceiling = _semantic_prepared_byte_ceiling(policy)
+    budget = reviewer_exchange_budget(policy, bindings)
+    return (ceiling is not None and ceiling <= SMALL_REVIEW_CHANNEL_BYTES) or (
+        budget is not None and budget.byte_limit <= SMALL_REVIEW_CHANNEL_BYTES
+    )
+
+
+def _pin_declared_tests(
+    case: DeterministicCase, workspace_root: str | None, excluded: tuple[str, ...]
+) -> tuple[DeclaredTest, ...]:
+    """The declared test files that are readable now, each with the digest of its bytes (#1220).
+
+    The candidates are the frozen case's own (``declared_test_candidates``); a file refused by
+    shape, missing, unreadable, binary or over 1 MiB is not listed. Nothing read here enters the
+    case but the digest.
+    """
+
+    statement = None if case.task_statement is None else case.task_statement.text
+    tests: list[DeclaredTest] = []
+    for candidate in declared_test_candidates(case.projection, statement):
+        location = declared_test_location(candidate.path, workspace_root)
+        if location is None or scan_for_sensitive_content(candidate.path.encode()):
+            # The path travels in the envelope: one that looks like a secret is not listed, so it
+            # can never block the whole review at the egress scan.
+            continue
+        data = read_declared_test(location, excluded=excluded)
+        if data is None:
+            continue
+        tests.append(
+            DeclaredTest(
+                f"dt{len(tests) + 1}",
+                candidate.path,
+                "sha256:" + hashlib.sha256(data).hexdigest(),
+                candidate.criterion_ref,
+            )
+        )
+    return tuple(tests)
 
 
 def _privacy_gated_semantic_evaluator(
@@ -5312,6 +5417,7 @@ def _privacy_gated_semantic_evaluator(
             recovered_case_id: str | None = None
             recovered_case_digest: str | None = None
             recovered_check_change: object | None = None
+            recovered_declared_tests: object | None = None
             if runtime is not None:
                 job = await runtime.ledger.load_semantic_job(
                     frozen.lease.writer_id, frozen.lease.operation_id
@@ -5323,7 +5429,8 @@ def _privacy_gated_semantic_evaluator(
                         recovered_case_digest,
                         recovered_check_change,
                         base_case_digest,
-                    ) = await _read_semantic_execution(runtime, job.case_object_ref)
+                        recovered_declared_tests,
+                    ) = await _read_semantic_case(runtime, job.case_object_ref)
                     if base_case_digest is not None:
                         # An in-check follow-up job (issue #1047): the check's own review job is
                         # its base, and every round is rebuilt from what that job froze.
@@ -5340,7 +5447,8 @@ def _privacy_gated_semantic_evaluator(
                             recovered_case_digest,
                             recovered_check_change,
                             _,
-                        ) = await _read_semantic_execution(runtime, job.case_object_ref)
+                            recovered_declared_tests,
+                        ) = await _read_semantic_case(runtime, job.case_object_ref)
                     if execution is None:
                         return await _finish_legacy_semantic_job(
                             runtime,
@@ -5573,8 +5681,45 @@ def _privacy_gated_semantic_evaluator(
                     )
                 )
             semantic_case_id = recovered_case_id or ids.new(IdKind.OUTBOUND_CASE)
+            # Ask-every-time: each further exchange would need its own approval, so the review
+            # offers no reads from its first exchange.
+            reviewer_reads = 0 if semantic_preview_required(policy) else MAX_READS
+            # Issue #1220: the agent's declared test files, pinned by digest for a new job (only
+            # where a reviewer read of repository content is offered and admissible on every
+            # destination), reloaded from the job's own case object on recovery.
+            # Never on a channel no larger than the minimal policy's (PR #1221 review): nothing is
+            # read or planned, so such a review is byte-identical to one without declared tests.
+            declared_tests: tuple[DeclaredTest, ...] = ()
+            if job is not None:
+                declared_tests = declared_tests_from_json(recovered_declared_tests)
+            elif (
+                runtime is not None
+                and reviewer_reads
+                and not _small_review_channel(policy, (provider, fallback_binding))
+                and _file_reads_offered(
+                    workspace_root, withheld, _admitted_home_project(workspace_root, repository)
+                )
+                and all(
+                    reviewer_history_admissible(
+                        policy,
+                        binding,
+                        scope.kind,
+                        (),
+                        {(DataCategory.REPOSITORY_EXCERPT, DataClass.ORDINARY_USER_CONTENT)},
+                    )
+                    for binding in (provider, fallback_binding)
+                    if binding is not None
+                )
+            ):
+                declared_tests = _pin_declared_tests(
+                    frozen.case, workspace_root, protected_directories
+                )
 
-            def build_case(selection: ReviewSelectionPolicy, gaps: tuple[str, ...]) -> SemanticCase:
+            def build_case(
+                selection: ReviewSelectionPolicy,
+                gaps: tuple[str, ...],
+                tests: tuple[DeclaredTest, ...] = (),
+            ) -> SemanticCase:
                 return build_semantic_case(
                     case_id=semantic_case_id,
                     frozen_case=frozen.case,
@@ -5594,16 +5739,12 @@ def _privacy_gated_semantic_evaluator(
                     check_time_change_unavailable=check_change.unavailable,
                     check_time_change_unavailable_reason=check_change.reason,
                     final_review=final_review,
+                    declared_tests=tests,
                 )
-
-            # Ask-every-time: each further exchange would need its own approval, so the review
-            # offers no reads from its first exchange.
-            reviewer_reads = 0 if semantic_preview_required(policy) else MAX_READS
 
             async def read_roots_for(case: SemanticCase) -> tuple[ReadRoot, ...]:
                 if runtime is None:
                     return ()
-                source = current_check_workspace_source()
                 return await _reviewer_read_roots(
                     runtime,
                     frozen.lease.operation_id,
@@ -5616,37 +5757,61 @@ def _privacy_gated_semantic_evaluator(
                     protected=protected_directories,
                     withheld=withheld,
                     change_capture=change_capture,
-                    admitted_home_project=(
-                        source is not None
-                        and workspace_root is not None
-                        and Path(source.workspace) == Path(workspace_root)
-                        and source.repository_commitment == repository
-                    ),
+                    admitted_home_project=_admitted_home_project(workspace_root, repository),
                 )
 
             try:
                 # Plan below the channel ceiling before egress would refuse the whole packet: a
                 # smaller excerpt budget is a narrowing of the approved selection (issue #907).
-                approved_case = build_case(review_selection, tuple(captured_content_gaps))
-                # #1118: what is planned is the exact first exchange of the reviewer
-                # conversation (instruction, packet as a JSON string, read catalog), below the
-                # ceiling less the frame its replies need. The catalog names roots and paths
-                # only, never the case's refs, so the planned case carries the same one.
-                read_catalog = reviewer_catalog(await read_roots_for(approved_case), reviewer_reads)
                 # The narrower of the two destinations' budgets: the review may be sent to either.
                 planned_budget = reviewer_exchange_budget(policy, (provider, fallback_binding))
-                semantic_case, planned_selection, ceiling_rounds = plan_under_channel_ceiling(
-                    approved_case,
-                    review_selection,
-                    reviewer_exchange_limit(planned_budget),
-                    lambda selection: build_case(
-                        selection, with_ceiling_planning_gap(captured_content_gaps)
-                    ),
-                    # Size what egress will release to either destination, not the items local
-                    # minimization withholds from the channel.
-                    channel_admission(policy, (provider, fallback_binding)),
-                    reviewer_exchange_measure(read_catalog, planned_budget),
-                )
+                # Size what egress will release to either destination, not the items local
+                # minimization withholds from the channel.
+                admission = channel_admission(policy, (provider, fallback_binding))
+                exchange_limit = reviewer_exchange_limit(planned_budget)
+
+                async def plan(
+                    tests: tuple[DeclaredTest, ...],
+                ) -> tuple[SemanticCase, SemanticCase, ReviewSelectionPolicy, int, bool]:
+                    approved = build_case(review_selection, tuple(captured_content_gaps), tests)
+                    # #1118: what is planned is the exact first exchange of the reviewer
+                    # conversation (instruction, packet as a JSON string, read catalog), below
+                    # the ceiling less the frame its replies need. The catalog names roots and
+                    # paths only, never the case's refs, so the planned case carries the same one.
+                    catalog = reviewer_catalog(await read_roots_for(approved), reviewer_reads)
+                    measure = reviewer_exchange_measure(catalog, planned_budget)
+                    planned, selection, rounds = plan_under_channel_ceiling(
+                        approved,
+                        review_selection,
+                        exchange_limit,
+                        lambda selection: build_case(
+                            selection, with_ceiling_planning_gap(captured_content_gaps), tests
+                        ),
+                        admission,
+                        measure,
+                    )
+                    size = (
+                        None
+                        if exchange_limit is None
+                        else planned_exchange_size(planned, admission, measure)
+                    )
+                    return (
+                        planned,
+                        approved,
+                        selection,
+                        rounds,
+                        exchange_limit is None or (size is not None and size <= exchange_limit),
+                    )
+
+                # Issue #1220: the declared-test list is offered only when the planned first
+                # exchange still fits its limit with it, so the frame left for replies and reads
+                # (one declared read of at most 4 KiB) stays whole; excerpt bytes give way first.
+                # Otherwise the review is planned exactly as it was before: nothing is listed.
+                planned = await plan(declared_tests) if declared_tests else None
+                if planned is None or not planned[4]:
+                    declared_tests = ()
+                    planned = await plan(())
+                semantic_case, approved_case, planned_selection, ceiling_rounds, _fits = planned
             except SemanticCaseCapacityExceeded as exc:
                 # Same pre-dispatch contract as an envelope that cannot be reduced: local
                 # findings stay recorded, no job is created, and the caller sees a capacity
@@ -5924,6 +6089,11 @@ def _privacy_gated_semantic_evaluator(
                     clock=clock,
                     execution=execution,
                     check_change=check_change.binding_json() if check_change.offered else None,
+                    declared_tests=(
+                        cast(CanonicalJsonValue, declared_tests_to_json(declared_tests))
+                        if declared_tests
+                        else None
+                    ),
                 )
                 job = await runtime.ledger.enqueue_semantic_job(
                     frozen.lease,

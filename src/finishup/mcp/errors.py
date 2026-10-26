@@ -58,6 +58,8 @@ _SAFE_LOCATION_SEGMENTS: Final = frozenset(
         "test_file",
         "results_file",
         "report_digest",
+        "checks",
+        "expected_from",
         # obligation_published 1.1.0 (#1002).
         "acknowledged_not_done_reason",
         "context_digest",

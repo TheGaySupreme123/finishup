@@ -65,6 +65,7 @@ __all__ = [
     "channel_admission",
     "channel_prepared_limit",
     "plan_under_channel_ceiling",
+    "planned_exchange_size",
     "reviewer_exchange_budget",
     "reviewer_exchange_limit",
     "reviewer_exchange_measure",
@@ -266,6 +267,15 @@ def _prepared_size(
         return measure(semantic_case_to_prepared_payload(case, released))
     except SemanticCaseTooLarge:
         return None
+
+
+def planned_exchange_size(
+    case: SemanticCase, admission: ChannelAdmission | None, measure: Callable[[bytes], int]
+) -> int | None:
+    """What ``plan_under_channel_ceiling`` compares with its limit for ``case``; ``None`` when
+    the envelope cannot be bounded at all."""
+
+    return _prepared_size(case, admission, measure)
 
 
 def _with_excerpt_budget(selection: ReviewSelectionPolicy, budget: int) -> ReviewSelectionPolicy:

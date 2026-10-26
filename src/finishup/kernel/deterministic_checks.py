@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import re
-from collections.abc import Iterable, Mapping
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from enum import Enum
 from types import MappingProxyType
@@ -1158,6 +1158,9 @@ class FrozenHistoryEvent:
             raise _invalid_case()
 
 
+_SHA256_DIGEST: Final = re.compile(r"sha256:[0-9a-f]{64}")
+
+
 @dataclass(frozen=True, slots=True)
 class DeterministicCase:
     projection: ProjectionState
@@ -1201,9 +1204,23 @@ class DeterministicCase:
     # raised. Frozen with the case (absent, ``False``, on a case frozen before the field), so the
     # closing review's question set is rebuilt identically on recovery.
     prior_review_recorded: bool = False
+    # #1220: the declared-test digests earlier successful reviews in this prefix were offered
+    # (their review input manifests' ``test_check_digests``), sorted. Frozen with the case, so a
+    # recovered review offers exactly what the new one did; never offered again while unchanged.
+    offered_test_digests: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         if type(self.prior_review_recorded) is not bool:
+            raise _invalid_case()
+        if (
+            type(self.offered_test_digests) is not tuple
+            or self.offered_test_digests
+            != tuple(sorted(set(self.offered_test_digests), key=str.encode))
+            or any(
+                type(value) is not str or _SHA256_DIGEST.fullmatch(value) is None
+                for value in self.offered_test_digests
+            )
+        ):
             raise _invalid_case()
         if self.evidence_view is not None:
             from finishup.kernel.evidence_basis import (
@@ -1649,6 +1666,11 @@ def deterministic_case_to_json(case: DeterministicCase) -> dict[str, JsonValue]:
         ),
         **({"verification_advisory": True} if case.verification_advisory else {}),
         **({"prior_review_recorded": True} if case.prior_review_recorded else {}),
+        **(
+            {"offered_test_digests": list(case.offered_test_digests)}
+            if case.offered_test_digests
+            else {}
+        ),
         **({"evidence_view": case.evidence_view} if case.evidence_view is not None else {}),
         **(
             {
@@ -1706,6 +1728,10 @@ def deterministic_case_from_json(value: JsonValue) -> DeterministicCase:
         if prior_review is not True and prior_review is not False:
             raise _invalid_case()
         source_keys -= {"prior_review_recorded"}
+        offered_tests = tuple(
+            cast(str, value) for value in _case_json_array(source.get("offered_test_digests", ()))
+        )
+        source_keys -= {"offered_test_digests"}
         freshness = None
         if "verification_freshness" in source:
             freshness_rows: list[VerificationFreshness] = []
@@ -1916,6 +1942,7 @@ def deterministic_case_from_json(value: JsonValue) -> DeterministicCase:
             verification_freshness=freshness,
             verification_advisory=cast(bool, advisory),
             prior_review_recorded=prior_review,
+            offered_test_digests=offered_tests,
             verification_tracked_runs=tracked_runs,
             verification_unjudged_stale=unjudged_stale,
             evidence_view=None
@@ -2691,7 +2718,34 @@ def build_deterministic_case(
             and record.payload.semantic_status is SemanticStatus.SUCCEEDED
             for record in accepted_prefix
         ),
+        offered_test_digests=_offered_test_digests(accepted_prefix),
     )
+
+
+def _offered_test_digests(records: Sequence[LedgerRecord]) -> tuple[str, ...]:
+    """Declared-test digests a successful earlier review was offered (#1220), sorted.
+
+    Read from each succeeded check's recorded review input manifest; a manifest without the
+    field (every review before #1220, or one that listed nothing) contributes nothing.
+    """
+
+    offered: set[str] = set()
+    for record in records:
+        if (
+            type(record) is not AcceptedEvent
+            or not isinstance(record.payload, CheckRecordedPayload)
+            or record.payload.semantic_status is not SemanticStatus.SUCCEEDED
+            or not isinstance(record.payload.review_input_manifest, Mapping)
+        ):
+            continue
+        digests = record.payload.review_input_manifest.get("test_check_digests")
+        if isinstance(digests, (list, tuple)):
+            offered.update(
+                value
+                for value in cast(Sequence[object], digests)
+                if type(value) is str and _SHA256_DIGEST.fullmatch(value) is not None
+            )
+    return tuple(sorted(offered, key=str.encode))
 
 
 # The cooperative publication channels a ``publish_work`` batch arrives on. Import and hook

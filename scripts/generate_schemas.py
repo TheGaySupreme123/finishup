@@ -28,6 +28,7 @@ from pydantic import TypeAdapter
 from pydantic_core import core_schema
 
 from finishup.domain.review_guidance import ReviewGuidance
+from finishup.domain.verification_coverage import VERIFICATION_EXPECTED_FROM
 from finishup.protocol.canonical import JsonValue, canonical_encode
 from finishup.protocol.models import MAX_REVIEW_EXCERPTS
 
@@ -1890,6 +1891,22 @@ def _egress_receipt_v1_1_schema(entry: _RegistryEntry) -> dict[str, JsonValue]:
     counts = cast(dict[str, JsonValue], definitions["counts"])
     count_properties = cast(dict[str, JsonValue], counts["properties"])
     count_properties["final_bytes"] = {"$ref": "#/$defs/max_524288_decimal"}
+    # #1220: a receipt may also show the receipt-only ``declared_test_excerpt`` label, which no
+    # privacy policy names. 1.1.0 is unreleased, so its category set widens in place.
+    from finishup.domain.privacy import DataCategory
+
+    definitions["receipt_category_set"] = {
+        "items": {
+            "enum": cast(list[JsonValue], sorted(str(category.value) for category in DataCategory)),
+            "type": "string",
+        },
+        "maxItems": len(DataCategory),
+        "minItems": 0,
+        "type": "array",
+        "uniqueItems": True,
+    }
+    for name in ("approved_categories", "blocked_categories"):
+        properties[name] = {"$ref": "#/$defs/receipt_category_set"}
     document["title"] = "Yoetz egress receipt 1.1.0"
     return document
 
@@ -2640,6 +2657,7 @@ def _check_recorded_v1_6_schema(entry: _RegistryEntry) -> dict[str, JsonValue]:
 
     document = _check_recorded_v1_5_schema(entry)
     _admit_stopped_review(document)
+    _add_test_check_to_review_input_manifest(document)
     definitions = cast(dict[str, JsonValue], document["$defs"])
     _add_reviewer_definitions(definitions)
     cast(dict[str, JsonValue], document["properties"])["correctness_advisories"] = (
@@ -4259,6 +4277,7 @@ def _check_result_v1_6_schema(entry: _RegistryEntry) -> dict[str, JsonValue]:
     document = _check_result_v1_5_schema(entry)
     _admit_stopped_review(document)
     _add_check_reviewer(document)
+    _add_test_check_to_review_input_manifest(document)
     definitions = cast(dict[str, JsonValue], document["$defs"])
     # Decision findings belong to the current contract; historical 1.4/1.5 bytes stay frozen.
     projected = cast(dict[str, JsonValue], definitions["projected_finding"])
@@ -4456,6 +4475,7 @@ def _add_reviewer_definitions(definitions: dict[str, JsonValue]) -> None:
         "standing": nullable(
             enum(
                 "agent_assertion",
+                "declared_test",
                 "finishup_record",
                 "outside_input_mutable",
                 "outside_input_snapshot",
@@ -5051,6 +5071,8 @@ def _verification_coverage_schema() -> dict[str, JsonValue]:
             "freshness": {"type": "string", "enum": ["current", "stale", "unknown", "legacy"]},
             "tuned_on_these_cases": {"type": "boolean"},
             "worst": text("command_metadata", 64),
+            "checks": text("command_metadata", 200),
+            "expected_from": {"enum": list(VERIFICATION_EXPECTED_FROM)},
         },
         "required": ["result_id", "action_id", "data_source", "cases", "failing", "stale"],
         "allOf": [
@@ -5351,6 +5373,7 @@ def _status_result_v1_4_schema(entry: _RegistryEntry) -> dict[str, JsonValue]:
     )
     definitions["review_packet"] = {"properties": {}}
     _add_review_input_manifest_to_outbound_case({"$defs": definitions})
+    _add_test_check_to_review_input_manifest({"$defs": definitions})
     definitions.pop("review_packet", None)
     history_item = cast(dict[str, JsonValue], definitions["history_item"])
     history_properties = cast(dict[str, JsonValue], history_item["properties"])
@@ -7599,6 +7622,10 @@ def _result_recorded_v1_1_schema(entry: _RegistryEntry) -> dict[str, JsonValue]:
             "test_file": {"type": "string", "minLength": 1, "maxLength": 1024, "pattern": r"\S"},
             "results_file": {"type": "string", "minLength": 1, "maxLength": 1024, "pattern": r"\S"},
             "report_digest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+            # Issue #1219: optional agent declarations, admitted in place on this unreleased
+            # version. Absent, the manifest and every projection keep their earlier bytes.
+            "checks": {"type": "string", "minLength": 1, "maxLength": 200, "pattern": r"\S"},
+            "expected_from": {"type": "string", "enum": list(VERIFICATION_EXPECTED_FROM)},
         },
         "dependentRequired": {
             "test_file": ["results_file", "report_digest"],
@@ -8134,11 +8161,54 @@ def _outbound_case_v1_2_schema(entry: _RegistryEntry) -> dict[str, JsonValue]:
     }
     if "prior_finding_refs" not in packet_required:
         packet_required.append("prior_finding_refs")
+    # Issue #1220, optional in place: the agent's declared tests the packet lists, as structural
+    # metadata (the declared path, the digest pinned at check time and the criterion ref).
+    packet_properties["declared_tests"] = {
+        "items": {
+            "additionalProperties": False,
+            "properties": {
+                "content_digest": {"$ref": "#/$defs/digest"},
+                "criterion_ref": {"maxLength": 64, "minLength": 1, "type": "string"},
+                "path": {"maxLength": 256, "minLength": 1, "type": "string"},
+                "ref": {"enum": ["dt1", "dt2", "dt3"], "type": "string"},
+            },
+            "required": ["content_digest", "criterion_ref", "path", "ref"],
+            "type": "object",
+        },
+        "maxItems": 3,
+        "minItems": 1,
+        "type": "array",
+    }
     _add_task_statement_to_outbound_case(document)
     _add_review_input_manifest_to_outbound_case(document)
+    _add_test_check_to_review_input_manifest(document)
     properties["schema_version"] = {"const": entry.schema_version}
     document["title"] = f"Yoetz outbound case {entry.schema_version}"
     return document
+
+
+def _add_test_check_to_review_input_manifest(document: dict[str, JsonValue]) -> None:
+    """Issue #1220, optional in place on the unreleased current documents only (check-result and
+    check-recorded 1.6.0 and later, status-result 1.4.0 and later, outbound-case 1.2.0): the packet
+    listed the agent's declared tests; the listed files' pinned digests. Both or neither. A check
+    whose manifest carries them is recorded as check-recorded 1.6.0, so the frozen 1.3.0 to 1.5.0
+    bytes stay unchanged."""
+
+    definitions = cast(dict[str, JsonValue], document["$defs"])
+    manifest = cast(dict[str, JsonValue], definitions["review_input_manifest"])
+    properties = cast(dict[str, JsonValue], manifest["properties"])
+    properties["test_check_digests"] = {
+        "items": {"pattern": "^sha256:[0-9a-f]{64}$", "type": "string"},
+        "maxItems": 3,
+        "minItems": 1,
+        "type": "array",
+        "uniqueItems": True,
+    }
+    properties["test_check_offered"] = {"const": True, "type": "boolean"}
+    manifest["dependentRequired"] = {
+        "test_check_digests": ["test_check_offered"],
+        "test_check_offered": ["test_check_digests"],
+    }
 
 
 def _add_review_input_manifest_to_outbound_case(document: dict[str, JsonValue]) -> None:

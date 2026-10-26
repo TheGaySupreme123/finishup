@@ -120,7 +120,11 @@ def reviewer_catalog(roots: Sequence[ReadRoot], reads: int) -> str:
     rows: list[dict[str, object]] = []
     for root in roots:
         row: dict[str, object] = {"root_id": root.alias}
-        if root.snapshot is not None:
+        if root.pinned:
+            # #1220: the declared tests the packet lists, by ref; never a filesystem path.
+            row["standing"], row["baseline"] = "declared_test", "check_time"
+            row["covers"] = [ref for ref, *_rest in root.pinned]
+        elif root.snapshot is not None:
             prefix = root.path.rstrip("/") + "/"
             row["standing"], row["baseline"] = "outside_input_snapshot", root.snapshot.boundary
             row["covers"] = sorted(

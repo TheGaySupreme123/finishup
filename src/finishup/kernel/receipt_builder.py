@@ -2966,7 +2966,9 @@ def build_receipt(
                 replace(
                     row,
                     criterion_quote="Criterion text withheld by export profile",
-                    witnesses=tuple(replace(witness, worst=None) for witness in row.witnesses),
+                    witnesses=tuple(
+                        replace(witness, worst=None, checks=None) for witness in row.witnesses
+                    ),
                 )
                 for row in declared_coverage.criteria
             ),

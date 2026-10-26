@@ -14,6 +14,7 @@ tracked and untracked paths alike.
 
 from __future__ import annotations
 
+import os
 from collections.abc import Sequence
 from pathlib import Path
 from typing import Final
@@ -58,6 +59,64 @@ def home_private_path(root: Path, relative: bytes) -> bool:
         or any(part in _COPIED_TREES for part in exact)
         or parts[-1] in _FOLDED_FILES
     )
+
+
+def _identity(facts: os.stat_result) -> tuple[int, int]:
+    return facts.st_dev, facts.st_ino
+
+
+def home_private_location(path: str) -> bool:
+    """Whether absolute ``path`` lies in the home directory's private state (#1220 review).
+
+    Unlike ``home_private_path`` this decides by identity, not spelling: the home directory is
+    found among ``path``'s ancestors by device and inode, so another spelling of it (``/Users/ALICE``
+    on a case-insensitive volume, a bind mount) still counts. Each directory beneath it whose name
+    folds to a private tree's is compared by identity with the tree's exact spelling and, when it
+    is that tree, judged under that spelling. Ancestors are examined without following a link;
+    a read beneath one never follows it either. An ancestor that cannot be examined (other than
+    one that does not exist) excludes the path.
+    """
+
+    home = Path.home()
+    try:
+        home_identity = _identity(os.stat(home))
+    except OSError:
+        return False
+    parts = path.strip("/").split("/")
+    current = ""
+    for index in range(len(parts) - 1):
+        current += "/" + parts[index]
+        try:
+            facts = os.lstat(current)
+        except FileNotFoundError:
+            return False
+        except OSError:
+            return True
+        if _identity(facts) != home_identity:
+            continue
+        canonical: list[str] = []
+        base = current
+        remainder = parts[index + 1 :]
+        for depth, part in enumerate(remainder):
+            name = part
+            trees = _PRIVATE_TREES if depth == 0 else _COPIED_TREES
+            for tree in trees:
+                if tree != part and tree.casefold() == part.casefold():
+                    try:
+                        same = _identity(os.lstat(f"{base}/{tree}")) == _identity(
+                            os.lstat(f"{base}/{part}")
+                        )
+                    except FileNotFoundError:
+                        same = False
+                    except OSError:
+                        return True
+                    if same:
+                        name = tree
+            canonical.append(name)
+            base = f"{base}/{part}"
+        relative = "/".join(canonical).encode("utf-8", errors="surrogateescape")
+        return home_private_path(home, relative)
+    return False
 
 
 def home_private_pathspecs(root: Path) -> tuple[str, ...]:

@@ -12314,7 +12314,38 @@ as `outcome_unknown` and is never resent. For it, `operation_max_retries` is `0`
   `ignored=False`, citable under the packet's excerpt refs; `o<n>` an admitted outside root with the
   task-declared paths beneath it (`declared`), and `s<n>` the same root served from the first kept
   snapshot set with files beneath it, citable under the task statement's refs. None when the policy
-  withholds `repository_excerpt`.
+  withholds `repository_excerpt`. `t1` (#1220, `DECLARED_TEST_ROOT`) serves the packet's
+  `declared_tests` by ref only (`ReadRoot.pinned`: `(ref, absolute path, digest, criterion ref)`;
+  catalog row `standing: declared_test`, `baseline: check_time`, `covers: ["dt1", …]`): text mode,
+  `path=dt<n>`; a listing, another ref or any path is `denied/outside_scope` with the fixed
+  `declared_test` correction. Each read re-reads through `adapters.task_input_read.
+  read_declared_test` and returns `unavailable/declared_test_changed` unless the bytes hash to the
+  listed digest, or `unavailable/declared_test_not_visible`; the result room is
+  `min(…, DECLARED_TEST_READ_BYTES)` (4,096) and its element category is `declared_test_excerpt`,
+  which `PrivacyCoordinator.admit_reviewer_read` admits as `repository_excerpt` and records on
+  `ReviewerHistory.declared_tests`; each later exchange's minimized disclosure (and so its proposal
+  and receipt) then adds `declared_test_excerpt` to `approved_categories`.
+- Declared tests (#1220, `kernel.declared_tests`): `declared_test_candidates(projection,
+  task_statement)` (at most `MAX_DECLARED_TESTS` = 3 `DeclaredTestCandidate(path, criterion_ref)`),
+  `declared_test_location(path, workspace_root)` (absolute path or `None` by shape alone),
+  `DeclaredTest(ref, path, content_digest, criterion_ref)` with `to_json()` (keys `content_digest`,
+  `criterion_ref`, `path`, `ref`) and `declared_tests_to_json` / `declared_tests_from_json` (the
+  job case object's `declared_tests`), `offered_declared_tests(tests, final=, offered=)` and
+  `DECLARED_TEST_QUESTION`. `build_semantic_case(..., declared_tests=)` lists them as
+  `ReviewPacket.declared_tests` (packet JSON `declared_tests`, emitted only when non-empty): all of
+  them when `review_phase == "final"`, else only those whose digest is outside
+  `DeterministicCase.offered_test_digests`, each keeping its pinned `dt<n>` ref
+  (derived at freeze from succeeded `check_recorded` manifests' `test_check_digests`; case JSON key
+  `offered_test_digests` only when non-empty); never on a `small_channel` case. The composition
+  pins nothing when `_small_review_channel(policy, bindings)` (prepared ceiling or exchange byte
+  limit at most `SMALL_REVIEW_CHANNEL_BYTES`). `ReviewInputManifest.test_check_offered` /
+  `test_check_digests` (wire: `test_check_offered: true` with one to three sorted digests, both or
+  neither, optional in place on every manifest schema). The composition lists them only when the
+  planned first exchange fits `reviewer_exchange_limit` with them
+  (`semantic_ceiling.planned_exchange_size`), else plans without them.
+- `domain.privacy.RECEIPT_ONLY_CATEGORIES` = `{declared_test_excerpt}`: dropped from every policy
+  category set when a `ChannelPolicy`, `PrivacyPolicy` or effective policy is built;
+  `system_directory_path(value)` is the shared system-directory refusal.
 - `domain.reviewer_reads.ReviewerRecord(exchanges, reads, ended, cleanup)` and
   `ReviewerRead(call, action, status, reason, source, root, standing, baseline, lines,
   result_bytes, result_digest, disclosure)`; `as_wire()` gives canonical decimal-string counts;
@@ -12625,6 +12656,14 @@ recomputation solely because the finding names paths.
 `cases`/`failing` (0..2^53-1, `failing <= cases`). Optional `worst` is nonblank text of at most
 64 characters; optional `tuned_on_these_cases` is a boolean. Optional `test_file`, `results_file`
 (nonblank paths of at most 1,024 characters) and `report_digest` (`sha256:` digest) travel together.
+Issue #1219 adds two optional declarations in place on this unreleased version: `checks` (nonblank
+text of at most 200 characters naming what the test exercises) and `expected_from`
+(`task_text|independent_source|own_reimplementation|implementation_output|hand_computed`, where the
+expected value comes from). Neither is semantically evaluated, joins a run identity, ranks a witness, sets a flag
+or gates anything; a manifest without them keeps its bytes on every surface. `record-test` accepts
+`--checks` and `--expected-from`, refusing a value that contradicts the request's manifest. The
+compact MCP payload hint omits both to stay within the advertised-schema byte budget; the full
+event schema and the request template name them.
 The publication validator checks the quote against the current recorded task statement, including
 an earlier statement revision in the same atomic batch. The quote must occur verbatim on whole-word
 boundaries (`1` inside `1.06` or `atio` inside `ratio` does not count) and name at least three
@@ -12712,7 +12751,8 @@ The unreleased `status-request/1.2.0` / `status-result/1.4.0` admit `view=covera
 `1.3.0`, carried by receipt-result `1.3.0` and `1.4.0`, optionally carries `verification_coverage`. CLI status, TUI `/coverage`
 and receipt JSON/markdown/text share the projection. Wire quote leaves are separated into
 `task_criterion_quote` (`task_description`) and `obligation_criterion_quote` (`obligation_text`);
-`worst` uses command metadata. Human receipt prose carries ordinal/source/refs/counts so the
+`worst` and `checks` use command metadata; `expected_from` is a closed structural label shown on
+witness rows when declared. Human receipt prose carries ordinal/source/refs/counts so the
 legacy `human_text` category cannot export task text indirectly. JSON preserves categorized text
 only when the selected receipt profile and disclosure policy admit it.
 
@@ -12726,7 +12766,8 @@ under command metadata. Adding the index to either profile would widen what they
 a separate privacy decision. Local status, TUI `/coverage` and receipts show the projection under
 every review profile. Its structural item contains closed
 flags, counts, result/action refs, and character spans pointing to separately authorized task or
-obligation text; it contains no criterion quote or worst-value prose. It uses the existing
+obligation text, plus a witness's declared `expected_from` label (#1219); it contains no criterion
+quote, worst-value or `checks` prose. It uses the existing
 bounded-structural-metadata category under the existing selection and whole-packet byte limits;
 the reserved diff and decisive-verification excerpt budgets retain their original floors.
 The owning outbound-case generator includes the new section and optional member.

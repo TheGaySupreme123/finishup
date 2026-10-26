@@ -773,6 +773,8 @@ def _publish_work_request(
     *,
     test_file: str | None = None,
     results_file: str | None = None,
+    checks: str | None = None,
+    expected_from: str | None = None,
 ) -> tuple[BaseModel, str | None]:
     """Parse one ``publish-work`` body, minting its request id when it omits one.
 
@@ -794,6 +796,8 @@ def _publish_work_request(
             test_file=test_file,
             results_file=results_file,
             workspace=Path.cwd(),
+            checks=checks,
+            expected_from=expected_from,
         )
     if not isinstance(parsed, Mapping) or "request_id" in parsed:
         return PublishWorkRequest.model_validate(parsed), None
@@ -838,6 +842,8 @@ async def _call_workflow(
     use_passphrase: bool = False,
     test_file: str | None = None,
     results_file: str | None = None,
+    checks: str | None = None,
+    expected_from: str | None = None,
 ) -> int:
     # ADR-047: a ``check`` whose mode records nothing (``inspect``) fails as a read.
     check_mode: object = None
@@ -862,7 +868,12 @@ async def _call_workflow(
             )
         elif method == "publish_work":
             parsed_request, minted = _publish_work_request(
-                input_path, inline, test_file=test_file, results_file=results_file
+                input_path,
+                inline,
+                test_file=test_file,
+                results_file=results_file,
+                checks=checks,
+                expected_from=expected_from,
             )
             request = cast(WorkflowRequest, parsed_request)
         else:
@@ -1763,6 +1774,27 @@ def record_test_command(
     request: _INLINE = None,
     json_output: _JSON = False,
     deadline_ms: _DEADLINE = None,
+    checks: Annotated[
+        str | None,
+        typer.Option(
+            "--checks",
+            help="What this test exercises (at most 200 characters); agent-declared.",
+        ),
+    ] = None,
+    expected_from: Annotated[
+        Literal[
+            "task_text",
+            "independent_source",
+            "own_reimplementation",
+            "implementation_output",
+            "hand_computed",
+        ]
+        | None,
+        typer.Option(
+            "--expected-from",
+            help="Where the test's expected values come from; agent-declared.",
+        ),
+    ] = None,
 ) -> None:
     """Ingest one declared test and its results through ordinary publication."""
 
@@ -1777,6 +1809,8 @@ def record_test_command(
                 deadline_ms,
                 test_file=test_file,
                 results_file=results_file,
+                checks=checks,
+                expected_from=expected_from,
             )
         )
     )

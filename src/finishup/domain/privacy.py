@@ -210,6 +210,18 @@ def _time(value: object) -> datetime:
     return value
 
 
+# #1220: categories a receipt may show but no policy names. A reviewer read of an agent-declared
+# test file is admitted under the ``repository_excerpt`` grant (ADR-009 amendment) and labelled
+# ``declared_test_excerpt`` on the egress receipt of each exchange that carries it. A policy
+# category set is read without them (``tuple(DataCategory)`` means every grantable category), so
+# every policy keeps its exact wire bytes and digest.
+RECEIPT_ONLY_CATEGORIES: Final = frozenset({DataCategory.DECLARED_TEST_EXCERPT})
+
+
+def _without_receipt_only(values: tuple[DataCategory, ...]) -> tuple[DataCategory, ...]:
+    return tuple(value for value in values if value not in RECEIPT_ONLY_CATEGORIES)
+
+
 def _sorted_enums[TEnum: Enum](values: object, enum_type: type[TEnum]) -> tuple[TEnum, ...]:
     if type(values) not in {tuple, list, set, frozenset}:
         raise _invalid()
@@ -309,6 +321,19 @@ _FORBIDDEN_INPUT_ROOT_PREFIXES: Final = (
     "/sys",
     "/var/run",
 )
+
+
+# The same directories, for callers that also compare device and inode (#1220 review).
+SYSTEM_DIRECTORY_PREFIXES: Final = _FORBIDDEN_INPUT_ROOT_PREFIXES
+
+
+def system_directory_path(value: str) -> bool:
+    """Whether absolute ``value`` is at or beneath a system directory no review ever reads."""
+
+    return any(
+        value == prefix or value.startswith(prefix + "/")
+        for prefix in _FORBIDDEN_INPUT_ROOT_PREFIXES
+    )
 
 
 def admitted_input_root_valid(value: object) -> bool:
@@ -938,6 +963,9 @@ class ChannelPolicy:
             self, "allowed_categories", _sorted_enums(self.allowed_categories, DataCategory)
         )
         object.__setattr__(
+            self, "allowed_categories", _without_receipt_only(self.allowed_categories)
+        )
+        object.__setattr__(
             self, "allowed_data_classes", _sorted_enums(self.allowed_data_classes, DataClass)
         )
         object.__setattr__(
@@ -1189,6 +1217,12 @@ class PrivacyPolicy:
             ("trusted_human_control_data_classes", DataClass),
         ):
             object.__setattr__(self, name, _sorted_enums(getattr(self, name), enum_type))
+        for name in (
+            "local_model_categories",
+            "agent_context_categories",
+            "trusted_human_control_categories",
+        ):
+            object.__setattr__(self, name, _without_receipt_only(getattr(self, name)))
         if any(
             DataClass.SECRET_OR_CRYPTOGRAPHIC in values
             for values in (
@@ -1559,6 +1593,8 @@ class PolicyOverlay:
             ("agent_context_data_classes", DataClass),
         ):
             object.__setattr__(self, name, _sorted_enums(getattr(self, name), enum_type))
+        for name in ("local_model_categories", "agent_context_categories"):
+            object.__setattr__(self, name, _without_receipt_only(getattr(self, name)))
         if (
             self.candidate_policy.review_selection != self.review_selection
             or self.candidate_policy.require_current_provider_data_use_evidence
