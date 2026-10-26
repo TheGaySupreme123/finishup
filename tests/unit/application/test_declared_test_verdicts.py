@@ -194,3 +194,37 @@ def test_a_tagged_test_on_a_minimal_channel_changes_no_byte(final: bool) -> None
     assert declared.packet.declared_tests == ()
     assert not any("declared_test_verdicts" in question for question in declared.question_set)
     assert (declared.case_digest, _prepared(declared)) == (plain.case_digest, _prepared(plain))
+
+
+def test_every_closed_result_enum_admits_the_new_values() -> None:
+    """PR #1224 review: #1221 recorded ``standing: declared_test`` that the check result model
+    refused. The wire models' closed sets match the domain's, so no new value is refused again."""
+
+    from typing import get_args
+
+    from finishup.domain.correctness_advisories import ADVISORY_ORIGINS
+    from finishup.domain.reviewer_reads import (
+        _STANDINGS,  # pyright: ignore[reportPrivateUsage]
+    )
+    from finishup.protocol.models import (
+        CheckCorrectnessAdvisoryModel,
+        ReviewerReadModel,
+        StatusCheckOutcomeAdvisoryModel,
+    )
+
+    def literal_values(annotation: object) -> set[str]:
+        """The string members of a ``Literal``, through any ``| None``."""
+
+        values: set[str] = set()
+        for arg in get_args(annotation):
+            if type(arg) is str:
+                values.add(arg)
+            else:
+                values |= literal_values(arg)
+        return values
+
+    assert literal_values(ReviewerReadModel.model_fields["standing"].annotation) == set(_STANDINGS)
+    for model in (CheckCorrectnessAdvisoryModel, StatusCheckOutcomeAdvisoryModel):
+        assert literal_values(model.model_fields["origin"].annotation) == (
+            set(ADVISORY_ORIGINS) | {"routine_correctness_note"}
+        )

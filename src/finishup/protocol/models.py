@@ -4470,6 +4470,8 @@ class ReviewerReadModel(_ClosedModel):
             "workspace_content",
             "outside_input_mutable",
             "outside_input_snapshot",
+            # #1220: an agent-declared test file read through ``t1`` (PR #1224 review).
+            "declared_test",
         ]
         | None
     )

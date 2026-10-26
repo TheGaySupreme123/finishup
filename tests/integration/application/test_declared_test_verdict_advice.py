@@ -13,6 +13,7 @@ import json
 import re
 from collections.abc import Mapping
 from dataclasses import dataclass, field, replace
+from pathlib import Path
 from typing import Any, cast
 
 import pytest
@@ -33,6 +34,7 @@ from finishup.application.service import Application
 from finishup.cli.render import render_human_check
 from finishup.domain.findings import Finding
 from finishup.domain.privacy import ReviewContextProfile, ReviewSelectionPolicy
+from finishup.domain.reviewer_reads import ReviewerRecord
 from finishup.kernel.declared_tests import DeclaredTest, declared_test_candidates
 from finishup.mcp.server import _result_text  # pyright: ignore[reportPrivateUsage]
 from finishup.ports.control import ControlMethod
@@ -48,6 +50,7 @@ from finishup.protocol.models import (
     RespondRequest,
     SemanticReason,
     SemanticStatus,
+    StatusRequest,
     public_model_to_wire,
 )
 from integration.application.test_review_dialogue_workflow import (
@@ -68,6 +71,7 @@ class _Run:
     ids: dict[str, JsonValue]
     task_id: str
     frontier: Any
+    bodies: list[dict[str, JsonValue]] = field(default_factory=lambda: [])
 
 
 @dataclass
@@ -80,6 +84,8 @@ class _ScriptedReviewer:
     seed: int
     # The prepared byte ceiling the case is built under; 16 KiB is the small-channel gate.
     ceiling: int | None = None
+    # A reviewer conversation record to report with the judgment (a real one, from the broker).
+    reviewer: ReviewerRecord | None = None
     cases: list[SemanticCase] = field(default_factory=lambda: [])
 
     async def __call__(
@@ -139,6 +145,7 @@ class _ScriptedReviewer:
             case_citable_refs=view.citable_refs,
             provider_input_manifest=provider_bound_manifest(),
             case_declared_tests=case.packet.declared_tests,
+            reviewer=self.reviewer,
         )
 
 
@@ -224,6 +231,7 @@ async def _checks(seed: int, reviewer: _ScriptedReviewer, rounds: int) -> _Run:
     )
     frontier = published.result_frontier
     wires: list[Mapping[str, Any]] = []
+    bodies: list[dict[str, JsonValue]] = []
     for round_ in range(rounds):
         body: dict[str, JsonValue] = {
             **request_base(protocol_id("req_", seed + 20 + round_)),
@@ -233,6 +241,7 @@ async def _checks(seed: int, reviewer: _ScriptedReviewer, rounds: int) -> _Run:
             "max_findings": "5",
             "final_review": True,
         }
+        bodies.append(body)
         checked = await app.check(CheckRequest.model_validate(body))
         assert type(checked) is CheckCommitResult, type(checked)
         frontier = checked.result_frontier
@@ -241,7 +250,7 @@ async def _checks(seed: int, reviewer: _ScriptedReviewer, rounds: int) -> _Run:
                 app, ProjectionCase("check", ControlMethod.CHECK, body, checked), seed + 40 + round_
             )
         )
-    return _Run(app, wires, ids, started.task_id, frontier)
+    return _Run(app, wires, ids, started.task_id, frontier, bodies)
 
 
 def _advice(projected: Mapping[str, Any]) -> list[Mapping[str, Any]]:
@@ -447,3 +456,79 @@ async def test_a_probe_keeps_its_exact_spacing_and_lines_on_every_surface() -> N
         run.frontier = receipt.result_frontier
         rendered = _strings(receipt.as_json())
         assert spaced in rendered and multi in rendered, form
+
+
+async def test_a_check_whose_reviewer_read_a_declared_test_validates_everywhere(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """PR #1224 review (a #1221 regression): a reviewer read through ``t1`` is recorded with
+    ``standing: declared_test``, which the check result model refused. The record comes from the
+    real broker reading a declared test; the check, its hosts, history and receipt all carry it."""
+
+    from integration.service import test_declared_test_reads as reads
+    from integration.service import test_reviewer_conversation_composition as composition
+
+    test = reads._outside(tmp_path)  # pyright: ignore[reportPrivateUsage]
+    reads._declare(monkeypatch, str(test))  # pyright: ignore[reportPrivateUsage]
+    evaluated, _gateway, _runtime = await composition._run(  # pyright: ignore[reportPrivateUsage]
+        tmp_path,
+        monkeypatch,
+        reads._declared(),  # pyright: ignore[reportPrivateUsage]
+        reads._FINAL,  # pyright: ignore[reportPrivateUsage]
+        policy=reads._ROOMY,  # pyright: ignore[reportPrivateUsage]
+    )
+    record = evaluated.reviewer
+    assert record is not None
+    assert [(read.root, read.standing) for read in record.reads] == [("t1", "declared_test")]
+
+    reviewer = _ScriptedReviewer([_digest("a")], [(_SHARED,)], seed=9600, reviewer=record)
+    run = await _checks(9600, reviewer, 1)
+    (projected,) = run.wires
+    model = CheckResult.model_validate(projected).root
+    assert type(model) is CheckSuccessModel
+    wire = public_model_to_wire(CheckResult.model_validate(projected))
+    reads_wire = cast(list[Mapping[str, Any]], cast(Mapping[str, Any], wire["reviewer"])["reads"])
+    assert [(read["root"], read["standing"]) for read in reads_wire] == [("t1", "declared_test")]
+    for host in ("codex", "claude", "cursor"):
+        assert "declared_test" in _result_text(wire, host_profile=host), host
+    assert render_human_check(model)
+
+    history = await run.app.status(
+        StatusRequest.model_validate(
+            {
+                **request_base(protocol_id("req_", 9650)),
+                **run.ids,
+                "view": "history",
+                "detail": "full",
+            }
+        )
+    )
+    # History rows carry the advisory (not the reviewer record); readiness names its origin.
+    assert "reviewer's declared-test verdict" in json.dumps(history.as_json(), default=str)
+    assert any(
+        row.get("correctness_advisories")
+        for row in cast(Mapping[str, Any], history.as_json()["page"])["items"]
+    )
+    # A same-id replay re-reads the recorded check, reviewer record included.
+    replayed = await run.app.check(CheckRequest.model_validate(run.bodies[0]))
+    assert type(replayed) is CheckCommitResult and replayed.outcome == "replayed"
+    again = await project_case(
+        run.app,
+        ProjectionCase("check", ControlMethod.CHECK, run.bodies[0], replayed),
+        9670,
+    )
+    assert type(CheckResult.model_validate(again).root) is CheckSuccessModel
+    receipt = await run.app.receipt(
+        ReceiptRequest.model_validate(
+            {
+                **request_base(protocol_id("req_", 9660)),
+                "task_id": run.task_id,
+                **run.ids,
+                "expected_frontier": frontier_json(run.frontier),
+                "format": "json",
+                "include": "standard",
+                "redaction_profile": "full_local",
+            }
+        )
+    )
+    assert "reviewer's declared-test verdict" in _strings(receipt.as_json())
