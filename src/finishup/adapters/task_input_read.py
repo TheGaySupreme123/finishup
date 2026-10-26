@@ -776,7 +776,7 @@ def read_declared_test(
 ) -> bytes | None:
     """The bytes of one agent-declared test file (issue #1220), or ``None``; never raises.
 
-    ``location`` is the absolute, normalized path ``kernel.declared_tests`` admitted by shape.
+    ``location`` is the absolute, normalized path ``kernel.declared_checks`` admitted by shape.
     The read is the outside read's walk with ``/`` plus the first component as its root: every
     directory on the way and the file pass the same trust test, hidden and credential-named
     components are refused, ``excluded`` (FinishUP's own directories) is never entered, and a
@@ -807,7 +807,7 @@ def read_declared_test(
         return None
     resolved = f"{top}/{rest}"
     # By spelling (case-folded too) and by identity (#1220 review): on a case-insensitive volume
-    # ``/ETC`` or ``/Users/ALICE/Library`` names the same directory as the refused spelling.
+    # ``/ETC`` or ``<HOME>/LIBRARY`` names the same directory as the refused spelling.
     if (
         system_directory_path(resolved)
         or system_directory_path(location.casefold())

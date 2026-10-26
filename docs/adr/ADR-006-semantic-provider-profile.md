@@ -3517,7 +3517,7 @@ capacity narrowing (`primary_material_selection`) drops the goal, obligation and
 gate depends on in about 140 of 142 reviews, and the decisive tests usually lived in `/tmp`,
 outside every reviewer root.
 
-- **The list.** `kernel.declared_tests.declared_test_candidates` names at most three distinct
+- **The list.** `kernel.declared_checks.declared_test_candidates` names at most three distinct
   `test_file`s of `result_recorded` manifests (#1170) whose criterion quote the task statement (or,
   second, an effective obligation's criteria) still states, task criteria first, then the newest.
   Each entry's `criterion_ref` is the first obligation stating the quote, else the declaring

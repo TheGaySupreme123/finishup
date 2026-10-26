@@ -22,7 +22,7 @@ from builders.privacy_policies import minimal_external_policy
 from builders.privacy_widenings import with_llm
 from finishup.domain.privacy import ApprovedOutboundCase, DataCategory
 from finishup.domain.reviewer_reads import render_reviewer_lines
-from finishup.kernel.declared_tests import DECLARED_TEST_QUESTION, DeclaredTestCandidate
+from finishup.kernel.declared_checks import DECLARED_TEST_QUESTION, DeclaredTestCandidate
 from finishup.ports.semantic import ProviderAttemptProvenance, SemanticResultReply
 from finishup.protocol.canonical import JsonValue
 from finishup.protocol.models import SemanticStatus

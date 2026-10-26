@@ -302,7 +302,7 @@ from finishup.domain.values import (
 from finishup.domain.values import (
     JsonValue as DomainJsonValue,
 )
-from finishup.kernel.declared_tests import (
+from finishup.kernel.declared_checks import (
     DECLARED_TEST_ROOT,
     DeclaredTest,
     declared_test_candidates,
