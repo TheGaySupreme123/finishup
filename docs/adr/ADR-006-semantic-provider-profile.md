@@ -3518,7 +3518,8 @@ gate depends on in about 140 of 142 reviews, and the decisive tests usually live
 outside every reviewer root.
 
 - **The list.** `kernel.declared_checks.declared_test_candidates` names at most three distinct
-  `test_file`s of `result_recorded` manifests (#1170) whose criterion quote the task statement (or,
+  `test_file`s of `result_recorded` manifests (#1170; a `test_file` declared alone counts, without a
+  bound report, #1226) whose criterion quote the task statement (or,
   second, an effective obligation's criteria) still states, task criteria first, then the newest.
   Each entry's `criterion_ref` is the first obligation stating the quote, else the declaring
   result. The service reads each file once when a new job is composed (`_pin_declared_tests`),

@@ -224,7 +224,12 @@ unknown or hostile property names are never echoed. Closed reason tokens are:
 - `paired_field_required` — a schema `dependentRequired` pair is incomplete (for example `start`
   with `workspace_ref` present and `external_ref` absent, or the inverse). Both the present field
   and the required peer are named; the authoring hint states the schema peer rule (e.g.
-  `workspace_ref requires external_ref`) without echoing submitted values;
+  `workspace_ref requires external_ref`) without echoing submitted values. A pairing rule nested in
+  a selected event payload object (`result_recorded` 1.1.0 `verification`, #1226) names the object
+  (`/event_drafts/<n>/payload/verification`) with this token, and the hint names the object, its
+  dependent key and the absent peers from the frozen pairing map (e.g.
+  `verification.results_file requires report_digest; declare report_digest too, or omit
+  verification.results_file`);
 - `conditional_field_required` — a root-level schema `if`/`then` (or equivalent closed object rule)
   activated required alternatives, a selected const-discriminated `oneOf` branch has a missing
   required peer or `anyOf`-of-`required` alternative (for example `start` with `mode` `attach`
@@ -3634,15 +3639,41 @@ preview|install`, and `cli/host_connection.apply_selected` for a connect); disco
 their previews and status never consult it. The MCP bridge supplies a
 default **30-second** call deadline for `start`, `publish_work`, and `status`, a default
 **50-second** deadline for `respond` and `receipt` (below the common 60-second host MCP tool
-limit, so the bridge's typed timeout reaches the agent first), and a default **300-second**
-deadline for `check` (a `check` with `mode: inspect` is a read and takes the `status` deadline,
-ADR-047); these use the existing private `deadline_ms` envelope field and do not
+limit, so the bridge's typed timeout reaches the agent first), and a default **280-second**
+deadline for `check`, below Codex's 300-second tool-call limit so the typed timeout and its
+`replay_request_id` reach the agent before the host abandons the call (#1226; a `check` with
+`mode: inspect` is a read and takes the `status` deadline, ADR-047); these use the existing private `deadline_ms` envelope field and do not
 change the public workflow-tool schemas. The bridge environment may override them in integer
-milliseconds, clamped to 1,000-900,000: `FINISHUP_MCP_DEADLINE_MS_<TOOL>` (for example
+milliseconds, clamped to 1,000-285,000 so no override reaches that 300-second limit: `FINISHUP_MCP_DEADLINE_MS_<TOOL>` (for example
 `FINISHUP_MCP_DEADLINE_MS_RECEIPT`) sets one tool, and `FINISHUP_MCP_DEADLINE_MS` sets every tool except
 `check` (an inspection follows `FINISHUP_MCP_DEADLINE_MS_STATUS` and the global variable, never
-`FINISHUP_MCP_DEADLINE_MS_CHECK`); an unparsable value keeps the default. Raising a deadline above the host's own MCP tool
-timeout only lets the host give up first. A timed-out write has an unknown outcome: the bridge
+`FINISHUP_MCP_DEADLINE_MS_CHECK`); an unparsable value keeps the default. Each call also has
+one whole-call budget (`mcp.server._CALL_BUDGET_MS`): service discovery (its own 30-second cap or
+what remains, whichever is less, including a wait on another call's probe), the RPC (its deadline
+above or what remains, whichever is less) and any reconnect share one monotonic deadline measured
+from the call's start. The budget is 55 seconds for `status`, `closure_prepare` (whose reads share
+it), an inspection and `start`, so a cold service start still leaves the read its full 30 seconds
+(29 s discovery plus a 30-second RPC timeout answers by 55 s, under the common 60-second host
+limit); for `publish_work`, `respond`, `receipt` and `check` it equals the RPC deadline. Each
+tool also has a host ceiling (`_HOST_CEILING_MS`: 300 seconds for `check`, the common 60 seconds
+for every other tool) that the whole call, post-timeout recovery and cleanup included, ends
+3 seconds inside (a margin for rendering and the client's bounded cancellation cleanup). A deadline
+override above a budget raises the budget with it, but never past that ceiling less the margin
+(57 or 297 seconds). A reconnect never gets a fresh budget, and running out at any stage is the
+same typed `request_timeout` with its `replay_request_id` for a write (an exhausted discovery is
+never latched as an availability failure). The post-timeout probe and same-request recovery of a
+write share one window of at most 10 seconds that also ends by that ceiling less the margin;
+recovery gets only what remains. The slot lock guards only synchronous bookkeeping: the
+handshake and the on-demand start run outside it, only the call that owns a probe releases it,
+and every wait (on the lock, on another call's probe, on a client close) ends by the waiting
+call's own deadline, so an expired caller answers with its typed timeout without touching the
+other caller's probe. The budget starts when the MCP handler receives the call, so Cursor's
+workspace preflight (its binding-lock wait and the roots exchange, itself capped at 5 seconds)
+spends the same budget; running out there is the typed timeout and leaves the binding as it was.
+A discovery publishes its client only if the slot's retirement generation and the Cursor binding
+it started under are unchanged; a client for a binding retired meanwhile is closed, no RPC is sent,
+and the call answers with the workspace-binding error (#1226). Raising a deadline above the host's own MCP tool timeout only lets
+the host give up first. A timed-out write has an unknown outcome: the bridge
 must preserve its retryable failure shape, say that it may already have committed, and direct the
 caller to retry with the same `request_id` (and operation status where applicable). A timed-out
 read may simply be repeated. For a timed-out `publish_work`, `respond` or `receipt`, the bridge
@@ -9378,7 +9409,7 @@ therefore depend on that process-local memo, not on ledger state alone: after an
 writer's resend can still carry the prediction (or a non-supply continuation) while the successor's
 page does not; after a restart (or eight newer frontiers) with a later record in place, both are
 rebuilt from the stored rows and agree. The verdict, missing
-items, review status and frontier are always carried. Persisting the continuation with the stored
+items, review status, frontier and the check's own tracked advice are always carried. Persisting the continuation with the stored
 check, so it no longer depends on the memo, is a storage change left as a follow-up (owned by
 #1100). The page-level `outcome`, frontiers and events keep the non-publish completion rule.
 Best effort: any failure omits the object and records the bounded diagnostic
@@ -10440,7 +10471,12 @@ it still sees it or names agent work); the last two continue as `input_correctio
 resolution-reason tokens that disqualified it (`self_verification_blocking_reasons`, matching
 `^(coverage:)?[a-z][a-z0-9_]{0,95}$`, `no_recorded_limit` when the check recorded none), and its
 message names them with a next step and the `finishup-verification-limit:<obligation id>` exit
-(ADR-041).
+(ADR-041). When `findings_suppressed` is among them (the check's ranking cap withheld findings), the
+`respond` message, the MCP text summary of that refusal and the finding explanation that `status`
+shows all carry the one fixed step `readiness_text.FINDINGS_SUPPRESSED_NEXT_STEP` (#1226): run
+`check` again with `max_findings` `"10"`, the maximum (omitting it uses the configured default),
+so no finding is withheld; if more than 10 findings are open, settle or answer the others first.
+It names no caller content and appears for no other blocker.
 Eligibility is `kernel/self_verification.self_verification_refusal(state, finding_id, records)`
 over the resolution reasons of that check (ADR-034): any `coverage:<code>` classified standing in
 `GAP_CLASSIFICATION` is a FinishUP limit. The to-do state `self_verified` is not resolved by its own
@@ -11865,8 +11901,8 @@ is withheld whole), recorded as a bounded `semantic_composition/check_time_chang
   When the gate fires and readiness `standing_limitations` lists `declared_output_content_moved`, the text
   carries one informational note; that code alone never fires the gate.
   Both decision functions take `code_mode=` (tb4n5 P6, #1079). The required close instruction asks for the `check` with the cell's deadline
-  pragma, `readiness_text.CODEX_CHECK_CELL_PRAGMA` (`// @exec: {"yield_time_ms": 300000}`, the
-  bridge's `check` deadline), only when code mode was positively observed: `code_mode` is true
+  pragma, `readiness_text.CODEX_CHECK_CELL_PRAGMA` (`// @exec: {"yield_time_ms": 300000}`, Codex's
+  tool-call limit, above the bridge's 280-second `check` deadline), only when code mode was positively observed: `code_mode` is true
   (the hook saw a recorded `exec` cell for this session via
   `LocalObservationStore.session_observed_code_mode`) or `check_cause.tool` is `exec`. Otherwise
   the neutral sentence is used, including on Codex (plain `exec_command` /
@@ -12656,7 +12692,15 @@ recomputation solely because the finding names paths.
 (`task_public|own_generated|independent|held_out|stated_environment|unknown`), and integer
 `cases`/`failing` (0..2^53-1, `failing <= cases`). Optional `worst` is nonblank text of at most
 64 characters; optional `tuned_on_these_cases` is a boolean. Optional `test_file`, `results_file`
-(nonblank paths of at most 1,024 characters) and `report_digest` (`sha256:` digest) travel together.
+(nonblank paths of at most 1,024 characters) and `report_digest` (`sha256:` digest): `test_file` may
+stand alone and declares the test the closing reviewer may be offered (ADR-006, #1220);
+`results_file` and `report_digest` bind a report to it and require each other and `test_file`
+(schema `dependentRequired`; owner decision on #1226, admitted in place on this unreleased version,
+so every earlier all-three-or-none manifest keeps its bytes and meaning). A manifest that breaks the
+pairing is refused before publication with the closed location reason `paired_field_required` at
+`/event_drafts/<n>/payload/verification`; the MCP hint names the rule from the frozen pairing map
+only (for example `verification.results_file requires report_digest; declare report_digest too, or
+omit verification.results_file`), never a caller value. `record-test` still binds all three.
 Issue #1219 adds two optional declarations in place on this unreleased version: `checks` (nonblank
 text of at most 200 characters naming what the test exercises) and `expected_from`
 (`task_text|independent_source|own_reimplementation|implementation_output|hand_computed`, where the
@@ -12909,7 +12953,10 @@ The check result (check-result 1.6.0 success, in place; 1.7.0 follows) carries
 same-id replay agree, and it is paged with the actionable fields. `status view=operation`
 carries the same rows in `check_outcome.correctness_advisories` without the summary (identity,
 origin, subjects; structural only, status-result 1.4.0/1.5.0 in place), so recovering a lost
-check response keeps the identities `respond` answers. CLI
+check response keeps the identities `respond` answers. The rows need only the check event recorded
+at the result frontier, never the closure basis, so they are carried on every rebuild, including
+when the trusted projection or the closure basis at that frontier is unavailable and the finding
+list and continuation are omitted (#1226). CLI
 and MCP text list the rows under a fixed "Tracked reviewer advice" header. Closure readiness
 (status-result 1.4.0, in place; check embeds it) carries `correctness_advisory_counts` (the
 receipt's `total`/`no_recorded_response`/`withheld_may_answer`) whenever the task has advice, and

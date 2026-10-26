@@ -2176,7 +2176,7 @@ async def _attach_finding_checklist(
             runtime.ledger, result.session_id, result.result_frontier
         )
         if projection is None:
-            return _with_stored_supply_next(result)
+            return await _with_recorded_advice(runtime, _with_stored_supply_next(result))
         # ADR-046: the receipt's own context at the result frontier gives the predicted
         # conclusion and the records the classes need. A read that fails omits the prediction
         # (never guesses one) and leaves a bounded diagnostic.
@@ -2192,7 +2192,7 @@ async def _attach_finding_checklist(
             # obligations are emptied or blocked). Without it any class would be a guess that
             # status, reading the real basis, could contradict; the check is returned without the
             # list, like every other failed read here (the diagnostic above is the trace).
-            return _with_stored_supply_next(result)
+            return await _with_recorded_advice(runtime, _with_stored_supply_next(result))
         checklist = build_finding_checklist(
             projection, attempt_budget=budget, records=loaded.records
         )
@@ -2239,7 +2239,36 @@ async def _attach_finding_checklist(
             component="check",
             operation="finding_checklist_read",
         )
-        return _with_stored_supply_next(result)
+        return await _with_recorded_advice(runtime, _with_stored_supply_next(result))
+
+
+async def _with_recorded_advice(
+    runtime: TaskRuntime, result: CheckCommitResult
+) -> CheckCommitResult:
+    """The check with its own tracked advice when the finding list could not be built (#1226).
+
+    The advisory rows need only the check event recorded at the result frontier, never the
+    closure basis, so a cold memo or a later record (the recovery case) still returns them. A
+    failed read of that one event leaves the result unchanged with a bounded diagnostic.
+    """
+
+    frontier = result.result_frontier
+    try:
+        records = tuple(
+            [
+                record
+                async for record in runtime.ledger.load_events(
+                    result.session_id, after=frontier.sequence - 1, through=frontier.sequence
+                )
+            ]
+        )
+        rows = check_advisory_rows(records, frontier)
+    except Exception as exc:  # noqa: BLE001 - advice enriches the result, never strands it
+        record_unexpected_exception_without_raising(
+            exc, component="check", operation="check_advice_read"
+        )
+        return result
+    return result if not rows else replace(result, correctness_advisories=rows)
 
 
 def check_advisory_rows(

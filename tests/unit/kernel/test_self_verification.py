@@ -525,3 +525,27 @@ def test_a_rule_that_fires_again_after_self_verification_mints_a_new_finding() -
     # Acknowledged-not-done keeps converging on its row: the agent said it will not do it.
     acknowledged = _state(finding, response=ResponseDisposition.ACKNOWLEDGED_NOT_DONE)
     assert prior_finding_ids(acknowledged) == {key: fnd(1)}
+
+
+@pytest.mark.parametrize("suppressed", [0, 2])
+def test_a_suppressing_check_tells_the_agent_how_to_clear_findings_suppressed(
+    suppressed: int,
+) -> None:
+    """#1226 (tq6 D2): the bare token left the agent looping between repair and the same check."""
+
+    from dataclasses import replace
+
+    from finishup.protocol.models import MAX_FINDINGS_LIMIT
+    from finishup.protocol.readiness_text import FINDINGS_SUPPRESSED_NEXT_STEP
+
+    assert f'max_findings "{MAX_FINDINGS_LIMIT}"' in FINDINGS_SUPPRESSED_NEXT_STEP
+    assert f"more than {MAX_FINDINGS_LIMIT} findings" in FINDINGS_SUPPRESSED_NEXT_STEP
+    state = _state(_finding())
+    records = _records(
+        _row(10, replace(_check(gaps=("missing_ref",)), suppressed_count=suppressed))
+    )
+    _refusal, blocking = self_verification_evaluation(state, fnd(1), records)
+    explanation = finding_resolution_explanation(state, fnd(1), records)
+    assert ("findings_suppressed" in blocking) is bool(suppressed)
+    assert (f"Next: {FINDINGS_SUPPRESSED_NEXT_STEP}." in explanation) is bool(suppressed)
+    assert ("max_findings" in explanation) is bool(suppressed)

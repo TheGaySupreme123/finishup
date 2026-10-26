@@ -201,7 +201,7 @@ class TestAnInspectionFailsAsARead:
 
     The daemon already classified it read-only, but the bridge and the CLI classified by operation
     name, so a timed-out inspection was told it "MAY already have committed", carried a
-    ``replay_request_id`` for an operation that never exists, and waited on the 300-second budget
+    ``replay_request_id`` for an operation that never exists, and waited on the 280-second budget
     of a check that may run an AI-powered review. A minting check keeps all of that.
     """
 
@@ -210,8 +210,8 @@ class TestAnInspectionFailsAsARead:
         ("mode", "deadline", "token"),
         (
             ("inspect", 30_000, "read_timeout_new_identity"),
-            ("deterministic_only", 300_000, "write_timeout_same_identity"),
-            ("semantic_required", 300_000, "write_timeout_same_identity"),
+            ("deterministic_only", 280_000, "write_timeout_same_identity"),
+            ("semantic_required", 280_000, "write_timeout_same_identity"),
         ),
     )
     async def test_a_timed_out_inspection_is_a_read_with_the_status_deadline(
@@ -235,7 +235,9 @@ class TestAnInspectionFailsAsARead:
         finally:
             await bridge.close_bridge_runtime(runtime)
 
-        assert client.deadlines == [deadline]
+        # The RPC gets what remains of the one call deadline (review of #1226), never more.
+        (sent,) = client.deadlines
+        assert sent is not None and deadline - 1_000 < sent <= deadline
         error = _error_of(result)
         assert error["code"] == PublicErrorCode.SERVICE_UNAVAILABLE.value
         assert error["retryable"] is True

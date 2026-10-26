@@ -65,7 +65,7 @@ _DIGEST = "sha256:" + "d" * 64
 _TEST = DeclaredTest("dt1", "/tmp/test_accuracy.py", _DIGEST, str(obl(1)))
 
 
-def _frozen(test_file: str | None) -> DeterministicCase:
+def _frozen(test_file: str | None, *, report: bool = True) -> DeterministicCase:
     case = make_case(
         plans={1: plan_record(PlanPublishedPayload(1, "Deliver predictions", (obl(1),)), 1)},
         obligations={
@@ -97,8 +97,12 @@ def _frozen(test_file: str | None) -> DeterministicCase:
                         100,
                         0,
                         test_file=test_file,
-                        results_file=None if test_file is None else "/tmp/results.json",
-                        report_digest=None if test_file is None else "sha256:" + "c" * 64,
+                        results_file=(
+                            None if test_file is None or not report else "/tmp/results.json"
+                        ),
+                        report_digest=(
+                            None if test_file is None or not report else "sha256:" + "c" * 64
+                        ),
                     ),
                 ),
                 4,
@@ -211,6 +215,22 @@ def test_the_offered_list_is_structural_metadata_with_the_flag_and_one_question(
         review_input_manifest_to_json(case.packet.input_manifest)
     )
     assert "declared tests offered 1; " in lines[0]
+
+
+def test_a_test_file_declared_alone_is_listed_like_one_with_a_report() -> None:
+    """#1226 (owner decision): no bound report is needed for the reviewer to be offered the test."""
+
+    listed: list[object] = []
+    for report in (True, False):
+        frozen = _frozen(_TEST.path, report=report)
+        manifest = frozen.projection.results[res(1)].payload
+        assert manifest is not None and manifest.verification is not None
+        assert (manifest.verification.report_digest is None) is not report
+        (candidate,) = declared_test_candidates(frozen.projection, _CRITERION)
+        assert candidate.path == _TEST.path
+        packet = json.loads(_prepared(_build(frozen, final=True, declared=(_TEST,))))
+        listed.append((candidate, packet["review_packet"]["declared_tests"]))
+    assert listed[0] == listed[1]
 
 
 def test_the_list_survives_the_narrowing_that_drops_obligation_rows() -> None:

@@ -237,6 +237,23 @@ def test_an_agreed_global_deadline_does_not_control_a_writing_check(
     assert mcp_server._rpc_deadline_ms("check", environ) == expected  # pyright: ignore[reportPrivateUsage]
 
 
+@pytest.mark.parametrize("tool", sorted(mcp_server._DEFAULT_RPC_DEADLINES_MS))  # pyright: ignore[reportPrivateUsage]
+@pytest.mark.parametrize("override", [None, "299999", "300000", "900000", "99999999"])
+@pytest.mark.parametrize("prefix", ["FINISHUP_", "YOETZ_"])
+def test_no_mcp_deadline_reaches_the_host_tool_call_limit(
+    tool: str, override: str | None, prefix: str
+) -> None:
+    """#1226: Codex abandons a tool call at 300 s, so the bridge's typed timeout must come first."""
+
+    host_limit = mcp_server._HOST_TOOL_CALL_LIMIT_MS  # pyright: ignore[reportPrivateUsage]
+    assert host_limit == 300_000
+    environ = {} if override is None else {f"{prefix}MCP_DEADLINE_MS_{tool.upper()}": override}
+    deadline = mcp_server._rpc_deadline_ms(tool, environ)  # pyright: ignore[reportPrivateUsage]
+    assert deadline < host_limit
+    if override is None and tool == "check":
+        assert deadline == 280_000
+
+
 @pytest.mark.anyio
 @pytest.mark.parametrize(
     ("operation", "mode", "suffix"),

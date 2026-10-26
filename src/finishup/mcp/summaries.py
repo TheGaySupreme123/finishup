@@ -60,6 +60,8 @@ from finishup.protocol.guidance_uris import ALL_GUIDANCE_URIS, LEGACY_ALL_GUIDAN
 from finishup.protocol.ids import IdKind, is_valid_id, validate_opaque_item_id
 from finishup.protocol.inspection_text import inspection_text
 from finishup.protocol.readiness_text import (
+    FINDINGS_SUPPRESSED_NEXT_STEP,
+    FINDINGS_SUPPRESSED_TOKEN,
     READINESS_STATES,
     acceptance_risk_note,
     awaiting_ruling_variants,
@@ -1395,6 +1397,47 @@ def _result_outcome_variants(error: Mapping[str, JsonValue]) -> tuple[str, ...]:
     return ()
 
 
+_VERIFICATION_POINTER: Final = re.compile(r"\A/event_drafts/[0-9]{1,3}/payload/verification\Z")
+_VERIFICATION_PAIR_HINT: Final = (
+    " Verification manifest: test_file may stand alone; results_file and report_digest go"
+    " together, and only beside test_file."
+)
+
+
+def _verification_pair_clause(error: Mapping[str, JsonValue]) -> str:
+    """State the manifest's report pairing when a result draft broke it (#1226).
+
+    Text-channel hosts saw only ``paired_field_required at .../verification``; the structured
+    message names the exact peers. Fixed repository text selected by the frozen pointer and the
+    closed reason; no caller value is echoed.
+    """
+
+    details = error.get("safe_details")
+    if not isinstance(details, Mapping):
+        return ""
+    typed = cast(Mapping[str, JsonValue], details)
+    fields = typed.get("fields")
+    reasons = typed.get("reasons")
+    if (
+        not isinstance(fields, Sequence)
+        or not isinstance(reasons, Sequence)
+        or isinstance(fields, str)
+        or isinstance(reasons, str)
+        or len(fields) != len(reasons)
+    ):
+        return ""
+    if any(
+        reason == "paired_field_required"
+        and type(field) is str
+        and _VERIFICATION_POINTER.fullmatch(field) is not None
+        for field, reason in zip(
+            cast(Sequence[JsonValue], fields), cast(Sequence[JsonValue], reasons), strict=True
+        )
+    ):
+        return _VERIFICATION_PAIR_HINT
+    return ""
+
+
 def _claim_revision_clause(error: Mapping[str, JsonValue]) -> str:
     """Render the closed claim-revision invariant and its correction from typed details.
 
@@ -1450,9 +1493,12 @@ def _blocking_reasons_clause(error: Mapping[str, JsonValue]) -> str:
     named = ", ".join(blocking[:_MAX_SUMMARY_BLOCKING_REASONS])
     if len(blocking) > _MAX_SUMMARY_BLOCKING_REASONS:
         named += f" (+{len(blocking) - _MAX_SUMMARY_BLOCKING_REASONS})"
+    suppressed = (
+        f" Next: {FINDINGS_SUPPRESSED_NEXT_STEP}." if FINDINGS_SUPPRESSED_TOKEN in blocking else ""
+    )
     return (
-        f" Not a FinishUP limit; still listed: {named}. Repair and check, or disclose a check you"
-        " cannot run with finishup-verification-limit:<obligation id>."
+        f" Not a FinishUP limit; still listed: {named}.{suppressed} Repair and check, or disclose"
+        " a check you cannot run with finishup-verification-limit:<obligation id>."
     )
 
 
@@ -1493,6 +1539,10 @@ def summary_for_public_error(envelope: object) -> str:
         _req(render.text("validation", lambda: _validation_location_clause(error))),
         _opt(
             *render.variants("outcome_hint", lambda: _result_outcome_variants(error)),
+            priority=_P_IDENTITY,
+        ),
+        _opt(
+            render.text("verification_pair", lambda: _verification_pair_clause(error)),
             priority=_P_IDENTITY,
         ),
         _opt(

@@ -2386,11 +2386,14 @@ class ResultVerification:
         object.__setattr__(self, "failing", _bounded_integer(self.failing, 0, self.cases))
         if self.tuned_on_these_cases is not None and type(self.tuned_on_these_cases) is not bool:
             raise ProtocolValueError("invalid_event_value_type")
-        registration = (self.test_file, self.results_file, self.report_digest)
-        if any(value is not None for value in registration):
-            if any(value is None for value in registration):
-                raise ProtocolValueError("invalid_event_value_type")
-            validate_sha256_digest(cast(str, self.report_digest))
+        # #1226: ``test_file`` alone declares the test; a report binds to it with both
+        # ``results_file`` and ``report_digest`` (the schema's ``dependentRequired``).
+        if (self.results_file is None) != (self.report_digest is None) or (
+            self.results_file is not None and self.test_file is None
+        ):
+            raise ProtocolValueError("invalid_event_value_type")
+        if self.report_digest is not None:
+            validate_sha256_digest(self.report_digest)
 
 
 @dataclass(frozen=True, slots=True)

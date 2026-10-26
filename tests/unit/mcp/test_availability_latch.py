@@ -148,8 +148,10 @@ class _Harness:
         self.stall_on_demand = False
         original = bridge.record_public_error_without_raising
 
-        async def on_demand(_kind: object, *, workspace_locator: object = None) -> object:
-            del workspace_locator
+        async def on_demand(
+            _kind: object, *, workspace_locator: object = None, timeout_seconds: float = 30.0
+        ) -> object:
+            del workspace_locator, timeout_seconds
             self.on_demand.append("connect")
             self.entered_on_demand.set()
             if self.stall_on_demand:

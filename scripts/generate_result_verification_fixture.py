@@ -55,6 +55,43 @@ def document() -> dict[str, JsonValue]:
             False,
         ),
         ("null_manifest", {**base, "verification": None}, False, False),
+        # Issue #1226: a test file alone declares the test; a report binds to it only with both
+        # results_file and report_digest.
+        (
+            "test_file_alone",
+            {
+                **base,
+                "verification": {
+                    key: value
+                    for key, value in manifest.items()
+                    if key not in {"results_file", "report_digest"}
+                },
+            },
+            False,
+            True,
+        ),
+        (
+            "results_file_without_digest",
+            {
+                **base,
+                "verification": {
+                    key: value for key, value in manifest.items() if key != "report_digest"
+                },
+            },
+            False,
+            False,
+        ),
+        (
+            "report_without_test_file",
+            {
+                **base,
+                "verification": {
+                    key: value for key, value in manifest.items() if key != "test_file"
+                },
+            },
+            False,
+            False,
+        ),
     )
     return {
         "fixture_id": _FIXTURE_ID,
@@ -65,7 +102,10 @@ def document() -> dict[str, JsonValue]:
             "protocol": "0.1",
             "result_recorded_schema": "1.1.0",
         },
-        "owns_requirements": ["issue-1170:optional-test-manifest"],
+        "owns_requirements": [
+            "issue-1170:optional-test-manifest",
+            "issue-1226:test-file-alone",
+        ],
         "purpose": "Freeze optional agent-declared result verification without changing the released result shape.",
         "controls": {
             "clock": "fixture_supplied",

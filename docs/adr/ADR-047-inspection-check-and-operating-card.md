@@ -59,7 +59,7 @@ operation record, no finding, no reviewer, no egress). The daemon, the MCP bridg
 classify it read-only by one set of modes (`READ_ONLY_CHECK_MODES`), so a failure, a timeout
 included, is a retryable read failure answered by a fresh request (continuation
 `read_timeout_new_identity`, no `replay_request_id`), and the daemon never runs it detached. The
-bridge gives it the `status` call deadline (30 seconds by default), not the 300 seconds kept for a
+bridge gives it the `status` call deadline (30 seconds by default), not the 280 seconds kept for a
 check that may run an AI-powered review: an inspection waiting on a running review's dispatch gate
 then gets a typed read timeout inside the common 60-second host tool limit.
 **It is not recorded.** `status` reads are not recorded either; an inspection changes nothing that

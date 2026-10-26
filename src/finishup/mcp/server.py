@@ -8,7 +8,9 @@ import os
 import re
 import stat
 import sys
-from collections.abc import Awaitable, Callable, Mapping, Sequence
+import time
+from collections.abc import Awaitable, Callable, Generator, Mapping, Sequence
+from contextvars import ContextVar
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
@@ -202,7 +204,13 @@ _WORKFLOW_RPC_DEADLINE_MS: Final = 30_000
 # below the common 60-second host MCP tool limit (Codex ``tool_timeout_sec``) so the bridge's own
 # typed timeout, with its operation handle, reaches the agent before the host gives up.
 _RECEIPT_RESPONSE_RPC_DEADLINE_MS: Final = 50_000
-_SEMANTIC_CHECK_RPC_DEADLINE_MS: Final = 300_000
+# Codex gives up on any MCP tool call after 300 seconds. A ``check`` that may run an AI-powered
+# review keeps its deadline below that limit, so the bridge's typed timeout, with its
+# ``replay_request_id`` recovery handle, reaches the agent before the host abandons the call
+# (issue #1226). Every override is clamped below it too, leaving room for a timed-out write's
+# operation probe.
+_HOST_TOOL_CALL_LIMIT_MS: Final = 300_000
+_SEMANTIC_CHECK_RPC_DEADLINE_MS: Final = 280_000
 _DEFAULT_RPC_DEADLINES_MS: Final = MappingProxyType(
     {
         "start": _WORKFLOW_RPC_DEADLINE_MS,
@@ -220,9 +228,48 @@ _DEFAULT_RPC_DEADLINES_MS: Final = MappingProxyType(
 # set to different values is ambiguous and refuses the operation before discovery (ADR-048).
 _RPC_DEADLINE_ENV_SUFFIX: Final = "MCP_DEADLINE_MS"
 _MIN_RPC_DEADLINE_MS: Final = 1_000
-_MAX_RPC_DEADLINE_MS: Final = 900_000
 # A write that timed out is probed once for its durable operation state with this budget.
 _TIMEOUT_PROBE_DEADLINE_MS: Final = 5_000
+_MAX_RPC_DEADLINE_MS: Final = 285_000
+# Review of #1226: one monotonic deadline bounds a whole tool call (service discovery, the RPC
+# and any reconnect), never one per stage. Discovery gets its own cap or what remains, whichever
+# is less. After a timeout, the operation probe and same-request recovery of a write share one
+# short window that still ends inside the host limit.
+_SERVICE_DISCOVERY_CAP_SECONDS: Final = 30.0
+_MIN_SERVICE_DISCOVERY_SECONDS: Final = 0.1
+_POST_TIMEOUT_WINDOW_MS: Final = 10_000
+# The common 60-second host MCP tool limit (Codex ``tool_timeout_sec``) that the 30- and
+# 50-second tools answer inside.
+_COMMON_HOST_TOOL_LIMIT_MS: Final = 60_000
+# The host limit each tool's whole call must end inside, post-timeout recovery and cleanup
+# included, less a margin for rendering and the client's bounded cancellation cleanup.
+_HOST_CEILING_MS: Final = MappingProxyType(
+    {
+        "start": _COMMON_HOST_TOOL_LIMIT_MS,
+        "status": _COMMON_HOST_TOOL_LIMIT_MS,
+        "publish_work": _COMMON_HOST_TOOL_LIMIT_MS,
+        "respond": _COMMON_HOST_TOOL_LIMIT_MS,
+        "receipt": _COMMON_HOST_TOOL_LIMIT_MS,
+        "check": _HOST_TOOL_CALL_LIMIT_MS,
+    }
+)
+_HOST_CEILING_MARGIN_MS: Final = 3_000
+# The whole-call budget per tool (discovery, RPC and any reconnect together). The reads and
+# ``start`` keep room for a cold service start beside their full 30-second RPC (29 s discovery
+# plus the RPC still answers by 55 s, under the common host limit); the RPC stage itself stays
+# capped by its own deadline. A deadline override above the budget raises the budget with it,
+# but never past the tool's host ceiling less the margin. ``closure_prepare`` and an inspection
+# take the ``status`` budget and ceiling.
+_CALL_BUDGET_MS: Final = MappingProxyType(
+    {
+        "start": 55_000,
+        "status": 55_000,
+        "publish_work": _WORKFLOW_RPC_DEADLINE_MS,
+        "respond": _RECEIPT_RESPONSE_RPC_DEADLINE_MS,
+        "receipt": _RECEIPT_RESPONSE_RPC_DEADLINE_MS,
+        "check": _SEMANTIC_CHECK_RPC_DEADLINE_MS,
+    }
+)
 _CURSOR_ROOTS_REQUEST_TIMEOUT_SECONDS: Final = 5.0
 _MAX_CURSOR_ROOTS: Final = 32
 _MAX_CURSOR_ROOT_URI_BYTES: Final = MAX_WORKSPACE_LOCATOR_BYTES * 2
@@ -489,6 +536,12 @@ class _ClientSlot:
     # park on attempt_finished, then re-check the completed latch (issue #476).
     attempting: bool = False
     attempt_finished: asyncio.Event | None = None
+    # The token of the call that owns the in-flight probe (review of #1226): only that call may
+    # release it, so an expired waiter never clears another caller's probe.
+    attempt_owner: object | None = None
+    # Bumped whenever the slot's client is retired (a Cursor binding change, shutdown): a probe
+    # that started before a retirement never publishes its client (review of #1226).
+    retirement_generation: int = 0
 
 
 @dataclass(frozen=True, slots=True)
@@ -903,10 +956,20 @@ async def _close_client(client: ServiceClient) -> None:
 
 
 async def _discard_client(runtime: BridgeRuntime, client: ServiceClient) -> None:
-    async with runtime._slot.lock:  # pyright: ignore[reportPrivateUsage]
-        if runtime._slot.client is client:  # pyright: ignore[reportPrivateUsage]
-            runtime._slot.client = None  # pyright: ignore[reportPrivateUsage]
-    await _close_client(client)
+    # One synchronous step needs no lock on the event loop, so a reconnect never queues behind
+    # another caller's probe (review of #1226); the close is bounded by the call's budget.
+    slot = runtime._slot  # pyright: ignore[reportPrivateUsage]
+    if slot.client is client:
+        slot.client = None
+    budget = _CALL_BUDGET.get()
+    if budget is None:
+        await _close_client(client)
+        return
+    try:
+        async with asyncio.timeout(max(0.0, budget.remaining_seconds())):
+            await _close_client(client)
+    except TimeoutError:
+        pass
 
 
 async def ensure_service_client(
@@ -923,73 +986,180 @@ async def ensure_service_client(
     opts into retaining an availability failure only long enough for ``_latch_availability`` to
     store the shared public result. The original request identity still replays through a latched
     outage (issue #469).
+
+    Inside a tool call's budget (review of #1226) discovery, including a wait on another caller's
+    probe, ends by the call deadline: the on-demand start gets its own cap or what remains,
+    whichever is less, and running out is FinishUP's typed ``request_timeout``, never an
+    availability failure that a later call would inherit.
+    """
+
+    budget = _CALL_BUDGET.get()
+    if budget is None:
+        return await _ensure_service_client(
+            runtime,
+            request_id=request_id,
+            retain_availability_failure_for_latch=retain_availability_failure_for_latch,
+            start_timeout_seconds=None,
+        )
+    remaining = budget.remaining_seconds()
+    if remaining < _MIN_SERVICE_DISCOVERY_SECONDS:
+        raise _call_timeout()
+    try:
+        async with asyncio.timeout(remaining):
+            return await _ensure_service_client(
+                runtime,
+                request_id=request_id,
+                retain_availability_failure_for_latch=retain_availability_failure_for_latch,
+                start_timeout_seconds=min(_SERVICE_DISCOVERY_CAP_SECONDS, remaining),
+            )
+    except TimeoutError:
+        raise _call_timeout() from None
+
+
+async def _ensure_service_client(
+    runtime: BridgeRuntime,
+    *,
+    request_id: str | None,
+    retain_availability_failure_for_latch: bool,
+    start_timeout_seconds: float | None,
+) -> ServiceClient:
+    """Reuse the slot's client, wait for another call's probe, or own one probe.
+
+    The slot lock guards only synchronous bookkeeping; the handshake and the on-demand start run
+    outside it (review of #1226), so no caller waits on the lock behind another caller's probe.
+    Only the owner releases its probe, so a waiter that runs out of budget leaves it untouched.
     """
 
     slot = runtime._slot  # pyright: ignore[reportPrivateUsage]
     workspace_locator = _workspace_locator_for_runtime(runtime)
     if workspace_locator is None:
         raise _CursorWorkspaceBindingError()
+    generation = slot.retirement_generation
+    owner = object()
+    owns_probe = False
     keep_gate = False
     try:
         while True:
             waiter: asyncio.Event | None = None
-            connected: ServiceClient | None = None
             async with slot.lock:
+                if _slot_retired_since(runtime, generation, workspace_locator):
+                    raise _retired_binding_error(runtime)
                 if slot.availability is not None:
                     latch = slot.availability
                     if request_id is None or request_id != latch.request_id:
                         raise ControlError(latch.reason, retryable=latch.retryable)
                 existing = slot.client
-                if existing is not None:
-                    try:
-                        await existing.connect()
-                    except Exception:
-                        slot.client = None
-                        await _close_client(existing)
+                if existing is None:
+                    if slot.attempting:
+                        waiter = slot.attempt_finished
                     else:
-                        return existing
-                if slot.attempting:
-                    waiter = slot.attempt_finished
-                else:
-                    slot.attempting = True
-                    slot.attempt_finished = asyncio.Event()
-                    connected_attempt: ServiceClient | None = None
-                    try:
-                        connected_attempt = await connect_service_on_demand(
-                            ControlClientKind.MCP_BRIDGE,
-                            workspace_locator=workspace_locator,
-                        )
-                        await connected_attempt.connect()
-                    except BaseException as exc:
+                        slot.attempting = True
+                        slot.attempt_owner = owner
+                        slot.attempt_finished = asyncio.Event()
+                        owns_probe = True
+                        _ATTEMPT_OWNER.set(owner)
+            if existing is not None:
+                try:
+                    await existing.connect()
+                except Exception:
+                    if slot.client is existing:
                         slot.client = None
-                        if connected_attempt is not None:
-                            await _close_client(connected_attempt)
-                        keep_gate = (
-                            retain_availability_failure_for_latch
-                            and isinstance(exc, ControlError)
-                            and exc.reason in _AVAILABILITY_LATCH_REASONS
-                        )
-                        raise
-                    slot.client = connected_attempt
-                    connected = connected_attempt
-            if connected is not None:
-                await _finish_availability_attempt(runtime)
-                return connected
-            if waiter is None:
+                    await _close_client(existing)
+                    continue
+                async with slot.lock:
+                    if _slot_retired_since(runtime, generation, workspace_locator):
+                        raise _retired_binding_error(runtime)
+                return existing
+            if waiter is not None:
+                await waiter.wait()
                 continue
-            await waiter.wait()
+            if not owns_probe:
+                continue
+            connected_attempt: ServiceClient | None = None
+            try:
+                connected_attempt = (
+                    await connect_service_on_demand(
+                        ControlClientKind.MCP_BRIDGE,
+                        workspace_locator=workspace_locator,
+                    )
+                    if start_timeout_seconds is None
+                    else await connect_service_on_demand(
+                        ControlClientKind.MCP_BRIDGE,
+                        workspace_locator=workspace_locator,
+                        timeout_seconds=start_timeout_seconds,
+                    )
+                )
+                await connected_attempt.connect()
+            except BaseException as exc:
+                if connected_attempt is not None:
+                    await _close_client(connected_attempt)
+                budget = _CALL_BUDGET.get()
+                if (
+                    budget is not None
+                    and isinstance(exc, ControlError)
+                    and exc.reason == "service_unavailable"
+                    and budget.remaining_seconds() < _MIN_SERVICE_DISCOVERY_SECONDS
+                ):
+                    # The start ran out of this call's budget, not of its own: a typed
+                    # timeout the caller recovers from, never a latched outage.
+                    raise _call_timeout() from None
+                keep_gate = (
+                    retain_availability_failure_for_latch
+                    and isinstance(exc, ControlError)
+                    and exc.reason in _AVAILABILITY_LATCH_REASONS
+                )
+                raise
+            # Publish only if no retirement landed while discovery ran outside the lock: a
+            # client for a binding retired meanwhile is closed and no RPC is sent on it.
+            async with slot.lock:
+                retired = _slot_retired_since(runtime, generation, workspace_locator)
+                stale = None if retired else slot.client
+                if not retired:
+                    slot.client = connected_attempt
+            if retired:
+                await _close_client(connected_attempt)
+                raise _retired_binding_error(runtime)
+            if stale is not None and stale is not connected_attempt:
+                await _close_client(stale)
+            _release_availability_attempt(slot, owner)
+            return connected_attempt
     except BaseException:
-        if not keep_gate:
-            await _finish_availability_attempt(runtime)
+        if owns_probe and not keep_gate:
+            _release_availability_attempt(slot, owner)
         raise
 
 
-async def close_bridge_runtime(runtime: BridgeRuntime = BRIDGE_RUNTIME) -> None:
-    """Close only this bridge's local client connection, never the persistent service."""
+def _slot_retired_since(
+    runtime: BridgeRuntime, generation: int, workspace_locator: WorkspaceLocator
+) -> bool:
+    """Whether the slot's client was retired, or its workspace binding changed or failed, since
+    a discovery captured ``generation`` and ``workspace_locator`` (review of #1226)."""
 
-    async with runtime._slot.lock:  # pyright: ignore[reportPrivateUsage]
-        client = runtime._slot.client  # pyright: ignore[reportPrivateUsage]
-        runtime._slot.client = None  # pyright: ignore[reportPrivateUsage]
+    slot = runtime._slot  # pyright: ignore[reportPrivateUsage]
+    return (
+        slot.retirement_generation != generation
+        or _workspace_locator_for_runtime(runtime) != workspace_locator
+        or (runtime.host_profile == "cursor" and slot.workspace_binding_state != "bound")
+    )
+
+
+def _retired_binding_error(runtime: BridgeRuntime) -> Exception:
+    if runtime.host_profile == "cursor":
+        return _CursorWorkspaceBindingError()
+    return ControlError("service_unavailable", retryable=True)
+
+
+async def close_bridge_runtime(runtime: BridgeRuntime = BRIDGE_RUNTIME) -> None:
+    """Close only this bridge's local client connection, never the persistent service.
+
+    One synchronous step retires the slot's client and bumps its generation, so a discovery
+    already in flight cannot publish a client afterwards (review of #1226).
+    """
+
+    slot = runtime._slot  # pyright: ignore[reportPrivateUsage]
+    slot.retirement_generation += 1
+    client = slot.client
+    slot.client = None
     if client is not None:
         await _close_client(client)
 
@@ -2249,19 +2419,15 @@ async def _latch_availability(
             details,
             _holder_snapshot(),
         )
+        # One synchronous step: no lock wait behind another caller (review of #1226).
         already = False
-        async with slot.lock:
-            existing = slot.availability
-            if (
-                existing is not None
-                and request_id is not None
-                and request_id == existing.request_id
-            ):
-                slot.availability = latch
-            elif existing is not None:
-                already = True
-            else:
-                slot.availability = latch
+        existing = slot.availability
+        if existing is not None and request_id is not None and request_id == existing.request_id:
+            slot.availability = latch
+        elif existing is not None:
+            already = True
+        else:
+            slot.availability = latch
         if already:
             inherited = await _inherit_terminal_availability(runtime, request_id)
             if inherited is not None:
@@ -2280,8 +2446,8 @@ async def _latch_availability(
 
 
 async def _clear_availability(runtime: BridgeRuntime) -> None:
-    async with runtime._slot.lock:  # pyright: ignore[reportPrivateUsage]
-        runtime._slot.availability = None  # pyright: ignore[reportPrivateUsage]
+    # One synchronous step needs no lock on the event loop (review of #1226).
+    runtime._slot.availability = None  # pyright: ignore[reportPrivateUsage]
 
 
 async def _quiet_probe(runtime: BridgeRuntime) -> ServiceClient | None:
@@ -2305,6 +2471,32 @@ async def _quiet_probe(runtime: BridgeRuntime) -> ServiceClient | None:
 
 
 async def _inherit_terminal_availability(
+    runtime: BridgeRuntime,
+    request_id: str | None,
+    *,
+    concurrent_waiter: bool = False,
+) -> types.CallToolResult | None:
+    """``_inherit_latched_availability`` ended by the call's budget (review of #1226).
+
+    Its lock wait and quiet handshake never outlive the call; a call that runs out inherits
+    nothing and answers with its own typed result.
+    """
+
+    budget = _CALL_BUDGET.get()
+    if budget is None:
+        return await _inherit_latched_availability(
+            runtime, request_id, concurrent_waiter=concurrent_waiter
+        )
+    try:
+        async with asyncio.timeout(max(0.0, budget.remaining_seconds())):
+            return await _inherit_latched_availability(
+                runtime, request_id, concurrent_waiter=concurrent_waiter
+            )
+    except TimeoutError:
+        return None
+
+
+async def _inherit_latched_availability(
     runtime: BridgeRuntime,
     request_id: str | None,
     *,
@@ -2354,16 +2546,35 @@ async def _inherit_terminal_availability(
         )
 
 
-async def _finish_availability_attempt(runtime: BridgeRuntime) -> None:
-    """Release the first-probe gate so waiters can inherit the completed latch or proceed."""
+# The probe this call owns and kept open for ``_latch_availability`` (review of #1226).
+_ATTEMPT_OWNER: ContextVar[object | None] = ContextVar("finishup_mcp_attempt_owner", default=None)
 
-    slot = runtime._slot  # pyright: ignore[reportPrivateUsage]
-    async with slot.lock:
-        slot.attempting = False
-        finished = slot.attempt_finished
-        slot.attempt_finished = None
+
+def _release_availability_attempt(slot: _ClientSlot, owner: object) -> None:
+    """Release the first-probe gate if ``owner`` holds it, so waiters inherit or proceed.
+
+    One synchronous step: on the event loop it needs no lock, so releasing never waits behind
+    another caller, and a caller that does not own the probe changes nothing.
+    """
+
+    if slot.attempt_owner is not owner:
+        return
+    slot.attempting = False
+    slot.attempt_owner = None
+    finished = slot.attempt_finished
+    slot.attempt_finished = None
     if finished is not None:
         finished.set()
+
+
+async def _finish_availability_attempt(runtime: BridgeRuntime) -> None:
+    """Release the probe this call kept open for latching; any other probe is left alone."""
+
+    owner = _ATTEMPT_OWNER.get()
+    if owner is None:
+        return
+    _ATTEMPT_OWNER.set(None)
+    _release_availability_attempt(runtime._slot, owner)  # pyright: ignore[reportPrivateUsage]
 
 
 async def _prepare_availability(
@@ -2372,6 +2583,21 @@ async def _prepare_availability(
     """Wait for an in-flight on-demand probe, then inherit a completed latch if one exists."""
 
     return await _inherit_after_inflight_availability(runtime, request_id)
+
+
+async def _bounded_prepare_availability(
+    runtime: BridgeRuntime, request_id: str | None
+) -> types.CallToolResult | None:
+    """``_prepare_availability`` ended by the call deadline; running out is a typed timeout."""
+
+    budget = _CALL_BUDGET.get()
+    if budget is None:
+        return await _prepare_availability(runtime, request_id)
+    try:
+        async with asyncio.timeout(max(0.0, budget.remaining_seconds())):
+            return await _prepare_availability(runtime, request_id)
+    except TimeoutError:
+        raise _call_timeout() from None
 
 
 async def _inherit_after_inflight_availability(
@@ -2396,6 +2622,104 @@ async def _inherit_after_inflight_availability(
         waited = True
         await waiter.wait()
     return await _inherit_terminal_availability(runtime, request_id, concurrent_waiter=waited)
+
+
+@dataclass(frozen=True, slots=True)
+class _CallBudget:
+    """The monotonic instants one MCP tool call must finish by (review of #1226).
+
+    ``deadline`` ends discovery, invocation and any reconnect; ``ceiling`` is never passed, even
+    by the short post-timeout probe of a write.
+    """
+
+    deadline: float
+    ceiling: float
+
+    def remaining_seconds(self) -> float:
+        return self.deadline - time.monotonic()
+
+
+_CALL_BUDGET: ContextVar[_CallBudget | None] = ContextVar("finishup_mcp_call_budget", default=None)
+
+
+def _call_ceiling_ms(tool: str) -> int:
+    """When one tool call must be finished, recovery included: its host ceiling less a margin."""
+
+    return _HOST_CEILING_MS[tool] - _HOST_CEILING_MARGIN_MS
+
+
+def _call_budget_ms(tool: str) -> int:
+    """The whole-call budget for one tool: its explicit budget, or its deadline if larger, and
+    never past its ceiling (a larger override cannot outlive the host)."""
+
+    return min(max(_rpc_deadline_ms(tool), _CALL_BUDGET_MS[tool]), _call_ceiling_ms(tool))
+
+
+@contextlib.contextmanager
+def _call_budget(tool: str) -> Generator[None]:
+    """Bound everything this tool call does by the tool's whole-call budget, measured from now.
+
+    A nested call keeps the earlier of the two deadlines, so an inner stage never extends the
+    call. An ambiguous deadline configuration sets no budget; the caller refuses it as before.
+    """
+
+    try:
+        configured = _call_budget_ms(tool)
+    except ConfigError:
+        yield
+        return
+    now = time.monotonic()
+    outer = _CALL_BUDGET.get()
+    budget = _CallBudget(now + configured / 1_000, now + _call_ceiling_ms(tool) / 1_000)
+    if outer is not None:
+        budget = _CallBudget(
+            min(outer.deadline, budget.deadline), min(outer.ceiling, budget.ceiling)
+        )
+    token = _CALL_BUDGET.set(budget)
+    try:
+        yield
+    finally:
+        _CALL_BUDGET.reset(token)
+
+
+@contextlib.contextmanager
+def _post_timeout_window() -> Generator[None]:
+    """A short window for probing and recovering a write whose call deadline expired."""
+
+    outer = _CALL_BUDGET.get()
+    if outer is None:
+        yield
+        return
+    deadline = min(time.monotonic() + _POST_TIMEOUT_WINDOW_MS / 1_000, outer.ceiling)
+    token = _CALL_BUDGET.set(_CallBudget(deadline, outer.ceiling))
+    try:
+        yield
+    finally:
+        _CALL_BUDGET.reset(token)
+
+
+def _call_timeout() -> ControlError:
+    return ControlError("request_timeout", retryable=True)
+
+
+def _bounded_deadline_ms(configured: int) -> int:
+    """One stage's RPC deadline: its configured value or what the call has left, if less.
+
+    An exhausted call raises FinishUP's own typed ``request_timeout``, so the caller still gets
+    its recovery handle instead of a host-side abandonment.
+    """
+
+    budget = _CALL_BUDGET.get()
+    if budget is None:
+        return configured
+    remaining_ms = int(budget.remaining_seconds() * 1_000)
+    if remaining_ms < 1:
+        raise _call_timeout()
+    return min(configured, remaining_ms)
+
+
+def _stage_deadline_ms(tool: str) -> int:
+    return _bounded_deadline_ms(_rpc_deadline_ms(tool))
 
 
 def _rpc_deadline_ms(tool: str, environ: Mapping[str, str] | None = None) -> int:
@@ -2490,7 +2814,7 @@ async def _timeout_operation_state(
             runtime,
             status_request,
             lambda service, request: service.status(
-                request, deadline_ms=_TIMEOUT_PROBE_DEADLINE_MS
+                request, deadline_ms=_bounded_deadline_ms(_TIMEOUT_PROBE_DEADLINE_MS)
             ),
             request_id,
         )
@@ -2551,6 +2875,30 @@ async def _dispatch[RequestT: BaseModel, ResultT: BaseModel](
     runtime: BridgeRuntime,
     operation: str,
 ) -> types.CallToolResult:
+    """Run one workflow tool call inside a single deadline (review of #1226).
+
+    Discovery, invocation and any reconnect share the tool's deadline, so FinishUP's typed
+    timeout, with its recovery handle, always reaches the agent before the host's own limit.
+    """
+
+    mode = arguments.get("mode") if operation == "check" else None
+    # Before validation the mode may be any JSON shape (a list or object is unhashable); only a
+    # string is compared, and validation below answers every other shape (review of #1226).
+    read_only = type(mode) is str and mode in READ_ONLY_CHECK_MODES
+    with _call_budget("status" if read_only else operation):
+        return await _dispatch_within_budget(
+            arguments, request_type, result_type, invoke, runtime, operation
+        )
+
+
+async def _dispatch_within_budget[RequestT: BaseModel, ResultT: BaseModel](
+    arguments: Mapping[str, object],
+    request_type: type[RequestT],
+    result_type: type[ResultT],
+    invoke: Callable[[ServiceClient, RequestT], Awaitable[ResultT]],
+    runtime: BridgeRuntime,
+    operation: str,
+) -> types.CallToolResult:
 
     request_id = safe_request_id_from(arguments)
     # ADR-047: a ``check`` whose mode records nothing (``inspect``) fails as a read, like the
@@ -2593,7 +2941,13 @@ async def _dispatch[RequestT: BaseModel, ResultT: BaseModel](
         _rpc_deadline_ms(deadline_tool)
     except ConfigError:
         return _deadline_config_conflict_result(request_id, operation, runtime.host_profile)
-    inherited = await _prepare_availability(runtime, request_id)
+    try:
+        inherited = await _bounded_prepare_availability(runtime, request_id)
+    except ControlError as exc:
+        # The call's budget ran out waiting on another caller's probe; nothing was sent.
+        return _control_error_result(
+            exc, request_id, operation, host_profile=runtime.host_profile, check_mode=check_mode
+        )
     if inherited is not None:
         return inherited
     # Invoke first. Once this returns, a write may already be durable; response shaping must not
@@ -2666,10 +3020,11 @@ async def _dispatch[RequestT: BaseModel, ResultT: BaseModel](
         timeout_handle: dict[str, object] | None = None
         recovered: ResultT | None = None
         if exc.reason == "request_timeout" and operation in _TIMEOUT_PROBED_WRITES:
-            probed = await _timeout_operation_state(arguments, runtime, request_id)
-            if probed is not None:
-                state, session_id, writer_id = probed
-                if state is _TimeoutOperationState.COMPLETE:
+            # The call deadline has passed; the probe and any same-request recovery share one
+            # short window that still ends inside the host limit (review of #1226).
+            with _post_timeout_window():
+                probed = await _timeout_operation_state(arguments, runtime, request_id)
+                if probed is not None and probed[0] is _TimeoutOperationState.COMPLETE:
                     # The write committed after the response deadline. Its same-request replay
                     # is idempotent and returns the stored outcome without appending again.
                     try:
@@ -2678,6 +3033,8 @@ async def _dispatch[RequestT: BaseModel, ResultT: BaseModel](
                         )
                     except Exception:  # noqa: BLE001 - fall back to the typed pollable handle
                         recovered = None
+            if probed is not None:
+                state, session_id, writer_id = probed
                 timeout_handle = {
                     "session_id": session_id,
                     "writer_id": writer_id,
@@ -2760,7 +3117,7 @@ async def dispatch_start(
         arguments,
         StartRequest,
         StartResult,
-        lambda client, request: client.start(request, deadline_ms=_rpc_deadline_ms("start")),
+        lambda client, request: client.start(request, deadline_ms=_stage_deadline_ms("start")),
         runtime,
         "start",
     )
@@ -2918,7 +3275,9 @@ async def _publish_recovery_from_envelope(
         status_result = await _invoke_with_reconnect(
             runtime,
             status_request,
-            lambda service, request: service.status(request, deadline_ms=_WORKFLOW_RPC_DEADLINE_MS),
+            lambda service, request: service.status(
+                request, deadline_ms=_bounded_deadline_ms(_WORKFLOW_RPC_DEADLINE_MS)
+            ),
             recovery_request_id,
         )
     except _CursorWorkspaceBindingError:
@@ -3152,7 +3511,7 @@ async def _dispatch_publish_without_identity(
         )
 
     def invoke(client: ServiceClient, request: PublishWorkRequest) -> Awaitable[PublishWorkResult]:
-        return client.publish_work(request, deadline_ms=_rpc_deadline_ms("publish_work"))
+        return client.publish_work(request, deadline_ms=_stage_deadline_ms("publish_work"))
 
     if _publish_is_declared_dry_run(arguments):
         # A preview appends nothing and consumes no identity.
@@ -3178,6 +3537,14 @@ async def _dispatch_publish_without_identity(
 
 async def dispatch_publish_work(
     arguments: Mapping[str, object], runtime: BridgeRuntime = BRIDGE_RUNTIME
+) -> types.CallToolResult:
+    # One deadline for the whole call, the envelope recovery read included (review of #1226).
+    with _call_budget("publish_work"):
+        return await _dispatch_publish_work_within_budget(arguments, runtime)
+
+
+async def _dispatch_publish_work_within_budget(
+    arguments: Mapping[str, object], runtime: BridgeRuntime
 ) -> types.CallToolResult:
     if "request_id" not in arguments:
         return await _dispatch_publish_without_identity(arguments, runtime)
@@ -3239,7 +3606,7 @@ async def dispatch_publish_work(
         PublishWorkRequest,
         PublishWorkResult,
         lambda client, request: client.publish_work(
-            request, deadline_ms=_rpc_deadline_ms("publish_work")
+            request, deadline_ms=_stage_deadline_ms("publish_work")
         ),
         runtime,
         "publish_work",
@@ -3264,7 +3631,7 @@ async def dispatch_check(
             request,
             # ADR-047: an inspection is a read routed like ``status``, so it takes the status
             # deadline, not the budget of a check that may run an AI-powered review.
-            deadline_ms=_rpc_deadline_ms(
+            deadline_ms=_stage_deadline_ms(
                 "status" if request.mode in READ_ONLY_CHECK_MODES else "check"
             ),
             route_profile=runtime.route_profile,
@@ -3282,7 +3649,7 @@ async def dispatch_respond(
         arguments,
         RespondRequest,
         RespondResult,
-        lambda client, request: client.respond(request, deadline_ms=_rpc_deadline_ms("respond")),
+        lambda client, request: client.respond(request, deadline_ms=_stage_deadline_ms("respond")),
         runtime,
         "respond",
     )
@@ -3306,7 +3673,7 @@ async def dispatch_status(
         StatusResult,
         lambda client, request: client.status(
             request,
-            deadline_ms=_rpc_deadline_ms("status"),
+            deadline_ms=_stage_deadline_ms("status"),
             route_profile=runtime.route_profile,
         ),
         runtime,
@@ -3320,7 +3687,23 @@ async def dispatch_closure_prepare(
     *,
     transport_request_id: types.RequestId | None = None,
 ) -> types.CallToolResult:
-    """Prepare one explicit closure request from a pinned, paginated status inventory."""
+    """Prepare one explicit closure request from a pinned, paginated status inventory.
+
+    Its status reads share one ``status`` deadline for the whole call (review of #1226).
+    """
+
+    with _call_budget("status"):
+        return await _dispatch_closure_prepare_within_budget(
+            arguments, runtime, transport_request_id=transport_request_id
+        )
+
+
+async def _dispatch_closure_prepare_within_budget(
+    arguments: Mapping[str, object],
+    runtime: BridgeRuntime,
+    *,
+    transport_request_id: types.RequestId | None,
+) -> types.CallToolResult:
 
     request_id = safe_request_id_from(arguments)
     try:
@@ -3354,7 +3737,12 @@ async def dispatch_closure_prepare(
         _rpc_deadline_ms("status")
     except ConfigError:
         return _deadline_config_conflict_result(request_id, "closure_prepare", runtime.host_profile)
-    inherited = await _prepare_availability(runtime, request_id)
+    try:
+        inherited = await _bounded_prepare_availability(runtime, request_id)
+    except ControlError as exc:
+        return _control_error_result(
+            exc, request_id, "closure_prepare", host_profile=runtime.host_profile
+        )
     if inherited is not None:
         return inherited
 
@@ -3364,7 +3752,7 @@ async def dispatch_closure_prepare(
             status_request,
             lambda client, current: client.status(
                 current,
-                deadline_ms=_rpc_deadline_ms("status"),
+                deadline_ms=_stage_deadline_ms("status"),
                 route_profile=runtime.route_profile,
             ),
             request_id,
@@ -3532,7 +3920,7 @@ async def dispatch_receipt(
         arguments,
         ReceiptRequest,
         ReceiptResult,
-        lambda client, request: client.receipt(request, deadline_ms=_rpc_deadline_ms("receipt")),
+        lambda client, request: client.receipt(request, deadline_ms=_stage_deadline_ms("receipt")),
         runtime,
         "receipt",
     )
@@ -4022,32 +4410,85 @@ async def _handle_call_tool_request(
             types.ErrorData(code=types.INVALID_PARAMS, message=sanitize_unknown_tool_name(name))
         )
     arguments = dict(req.params.arguments or {})
+    # Review of #1226: the whole-call budget starts here, so Cursor's workspace preflight (its
+    # binding lock and roots exchange) and the dispatch below share one deadline.
+    budget_tool = _call_budget_tool(name, arguments)
+    with contextlib.nullcontext() if budget_tool is None else _call_budget(budget_tool):
+        result = await _handle_budgeted_call(name, arguments, runtime, session)
+    _record_rejected_call(name, arguments, result)
+    _record_served_read(runtime, name, arguments, result)
+    return types.ServerResult(result)
+
+
+def _call_budget_tool(name: str, arguments: Mapping[str, object]) -> str | None:
+    """The tool whose whole-call budget a registered call runs under; guidance reads have none."""
+
+    if name == "closure_prepare":
+        return "status"
+    if name == "check":
+        mode = arguments.get("mode")
+        return "status" if type(mode) is str and mode in READ_ONLY_CHECK_MODES else "check"
+    return name if name in _CALL_BUDGET_MS else None
+
+
+async def _handle_budgeted_call(
+    name: str,
+    arguments: dict[str, object],
+    runtime: BridgeRuntime,
+    session: _RootsSession | None,
+) -> types.CallToolResult:
     if name != "read_guidance":
-        binding_error = await _ensure_cursor_workspace_binding(
-            runtime,
-            session,
-            safe_request_id_from(arguments),
-            name,
-        )
+        request_id = safe_request_id_from(arguments)
+        try:
+            binding_error = await _bounded_cursor_workspace_binding(
+                runtime, session, request_id, name
+            )
+        except ControlError as exc:
+            # The call's budget ran out in the preflight; nothing was sent.
+            mode = arguments.get("mode") if name == "check" else None
+            return _control_error_result(
+                exc,
+                request_id,
+                name,
+                host_profile=runtime.host_profile,
+                check_mode=mode if type(mode) is str else None,
+            )
         if binding_error is not None:
-            _record_rejected_call(name, arguments, binding_error)
-            return types.ServerResult(binding_error)
+            return binding_error
     try:
         transport_request_id = request_ctx.get().request_id
     except LookupError:
         transport_request_id = None
     if name == "closure_prepare":
-        result = await call_tool(
+        return await call_tool(
             name,
             arguments,
             runtime,
             transport_request_id=transport_request_id,
         )
-    else:
-        result = await call_tool(name, arguments, runtime)
-    _record_rejected_call(name, arguments, result)
-    _record_served_read(runtime, name, arguments, result)
-    return types.ServerResult(result)
+    return await call_tool(name, arguments, runtime)
+
+
+async def _bounded_cursor_workspace_binding(
+    runtime: BridgeRuntime,
+    session: _RootsSession | None,
+    request_id: str | None,
+    operation: str,
+) -> types.CallToolResult | None:
+    """Cursor's workspace preflight ended by the call's budget (review of #1226).
+
+    The binding lock wait and the roots exchange (itself capped at 5 seconds) end by the call
+    deadline; running out is the typed ``request_timeout`` and leaves the binding as it was.
+    """
+
+    budget = _CALL_BUDGET.get()
+    if runtime.host_profile != "cursor" or budget is None:
+        return await _ensure_cursor_workspace_binding(runtime, session, request_id, operation)
+    try:
+        async with asyncio.timeout(max(0.0, budget.remaining_seconds())):
+            return await _ensure_cursor_workspace_binding(runtime, session, request_id, operation)
+    except TimeoutError:
+        raise _call_timeout() from None
 
 
 def _record_served_read(
