@@ -9379,7 +9379,7 @@ therefore depend on that process-local memo, not on ledger state alone: after an
 writer's resend can still carry the prediction (or a non-supply continuation) while the successor's
 page does not; after a restart (or eight newer frontiers) with a later record in place, both are
 rebuilt from the stored rows and agree. The verdict, missing
-items, review status and frontier are always carried. Persisting the continuation with the stored
+items, review status, frontier and the check's own tracked advice are always carried. Persisting the continuation with the stored
 check, so it no longer depends on the memo, is a storage change left as a follow-up (owned by
 #1100). The page-level `outcome`, frontiers and events keep the non-publish completion rule.
 Best effort: any failure omits the object and records the bounded diagnostic
@@ -12910,7 +12910,10 @@ The check result (check-result 1.6.0 success, in place; 1.7.0 follows) carries
 same-id replay agree, and it is paged with the actionable fields. `status view=operation`
 carries the same rows in `check_outcome.correctness_advisories` without the summary (identity,
 origin, subjects; structural only, status-result 1.4.0/1.5.0 in place), so recovering a lost
-check response keeps the identities `respond` answers. CLI
+check response keeps the identities `respond` answers. The rows need only the check event recorded
+at the result frontier, never the closure basis, so they are carried on every rebuild, including
+when the trusted projection or the closure basis at that frontier is unavailable and the finding
+list and continuation are omitted (#1226). CLI
 and MCP text list the rows under a fixed "Tracked reviewer advice" header. Closure readiness
 (status-result 1.4.0, in place; check embeds it) carries `correctness_advisory_counts` (the
 receipt's `total`/`no_recorded_response`/`withheld_may_answer`) whenever the task has advice, and

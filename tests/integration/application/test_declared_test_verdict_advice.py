@@ -532,3 +532,89 @@ async def test_a_check_whose_reviewer_read_a_declared_test_validates_everywhere(
         )
     )
     assert "reviewer's declared-test verdict" in _strings(receipt.as_json())
+
+
+@pytest.mark.parametrize("miss", ["later_record_cold_memo", "no_trusted_projection"])
+async def test_a_recovered_check_outcome_keeps_its_tracked_advice(
+    miss: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """#1226: ``status view=operation`` keeps the check's advice when the closure basis misses.
+
+    The advice needs only the recorded check event, so a later record on a cold memo (the
+    recovery after a lost check result) or an unavailable trusted projection omits the finding
+    list and continuation, never the advisory identities.
+    """
+
+    import finishup.application.check as check_module
+    from finishup.application.closure_basis import clear_closure_basis_memo
+    from finishup.protocol.models import StatusOperationPageModel
+
+    reviewer = _ScriptedReviewer([_digest("a")], [(_SHARED,)], seed=9700)
+    run = await _checks(9700, reviewer, 1)
+    (row,) = _advice(run.wires[0])
+    expected = [
+        {
+            "advisory_id": row["advisory_id"],
+            "origin": "declared_test_verdict",
+            "subject_refs": [protocol_id("obl_", 9701)],
+        }
+    ]
+
+    async def operation_outcome(seed: int) -> Mapping[str, Any]:
+        status = await run.app.status(
+            StatusRequest.model_validate(
+                {
+                    **request_base(protocol_id("req_", seed)),
+                    **run.ids,
+                    "view": "operation",
+                    "limit": "1",
+                    "filter": {"operation_request_id": run.bodies[0]["request_id"]},
+                }
+            )
+        )
+        page = status.page
+        assert type(page) is StatusOperationPageModel and page.check_outcome is not None
+        return cast(
+            Mapping[str, Any],
+            json.loads(page.check_outcome.model_dump_json(exclude_none=True)),
+        )
+
+    warm = await operation_outcome(9750)
+    assert "overall_next" in warm and warm["correctness_advisories"] == expected
+
+    if miss == "later_record_cold_memo":
+        # A later record, then a cold memo (a service restart): the basis at the check's
+        # frontier cannot be rebuilt.
+        later = await run.app.publish_work(
+            PublishWorkRequest.model_validate(
+                {
+                    **request_base(protocol_id("req_", 9760)),
+                    **run.ids,
+                    "expected_frontier": frontier_json(run.frontier),
+                    "event_drafts": [
+                        _draft(
+                            protocol_id("evt_", 9761),
+                            "action_recorded",
+                            {
+                                "action_id": protocol_id("act_", 9762),
+                                "action_kind": "command",
+                                "description": "Rerun the parity test.",
+                                "command": f"pytest {_TEST_FILE}",
+                                "obligation_refs": [protocol_id("obl_", 9701)],
+                            },
+                        )
+                    ],
+                }
+            )
+        )
+        assert later.result_frontier.sequence > run.frontier.sequence
+        clear_closure_basis_memo()
+    else:
+
+        async def untrusted(*_args: object, **_kwargs: object) -> None:
+            return None
+
+        monkeypatch.setattr(check_module, "trusted_projection_at", untrusted)
+    cold = await operation_outcome(9770)
+    assert "overall_next" not in cold and "finding_checklist" not in cold
+    assert cold["correctness_advisories"] == expected
