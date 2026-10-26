@@ -261,9 +261,10 @@ outside the repository: naming it is what lets review read it.
 
 The other limits still apply: never a hidden, credential-named, system or FinishUP file, never your
 home folder's private settings, never through a link, only text, at most 4 KB per read, and always
-the same redaction and never-send checks; a read that holds anything that looks like a secret is
-withheld whole. If the file has changed since it
-was listed, nothing of it is sent and the reviewer is told it could not see the file. It happens
+the same redaction and never-send checks: a read that holds a credential the never-send set
+blocks (a known credential shape, a private key, a password inside a URL) is withheld whole, and a
+value that only looks like one is replaced by `[withheld-by-yoetz:possible-credential]` unless you
+turned that filter off (see above). If the file has changed since it was listed, nothing of it is sent and the reviewer is told it could not see the file. It happens
 only when your review policy already lets the reviewer read repository files and does not ask you
 before every request, and only when the review has room for it, so the smallest policies never
 list these files. Receipts show such a read as its own category, `declared_test_excerpt`. To stop
