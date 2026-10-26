@@ -188,6 +188,7 @@ from finishup.application.semantic_case import (
     CHECK_TIME_CHANGE_ITEM_PREFIX,
     MAX_CAPTURED_SEMANTIC_CONTENT_PARTS,
     MAX_CAPTURED_SEMANTIC_INPUT_BYTES,
+    SMALL_REVIEW_CHANNEL_BYTES,
     TASK_INPUT_ITEM_PREFIX,
     LineageSemanticCapacityExceeded,
     SemanticCaseCapacityExceeded,
@@ -5159,6 +5160,19 @@ def _admitted_home_project(workspace_root: str | None, repository: str) -> bool:
     )
 
 
+def _small_review_channel(
+    policy: PrivacyPolicy, bindings: tuple[ProviderBinding | None, ProviderBinding | None]
+) -> bool:
+    """A channel no larger than the minimal policy's, by the case builder's prepared ceiling
+    (``SMALL_REVIEW_CHANNEL_BYTES``) or by either destination's exchange byte limit (#1220)."""
+
+    ceiling = _semantic_prepared_byte_ceiling(policy)
+    budget = reviewer_exchange_budget(policy, bindings)
+    return (ceiling is not None and ceiling <= SMALL_REVIEW_CHANNEL_BYTES) or (
+        budget is not None and budget.byte_limit <= SMALL_REVIEW_CHANNEL_BYTES
+    )
+
+
 def _pin_declared_tests(
     case: DeterministicCase, workspace_root: str | None, excluded: tuple[str, ...]
 ) -> tuple[DeclaredTest, ...]:
@@ -5709,12 +5723,15 @@ def _privacy_gated_semantic_evaluator(
             # Issue #1220: the agent's declared test files, pinned by digest for a new job (only
             # where a reviewer read of repository content is offered and admissible on every
             # destination), reloaded from the job's own case object on recovery.
+            # Never on a channel no larger than the minimal policy's (PR #1221 review): nothing is
+            # read or planned, so such a review is byte-identical to one without declared tests.
             declared_tests: tuple[DeclaredTest, ...] = ()
             if job is not None:
                 declared_tests = declared_tests_from_json(recovered_declared_tests)
             elif (
                 runtime is not None
                 and reviewer_reads
+                and not _small_review_channel(policy, (provider, fallback_binding))
                 and _file_reads_offered(
                     workspace_root, withheld, _admitted_home_project(workspace_root, repository)
                 )

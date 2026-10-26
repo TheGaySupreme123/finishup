@@ -3550,10 +3550,13 @@ outside every reviewer root.
   allowance (#1173). It is citable under its criterion ref when the case allows that ref.
 - **Fit.** The list is offered only when the planned first exchange still fits its limit with it,
   so the frame left for replies and reads stays whole; excerpt bytes give way first. Otherwise the
-  review is planned exactly as before and nothing is listed. At the minimal policy (4,096 tokens)
-  the fixed packet already fills the first exchange's plan, so the list is never offered there and
-  the #1173 budgets are unchanged; a probe that listed it anyway ended a closing review with the
-  linked-check question as `case_capacity_exceeded`.
+  review is planned exactly as before and nothing is listed. A channel no larger than the minimal
+  policy's (prepared ceiling or either destination's exchange byte limit at most
+  `SMALL_REVIEW_CHANNEL_BYTES`, 16 KiB) never offers the list: the composition reads and plans
+  nothing for it, and the builder lists nothing on a `small_channel` case whatever it is passed
+  (PR #1221 review), so those reviews, their excerpt budget and case digest are byte-identical to
+  before and the #1173 budgets are unchanged. A probe that listed it anyway at the minimal policy
+  ended a closing review with the linked-check question as `case_capacity_exceeded`.
 - **Audit.** The review input manifest carries `test_check_offered: true` and
   `test_check_digests` (both or neither, optional in place), on the composed and provider-bound
   manifests, the recorded check and every manifest renderer ("declared tests offered N").

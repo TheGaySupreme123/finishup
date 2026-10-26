@@ -217,10 +217,31 @@ def test_the_list_survives_the_narrowing_that_drops_obligation_rows() -> None:
     """Root cause A (#1220): the capacity narrowing drops goal, obligation and claim rows, so
     a question gated on them never fires. The list rides the structural envelope instead."""
 
-    frozen = _frozen(_TEST.path)
+    base = _frozen(_TEST.path)
+    # Enough obligation prose that the packet is above the minimal channel (16 KiB), where a
+    # declared test is never listed (PR #1221 review).
+    obligations = dict(base.projection.obligations)
+    for number in range(2, 10):
+        obligations[obl(number)] = obligation_record(
+            ObligationPublishedPayload(
+                obl(number), "Prediction detail " * 100, "Probe passes", ObligationStatus.OPEN
+            ),
+            10 + number,
+        )
+    frozen = replace(
+        make_case(
+            plans=dict(base.projection.plans),
+            obligations=obligations,
+            actions=dict(base.projection.actions),
+            results=dict(base.projection.results),
+            extra_refs=(evt(1),),
+        ),
+        task_statement=base.task_statement,
+    )
     full = _build(frozen, final=True, declared=(_TEST,))
     assert full.packet.obligation_item_ids
     ceiling = len(_prepared(full)) - 64  # just too small: primary_material_selection narrows
+    assert ceiling > 16_384
     narrowed = _build(frozen, final=True, declared=(_TEST,), ceiling=ceiling)
     assert narrowed.packet.obligation_item_ids == ()
     assert narrowed.packet.declared_tests == (_TEST,)
@@ -377,3 +398,21 @@ def test_a_frozen_manifest_with_declared_tests_decodes_and_recovers() -> None:
         {**wire, "test_check_offered": False},
     ):
         assert _decode_review_input_manifest(broken, expected_phase="provider_bound") is None
+
+
+@pytest.mark.parametrize("final", [False, True])
+def test_a_minimal_channel_case_never_lists_declared_tests(final: bool) -> None:
+    """PR #1221 review: at the minimal policy's prepared ceiling (16 KiB, ``small_channel``) the
+    builder lists nothing, whatever the caller passes, so planning, the excerpt budget and the
+    case digest are exactly those of a case without declared tests."""
+
+    frozen = _frozen(_TEST.path)
+    plain = _build(frozen, final=final, ceiling=16_384)
+    declared = _build(frozen, final=final, declared=(_TEST,), ceiling=16_384)
+    assert declared.packet.declared_tests == ()
+    assert DECLARED_TEST_QUESTION not in declared.question_set
+    assert declared.case_digest == plain.case_digest
+    assert _prepared(declared) == _prepared(plain)
+    # One byte over the small-channel bound, the same case does list it.
+    roomy = _build(frozen, final=True, declared=(_TEST,), ceiling=16_385)
+    assert roomy.packet.declared_tests == (_TEST,)
