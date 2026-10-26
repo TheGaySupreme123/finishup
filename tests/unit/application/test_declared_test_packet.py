@@ -325,3 +325,55 @@ def test_offered_digests_freeze_with_the_case() -> None:
     )
     with pytest.raises(ValueError):
         replace(frozen, offered_test_digests=("sha256:" + "f" * 64, _DIGEST))
+
+
+def test_a_routine_review_offers_only_the_changed_test() -> None:
+    """PR #1221 review: A and B were offered; only B changed, so only B is listed again, under
+    the ref it was pinned with. The closing review still lists both."""
+
+    a = _TEST
+    b = DeclaredTest("dt2", "tests/b.py", "sha256:" + "b" * 64, str(res(1)))
+    changed = replace(b, content_digest="sha256:" + "c" * 64)
+    frozen = replace(
+        _frozen(_TEST.path),
+        offered_test_digests=tuple(sorted((a.content_digest, b.content_digest))),
+    )
+    routine = _build(frozen, final=False, declared=(a, changed))
+    assert routine.packet.declared_tests == (changed,)
+    assert routine.question_set[-1] == DECLARED_TEST_QUESTION
+    assert routine.packet.input_manifest is not None
+    assert routine.packet.input_manifest.test_check_digests == (changed.content_digest,)
+    packet = json.loads(_prepared(routine))["review_packet"]
+    assert [row["ref"] for row in packet["declared_tests"]] == ["dt2"]
+    closing = _build(frozen, final=True, declared=(a, changed))
+    assert closing.packet.declared_tests == (a, changed)
+
+
+def test_a_frozen_manifest_with_declared_tests_decodes_and_recovers() -> None:
+    """PR #1221 review: a recorded (frozen) provider-bound manifest holds tuples, not lists; it
+    must decode with its declared-test fields, so a recovered review keeps its sent excerpts."""
+
+    from finishup.application.semantic_case import (
+        _decode_review_input_manifest,  # pyright: ignore[reportPrivateUsage]
+        sent_excerpt_content_refs,
+    )
+    from finishup.domain.values import JsonObject, freeze_json
+
+    case = _build(_frozen(_TEST.path), final=True, declared=(_TEST,))
+    wire = json.loads(_prepared(case))["review_packet"]["provider_input_manifest"]
+    frozen = freeze_json(wire)
+    assert type(frozen) is JsonObject
+    assert type(frozen["test_check_digests"]) is tuple
+    decoded = _decode_review_input_manifest(frozen, expected_phase="provider_bound")
+    assert decoded is not None
+    assert decoded.test_check_offered and decoded.test_check_digests == (_DIGEST,)
+    assert decoded == _decode_review_input_manifest(wire, expected_phase="provider_bound")
+    assert sent_excerpt_content_refs(case, frozen) == sent_excerpt_content_refs(case, wire)
+    assert sent_excerpt_content_refs(case, frozen) is not None
+    # Other validation is unchanged: one field without the other, or a non-array, is refused.
+    for broken in (
+        {k: v for k, v in wire.items() if k != "test_check_digests"},
+        {**wire, "test_check_digests": _DIGEST},
+        {**wire, "test_check_offered": False},
+    ):
+        assert _decode_review_input_manifest(broken, expected_phase="provider_bound") is None

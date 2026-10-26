@@ -41,10 +41,14 @@ from itertools import islice
 from pathlib import Path
 from typing import Final, Literal
 
-from finishup.adapters.home_project_reads import home_private_path
+from finishup.adapters.home_project_reads import home_private_location, home_private_path
 from finishup.adapters.input_summary import declared_binary_format, summarize_task_input
 from finishup.config.foreign_write import writable_by_others
-from finishup.domain.privacy import admitted_input_root_valid, system_directory_path
+from finishup.domain.privacy import (
+    SYSTEM_DIRECTORY_PREFIXES,
+    admitted_input_root_valid,
+    system_directory_path,
+)
 from finishup.domain.repository_excerpt import credential_named_bytes
 from finishup.observability.privacy import scan_for_sensitive_content
 from finishup.ports.change_capture import (
@@ -736,6 +740,37 @@ def read_text_beneath(
     return (b"" if ends[2] > len(ends[0]) else ends[0], ends[2])
 
 
+def _beneath_system_directory(path: str) -> bool:
+    """Whether an ancestor of ``path`` is a system directory by device and inode (#1220 review).
+
+    Ancestors are examined without following a link (a read never follows one beneath its root);
+    the system directories are taken both as named and as their link targets. An ancestor that
+    cannot be examined, other than one that does not exist, refuses the path.
+    """
+
+    refused: set[tuple[int, int]] = set()
+    for prefix in SYSTEM_DIRECTORY_PREFIXES:
+        for probe in (os.lstat, os.stat):
+            try:
+                facts = probe(prefix)
+            except OSError:
+                continue
+            refused.add((facts.st_dev, facts.st_ino))
+    parts = path.strip("/").split("/")
+    current = ""
+    for part in parts[:-1]:
+        current += "/" + part
+        try:
+            facts = os.lstat(current)
+        except FileNotFoundError:
+            return False
+        except OSError:
+            return True
+        if (facts.st_dev, facts.st_ino) in refused:
+            return True
+    return False
+
+
 def read_declared_test(
     location: str, *, excluded: tuple[str, ...], expired: Callable[[], bool] = lambda: False
 ) -> bytes | None:
@@ -770,11 +805,15 @@ def read_declared_test(
             top = target
     except OSError:
         return None
-    if system_directory_path(f"{top}/{rest}"):
-        return None
-    home = str(Path.home())
-    if location.startswith(home.rstrip("/") + "/") and home_private_path(
-        Path.home(), location[len(home.rstrip("/")) + 1 :].encode("utf-8", "surrogateescape")
+    resolved = f"{top}/{rest}"
+    # By spelling (case-folded too) and by identity (#1220 review): on a case-insensitive volume
+    # ``/ETC`` or ``/Users/ALICE/Library`` names the same directory as the refused spelling.
+    if (
+        system_directory_path(resolved)
+        or system_directory_path(location.casefold())
+        or system_directory_path(resolved.casefold())
+        or _beneath_system_directory(resolved)
+        or home_private_location(resolved)
     ):
         return None
     try:

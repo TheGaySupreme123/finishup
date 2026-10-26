@@ -256,11 +256,13 @@ test. The reviewer can then read one of them, in pieces of at most 4 KB, to judg
 test's expected values come from the task or merely copy the implementation. This works even when
 the file is outside your repository, for example in `/tmp`, because your agent named that exact
 file; it is the only kind of file outside your repository that review reads without an admitted
-folder.
+folder. Your repository's Git ignore rules do not exclude a declared test file either, inside or
+outside the repository: naming it is what lets review read it.
 
-The same limits as every other file apply: never a hidden, credential-named, system or FinishUP
-file, never through a link, only text, and always the same redaction and never-send checks; a read
-that holds anything that looks like a secret is withheld whole. If the file has changed since it
+The other limits still apply: never a hidden, credential-named, system or FinishUP file, never your
+home folder's private settings, never through a link, only text, at most 4 KB per read, and always
+the same redaction and never-send checks; a read that holds anything that looks like a secret is
+withheld whole. If the file has changed since it
 was listed, nothing of it is sent and the reviewer is told it could not see the file. It happens
 only when your review policy already lets the reviewer read repository files and does not ask you
 before every request, and only when the review has room for it, so the smallest policies never

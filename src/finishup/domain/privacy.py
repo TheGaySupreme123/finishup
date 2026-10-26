@@ -323,6 +323,10 @@ _FORBIDDEN_INPUT_ROOT_PREFIXES: Final = (
 )
 
 
+# The same directories, for callers that also compare device and inode (#1220 review).
+SYSTEM_DIRECTORY_PREFIXES: Final = _FORBIDDEN_INPUT_ROOT_PREFIXES
+
+
 def system_directory_path(value: str) -> bool:
     """Whether absolute ``value`` is at or beneath a system directory no review ever reads."""
 

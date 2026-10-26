@@ -619,7 +619,9 @@ Use `result_recorded/1.1.0` to add `verification` to the result payload above:
   "cases": 100,
   "failing": 6,
   "worst": "0.03",
-  "tuned_on_these_cases": false
+  "tuned_on_these_cases": false,
+  "checks": "Exported values match the reference export within 0.01",
+  "expected_from": "independent_source"
 }
 ```
 
@@ -639,7 +641,8 @@ For a test you already ran, save a small UTF-8 JSON results file such as
 `criterion_quote` and `data_source`, then run:
 
 ```text
-finishup record-test --input publication.json --test-file checks/export.py --results-file checks/results.json
+finishup record-test --input publication.json --test-file checks/export.py --results-file checks/results.json \
+  --checks "Exported values match the reference export within 0.01" --expected-from independent_source
 ```
 
 The helper reads the script and report immediately, fills the manifest's counts and optional

@@ -3532,8 +3532,10 @@ outside every reviewer root.
 - **The question.** Beside the list only, `DECLARED_TEST_QUESTION` (212 bytes) is appended last to
   the question set: for each listed declared test, read it if needed and judge whether its expected
   value comes from the task or an independent source, or from the implementation.
-- **Timing.** The list and question are offered at the closing review (final phase) and at a
-  routine review where a listed digest is one no earlier successful review was offered. The frozen
+- **Timing.** The whole list and the question are offered at the closing review (final phase). At
+  a routine review only the tests whose digest no earlier successful review was offered are
+  listed, each under the ref it was pinned with (PR #1221 review), with the question when any
+  is. The frozen
   case's `offered_test_digests` (from earlier succeeded `check_recorded` manifests'
   `test_check_digests`; absent from the case JSON when empty) decides it, so recovery agrees and an
   unchanged digest is never offered again before the closing review.

@@ -11101,7 +11101,8 @@ def _decode_review_input_manifest(
         or frozenset(body) - _OPTIONAL_REVIEW_INPUT_MANIFEST_KEYS != _REVIEW_INPUT_MANIFEST_KEYS
         or ("test_check_offered" in body) != ("test_check_digests" in body)
         or body.get("test_check_offered", True) is not True
-        or type(body.get("test_check_digests", [])) is not list
+        # A frozen manifest (a recorded check's) holds tuples where the wire holds lists.
+        or type(body.get("test_check_digests", [])) not in {list, tuple}
         or body.get("review_phase", "routine") not in {"routine", "final"}
     ):
         return None
@@ -11231,7 +11232,9 @@ def _decode_review_input_manifest(
             review_phase=cast(Literal["routine", "final"] | None, body.get("review_phase")),
             follow_up_round=cast(int | None, body.get("follow_up_round")),
             test_check_offered="test_check_offered" in body,
-            test_check_digests=tuple(cast(list[str], body.get("test_check_digests", []))),
+            test_check_digests=tuple(
+                cast(list[str] | tuple[str, ...], body.get("test_check_digests", ()))
+            ),
         )
     except (KeyError, TypeError, ValueError):
         return None

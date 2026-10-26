@@ -208,7 +208,9 @@ def declared_test_location(path: str, workspace_root: str | None) -> str | None:
         location = posixpath.normpath(posixpath.join(workspace_root, path))
     else:
         location = posixpath.normpath(path)
-    if system_directory_path(location):
+    # Case-folded too: on a case-insensitive volume ``/ETC`` is ``/etc``. The read also refuses
+    # by device and inode (``adapters.task_input_read.read_declared_test``).
+    if system_directory_path(location) or system_directory_path(location.casefold()):
         return None
     return location
 
@@ -216,10 +218,10 @@ def declared_test_location(path: str, workspace_root: str | None) -> str | None:
 def offered_declared_tests(
     tests: Sequence[DeclaredTest], *, final: bool, offered: Collection[str]
 ) -> tuple[DeclaredTest, ...]:
-    """The list to offer: all of it at the closing review or when a digest is new, else none."""
+    """The list to offer: all of it at the closing review; otherwise only the tests whose digest
+    no earlier review was offered (#1220 review), each keeping the ref it was pinned under, so the
+    packet, the ``t1`` root and the stored job list name a test alike."""
 
-    if not tests:
-        return ()
-    if final or any(test.content_digest not in offered for test in tests):
+    if final:
         return tuple(tests)
-    return ()
+    return tuple(test for test in tests if test.content_digest not in offered)

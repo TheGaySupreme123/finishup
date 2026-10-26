@@ -12332,8 +12332,9 @@ as `outcome_unknown` and is never resent. For it, `operation_max_retries` is `0`
   `criterion_ref`, `path`, `ref`) and `declared_tests_to_json` / `declared_tests_from_json` (the
   job case object's `declared_tests`), `offered_declared_tests(tests, final=, offered=)` and
   `DECLARED_TEST_QUESTION`. `build_semantic_case(..., declared_tests=)` lists them as
-  `ReviewPacket.declared_tests` (packet JSON `declared_tests`, emitted only when non-empty) when
-  `review_phase == "final"` or a digest is outside `DeterministicCase.offered_test_digests`
+  `ReviewPacket.declared_tests` (packet JSON `declared_tests`, emitted only when non-empty): all of
+  them when `review_phase == "final"`, else only those whose digest is outside
+  `DeterministicCase.offered_test_digests`, each keeping its pinned `dt<n>` ref
   (derived at freeze from succeeded `check_recorded` manifests' `test_check_digests`; case JSON key
   `offered_test_digests` only when non-empty). `ReviewInputManifest.test_check_offered` /
   `test_check_digests` (wire: `test_check_offered: true` with one to three sorted digests, both or
@@ -12656,7 +12657,7 @@ recomputation solely because the finding names paths.
 Issue #1219 adds two optional declarations in place on this unreleased version: `checks` (nonblank
 text of at most 200 characters naming what the test exercises) and `expected_from`
 (`task_text|independent_source|own_reimplementation|implementation_output|hand_computed`, where the
-expected value comes from). Neither is checked, joins a run identity, ranks a witness, sets a flag
+expected value comes from). Neither is semantically evaluated, joins a run identity, ranks a witness, sets a flag
 or gates anything; a manifest without them keeps its bytes on every surface. `record-test` accepts
 `--checks` and `--expected-from`, refusing a value that contradicts the request's manifest. The
 compact MCP payload hint omits both to stay within the advertised-schema byte budget; the full

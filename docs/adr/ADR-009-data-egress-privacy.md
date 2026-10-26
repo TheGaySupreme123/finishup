@@ -1545,7 +1545,13 @@ no way to admit a root, no unattended consent and no policy field.
   their `/private` forms. The read is the outside read's walk from `/`, every directory and the
   file passing the same trust test (owned by the service user or root, writable by no other
   account unless sticky), with FinishUP's own bundle and state directories excluded by path and by
-  device and inode; beneath the home directory its private trees and files are refused too. A
+  device and inode. The system directories and the home directory's private trees and files
+  are refused by spelling (case-folded too) and by identity (PR #1221 review): each ancestor of
+  the path is examined without following a link and compared by device and inode with the system
+  directories and with the home directory, so `/ETC/…` or `/Users/ALICE/Library/…` on a
+  case-insensitive volume, or a bind mount, is refused like the canonical spelling; a directory
+  beneath home whose name folds to a private tree's is judged as that tree when both spellings
+  are the same directory. An ancestor that cannot be examined refuses the path. A
   top-level link that root owns (`/tmp` and `/var` on macOS) is replaced by its target; no other
   link is followed. Only UTF-8 text without NUL, at most 1 MiB, is read; the workspace's ignore
   rules do not apply to a file the agent declared.
