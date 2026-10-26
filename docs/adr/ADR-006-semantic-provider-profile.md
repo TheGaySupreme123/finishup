@@ -3606,7 +3606,9 @@ structured verdict rows, with a shared or vacuous expected value becoming tracke
   tag beside the reviewer's observation, so a contradiction is visible: "Your test <path> for
   '<criterion>' takes its expected value from the implementation (you tagged
   expected_from=task_text; the reviewer observed shared_with_implementation). Run: <probe>, or show
-  it fails on a deliberately broken scratch copy, or decline with a reason." Every other verdict
+  it fails on a deliberately broken scratch copy, or decline with a reason." The probe is runnable,
+  so it is kept verbatim (only control characters other than newline and tab are dropped); a
+  multi-line probe follows the sentence in a fenced block (PR #1224 review). Every other verdict
   stays in the encrypted review response only. The row is non-blocking and answered once through
   `respond`, like every advisory row.
 - **The small-channel gate.** A review on a channel no larger than the minimal policy's lists no

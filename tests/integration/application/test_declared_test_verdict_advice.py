@@ -381,3 +381,69 @@ async def test_a_minimal_channel_review_lists_no_test_and_mints_no_verdict_advic
     assert case.packet.declared_tests == ()
     assert not any("declared_test_verdicts" in question for question in case.question_set)
     assert _advice(projected) == []
+
+
+def _strings(value: object) -> str:
+    """Every string in a JSON-like value, so rendered text keeps its own line breaks."""
+
+    if isinstance(value, str):
+        return value
+    if isinstance(value, Mapping):
+        return "\n".join(_strings(item) for item in cast(Mapping[str, object], value).values())
+    if isinstance(value, (list, tuple)):
+        return "\n".join(_strings(item) for item in cast(list[object], value))
+    return ""
+
+
+def _shown(probe: str, text: str) -> bool:
+    """The probe verbatim in a text channel, or as the JSON string a JSON channel carries."""
+
+    return probe in text or json.dumps(probe)[1:-1] in text
+
+
+async def test_a_probe_keeps_its_exact_spacing_and_lines_on_every_surface() -> None:
+    """PR #1224 review: the counter-example is runnable, so spacing and line breaks are kept
+    verbatim (a multi-line probe in a fenced block), only blankness is tested on its strip."""
+
+    spaced = "assert split('a  b') == ['a', '', 'b']"
+    multi = "rows = load('fixture.csv')\nassert rows[0]['eos']  == 1\n    # indented note"
+    reviewer = _ScriptedReviewer(
+        [_digest("a"), _digest("b")],
+        [
+            (DeclaredTestVerdict("dt1", "shared_with_implementation", spaced),),
+            (DeclaredTestVerdict("dt1", "cannot_fail", multi + "\x1b"),),
+        ],
+        seed=9500,
+    )
+    run = await _checks(9500, reviewer, 2)
+    (one_line,) = _advice(run.wires[0])
+    assert f"Run: {spaced}, or show it fails" in cast(str, one_line["summary"])
+    (block,) = _advice(run.wires[1])
+    summary = cast(str, block["summary"])
+    # The control character is dropped; every space and line break of the probe stays.
+    assert f"\n```\n{multi}\n```" in summary
+    advisory_id = cast(str, block["advisory_id"])
+    wire = public_model_to_wire(CheckResult.model_validate(run.wires[1]))
+    for host in ("codex", "claude", "cursor"):
+        text = _result_text(wire, host_profile=host)
+        assert advisory_id in text and _shown(multi, text), host
+    model = CheckResult.model_validate(run.wires[1]).root
+    assert type(model) is CheckSuccessModel
+    assert multi in render_human_check(model)
+    for form, seed in (("text", 9560), ("markdown", 9570)):
+        receipt = await run.app.receipt(
+            ReceiptRequest.model_validate(
+                {
+                    **request_base(protocol_id("req_", seed)),
+                    "task_id": run.task_id,
+                    **run.ids,
+                    "expected_frontier": frontier_json(run.frontier),
+                    "format": form,
+                    "include": "summary",
+                    "redaction_profile": "full_local",
+                }
+            )
+        )
+        run.frontier = receipt.result_frontier
+        rendered = _strings(receipt.as_json())
+        assert spaced in rendered and multi in rendered, form

@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import inspect
+import re
+import unicodedata
 from collections.abc import Awaitable, Callable, Iterable, Mapping
 from dataclasses import dataclass, replace
 from functools import partial
@@ -5304,6 +5306,12 @@ _TEST_VERDICT_ADVICE: Final = (
     "Your test {path} for {criterion} {phrase}{tag}. Run: {probe}, or show it fails on a "
     "deliberately broken scratch copy, or decline with a reason."
 )
+# A multi-line probe is shown verbatim in a fenced block after the sentence (PR #1224 review).
+_TEST_VERDICT_ADVICE_BLOCK: Final = (
+    "Your test {path} for {criterion} {phrase}{tag}. Run the reviewer's probe below, or show it "
+    "fails on a deliberately broken scratch copy, or decline with a reason.\n{fence}\n{probe}\n"
+    "{fence}"
+)
 _TEST_VERDICT_TAG: Final = " (you tagged expected_from={tag}; the reviewer observed {observed})"
 _TEST_VERDICT_FOLDED_NOTE: Final = (
     "FinishUP note: {count} declared-test verdict(s) concern test bytes already advised and were "
@@ -5314,6 +5322,26 @@ _TEST_VERDICT_CAPPED_NOTE: Final = (
     f"{MAX_DECLARED_TEST_ADVICE_PER_TASK} per task."
 )
 _MAX_ADVICE_CRITERION_CHARS: Final = 120
+
+
+def _verbatim_probe(value: str) -> str:
+    """The reviewer's counter-example exactly as sent (spacing and line breaks are part of a
+    runnable probe), less control characters other than newline and tab; ``\r\n`` reads as a
+    newline."""
+
+    text = value.replace("\r\n", "\n")
+    return "".join(
+        character
+        for character in text
+        if character in "\n\t" or unicodedata.category(character) != "Cc"
+    )
+
+
+def _probe_fence(probe: str) -> str:
+    """A backtick fence longer than any backtick run in ``probe``, so the block stays closed."""
+
+    longest = max((len(run) for run in re.findall(r"`+", probe)), default=0)
+    return "`" * max(3, longest + 1)
 
 
 def _declared_test_subjects(case: DeterministicCase, criterion_ref: str) -> tuple[str, ...]:
@@ -5358,8 +5386,12 @@ def _declared_test_advice(
     overflow = 0
     for verdict in judgment.declared_test_verdicts:
         test = listed.get(verdict.test_ref)
-        probe = " ".join(verdict.counter_example.split())
-        if test is None or verdict.expected_from_observed not in ADVISED_TEST_VERDICTS or not probe:
+        probe = _verbatim_probe(verdict.counter_example)
+        if (
+            test is None
+            or verdict.expected_from_observed not in ADVISED_TEST_VERDICTS
+            or not probe.strip()
+        ):
             continue
         if test.content_digest in minted:
             continue
@@ -5383,7 +5415,8 @@ def _declared_test_advice(
             )
             + "'"
         )
-        text = _TEST_VERDICT_ADVICE.format(
+        multi_line = "\n" in probe
+        text = (_TEST_VERDICT_ADVICE_BLOCK if multi_line else _TEST_VERDICT_ADVICE).format(
             path=test.path,
             criterion=criterion,
             phrase=_TEST_VERDICT_PHRASES[verdict.expected_from_observed],
@@ -5395,6 +5428,7 @@ def _declared_test_advice(
                 )
             ),
             probe=probe,
+            fence=_probe_fence(probe),
         )
         bounded = _bounded_review_text(text)
         row = JsonObject(

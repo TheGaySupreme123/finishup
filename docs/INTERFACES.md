@@ -12938,7 +12938,11 @@ and criterion quote (newest manifest naming the path, at most 120 characters), t
 beside the reviewer's observation when tagged, and the reviewer's probe: "Your test <path> for
 '<criterion>' takes its expected value from the implementation | cannot fail as written (you
 tagged expected_from=<tag>; the reviewer observed <observation>). Run: <probe>, or show it fails
-on a deliberately broken scratch copy, or decline with a reason." Subjects: the criterion ref
+on a deliberately broken scratch copy, or decline with a reason." The probe is kept verbatim
+(spacing and line breaks; only control characters other than newline and tab are dropped, and
+blankness is tested on its strip); a multi-line probe follows the sentence in a fenced block
+whose fence outruns any backtick run in it, in both summary and detail, since the check result
+row carries the summary. Subjects: the criterion ref
 when it is an obligation or claim, the declaring result's recording event otherwise. A digest an
 earlier row of this origin carries is never advised again, whatever the answer (a fixed summary
 line names the earlier identity); a task carries at most `MAX_DECLARED_TEST_ADVICE_PER_TASK` = 2
