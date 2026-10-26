@@ -3654,14 +3654,21 @@ above or what remains, whichever is less) and any reconnect share one monotonic 
 from the call's start. The budget is 55 seconds for `status`, `closure_prepare` (whose reads share
 it), an inspection and `start`, so a cold service start still leaves the read its full 30 seconds
 (29 s discovery plus a 30-second RPC timeout answers by 55 s, under the common 60-second host
-limit); for `publish_work`, `respond`, `receipt` and `check` it equals the RPC deadline. A deadline
-override above a budget raises the budget with it, within the clamp. A reconnect never gets a fresh
-budget, and running out at any stage is the same typed `request_timeout` with its
-`replay_request_id` for a write (an exhausted discovery is never latched as an availability
-failure). The post-timeout probe and same-request recovery of a
-write share one 10-second window that ends no later than 295 seconds after the call started
-(#1226). Raising a deadline above the host's own MCP tool timeout only lets the host give up
-first. A timed-out write has an unknown outcome: the bridge
+limit); for `publish_work`, `respond`, `receipt` and `check` it equals the RPC deadline. Each
+tool also has a host ceiling (`_HOST_CEILING_MS`: 300 seconds for `check`, the common 60 seconds
+for every other tool) that the whole call, post-timeout recovery and cleanup included, ends
+3 seconds inside (a margin for rendering and the client's bounded cancellation cleanup). A deadline
+override above a budget raises the budget with it, but never past that ceiling less the margin
+(57 or 297 seconds). A reconnect never gets a fresh budget, and running out at any stage is the
+same typed `request_timeout` with its `replay_request_id` for a write (an exhausted discovery is
+never latched as an availability failure). The post-timeout probe and same-request recovery of a
+write share one window of at most 10 seconds that also ends by that ceiling less the margin;
+recovery gets only what remains. The slot lock guards only synchronous bookkeeping: the
+handshake and the on-demand start run outside it, only the call that owns a probe releases it,
+and every wait (on the lock, on another call's probe, on a client close) ends by the waiting
+call's own deadline, so an expired caller answers with its typed timeout without touching the
+other caller's probe (#1226). Raising a deadline above the host's own MCP tool timeout only lets
+the host give up first. A timed-out write has an unknown outcome: the bridge
 must preserve its retryable failure shape, say that it may already have committed, and direct the
 caller to retry with the same `request_id` (and operation status where applicable). A timed-out
 read may simply be repeated. For a timed-out `publish_work`, `respond` or `receipt`, the bridge

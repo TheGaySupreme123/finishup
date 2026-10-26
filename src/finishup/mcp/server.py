@@ -237,16 +237,29 @@ _MAX_RPC_DEADLINE_MS: Final = 285_000
 # short window that still ends inside the host limit.
 _SERVICE_DISCOVERY_CAP_SECONDS: Final = 30.0
 _MIN_SERVICE_DISCOVERY_SECONDS: Final = 0.1
-_CALL_CEILING_MS: Final = _HOST_TOOL_CALL_LIMIT_MS - 5_000
 _POST_TIMEOUT_WINDOW_MS: Final = 10_000
 # The common 60-second host MCP tool limit (Codex ``tool_timeout_sec``) that the 30- and
 # 50-second tools answer inside.
 _COMMON_HOST_TOOL_LIMIT_MS: Final = 60_000
+# The host limit each tool's whole call must end inside, post-timeout recovery and cleanup
+# included, less a margin for rendering and the client's bounded cancellation cleanup.
+_HOST_CEILING_MS: Final = MappingProxyType(
+    {
+        "start": _COMMON_HOST_TOOL_LIMIT_MS,
+        "status": _COMMON_HOST_TOOL_LIMIT_MS,
+        "publish_work": _COMMON_HOST_TOOL_LIMIT_MS,
+        "respond": _COMMON_HOST_TOOL_LIMIT_MS,
+        "receipt": _COMMON_HOST_TOOL_LIMIT_MS,
+        "check": _HOST_TOOL_CALL_LIMIT_MS,
+    }
+)
+_HOST_CEILING_MARGIN_MS: Final = 3_000
 # The whole-call budget per tool (discovery, RPC and any reconnect together). The reads and
 # ``start`` keep room for a cold service start beside their full 30-second RPC (29 s discovery
 # plus the RPC still answers by 55 s, under the common host limit); the RPC stage itself stays
 # capped by its own deadline. A deadline override above the budget raises the budget with it,
-# within the 285-second clamp. ``closure_prepare`` and an inspection take the ``status`` budget.
+# but never past the tool's host ceiling less the margin. ``closure_prepare`` and an inspection
+# take the ``status`` budget and ceiling.
 _CALL_BUDGET_MS: Final = MappingProxyType(
     {
         "start": 55_000,
@@ -523,6 +536,9 @@ class _ClientSlot:
     # park on attempt_finished, then re-check the completed latch (issue #476).
     attempting: bool = False
     attempt_finished: asyncio.Event | None = None
+    # The token of the call that owns the in-flight probe (review of #1226): only that call may
+    # release it, so an expired waiter never clears another caller's probe.
+    attempt_owner: object | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -937,10 +953,20 @@ async def _close_client(client: ServiceClient) -> None:
 
 
 async def _discard_client(runtime: BridgeRuntime, client: ServiceClient) -> None:
-    async with runtime._slot.lock:  # pyright: ignore[reportPrivateUsage]
-        if runtime._slot.client is client:  # pyright: ignore[reportPrivateUsage]
-            runtime._slot.client = None  # pyright: ignore[reportPrivateUsage]
-    await _close_client(client)
+    # One synchronous step needs no lock on the event loop, so a reconnect never queues behind
+    # another caller's probe (review of #1226); the close is bounded by the call's budget.
+    slot = runtime._slot  # pyright: ignore[reportPrivateUsage]
+    if slot.client is client:
+        slot.client = None
+    budget = _CALL_BUDGET.get()
+    if budget is None:
+        await _close_client(client)
+        return
+    try:
+        async with asyncio.timeout(max(0.0, budget.remaining_seconds())):
+            await _close_client(client)
+    except TimeoutError:
+        pass
 
 
 async def ensure_service_client(
@@ -994,80 +1020,95 @@ async def _ensure_service_client(
     retain_availability_failure_for_latch: bool,
     start_timeout_seconds: float | None,
 ) -> ServiceClient:
+    """Reuse the slot's client, wait for another call's probe, or own one probe.
+
+    The slot lock guards only synchronous bookkeeping; the handshake and the on-demand start run
+    outside it (review of #1226), so no caller waits on the lock behind another caller's probe.
+    Only the owner releases its probe, so a waiter that runs out of budget leaves it untouched.
+    """
+
     slot = runtime._slot  # pyright: ignore[reportPrivateUsage]
     workspace_locator = _workspace_locator_for_runtime(runtime)
     if workspace_locator is None:
         raise _CursorWorkspaceBindingError()
+    owner = object()
+    owns_probe = False
     keep_gate = False
     try:
         while True:
             waiter: asyncio.Event | None = None
-            connected: ServiceClient | None = None
             async with slot.lock:
                 if slot.availability is not None:
                     latch = slot.availability
                     if request_id is None or request_id != latch.request_id:
                         raise ControlError(latch.reason, retryable=latch.retryable)
                 existing = slot.client
-                if existing is not None:
-                    try:
-                        await existing.connect()
-                    except Exception:
-                        slot.client = None
-                        await _close_client(existing)
+                if existing is None:
+                    if slot.attempting:
+                        waiter = slot.attempt_finished
                     else:
-                        return existing
-                if slot.attempting:
-                    waiter = slot.attempt_finished
-                else:
-                    slot.attempting = True
-                    slot.attempt_finished = asyncio.Event()
-                    connected_attempt: ServiceClient | None = None
-                    try:
-                        connected_attempt = (
-                            await connect_service_on_demand(
-                                ControlClientKind.MCP_BRIDGE,
-                                workspace_locator=workspace_locator,
-                            )
-                            if start_timeout_seconds is None
-                            else await connect_service_on_demand(
-                                ControlClientKind.MCP_BRIDGE,
-                                workspace_locator=workspace_locator,
-                                timeout_seconds=start_timeout_seconds,
-                            )
-                        )
-                        await connected_attempt.connect()
-                    except BaseException as exc:
+                        slot.attempting = True
+                        slot.attempt_owner = owner
+                        slot.attempt_finished = asyncio.Event()
+                        owns_probe = True
+                        _ATTEMPT_OWNER.set(owner)
+            if existing is not None:
+                try:
+                    await existing.connect()
+                except Exception:
+                    if slot.client is existing:
                         slot.client = None
-                        if connected_attempt is not None:
-                            await _close_client(connected_attempt)
-                        budget = _CALL_BUDGET.get()
-                        if (
-                            budget is not None
-                            and isinstance(exc, ControlError)
-                            and exc.reason == "service_unavailable"
-                            and budget.remaining_seconds() < _MIN_SERVICE_DISCOVERY_SECONDS
-                        ):
-                            # The start ran out of this call's budget, not of its own: a typed
-                            # timeout the caller recovers from, never a latched outage.
-                            raise _call_timeout() from None
-                        keep_gate = (
-                            retain_availability_failure_for_latch
-                            and isinstance(exc, ControlError)
-                            and exc.reason in _AVAILABILITY_LATCH_REASONS
-                        )
-                        raise
-                    slot.client = connected_attempt
-                    connected = connected_attempt
-            if connected is not None:
-                await _finish_availability_attempt(runtime)
-                return connected
-            if waiter is None:
+                    await _close_client(existing)
+                    continue
+                return existing
+            if waiter is not None:
+                await waiter.wait()
                 continue
-            await waiter.wait()
+            if not owns_probe:
+                continue
+            connected_attempt: ServiceClient | None = None
+            try:
+                connected_attempt = (
+                    await connect_service_on_demand(
+                        ControlClientKind.MCP_BRIDGE,
+                        workspace_locator=workspace_locator,
+                    )
+                    if start_timeout_seconds is None
+                    else await connect_service_on_demand(
+                        ControlClientKind.MCP_BRIDGE,
+                        workspace_locator=workspace_locator,
+                        timeout_seconds=start_timeout_seconds,
+                    )
+                )
+                await connected_attempt.connect()
+            except BaseException as exc:
+                if connected_attempt is not None:
+                    await _close_client(connected_attempt)
+                budget = _CALL_BUDGET.get()
+                if (
+                    budget is not None
+                    and isinstance(exc, ControlError)
+                    and exc.reason == "service_unavailable"
+                    and budget.remaining_seconds() < _MIN_SERVICE_DISCOVERY_SECONDS
+                ):
+                    # The start ran out of this call's budget, not of its own: a typed
+                    # timeout the caller recovers from, never a latched outage.
+                    raise _call_timeout() from None
+                keep_gate = (
+                    retain_availability_failure_for_latch
+                    and isinstance(exc, ControlError)
+                    and exc.reason in _AVAILABILITY_LATCH_REASONS
+                )
+                raise
+            stale = slot.client
+            slot.client = connected_attempt
+            if stale is not None and stale is not connected_attempt:
+                await _close_client(stale)
+            _release_availability_attempt(slot, owner)
+            return connected_attempt
     except BaseException:
-        if not keep_gate:
-            await _finish_availability_attempt(runtime)
+        if owns_probe and not keep_gate:
+            _release_availability_attempt(slot, owner)
         raise
 
 
@@ -2336,19 +2377,15 @@ async def _latch_availability(
             details,
             _holder_snapshot(),
         )
+        # One synchronous step: no lock wait behind another caller (review of #1226).
         already = False
-        async with slot.lock:
-            existing = slot.availability
-            if (
-                existing is not None
-                and request_id is not None
-                and request_id == existing.request_id
-            ):
-                slot.availability = latch
-            elif existing is not None:
-                already = True
-            else:
-                slot.availability = latch
+        existing = slot.availability
+        if existing is not None and request_id is not None and request_id == existing.request_id:
+            slot.availability = latch
+        elif existing is not None:
+            already = True
+        else:
+            slot.availability = latch
         if already:
             inherited = await _inherit_terminal_availability(runtime, request_id)
             if inherited is not None:
@@ -2367,8 +2404,8 @@ async def _latch_availability(
 
 
 async def _clear_availability(runtime: BridgeRuntime) -> None:
-    async with runtime._slot.lock:  # pyright: ignore[reportPrivateUsage]
-        runtime._slot.availability = None  # pyright: ignore[reportPrivateUsage]
+    # One synchronous step needs no lock on the event loop (review of #1226).
+    runtime._slot.availability = None  # pyright: ignore[reportPrivateUsage]
 
 
 async def _quiet_probe(runtime: BridgeRuntime) -> ServiceClient | None:
@@ -2392,6 +2429,32 @@ async def _quiet_probe(runtime: BridgeRuntime) -> ServiceClient | None:
 
 
 async def _inherit_terminal_availability(
+    runtime: BridgeRuntime,
+    request_id: str | None,
+    *,
+    concurrent_waiter: bool = False,
+) -> types.CallToolResult | None:
+    """``_inherit_latched_availability`` ended by the call's budget (review of #1226).
+
+    Its lock wait and quiet handshake never outlive the call; a call that runs out inherits
+    nothing and answers with its own typed result.
+    """
+
+    budget = _CALL_BUDGET.get()
+    if budget is None:
+        return await _inherit_latched_availability(
+            runtime, request_id, concurrent_waiter=concurrent_waiter
+        )
+    try:
+        async with asyncio.timeout(max(0.0, budget.remaining_seconds())):
+            return await _inherit_latched_availability(
+                runtime, request_id, concurrent_waiter=concurrent_waiter
+            )
+    except TimeoutError:
+        return None
+
+
+async def _inherit_latched_availability(
     runtime: BridgeRuntime,
     request_id: str | None,
     *,
@@ -2441,16 +2504,35 @@ async def _inherit_terminal_availability(
         )
 
 
-async def _finish_availability_attempt(runtime: BridgeRuntime) -> None:
-    """Release the first-probe gate so waiters can inherit the completed latch or proceed."""
+# The probe this call owns and kept open for ``_latch_availability`` (review of #1226).
+_ATTEMPT_OWNER: ContextVar[object | None] = ContextVar("finishup_mcp_attempt_owner", default=None)
 
-    slot = runtime._slot  # pyright: ignore[reportPrivateUsage]
-    async with slot.lock:
-        slot.attempting = False
-        finished = slot.attempt_finished
-        slot.attempt_finished = None
+
+def _release_availability_attempt(slot: _ClientSlot, owner: object) -> None:
+    """Release the first-probe gate if ``owner`` holds it, so waiters inherit or proceed.
+
+    One synchronous step: on the event loop it needs no lock, so releasing never waits behind
+    another caller, and a caller that does not own the probe changes nothing.
+    """
+
+    if slot.attempt_owner is not owner:
+        return
+    slot.attempting = False
+    slot.attempt_owner = None
+    finished = slot.attempt_finished
+    slot.attempt_finished = None
     if finished is not None:
         finished.set()
+
+
+async def _finish_availability_attempt(runtime: BridgeRuntime) -> None:
+    """Release the probe this call kept open for latching; any other probe is left alone."""
+
+    owner = _ATTEMPT_OWNER.get()
+    if owner is None:
+        return
+    _ATTEMPT_OWNER.set(None)
+    _release_availability_attempt(runtime._slot, owner)  # pyright: ignore[reportPrivateUsage]
 
 
 async def _prepare_availability(
@@ -2518,10 +2600,17 @@ class _CallBudget:
 _CALL_BUDGET: ContextVar[_CallBudget | None] = ContextVar("finishup_mcp_call_budget", default=None)
 
 
-def _call_budget_ms(tool: str) -> int:
-    """The whole-call budget for one tool: its explicit budget, or its deadline if larger."""
+def _call_ceiling_ms(tool: str) -> int:
+    """When one tool call must be finished, recovery included: its host ceiling less a margin."""
 
-    return max(_rpc_deadline_ms(tool), _CALL_BUDGET_MS[tool])
+    return _HOST_CEILING_MS[tool] - _HOST_CEILING_MARGIN_MS
+
+
+def _call_budget_ms(tool: str) -> int:
+    """The whole-call budget for one tool: its explicit budget, or its deadline if larger, and
+    never past its ceiling (a larger override cannot outlive the host)."""
+
+    return min(max(_rpc_deadline_ms(tool), _CALL_BUDGET_MS[tool]), _call_ceiling_ms(tool))
 
 
 @contextlib.contextmanager
@@ -2539,7 +2628,7 @@ def _call_budget(tool: str) -> Generator[None]:
         return
     now = time.monotonic()
     outer = _CALL_BUDGET.get()
-    budget = _CallBudget(now + configured / 1_000, now + _CALL_CEILING_MS / 1_000)
+    budget = _CallBudget(now + configured / 1_000, now + _call_ceiling_ms(tool) / 1_000)
     if outer is not None:
         budget = _CallBudget(
             min(outer.deadline, budget.deadline), min(outer.ceiling, budget.ceiling)
@@ -2751,7 +2840,10 @@ async def _dispatch[RequestT: BaseModel, ResultT: BaseModel](
     """
 
     mode = arguments.get("mode") if operation == "check" else None
-    with _call_budget("status" if mode in READ_ONLY_CHECK_MODES else operation):
+    # Before validation the mode may be any JSON shape (a list or object is unhashable); only a
+    # string is compared, and validation below answers every other shape (review of #1226).
+    read_only = type(mode) is str and mode in READ_ONLY_CHECK_MODES
+    with _call_budget("status" if read_only else operation):
         return await _dispatch_within_budget(
             arguments, request_type, result_type, invoke, runtime, operation
         )
