@@ -644,7 +644,8 @@ pre-disclosure gate refused every warning, so the capability check and each atte
    call: `config/read` returns config values, not registered handlers, and
    `codex debug prompt-input` renders input items only. Even a tool list would not prove that a
    patch is rejected before it runs. The admission is therefore limited to the reviewed set
-   `SANDBOX_UNAVAILABLE_REVIEWED_RELEASES = {0.162.1}`, matched against the release that
+   `SANDBOX_UNAVAILABLE_REVIEWED_RELEASES = {0.162.1}` (0.164.0 added 2026-10-26, see the #1228
+   amendment below), matched against the release that
    `initialize` proved. That is the newest stable npm release on 2026-10-14; 0.159.x sends this
    warning only in the terminal UI, not through the app-server.
 
@@ -689,7 +690,7 @@ missing-bubblewrap, WSL1 and user-namespace warnings.
    widens nothing a review can do.
 2. **Same narrow admission.** The warning is admitted only with the closed shape of point 2 and
    that summary byte for byte. It is admitted only from `SANDBOX_UNAVAILABLE_REVIEWED_RELEASES`
-   (`{0.162.1}`); any other release sending it fails closed with
+   (`{0.162.1}`, `{0.162.1, 0.164.0}` since #1228); any other release sending it fails closed with
    `codex_sandbox_unavailable_unreviewed_runtime`, as before. Look-alikes (a detail, a path or
    range, a missing `details`, trailing bytes, the same text through `warning`) and the WSL1
    warning stay refused as `codex_app_server_predisclosure_event_forbidden`.
@@ -2506,7 +2507,7 @@ Codex is used as the model only. Capability profile v3 applies to every Codex se
 `initialize` opts into the experimental API solely to send `thread/start.environments: []`, which
 disables environment access, so shell, patch and file tools have no environment to register or
 read from; `[tools.update_plan]` and `[tools.experimental_request_user_input]` are disabled in the
-isolated config and launch overrides; on 0.162.1 only, the launch also sets `agents.enabled=false`,
+isolated config and launch overrides; on 0.162.1 and 0.164.0 only, the launch also sets `agents.enabled=false`,
 `features.goals=false`, `features.sleep_tool=false` and `skills.include_instructions=false`, because a
 model catalog entry (for example gpt-6.1-sol's `multi_agent_version` and `clock`) otherwise
 registers collaboration, goal and `sleep` tools without any environment (#1118). The same catalog's
@@ -2516,7 +2517,7 @@ registers collaboration, goal and `sleep` tools without any environment (#1118).
 derived catalog: the bundled 0.162.1 `gpt-6.1-sol` entry, as `codex debug models --bundled` exposes
 it, minus `tool_mode` and with `experimental_supported_tools` emptied, every other field unchanged.
 It is a generated packaged resource pinned by two digests (the source entry and the derived bytes),
-and it applies only when the bound release is 0.162.1, the bound model is `gpt-6.1-sol`, the bundled
+and it applies only when the bound release is 0.162.1 or 0.164.0, the bound model is `gpt-6.1-sol`, the bundled
 entry measured from the exact executable bytes the fence just re-hashed has the pinned source digest,
 and the packaged file has the pinned derived digest. Otherwise the launch is unchanged, those tools
 stay registered and are refused on the wire if called, and the closed reason is recorded once per
@@ -2547,11 +2548,30 @@ original deadline, and a late answer is never used; for Codex the bound covers l
 pipe write and read, and cleanup runs after it. Only a completed Codex turn stays in the session.
 After a reply the loop's decoder rejects, the session continues from the thread before that reply,
 so the one format repair reaches the model without echoing the rejected action. Only a completed
-generation can earn that repair: a failed or unfinished Responses generation ends the review. Only release 0.162.1, whose source was reviewed, runs the
+generation can earn that repair: a failed or unfinished Responses generation ends the review. Only releases 0.162.1 and 0.164.0, whose source was reviewed, run the
 loop until an authorized native capability cell shows `environments: []` persists across turns.
 This is not proof that no internal Codex utility can execute; an absolute guarantee still needs
 stronger upstream suppression. A route that cannot serve the loop fails closed. Nothing falls back
 to a separately billed API.
+
+**Amendment (2026-10-26, #1228, maintainer request: Codex 0.164.0 for the reviewer).** Codex
+0.164.0 joins 0.162.1 in the three release-bound sets (`SANDBOX_UNAVAILABLE_REVIEWED_RELEASES`,
+the four tool-removing launch keys, `REVIEWER_LOOP_REVIEWED_RELEASES`) and in the derived-catalog
+pin. Evidence, from npm `@openai/codex@0.164.0-darwin-arm64` (executable SHA-256
+`d8990e3ee7acfbc26f91265b12a1a83f0fee40d0e0f8f1f40a37d4ec21f499cf`) and the `rust-v0.164.0`
+source against `rust-v0.162.1`: the reviewed app-server schema subset has the same facts digest
+(`sha256:fa8f2def03d3da960642755c1307cad94bca01f6c415f2bf7d46b5380d8e7bf2`); the bundled
+`gpt-6.1-sol` entry has the same source digest, so the same derived file applies; both bubblewrap
+warning texts are unchanged; `agents.enabled`, `features.goals`, `features.sleep_tool` and
+`skills.include_instructions` still exist and still remove the same tools. The one new
+notification, `thread/readState/changed`, is published only for non-ephemeral threads. One
+difference: without an environment 0.164.0 still advertises the catalog's `apply_patch`, which
+0.162.1 hid; its handler resolves a turn environment first and fails without one, and `read-only`
+with `approval_policy=never` still rejects the patch, so point 1 of the sandbox decision holds.
+`gpt-6.1-terra` is not in 0.164.0's bundled catalog (only the account's live `/models` lists it),
+so the launch cannot measure a terra entry from the bytes it runs and terra gets no pin: it keeps
+the unchanged launch (`model_not_pinned`) and the unsized exchange bound. Pinning it needs a source
+other than the launched bytes and is a separate decision.
 
 ### Residual requests, linked supply and required-review limits (#1118 unit 4)
 

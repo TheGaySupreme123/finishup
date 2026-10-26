@@ -327,7 +327,7 @@ and no Linux sandbox capability cell is claimed from it.
 ## Codex evaluator without a system bubblewrap
 
 The Codex-subscription evaluator is a different consumer from approved checks. With a
-source-reviewed Codex release (today `0.162.1`), it admits Codex's exact missing-bubblewrap and
+source-reviewed Codex release (today `0.162.1` and `0.164.0`), it admits Codex's exact missing-bubblewrap and
 no-user-namespace warnings (ADR-006, 2026-10-14). It runs no commands and writes no files, so
 there is nothing for the sandbox to confine. Without a system `bwrap`, setup and repair still
 pass. `finishup provider codex-subscription status --json` reports

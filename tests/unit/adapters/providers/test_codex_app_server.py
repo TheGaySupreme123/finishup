@@ -1850,9 +1850,9 @@ def test_launcher_and_environment_do_not_inherit_aliases_credentials_or_proxies(
     assert "HOME" not in environment
 
 
-@pytest.mark.parametrize("version", ["0.157.1", "0.159.0", "0.162.1"])
+@pytest.mark.parametrize("version", ["0.157.1", "0.159.0", "0.162.1", "0.163.0", "0.164.0"])
 def test_only_the_reviewed_release_gets_its_extra_tool_removal_overrides(version: str) -> None:
-    """#1118: catalog- and default-driven tools 0.162.1 still registers are disabled by key."""
+    """#1118/#1228: catalog- and default-driven tools a reviewed release registers are disabled."""
 
     profile = profile_for(record_for(b"codex", b"host", version=version))
     overrides = [
@@ -1869,9 +1869,11 @@ def test_only_the_reviewed_release_gets_its_extra_tool_removal_overrides(version
 
     assert "tools.update_plan.enabled=false" in overrides
     assert "features.shell_tool=false" in overrides
-    # ``--strict-config`` refuses a key a release does not define, so only 0.162.1 gets them.
-    assert extra.issubset(overrides) is (version == "0.162.1")
-    assert extra.isdisjoint(overrides) is (version != "0.162.1")
+    # ``--strict-config`` refuses a key a release does not define, so only reviewed releases get
+    # them (0.162.1, and 0.164.0 since #1228).
+    reviewed = version in {"0.162.1", "0.164.0"}
+    assert extra.issubset(overrides) is reviewed
+    assert extra.isdisjoint(overrides) is (not reviewed)
 
 
 def test_factory_binds_every_runtime_authority_field(
@@ -3288,14 +3290,15 @@ async def _release_responses(
 
 
 def test_the_sandbox_warning_is_reviewed_only_for_source_verified_releases() -> None:
-    assert module.SANDBOX_UNAVAILABLE_REVIEWED_RELEASES == frozenset({"0.162.1"})
+    assert module.SANDBOX_UNAVAILABLE_REVIEWED_RELEASES == frozenset({"0.162.1", "0.164.0"})
 
 
+@pytest.mark.parametrize("version", sorted(module.SANDBOX_UNAVAILABLE_REVIEWED_RELEASES))
 @pytest.mark.parametrize(("event", "reason"), _ADMITTED_SANDBOX_WARNINGS)
 async def test_capability_probe_admits_the_exact_sandbox_unavailable_warning(
-    monkeypatch: pytest.MonkeyPatch, event: dict[str, object], reason: str
+    monkeypatch: pytest.MonkeyPatch, event: dict[str, object], reason: str, version: str
 ) -> None:
-    profile = _reviewed_profile()
+    profile = _reviewed_profile(version)
     lines = await _release_responses(
         profile,
         (0, "initialize"),
@@ -3408,7 +3411,7 @@ async def test_an_attempt_discloses_the_case_despite_the_sandbox_unavailable_war
 
 # A release outside the reviewed set: an older admitted one, and a synthetic newer one that keeps
 # the same warning and protocol but whose tool semantics nobody has reviewed.
-_UNREVIEWED_RELEASES = ["0.159.0", "1.0.0"]
+_UNREVIEWED_RELEASES = ["0.159.0", "0.163.0", "1.0.0"]
 
 
 @pytest.mark.parametrize("version", _UNREVIEWED_RELEASES)

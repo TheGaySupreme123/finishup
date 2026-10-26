@@ -17,6 +17,9 @@ key: the entry exactly as the pinned runtime exposes it (``codex debug models --
 efforts, truncation, instructions, messages) is byte-for-byte the bundled value, so model
 behaviour does not drift.
 
+Codex 0.164.0's bundled ``gpt-6.1-sol`` entry is byte-identical to 0.162.1's (same source-entry
+digest, same derived file; #1228), so one derived file serves both releases.
+
 The file is applied only when the runtime release, the model and the bundled entry the exact
 launched bytes expose all match the pins below, and the packaged file still has its pinned digest.
 Otherwise the launch is unchanged and the closed reason is recorded. Nothing here reads a
@@ -42,6 +45,7 @@ __all__ = [
     "REVIEWER_CATALOG_MODEL",
     "REVIEWER_CATALOG_RESOURCE",
     "REVIEWER_CATALOG_RUNTIME_VERSION",
+    "REVIEWER_CATALOG_RUNTIME_VERSIONS",
     "REVIEWER_CATALOG_SOURCE_ENTRY_SHA256",
     "ReviewerCatalogDecision",
     "ReviewerCatalogReason",
@@ -53,14 +57,18 @@ __all__ = [
     "reviewer_model_context_window",
 ]
 
-# The one release and model the derivation was reviewed for (Codex tag ``rust-v0.162.1``,
+# The release the derived file was generated from (Codex tag ``rust-v0.162.1``,
 # ``codex-rs/models-manager/models.json``, exposed by ``codex debug models --bundled``).
 REVIEWER_CATALOG_RUNTIME_VERSION: Final = "0.162.1"
+# Every release the derivation is pinned for: each exposes the same bundled entry digest, which
+# every launch re-measures from its own bytes (0.164.0 checked 2026-10-26, #1228).
+REVIEWER_CATALOG_RUNTIME_VERSIONS: Final = frozenset({REVIEWER_CATALOG_RUNTIME_VERSION, "0.164.0"})
 REVIEWER_CATALOG_MODEL: Final = "gpt-6.1-sol"
 # Package-relative path of the generated file (source: ``support/codex-evaluator/``).
 REVIEWER_CATALOG_RESOURCE: Final = "support/codex-evaluator/reviewer-model-catalog-0.162.1.json"
 # SHA-256 of the FinishUP canonical encoding of the bundled ``gpt-6.1-sol`` entry as Codex
-# 0.162.1 exposes it. The launch measures the same digest from the exact bytes it launches.
+# 0.162.1 and 0.164.0 expose it. The launch measures the same digest from the exact bytes it
+# launches.
 REVIEWER_CATALOG_SOURCE_ENTRY_SHA256: Final = (
     "sha256:2723b11fc3c0791615cb5a14f6c1abade723228bd7b3d269f5eebeb7264d2cb6"
 )
@@ -193,7 +201,7 @@ def resolve_reviewer_catalog(
     packaged derived file (``None`` when it is not installed as a regular file).
     """
 
-    if runtime_version != REVIEWER_CATALOG_RUNTIME_VERSION:
+    if runtime_version not in REVIEWER_CATALOG_RUNTIME_VERSIONS:
         return ReviewerCatalogDecision(None, "runtime_release_not_pinned")
     if model != REVIEWER_CATALOG_MODEL:
         return ReviewerCatalogDecision(None, "model_not_pinned")
@@ -215,9 +223,10 @@ def resolve_reviewer_catalog(
 def reviewer_model_context_window(model: str) -> ReviewerContextWindow | None:
     """The pinned reviewer model's context window, read from the packaged derived catalog.
 
-    ``context_window`` and ``effective_context_window_percent`` are the bundled 0.162.1 values
-    byte for byte, so they hold whether or not a launch applies the file: without it a ChatGPT
-    login serves the live ``/models`` entry, whose window was larger (500,000) when measured.
+    ``context_window`` and ``effective_context_window_percent`` are the bundled values (0.162.1 and
+    0.164.0) byte for byte, so they hold whether or not a launch applies the file: without it a
+    ChatGPT login serves the live ``/models`` entry, whose window was larger (500,000) when
+    measured.
     ``None`` for any other model, or when the packaged file is missing or not its pinned bytes;
     such a route keeps the unsized exchange bound.
     """

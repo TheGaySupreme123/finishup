@@ -308,7 +308,8 @@ class _CodexRuntime:
     async def request(self, rid: int, method: str, params: object, timeout: float) -> object:
         self.requests.append((method, cast(dict[str, object], params or {})))
         if method == "initialize":
-            return {"codexHome": str(self.profile.codex_home), "userAgent": "x/0.162.1 (Mac)"}
+            agent = f"x/{self.profile.runtime_version} (Mac)"
+            return {"codexHome": str(self.profile.codex_home), "userAgent": agent}
         if method == "account/read":
             return {"account": {"type": "chatgpt", "planType": "plus"}}
         if method == "model/list":
@@ -376,12 +377,11 @@ async def _codex_exchange(
         CURRENT_REVIEWER_SESSION.reset(token)
 
 
+@pytest.mark.parametrize("version", sorted(codex.REVIEWER_LOOP_REVIEWED_RELEASES))
 async def test_codex_keeps_one_thread_sends_only_new_input_and_cleans_up_at_the_end(
-    monkeypatch: pytest.MonkeyPatch,
+    monkeypatch: pytest.MonkeyPatch, version: str
 ) -> None:
-    runtime = _CodexRuntime(
-        profile_for(record_for(b"c", b"h", version="0.162.1")), [_ACTION, _FINAL]
-    )
+    runtime = _CodexRuntime(profile_for(record_for(b"c", b"h", version=version)), [_ACTION, _FINAL])
     session = ReviewerSession("review-a", _DEADLINE)
     cleanups: list[object] = []
 
@@ -526,10 +526,15 @@ async def test_codex_reviewer_turn_aborts_on_utility_compaction_request_or_warni
     assert evidence is not None and evidence.failure_stage == stage
 
 
+def test_the_reviewer_loop_is_reviewed_only_for_source_verified_releases() -> None:
+    assert codex.REVIEWER_LOOP_REVIEWED_RELEASES == frozenset({"0.162.1", "0.164.0"})
+
+
+@pytest.mark.parametrize("version", ["0.159.0", "0.163.0"])
 async def test_codex_reviewer_loop_refuses_an_unreviewed_release_before_launch(
-    monkeypatch: pytest.MonkeyPatch,
+    monkeypatch: pytest.MonkeyPatch, version: str
 ) -> None:
-    runtime = _CodexRuntime(profile_for(record_for(b"c", b"h", version="0.159.0")), [_ACTION])
+    runtime = _CodexRuntime(profile_for(record_for(b"c", b"h", version=version)), [_ACTION])
     session = ReviewerSession("review-a", _DEADLINE)
     result = await _codex_exchange(monkeypatch, runtime, session, _FIRST, [])
     assert type(result) is SemanticResultUnavailable and runtime.requests == []
