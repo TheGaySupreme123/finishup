@@ -173,3 +173,24 @@ def test_tagged_and_untagged_entries_validate_on_the_outbound_case_packet() -> N
         validator.validate(  # pyright: ignore[reportUnknownMemberType]
             [{**untagged.to_json(), "expected_from": "cannot_fail"}]
         )
+
+
+@pytest.mark.parametrize("final", [False, True])
+def test_a_tagged_test_on_a_minimal_channel_changes_no_byte(final: bool) -> None:
+    """The small-channel gate (PR #1221 review) holds for a tagged entry too: no list, no
+    question naming the verdict field, and the same case and prepared bytes as no declared test."""
+
+    from unit.application.test_declared_test_packet import (
+        _TEST,  # pyright: ignore[reportPrivateUsage]
+        _build,  # pyright: ignore[reportPrivateUsage]
+        _frozen,  # pyright: ignore[reportPrivateUsage]
+        _prepared,  # pyright: ignore[reportPrivateUsage]
+    )
+
+    frozen = _frozen(_TEST.path)
+    tagged = replace(_TEST, expected_from="task_text")
+    plain = _build(frozen, final=final, ceiling=16_384)
+    declared = _build(frozen, final=final, declared=(tagged,), ceiling=16_384)
+    assert declared.packet.declared_tests == ()
+    assert not any("declared_test_verdicts" in question for question in declared.question_set)
+    assert (declared.case_digest, _prepared(declared)) == (plain.case_digest, _prepared(plain))

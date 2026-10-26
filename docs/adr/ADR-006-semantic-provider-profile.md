@@ -3609,6 +3609,10 @@ structured verdict rows, with a shared or vacuous expected value becoming tracke
   it fails on a deliberately broken scratch copy, or decline with a reason." Every other verdict
   stays in the encrypted review response only. The row is non-blocking and answered once through
   `respond`, like every advisory row.
+- **The small-channel gate.** A review on a channel no larger than the minimal policy's lists no
+  declared test and asks no declared-test question (PR #1221 review), so it never names the field
+  and no verdict is read there: its packet and first exchange stay byte-identical, tagged test or
+  not. The reply schema stays one per release (#1172), so it carries the nullable field there too.
 - **Never twice, at most two.** The key is the digest: a test whose bytes an earlier
   `declared_test_verdict` row already carries is never advised again, answered or not (a fixed
   summary line names the earlier identity); a changed test may be advised again. A task carries at

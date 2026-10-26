@@ -78,6 +78,8 @@ class _ScriptedReviewer:
     digests: list[str]
     verdicts: list[tuple[DeclaredTestVerdict, ...]]
     seed: int
+    # The prepared byte ceiling the case is built under; 16 KiB is the small-channel gate.
+    ceiling: int | None = None
     cases: list[SemanticCase] = field(default_factory=lambda: [])
 
     async def __call__(
@@ -116,6 +118,7 @@ class _ScriptedReviewer:
             policy_version="1",
             final_review=True,
             declared_tests=pinned,
+            prepared_byte_ceiling=self.ceiling,
         )
         self.cases.append(case)
         step = scripted_success(
@@ -366,3 +369,15 @@ async def test_only_shared_or_cannot_fail_with_a_probe_on_a_listed_test_is_advis
     wires = (await _checks(9300, reviewer, 2)).wires
     assert [_advice(wire) for wire in wires] == [[], []]
     assert not re.search(r"declared-test verdict", json.dumps(wires))
+
+
+async def test_a_minimal_channel_review_lists_no_test_and_mints_no_verdict_advice() -> None:
+    """The small-channel gate (PR #1221 review): nothing is listed, so a verdict the reviewer
+    returns anyway fences to no listed test and records nothing."""
+
+    reviewer = _ScriptedReviewer([_digest("a")], [(_SHARED,)], seed=9400, ceiling=16_384)
+    (projected,) = (await _checks(9400, reviewer, 1)).wires
+    (case,) = reviewer.cases
+    assert case.packet.declared_tests == ()
+    assert not any("declared_test_verdicts" in question for question in case.question_set)
+    assert _advice(projected) == []
