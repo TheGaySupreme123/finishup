@@ -7385,10 +7385,17 @@ def _build_semantic_case_once(
         type(item) is not DeclaredTest for item in declared_tests
     ):
         raise TypeError("semantic_case_declared_tests_invalid")
-    offered_tests = offered_declared_tests(
-        declared_tests,
-        final=review_phase == "final",
-        offered=frozenset(frozen_case.offered_test_digests),
+    # Never on a channel no larger than the minimal policy's (PR #1221 review): its fixed packet
+    # already fills the first exchange, so the list would only displace review content. Such a
+    # case is built exactly as before, whatever the caller passed.
+    offered_tests = (
+        ()
+        if small_channel
+        else offered_declared_tests(
+            declared_tests,
+            final=review_phase == "final",
+            offered=frozenset(frozen_case.offered_test_digests),
+        )
     )
     if type(review_context_profile) is not ReviewContextProfile:
         raise TypeError("review_context_profile_invalid")

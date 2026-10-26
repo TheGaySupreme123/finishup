@@ -12336,7 +12336,9 @@ as `outcome_unknown` and is never resent. For it, `operation_max_retries` is `0`
   them when `review_phase == "final"`, else only those whose digest is outside
   `DeterministicCase.offered_test_digests`, each keeping its pinned `dt<n>` ref
   (derived at freeze from succeeded `check_recorded` manifests' `test_check_digests`; case JSON key
-  `offered_test_digests` only when non-empty). `ReviewInputManifest.test_check_offered` /
+  `offered_test_digests` only when non-empty); never on a `small_channel` case. The composition
+  pins nothing when `_small_review_channel(policy, bindings)` (prepared ceiling or exchange byte
+  limit at most `SMALL_REVIEW_CHANNEL_BYTES`). `ReviewInputManifest.test_check_offered` /
   `test_check_digests` (wire: `test_check_offered: true` with one to three sorted digests, both or
   neither, optional in place on every manifest schema). The composition lists them only when the
   planned first exchange fits `reviewer_exchange_limit` with them

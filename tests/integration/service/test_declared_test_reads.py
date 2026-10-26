@@ -318,11 +318,12 @@ async def test_the_minimal_policy_review_is_planned_exactly_as_before(
     phase: str | None,
     asked_for: dict[str, bool],
 ) -> None:
-    """#1173 budget (ADR-006): at the minimal policy (4,096 tokens) the fixed packet already
-    fills the first exchange's plan, so the list would eat the frame a read needs (a closing
-    review with the linked-check question then ended ``case_capacity_exceeded`` in a probe).
-    The list is offered only when the planned exchange still fits; here it never does, and the
-    review is the one it was before: same questions, no ``t1`` root, same outcome."""
+    """#1173 budget (ADR-006, PR #1221 review): at the minimal policy (4,096 tokens) the fixed
+    packet already fills the first exchange's plan, so the list would eat the frame a read needs
+    (a closing review with the linked-check question then ended ``case_capacity_exceeded`` in a
+    probe). A channel no larger than the minimal policy's never offers declared tests: nothing
+    is read or planned with them, and the first exchange is byte-identical (ids, digests and the
+    temporary path aside) to the same review without any declared test."""
 
     asked = semantic_case_module.review_question_set
 
@@ -332,13 +333,30 @@ async def test_the_minimal_policy_review_is_planned_exactly_as_before(
         return asked(*args, **{**kwargs, **asked_for})
 
     monkeypatch.setattr(semantic_case_module, "review_question_set", with_question)
-    test = _outside(tmp_path)
-    _declare(monkeypatch, str(test))
     replies = (composition._read_file("calc.py"), _FINAL)  # pyright: ignore[reportPrivateUsage]
+    (tmp_path / "a").mkdir()
+    (tmp_path / "b").mkdir()
+    _baseline, plain, _ = await composition._run(  # pyright: ignore[reportPrivateUsage]
+        tmp_path / "a", monkeypatch, *replies, policy=minimal_external_policy()
+    )
+    test = _outside(tmp_path / "b")
+    _declare(monkeypatch, str(test))
+
+    def never(*_args: object, **_kwargs: object) -> bytes | None:
+        raise AssertionError("a minimal-policy review must not read a declared test")
+
+    monkeypatch.setattr(ready_composition_module, "read_declared_test", never)
     result, gateway, _runtime = await composition._run(  # pyright: ignore[reportPrivateUsage]
-        tmp_path, monkeypatch, *replies, policy=minimal_external_policy()
+        tmp_path / "b", monkeypatch, *replies, policy=minimal_external_policy()
     )
     assert result.status is SemanticStatus.SUCCEEDED, (result.status, result.reason)
+
+    def normalized(exchange: Any, folder: str) -> str:  # noqa: ANN401
+        text = json.dumps(exchange).replace(str(tmp_path.resolve() / folder), "TMP")
+        text = re.sub(r"[a-z]{3}_[0-9a-f]{8}-[0-9a-f-]{27}", "ID", text)
+        return re.sub(r"sha256:[0-9a-f]{64}", "DIGEST", text)
+
+    assert normalized(_history(gateway, 0), "b") == normalized(_history(plain, 0), "a")
     first = _history(gateway, 0)
     assert "declared_tests" not in first[1][1] and '"t1"' not in first[2][1]
     assert result.review_input_manifest is not None
