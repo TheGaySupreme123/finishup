@@ -242,3 +242,41 @@ async def test_no_call_outlives_the_host_limit_even_at_the_largest_override(
 
     assert (clock.now - started) * 1_000 < _HOST_LIMIT_MS
     assert _timeout_details(result)["replay_request_id"] == _REQUEST
+
+
+def test_each_whole_call_budget_sits_below_its_host_limit() -> None:
+    """The reads and ``start`` answer inside the common 60 s host limit; the rest inside 300 s."""
+
+    budgets = bridge._CALL_BUDGET_MS  # pyright: ignore[reportPrivateUsage]
+    deadlines = bridge._DEFAULT_RPC_DEADLINES_MS  # pyright: ignore[reportPrivateUsage]
+    assert set(budgets) == set(deadlines)
+    for tool, budget in budgets.items():
+        # A budget never cuts a stage below its own configured RPC deadline.
+        assert budget >= deadlines[tool], tool
+        limit = 60_000 if tool in {"status", "start"} else _HOST_LIMIT_MS
+        assert budget < limit, tool
+    # ``closure_prepare`` and a ``check`` inspection are reads under the status budget.
+    assert budgets["status"] == 55_000 and deadlines["status"] == 30_000
+
+
+@pytest.mark.anyio
+async def test_a_slow_discovery_and_a_status_timeout_answer_within_55_seconds(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    clock = _Clock()
+    client = _Client(clock)
+    budgets = _install(monkeypatch, clock, [client], discovery_ms=29_000)
+    started = clock.now
+    body = {key: value for key, value in _envelope().items() if key != "expected_frontier"} | {
+        "view": "compact"
+    }
+
+    result = await _run(bridge.dispatch_status, body)
+
+    # Discovery keeps its full 30 s cap; the read gets the 26 s that remain of 55 s, not 30 s.
+    assert budgets == [30.0]
+    assert client.methods == ["status"] and client.deadlines == [26_000]
+    assert (clock.now - started) * 1_000 <= 55_000
+    details = _timeout_details(result)
+    assert details["continuation"] == "read_timeout_new_identity"
+    assert "replay_request_id" not in details

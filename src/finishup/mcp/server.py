@@ -239,6 +239,24 @@ _SERVICE_DISCOVERY_CAP_SECONDS: Final = 30.0
 _MIN_SERVICE_DISCOVERY_SECONDS: Final = 0.1
 _CALL_CEILING_MS: Final = _HOST_TOOL_CALL_LIMIT_MS - 5_000
 _POST_TIMEOUT_WINDOW_MS: Final = 10_000
+# The common 60-second host MCP tool limit (Codex ``tool_timeout_sec``) that the 30- and
+# 50-second tools answer inside.
+_COMMON_HOST_TOOL_LIMIT_MS: Final = 60_000
+# The whole-call budget per tool (discovery, RPC and any reconnect together). The reads and
+# ``start`` keep room for a cold service start beside their full 30-second RPC (29 s discovery
+# plus the RPC still answers by 55 s, under the common host limit); the RPC stage itself stays
+# capped by its own deadline. A deadline override above the budget raises the budget with it,
+# within the 285-second clamp. ``closure_prepare`` and an inspection take the ``status`` budget.
+_CALL_BUDGET_MS: Final = MappingProxyType(
+    {
+        "start": 55_000,
+        "status": 55_000,
+        "publish_work": _WORKFLOW_RPC_DEADLINE_MS,
+        "respond": _RECEIPT_RESPONSE_RPC_DEADLINE_MS,
+        "receipt": _RECEIPT_RESPONSE_RPC_DEADLINE_MS,
+        "check": _SEMANTIC_CHECK_RPC_DEADLINE_MS,
+    }
+)
 _CURSOR_ROOTS_REQUEST_TIMEOUT_SECONDS: Final = 5.0
 _MAX_CURSOR_ROOTS: Final = 32
 _MAX_CURSOR_ROOT_URI_BYTES: Final = MAX_WORKSPACE_LOCATOR_BYTES * 2
@@ -2500,16 +2518,22 @@ class _CallBudget:
 _CALL_BUDGET: ContextVar[_CallBudget | None] = ContextVar("finishup_mcp_call_budget", default=None)
 
 
+def _call_budget_ms(tool: str) -> int:
+    """The whole-call budget for one tool: its explicit budget, or its deadline if larger."""
+
+    return max(_rpc_deadline_ms(tool), _CALL_BUDGET_MS[tool])
+
+
 @contextlib.contextmanager
 def _call_budget(tool: str) -> Generator[None]:
-    """Bound everything this tool call does by the tool's deadline, measured from now.
+    """Bound everything this tool call does by the tool's whole-call budget, measured from now.
 
     A nested call keeps the earlier of the two deadlines, so an inner stage never extends the
     call. An ambiguous deadline configuration sets no budget; the caller refuses it as before.
     """
 
     try:
-        configured = _rpc_deadline_ms(tool)
+        configured = _call_budget_ms(tool)
     except ConfigError:
         yield
         return

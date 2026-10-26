@@ -3647,13 +3647,18 @@ change the public workflow-tool schemas. The bridge environment may override the
 milliseconds, clamped to 1,000-285,000 so no override reaches that 300-second limit: `FINISHUP_MCP_DEADLINE_MS_<TOOL>` (for example
 `FINISHUP_MCP_DEADLINE_MS_RECEIPT`) sets one tool, and `FINISHUP_MCP_DEADLINE_MS` sets every tool except
 `check` (an inspection follows `FINISHUP_MCP_DEADLINE_MS_STATUS` and the global variable, never
-`FINISHUP_MCP_DEADLINE_MS_CHECK`); an unparsable value keeps the default. Each deadline bounds
-the whole tool call, not one stage: service discovery (its own 30-second cap or what remains,
-whichever is less, including a wait on another call's probe), the RPC and any reconnect share one
-monotonic deadline measured from the call's start, a reconnect never gets a fresh budget, and
-running out at any stage is the same typed `request_timeout` with its `replay_request_id` for a
-write (an exhausted discovery is never latched as an availability failure). `closure_prepare`'s
-status reads share the `status` deadline. The post-timeout probe and same-request recovery of a
+`FINISHUP_MCP_DEADLINE_MS_CHECK`); an unparsable value keeps the default. Each call also has
+one whole-call budget (`mcp.server._CALL_BUDGET_MS`): service discovery (its own 30-second cap or
+what remains, whichever is less, including a wait on another call's probe), the RPC (its deadline
+above or what remains, whichever is less) and any reconnect share one monotonic deadline measured
+from the call's start. The budget is 55 seconds for `status`, `closure_prepare` (whose reads share
+it), an inspection and `start`, so a cold service start still leaves the read its full 30 seconds
+(29 s discovery plus a 30-second RPC timeout answers by 55 s, under the common 60-second host
+limit); for `publish_work`, `respond`, `receipt` and `check` it equals the RPC deadline. A deadline
+override above a budget raises the budget with it, within the clamp. A reconnect never gets a fresh
+budget, and running out at any stage is the same typed `request_timeout` with its
+`replay_request_id` for a write (an exhausted discovery is never latched as an availability
+failure). The post-timeout probe and same-request recovery of a
 write share one 10-second window that ends no later than 295 seconds after the call started
 (#1226). Raising a deadline above the host's own MCP tool timeout only lets the host give up
 first. A timed-out write has an unknown outcome: the bridge
