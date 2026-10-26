@@ -3667,7 +3667,12 @@ recovery gets only what remains. The slot lock guards only synchronous bookkeepi
 handshake and the on-demand start run outside it, only the call that owns a probe releases it,
 and every wait (on the lock, on another call's probe, on a client close) ends by the waiting
 call's own deadline, so an expired caller answers with its typed timeout without touching the
-other caller's probe (#1226). Raising a deadline above the host's own MCP tool timeout only lets
+other caller's probe. The budget starts when the MCP handler receives the call, so Cursor's
+workspace preflight (its binding-lock wait and the roots exchange, itself capped at 5 seconds)
+spends the same budget; running out there is the typed timeout and leaves the binding as it was.
+A discovery publishes its client only if the slot's retirement generation and the Cursor binding
+it started under are unchanged; a client for a binding retired meanwhile is closed, no RPC is sent,
+and the call answers with the workspace-binding error (#1226). Raising a deadline above the host's own MCP tool timeout only lets
 the host give up first. A timed-out write has an unknown outcome: the bridge
 must preserve its retryable failure shape, say that it may already have committed, and direct the
 caller to retry with the same `request_id` (and operation status where applicable). A timed-out

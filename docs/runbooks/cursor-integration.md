@@ -2299,6 +2299,8 @@ and any reconnect: 55 seconds for `status`, `closure_prepare` and `start` (the r
 still at most 30), and the call deadline for the other tools, so FinishUP's typed timeout with
 the request id to replay arrives first. No override lets a call, its write recovery included,
 run past 57 seconds (297 for `check`), inside the 60-second (300 for `check`) host limit.
+On Cursor the budget also covers the roots/list revalidation before each call, and a client
+discovered for a project binding that was retired meanwhile is closed unused.
 A timeout may follow a committed write. For `publish_work`, `respond` and `receipt` the bridge
 checks `status view=operation` once and, when the write already completed, returns its stored
 outcome directly. Otherwise use the timeout's pollable handle: `safe_details.replay_request_id`

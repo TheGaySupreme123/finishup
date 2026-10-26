@@ -539,6 +539,9 @@ class _ClientSlot:
     # The token of the call that owns the in-flight probe (review of #1226): only that call may
     # release it, so an expired waiter never clears another caller's probe.
     attempt_owner: object | None = None
+    # Bumped whenever the slot's client is retired (a Cursor binding change, shutdown): a probe
+    # that started before a retirement never publishes its client (review of #1226).
+    retirement_generation: int = 0
 
 
 @dataclass(frozen=True, slots=True)
@@ -1031,6 +1034,7 @@ async def _ensure_service_client(
     workspace_locator = _workspace_locator_for_runtime(runtime)
     if workspace_locator is None:
         raise _CursorWorkspaceBindingError()
+    generation = slot.retirement_generation
     owner = object()
     owns_probe = False
     keep_gate = False
@@ -1038,6 +1042,8 @@ async def _ensure_service_client(
         while True:
             waiter: asyncio.Event | None = None
             async with slot.lock:
+                if _slot_retired_since(runtime, generation, workspace_locator):
+                    raise _retired_binding_error(runtime)
                 if slot.availability is not None:
                     latch = slot.availability
                     if request_id is None or request_id != latch.request_id:
@@ -1060,6 +1066,9 @@ async def _ensure_service_client(
                         slot.client = None
                     await _close_client(existing)
                     continue
+                async with slot.lock:
+                    if _slot_retired_since(runtime, generation, workspace_locator):
+                        raise _retired_binding_error(runtime)
                 return existing
             if waiter is not None:
                 await waiter.wait()
@@ -1100,8 +1109,16 @@ async def _ensure_service_client(
                     and exc.reason in _AVAILABILITY_LATCH_REASONS
                 )
                 raise
-            stale = slot.client
-            slot.client = connected_attempt
+            # Publish only if no retirement landed while discovery ran outside the lock: a
+            # client for a binding retired meanwhile is closed and no RPC is sent on it.
+            async with slot.lock:
+                retired = _slot_retired_since(runtime, generation, workspace_locator)
+                stale = None if retired else slot.client
+                if not retired:
+                    slot.client = connected_attempt
+            if retired:
+                await _close_client(connected_attempt)
+                raise _retired_binding_error(runtime)
             if stale is not None and stale is not connected_attempt:
                 await _close_client(stale)
             _release_availability_attempt(slot, owner)
@@ -1112,12 +1129,37 @@ async def _ensure_service_client(
         raise
 
 
-async def close_bridge_runtime(runtime: BridgeRuntime = BRIDGE_RUNTIME) -> None:
-    """Close only this bridge's local client connection, never the persistent service."""
+def _slot_retired_since(
+    runtime: BridgeRuntime, generation: int, workspace_locator: WorkspaceLocator
+) -> bool:
+    """Whether the slot's client was retired, or its workspace binding changed or failed, since
+    a discovery captured ``generation`` and ``workspace_locator`` (review of #1226)."""
 
-    async with runtime._slot.lock:  # pyright: ignore[reportPrivateUsage]
-        client = runtime._slot.client  # pyright: ignore[reportPrivateUsage]
-        runtime._slot.client = None  # pyright: ignore[reportPrivateUsage]
+    slot = runtime._slot  # pyright: ignore[reportPrivateUsage]
+    return (
+        slot.retirement_generation != generation
+        or _workspace_locator_for_runtime(runtime) != workspace_locator
+        or (runtime.host_profile == "cursor" and slot.workspace_binding_state != "bound")
+    )
+
+
+def _retired_binding_error(runtime: BridgeRuntime) -> Exception:
+    if runtime.host_profile == "cursor":
+        return _CursorWorkspaceBindingError()
+    return ControlError("service_unavailable", retryable=True)
+
+
+async def close_bridge_runtime(runtime: BridgeRuntime = BRIDGE_RUNTIME) -> None:
+    """Close only this bridge's local client connection, never the persistent service.
+
+    One synchronous step retires the slot's client and bumps its generation, so a discovery
+    already in flight cannot publish a client afterwards (review of #1226).
+    """
+
+    slot = runtime._slot  # pyright: ignore[reportPrivateUsage]
+    slot.retirement_generation += 1
+    client = slot.client
+    slot.client = None
     if client is not None:
         await _close_client(client)
 
@@ -4368,32 +4410,85 @@ async def _handle_call_tool_request(
             types.ErrorData(code=types.INVALID_PARAMS, message=sanitize_unknown_tool_name(name))
         )
     arguments = dict(req.params.arguments or {})
+    # Review of #1226: the whole-call budget starts here, so Cursor's workspace preflight (its
+    # binding lock and roots exchange) and the dispatch below share one deadline.
+    budget_tool = _call_budget_tool(name, arguments)
+    with contextlib.nullcontext() if budget_tool is None else _call_budget(budget_tool):
+        result = await _handle_budgeted_call(name, arguments, runtime, session)
+    _record_rejected_call(name, arguments, result)
+    _record_served_read(runtime, name, arguments, result)
+    return types.ServerResult(result)
+
+
+def _call_budget_tool(name: str, arguments: Mapping[str, object]) -> str | None:
+    """The tool whose whole-call budget a registered call runs under; guidance reads have none."""
+
+    if name == "closure_prepare":
+        return "status"
+    if name == "check":
+        mode = arguments.get("mode")
+        return "status" if type(mode) is str and mode in READ_ONLY_CHECK_MODES else "check"
+    return name if name in _CALL_BUDGET_MS else None
+
+
+async def _handle_budgeted_call(
+    name: str,
+    arguments: dict[str, object],
+    runtime: BridgeRuntime,
+    session: _RootsSession | None,
+) -> types.CallToolResult:
     if name != "read_guidance":
-        binding_error = await _ensure_cursor_workspace_binding(
-            runtime,
-            session,
-            safe_request_id_from(arguments),
-            name,
-        )
+        request_id = safe_request_id_from(arguments)
+        try:
+            binding_error = await _bounded_cursor_workspace_binding(
+                runtime, session, request_id, name
+            )
+        except ControlError as exc:
+            # The call's budget ran out in the preflight; nothing was sent.
+            mode = arguments.get("mode") if name == "check" else None
+            return _control_error_result(
+                exc,
+                request_id,
+                name,
+                host_profile=runtime.host_profile,
+                check_mode=mode if type(mode) is str else None,
+            )
         if binding_error is not None:
-            _record_rejected_call(name, arguments, binding_error)
-            return types.ServerResult(binding_error)
+            return binding_error
     try:
         transport_request_id = request_ctx.get().request_id
     except LookupError:
         transport_request_id = None
     if name == "closure_prepare":
-        result = await call_tool(
+        return await call_tool(
             name,
             arguments,
             runtime,
             transport_request_id=transport_request_id,
         )
-    else:
-        result = await call_tool(name, arguments, runtime)
-    _record_rejected_call(name, arguments, result)
-    _record_served_read(runtime, name, arguments, result)
-    return types.ServerResult(result)
+    return await call_tool(name, arguments, runtime)
+
+
+async def _bounded_cursor_workspace_binding(
+    runtime: BridgeRuntime,
+    session: _RootsSession | None,
+    request_id: str | None,
+    operation: str,
+) -> types.CallToolResult | None:
+    """Cursor's workspace preflight ended by the call's budget (review of #1226).
+
+    The binding lock wait and the roots exchange (itself capped at 5 seconds) end by the call
+    deadline; running out is the typed ``request_timeout`` and leaves the binding as it was.
+    """
+
+    budget = _CALL_BUDGET.get()
+    if runtime.host_profile != "cursor" or budget is None:
+        return await _ensure_cursor_workspace_binding(runtime, session, request_id, operation)
+    try:
+        async with asyncio.timeout(max(0.0, budget.remaining_seconds())):
+            return await _ensure_cursor_workspace_binding(runtime, session, request_id, operation)
+    except TimeoutError:
+        raise _call_timeout() from None
 
 
 def _record_served_read(
