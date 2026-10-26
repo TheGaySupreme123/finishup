@@ -92,3 +92,23 @@ def test_every_hint_family_at_once_stays_bounded() -> None:
     for _family, hint in _BLOCKING_HINTS:
         assert hint in message
     _assert_bounded(message)
+
+
+def test_findings_suppressed_names_the_uncapped_check_and_nothing_else_does() -> None:
+    """#1226 (tq6 D2): the generic "run a full check again" re-ran the same capped check."""
+
+    from finishup.protocol.readiness_text import FINDINGS_SUPPRESSED_NEXT_STEP
+
+    message = self_verification_refusal_message(("findings_suppressed", "coverage:missing_ref"))
+    assert f"Next: {FINDINGS_SUPPRESSED_NEXT_STEP};" in message
+    assert "run a full check again" not in message
+    # An unhinted coverage code beside it keeps its own generic step.
+    assert "a listed coverage code is work you can do" in message
+    _assert_bounded(message)
+    for blocking in (
+        ("matching_policy_not_completed",),
+        ("issue_returned_again",),
+        ("coverage:missing_ref",),
+    ):
+        assert FINDINGS_SUPPRESSED_NEXT_STEP not in self_verification_refusal_message(blocking)
+        assert "max_findings" not in self_verification_refusal_message(blocking)

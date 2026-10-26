@@ -138,6 +138,10 @@ from finishup.protocol.policy_packs import (
     WORK_INTEGRITY_POLICY_ID,
     policy_version_supersedes_or_equals,
 )
+from finishup.protocol.readiness_text import (
+    FINDINGS_SUPPRESSED_NEXT_STEP,
+    FINDINGS_SUPPRESSED_TOKEN,
+)
 
 __all__ = [
     "AGENT_SETTLED_DISPOSITION_VALUES",
@@ -1956,8 +1960,11 @@ def _self_verification_next_steps(
     conditions = " (" + ", ".join(blocking[:32]) + ")" if blocking else ""
     if len(blocking) > 32:
         conditions += " (additional conditions omitted; inspect recorded check coverage)"
+    suppressed = (
+        f" Next: {FINDINGS_SUPPRESSED_NEXT_STEP}." if FINDINGS_SUPPRESSED_TOKEN in blocking else ""
+    )
     return (
-        f"Self-verification is unavailable now: {refusal}{conditions}. "
+        f"Self-verification is unavailable now: {refusal}{conditions}.{suppressed} "
         "A self_verified response requires a later recorded check with only proof-limit "
         "conditions. Address the reported conditions before self_verified; repeating the same "
         "repair or an aggregate review does not establish the missing proof. Respond acknowledged_not_done "

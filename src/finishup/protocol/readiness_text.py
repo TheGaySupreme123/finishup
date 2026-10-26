@@ -39,6 +39,8 @@ __all__ = [
     "coordinator_failure_note",
     "draft_receipt_criterion_lines",
     "draft_receipt_variants",
+    "FINDINGS_SUPPRESSED_NEXT_STEP",
+    "FINDINGS_SUPPRESSED_TOKEN",
     "FIX_OR_DECLINE_CODES",
     "fix_or_decline_rows",
     "fix_or_decline_variants",
@@ -70,6 +72,17 @@ _READY: Final = "Nothing further to do. Request the receipt."
 # still waiting when the bridge's typed timeout arrives (#1226; a test pins the relation).
 CODEX_CHECK_YIELD_TIME_MS: Final = 300_000
 CODEX_CHECK_CELL_PRAGMA: Final = '// @exec: {"yield_time_ms": 300000}'
+# #1226 (tq6 D2): a check whose ranking cap withheld findings cannot settle a repaired finding or
+# admit ``self_verified``, and the bare token left the agent looping. Fixed text, no caller
+# content; ``status`` (the finding's next steps), the ``respond`` refusal and the MCP refusal
+# summary carry it verbatim. ``10`` is ``protocol.models.MAX_FINDINGS_LIMIT`` (a test pins it).
+FINDINGS_SUPPRESSED_TOKEN: Final = "findings_suppressed"
+FINDINGS_SUPPRESSED_NEXT_STEP: Final = (
+    "that check withheld findings past its max_findings cap (findings_suppressed), so it cannot"
+    ' settle a finding or admit self_verified: run check again with max_findings "10", the'
+    " maximum (omitting it uses the configured default, which may be lower), so no finding is"
+    " withheld; if more than 10 findings are open, settle or answer the others first"
+)
 # The tool name a code-mode cell records. Direct ``exec_command`` is a shell tool, not this.
 _CODEX_CELL_TOOL: Final = "exec"
 _UNKNOWN: Final = (

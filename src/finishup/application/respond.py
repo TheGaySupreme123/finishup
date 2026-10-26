@@ -114,6 +114,10 @@ from finishup.protocol.policy_packs import (
     WORK_INTEGRITY_POLICY_ID,
     current_policy_pack,
 )
+from finishup.protocol.readiness_text import (
+    FINDINGS_SUPPRESSED_NEXT_STEP,
+    FINDINGS_SUPPRESSED_TOKEN,
+)
 from finishup.protocol.recovery import REASON_REMEDIES
 
 __all__ = ["Application", "RespondInternalResult", "execute_respond"]
@@ -561,13 +565,14 @@ _BLOCKING_HINTS: Final[tuple[tuple[frozenset[str], str], ...]] = (
         frozenset({"no_material_change_since_finding"}),
         "nothing changed since the finding: repair it, then check",
     ),
+    # #1226: the generic "run a full check again" let the agent re-run the same capped check.
+    (frozenset({FINDINGS_SUPPRESSED_TOKEN}), FINDINGS_SUPPRESSED_NEXT_STEP),
     (
         frozenset(
             {
                 "finding_not_in_checked_frontier",
                 "matching_policy_not_completed",
                 "subject_outside_checked_scope",
-                "findings_suppressed",
                 "check_unreadable",
                 "returned_findings_unreadable",
                 "semantic_review_not_completed",
@@ -660,7 +665,7 @@ def self_verification_refusal_message(
         hint for tokens, hint in _BLOCKING_HINTS if any(reason in tokens for reason in blocking)
     ]
     if any(reason.startswith("coverage:") for reason in blocking) and not any(
-        reason in tokens for tokens, _hint in _BLOCKING_HINTS[3:] for reason in blocking
+        reason in tokens for tokens, _hint in _BLOCKING_HINTS[4:] for reason in blocking
     ):
         hints.append("a listed coverage code is work you can do: clear it, then check")
     reasons_text = (

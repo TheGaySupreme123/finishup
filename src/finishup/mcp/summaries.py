@@ -60,6 +60,8 @@ from finishup.protocol.guidance_uris import ALL_GUIDANCE_URIS, LEGACY_ALL_GUIDAN
 from finishup.protocol.ids import IdKind, is_valid_id, validate_opaque_item_id
 from finishup.protocol.inspection_text import inspection_text
 from finishup.protocol.readiness_text import (
+    FINDINGS_SUPPRESSED_NEXT_STEP,
+    FINDINGS_SUPPRESSED_TOKEN,
     READINESS_STATES,
     acceptance_risk_note,
     awaiting_ruling_variants,
@@ -1450,9 +1452,12 @@ def _blocking_reasons_clause(error: Mapping[str, JsonValue]) -> str:
     named = ", ".join(blocking[:_MAX_SUMMARY_BLOCKING_REASONS])
     if len(blocking) > _MAX_SUMMARY_BLOCKING_REASONS:
         named += f" (+{len(blocking) - _MAX_SUMMARY_BLOCKING_REASONS})"
+    suppressed = (
+        f" Next: {FINDINGS_SUPPRESSED_NEXT_STEP}." if FINDINGS_SUPPRESSED_TOKEN in blocking else ""
+    )
     return (
-        f" Not a FinishUP limit; still listed: {named}. Repair and check, or disclose a check you"
-        " cannot run with finishup-verification-limit:<obligation id>."
+        f" Not a FinishUP limit; still listed: {named}.{suppressed} Repair and check, or disclose"
+        " a check you cannot run with finishup-verification-limit:<obligation id>."
     )
 
 

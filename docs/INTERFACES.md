@@ -10441,7 +10441,12 @@ it still sees it or names agent work); the last two continue as `input_correctio
 resolution-reason tokens that disqualified it (`self_verification_blocking_reasons`, matching
 `^(coverage:)?[a-z][a-z0-9_]{0,95}$`, `no_recorded_limit` when the check recorded none), and its
 message names them with a next step and the `finishup-verification-limit:<obligation id>` exit
-(ADR-041).
+(ADR-041). When `findings_suppressed` is among them (the check's ranking cap withheld findings), the
+`respond` message, the MCP text summary of that refusal and the finding explanation that `status`
+shows all carry the one fixed step `readiness_text.FINDINGS_SUPPRESSED_NEXT_STEP` (#1226): run
+`check` again with `max_findings` `"10"`, the maximum (omitting it uses the configured default),
+so no finding is withheld; if more than 10 findings are open, settle or answer the others first.
+It names no caller content and appears for no other blocker.
 Eligibility is `kernel/self_verification.self_verification_refusal(state, finding_id, records)`
 over the resolution reasons of that check (ADR-034): any `coverage:<code>` classified standing in
 `GAP_CLASSIFICATION` is a FinishUP limit. The to-do state `self_verified` is not resolved by its own

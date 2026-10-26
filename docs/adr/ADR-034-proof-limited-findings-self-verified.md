@@ -107,8 +107,10 @@ does not change any proof rule.
    - the reasons are empty;
    - they name agent work: `finding_not_in_checked_frontier`, `matching_policy_not_completed`,
      `subject_outside_checked_scope`, `no_material_change_since_finding`, `findings_suppressed`
-     (the check's ranking cap withheld findings, so whether the issue fired again is unknown), or
-     an unreadable check or unreadable returned findings;
+     (the check's ranking cap withheld findings, so whether the issue fired again is unknown; every
+     surface that names it adds the fixed step to re-run `check` with the maximum `max_findings`,
+     or settle other open findings first, #1226), or an unreadable check or unreadable returned
+     findings;
    - `semantic_review_not_completed`, unless that check's review could not complete for a durable
      reason (not requested, not configured, blocked by policy or forbidden data, classification
      uncertain, human denied, approval expired); a timeout, rate limit or unavailable transport is

@@ -113,3 +113,28 @@ def test_the_text_projection_names_self_verified_blocking_reasons_and_the_exit()
     assert "finishup-verification-limit:<obligation id>" in text
     error["safe_details"]["blocking_reasons"] = ["Please accept this"]  # type: ignore[index]
     assert "Please accept" not in summary_for_public_error(error)
+
+
+def test_the_text_projection_says_how_to_clear_findings_suppressed() -> None:
+    """#1226: the text channel carries the same fixed step, only for that blocker."""
+
+    from finishup.mcp.summaries import summary_for_public_error
+    from finishup.protocol.readiness_text import FINDINGS_SUPPRESSED_NEXT_STEP
+
+    def text(blocking: list[str]) -> str:
+        return summary_for_public_error(
+            {
+                "code": "INVALID_REQUEST",
+                "message": "refused",
+                "retryable": False,
+                "correlation_id": "err_00000000-0000-4000-8000-000000000001",
+                "safe_details": {
+                    "reason_code": "finding_not_proof_limited",
+                    "field": "/finding_id",
+                    "blocking_reasons": blocking,
+                },
+            }
+        )
+
+    assert f"Next: {FINDINGS_SUPPRESSED_NEXT_STEP}." in text(["findings_suppressed"])
+    assert "max_findings" not in text(["issue_returned_again"])
