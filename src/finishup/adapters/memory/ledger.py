@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import threading
 from bisect import bisect_right
 from collections.abc import AsyncIterator, Callable, Iterable, Iterator, Mapping, Sequence
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime, timedelta
 from enum import StrEnum
@@ -351,37 +353,61 @@ def _frontier_conflict(head: Frontier) -> PublicOperationError:
     )
 
 
-async def _run_blocking_joined[ResultT](call: Callable[[], ResultT]) -> ResultT:
-    """Run a pure local calculation off-loop and join it before cancellation returns.
+# Pure ledger computation (reducer replay, projection snapshots, case building) runs on its own
+# bounded pool rather than the event loop's shared default executor (#1231). Every other blocking
+# hop in the service (git capture, SQLite opens, observation probes) shares that default pool, so a
+# burst of them used to queue a status read's projection snapshot behind unrelated work; and a
+# read whose caller had already timed out still had to wait for its queued worker to start.
+LEDGER_WORKERS: Final = 4
+_ledger_executor: ThreadPoolExecutor | None = None
+_ledger_executor_guard = threading.Lock()
 
-    The worker only receives immutable records/projections. ``asyncio.wait`` deliberately leaves
-    the thread task alive when the caller is cancelled; the repeated wait below prevents the
-    ledger lock from being released while that worker can still compute a result.
+
+def ledger_executor() -> ThreadPoolExecutor:
+    """Return the process-wide bounded pool for pure ledger computation."""
+
+    global _ledger_executor
+    with _ledger_executor_guard:
+        if _ledger_executor is None:
+            _ledger_executor = ThreadPoolExecutor(
+                max_workers=LEDGER_WORKERS, thread_name_prefix="finishup-ledger"
+            )
+        return _ledger_executor
+
+
+async def run_ledger_work[ResultT](call: Callable[[], ResultT]) -> ResultT:
+    """Run a pure local calculation on the ledger pool and join it before cancellation returns.
+
+    The worker only receives immutable records/projections. A cancelled caller drops work that has
+    not started yet, so a timed-out read never leaves a queued worker behind it; work that already
+    started is joined, which keeps a ledger lock held by the caller from being released while that
+    worker can still compute a result.
     """
 
-    worker = asyncio.create_task(asyncio.to_thread(call))
+    future = ledger_executor().submit(call)
+    waiter = asyncio.wrap_future(future)
     try:
-        await asyncio.wait((worker,))
-        return worker.result()
+        await asyncio.wait((waiter,))
     except asyncio.CancelledError:
-        while not worker.done():
+        if future.cancel():
+            raise
+        while not waiter.done():
             try:
-                await asyncio.wait((worker,))
+                await asyncio.wait((waiter,))
             except asyncio.CancelledError:
                 # A second cancellation must not abandon the worker or release the ledger lock.
                 continue
-        if not worker.cancelled():
+        if not waiter.cancelled():
             # Observe a late worker exception before preserving the caller's cancellation.
-            try:
-                worker.result()
-            except BaseException as worker_error:
-                if not isinstance(worker_error, asyncio.CancelledError):
-                    record_unexpected_exception_without_raising(
-                        worker_error,
-                        component="adapters.memory.ledger",
-                        operation="append_validation_worker_failed",
-                    )
+            worker_error = waiter.exception()
+            if worker_error is not None and not isinstance(worker_error, asyncio.CancelledError):
+                record_unexpected_exception_without_raising(
+                    worker_error,
+                    component="adapters.memory.ledger",
+                    operation="append_validation_worker_failed",
+                )
         raise
+    return waiter.result()
 
 
 @dataclass(frozen=True, slots=True)
@@ -2481,7 +2507,7 @@ class MemoryLedgerAdapter:
                 # A genesis replay here held the ledger lock for tens of seconds late in a
                 # session (issue #886).
                 if appended_records:
-                    projection, replay_index = await _run_blocking_joined(
+                    projection, replay_index = await run_ledger_work(
                         lambda: replay_extension_with_index(
                             prior_projection,
                             snapshot_records,
@@ -2489,7 +2515,7 @@ class MemoryLedgerAdapter:
                         )
                     )
                 else:
-                    projection, replay_index = await _run_blocking_joined(
+                    projection, replay_index = await run_ledger_work(
                         lambda: replay_with_index(proposed)
                     )
             except NoObligationsReasonMismatch as exc:
@@ -2525,7 +2551,7 @@ class MemoryLedgerAdapter:
             except ValueError as exc:
                 raise _error(PublicErrorCode.EVENT_INVALID) from exc
             try:
-                await _run_blocking_joined(
+                await run_ledger_work(
                     lambda: _validate_receipt_coverage_capacity_validated(
                         projection,
                         proposed,
@@ -2788,7 +2814,7 @@ class MemoryLedgerAdapter:
                 )
         # Only immutable snapshots cross the thread boundary; no SQLite handle or mutable
         # ledger state enters the worker. Cancellation joins it before this read returns.
-        page, effective, items = await _run_blocking_joined(
+        page, effective, items = await run_ledger_work(
             lambda: self._query_snapshot(query, head, records, projection, cached)
         )
         async with self._lock:
@@ -3268,7 +3294,7 @@ class MemoryLedgerAdapter:
             )
             return case, dependency, encoded
 
-        case, dependency, resume_bytes = await _run_blocking_joined(build)
+        case, dependency, resume_bytes = await run_ledger_work(build)
         created_at = _now(self._clock)
 
         def refresh_inputs_current() -> bool:
@@ -3484,7 +3510,7 @@ class MemoryLedgerAdapter:
                 )
                 return built, digest, encoded
 
-            case, dependency, case_bytes = await _run_blocking_joined(freeze)
+            case, dependency, case_bytes = await run_ledger_work(freeze)
             self._remember_dependency_digest(key, case, dependency)
             assert self._objects is not None
             created_at = _now(self._clock)
@@ -4515,7 +4541,7 @@ class MemoryLedgerAdapter:
         try:
             # The snapshot projection is the adapter-owned replay of ``snapshot_records``; the
             # commit below re-checks both under the lock before adopting this extension.
-            proposed_projection = await _run_blocking_joined(
+            proposed_projection = await run_ledger_work(
                 lambda: replay_extension(
                     snapshot_projection, snapshot_records, appended_check_records
                 )

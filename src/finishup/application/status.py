@@ -89,6 +89,7 @@ from finishup.kernel.verification_coverage import (
     verification_coverage_to_json,
 )
 from finishup.observability.logging import record_unexpected_exception_without_raising
+from finishup.observability.read_stages import read_stage
 from finishup.ports.diagnostics import RuntimeCapability
 from finishup.ports.host_lineage import HostLineageRegistryPort
 from finishup.ports.ledger import (
@@ -2552,26 +2553,29 @@ async def execute_status(
     if route_profile not in {None, "policy", "strict"}:
         raise TypeError("status_route_profile_invalid")
     decoded = _decode_cursor(app, request)
-    runtime = await app.runtime.route(
-        RouteCommand(
-            request.session_id,
-            request.writer_id,
-            RouteAccess.PAYLOAD_READ,
-            frozenset({RuntimeCapability.STRUCTURAL_READ, RuntimeCapability.PAYLOAD_READ}),
+    with read_stage("runtime_route"):
+        runtime = await app.runtime.route(
+            RouteCommand(
+                request.session_id,
+                request.writer_id,
+                RouteAccess.PAYLOAD_READ,
+                frozenset({RuntimeCapability.STRUCTURAL_READ, RuntimeCapability.PAYLOAD_READ}),
+            )
         )
-    )
     try:
         if runtime.session_id != request.session_id or runtime.writer_id != request.writer_id:
             raise _error(PublicErrorCode.SESSION_CONFLICT, "The writer route is inconsistent.")
         if decoded is None:
-            frontier, head = await _exact_frontier(
-                runtime, None if request.at_frontier is None else int(request.at_frontier)
-            )
+            with read_stage("frontier"):
+                frontier, head = await _exact_frontier(
+                    runtime, None if request.at_frontier is None else int(request.at_frontier)
+                )
             expected_version: str | None = None
             position: ProjectionPosition | int | None = None
         else:
             frontier, expected_version, position = decoded
-            exact, head = await _exact_frontier(runtime, frontier.sequence)
+            with read_stage("frontier"):
+                exact, head = await _exact_frontier(runtime, frontier.sequence)
             if exact != frontier:
                 raise _error(PublicErrorCode.INVALID_REQUEST, _STATUS_CURSOR_INVALID)
             if request.at_frontier is not None and int(request.at_frontier) != frontier.sequence:
@@ -2588,9 +2592,10 @@ async def execute_status(
                 raise _error(PublicErrorCode.INVALID_REQUEST, "The status filter is invalid.")
             if request.cursor is not None:
                 raise _error(PublicErrorCode.INVALID_REQUEST, _STATUS_CURSOR_INVALID)
-            operation = await runtime.ledger.lookup_task_operation(
-                request.writer_id, request.filter.operation_request_id
-            )
+            with read_stage("operation_lookup"):
+                operation = await runtime.ledger.lookup_task_operation(
+                    request.writer_id, request.filter.operation_request_id
+                )
             continuation = None
             if (
                 operation is not None

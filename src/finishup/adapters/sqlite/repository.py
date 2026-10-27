@@ -22,6 +22,7 @@ from finishup.adapters.memory.ledger import (
     load_frozen_case_from_resume,
     note_check_admission_refusal,
     quarantine_resume_object_invalid,
+    run_ledger_work,
     semantic_case_follow_up_round,
 )
 from finishup.adapters.objects.check_resume import CHECK_RESUME_PAGE_MEDIA_TYPE
@@ -79,6 +80,7 @@ from finishup.kernel.projections import (
     unanswered_finding_count,
 )
 from finishup.kernel.reducers import replay
+from finishup.observability.read_stages import read_stage
 from finishup.ports.change_capture import (
     MAX_SNAPSHOT_SETS,
     TASK_CHANGE_BASE_MEDIA_TYPE,
@@ -761,10 +763,13 @@ class SqliteLedger:
             raise _public_error(PublicErrorCode.STORAGE_CORRUPT)
         task = self._recovery_task
         if task is None:
+            # One shared rebuild per ledger. It runs in its own task (``shield``), so a waiter
+            # whose deadline expires leaves without cancelling or repeating it (#1231).
             task = asyncio.create_task(self._recover_once())
             self._recovery_task = task
         try:
-            await asyncio.shield(task)
+            with read_stage("ledger_recovery"):
+                await asyncio.shield(task)
         finally:
             if task.done() and self._recovery_task is task:
                 self._recovery_task = None
@@ -821,14 +826,17 @@ class SqliteLedger:
             decoded_records: list[LedgerRecord] = []
             for index, row in enumerate(rows, start=1):
                 decoded_records.append(await self._decode_durable_record(row))
-                if index % 32 == 0:
+                # Decoding verifies and decrypts each payload on the loop; yield often so a
+                # long replay cannot hold every other request off the loop (#1231).
+                if index % 4 == 0:
                     await asyncio.sleep(0)
             records = tuple(decoded_records)
             try:
                 # Reducer replay is pure but can be CPU-heavy for a mature ledger.  Keep it off
                 # the service daemon's event loop so recovery of one task cannot starve control
                 # handshakes or unrelated task routes.
-                projection = await asyncio.to_thread(replay, records)
+                # It runs on the bounded ledger pool, never the shared default executor (#1231).
+                projection = await run_ledger_work(lambda: replay(records))
             except ValueError as exc:
                 raise _public_error(PublicErrorCode.STORAGE_CORRUPT) from exc
             for (
@@ -2229,7 +2237,8 @@ class SqliteLedger:
 
     async def query_projection(self, query: ProjectionQuery) -> ProjectionPage:
         await self._ensure_recovered()
-        return await self._oracle().query_projection(query)
+        with read_stage("projection_query"):
+            return await self._oracle().query_projection(query)
 
     async def lookup_operation(self, writer_id: str, operation_id: str) -> OperationRecord | None:
         await self._ensure_recovered()
