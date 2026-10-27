@@ -150,7 +150,10 @@ from finishup.kernel.reducers import (
     replay_with_index,
 )
 from finishup.kernel.task_facts import effective_obligations, task_fact_signals
-from finishup.observability.logging import record_unexpected_exception_without_raising
+from finishup.observability.logging import (
+    record_bounded_event_without_raising,
+    record_unexpected_exception_without_raising,
+)
 from finishup.ports.change_capture import (
     MAX_SNAPSHOT_SETS,
     TASK_CHANGE_BASE_MEDIA_TYPE,
@@ -393,7 +396,7 @@ def shutdown_ledger_executors() -> None:
         executor.shutdown(wait=False, cancel_futures=True)
 
 
-_ledger_pool_owners = 0
+_ledger_pool_owners: int = 0
 
 
 def acquire_ledger_executors() -> None:
@@ -413,10 +416,28 @@ def release_ledger_executors() -> None:
 
     global _ledger_pool_owners
     with _ledger_executor_guard:
-        _ledger_pool_owners = max(0, _ledger_pool_owners - 1)
-        last = _ledger_pool_owners == 0
-    if last:
-        shutdown_ledger_executors()
+        if _ledger_pool_owners <= 0:
+            unbalanced = True
+            executors: tuple[ThreadPoolExecutor, ...] = ()
+        else:
+            unbalanced = False
+            _ledger_pool_owners -= 1
+            # Detach the pools in the same critical section as the last release, so an acquire
+            # that follows always lazily opens fresh pools instead of racing this shutdown.
+            executors = tuple(_ledger_executors.values()) if _ledger_pool_owners == 0 else ()
+            if executors:
+                _ledger_executors.clear()
+    if unbalanced:
+        # A release without a matching acquire is a caller bug; it must not retire pools another
+        # instance still owns.
+        record_bounded_event_without_raising(
+            component="adapters.memory.ledger",
+            operation="ledger_pool_release_unbalanced",
+            reason="release_without_acquire",
+        )
+        return
+    for executor in executors:
+        executor.shutdown(wait=False, cancel_futures=True)
 
 
 def _observe_late_failure(waiter: asyncio.Future[Any]) -> None:

@@ -7,6 +7,7 @@ import threading
 from collections.abc import Awaitable, Callable
 from typing import cast
 
+from finishup.adapters.memory.ledger import ledger_executor
 from finishup.domain.events import LedgerRecord
 from finishup.domain.values import Frontier
 from finishup.kernel.projections import ProjectionState, empty_projection_state
@@ -36,21 +37,25 @@ async def replay_off_loop(records: tuple[LedgerRecord, ...]) -> ProjectionState:
 
     A plain ``asyncio.to_thread`` keeps a GIL-bound replay running after an RPC deadline cancels
     its caller, so a same-request retry doubled the CPU on small hosts (issue #886). The fold is
-    pure; stopping it early discards nothing durable.
+    pure; stopping it early discards nothing durable. It runs on the bounded ledger read pool, not
+    the shared default executor, and a cancelled caller drops a replay that has not started yet
+    instead of waiting for a worker to pick it up (#1231).
     """
 
     cancelled = threading.Event()
-    worker = asyncio.get_running_loop().run_in_executor(
-        None, _replay_until_cancelled, records, cancelled
-    )
+    future = ledger_executor("read").submit(_replay_until_cancelled, records, cancelled)
+    worker = asyncio.wrap_future(future)
     try:
         # ``asyncio.wait`` never cancels the worker itself, unlike awaiting it directly.
         await asyncio.wait((worker,))
     except asyncio.CancelledError:
+        if future.cancel():
+            raise
         cancelled.set()
-        # Join the worker so no replay outlives the request; it exits at the next record.
+        # Join the running worker so no replay outlives the request; it exits at the next record.
         try:
-            await worker
+            await asyncio.wait((worker,))
+            worker.result()
         except (ReplayCancelled, ValueError):
             pass
         raise

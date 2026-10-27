@@ -269,3 +269,68 @@ async def test_cold_replays_of_many_tasks_cannot_starve_a_warm_append(
         finally:
             release.set()
             await asyncio.wait_for(asyncio.gather(*readers), _BOUND_SECONDS)
+
+
+async def test_genesis_replay_ignores_a_saturated_default_pool_and_drops_when_queued() -> None:
+    """Independent review: status' fallback replay keeps the read's deadline (#1231)."""
+
+    from builders.replay import replay_records
+    from finishup.application.ledger_snapshot import replay_off_loop
+
+    records = replay_records("all-event-families")
+    loop = asyncio.get_running_loop()
+    starved = ThreadPoolExecutor(max_workers=2, thread_name_prefix="starved-default")
+    parked = threading.Event()
+    loop.set_default_executor(starved)
+    blockers = [loop.run_in_executor(None, parked.wait, _BOUND_SECONDS) for _ in range(2)]
+    try:
+        replay = asyncio.create_task(replay_off_loop(records))
+        # ``asyncio.wait`` observes without cancelling, so a stuck replay cannot hang the test.
+        done, _pending = await asyncio.wait((replay,), timeout=_BOUND_SECONDS / 4)
+        assert replay in done, "the replay waited for the shared default pool"
+        assert isinstance(replay.result(), ProjectionState)
+    finally:
+        parked.set()
+        await asyncio.gather(*blockers)
+        loop.set_default_executor(ThreadPoolExecutor())
+        starved.shutdown(wait=True)
+
+    gate = threading.Event()
+    workers = ledger_module.LEDGER_POOL_WORKERS["read"]
+    started = [threading.Event() for _ in range(workers)]
+
+    def occupy(index: int) -> None:
+        started[index].set()
+        assert gate.wait(_BOUND_SECONDS)
+
+    pool = ledger_module.ledger_executor("read")
+    occupants = [pool.submit(occupy, index) for index in range(workers)]
+    try:
+        for flag in started:
+            assert await asyncio.to_thread(flag.wait, _BOUND_SECONDS)
+
+        async def bounded() -> str:
+            try:
+                async with asyncio.timeout(0.05):
+                    await replay_off_loop(records)
+            except TimeoutError:
+                return "timed_out"
+            return "served"
+
+        queued = asyncio.create_task(bounded())
+        done, _pending = await asyncio.wait((queued,), timeout=_BOUND_SECONDS / 4)
+        assert queued in done, "a cancelled replay waited for a queued worker"
+        assert queued.result() == "timed_out"
+    finally:
+        gate.set()
+        for occupant in occupants:
+            occupant.result(_BOUND_SECONDS)
+
+
+def test_an_unbalanced_release_never_retires_pools(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(ledger_module, "_ledger_pool_owners", 0)
+    pool = ledger_module.ledger_executor("write")
+    ledger_module.release_ledger_executors()
+    assert ledger_module._ledger_pool_owners == 0  # pyright: ignore[reportPrivateUsage]
+    assert ledger_module.ledger_executor("write") is pool
+    assert pool.submit(lambda: "alive").result(_BOUND_SECONDS) == "alive"
