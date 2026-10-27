@@ -1521,8 +1521,16 @@ class SemanticCase:
     # #1118 unit 1 (E2E-2), local composition fact: ``(item_id, root)`` for each excerpt read
     # beneath an owner-admitted outside root, so egress can refuse it once that root is removed.
     input_roots: tuple[tuple[str, str], ...] = field(default=(), compare=False)
+    # #1230, local composition fact: excerpt items cut so their bytes have no exact place in
+    # their source (a cut of the source redacted in full, or a part cut again to fit its
+    # disclosed size). Such an item never reads as showing its source whole.
+    unplaced_item_ids: frozenset[str] = field(default=frozenset(), compare=False)
 
     def __post_init__(self) -> None:
+        if type(self.unplaced_item_ids) is not frozenset or any(
+            type(item_id) is not str for item_id in self.unplaced_item_ids
+        ):
+            raise _invalid_case()
         if type(self.input_roots) is not tuple or any(
             type(pair) is not tuple or len(pair) != 2 or any(type(v) is not str for v in pair)
             for pair in self.input_roots

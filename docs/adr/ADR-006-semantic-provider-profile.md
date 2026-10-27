@@ -2649,11 +2649,13 @@ credential probe keep their one-shot dispatch; no check uses it.
   keeps the longest head that fits, measured. A read is offered only while 2 KiB of that room is
   left (an ordinary read action and a result without data); an action whose own bytes leave less
   than 1 KiB ends the review `read_limit`, unread and unsent. The ceiling here is the exchange
-  budget below, never above what one prepared disclosure carries. An exchange that still outgrows
-  it is refused whole before a proposal exists, never trimmed and never sent: the receipt records
-  `blocked_by_policy` / `policy_denied` and the check reports `failed/case_capacity_exceeded`
-  (owner decision on #1118), with the attempted size and the limit, in bytes or estimated tokens,
-  in a bounded diagnostic.
+  budget below, never above what one prepared disclosure carries. Planning measures the packet in
+  its largest disclosed shape, credential-like values replaced (#1230). A first exchange that still
+  outgrows it has its lowest-ranked excerpts left out whole at disclosure (#1230, ADR-009
+  "Disclosure-time capacity fit"); one that outgrows it even so is refused whole before a proposal
+  exists and never sent: the receipt records `blocked_by_policy` / `policy_denied` and the check
+  reports `failed/case_capacity_exceeded` (owner decision on #1118), with the attempted size and
+  the limit, in bytes or estimated tokens, in a bounded diagnostic.
 - **Exchange budget sized to the reviewer model's context** (*Amended 2026-10-20, #1118 owner
   decision: a token budget instead of the fixed 262,144-byte cap*). The whole conversation stays
   in one Codex thread and compaction is refused on the reviewer path, so every exchange must fit
@@ -3134,8 +3136,8 @@ first exchange it could not plan may sit inside the room the notices need. In th
 loop leaves the notice out, so the notice never pushes that exchange over the cap. Only a
 malformed first answer reaches that state, so the repair note already asks for the judgment and
 the turn is read-free because the repair is spent. A first exchange that leaves less room than the
-repair note itself still ends `case_capacity_exceeded`, as before. An exchange that outgrows the
-cap is still refused whole, never trimmed.
+repair note itself still ends `case_capacity_exceeded`, as before. A later exchange that outgrows
+the cap is still refused whole, never trimmed; only the first exchange's excerpts are shed (#1230).
 The reviewer path still refuses Codex compaction (it would replace history FinishUP inspected and
 disclosed). The exchange budget keeps every exchange below Codex's auto-compact threshold with its
 estimation margin, and the #1172 telemetry labels a compaction if one ever occurs.

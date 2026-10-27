@@ -15,7 +15,9 @@ import json
 import posixpath
 import re
 import shlex
+import threading
 import unicodedata
+from collections import OrderedDict
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from dataclasses import field as dataclass_field
@@ -190,8 +192,12 @@ from finishup.observability.privacy import (
     EGRESS_CREDENTIAL_PLACEHOLDER,
     PrivacyFenceError,
     ScanConfidence,
+    redact_before_cut,
     redact_sensitive_content,
     scan_for_sensitive_content,
+    semantic_disclosed_bytes,
+    semantic_egress_forms,
+    semantic_egress_transforms,
 )
 from finishup.ports.change_capture import (
     CHECK_CHANGE_MEDIA_TYPE,
@@ -284,6 +290,7 @@ __all__ = [
     "primary_material_selection",
     "prior_context_selections",
     "final_diff_floor",
+    "fit_disclosed_excerpt",
     "follow_up_byte_budget",
     "follow_up_new_parts",
     "current_section_parts",
@@ -316,6 +323,7 @@ __all__ = [
     "semantic_case_to_candidate_context",
     "review_item_catalog",
     "review_envelope_to_candidate_context",
+    "semantic_case_to_disclosed_payloads",
     "semantic_case_to_prepared_payload",
 ]
 
@@ -2063,9 +2071,74 @@ def _head_tail(raw: bytes, limit: int) -> str:
     return _head_tail_kept(raw, limit)[0]
 
 
+# Issue #1230: redact-then-cut results by source digest, LRU, bounded by entries and by the bytes
+# held. A clean source stores ``None`` (no content kept); a redacted one stores its redacted
+# text, which holds no detected value.
+_CUT_SOURCE_CACHE: Final[OrderedDict[str, bytes | None]] = OrderedDict()
+_CUT_SOURCE_CACHE_LOCK: Final = threading.Lock()
+_CUT_SOURCE_CACHE_ENTRIES: Final = 256
+_CUT_SOURCE_CACHE_MAX_BYTES: Final = 16 * 1024 * 1024
+_cut_source_cache_bytes: int = 0
+# What a cut is taken from when its source cannot be redacted in full: a fixed FinishUP line, so
+# no byte of that source is sent (fail closed).
+_UNREDACTABLE_CUT_SOURCE: Final = (
+    b"[FinishUP withheld this text: it holds more credential-like values than can be replaced.]\n"
+)
+
+
+def _cut_source(raw: bytes) -> bytes:
+    """What a cut of ``raw`` is taken from: ``raw`` redacted in full first (#1230).
+
+    ``redact_before_cut`` replaces every detected value before any byte is dropped, so a cut
+    can never keep a value whose label it removed. Clean text is returned as is; text that
+    cannot be redacted in full is replaced whole by ``_UNREDACTABLE_CUT_SOURCE``.
+    """
+
+    global _cut_source_cache_bytes
+    key = hashlib.sha256(raw).hexdigest()
+    with _CUT_SOURCE_CACHE_LOCK:
+        if key in _CUT_SOURCE_CACHE:
+            _CUT_SOURCE_CACHE.move_to_end(key)
+            cached = _CUT_SOURCE_CACHE[key]
+            return raw if cached is None else cached
+    redacted = redact_before_cut(raw)
+    if redacted is None:
+        redacted = _UNREDACTABLE_CUT_SOURCE
+    stored = None if redacted == raw else redacted
+    with _CUT_SOURCE_CACHE_LOCK:
+        if key not in _CUT_SOURCE_CACHE and (
+            stored is None or len(stored) <= _CUT_SOURCE_CACHE_MAX_BYTES
+        ):
+            _CUT_SOURCE_CACHE[key] = stored
+            _cut_source_cache_bytes += 0 if stored is None else len(stored)
+        while _CUT_SOURCE_CACHE and (
+            len(_CUT_SOURCE_CACHE) > _CUT_SOURCE_CACHE_ENTRIES
+            or _cut_source_cache_bytes > _CUT_SOURCE_CACHE_MAX_BYTES
+        ):
+            _evicted, dropped = _CUT_SOURCE_CACHE.popitem(last=False)
+            _cut_source_cache_bytes -= 0 if dropped is None else len(dropped)
+    return redacted
+
+
 def _head_tail_kept(raw: bytes, limit: int) -> tuple[str, tuple[tuple[int, int], ...]]:
     """``_head_tail`` and the byte intervals of ``raw`` it kept (tb4n5): the head and the tail,
     never the elided middle, so a clipped excerpt never reads as the whole source.
+
+    A cut is taken from ``raw`` redacted in full (#1230), never from ``raw`` itself: a cut that
+    dropped a label could otherwise keep its value where no scanner sees it. When redaction
+    changed the text, the kept bytes no longer sit at ``raw``'s offsets, so no interval is
+    claimed (the excerpt then places nothing in its source).
+    """
+
+    if len(raw) > limit:
+        source = _cut_source(raw)
+        if source != raw:
+            return _head_tail_kept_clean(source, limit)[0], ()
+    return _head_tail_kept_clean(raw, limit)
+
+
+def _head_tail_kept_clean(raw: bytes, limit: int) -> tuple[str, tuple[tuple[int, int], ...]]:
+    """``_head_tail_kept`` of text a cut may be taken from directly.
 
     The elision marker ends on a newline, so the tail's first bytes start a line even when they
     sat mid-line in ``raw``, where no fence marked them. A tail that then begins like a FinishUP
@@ -2136,6 +2209,42 @@ def _head_tail_cut(raw: bytes, limit: int) -> tuple[str, tuple[tuple[int, int], 
     return head, ((0, size),) if size else ()
 
 
+# A cut can move, split or drop a replaced value, so the fit re-measures; each round only shrinks.
+_MAX_DISCLOSED_FIT_ROUNDS: Final = 8
+
+
+def fit_disclosed_excerpt(content: bytes, limit: int) -> bytes | None:
+    """``content`` cut so every form egress may disclose it in fits ``limit`` bytes (#1230).
+
+    Egress sizes an excerpt as its minimized row carries it, and a credential-like value replaced
+    there by the fixed placeholder can be shorter than the placeholder. ``semantic_disclosed_bytes``
+    is that measure, shared with egress. ``content`` is returned unchanged when it already fits.
+    Otherwise it is redacted in full first and only then cut (``_cut_source``), so a cut can
+    never keep a value whose label it dropped; the middle is cut with the ordinary elision
+    marker, the marker and any placeholder counted, and the cut repeats with the room shrunk by
+    what is still over. ``None`` when no cut fits, so the caller keeps its own bound and egress
+    decides.
+    """
+
+    if limit < 1:
+        return None
+    if semantic_disclosed_bytes(content) <= limit:
+        return content
+    source = _cut_source(content)
+    room = limit - (semantic_disclosed_bytes(source) - len(source))
+    for _round in range(_MAX_DISCLOSED_FIT_ROUNDS):
+        if room < 1:
+            return None
+        cut = source if len(source) <= room else _head_tail(source, room).encode("utf-8")
+        if not cut:
+            return None
+        size = semantic_disclosed_bytes(cut)
+        if size <= limit:
+            return cut
+        room = min(room, len(cut)) - (size - limit)
+    return None
+
+
 def _content_item(
     *,
     item_id: str,
@@ -2165,6 +2274,15 @@ def _content_item(
     if not raw:
         raise ValueError("semantic_case_content_invalid")
     content = _utf8(raw.decode("utf-8"), maximum=limit)
+    if section == "excerpt":
+        # Issue #1230: egress measures an excerpt after minimization, where a replaced
+        # credential-like value can make it longer than it is here. Cut it so every form it can be
+        # disclosed in fits the bound; the cut is marked and reported like any over-limit clip.
+        fitted = fit_disclosed_excerpt(content, limit)
+        if fitted is not None and fitted != content:
+            content = fitted
+            if over_limit is not None:
+                over_limit.add(item_id)
     digest = "sha256:" + hashlib.sha256(content).hexdigest()
     return SemanticCaseItem(
         item_id=item_id,
@@ -2259,7 +2377,8 @@ def _clip_json_prose(value: JsonValue, limit: int) -> JsonValue | None:
         target = max(_MIN_CLIPPABLE_PROSE_BYTES, size - (len(encoded) - limit))
         clipped = _head_tail(raw, target)
         if len(clipped.encode("utf-8")) >= size:
-            clipped = raw[:target].decode("utf-8", errors="ignore")
+            # #1230: a head cut too is taken from the text redacted in full, never from raw.
+            clipped = _cut_source(raw)[:target].decode("utf-8", errors="ignore")
         current = _replace_leaf(current, path, clipped)
     return None
 
@@ -4694,6 +4813,12 @@ def _evidence_candidates(
             # capture; each part is one excerpt slot and no part joins two captures.
             parts: list[str] = []
             spans: list[tuple[int, int]] = []
+            # #1230: parts are cut from the capture redacted in full, never from its raw bytes,
+            # so a part boundary cannot separate a value from the label that exposes it. Parts
+            # of redacted text no longer sit at the capture's offsets, so they place nothing.
+            source = _cut_source(encoded) if len(encoded) > part_limit else encoded
+            redacted_source = source != encoded
+            encoded = source
             remaining = encoded
             while remaining and len(parts) <= selection.max_excerpts:
                 # A part that would begin mid-line like a FinishUP label is marked as well.
@@ -4705,9 +4830,12 @@ def _evidence_candidates(
                 start = len(encoded) - len(remaining)
                 remaining = remaining[len(part.encode("utf-8")) :]
                 spans.append((start, len(encoded) - len(remaining)))
-            clipped = bool(remaining)
-            # Placed over the capture's own length: the same bytes keep the same key whatever
-            # part count or size a narrowed selection allows, and bytes no part holds stay unshown.
+            # A capture whose values were replaced before the split is shown in part, as egress
+            # reports a redacted row (#1230).
+            clipped = bool(remaining) or redacted_source
+            # Placed over the length of the text the parts were cut from (the capture, or the
+            # capture redacted in full): the same bytes keep the same key whatever part count or
+            # size a narrowed selection allows, and bytes no part holds stay unshown.
             part_keys = tuple(
                 (excerpt_span_key(ref, low, high, len(encoded)),) for low, high in spans
             )
@@ -6268,6 +6396,10 @@ def _select_targeted_excerpts(
             )
             items.append(item)
             admitted_item_ids.append(item_id)
+            # Issue #1230: a part cut further so its disclosed form fits no longer holds every
+            # byte its span keys place, so it claims none and reads as truncated.
+            refitted = item.content != part.encode("utf-8")
+            truncated = truncated or refitted
             targeted.append(
                 TargetedExcerptRef(
                     excerpt_item_id=item_id,
@@ -6281,7 +6413,7 @@ def _select_targeted_excerpts(
                 )
             )
             excerpt_bytes_used += item.content_bytes
-            if part_index < len(candidate.part_keys):
+            if part_index < len(candidate.part_keys) and not refitted:
                 part_keys.extend((item_id, key) for key in candidate.part_keys[part_index])
         if truncated and len(targeted) > admitted_before:
             gaps.add("truncated_payload")
@@ -7260,6 +7392,27 @@ def build_semantic_case(
     selection = review_selection
 
     def build(excerpt_byte_budget: int | None) -> SemanticCase:
+        """One case whose excerpts, as egress will measure them, fit their total (#1230).
+
+        Each excerpt already fits its own bound in its disclosed form (``_content_item``); a
+        replaced value can still make the sum outgrow the budget the builder filled with the
+        bytes as written. The case is then rebuilt with the budget narrowed by that excess, which
+        cuts the lowest-ranked excerpts like any narrowed budget, until the disclosed sum fits.
+        """
+
+        case = build_once(excerpt_byte_budget)
+        total = selection.max_total_excerpt_bytes
+        if excerpt_byte_budget is not None:
+            total = min(total, excerpt_byte_budget)
+        for _round in range(_MAX_DISCLOSED_FIT_ROUNDS):
+            excerpts = [item for item in case.items if item.section == "excerpt"]
+            over = sum(semantic_disclosed_bytes(item.content) for item in excerpts) - total
+            if over <= 0:
+                break
+            case = build_once(max(0, sum(item.content_bytes for item in excerpts) - over))
+        return case
+
+    def build_once(excerpt_byte_budget: int | None) -> SemanticCase:
         return _build_semantic_case_once(
             case_id=case_id,
             frozen_case=frozen_case,
@@ -7295,14 +7448,15 @@ def build_semantic_case(
 
     def fits(candidate: SemanticCase) -> bool | None:
         try:
-            prepared = semantic_case_to_prepared_payload(
+            # #1230: sized as egress may carry it, a replaced value's growth included.
+            prepared = semantic_case_to_disclosed_payloads(
                 candidate, {item.item_id for item in candidate.items}
             )
         except SemanticCaseTooLarge:
             # The structural envelope cannot be bounded at all; the coordinator maps that to
             # its own terminal capacity outcome. Excerpt planning cannot help it.
             return None
-        return len(prepared) <= planning_bytes
+        return max(len(payload) for payload in prepared) <= planning_bytes
 
     case = build(None)
     if prepared_byte_ceiling is None:
@@ -8343,7 +8497,7 @@ def _build_semantic_case_once(
             text=text,
             limit=item_limit,
         )
-        if cut or len(text.encode("utf-8")) > item_limit:
+        if cut or item.content != text.encode("utf-8"):
             truncated_item_ids.add(item.item_id)
         else:
             truncated_item_ids.discard(item.item_id)
@@ -8503,7 +8657,13 @@ def _build_semantic_case_once(
         assert check_time_change is not None
         chunk_bytes = _check_time_change_part_chunk_bytes(item.content)
         part_key: tuple[str, str] | None = None
-        if chunk_bytes and index < len(check_change_offsets):
+        # Issue #1230: a part cut further so its disclosed form fits is no longer one contiguous
+        # run of the change, so it places no bytes in the shown-file record.
+        if (
+            chunk_bytes
+            and index < len(check_change_offsets)
+            and item.content == part.encode("utf-8")
+        ):
             part_start = check_change_offsets[index]
             part_key = (
                 item.item_id,
@@ -9408,6 +9568,14 @@ def _build_semantic_case_once(
         excerpt_parts=excerpt_parts,
         follow_up_supplied_item_ids=follow_up_supplied,
         input_roots=tuple(pair for pair in task_input_roots if pair[0] in carried_item_ids),
+        # #1230: a cut excerpt that places no bytes in its source never reads as shown whole.
+        unplaced_item_ids=frozenset(
+            item.item_id
+            for item in items
+            if item.section == "excerpt"
+            and item.item_id in (set(over_limit) | truncated_item_ids)
+            and item.item_id not in {item_id for item_id, _key in excerpt_parts}
+        ),
     )
 
 
@@ -10150,17 +10318,21 @@ def assemble_filtered_review_packet(
     included_item_ids: frozenset[str] | set[str],
     withheld_item_ids: frozenset[str] | set[str] = frozenset(),
     redacted_item_ids: frozenset[str] | set[str] = frozenset(),
+    unselected_item_ids: frozenset[str] | set[str] = frozenset(),
 ) -> bytes:
     """Assemble ``yoetz.review-packet-case/2`` from a builder envelope + approved content.
 
     Single shared projection used by the application prepared-payload path and the privacy
     enforcer. Filters by approved item id only; never re-derives section/source metadata from
-    origin pointers.
+    origin pointers. ``unselected_item_ids`` are items egress left out for room (#1230): their
+    omission rows read ``not_selected``, not withheld by policy, and their input-manifest
+    section names them as not selected by item identity (``_with_unselected_sections``).
     """
 
     included = set(included_item_ids)
     withheld = set(withheld_item_ids)
     redacted = set(redacted_item_ids)
+    unselected = set(unselected_item_ids) - included
     frontier_raw = envelope.get("frontier_refs")
     local_raw = envelope.get("local_check_refs")
     frontier_refs: set[str] = (
@@ -10274,6 +10446,10 @@ def assemble_filtered_review_packet(
         subject: str | None = None
         if type(source_ref) is str and source_ref in allowed:
             subject = source_ref
+        elif item_id in unselected:
+            # #1230: an excerpt left out for room names only its own source. A linked claim or
+            # obligation was not left out; the input manifest names the excerpt instead.
+            pass
         else:
             for ref in linked:
                 if ref in allowed:
@@ -10287,7 +10463,11 @@ def assemble_filtered_review_packet(
                 {
                     "category": category if type(category) is str else "",
                     "reason": (
-                        "never_send_heuristic" if item_id in withheld else "withheld_by_policy"
+                        "never_send_heuristic"
+                        if item_id in withheld
+                        else "not_selected"
+                        if item_id in unselected
+                        else "withheld_by_policy"
                     ),
                     "source_kind": source_kind if type(source_kind) is str else "task",
                     "subject_ref": subject,
@@ -10396,11 +10576,21 @@ def assemble_filtered_review_packet(
     # that an item survived when its content row was withheld or trimmed. This is structural
     # metadata only; no source prose is copied into either manifest.
     composed_manifest = packet_obj.get("review_input_manifest")
+    if isinstance(composed_manifest, dict) and unselected:
+        composed_manifest = _with_unselected_sections(
+            composed_manifest,
+            {
+                cast(str, meta["item_id"]): cast(str, meta["source_ref"])
+                for meta in catalog
+                if meta.get("item_id") in unselected and type(meta.get("source_ref")) is str
+            },
+        )
+        packet_obj["review_input_manifest"] = composed_manifest
     if isinstance(composed_manifest, dict):
         withheld_excerpt_refs = frozenset(
             ref
             for meta in catalog
-            if meta.get("item_id") not in included
+            if meta.get("item_id") not in included and meta.get("item_id") not in unselected
             for ref in _excerpt_row_content_refs(
                 meta.get("section"),
                 meta.get("category"),
@@ -10608,10 +10798,12 @@ def sent_excerpt_content_refs(
         return None
     placed = _parts_by_item(case.excerpt_parts)
     sent_keys = [key for item_id in sent for key in placed.get(item_id, ())]
+    # #1230: a cut excerpt with no exact place in its source showed part of it, never all.
     return excerpt_content_refs(
         item
         for item in case.items
         if item.item_id in sent
+        and item.item_id not in case.unplaced_item_ids
         and (item.item_id not in placed or excerpt_span_whole(placed[item.item_id][0], sent_keys))
     )
 
@@ -10745,6 +10937,62 @@ def withheld_excerpt_content_refs(case: SemanticCase, withheld: frozenset[str]) 
     return withheld | excerpt_content_refs(
         item for item in case.items if item.source_ref in withheld
     )
+
+
+def _with_unselected_sections(
+    composed: dict[str, JsonValue], unselected_sources: Mapping[str, str]
+) -> dict[str, JsonValue]:
+    """``composed`` with each excerpt egress left out for room named as not selected (#1230).
+
+    By item identity, never by a linked ref: the item leaves its section's ``item_ids``, its
+    own source joins ``omitted_refs``, ``not_selected`` joins the reasons, and a section left
+    with nothing reads ``not_selected`` (else ``partial``), never ``withheld``, which is a
+    privacy rule's word. It is rewritten in the packet itself, so a reader of the sent packet
+    projects the same provider-bound manifest.
+    """
+
+    updated = dict(composed)
+    for name in (
+        "specification",
+        "current_diff",
+        "caller_evidence",
+        "latest_verification",
+        "prior_finding_context",
+    ):
+        raw = updated.get(name)
+        if not isinstance(raw, dict):
+            continue
+        section = dict(raw)
+        raw_ids = section.get("item_ids")
+        ids = (
+            [item for item in cast(list[object], raw_ids) if type(item) is str]
+            if type(raw_ids) is list
+            else []
+        )
+        dropped = [item for item in ids if item in unselected_sources]
+        if not dropped:
+            continue
+        kept = [item for item in ids if item not in unselected_sources]
+        omitted = {
+            ref for ref in cast(list[object], section.get("omitted_refs") or []) if type(ref) is str
+        }
+        omitted.update(unselected_sources[item] for item in dropped)
+        reasons = {
+            reason
+            for reason in cast(list[object], section.get("omission_reasons") or [])
+            if type(reason) is str
+        }
+        reasons.add("not_selected")
+        section["item_ids"] = cast(JsonValue, kept)
+        section["omitted_refs"] = cast(JsonValue, sorted(omitted, key=str.encode)[:16])
+        section["omission_reasons"] = cast(JsonValue, sorted(reasons, key=str.encode)[:8])
+        section["status"] = "partial" if kept else "not_selected"
+        if not kept:
+            # Nothing of the section is offered: no bytes, and no digest to stand for them.
+            section["content_bytes"] = 0
+            section["content_digest"] = None
+        updated[name] = cast(JsonValue, section)
+    return updated
 
 
 def _provider_bound_input_manifest(
@@ -12212,6 +12460,40 @@ def review_envelope_to_candidate_context(
         provider_binding=provider_binding,
         items=tuple(items),
     )
+
+
+def semantic_case_to_disclosed_payloads(
+    case: SemanticCase,
+    included_item_ids: frozenset[str] | set[str],
+) -> tuple[bytes, ...]:
+    """The prepared payload in each shape egress minimization can give it (#1230).
+
+    The first is the payload as written (no credential-like value, or the owner turned the
+    heuristic off). When an included item has a value egress may replace, the second carries
+    every such item in its largest replaced form with its ``redacted`` transformation row, the
+    payload's largest disclosed shape. A planner sizes against the largest of them, so a
+    replacement longer than its value never pushes a planned exchange over its bound.
+    """
+
+    as_written = semantic_case_to_prepared_payload(case, included_item_ids)
+    replaced: dict[str, bytes] = {}
+    for item in case.items:
+        if item.item_id in included_item_ids and semantic_egress_transforms(item.content):
+            forms = semantic_egress_forms(item.content)[1:]
+            if forms:
+                replaced[item.item_id] = max(forms, key=len)
+    if not replaced:
+        return (as_written,)
+    envelope = cast(Mapping[str, JsonValue], strict_json_parse(bounded_case_envelope(case)))
+    disclosed = assemble_filtered_review_packet(
+        envelope,
+        content_by_id={
+            item.item_id: replaced.get(item.item_id, item.content) for item in case.items
+        },
+        included_item_ids=included_item_ids,
+        redacted_item_ids=set(replaced),
+    )
+    return (as_written, disclosed)
 
 
 def semantic_case_to_prepared_payload(

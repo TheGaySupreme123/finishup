@@ -30,6 +30,7 @@ from finishup.domain.privacy import (
 )
 from finishup.observability.privacy import (
     heuristic_value_lines,
+    redact_encoded_heuristic_spans,
     redact_heuristic_spans,
     scan_finding_is_heuristic,
     scan_for_sensitive_content,
@@ -242,6 +243,7 @@ def _assemble_semantic_review_payload(
     *,
     withheld_item_ids: tuple[str, ...] = (),
     transformed_content: dict[str, bytes] | None = None,
+    unselected_item_ids: tuple[str, ...] = (),
 ) -> bytes:
     """Assemble the versioned review-packet document from privacy-approved case items.
 
@@ -308,6 +310,7 @@ def _assemble_semantic_review_payload(
         included_item_ids=set(included_by_id),
         withheld_item_ids=set(withheld_item_ids),
         redacted_item_ids=set(transformed_content or ()),
+        unselected_item_ids=set(unselected_item_ids),
     )
 
 
@@ -339,36 +342,9 @@ def _items_carrying_heuristic(
 
 
 def _redact_encoded_heuristic_spans(content: bytes) -> tuple[bytes, int] | None:
-    """Replace heuristic values as they appear in the item's JSON-string encoding.
+    """The shared encoded-form pass, with this minimizer's own value pass (#1230)."""
 
-    The raw-text pass cannot see an assignment that only exists in the encoded form (for example
-    ``token = \\"...\\"`` inside an embedded JSON document). This pass redacts on the exact
-    encoding the packet carries, decodes the result back to the item's text, and returns it only
-    when both forms then scan clean. ``None`` means the caller must withhold the whole item.
-    No scanned bytes are retained.
-    """
-
-    try:
-        text = content.decode("utf-8")
-    except UnicodeDecodeError:
-        return None
-    encoded = canonical_encode(text)
-    sanitized_encoded, span_count = redact_heuristic_spans(encoded)
-    if span_count == 0:
-        return None
-    try:
-        decoded = strict_json_parse(sanitized_encoded)
-    except (TypeError, ValueError, UnicodeDecodeError):
-        return None
-    if type(decoded) is not str:
-        return None
-    sanitized = decoded.encode("utf-8")
-    if any(
-        scan_exact_bytes_with_confidence(form).all_findings
-        for form in (sanitized, canonical_encode(decoded))
-    ):
-        return None
-    return sanitized, span_count
+    return redact_encoded_heuristic_spans(content, redact=redact_heuristic_spans)
 
 
 _OPAQUE_SOURCE_REF: Final = re.compile(OPAQUE_ITEM_ID_PATTERN, re.ASCII)
@@ -577,6 +553,8 @@ class LocalPrivacyEnforcer:
                     if item.scope_valid
                     and item.heuristic_findings
                     and item.candidate.item_id not in included_id_set
+                    # Left out for room (#1230), not withheld for its value.
+                    and item.candidate.item_id not in decision.unselected_item_ids
                 },
                 key=str.encode,
             )
@@ -602,6 +580,7 @@ class LocalPrivacyEnforcer:
                 included,
                 withheld_item_ids=withheld_item_ids,
                 transformed_content=transformed_content,
+                unselected_item_ids=decision.unselected_item_ids,
             )
             # Partial withholding (issue #976): a low-confidence heuristic that survives into the
             # prepared bytes is replaced in place inside the item(s) whose own encoded content
@@ -662,6 +641,7 @@ class LocalPrivacyEnforcer:
                     included,
                     withheld_item_ids=withheld_item_ids,
                     transformed_content=transformed_content,
+                    unselected_item_ids=decision.unselected_item_ids,
                 )
             # The assembly helper fails closed to a structural empty fallback when the approved
             # envelope is missing or malformed.  That fallback is useful as a bounded diagnostic,

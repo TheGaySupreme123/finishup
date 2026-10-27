@@ -2224,12 +2224,19 @@ class PrivacyDecision:
     blocked_categories: tuple[DataCategory, ...]
     outcome: PrivacyOutcome
     reason: PrivacyReason | None
+    # Issue #1230: items the policy would release that egress left out so the packet fits the
+    # approved excerpt limits or the exchange bound. Never approved; the packet names them
+    # ``not_selected`` (room), not withheld by a privacy rule.
+    unselected_item_ids: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "approved_item_ids", _sorted_text(self.approved_item_ids))
         object.__setattr__(
             self, "blocked_categories", _sorted_enums(self.blocked_categories, DataCategory)
         )
+        object.__setattr__(self, "unselected_item_ids", _sorted_text(self.unselected_item_ids))
+        if set(self.unselected_item_ids) & set(self.approved_item_ids):
+            raise _invalid()
         if not outcome_reason_is_valid(self.outcome, self.reason):
             raise _invalid()
 

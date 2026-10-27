@@ -4,16 +4,19 @@ from __future__ import annotations
 
 import ast
 import bisect
+import hashlib
 import json
 import re
-from collections.abc import Iterator, Mapping
+import threading
+from collections import OrderedDict
+from collections.abc import Callable, Iterator, Mapping
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Final
 
 from finishup.domain.values import parse_rfc3339_millis, validate_commitment
 from finishup.ports.keys import MacKeyHandle
-from finishup.protocol.canonical import JsonValue, canonical_encode
+from finishup.protocol.canonical import JsonValue, canonical_encode, strict_json_parse
 from finishup.protocol.ids import IdKind, validate_id
 
 __all__ = [
@@ -31,13 +34,18 @@ __all__ = [
     "heuristic_value_lines",
     "prepare_persisted_plaintext",
     "privacy_request_commitment",
+    "redact_before_cut",
     "redact_diagnostic_record",
     "redact_diagnostic_value",
+    "redact_encoded_heuristic_spans",
     "redact_heuristic_spans",
     "redact_high_confidence_content",
     "redact_sensitive_content",
     "scan_for_sensitive_content",
     "scan_finding_is_heuristic",
+    "semantic_disclosed_bytes",
+    "semantic_egress_forms",
+    "semantic_egress_transforms",
     "session_id_hash",
 ]
 
@@ -333,6 +341,8 @@ _LOG_FIELDS: Final = frozenset(
         "semantic_excerpt_limit_excerpts",
         "semantic_excerpt_total_attempted_bytes",
         "semantic_excerpt_total_limit_bytes",
+        # #1230: excerpts a disclosure-time fit left out (integers only).
+        "semantic_excerpts_unselected_at_disclosure",
         "semantic_check_change_parts_selected",
         "semantic_edit_evidence_in_case",
         # Issue #1102: task-input pilot counters (integers only, never a path).
@@ -504,6 +514,8 @@ _INTEGER_FIELDS: Final = frozenset(
         "semantic_excerpt_limit_excerpts",
         "semantic_excerpt_total_attempted_bytes",
         "semantic_excerpt_total_limit_bytes",
+        # #1230: excerpts a disclosure-time fit left out (integers only).
+        "semantic_excerpts_unselected_at_disclosure",
         "semantic_check_change_parts_selected",
         "semantic_edit_evidence_in_case",
         # Issue #1102: task-input pilot counters (integers only, never a path).
@@ -1321,6 +1333,146 @@ def redact_heuristic_spans(data: bytes) -> tuple[bytes, int]:
         _replace_sensitive_spans(data, heuristic, marker=EGRESS_CREDENTIAL_PLACEHOLDER),
         len(heuristic),
     )
+
+
+def redact_encoded_heuristic_spans(
+    content: bytes,
+    *,
+    redact: Callable[[bytes], tuple[bytes, int]] = redact_heuristic_spans,
+) -> tuple[bytes, int] | None:
+    """Replace heuristic values as they appear in the item's JSON-string encoding.
+
+    The raw-text pass cannot see an assignment that only exists in the encoded form (for example
+    ``token = \\"...\\"`` inside an embedded JSON document). This pass redacts on the exact
+    encoding the review packet carries, decodes the result back to the item's text, and returns
+    it only when both forms then scan clean. ``None`` means the caller must withhold the whole
+    item. ``redact`` is the value pass the caller applies to raw text, so both passes agree. No
+    scanned bytes are retained.
+    """
+
+    try:
+        text = content.decode("utf-8")
+    except UnicodeDecodeError:
+        return None
+    encoded = canonical_encode(text)
+    sanitized_encoded, span_count = redact(encoded)
+    if span_count == 0:
+        return None
+    try:
+        decoded = strict_json_parse(sanitized_encoded)
+    except (TypeError, ValueError, UnicodeDecodeError):
+        return None
+    if type(decoded) is not str:
+        return None
+    sanitized = decoded.encode("utf-8")
+    if any(scan_for_sensitive_content(form) for form in (sanitized, canonical_encode(decoded))):
+        return None
+    return sanitized, span_count
+
+
+def semantic_egress_forms(content: bytes) -> tuple[bytes, ...]:
+    """Every text the semantic-review minimizer can carry for one item's ``content`` (#1230).
+
+    Egress minimization may send an item as written (no finding, or the owner turned the
+    credential heuristic off), with its credential-like values replaced
+    (``redact_heuristic_spans``), or with the values replaced in its JSON-string encoding
+    (``redact_encoded_heuristic_spans``, on either of the first two). A replacement is the fixed
+    ``EGRESS_CREDENTIAL_PLACEHOLDER``, which is longer than a short value, so an item can grow
+    between composition and disclosure. The forms are distinct and in that order; the first is
+    always ``content``. Nothing is retained.
+    """
+
+    if type(content) is not bytes:
+        raise TypeError("redaction_data_not_bytes")
+    forms: dict[bytes, None] = {content: None}
+    replaced, span_count = redact_heuristic_spans(content)
+    if span_count:
+        forms[replaced] = None
+    for base in tuple(forms):
+        encoded = redact_encoded_heuristic_spans(base)
+        if encoded is not None:
+            forms[encoded[0]] = None
+    return tuple(forms)
+
+
+_MAX_CUT_REDACTION_PASSES: Final = 8
+
+
+def redact_before_cut(content: bytes) -> bytes | None:
+    """``content`` with every detected credential-like value replaced, for a cut to follow (#1230).
+
+    A cut can keep a value and drop the label that made it detectable (``password = "..."``
+    cut after ``= ``), and a scanner reading the cut text no longer sees it. So the whole text
+    is redacted first, as egress would disclose it, and only then cut: concrete shapes read
+    ``[REDACTED]``, values that only look like credentials read the egress placeholder, in the
+    text and in its JSON-string encoding, pass after pass until a pass finds nothing (bounded;
+    the egress scan still checks whatever is sent). Content without a finding is returned
+    unchanged, so a clean cut stays placeable in its source. ``None`` when the pass bound is
+    reached while a pass still finds a value (each scan reports a bounded number of findings):
+    the text cannot be redacted in full, so no cut may be taken from it (fail closed, as capture's
+    ``redaction_incomplete``). Nothing is retained.
+    """
+
+    if type(content) is not bytes:
+        raise TypeError("redaction_data_not_bytes")
+    text = content
+    for _pass in range(_MAX_CUT_REDACTION_PASSES):
+        replaced, detected = redact_sensitive_content(
+            text, heuristic_marker=EGRESS_CREDENTIAL_PLACEHOLDER
+        )
+        if detected:
+            text = replaced
+            continue
+        encoded = redact_encoded_heuristic_spans(text)
+        if encoded is None:
+            return text
+        text = encoded[0]
+    return None
+
+
+# Bounded memo of ``semantic_egress_forms`` sizes, keyed by the content's SHA-256 digest so no
+# content is retained: composition, ceiling planning and their rebuilds measure the same excerpt
+# text many times, and each measure costs two scans.
+_DISCLOSED_SIZE_CACHE: Final[OrderedDict[str, tuple[int, bool]]] = OrderedDict()
+_DISCLOSED_SIZE_CACHE_LOCK: Final = threading.Lock()
+_DISCLOSED_SIZE_CACHE_ENTRIES: Final = 4_096
+
+
+def _semantic_disclosed_size(content: bytes) -> tuple[int, bool]:
+    if type(content) is not bytes:
+        raise TypeError("redaction_data_not_bytes")
+    key = hashlib.sha256(content).hexdigest()
+    with _DISCLOSED_SIZE_CACHE_LOCK:
+        cached = _DISCLOSED_SIZE_CACHE.get(key)
+        if cached is not None:
+            _DISCLOSED_SIZE_CACHE.move_to_end(key)
+            return cached
+    forms = semantic_egress_forms(content)
+    measured = (max(len(form) for form in forms), len(forms) > 1)
+    with _DISCLOSED_SIZE_CACHE_LOCK:
+        _DISCLOSED_SIZE_CACHE[key] = measured
+        _DISCLOSED_SIZE_CACHE.move_to_end(key)
+        while len(_DISCLOSED_SIZE_CACHE) > _DISCLOSED_SIZE_CACHE_ENTRIES:
+            _DISCLOSED_SIZE_CACHE.popitem(last=False)
+    return measured
+
+
+def semantic_disclosed_bytes(content: bytes) -> int:
+    """The most UTF-8 bytes one review item's ``content`` can occupy once disclosed (#1230).
+
+    This is the one measure composition and disclosure share: egress reads an excerpt's size as
+    the ``content_bytes`` of its minimized row, which is the length of one of
+    ``semantic_egress_forms(content)``; this is the largest of them. Content without a
+    credential-like value measures exactly ``len(content)``.
+    """
+
+    return _semantic_disclosed_size(content)[0]
+
+
+def semantic_egress_transforms(content: bytes) -> bool:
+    """Whether egress minimization may carry ``content`` in a form other than as written."""
+
+    return _semantic_disclosed_size(content)[1]
 
 
 def _json_string_newline_offsets(data: bytes) -> list[int]:

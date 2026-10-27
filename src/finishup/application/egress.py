@@ -10,9 +10,13 @@ from collections.abc import Awaitable, Callable, Iterable
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta
 from enum import StrEnum
-from typing import TYPE_CHECKING, Literal, cast
+from typing import TYPE_CHECKING, Final, Literal, cast
 
-from finishup.adapters.privacy.local_enforcer import SecretScanRuleset, estimated_token_count
+from finishup.adapters.privacy.local_enforcer import (
+    EGRESS_BYTES_PER_TOKEN_ESTIMATE,
+    SecretScanRuleset,
+    estimated_token_count,
+)
 from finishup.adapters.reviewer_artifacts import IMAGE_REVIEW_PURPOSE, read_image
 from finishup.domain.findings import SemanticDispatchKind
 from finishup.domain.privacy import (
@@ -66,7 +70,10 @@ from finishup.domain.receipts import (
     SEMANTIC_PROVIDER_INPUT_MANIFEST_MISSING_GAP,
 )
 from finishup.domain.reviewer_context import UNSIZED_EXCHANGE_BYTES, ReviewerExchangeBudget
-from finishup.observability.logging import record_unexpected_exception_without_raising
+from finishup.observability.logging import (
+    record_bounded_counts_without_raising,
+    record_unexpected_exception_without_raising,
+)
 from finishup.observability.privacy import redact_heuristic_spans
 from finishup.observability.semantic_context import semantic_check_request
 from finishup.ports.clock import ClockPort
@@ -429,6 +436,9 @@ class ReviewerHistory:
     retained: set[tuple[DataCategory, DataClass]] = field(
         default_factory=set[tuple[DataCategory, DataClass]]
     )
+    # #1230: the excerpts the first exchange's packet left out to fit its bounds; every later
+    # exchange leaves out the same ones, so its packet is the same.
+    capacity_left_out: frozenset[str] = frozenset()
 
     def holds(
         self,
@@ -2117,6 +2127,18 @@ class PrivacyCoordinator:
             )
         minimized = refreshed_minimized
         decision = refreshed_decision
+        if (
+            candidate.purpose == _SEMANTIC_PURPOSE
+            and not minimized.forbidden_findings
+            and not minimized.heuristic_findings
+            and minimized.included_item_ids
+        ):
+            # #1230: a packet over an approved excerpt limit or its exchange bound leaves out its
+            # lowest-ranked excerpts, whole, rather than failing the review; the checks below
+            # still fence it and refuse what cannot be fitted that way.
+            decision, minimized = self._fit_semantic_capacity(
+                refreshed_classified, decision, minimized, effective
+            )
         # Concrete credentials and scanner saturation still block the whole case. A heuristic
         # that survives into the prepared bytes means the omission construction was violated, so
         # the final prepared case also fails closed.
@@ -2191,10 +2213,10 @@ class PrivacyCoordinator:
                 # #1118: one exchange carries at most its route's bytes (never more than the
                 # receipt's ``final_bytes`` bound) and, on a route sized to its model's context,
                 # at most its estimated model-token budget. Ceiling planning keeps the first
-                # exchange under both and read fitting keeps later ones under both; a
-                # conversation that still outgrows them is refused whole before a proposal
-                # exists, never trimmed and never sent, and reported as capacity, not as a
-                # network denial.
+                # exchange under both and read fitting keeps later ones under both; a first
+                # exchange that still outgrows them had its lowest-ranked excerpts left out above
+                # (#1230), and one that outgrows them even so is refused whole before a proposal
+                # exists, never sent, and reported as capacity, not as a network denial.
                 return await self._complete_semantic_predispatch(
                     candidate,
                     effective,
@@ -2278,8 +2300,9 @@ class PrivacyCoordinator:
                 capacity_unit="tokens",
             )
         # The approved excerpt limits are authoritative here too: a review packet with more
-        # excerpts, or more excerpt bytes, than the effective policy approved is refused whole,
-        # never trimmed to fit (issue #907 Phase 1b).
+        # excerpts, or more excerpt bytes, than the effective policy approved is never sent
+        # (issue #907 Phase 1b). ``_fit_semantic_capacity`` has already left out excerpts, whole,
+        # to fit them (#1230); a packet it could not fit is refused whole here.
         excerpt_capacity = None
         excerpt_packet_valid = True
         if candidate.purpose == _SEMANTIC_PURPOSE:
@@ -2860,6 +2883,161 @@ class PrivacyCoordinator:
         if type(profile) is not ProviderDataUseProfile:
             return False
         return profile.recommendation_eligible(self._clock.now_utc())
+
+    def _semantic_capacity_overage(
+        self, packet: bytes, effective: EffectivePrivacyPolicy
+    ) -> _CapacityOverage | None:
+        """What ``packet`` exceeds of the bounds the dispatch checks below enforce (#1230).
+
+        The same bounds, measured the same way: the approved excerpt count, per-excerpt and total
+        bytes on the packet's excerpt rows, and the exchange's bytes and estimated tokens (the
+        reviewer conversation when one frames the packet, else the packet) against the route's
+        budget and the channel's ``max_bytes`` and ``max_tokens``. Token excess is converted to
+        bytes at the payload's own ratio. ``None`` when it fits or the packet is unreadable.
+        """
+
+        rows = _packet_excerpt_rows(packet)
+        if rows is None:
+            return None
+        selection = effective.policy.review_selection
+        sizes = [size for _item_id, size in rows]
+        over_cap = tuple(item_id for item_id, size in rows if size > selection.max_excerpt_bytes)
+        excess_excerpts = max(0, len(rows) - selection.max_excerpts)
+        excess_bytes = max(0, sum(sizes) - selection.max_total_excerpt_bytes)
+        exchange_excess = 0
+        frame = self._reviewer_frame
+        payload = packet if frame is None else frame.render(packet)
+        size = len(payload)
+        if frame is not None:
+            budget = frame.budget
+            byte_limit = min(
+                UNSIZED_EXCHANGE_BYTES if budget is None else budget.byte_limit,
+                MAX_MINIMIZED_DISCLOSURE_BYTES,
+            )
+            exchange_excess = max(exchange_excess, size - byte_limit)
+            if budget is not None and budget.token_limit is not None:
+                tokens = reviewer_exchange_tokens(payload)
+                if tokens > budget.token_limit:
+                    exchange_excess = max(
+                        exchange_excess,
+                        -(-(tokens - budget.token_limit) * size // max(1, tokens)),
+                    )
+        llm = next(
+            (
+                channel
+                for channel in effective.policy.channel_policies
+                if channel.channel is EgressChannel.LLM_INFERENCE
+            ),
+            None,
+        )
+        if llm is not None:
+            if llm.max_bytes > 0:
+                exchange_excess = max(exchange_excess, size - llm.max_bytes)
+            if llm.max_tokens > 0 and estimated_token_count(size) > llm.max_tokens:
+                exchange_excess = max(
+                    exchange_excess, size - llm.max_tokens * EGRESS_BYTES_PER_TOKEN_ESTIMATE
+                )
+        if exchange_excess > 0:
+            # Escaping can make a cut save a little less than its raw bytes; ask for a margin.
+            exchange_excess += _CAPACITY_FIT_MARGIN_BYTES
+        excess_bytes = max(excess_bytes, exchange_excess)
+        if not over_cap and not excess_excerpts and not excess_bytes:
+            return None
+        return _CapacityOverage(over_cap, excess_excerpts, excess_bytes)
+
+    def _fit_semantic_capacity(
+        self,
+        classified: ClassifiedContext,
+        decision: PrivacyDecision,
+        minimized: MinimizedDisclosure,
+        effective: EffectivePrivacyPolicy,
+    ) -> tuple[PrivacyDecision, MinimizedDisclosure]:
+        """Leave out lowest-ranked excerpts, whole, until the packet fits its bounds (#1230).
+
+        Composition sizes every excerpt as egress measures it, so this is defence in depth. No
+        excerpt is cut here: a left-out item is simply not sent, so no coverage claim about it
+        survives, and nothing is ever recombined from raw text. The narrowed approval is
+        minimized and scanned again in full. Nothing is ever raised: the approved limits,
+        consent and privacy rules are unchanged, and a packet that still does not fit (the
+        excess is fixed material, or would need the check-time change left out) is refused by
+        the checks that follow. A left-out excerpt is a ``not_selected`` omission of the sent
+        packet and of its input-manifest section.
+
+        A reviewer conversation re-admits its packet on every exchange and each exchange must
+        extend the last byte for byte, so the omission is decided on the first exchange only,
+        kept on the conversation's history, and replayed unchanged on every later one.
+        """
+
+        frame = self._reviewer_frame
+        history = None if frame is None else frame.history
+        if history is not None and history.policy is not None:
+            # A later exchange: the packet is the one the first exchange sent.
+            if not history.capacity_left_out:
+                return decision, minimized
+            replayed = self._capacity_fit_trial(
+                classified, decision, minimized, history.capacity_left_out
+            )
+            return (decision, minimized) if replayed is None else replayed
+        left_out: frozenset[str] = frozenset()
+        fitted = (decision, minimized)
+        for _round in range(_MAX_CAPACITY_FIT_ROUNDS):
+            overage = self._semantic_capacity_overage(fitted[1].prepared_bytes, effective)
+            if overage is None:
+                break
+            drops = _capacity_fit_plan(fitted[1].prepared_bytes, overage, left_out)
+            if drops is None:
+                break
+            trial = self._capacity_fit_trial(classified, decision, minimized, left_out | drops)
+            if trial is None:
+                break
+            left_out, fitted = left_out | drops, trial
+        if not left_out:
+            return fitted
+        if history is not None:
+            history.capacity_left_out = left_out
+        record_bounded_counts_without_raising(
+            component="semantic_composition",
+            operation="semantic_disclosure_capacity_fitted",
+            outcome="fitted"
+            if self._semantic_capacity_overage(fitted[1].prepared_bytes, effective) is None
+            else "still_over",
+            counts={"semantic_excerpts_unselected_at_disclosure": len(left_out)},
+            request_id=classified.candidate.request_id,
+        )
+        return fitted
+
+    def _capacity_fit_trial(
+        self,
+        classified: ClassifiedContext,
+        decision: PrivacyDecision,
+        minimized: MinimizedDisclosure,
+        left_out: frozenset[str],
+    ) -> tuple[PrivacyDecision, MinimizedDisclosure] | None:
+        """The packet with ``left_out`` not approved, minimized and scanned afresh (#1230).
+
+        ``None`` when the narrowed packet is not clean (a finding, nothing included, or another
+        scanner profile than the packet it replaces), so the caller keeps the packet it had.
+        """
+
+        narrowed = replace(
+            decision,
+            approved_item_ids=tuple(
+                item_id for item_id in decision.approved_item_ids if item_id not in left_out
+            ),
+            unselected_item_ids=tuple(
+                item_id for item_id in decision.approved_item_ids if item_id in left_out
+            ),
+        )
+        trial = self._classifier.minimize_and_scan(classified, narrowed)
+        if (
+            trial.forbidden_findings
+            or trial.heuristic_findings
+            or not trial.included_item_ids
+            or (trial.scanner_registry_version, trial.scanner_profile_digest)
+            != (minimized.scanner_registry_version, minimized.scanner_profile_digest)
+        ):
+            return None
+        return narrowed, trial
 
     def _semantic_decision(
         self,
@@ -3548,6 +3726,124 @@ def _current_limit_capacity(
         if 0 < llm.max_tokens < proposal.max_tokens:
             return (proposal.max_tokens, llm.max_tokens), "tokens", "disclosure"
     return None
+
+
+@dataclass(frozen=True, slots=True)
+class _CapacityOverage:
+    """What one semantic packet exceeds (#1230): bounded counts and item ids, never content."""
+
+    # Excerpt rows over the approved per-excerpt bytes.
+    over_cap_item_ids: tuple[str, ...]
+    # Excerpt rows beyond the approved count.
+    excess_excerpts: int
+    # Bytes to shed: over the approved excerpt total, or over the exchange's bounds.
+    excess_bytes: int
+
+
+# Rounds of leave-out, re-minimize and re-measure; each round only removes items.
+_MAX_CAPACITY_FIT_ROUNDS: Final = 4
+_CAPACITY_FIT_MARGIN_BYTES: Final = 256
+
+
+def _packet_excerpt_rows(packet: bytes) -> list[tuple[str, int]] | None:
+    """The packet's excerpt rows as ``(item_id, content_bytes)``, lowest rank last (#1230).
+
+    Rank is the packet's ``targeted_excerpts`` order, the order composition admitted them in;
+    a row it does not list ranks after every listed one, in packet order. ``None`` when the
+    packet is not a readable review packet, which the dispatch checks then refuse.
+    """
+
+    try:
+        document = strict_json_parse(packet)
+    except Exception:  # noqa: BLE001 - an unreadable packet is left to the checks that refuse it
+        return None
+    if not isinstance(document, dict):
+        return None
+    fields = cast(dict[str, object], document)
+    raw_rows = fields.get("items")
+    if not isinstance(raw_rows, list):
+        return None
+    rows: list[tuple[str, int]] = []
+    for raw in cast(list[object], raw_rows):
+        if not isinstance(raw, dict):
+            return None
+        row = cast(dict[str, object], raw)
+        if row.get("section") != "excerpt":
+            continue
+        item_id, size = row.get("item_id"), row.get("content_bytes")
+        if type(item_id) is not str or type(size) is not int:
+            return None
+        rows.append((item_id, size))
+    packet_obj = fields.get("review_packet")
+    targeted = (
+        cast(dict[str, object], packet_obj).get("targeted_excerpts")
+        if isinstance(packet_obj, dict)
+        else None
+    )
+    order: dict[str, int] = {}
+    if isinstance(targeted, list):
+        for raw in cast(list[object], targeted):
+            if isinstance(raw, dict):
+                excerpt_id = cast(dict[str, object], raw).get("excerpt_item_id")
+                if type(excerpt_id) is str and excerpt_id not in order:
+                    order[excerpt_id] = len(order)
+    positions = {item_id: index for index, (item_id, _size) in enumerate(rows)}
+    rows.sort(key=lambda row: (order.get(row[0], len(order)), positions[row[0]]))
+    return rows
+
+
+def _capacity_fit_plan(
+    packet: bytes,
+    overage: _CapacityOverage,
+    left_out: frozenset[str],
+) -> frozenset[str] | None:
+    """The excerpts to leave out, whole, so the packet fits (#1230), or ``None``.
+
+    Only whole items are left out; nothing is cut at disclosure. An excerpt over the per-excerpt
+    bound is left out; excess count and excess bytes are shed by leaving out the lowest-ranked
+    excerpts first. The service's check-time change and the change sections a follow-up served
+    are never left out: no fit trades the change under review for a dispatch, and the shown-file
+    record composed before disclosure stays exact. When the excess cannot be shed without them
+    (one is itself over a bound, or everything else is too little), ``None``, and the packet is
+    refused whole.
+    """
+
+    from finishup.application.semantic_case import (
+        CHECK_TIME_CHANGE_ITEM_PREFIX,
+        CHECK_TIME_SECTION_ITEM_PREFIX,
+    )
+
+    rows = _packet_excerpt_rows(packet)
+    if rows is None:
+        return None
+    rows = [row for row in rows if row[0] not in left_out]
+    sizes = dict(rows)
+
+    def protected(item_id: str) -> bool:
+        # The change's parts and the change sections a follow-up served are what the check's
+        # shown-file record counts (ADR-031), composed before disclosure: neither is left out.
+        return item_id.startswith((CHECK_TIME_CHANGE_ITEM_PREFIX, CHECK_TIME_SECTION_ITEM_PREFIX))
+
+    drops: set[str] = set()
+    for item_id in overage.over_cap_item_ids:
+        if item_id not in sizes:
+            continue
+        if protected(item_id):
+            return None
+        drops.add(item_id)
+    excess_count = overage.excess_excerpts - len(drops)
+    remaining = overage.excess_bytes - sum(sizes[item_id] for item_id in drops)
+    for item_id, size in reversed(rows):
+        if excess_count <= 0 and remaining <= 0:
+            break
+        if protected(item_id) or item_id in drops:
+            continue
+        drops.add(item_id)
+        excess_count -= 1
+        remaining -= size
+    if excess_count > 0 or remaining > 0 or not drops:
+        return None
+    return frozenset(drops)
 
 
 def _excerpt_limit_capacity(

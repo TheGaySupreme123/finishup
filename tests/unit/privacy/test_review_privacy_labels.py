@@ -115,6 +115,8 @@ async def test_a_real_credential_in_the_rendered_frame_still_refuses_the_whole_r
 async def test_replacement_growth_refuses_with_the_exact_transformed_excerpt_size(
     bound: Literal["excerpt", "excerpt_total"], monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    # #1230: the only excerpt is the check-time change, which disclosure never leaves out or
+    # cuts, so a packet over its bound because of it is still refused whole.
     case = _semantic_case(_DIFF, with_aws_key=False)
     selected = sum(item.content_bytes for item in case.items if item.section == "excerpt")
     packet = json.loads(_minimize_everything(_candidate(case)).prepared_bytes)

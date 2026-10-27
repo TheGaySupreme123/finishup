@@ -47,6 +47,9 @@ async def test_withheld_value_survives_packet_and_exchange_encoding(
 async def test_replacement_growth_finishes_the_job_as_capacity_not_network_denial(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    # #1230: composition now sizes the change as disclosed; this case is handed to the job as
+    # composed before that, and its only excerpt is the change, which disclosure never leaves
+    # out or cuts, so it still ends as capacity, never as a network denial.
     case = _semantic_case(
         b"diff --git a/config.py b/config.py\n+password=hunter2\n", with_aws_key=False
     )

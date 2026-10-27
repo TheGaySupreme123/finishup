@@ -589,8 +589,13 @@ async def _evaluate(policy: PrivacyPolicy, prepared: bytes) -> tuple[object, _Au
 
 
 @pytest.mark.anyio
-async def test_more_excerpts_than_the_policy_approved_is_policy_denied_never_trimmed() -> None:
-    """Issue #907 Phase 1b: the approved excerpt count is authoritative at egress."""
+async def test_more_excerpts_than_the_policy_approved_that_cannot_be_shed_are_denied() -> None:
+    """Issue #907 Phase 1b: the approved excerpt count is authoritative at egress.
+
+    Since #1230 egress first sheds the lowest-ranked excerpts (``test_disclosure_capacity_fit``);
+    this classifier returns the same packet whatever it approves, so nothing can be shed and the
+    packet is refused whole, never dispatched over the approval.
+    """
 
     current = _expanded("1.2.0")
     assert current.review_selection.max_excerpts == 64
