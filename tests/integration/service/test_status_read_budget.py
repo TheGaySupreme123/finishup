@@ -187,6 +187,8 @@ async def test_stop_retires_the_ledger_pools_and_later_work_gets_fresh_ones(
 
     import finishup.adapters.memory.ledger as ledger_module
 
+    # Other tests in this process may leave started daemons behind; count only this one.
+    monkeypatch.setattr(ledger_module, "_ledger_pool_owners", 0, raising=False)
     daemon, _application, _vault, _listener = _daemon()
     await daemon.start()
     pools: tuple[ledger_module.LedgerPool, ...] = ("write", "read", "recovery")
@@ -208,4 +210,51 @@ async def test_stop_retires_the_ledger_pools_and_later_work_gets_fresh_ones(
         fresh = ledger_module.ledger_executor(pool)
         assert fresh is not executor
     assert await ledger_module.run_ledger_work(lambda: "fresh") == "fresh"
+    assert await ledger_module.run_ledger_read(lambda: "fresh") == "fresh"
+
+
+async def test_stopping_one_instance_keeps_another_instances_queued_ledger_work(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Codex review round 3: the last of several in-process instances retires the pools."""
+
+    import threading
+
+    import finishup.adapters.memory.ledger as ledger_module
+
+    monkeypatch.setattr(ledger_module, "_ledger_pool_owners", 0, raising=False)
+    first, _first_app, _first_vault, _first_listener = _daemon()
+    second, _second_app, _second_vault, _second_listener = _daemon()
+    await first.start()
+    await second.start()
+    gate = threading.Event()
+    workers = ledger_module.LEDGER_POOL_WORKERS["read"]
+    started = [threading.Event() for _ in range(workers)]
+
+    def occupy(index: int) -> None:
+        started[index].set()
+        assert gate.wait(_BOUND_SECONDS)
+
+    pool = ledger_module.ledger_executor("read")
+    occupants = [pool.submit(occupy, index) for index in range(workers)]
+    try:
+        for flag in started:
+            assert await asyncio.to_thread(flag.wait, _BOUND_SECONDS)
+        queued = asyncio.create_task(ledger_module.run_ledger_read(lambda: "served"))
+        await asyncio.sleep(0)
+        # stop() and close() on the first instance release its hold exactly once.
+        await first.stop()
+        await first.close()
+        assert not queued.done()
+        assert ledger_module.ledger_executor("read") is pool
+    finally:
+        gate.set()
+        for occupant in occupants:
+            occupant.result(_BOUND_SECONDS)
+    assert await asyncio.wait_for(queued, _BOUND_SECONDS) == "served"
+
+    await second.stop()
+    with pytest.raises(RuntimeError):
+        pool.submit(lambda: None)
+    assert ledger_module.ledger_executor("read") is not pool
     assert await ledger_module.run_ledger_read(lambda: "fresh") == "fresh"

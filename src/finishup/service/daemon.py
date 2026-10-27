@@ -45,7 +45,10 @@ from finishup.adapters.keys.macos_user_presence import (
 from finishup.adapters.keys.os_keyring import AutoUnlockPassphraseStore
 from finishup.adapters.keys.secret_memory import LocalSecretMemory
 from finishup.adapters.keys.vault_passphrase import VaultRootEnvelope
-from finishup.adapters.memory.ledger import shutdown_ledger_executors
+from finishup.adapters.memory.ledger import (
+    acquire_ledger_executors,
+    release_ledger_executors,
+)
 from finishup.adapters.repository_identity import resolve_repository_privacy_context
 from finishup.adapters.session_events import SessionEventMonitor
 from finishup.adapters.sqlite.connection import StorageUnsafeError
@@ -826,6 +829,7 @@ class ServiceDaemon:
         self._started = False
         self._closed = False
         self._stopping = False
+        self._holds_ledger_pools = False
         self._state_reason = "none"
         # The serving route each session's MCP bridge last named on a status or check (#985).
         self._session_routes = SessionRouteMemory(_composition.session_route_path)
@@ -879,6 +883,11 @@ class ServiceDaemon:
                 raise LifecycleError("invalid_transition")
             lifecycle = self._composition.lifecycle
             await lifecycle.acquire_singleton()
+            # Own the process-wide ledger pools until this instance's stop() releases them; a
+            # failed start releases through close() below (#1231).
+            if not self._holds_ledger_pools:
+                acquire_ledger_executors()
+                self._holds_ledger_pools = True
             try:
                 monitor = self._composition.session_monitor
                 if monitor is not None:
@@ -1206,8 +1215,11 @@ class ServiceDaemon:
                 self._stop_event.set()
             finally:
                 # The ledger pools are process-wide. Every teardown path (serve() cleanup, the
-                # service-stop request, close(), and a failed teardown) retires them (#1231).
-                shutdown_ledger_executors()
+                # service-stop request, close(), and a failed teardown) releases this instance's
+                # hold exactly once; the last instance to leave retires them (#1231).
+                if self._holds_ledger_pools:
+                    self._holds_ledger_pools = False
+                    release_ledger_executors()
 
     async def close(self) -> None:
         """Idempotent alias for bounded service shutdown."""

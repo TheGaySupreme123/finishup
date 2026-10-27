@@ -393,6 +393,32 @@ def shutdown_ledger_executors() -> None:
         executor.shutdown(wait=False, cancel_futures=True)
 
 
+_ledger_pool_owners = 0
+
+
+def acquire_ledger_executors() -> None:
+    """Register one service instance that uses the process-wide ledger pools."""
+
+    global _ledger_pool_owners
+    with _ledger_executor_guard:
+        _ledger_pool_owners += 1
+
+
+def release_ledger_executors() -> None:
+    """Release one owner; the last owner to leave retires the pools.
+
+    Several service instances can share a process (tests, embedded hosts), so one stopping must
+    not cancel work another still has queued. Callers release at most once per acquire.
+    """
+
+    global _ledger_pool_owners
+    with _ledger_executor_guard:
+        _ledger_pool_owners = max(0, _ledger_pool_owners - 1)
+        last = _ledger_pool_owners == 0
+    if last:
+        shutdown_ledger_executors()
+
+
 def _observe_late_failure(waiter: asyncio.Future[Any]) -> None:
     if waiter.cancelled():
         return
