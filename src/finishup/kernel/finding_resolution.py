@@ -1866,7 +1866,8 @@ def _finding_resolution_explanation(
     return (
         f"{relation} in check {attempt.check_event_id} of subject frontier "
         f"{attempt.subject_sequence}. Resolution requirements not met: {detail}."
-        f"{later} " + _self_verification_next_steps(state, finding_id, records, attempt=attempt)
+        f"{later} "
+        + _self_verification_next_steps(state, finding_id, records, attempt=attempt, named=reasons)
     )
 
 
@@ -1949,7 +1950,12 @@ def _self_verification_next_steps(
     records: tuple[LedgerRecord, ...],
     *,
     attempt: ResolutionAttempt | None = None,
+    named: tuple[str, ...] = (),
 ) -> str:
+    # ``named`` are the resolution requirements the caller already listed: a check that withheld
+    # findings names ``findings_suppressed`` there even when self-verification is refused for
+    # another reason with no blocking list (``finding_not_rechecked``, issue #1234), and the agent
+    # still needs the one way out. The hint is fixed text and appears once.
     # Local import breaks the module dependency, not the evaluation: eligibility reads attempts,
     # never this explanation. The same evaluator and prefix serve respond and every read view.
     from finishup.kernel.self_verification import self_verification_evaluation
@@ -1961,7 +1967,9 @@ def _self_verification_next_steps(
     if len(blocking) > 32:
         conditions += " (additional conditions omitted; inspect recorded check coverage)"
     suppressed = (
-        f" Next: {FINDINGS_SUPPRESSED_NEXT_STEP}." if FINDINGS_SUPPRESSED_TOKEN in blocking else ""
+        f" Next: {FINDINGS_SUPPRESSED_NEXT_STEP}."
+        if FINDINGS_SUPPRESSED_TOKEN in blocking or FINDINGS_SUPPRESSED_TOKEN in named
+        else ""
     )
     return (
         f"Self-verification is unavailable now: {refusal}{conditions}.{suppressed} "

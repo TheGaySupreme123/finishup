@@ -15,7 +15,11 @@ from typing import Final, cast
 
 from finishup.domain.bounded_text import Part, compose_parts, list_variants
 from finishup.protocol.models import MAX_REVIEW_FOLLOW_UP_ROUNDS
-from finishup.protocol.readiness_text import fix_or_decline_variants, predicted_receipt_variants
+from finishup.protocol.readiness_text import (
+    FINDINGS_SUPPRESSED_NEXT_STEP,
+    fix_or_decline_variants,
+    predicted_receipt_variants,
+)
 
 __all__ = [
     "FINISHUP_LIMIT_MISSING_TEXT",
@@ -587,6 +591,7 @@ def render_agent_next(
     *,
     limitation_requests: bool = False,
     fix_or_decline: tuple[tuple[str, str], ...] = (),
+    findings_suppressed: bool = False,
 ) -> str:
     """The bounded first instruction of a check result for every host (W6, ADR-043 amendment).
 
@@ -594,7 +599,9 @@ def render_agent_next(
     paths or command text. One ASCII line of at most ``MAX_AGENT_NEXT_BYTES``. ``overall_next``
     and ``missing`` may be JSON mappings or typed rows. ``fix_or_decline`` holds the open
     ``(code, obligation id)`` items readiness names (``fix_or_decline_rows``, issue #1209): on a
-    ``ready_with_limitations`` receipt step they are named before the receipt. Returns ``""``
+    ``ready_with_limitations`` receipt step they are named before the receipt.
+    ``findings_suppressed`` (the check's ranking cap withheld findings, issue #1234) adds the fixed
+    ``FINDINGS_SUPPRESSED_NEXT_STEP`` once, after the instruction. Returns ``""``
     when there is no continuation (``overall_next`` absent or malformed) and never raises.
     """
 
@@ -604,6 +611,7 @@ def render_agent_next(
             missing,
             limitation_requests=limitation_requests,
             fix_or_decline=fix_or_decline,
+            findings_suppressed=findings_suppressed,
         )
     except Exception:
         return ""
@@ -615,6 +623,7 @@ def _render_agent_next(
     *,
     limitation_requests: bool,
     fix_or_decline: tuple[tuple[str, str], ...] = (),
+    findings_suppressed: bool = False,
 ) -> str:
     action = _field(overall_next, "action")
     status = _field(overall_next, "status")
@@ -697,6 +706,10 @@ def _render_agent_next(
                     priority=1,
                 )
             )
+    if findings_suppressed:
+        # Issue #1234: a capped check cannot settle a finding or admit self_verified; say how to
+        # clear it here, the one lead every host reads first, rather than per finding.
+        parts.append(Part((f"Then: {FINDINGS_SUPPRESSED_NEXT_STEP}.",), required=True, priority=1))
     predicted = _field(overall_next, "predicted_conclusion")
     if type(predicted) is str:
         parts.append(

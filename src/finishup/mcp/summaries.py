@@ -1844,6 +1844,12 @@ def summary_for_check(envelope: object) -> str:
         )
     if UNRESOLVED_VERIFICATION_GAP in _safe_gap_codes(source):
         parts.append(_req(UNRESOLVED_VERIFICATION_LIMITATION))
+    parts.append(
+        _opt(
+            render.text("findings_suppressed", lambda: _findings_suppressed_clause(source)),
+            priority=_P_ACTION,
+        )
+    )
     checklist = source.get("finding_checklist")
     at_budget = isinstance(checklist, Mapping) and (
         cast(Mapping[str, JsonValue], checklist).get("next") == "decide_at_budget"
@@ -1926,6 +1932,15 @@ def summary_for_check(envelope: object) -> str:
         )
     )
     return _compose(parts)
+
+
+def _findings_suppressed_clause(source: Mapping[str, JsonValue]) -> str:
+    """Issue #1234: how to clear a check's ranking cap; fixed text, once per check result."""
+
+    suppressed = _safe_count(source.get("suppressed_count"))
+    if suppressed in {"0", "unavailable"}:
+        return ""
+    return f"Next: {FINDINGS_SUPPRESSED_NEXT_STEP}."
 
 
 def _draft_receipt_part(source: Mapping[str, JsonValue]) -> Part | None:
