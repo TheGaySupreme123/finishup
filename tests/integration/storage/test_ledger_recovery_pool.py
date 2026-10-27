@@ -31,6 +31,7 @@ from builders.ledger_adapters import (
 from conformance.adapters.test_obligation_resolution_parity import (
     _append_payload,  # pyright: ignore[reportPrivateUsage]
 )
+from finishup.adapters.memory.ledger import MemoryLedgerAdapter
 from finishup.adapters.sqlite.migrations import initialize_bundle
 from finishup.adapters.sqlite.repository import SqliteLedger
 from finishup.domain.events import ObligationPublishedPayload, ObligationStatus
@@ -144,7 +145,7 @@ async def test_many_timed_out_reads_share_one_cold_replay_and_free_the_pool(
         assert outcomes == ["timed_out"] * 12
         # Twelve expired readers started exactly one replay, which is still running.
         assert len(calls) == 1
-        assert calls[0].startswith("finishup-ledger")
+        assert calls[0].startswith("finishup-ledger-recovery")
         # The expired readers left nothing queued: the pool still serves other work at once.
         assert (
             await asyncio.wait_for(ledger_module.run_ledger_work(lambda: "free"), _BOUND_SECONDS)
@@ -179,15 +180,17 @@ async def test_cold_replay_and_status_page_survive_a_saturated_default_executor(
 
 async def test_a_cancelled_read_drops_work_that_never_started() -> None:
     gate = threading.Event()
-    started = [threading.Event() for _ in range(ledger_module.LEDGER_WORKERS)]
+    started = [threading.Event() for _ in range(ledger_module.LEDGER_POOL_WORKERS["write"])]
     ran: list[str] = []
 
     def occupy(index: int) -> None:
         started[index].set()
         assert gate.wait(_BOUND_SECONDS)
 
-    pool = ledger_module.ledger_executor()
-    occupants = [pool.submit(occupy, index) for index in range(ledger_module.LEDGER_WORKERS)]
+    pool = ledger_module.ledger_executor("write")
+    occupants = [
+        pool.submit(occupy, index) for index in range(ledger_module.LEDGER_POOL_WORKERS["write"])
+    ]
     try:
         for flag in started:
             assert await asyncio.to_thread(flag.wait, _BOUND_SECONDS)
@@ -203,3 +206,66 @@ async def test_a_cancelled_read_drops_work_that_never_started() -> None:
             occupant.result(_BOUND_SECONDS)
     assert await ledger_module.run_ledger_work(lambda: "drained") == "drained"
     assert ran == []
+
+
+async def test_a_timed_out_read_detaches_an_already_running_snapshot(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Codex review P1: a running snapshot must not hold a read past its deadline."""
+
+    warm, _cold = await _recorded_ledger(8)
+    await _compact(warm)
+    started = threading.Event()
+    release = threading.Event()
+    original = MemoryLedgerAdapter._query_snapshot  # pyright: ignore[reportPrivateUsage]
+
+    def slow_snapshot(self: MemoryLedgerAdapter, *args: object) -> object:
+        started.set()
+        assert release.wait(_BOUND_SECONDS), "parked snapshot was never released"
+        return original(self, *args)  # pyright: ignore[reportArgumentType]
+
+    monkeypatch.setattr(MemoryLedgerAdapter, "_query_snapshot", slow_snapshot)
+    # A changed frontier forces a fresh snapshot instead of the cached page.
+    await _append_payload(warm, _obligation(99), request_tail=19_999, event_tail=29_999)
+
+    async def bounded_read() -> str:
+        try:
+            async with asyncio.timeout(0.05):
+                await _compact(warm)
+        except TimeoutError:
+            return "timed_out"
+        return "served"
+
+    read = asyncio.create_task(bounded_read())
+    try:
+        assert await asyncio.to_thread(started.wait, _BOUND_SECONDS)
+        # ``asyncio.wait`` observes without cancelling, so a joined worker cannot hang the test.
+        done, _pending = await asyncio.wait((read,), timeout=_BOUND_SECONDS / 4)
+        assert read in done, "the read waited for its running snapshot"
+        assert read.result() == "timed_out"
+        assert not release.is_set()
+    finally:
+        release.set()
+        await asyncio.wait((read,), timeout=_BOUND_SECONDS)
+
+
+async def test_cold_replays_of_many_tasks_cannot_starve_a_warm_append(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Codex review P2: background recoveries keep their own pool."""
+
+    warm, _cold = await _recorded_ledger(4)
+    colds = [cold() for _warm_unused, cold in [await _recorded_ledger(6) for _ in range(5)]]
+    with _parked_replay(monkeypatch) as (calls, release):
+        readers = [asyncio.create_task(_compact(ledger)) for ledger in colds]
+        try:
+            appended = asyncio.create_task(
+                _append_payload(warm, _obligation(77), request_tail=18_777, event_tail=28_777)
+            )
+            done, _pending = await asyncio.wait((appended,), timeout=_BOUND_SECONDS / 4)
+            assert appended in done, "a warm append queued behind cold replays"
+            appended.result()
+            assert calls and all(name.startswith("finishup-ledger-recovery") for name in calls)
+        finally:
+            release.set()
+            await asyncio.wait_for(asyncio.gather(*readers), _BOUND_SECONDS)

@@ -353,38 +353,69 @@ def _frontier_conflict(head: Frontier) -> PublicOperationError:
     )
 
 
-# Pure ledger computation (reducer replay, projection snapshots, case building) runs on its own
-# bounded pool rather than the event loop's shared default executor (#1231). Every other blocking
-# hop in the service (git capture, SQLite opens, observation probes) shares that default pool, so a
-# burst of them used to queue a status read's projection snapshot behind unrelated work; and a
-# read whose caller had already timed out still had to wait for its queued worker to start.
-LEDGER_WORKERS: Final = 4
-_ledger_executor: ThreadPoolExecutor | None = None
+# Pure ledger computation runs on bounded pools of its own rather than the event loop's shared
+# default executor (#1231). Every other blocking hop in the service (git capture, SQLite opens,
+# observation probes) shares that default pool, so a burst of them used to queue a status read's
+# projection snapshot behind unrelated work. The work is split three ways so no class can starve
+# another: foreground writes (append validation, case builds), read snapshots, and cold-ledger
+# replays, which outlive the readers that started them.
+LedgerPool = Literal["write", "read", "recovery"]
+LEDGER_POOL_WORKERS: Final[Mapping[str, int]] = {"write": 4, "read": 4, "recovery": 2}
+_ledger_executors: dict[str, ThreadPoolExecutor] = {}
 _ledger_executor_guard = threading.Lock()
 
 
-def ledger_executor() -> ThreadPoolExecutor:
-    """Return the process-wide bounded pool for pure ledger computation."""
+def ledger_executor(pool: LedgerPool = "write") -> ThreadPoolExecutor:
+    """Return the process-wide bounded pool for one class of pure ledger computation."""
 
-    global _ledger_executor
     with _ledger_executor_guard:
-        if _ledger_executor is None:
-            _ledger_executor = ThreadPoolExecutor(
-                max_workers=LEDGER_WORKERS, thread_name_prefix="finishup-ledger"
+        executor = _ledger_executors.get(pool)
+        if executor is None:
+            executor = ThreadPoolExecutor(
+                max_workers=LEDGER_POOL_WORKERS[pool],
+                thread_name_prefix=f"finishup-ledger-{pool}",
             )
-        return _ledger_executor
+            _ledger_executors[pool] = executor
+        return executor
 
 
-async def run_ledger_work[ResultT](call: Callable[[], ResultT]) -> ResultT:
-    """Run a pure local calculation on the ledger pool and join it before cancellation returns.
+def shutdown_ledger_executors() -> None:
+    """Retire every ledger pool on service close; a later call lazily opens fresh ones.
 
-    The worker only receives immutable records/projections. A cancelled caller drops work that has
-    not started yet, so a timed-out read never leaves a queued worker behind it; work that already
-    started is joined, which keeps a ledger lock held by the caller from being released while that
-    worker can still compute a result.
+    Queued work is cancelled. A worker already running pure computation finishes on its own
+    thread; nothing waits for it and its result is discarded.
     """
 
-    future = ledger_executor().submit(call)
+    with _ledger_executor_guard:
+        executors = tuple(_ledger_executors.values())
+        _ledger_executors.clear()
+    for executor in executors:
+        executor.shutdown(wait=False, cancel_futures=True)
+
+
+def _observe_late_failure(waiter: asyncio.Future[Any]) -> None:
+    if waiter.cancelled():
+        return
+    worker_error = waiter.exception()
+    if worker_error is not None and not isinstance(worker_error, asyncio.CancelledError):
+        record_unexpected_exception_without_raising(
+            worker_error,
+            component="adapters.memory.ledger",
+            operation="append_validation_worker_failed",
+        )
+
+
+async def run_ledger_work[ResultT](
+    call: Callable[[], ResultT], *, pool: LedgerPool = "write"
+) -> ResultT:
+    """Run a pure local calculation on a ledger pool and join it before cancellation returns.
+
+    The worker only receives immutable records/projections. A cancelled caller drops work that has
+    not started yet; work that already started is joined, which keeps a ledger lock held by the
+    caller from being released while that worker can still compute a result.
+    """
+
+    future = ledger_executor(pool).submit(call)
     waiter = asyncio.wrap_future(future)
     try:
         await asyncio.wait((waiter,))
@@ -397,15 +428,26 @@ async def run_ledger_work[ResultT](call: Callable[[], ResultT]) -> ResultT:
             except asyncio.CancelledError:
                 # A second cancellation must not abandon the worker or release the ledger lock.
                 continue
-        if not waiter.cancelled():
-            # Observe a late worker exception before preserving the caller's cancellation.
-            worker_error = waiter.exception()
-            if worker_error is not None and not isinstance(worker_error, asyncio.CancelledError):
-                record_unexpected_exception_without_raising(
-                    worker_error,
-                    component="adapters.memory.ledger",
-                    operation="append_validation_worker_failed",
-                )
+        _observe_late_failure(waiter)
+        raise
+    return waiter.result()
+
+
+async def run_ledger_read[ResultT](call: Callable[[], ResultT]) -> ResultT:
+    """Run a pure read snapshot on the read pool; a cancelled read never waits for it.
+
+    Only for work that holds no ledger lock and whose inputs are immutable: a cancelled caller
+    drops work that has not started and detaches work that has (the result is discarded), so a
+    read's deadline releases the request, its dispatch gates and its caller at once.
+    """
+
+    future = ledger_executor("read").submit(call)
+    waiter = asyncio.wrap_future(future)
+    try:
+        await asyncio.wait((waiter,))
+    except asyncio.CancelledError:
+        if not future.cancel():
+            waiter.add_done_callback(_observe_late_failure)
         raise
     return waiter.result()
 
@@ -2813,8 +2855,9 @@ class MemoryLedgerAdapter:
                     or projection,
                 )
         # Only immutable snapshots cross the thread boundary; no SQLite handle or mutable
-        # ledger state enters the worker. Cancellation joins it before this read returns.
-        page, effective, items = await run_ledger_work(
+        # ledger state enters the worker, and it runs outside the ledger lock, so a cancelled read
+        # detaches a running snapshot instead of waiting for it (#1231).
+        page, effective, items = await run_ledger_read(
             lambda: self._query_snapshot(query, head, records, projection, cached)
         )
         async with self._lock:

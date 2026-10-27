@@ -835,8 +835,9 @@ class SqliteLedger:
                 # Reducer replay is pure but can be CPU-heavy for a mature ledger.  Keep it off
                 # the service daemon's event loop so recovery of one task cannot starve control
                 # handshakes or unrelated task routes.
-                # It runs on the bounded ledger pool, never the shared default executor (#1231).
-                projection = await run_ledger_work(lambda: replay(records))
+                # It runs on the bounded recovery pool, never the shared default executor or the
+                # pool foreground writes use (#1231).
+                projection = await run_ledger_work(lambda: replay(records), pool="recovery")
             except ValueError as exc:
                 raise _public_error(PublicErrorCode.STORAGE_CORRUPT) from exc
             for (

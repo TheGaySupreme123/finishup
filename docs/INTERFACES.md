@@ -3844,8 +3844,9 @@ polls included; it is not how long any projection work took (#1231). A changed o
 binding cannot close that incident.
 
 A read-only call (`status`, project `status`, the observation and privacy reads, and `check` in
-`inspect` mode) spends one budget, its `deadline_ms`, across both dispatch-gate waits and its
-handler; a write keeps its full handler deadline after the gate waits. A read that times out appends one `status_read_stage_elapsed`
+`inspect` mode) spends one budget, its `deadline_ms`, across both dispatch-gate waits, its
+handler and the shaping of its response, and expiry anywhere is a retryable `request_timeout`; a
+write keeps its full handler deadline after the gate waits and an unbounded response projection. A read that times out appends one `status_read_stage_elapsed`
 record (component `service.daemon`) per stage it waited in, under the correlation id the caller
 receives: `phase` is a closed stage token (`observation_gate`, `maintenance_gate`, `admission`,
 `handler`, `repository_route`, `session_renewal`, `runtime_route`, `ledger_recovery`, `frontier`,
@@ -3854,9 +3855,11 @@ its elapsed time, and the reason `interrupted` (the deadline fired there), `in_f
 `completed`. A read that succeeds but takes longer than 2 s records the same stages under a fresh
 correlation. `ledger_recovery` is the one full replay a task ledger performs when its runtime is
 opened (service start, or the first write after a read-only open): it is shared by every
-concurrent reader, continues once in the background when a reader's deadline expires, and runs
-with projection snapshots on a bounded ledger worker pool rather than the event loop's shared
-default executor; a cancelled read drops ledger work that has not started. The daemon's control-plane watchdog samples event-loop lag from a plain OS thread and
+concurrent reader and continues once in the background when a reader's deadline expires. Pure
+ledger work runs on three bounded pools of its own, never the event loop's shared default
+executor: foreground writes, read snapshots, and cold replays, so replays of many tasks cannot
+starve a write. A cancelled read drops a snapshot that has not started and detaches one that has
+(its result is discarded); a write still joins its running validation. The daemon's control-plane watchdog samples event-loop lag from a plain OS thread and
 appends `control_plane_saturation_entered`/`_persists`/`_cleared` records (component
 `service.daemon`) with those counts at a bounded cadence, so a starved control plane is diagnosed
 while it is happening rather than never (#238); sweep failures append

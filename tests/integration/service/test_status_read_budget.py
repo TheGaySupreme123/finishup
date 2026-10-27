@@ -129,3 +129,51 @@ async def test_reads_queued_behind_a_parked_projection_recovery_keep_their_deadl
     finally:
         recovered.set()
         await daemon.close()
+
+
+async def test_a_blocked_response_projection_ends_at_the_read_deadline(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Codex review P3: shaping a read's response stays inside its one budget."""
+
+    daemon, _application, _vault, _listener = _daemon()
+    await daemon.start()
+    composition = daemon.composition
+    projecting = asyncio.Event()
+    never = asyncio.Event()
+
+    async def blocked_projection(*_args: object, **_kwargs: object) -> object:
+        projecting.set()
+        # Stands in for binding, privacy projection or hydration that does not return.
+        await never.wait()
+        raise AssertionError("unreachable")
+
+    monkeypatch.setattr(daemon, "_project_completed_response", blocked_projection)
+    loop = asyncio.get_running_loop()
+    started = loop.time()
+    read = asyncio.create_task(
+        daemon.dispatch(
+            ControlClientKind.MCP_BRIDGE,
+            _request(daemon, ControlMethod.STATUS, _status_body(), deadline_ms=_DEADLINE_MS),
+        )
+    )
+    try:
+        await asyncio.wait_for(projecting.wait(), _BOUND_SECONDS)
+        # ``asyncio.wait`` observes without cancelling the dispatch.
+        done, _pending = await asyncio.wait((read,), timeout=_BOUND_SECONDS / 4)
+        assert read in done, "the read outlived its deadline in response projection"
+        elapsed = loop.time() - started
+        assert elapsed <= _DEADLINE_MS / 1_000 + _SLACK_SECONDS, elapsed
+        body = read.result().body
+        assert isinstance(body, ControlError)
+        assert body.reason == "request_timeout"
+        assert body.retryable is True
+        assert body.phase == "projection"
+        assert not composition.maintenance_gate.locked()
+        assert not composition.observation_gate.locked()
+    finally:
+        never.set()
+        if not read.done():
+            read.cancel()
+            await asyncio.wait((read,), timeout=_BOUND_SECONDS)
+        await daemon.close()

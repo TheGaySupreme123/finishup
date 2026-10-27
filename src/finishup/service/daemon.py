@@ -45,6 +45,7 @@ from finishup.adapters.keys.macos_user_presence import (
 from finishup.adapters.keys.os_keyring import AutoUnlockPassphraseStore
 from finishup.adapters.keys.secret_memory import LocalSecretMemory
 from finishup.adapters.keys.vault_passphrase import VaultRootEnvelope
+from finishup.adapters.memory.ledger import shutdown_ledger_executors
 from finishup.adapters.repository_identity import resolve_repository_privacy_context
 from finishup.adapters.session_events import SessionEventMonitor
 from finishup.adapters.sqlite.connection import StorageUnsafeError
@@ -1206,7 +1207,11 @@ class ServiceDaemon:
     async def close(self) -> None:
         """Idempotent alias for bounded service shutdown."""
 
-        await self.stop()
+        try:
+            await self.stop()
+        finally:
+            # The ledger pools are process-wide; retire them with the service (#1231).
+            shutdown_ledger_executors()
 
     def status(self) -> ServiceStatus:
         lifecycle = self._composition.lifecycle
@@ -1614,14 +1619,23 @@ class ServiceDaemon:
             # The handler has returned, so a write may already be durable. Everything below only
             # shapes the response; an unexpected failure there must not be reported as a failed
             # operation.
-            with read_stage("response_projection"):
-                projected = await self._project_completed_response(
-                    projection_context,
-                    request,
-                    application,
-                    internal,
-                    repository_privacy_context,
-                )
+            try:
+                # A read shapes its response inside what is left of its one budget, so binding,
+                # privacy projection and hydration cannot hold both gates past it (#1231). A
+                # write keeps an unbounded projection: its operation may already be durable.
+                async with asyncio.timeout_at(deadline_at):
+                    with read_stage("response_projection"):
+                        projected = await self._project_completed_response(
+                            projection_context,
+                            request,
+                            application,
+                            internal,
+                            repository_privacy_context,
+                        )
+            except TimeoutError as exc:
+                raise self._read_projection_failure(
+                    request, exc, phase="projection", reason="request_timeout"
+                ) from exc
             if _request_is_read_only(request):
                 self._read_projection_recovered(request)
             return projected
@@ -1799,6 +1813,10 @@ class ServiceDaemon:
         except (ControlError, LifecycleError, PublicOperationError):
             raise
         except (asyncio.CancelledError, Exception) as exc:
+            if isinstance(exc, asyncio.CancelledError) and _request_is_read_only(request):
+                # A read changed nothing, so its cancellation (including its own deadline
+                # firing here, #1231) stays a cancellation for the caller to classify.
+                raise
             # Cancellation is reclassified here too. `dispatch` already converts a cancelled call
             # into a result rather than propagating, and past this point the operation may be
             # durable — reporting CANCELLED would say the work did not happen and would omit the
