@@ -9,13 +9,14 @@ from typing import Literal, cast
 
 import pytest
 
-import finishup.service.ready_composition as composition
+import finishup.application.egress as egress
 from finishup.adapters.privacy.local_enforcer import LocalPrivacyEnforcer
 from finishup.application.egress import (
     PrivacyCoordinator,
     ReviewerExchangeFrame,
     SemanticEgressBlocked,
 )
+from finishup.application.semantic_case import review_packet_disclosure_result
 from finishup.domain.privacy import (
     PrivacyOutcome,
     PrivacyPolicy,
@@ -31,8 +32,7 @@ from finishup.ports.privacy import (
     PrivacyAuditPort,
     PrivacyPolicyStorePort,
 )
-from finishup.ports.semantic import Deadline, encode_reviewer_exchange
-from finishup.protocol.models import SemanticReason, SemanticStatus
+from finishup.ports.semantic import Deadline, encode_reviewer_exchange, reviewer_packet_bytes
 from unit.application.test_egress_origin_operation import (
     _Clock,  # pyright: ignore[reportPrivateUsage]
     _Gateway,  # pyright: ignore[reportPrivateUsage]
@@ -112,9 +112,15 @@ async def test_a_real_credential_in_the_rendered_frame_still_refuses_the_whole_r
 
 @pytest.mark.anyio
 @pytest.mark.parametrize("bound", ("excerpt", "excerpt_total"))
-async def test_replacement_growth_refuses_with_the_exact_transformed_excerpt_size(
+async def test_replacement_growth_is_cut_to_the_approved_bound_and_the_review_continues(
     bound: Literal["excerpt", "excerpt_total"], monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    """#1230: an excerpt a replaced value grows past an approved bound is cut, not refused.
+
+    The case is handed to egress as composed (the #1142 boundary: it fits exactly as written),
+    so only disclosure-time recovery stands between it and a ``case_capacity_exceeded`` failure.
+    """
+
     case = _semantic_case(_DIFF, with_aws_key=False)
     selected = sum(item.content_bytes for item in case.items if item.section == "excerpt")
     packet = json.loads(_minimize_everything(_candidate(case)).prepared_bytes)
@@ -138,22 +144,33 @@ async def test_replacement_growth_refuses_with_the_exact_transformed_excerpt_siz
         events.append(kwargs)
         return ""
 
-    monkeypatch.setattr(composition, "record_bounded_counts_without_raising", record)
+    monkeypatch.setattr(egress, "record_bounded_counts_without_raising", record)
     result, audit = await _evaluate(policy=policy)
+    # The fake audit stops right after preparation: the cut packet was admitted for dispatch.
     assert isinstance(result, SemanticEgressBlocked)
-    assert result.capacity == (transformed, selected)
-    assert result.capacity_scope == bound
-    assert result.capacity_unit == "bytes"
-    assert audit.prepared == []
-    assert audit.receipts[0].counts.final_bytes == 0
-    final = composition._map_egress_to_final(  # pyright: ignore[reportPrivateUsage]
-        result, attempt_id="sma_00000000-0000-4000-8000-000000000001"
-    )
-    assert (final.status, final.reason) == (
-        SemanticStatus.FAILED,
-        SemanticReason.CASE_CAPACITY_EXCEEDED,
-    )
-    assert events[0]["counts"] == {
-        f"semantic_{bound}_attempted_bytes": transformed,
-        f"semantic_{bound}_limit_bytes": selected,
+    assert result.reason is PrivacyReason.AUDIT_FAILED
+    assert result.capacity is None
+    (proposal,) = audit.prepared
+    sent = reviewer_packet_bytes(proposal.minimized.prepared_bytes)
+    assert sent is not None
+    (row,) = [item for item in json.loads(sent)["items"] if item["section"] == "excerpt"]
+    # The approved bound is respected and the value is never sent. A bound this small keeps the
+    # part's head only (too small for an elision marker), which here ends before the value.
+    assert row["content_bytes"] <= selected
+    assert row["content_bytes"] == len(row["content"].encode("utf-8"))
+    assert row["content"].startswith("[FinishUP check-time change")
+    assert b"hunter2" not in proposal.minimized.prepared_bytes
+    # The cut is disclosed in the provider-bound review input manifest, re-derived from the
+    # sent packet alone.
+    disclosure = review_packet_disclosure_result(sent)
+    assert disclosure.failure is None
+    manifest = cast(dict[str, object], disclosure.disclosure.provider_input_manifest)  # type: ignore[union-attr]
+    current_diff = cast(dict[str, object], manifest["current_diff"])
+    assert current_diff["status"] == "partial"
+    assert "truncated_payload" in cast(list[str], current_diff["omission_reasons"])
+    (fitted,) = [e for e in events if e["operation"] == "semantic_disclosure_capacity_fitted"]
+    assert fitted["outcome"] == "fitted"
+    assert fitted["counts"] == {
+        "semantic_excerpts_cut_at_disclosure": 1,
+        "semantic_excerpts_unselected_at_disclosure": 0,
     }

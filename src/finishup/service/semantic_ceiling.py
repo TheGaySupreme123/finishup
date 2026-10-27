@@ -34,7 +34,7 @@ from finishup.application.semantic_case import (
     final_diff_floor,
     primary_material_selection,
     prior_context_selections,
-    semantic_case_to_prepared_payload,
+    semantic_case_to_disclosed_payloads,
 )
 from finishup.config.models import (
     CODEX_SUBSCRIPTION_ENDPOINT_PROFILE_ID,
@@ -264,7 +264,11 @@ def _prepared_size(
 ) -> int | None:
     released = {item.item_id for item in case.items if admission is None or admission.admits(item)}
     try:
-        return measure(semantic_case_to_prepared_payload(case, released))
+        # #1230: the payload in every shape egress minimization can give it, so a replaced
+        # credential-like value that is shorter than its placeholder is measured, not missed.
+        return max(
+            measure(payload) for payload in semantic_case_to_disclosed_payloads(case, released)
+        )
     except SemanticCaseTooLarge:
         return None
 

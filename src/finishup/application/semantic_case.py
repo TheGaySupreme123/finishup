@@ -192,6 +192,9 @@ from finishup.observability.privacy import (
     ScanConfidence,
     redact_sensitive_content,
     scan_for_sensitive_content,
+    semantic_disclosed_bytes,
+    semantic_egress_forms,
+    semantic_egress_transforms,
 )
 from finishup.ports.change_capture import (
     CHECK_CHANGE_MEDIA_TYPE,
@@ -284,6 +287,7 @@ __all__ = [
     "primary_material_selection",
     "prior_context_selections",
     "final_diff_floor",
+    "fit_disclosed_excerpt",
     "follow_up_byte_budget",
     "follow_up_new_parts",
     "current_section_parts",
@@ -316,6 +320,7 @@ __all__ = [
     "semantic_case_to_candidate_context",
     "review_item_catalog",
     "review_envelope_to_candidate_context",
+    "semantic_case_to_disclosed_payloads",
     "semantic_case_to_prepared_payload",
 ]
 
@@ -2136,6 +2141,40 @@ def _head_tail_cut(raw: bytes, limit: int) -> tuple[str, tuple[tuple[int, int], 
     return head, ((0, size),) if size else ()
 
 
+# A cut can move, split or drop a replaced value, so the fit re-measures; each round only shrinks.
+_MAX_DISCLOSED_FIT_ROUNDS: Final = 8
+
+
+def fit_disclosed_excerpt(content: bytes, limit: int) -> bytes | None:
+    """``content`` cut so every form egress may disclose it in fits ``limit`` bytes (#1230).
+
+    Egress sizes an excerpt as its minimized row carries it, and a credential-like value replaced
+    there by the fixed placeholder can be shorter than the placeholder. ``semantic_disclosed_bytes``
+    is that measure, shared with egress. ``content`` is returned unchanged when it already fits;
+    otherwise its middle is cut with the ordinary elision marker, the marker counted, and the cut
+    repeats with the room shrunk by what is still over, since a cut can move or remove a replaced
+    value. ``None`` when no cut fits, so the caller keeps its own bound and egress decides.
+    """
+
+    if limit < 1:
+        return None
+    measured = semantic_disclosed_bytes(content)
+    if measured <= limit:
+        return content
+    room = limit - (measured - len(content))
+    for _round in range(_MAX_DISCLOSED_FIT_ROUNDS):
+        if room < 1:
+            return None
+        cut = _head_tail(content, room).encode("utf-8")
+        if not cut:
+            return None
+        size = semantic_disclosed_bytes(cut)
+        if size <= limit:
+            return cut
+        room -= size - limit
+    return None
+
+
 def _content_item(
     *,
     item_id: str,
@@ -2165,6 +2204,15 @@ def _content_item(
     if not raw:
         raise ValueError("semantic_case_content_invalid")
     content = _utf8(raw.decode("utf-8"), maximum=limit)
+    if section == "excerpt":
+        # Issue #1230: egress measures an excerpt after minimization, where a replaced
+        # credential-like value can make it longer than it is here. Cut it so every form it can be
+        # disclosed in fits the bound; the cut is marked and reported like any over-limit clip.
+        fitted = fit_disclosed_excerpt(content, limit)
+        if fitted is not None and fitted != content:
+            content = fitted
+            if over_limit is not None:
+                over_limit.add(item_id)
     digest = "sha256:" + hashlib.sha256(content).hexdigest()
     return SemanticCaseItem(
         item_id=item_id,
@@ -6268,6 +6316,10 @@ def _select_targeted_excerpts(
             )
             items.append(item)
             admitted_item_ids.append(item_id)
+            # Issue #1230: a part cut further so its disclosed form fits no longer holds every
+            # byte its span keys place, so it claims none and reads as truncated.
+            refitted = item.content != part.encode("utf-8")
+            truncated = truncated or refitted
             targeted.append(
                 TargetedExcerptRef(
                     excerpt_item_id=item_id,
@@ -6281,7 +6333,7 @@ def _select_targeted_excerpts(
                 )
             )
             excerpt_bytes_used += item.content_bytes
-            if part_index < len(candidate.part_keys):
+            if part_index < len(candidate.part_keys) and not refitted:
                 part_keys.extend((item_id, key) for key in candidate.part_keys[part_index])
         if truncated and len(targeted) > admitted_before:
             gaps.add("truncated_payload")
@@ -7260,6 +7312,27 @@ def build_semantic_case(
     selection = review_selection
 
     def build(excerpt_byte_budget: int | None) -> SemanticCase:
+        """One case whose excerpts, as egress will measure them, fit their total (#1230).
+
+        Each excerpt already fits its own bound in its disclosed form (``_content_item``); a
+        replaced value can still make the sum outgrow the budget the builder filled with the
+        bytes as written. The case is then rebuilt with the budget narrowed by that excess, which
+        cuts the lowest-ranked excerpts like any narrowed budget, until the disclosed sum fits.
+        """
+
+        case = build_once(excerpt_byte_budget)
+        total = selection.max_total_excerpt_bytes
+        if excerpt_byte_budget is not None:
+            total = min(total, excerpt_byte_budget)
+        for _round in range(_MAX_DISCLOSED_FIT_ROUNDS):
+            excerpts = [item for item in case.items if item.section == "excerpt"]
+            over = sum(semantic_disclosed_bytes(item.content) for item in excerpts) - total
+            if over <= 0:
+                break
+            case = build_once(max(0, sum(item.content_bytes for item in excerpts) - over))
+        return case
+
+    def build_once(excerpt_byte_budget: int | None) -> SemanticCase:
         return _build_semantic_case_once(
             case_id=case_id,
             frozen_case=frozen_case,
@@ -7295,14 +7368,15 @@ def build_semantic_case(
 
     def fits(candidate: SemanticCase) -> bool | None:
         try:
-            prepared = semantic_case_to_prepared_payload(
+            # #1230: sized as egress may carry it, a replaced value's growth included.
+            prepared = semantic_case_to_disclosed_payloads(
                 candidate, {item.item_id for item in candidate.items}
             )
         except SemanticCaseTooLarge:
             # The structural envelope cannot be bounded at all; the coordinator maps that to
             # its own terminal capacity outcome. Excerpt planning cannot help it.
             return None
-        return len(prepared) <= planning_bytes
+        return max(len(payload) for payload in prepared) <= planning_bytes
 
     case = build(None)
     if prepared_byte_ceiling is None:
@@ -8343,7 +8417,7 @@ def _build_semantic_case_once(
             text=text,
             limit=item_limit,
         )
-        if cut or len(text.encode("utf-8")) > item_limit:
+        if cut or item.content != text.encode("utf-8"):
             truncated_item_ids.add(item.item_id)
         else:
             truncated_item_ids.discard(item.item_id)
@@ -8503,7 +8577,13 @@ def _build_semantic_case_once(
         assert check_time_change is not None
         chunk_bytes = _check_time_change_part_chunk_bytes(item.content)
         part_key: tuple[str, str] | None = None
-        if chunk_bytes and index < len(check_change_offsets):
+        # Issue #1230: a part cut further so its disclosed form fits is no longer one contiguous
+        # run of the change, so it places no bytes in the shown-file record.
+        if (
+            chunk_bytes
+            and index < len(check_change_offsets)
+            and item.content == part.encode("utf-8")
+        ):
             part_start = check_change_offsets[index]
             part_key = (
                 item.item_id,
@@ -10150,17 +10230,23 @@ def assemble_filtered_review_packet(
     included_item_ids: frozenset[str] | set[str],
     withheld_item_ids: frozenset[str] | set[str] = frozenset(),
     redacted_item_ids: frozenset[str] | set[str] = frozenset(),
+    unselected_item_ids: frozenset[str] | set[str] = frozenset(),
+    before_bytes_by_id: Mapping[str, int] | None = None,
 ) -> bytes:
     """Assemble ``yoetz.review-packet-case/2`` from a builder envelope + approved content.
 
     Single shared projection used by the application prepared-payload path and the privacy
     enforcer. Filters by approved item id only; never re-derives section/source metadata from
-    origin pointers.
+    origin pointers. ``unselected_item_ids`` are items egress left out for room (#1230): their
+    omission rows read ``not_selected``, not withheld by policy. ``before_bytes_by_id`` is each
+    redacted item's size before redaction when the caller knows it (an item egress cut is
+    smaller than composed); otherwise the catalogued composed size is used.
     """
 
     included = set(included_item_ids)
     withheld = set(withheld_item_ids)
     redacted = set(redacted_item_ids)
+    unselected = set(unselected_item_ids) - included
     frontier_raw = envelope.get("frontier_refs")
     local_raw = envelope.get("local_check_refs")
     frontier_refs: set[str] = (
@@ -10238,7 +10324,10 @@ def assemble_filtered_review_packet(
                                     {
                                         "after_bytes": len(plaintext),
                                         "before_bytes": (
-                                            meta.get("content_bytes")
+                                            before_bytes_by_id[item_id]
+                                            if before_bytes_by_id is not None
+                                            and item_id in before_bytes_by_id
+                                            else meta.get("content_bytes")
                                             if type(meta.get("content_bytes")) is int
                                             and cast(int, meta["content_bytes"]) >= 0
                                             else len(plaintext)
@@ -10287,7 +10376,11 @@ def assemble_filtered_review_packet(
                 {
                     "category": category if type(category) is str else "",
                     "reason": (
-                        "never_send_heuristic" if item_id in withheld else "withheld_by_policy"
+                        "never_send_heuristic"
+                        if item_id in withheld
+                        else "not_selected"
+                        if item_id in unselected
+                        else "withheld_by_policy"
                     ),
                     "source_kind": source_kind if type(source_kind) is str else "task",
                     "subject_ref": subject,
@@ -10400,7 +10493,7 @@ def assemble_filtered_review_packet(
         withheld_excerpt_refs = frozenset(
             ref
             for meta in catalog
-            if meta.get("item_id") not in included
+            if meta.get("item_id") not in included and meta.get("item_id") not in unselected
             for ref in _excerpt_row_content_refs(
                 meta.get("section"),
                 meta.get("category"),
@@ -10414,6 +10507,9 @@ def assemble_filtered_review_packet(
             omissions,
             redacted_item_ids=redacted,
             privacy_withheld_refs=withheld_excerpt_refs,
+            cut_item_ids=_egress_cut_item_ids(
+                content_rows, packet_obj.get("targeted_excerpts"), redacted
+            ),
         )
         packet_obj["provider_input_manifest"] = provider_manifest
 
@@ -10747,6 +10843,48 @@ def withheld_excerpt_content_refs(case: SemanticCase, withheld: frozenset[str]) 
     )
 
 
+def _egress_cut_item_ids(
+    content_rows: Sequence[Mapping[str, JsonValue]],
+    targeted: object,
+    redacted_item_ids: frozenset[str] | set[str],
+) -> frozenset[str]:
+    """Excerpt rows egress cut after composition to fit a bound (#1230), read from the packet.
+
+    Each targeted excerpt names the digest and size its row was composed with. A carried row
+    whose own digest differs, with no redaction to explain it, was cut at disclosure; a redacted
+    row was cut when the size its redaction started from (``before_bytes``) is not the composed
+    size. Both the assembler and the reader of a sent packet derive the same ids from the same
+    packet fields.
+    """
+
+    composed: dict[str, tuple[object, object]] = {}
+    if type(targeted) is list:
+        for raw in cast(list[object], targeted):
+            if isinstance(raw, Mapping):
+                row = cast(Mapping[str, object], raw)
+                item_id = row.get("excerpt_item_id")
+                if type(item_id) is str:
+                    composed[item_id] = (row.get("content_digest"), row.get("content_bytes"))
+    cut: set[str] = set()
+    for row in content_rows:
+        item_id = row.get("item_id")
+        if row.get("section") != "excerpt" or type(item_id) is not str or item_id not in composed:
+            continue
+        digest, size = composed[item_id]
+        if item_id not in redacted_item_ids:
+            if row.get("content_digest") != digest:
+                cut.add(item_id)
+            continue
+        transformations = row.get("transformations")
+        if type(transformations) is list and any(
+            isinstance(entry, Mapping)
+            and cast(Mapping[str, object], entry).get("before_bytes") != size
+            for entry in cast(list[object], transformations)
+        ):
+            cut.add(item_id)
+    return frozenset(cut)
+
+
 def _provider_bound_input_manifest(
     composed: Mapping[str, JsonValue],
     content_rows: Sequence[Mapping[str, JsonValue]],
@@ -10754,8 +10892,12 @@ def _provider_bound_input_manifest(
     *,
     redacted_item_ids: frozenset[str] | set[str] = frozenset(),
     privacy_withheld_refs: frozenset[str] = frozenset(),
+    cut_item_ids: frozenset[str] = frozenset(),
 ) -> dict[str, JsonValue]:
     """Project a composed input manifest onto the exact provider-bound rows.
+
+    ``cut_item_ids`` are excerpts egress cut to fit a bound (#1230): their section is partial
+    and reads ``truncated_payload``, as a cut made at composition does.
 
     In a follow-up packet a request is ``supplied`` only through a carried excerpt row the
     builder marked ``follow_up_supplied`` (tb4n5): an old part the first packet already carried
@@ -10872,7 +11014,7 @@ def _provider_bound_input_manifest(
                 )
             )
         section["content_digest"] = rendered_digest
-        if any(item_id in redacted_item_ids for item_id in item_ids):
+        if any(item_id in redacted_item_ids or item_id in cut_item_ids for item_id in item_ids):
             section["status"] = "partial"
         if item_ids:
             if (
@@ -10947,6 +11089,8 @@ def _provider_bound_input_manifest(
             omission_reasons.add("not_selected")
         if any(item_id in redacted_item_ids for item_id in item_ids):
             omission_reasons.add("redacted_never_send")
+        if any(item_id in cut_item_ids for item_id in item_ids):
+            omission_reasons.add("truncated_payload")
         # Packet omission rows name a heuristic withholding ``never_send_heuristic``; the section
         # manifest's closed vocabulary (``ports/semantic.py``) records the same loss as
         # ``redacted_never_send``.  Copying the row reason verbatim made the provider-bound
@@ -11502,6 +11646,9 @@ def review_packet_disclosure_result(prepared: bytes) -> ReviewPacketDisclosureRe
                                 content_rows,
                                 cast(list[JsonValue], omission_rows),
                                 redacted_item_ids=redacted_item_ids,
+                                cut_item_ids=_egress_cut_item_ids(
+                                    content_rows, targeted_raw, redacted_item_ids
+                                ),
                             )
                             try:
                                 frozen_expected = freeze_json(cast(JsonValue, expected))
@@ -12212,6 +12359,40 @@ def review_envelope_to_candidate_context(
         provider_binding=provider_binding,
         items=tuple(items),
     )
+
+
+def semantic_case_to_disclosed_payloads(
+    case: SemanticCase,
+    included_item_ids: frozenset[str] | set[str],
+) -> tuple[bytes, ...]:
+    """The prepared payload in each shape egress minimization can give it (#1230).
+
+    The first is the payload as written (no credential-like value, or the owner turned the
+    heuristic off). When an included item has a value egress may replace, the second carries
+    every such item in its largest replaced form with its ``redacted`` transformation row, the
+    payload's largest disclosed shape. A planner sizes against the largest of them, so a
+    replacement longer than its value never pushes a planned exchange over its bound.
+    """
+
+    as_written = semantic_case_to_prepared_payload(case, included_item_ids)
+    replaced: dict[str, bytes] = {}
+    for item in case.items:
+        if item.item_id in included_item_ids and semantic_egress_transforms(item.content):
+            forms = semantic_egress_forms(item.content)[1:]
+            if forms:
+                replaced[item.item_id] = max(forms, key=len)
+    if not replaced:
+        return (as_written,)
+    envelope = cast(Mapping[str, JsonValue], strict_json_parse(bounded_case_envelope(case)))
+    disclosed = assemble_filtered_review_packet(
+        envelope,
+        content_by_id={
+            item.item_id: replaced.get(item.item_id, item.content) for item in case.items
+        },
+        included_item_ids=included_item_ids,
+        redacted_item_ids=set(replaced),
+    )
+    return (as_written, disclosed)
 
 
 def semantic_case_to_prepared_payload(

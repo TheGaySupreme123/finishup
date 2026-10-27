@@ -93,6 +93,9 @@ _FIELD_ORDER: Final = (
     "semantic_excerpt_limit_excerpts",
     "semantic_excerpt_total_attempted_bytes",
     "semantic_excerpt_total_limit_bytes",
+    # #1230: excerpts a disclosure-time fit cut or left out (integers only).
+    "semantic_excerpts_cut_at_disclosure",
+    "semantic_excerpts_unselected_at_disclosure",
     "semantic_check_change_parts_selected",
     "semantic_edit_evidence_in_case",
     # Issue #1102: task-input pilot counters (integers only, never a path).

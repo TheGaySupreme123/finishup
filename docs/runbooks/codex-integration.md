@@ -3454,7 +3454,9 @@ The excerpt count is a privacy-policy and review-packet limit. It is enforced by
 hook or MCP adapters. From privacy policy 1.2.0 the Expanded recipe allows up to 64 excerpts within
 its unchanged byte budget (16 KiB each, 128 KiB in total). An Expanded policy approved earlier keeps
 16 until the owner re-approves through `finishup --privacy`. A packet above the approved count or bytes
-is refused as `policy_denied`, never trimmed. A case that would exceed the per-case channel ceiling
+is first shrunk at disclosure: lowest-ranked excerpts are cut or left out and disclosed (#1230),
+and only a packet that still does not fit is refused as `policy_denied`. A case that would exceed
+the per-case channel ceiling
 is planned with fewer excerpts and discloses `content_unselected` instead of being refused.
 `finishup privacy show` shows the current limits beside
 the proposed ones. To go back to 16, choose Assisted or propose the earlier Expanded limits; that is
