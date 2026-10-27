@@ -381,7 +381,6 @@ def test_bounded_event_context_is_fenced_and_reaches_the_ring(
         "semantic_excerpt_limit_excerpts",
         "semantic_excerpt_total_attempted_bytes",
         "semantic_excerpt_total_limit_bytes",
-        "semantic_excerpts_cut_at_disclosure",
         "semantic_excerpts_unselected_at_disclosure",
         "semantic_check_change_parts_selected",
         "semantic_edit_evidence_in_case",

@@ -34,6 +34,7 @@ __all__ = [
     "heuristic_value_lines",
     "prepare_persisted_plaintext",
     "privacy_request_commitment",
+    "redact_before_cut",
     "redact_diagnostic_record",
     "redact_diagnostic_value",
     "redact_encoded_heuristic_spans",
@@ -340,8 +341,7 @@ _LOG_FIELDS: Final = frozenset(
         "semantic_excerpt_limit_excerpts",
         "semantic_excerpt_total_attempted_bytes",
         "semantic_excerpt_total_limit_bytes",
-        # #1230: excerpts a disclosure-time fit cut or left out (integers only).
-        "semantic_excerpts_cut_at_disclosure",
+        # #1230: excerpts a disclosure-time fit left out (integers only).
         "semantic_excerpts_unselected_at_disclosure",
         "semantic_check_change_parts_selected",
         "semantic_edit_evidence_in_case",
@@ -514,8 +514,7 @@ _INTEGER_FIELDS: Final = frozenset(
         "semantic_excerpt_limit_excerpts",
         "semantic_excerpt_total_attempted_bytes",
         "semantic_excerpt_total_limit_bytes",
-        # #1230: excerpts a disclosure-time fit cut or left out (integers only).
-        "semantic_excerpts_cut_at_disclosure",
+        # #1230: excerpts a disclosure-time fit left out (integers only).
         "semantic_excerpts_unselected_at_disclosure",
         "semantic_check_change_parts_selected",
         "semantic_edit_evidence_in_case",
@@ -1394,6 +1393,38 @@ def semantic_egress_forms(content: bytes) -> tuple[bytes, ...]:
         if encoded is not None:
             forms[encoded[0]] = None
     return tuple(forms)
+
+
+_MAX_CUT_REDACTION_PASSES: Final = 8
+
+
+def redact_before_cut(content: bytes) -> bytes:
+    """``content`` with every detected credential-like value replaced, for a cut to follow (#1230).
+
+    A cut can keep a value and drop the label that made it detectable (``password = "..."``
+    cut after ``= ``), and a scanner reading the cut text no longer sees it. So the whole text
+    is redacted first, as egress would disclose it, and only then cut: concrete shapes read
+    ``[REDACTED]``, values that only look like credentials read the egress placeholder, in the
+    text and in its JSON-string encoding, pass after pass until a pass finds nothing (bounded;
+    the egress scan still checks whatever is sent). Content without a finding is returned
+    unchanged, so a clean cut stays placeable in its source. Nothing is retained.
+    """
+
+    if type(content) is not bytes:
+        raise TypeError("redaction_data_not_bytes")
+    text = content
+    for _pass in range(_MAX_CUT_REDACTION_PASSES):
+        replaced, detected = redact_sensitive_content(
+            text, heuristic_marker=EGRESS_CREDENTIAL_PLACEHOLDER
+        )
+        if detected:
+            text = replaced
+            continue
+        encoded = redact_encoded_heuristic_spans(text)
+        if encoded is None:
+            break
+        text = encoded[0]
+    return text
 
 
 # Bounded memo of ``semantic_egress_forms`` sizes, keyed by the content's SHA-256 digest so no

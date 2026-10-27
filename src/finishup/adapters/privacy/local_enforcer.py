@@ -311,11 +311,6 @@ def _assemble_semantic_review_payload(
         withheld_item_ids=set(withheld_item_ids),
         redacted_item_ids=set(transformed_content or ()),
         unselected_item_ids=set(unselected_item_ids),
-        # The bytes each item had before redaction: a row cut at disclosure (#1230) then reads
-        # its own size, not the composed one.
-        before_bytes_by_id={
-            item_id: len(item.candidate.plaintext) for item_id, item in included_by_id.items()
-        },
     )
 
 

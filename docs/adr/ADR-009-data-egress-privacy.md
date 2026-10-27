@@ -930,7 +930,7 @@ into the unreleased privacy-policy wire 1.2.0 (the #908 version), so one re-appr
   released boundary's 1.1.0 schema refuses the 1.2.0 Expanded document.
 - The policy stays authoritative at egress. A prepared review packet with more `excerpt` rows,
   more bytes in one excerpt, or more excerpt bytes in total than the effective policy approved is
-  never sent. *Amended 2026-10-27 (#1230):* egress first shrinks it deterministically (see
+  never sent. *Amended 2026-10-27 (#1230):* egress first leaves out whole excerpts (see
   "Disclosure-time capacity fit" below) and refuses it as `blocked_by_policy` / `policy_denied`
   only when it still does not fit. An unreadable packet is refused. Resuming a stored proposal
   rechecks those limits and the channel `max_bytes` and `max_tokens` against the policy in force
@@ -1605,21 +1605,31 @@ measured the minimized row: 16,402 bytes. Egress refused the whole packet and no
   the approved total. Ceiling planning measures the payload in its largest disclosed shape,
   including each replaced row's `redacted` transformation. A composed case therefore fits every
   per-excerpt, total and exchange bound once its values are replaced.
-- **Shrink, then refuse.** If a semantic packet still exceeds an approved excerpt limit or the
+- **Redact, then cut.** A cut can drop a label (`password =`) and keep the value it made
+  detectable, where no scan of the cut text sees it. So every composition cut (a head-and-tail
+  clip, a captured diff split into parts, a part cut again to its disclosed size, a clipped prose
+  field) is taken from the whole text with every detected value already replaced
+  (`redact_before_cut`), never from the raw text; the egress scan then checks what is sent as
+  usual. A cut of replaced text has no exact place in its source, so it places no bytes there and
+  never reads as showing its source whole (`SemanticCase.unplaced_item_ids`); a captured diff
+  split from replaced text is placed in that text and reads as truncated.
+- **Leave out, then refuse.** If a semantic packet still exceeds an approved excerpt limit or the
   exchange's byte or token bound at disclosure (for example, the owner narrowed the limits after
-  composition), egress shrinks it deterministically instead of failing the review. An over-limit
-  excerpt is cut to the limit. Excess excerpts or bytes are shed from the lowest-ranked excerpt up,
-  in the packet's `targeted_excerpts` order: each is cut while at least 512 bytes (or half of a
-  smaller excerpt) remain, and otherwise left out. The service's check-time change can be cut but
-  is never left out. Cuts are made on the composed text, then classification, minimization and the
-  secret scan run again in full, so a cut never carries a value past redaction. Shedding never
-  raises an approved limit and never changes consent or privacy rules. When the excess is not
-  excerpt room, nothing is shed and the packet is refused as before.
-- **Disclosed like other omissions.** A left-out excerpt becomes a `not_selected` omission row of
-  the sent packet: room, not a privacy withholding, even when it held a replaceable value. The
-  provider-bound review input manifest marks a cut excerpt's section `partial` with
-  `truncated_payload`. A reader of the sent packet derives the same cut from the packet alone: the
-  row's digest differs from its targeted excerpt's composed digest, or, for a redacted row, its
-  `before_bytes` differs from the composed size. The privacy receipt counts the items actually
-  included. A bounded diagnostic `semantic_disclosure_capacity_fitted` records how many excerpts
-  were cut and left out, never content.
+  composition), egress leaves out whole excerpts instead of failing the review; it never cuts an
+  excerpt at disclosure. An excerpt over the per-excerpt limit is left out, and excess excerpts or
+  bytes are shed from the lowest-ranked excerpt up, in the packet's `targeted_excerpts` order. The
+  service's check-time change and the change sections a follow-up served are never left out: they
+  are what the shown-file record (ADR-031) counts, and no fit trades the change under review for a
+  dispatch. The narrowed approval is minimized and scanned again in full. Shedding never raises an
+  approved limit and never changes consent or privacy rules. When the excess cannot be shed that
+  way (it is fixed material, or would need the change), nothing is shed and the packet is refused
+  as before.
+- **Disclosed as room, by item identity.** A left-out excerpt becomes a `not_selected` omission row
+  of the sent packet naming only its own source, never a linked claim: room, not a privacy
+  withholding, even when it held a replaceable value. Its input-manifest section drops it by item
+  id, names its source in `omitted_refs` with `not_selected`, and reads `partial` (or
+  `not_selected` when nothing of it is left), never `withheld`; the rewrite is in the sent packet,
+  so its provider-bound manifest says the same. What a follow-up reads as shown (sent excerpt
+  refs and parts) comes from that provider-bound manifest, so a left-out excerpt is never counted
+  shown. The privacy receipt counts the items actually included. A bounded diagnostic
+  `semantic_disclosure_capacity_fitted` records how many excerpts were left out, never content.

@@ -92,16 +92,20 @@ def test_a_task_input_clipped_to_the_cap_still_fits_once_its_value_is_replaced()
     # The reader kept the file's first 16 KiB; its label then puts the excerpt over the bound.
     case = _build(inputs=(TaskInputFile("DESIGN.md", spec, 2 * len(spec)),))
     item = next(item for item in case.items if item.item_id == "task-input-01")
-    assert b"hunter2" in item.content
     assert b"SPEC HEAD" in item.content and b"SPEC TAIL" in item.content
-    # Composition's own measure is now the disclosed one, not the bytes as written.
+    # The cut is taken from the input redacted in full, so the value is replaced before any
+    # byte is dropped, and composition's own measure is the disclosed one.
+    assert b"hunter2" not in item.content
+    assert EGRESS_CREDENTIAL_PLACEHOLDER in item.content
     assert semantic_disclosed_bytes(item.content) <= _CAP
-    assert item.content_bytes == _CAP - _GROWTH
+    assert item.content_bytes <= _CAP
+    # A cut of redacted text has no exact place in the input: never read as shown whole.
+    assert item.item_id in case.unplaced_item_ids
     minimized = _minimize_everything(_candidate(case))
     row = _rows(minimized.prepared_bytes)["task-input-01"]
     assert b"hunter2" not in minimized.prepared_bytes
     assert EGRESS_CREDENTIAL_PLACEHOLDER.decode() in cast(str, row["content"])
-    assert row["content_bytes"] == _CAP
+    assert cast(int, row["content_bytes"]) <= _CAP
     # Before #1230 the row measured _CAP + _GROWTH and egress refused the whole review.
     assert _excerpt_limit_capacity(minimized.prepared_bytes, _SELECTION) is None
 
@@ -142,7 +146,15 @@ def test_the_excerpt_total_is_kept_as_disclosure_will_measure_it() -> None:
     )
     case = _build(diff=diff, selection=selection)
     excerpts = [item for item in case.items if item.section == "excerpt"]
-    assert sum(1 for item in excerpts if b"hunter2" in item.content) > 1
+    # Several parts hold a value, as written or already replaced by a cut (#1230).
+    assert (
+        sum(
+            1
+            for item in excerpts
+            if b"hunter2" in item.content or EGRESS_CREDENTIAL_PLACEHOLDER in item.content
+        )
+        > 1
+    )
     assert sum(semantic_disclosed_bytes(item.content) for item in excerpts) <= total
     minimized = _minimize_everything(_candidate(case))
     sizes = [cast(int, row["content_bytes"]) for row in _rows(minimized.prepared_bytes).values()]
@@ -164,3 +176,54 @@ def test_the_planned_exchange_is_the_payload_as_disclosed() -> None:
     assert planned_exchange_size(case, None, len) == len(disclosed)
     minimized = _minimize_everything(_candidate(case))
     assert len(minimized.prepared_bytes) <= len(disclosed)
+
+
+# Codex review round 1, P1: a cut keeping ``hunter2`` but dropping its ``password =`` label.
+_LABEL_CUT_INPUT = b"HEAD\n" + b"a" * 8_000 + b"\n" + _PLANTED + b"b" * 3_980 + b"\nTAIL\n"
+# Fragments of the value a cut through it could keep; the filler holds none of them.
+_VALUE_FRAGMENTS = (b"hunter2", b"hunt", b"unte", b"nter", b"ter2")
+
+
+def test_a_cut_never_keeps_a_value_whose_label_it_dropped() -> None:
+    """Every cut edge around the value: label dropped, value split, value whole in the tail."""
+
+    limits = range(7_900, 8_200)
+    # The edge is real: cut as written, some of these keep the value and lose its label.
+    exposed = [
+        limit
+        for limit in limits
+        if b"hunter2"
+        in (cut := composer._head_tail_kept_clean(_LABEL_CUT_INPUT, limit)[0].encode())  # pyright: ignore[reportPrivateUsage]
+        and b"password" not in cut
+    ]
+    assert exposed
+    for limit in limits:
+        cut = composer._head_tail(_LABEL_CUT_INPUT, limit).encode()  # pyright: ignore[reportPrivateUsage]
+        fitted = composer.fit_disclosed_excerpt(_LABEL_CUT_INPUT, limit)
+        for text in (cut, fitted or b""):
+            assert not any(fragment in text for fragment in _VALUE_FRAGMENTS), limit
+        assert fitted is not None and semantic_disclosed_bytes(fitted) <= limit
+
+
+def test_the_label_cut_reproduction_composes_without_the_value() -> None:
+    selection = replace(_SELECTION, max_excerpt_bytes=8_086)
+    case = _build(
+        inputs=(TaskInputFile("DESIGN.md", _LABEL_CUT_INPUT, len(_LABEL_CUT_INPUT)),),
+        selection=selection,
+    )
+    item = next(item for item in case.items if item.item_id == "task-input-01")
+    assert b"HEAD" in item.content and b"TAIL" in item.content
+    assert not any(fragment in item.content for fragment in _VALUE_FRAGMENTS)
+    assert semantic_disclosed_bytes(item.content) <= 8_086
+    minimized = _minimize_everything(_candidate(case))
+    assert minimized.forbidden_findings == () and minimized.heuristic_findings == ()
+    assert not any(fragment in minimized.prepared_bytes for fragment in _VALUE_FRAGMENTS)
+    # Finding 2: the cut input is sent but never counted as showing its source whole, so an
+    # in-check follow-up may still offer the rest.
+    assert item.item_id in case.unplaced_item_ids
+    disclosure = composer.review_packet_disclosure_result(minimized.prepared_bytes)
+    assert disclosure.failure is None and disclosure.disclosure is not None
+    manifest = disclosure.disclosure.provider_input_manifest
+    sent = composer.sent_excerpt_content_refs(case, manifest)
+    assert sent is not None
+    assert not composer.excerpt_content_refs((item,)) <= sent

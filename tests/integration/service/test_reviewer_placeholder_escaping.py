@@ -1,14 +1,12 @@
-"""#1138/#1230: a real service job reviews a packet whose values were replaced."""
+"""#1138: a real service job can review a packet containing FinishUP's withheld value."""
 
 from __future__ import annotations
 
-import json
 from dataclasses import replace
 from pathlib import Path
 
 import pytest
 
-import finishup.application.egress as egress
 import finishup.service.ready_composition as composition
 from finishup.domain.privacy import ReviewContextProfile
 from finishup.observability.privacy import EGRESS_CREDENTIAL_PLACEHOLDER
@@ -46,16 +44,12 @@ async def test_withheld_value_survives_packet_and_exchange_encoding(
 
 
 @pytest.mark.anyio
-async def test_replacement_growth_is_cut_to_the_bound_and_the_job_completes(
+async def test_replacement_growth_finishes_the_job_as_capacity_not_network_denial(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """#1230: the #1142 boundary no longer fails the review as ``case_capacity_exceeded``.
-
-    The case is handed to the job exactly as composed (it fits the excerpt total as written);
-    replacing ``hunter2`` with the longer placeholder takes it over. Disclosure cuts the excerpt
-    back within the approved total, says so in the provider-bound manifest, and sends it.
-    """
-
+    # #1230: composition now sizes the change as disclosed; this case is handed to the job as
+    # composed before that, and its only excerpt is the change, which disclosure never leaves
+    # out or cuts, so it still ends as capacity, never as a network denial.
     case = _semantic_case(
         b"diff --git a/config.py b/config.py\n+password=hunter2\n", with_aws_key=False
     )
@@ -79,25 +73,20 @@ async def test_replacement_growth_is_cut_to_the_bound_and_the_job_completes(
         return ""
 
     monkeypatch.setattr(composition, "record_bounded_counts_without_raising", record)
-    monkeypatch.setattr(egress, "record_bounded_counts_without_raising", record)
     result, gateway, runtime = await _run(tmp_path, monkeypatch, _FINAL, policy=policy)
     assert (result.status, result.reason) == (
-        SemanticStatus.SUCCEEDED,
-        SemanticReason.SEMANTIC_COMPLETED,
+        SemanticStatus.FAILED,
+        SemanticReason.CASE_CAPACITY_EXCEEDED,
     )
-    ((_, history),) = gateway.exchanges
-    packet = json.loads(history[1][1])
-    rows = [row for row in packet["items"] if row["section"] == "excerpt"]
-    assert sum(row["content_bytes"] for row in rows) <= selected
-    assert "hunter2" not in history[1][1]
-    current_diff = packet["review_packet"]["provider_input_manifest"]["current_diff"]
-    assert current_diff["status"] == "partial"
-    assert "truncated_payload" in current_diff["omission_reasons"]
+    assert gateway.exchanges == []
     job = await runtime.ledger.load_semantic_job(runtime.writer_id or "", frozen_request())
-    assert job is not None and job.terminal_code is SemanticReason.SEMANTIC_COMPLETED
-    assert not [e for e in events if e["operation"] == "semantic_disclosure_capacity_exceeded"]
-    (fitted,) = [e for e in events if e["operation"] == "semantic_disclosure_capacity_fitted"]
-    assert fitted["counts"] == {
-        "semantic_excerpts_cut_at_disclosure": 1,
-        "semantic_excerpts_unselected_at_disclosure": 0,
+    assert job is not None and job.terminal_code is SemanticReason.CASE_CAPACITY_EXCEEDED
+    (capacity,) = [
+        event for event in events if event["operation"] == "semantic_disclosure_capacity_exceeded"
+    ]
+    assert capacity["counts"] == {
+        "semantic_excerpt_total_attempted_bytes": selected
+        + len(EGRESS_CREDENTIAL_PLACEHOLDER)
+        - len(b"hunter2"),
+        "semantic_excerpt_total_limit_bytes": selected,
     }

@@ -6,7 +6,7 @@ import asyncio
 import base64
 import hashlib
 from collections import Counter
-from collections.abc import Awaitable, Callable, Iterable, Mapping
+from collections.abc import Awaitable, Callable, Iterable
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta
 from enum import StrEnum
@@ -436,9 +436,9 @@ class ReviewerHistory:
     retained: set[tuple[DataCategory, DataClass]] = field(
         default_factory=set[tuple[DataCategory, DataClass]]
     )
-    # #1230: the cuts (item id to disclosed size) and left-out item ids the first exchange's
-    # packet was fitted with; every later exchange replays them so its packet is the same.
-    capacity_fit: tuple[dict[str, int], frozenset[str]] | None = None
+    # #1230: the excerpts the first exchange's packet left out to fit its bounds; every later
+    # exchange leaves out the same ones, so its packet is the same.
+    capacity_left_out: frozenset[str] = frozenset()
 
     def holds(
         self,
@@ -2133,10 +2133,11 @@ class PrivacyCoordinator:
             and not minimized.heuristic_findings
             and minimized.included_item_ids
         ):
-            # #1230: a packet over an approved excerpt limit or its exchange bound is shrunk to
-            # fit, never refused whole for want of a few bytes; the checks below still fence it.
-            candidate, decision, minimized = self._fit_semantic_capacity(
-                candidate, decision, minimized, effective, binding
+            # #1230: a packet over an approved excerpt limit or its exchange bound leaves out its
+            # lowest-ranked excerpts, whole, rather than failing the review; the checks below
+            # still fence it and refuse what cannot be fitted that way.
+            decision, minimized = self._fit_semantic_capacity(
+                refreshed_classified, decision, minimized, effective
             )
         # Concrete credentials and scanner saturation still block the whole case. A heuristic
         # that survives into the prepared bytes means the omission construction was violated, so
@@ -2213,7 +2214,7 @@ class PrivacyCoordinator:
                 # receipt's ``final_bytes`` bound) and, on a route sized to its model's context,
                 # at most its estimated model-token budget. Ceiling planning keeps the first
                 # exchange under both and read fitting keeps later ones under both; a first
-                # exchange that still outgrows them had its lowest-ranked excerpts shed above
+                # exchange that still outgrows them had its lowest-ranked excerpts left out above
                 # (#1230), and one that outgrows them even so is refused whole before a proposal
                 # exists, never sent, and reported as capacity, not as a network denial.
                 return await self._complete_semantic_predispatch(
@@ -2300,7 +2301,7 @@ class PrivacyCoordinator:
             )
         # The approved excerpt limits are authoritative here too: a review packet with more
         # excerpts, or more excerpt bytes, than the effective policy approved is never sent
-        # (issue #907 Phase 1b). ``_fit_semantic_capacity`` has already cut or left out excerpts
+        # (issue #907 Phase 1b). ``_fit_semantic_capacity`` has already left out excerpts, whole,
         # to fit them (#1230); a packet it could not fit is refused whole here.
         excerpt_capacity = None
         excerpt_packet_valid = True
@@ -2946,130 +2947,79 @@ class PrivacyCoordinator:
 
     def _fit_semantic_capacity(
         self,
-        candidate: CandidateContext,
+        classified: ClassifiedContext,
         decision: PrivacyDecision,
         minimized: MinimizedDisclosure,
         effective: EffectivePrivacyPolicy,
-        binding: ProviderBinding,
-    ) -> tuple[CandidateContext, PrivacyDecision, MinimizedDisclosure]:
-        """Shrink an over-bound semantic packet deterministically until it fits (#1230).
+    ) -> tuple[PrivacyDecision, MinimizedDisclosure]:
+        """Leave out lowest-ranked excerpts, whole, until the packet fits its bounds (#1230).
 
-        Composition sizes every excerpt as egress measures it, so this is defence in depth. An
-        excerpt over the per-excerpt bound is cut to it; excess excerpts and excess bytes are
-        shed from the lowest-ranked excerpt up (the packet's ``targeted_excerpts`` order): cut
-        with the ordinary elision marker while a useful part remains, else left out. The
-        service's own check-time change is cut but never left out, so no fit trades the change
-        under review for a dispatch. Cuts are made on the composed text and the whole
-        classification, minimization and scan run again, so a cut can never carry a value past
-        redaction. Nothing is ever raised: the approved limits, consent and privacy rules are
-        unchanged, and a packet that still does not fit is refused by the checks that follow.
-        A left-out excerpt is a ``not_selected`` omission of the sent packet; a cut excerpt
-        reads ``truncated_payload`` in its provider-bound manifest section.
+        Composition sizes every excerpt as egress measures it, so this is defence in depth. No
+        excerpt is cut here: a left-out item is simply not sent, so no coverage claim about it
+        survives, and nothing is ever recombined from raw text. The narrowed approval is
+        minimized and scanned again in full. Nothing is ever raised: the approved limits,
+        consent and privacy rules are unchanged, and a packet that still does not fit (the
+        excess is fixed material, or would need the check-time change left out) is refused by
+        the checks that follow. A left-out excerpt is a ``not_selected`` omission of the sent
+        packet and of its input-manifest section.
 
         A reviewer conversation re-admits its packet on every exchange and each exchange must
-        extend the last byte for byte, so the fit is decided on the first exchange only, kept on
-        the conversation's history, and replayed unchanged on every later one.
+        extend the last byte for byte, so the omission is decided on the first exchange only,
+        kept on the conversation's history, and replayed unchanged on every later one.
         """
 
         frame = self._reviewer_frame
         history = None if frame is None else frame.history
         if history is not None and history.policy is not None:
             # A later exchange: the packet is the one the first exchange sent.
-            if history.capacity_fit is None:
-                return candidate, decision, minimized
+            if not history.capacity_left_out:
+                return decision, minimized
             replayed = self._capacity_fit_trial(
-                candidate, minimized, effective, binding, *history.capacity_fit
+                classified, decision, minimized, history.capacity_left_out
             )
-            return (candidate, decision, minimized) if replayed is None else replayed
-        targets: dict[str, int] = {}
-        dropped: frozenset[str] = frozenset()
-        accepted: tuple[dict[str, int], frozenset[str]] | None = None
-        fitted = (candidate, decision, minimized)
+            return (decision, minimized) if replayed is None else replayed
+        left_out: frozenset[str] = frozenset()
+        fitted = (decision, minimized)
         for _round in range(_MAX_CAPACITY_FIT_ROUNDS):
-            overage = self._semantic_capacity_overage(fitted[2].prepared_bytes, effective)
+            overage = self._semantic_capacity_overage(fitted[1].prepared_bytes, effective)
             if overage is None:
                 break
-            plan = _capacity_fit_plan(
-                fitted[2].prepared_bytes, overage, effective.policy.review_selection, dropped
-            )
-            if plan is None:
+            drops = _capacity_fit_plan(fitted[1].prepared_bytes, overage, left_out)
+            if drops is None:
                 break
-            targets = {**targets, **plan[0]}
-            dropped = dropped | plan[1]
-            trial = self._capacity_fit_trial(
-                candidate, minimized, effective, binding, targets, dropped
-            )
+            trial = self._capacity_fit_trial(classified, decision, minimized, left_out | drops)
             if trial is None:
                 break
-            fitted = trial
-            accepted = (dict(targets), frozenset(fitted[1].unselected_item_ids))
-        if accepted is None:
+            left_out, fitted = left_out | drops, trial
+        if not left_out:
             return fitted
         if history is not None:
-            history.capacity_fit = accepted
+            history.capacity_left_out = left_out
         record_bounded_counts_without_raising(
             component="semantic_composition",
             operation="semantic_disclosure_capacity_fitted",
             outcome="fitted"
-            if self._semantic_capacity_overage(fitted[2].prepared_bytes, effective) is None
+            if self._semantic_capacity_overage(fitted[1].prepared_bytes, effective) is None
             else "still_over",
-            counts={
-                "semantic_excerpts_cut_at_disclosure": len(
-                    {
-                        item_id
-                        for item_id in accepted[0]
-                        if item_id not in accepted[1] and item_id in fitted[2].included_item_ids
-                    }
-                ),
-                "semantic_excerpts_unselected_at_disclosure": len(accepted[1]),
-            },
-            request_id=candidate.request_id,
+            counts={"semantic_excerpts_unselected_at_disclosure": len(left_out)},
+            request_id=classified.candidate.request_id,
         )
         return fitted
 
     def _capacity_fit_trial(
         self,
-        candidate: CandidateContext,
+        classified: ClassifiedContext,
+        decision: PrivacyDecision,
         minimized: MinimizedDisclosure,
-        effective: EffectivePrivacyPolicy,
-        binding: ProviderBinding,
-        targets: Mapping[str, int],
-        dropped: frozenset[str],
-    ) -> tuple[CandidateContext, PrivacyDecision, MinimizedDisclosure] | None:
-        """``candidate`` with ``targets`` cut and ``dropped`` left out, admitted afresh (#1230).
+        left_out: frozenset[str],
+    ) -> tuple[PrivacyDecision, MinimizedDisclosure] | None:
+        """The packet with ``left_out`` not approved, minimized and scanned afresh (#1230).
 
-        Each cut starts from the composed text. ``None`` when the narrowed case is not admitted
-        clean (a decision other than completed, a finding, nothing included, or another scanner
-        profile than the packet it replaces), so the caller keeps the packet it had.
+        ``None`` when the narrowed packet is not clean (a finding, nothing included, or another
+        scanner profile than the packet it replaces), so the caller keeps the packet it had.
         """
 
-        from finishup.application.semantic_case import (
-            CHECK_TIME_CHANGE_ITEM_PREFIX,
-            fit_disclosed_excerpt,
-        )
-
-        left_out = set(dropped)
-        items: list[CandidateContextItem] = []
-        for item in candidate.items:
-            target = targets.get(item.item_id)
-            if target is None or item.item_id in left_out:
-                items.append(item)
-                continue
-            cut = fit_disclosed_excerpt(item.plaintext, target)
-            if cut is None:
-                # Too small a bound for any cut: left out, except the check-time change, which
-                # then stays whole for the checks that follow to refuse.
-                if not item.item_id.startswith(CHECK_TIME_CHANGE_ITEM_PREFIX):
-                    left_out.add(item.item_id)
-                items.append(item)
-                continue
-            items.append(replace(item, plaintext=cut))
-        trial_candidate = replace(candidate, items=tuple(items))
-        classified = self._classifier.classify(trial_candidate, effective)
-        decision = self._semantic_decision(classified, effective, binding)
-        if decision.outcome is not PrivacyOutcome.COMPLETED:
-            return None
-        decision = replace(
+        narrowed = replace(
             decision,
             approved_item_ids=tuple(
                 item_id for item_id in decision.approved_item_ids if item_id not in left_out
@@ -3078,7 +3028,7 @@ class PrivacyCoordinator:
                 item_id for item_id in decision.approved_item_ids if item_id in left_out
             ),
         )
-        trial = self._classifier.minimize_and_scan(classified, decision)
+        trial = self._classifier.minimize_and_scan(classified, narrowed)
         if (
             trial.forbidden_findings
             or trial.heuristic_findings
@@ -3087,7 +3037,7 @@ class PrivacyCoordinator:
             != (minimized.scanner_registry_version, minimized.scanner_profile_digest)
         ):
             return None
-        return trial_candidate, decision, trial
+        return narrowed, trial
 
     def _semantic_decision(
         self,
@@ -3790,11 +3740,8 @@ class _CapacityOverage:
     excess_bytes: int
 
 
-# Rounds of shrink, re-minimize and re-measure; each round only removes bytes.
+# Rounds of leave-out, re-minimize and re-measure; each round only removes items.
 _MAX_CAPACITY_FIT_ROUNDS: Final = 4
-# An excerpt cut below this many bytes (or below half its size, when smaller) keeps too little to
-# review; it is left out instead.
-_MIN_CUT_EXCERPT_BYTES: Final = 512
 _CAPACITY_FIT_MARGIN_BYTES: Final = 256
 
 
@@ -3848,81 +3795,55 @@ def _packet_excerpt_rows(packet: bytes) -> list[tuple[str, int]] | None:
 def _capacity_fit_plan(
     packet: bytes,
     overage: _CapacityOverage,
-    selection: ReviewSelectionPolicy,
-    dropped: frozenset[str],
-) -> tuple[dict[str, int], set[str]] | None:
-    """Which excerpts to cut (to a disclosed size) and which to leave out, deterministically.
+    left_out: frozenset[str],
+) -> frozenset[str] | None:
+    """The excerpts to leave out, whole, so the packet fits (#1230), or ``None``.
 
-    An over-cap excerpt is cut to the per-excerpt bound. Excess count is shed by leaving out the
-    lowest-ranked excerpts; excess bytes by cutting the lowest-ranked excerpt by the excess while
-    ``_MIN_CUT_EXCERPT_BYTES`` (or half of a smaller excerpt) would remain, else leaving it out
-    and moving up. The check-time
-    change is cut but never left out. ``None`` when nothing more can be shed.
+    Only whole items are left out; nothing is cut at disclosure. An excerpt over the per-excerpt
+    bound is left out; excess count and excess bytes are shed by leaving out the lowest-ranked
+    excerpts first. The service's check-time change and the change sections a follow-up served
+    are never left out: no fit trades the change under review for a dispatch, and the shown-file
+    record composed before disclosure stays exact. When the excess cannot be shed without them
+    (one is itself over a bound, or everything else is too little), ``None``, and the packet is
+    refused whole.
     """
 
-    from finishup.application.semantic_case import CHECK_TIME_CHANGE_ITEM_PREFIX
+    from finishup.application.semantic_case import (
+        CHECK_TIME_CHANGE_ITEM_PREFIX,
+        CHECK_TIME_SECTION_ITEM_PREFIX,
+    )
 
     rows = _packet_excerpt_rows(packet)
     if rows is None:
         return None
-    rows = [row for row in rows if row[0] not in dropped]
-    targets: dict[str, int] = {}
-    drops: set[str] = set()
+    rows = [row for row in rows if row[0] not in left_out]
+    sizes = dict(rows)
 
     def protected(item_id: str) -> bool:
-        return item_id.startswith(CHECK_TIME_CHANGE_ITEM_PREFIX)
+        # The change's parts and the change sections a follow-up served are what the check's
+        # shown-file record counts (ADR-031), composed before disclosure: neither is left out.
+        return item_id.startswith((CHECK_TIME_CHANGE_ITEM_PREFIX, CHECK_TIME_SECTION_ITEM_PREFIX))
 
-    sizes = dict(rows)
+    drops: set[str] = set()
     for item_id in overage.over_cap_item_ids:
-        if item_id in sizes:
-            targets[item_id] = selection.max_excerpt_bytes
-    excess_count = overage.excess_excerpts
-    for item_id, _size in reversed(rows):
-        if excess_count <= 0:
+        if item_id not in sizes:
+            continue
+        if protected(item_id):
+            return None
+        drops.add(item_id)
+    excess_count = overage.excess_excerpts - len(drops)
+    remaining = overage.excess_bytes - sum(sizes[item_id] for item_id in drops)
+    for item_id, size in reversed(rows):
+        if excess_count <= 0 and remaining <= 0:
             break
         if protected(item_id) or item_id in drops:
             continue
         drops.add(item_id)
-        targets.pop(item_id, None)
         excess_count -= 1
-    # Bytes already shed by the cuts and drops above count against the excess.
-    shed = sum(sizes[item_id] for item_id in drops) + sum(
-        sizes[item_id] - target for item_id, target in targets.items()
-    )
-    remaining = overage.excess_bytes - shed
-    sheddable = sum(
-        targets.get(item_id, size)
-        - (min(_MIN_CUT_EXCERPT_BYTES, size // 2) if protected(item_id) else 0)
-        for item_id, size in rows
-        if item_id not in drops
-    )
-    if remaining > sheddable:
-        # The excess is not excerpt room (fixed material, or less than the change under review
-        # can give): shedding excerpts would not make it fit, so nothing is shed and the packet
-        # is refused whole by the checks that follow.
+        remaining -= size
+    if excess_count > 0 or remaining > 0 or not drops:
         return None
-    for item_id, _size in reversed(rows):
-        if remaining <= 0:
-            break
-        if item_id in drops:
-            continue
-        current = targets.get(item_id, sizes[item_id])
-        keep = min(_MIN_CUT_EXCERPT_BYTES, current // 2)
-        if current - remaining >= keep:
-            targets[item_id] = current - remaining
-            remaining = 0
-            break
-        if protected(item_id):
-            if current > keep:
-                targets[item_id] = keep
-                remaining -= current - keep
-            continue
-        drops.add(item_id)
-        targets.pop(item_id, None)
-        remaining -= current
-    if not targets and not drops:
-        return None
-    return targets, drops
+    return frozenset(drops)
 
 
 def _excerpt_limit_capacity(

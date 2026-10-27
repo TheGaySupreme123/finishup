@@ -2631,7 +2631,7 @@ credential probe keep their one-shot dispatch; no check uses it.
   than 1 KiB ends the review `read_limit`, unread and unsent. The ceiling here is the exchange
   budget below, never above what one prepared disclosure carries. Planning measures the packet in
   its largest disclosed shape, credential-like values replaced (#1230). A first exchange that still
-  outgrows it has its lowest-ranked excerpts cut or left out at disclosure (#1230, ADR-009
+  outgrows it has its lowest-ranked excerpts left out whole at disclosure (#1230, ADR-009
   "Disclosure-time capacity fit"); one that outgrows it even so is refused whole before a proposal
   exists and never sent: the receipt records `blocked_by_policy` / `policy_denied` and the check
   reports `failed/case_capacity_exceeded` (owner decision on #1118), with the attempted size and
