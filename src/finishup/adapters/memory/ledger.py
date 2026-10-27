@@ -2844,6 +2844,11 @@ class MemoryLedgerAdapter:
                 state.query_records = records
             key = (query.requested_frontier, query.view, query.session_id)
             cached = state.query_cache.get(key)
+            # The snapshot runs off-lock and may be detached by a cancelled read, so it gets an
+            # immutable copy of the operation facts history labels read, never live state.
+            operations: Mapping[tuple[str, str], tuple[OperationRecord, AppendResult | None]] = (
+                dict(state.operations) if query.view == ProjectionView.HISTORY.value else {}
+            )
             if cached is None:
                 projection = next(
                     (
@@ -2858,7 +2863,7 @@ class MemoryLedgerAdapter:
         # ledger state enters the worker, and it runs outside the ledger lock, so a cancelled read
         # detaches a running snapshot instead of waiting for it (#1231).
         page, effective, items = await run_ledger_read(
-            lambda: self._query_snapshot(query, head, records, projection, cached)
+            lambda: self._query_snapshot(query, head, records, projection, cached, operations)
         )
         async with self._lock:
             if state.records is records and state.query_records is records:
@@ -2874,6 +2879,7 @@ class MemoryLedgerAdapter:
         records: tuple[LedgerRecord, ...],
         projection: ProjectionState,
         cached: tuple[ProjectionState, tuple[ProjectionItem, ...] | None] | None,
+        operations: Mapping[tuple[str, str], tuple[OperationRecord, AppendResult | None]],
     ) -> tuple[ProjectionPage, ProjectionState, tuple[ProjectionItem, ...] | None]:
         if not any(row.session_id == query.session_id for row in records):
             raise _error(PublicErrorCode.SESSION_NOT_FOUND)
@@ -2920,7 +2926,7 @@ class MemoryLedgerAdapter:
                     task=self._task_id,
                     session=query.session_id,
                     service_clock_events=(
-                        service_clock_event_ids(self._state.operations, prefix)
+                        service_clock_event_ids(operations, prefix)
                         if view is ProjectionView.HISTORY
                         else frozenset()
                     ),

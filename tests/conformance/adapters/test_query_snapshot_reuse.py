@@ -86,18 +86,25 @@ async def test_pages_reuse_frontier_and_rows(backend: str, monkeypatch: pytest.M
 
 
 @pytest.mark.anyio
-async def test_historical_query_yields_and_joins_cancelled_worker(
+async def test_historical_query_yields_and_detaches_cancelled_worker(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """A cancelled read returns at once; its running snapshot finishes detached (#1231).
+
+    The snapshot holds no ledger lock and reads only immutable inputs, so the read does not
+    wait for it. The detached worker's result is discarded: it never populates the page cache.
+    """
+
     records = replay_records("all-event-families")
     command, objects = command_from_records(records, expected_frontier=0)
     ledger = memory_for(command, objects)
     await ledger.append_batch(command)
     accepted = tuple([row async for row in ledger.load_events(command.session_id)])
     frontier = Frontier(accepted[3].ledger.ingestion_sequence, accepted[3].entry_digest)
-    entered, release = threading.Event(), threading.Event()
+    entered, release, finished = threading.Event(), threading.Event(), threading.Event()
     loop_thread = threading.get_ident()
     original = module.replay
+    original_snapshot = module.MemoryLedgerAdapter._query_snapshot  # pyright: ignore[reportPrivateUsage]
 
     def replay(prefix: tuple[LedgerRecord, ...]) -> ProjectionState:
         assert threading.get_ident() != loop_thread
@@ -105,25 +112,32 @@ async def test_historical_query_yields_and_joins_cancelled_worker(
         assert release.wait(10)
         return original(prefix)
 
+    def tracked_snapshot(self: module.MemoryLedgerAdapter, *args: object) -> object:
+        try:
+            return original_snapshot(self, *args)  # pyright: ignore[reportArgumentType]
+        finally:
+            finished.set()
+
     monkeypatch.setattr(module, "replay", replay)
-    task = asyncio.create_task(
-        ledger.query_projection(
-            ProjectionQuery(command.session_id, "history", None, frontier, 1, None, None)
-        )
-    )
+    monkeypatch.setattr(module.MemoryLedgerAdapter, "_query_snapshot", tracked_snapshot)
+    query = ProjectionQuery(command.session_id, "history", None, frontier, 1, None, None)
+    task = asyncio.create_task(ledger.query_projection(query))
     try:
         assert await asyncio.to_thread(entered.wait, 5)
         # An unrelated ledger read progresses while replay is deliberately held.
         assert await ledger.lookup_operation(command.writer_id, command.operation_id) is not None
         task.cancel()
-        scheduled = asyncio.Event()
-        asyncio.get_running_loop().call_soon(scheduled.set)
-        await scheduled.wait()
-        assert not task.done()
+        # Cancellation completes while the worker is still held: nothing joins it.
+        done, _pending = await asyncio.wait((task,), timeout=5)
+        assert task in done
+        assert task.cancelled()
+        assert not finished.is_set()
     finally:
         release.set()
-    with pytest.raises(asyncio.CancelledError):
-        await task
+    # Drain the detached worker explicitly, then prove its result was discarded.
+    assert await asyncio.to_thread(finished.wait, 10)
+    state = ledger._state  # pyright: ignore[reportPrivateUsage]
+    assert all(key[0] != frontier for key in state.query_cache)
 
 
 @pytest.mark.anyio

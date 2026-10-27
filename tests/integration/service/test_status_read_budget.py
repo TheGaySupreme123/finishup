@@ -177,3 +177,35 @@ async def test_a_blocked_response_projection_ends_at_the_read_deadline(
             read.cancel()
             await asyncio.wait((read,), timeout=_BOUND_SECONDS)
         await daemon.close()
+
+
+@pytest.mark.parametrize("teardown_fails", [False, True])
+async def test_stop_retires_the_ledger_pools_and_later_work_gets_fresh_ones(
+    teardown_fails: bool, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Codex review round 2: every stop() path retires the process-wide ledger pools."""
+
+    import finishup.adapters.memory.ledger as ledger_module
+
+    daemon, _application, _vault, _listener = _daemon()
+    await daemon.start()
+    pools: tuple[ledger_module.LedgerPool, ...] = ("write", "read", "recovery")
+    retired = {pool: ledger_module.ledger_executor(pool) for pool in pools}
+    if teardown_fails:
+
+        async def failing_close_components() -> None:
+            raise RuntimeError("teardown-failure")
+
+        monkeypatch.setattr(daemon, "_close_components", failing_close_components)
+        with pytest.raises(RuntimeError, match="teardown-failure"):
+            await daemon.stop()
+    else:
+        await daemon.stop()
+    for pool in pools:
+        executor = retired[pool]
+        with pytest.raises(RuntimeError):
+            executor.submit(lambda: None)
+        fresh = ledger_module.ledger_executor(pool)
+        assert fresh is not executor
+    assert await ledger_module.run_ledger_work(lambda: "fresh") == "fresh"
+    assert await ledger_module.run_ledger_read(lambda: "fresh") == "fresh"

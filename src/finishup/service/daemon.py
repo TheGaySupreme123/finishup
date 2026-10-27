@@ -1185,33 +1185,34 @@ class ServiceDaemon:
                 self._stop_event.set()
                 return
             self._stopping = True
-            await self._check_waits.close()
-            self._state_reason = reason if reason == "internal_error" else "shutdown_requested"
-            lifecycle = self._composition.lifecycle
-            if self._started:
-                async with self._activation_lock:
-                    if lifecycle.state is ServiceState.UNLOCKING:
-                        await self._composition.vault.lock()
-                        await lifecycle.transition(ServiceState.LOCKED)
-                    if lifecycle.state is not ServiceState.DRAINING:
-                        try:
-                            await lifecycle.request_stop(reason)
-                        except LifecycleError as exc:
-                            if exc.reason != "invalid_transition":
-                                raise
-            await self._close_components()
-            await lifecycle.close()
-            self._closed = True
-            self._stop_event.set()
+            try:
+                await self._check_waits.close()
+                self._state_reason = reason if reason == "internal_error" else "shutdown_requested"
+                lifecycle = self._composition.lifecycle
+                if self._started:
+                    async with self._activation_lock:
+                        if lifecycle.state is ServiceState.UNLOCKING:
+                            await self._composition.vault.lock()
+                            await lifecycle.transition(ServiceState.LOCKED)
+                        if lifecycle.state is not ServiceState.DRAINING:
+                            try:
+                                await lifecycle.request_stop(reason)
+                            except LifecycleError as exc:
+                                if exc.reason != "invalid_transition":
+                                    raise
+                await self._close_components()
+                await lifecycle.close()
+                self._closed = True
+                self._stop_event.set()
+            finally:
+                # The ledger pools are process-wide. Every teardown path (serve() cleanup, the
+                # service-stop request, close(), and a failed teardown) retires them (#1231).
+                shutdown_ledger_executors()
 
     async def close(self) -> None:
         """Idempotent alias for bounded service shutdown."""
 
-        try:
-            await self.stop()
-        finally:
-            # The ledger pools are process-wide; retire them with the service (#1231).
-            shutdown_ledger_executors()
+        await self.stop()
 
     def status(self) -> ServiceStatus:
         lifecycle = self._composition.lifecycle
