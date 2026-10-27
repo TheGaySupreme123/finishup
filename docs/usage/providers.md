@@ -188,7 +188,7 @@ dedicated home first when you choose to switch ChatGPT accounts.
 
 On Linux, Codex's read-only sandbox uses bubblewrap (`bwrap`) and unprivileged user
 namespaces. The evaluator runs no commands and writes no files, so with a reviewed Codex release
-(today 0.162.1) a container or VM without them still works. `finishup provider codex-subscription
+(today 0.162.1 and 0.164.0) a container or VM without them still works. `finishup provider codex-subscription
 status` then reports `codex_sandbox_unavailable: true` with the reason (`bubblewrap_missing` or
 `user_namespaces_unavailable`). Any other Codex warning, or the same warning from an unreviewed
 release, fails closed before any case is disclosed. See the

@@ -1,6 +1,6 @@
 """Generate or verify the reviewer's derived Codex model catalog (#1118, ADR-006).
 
-``--write --codex PATH`` runs ``PATH debug models --bundled`` (a Codex 0.162.1 executable, under a
+``--write --codex PATH`` runs ``PATH debug models --bundled`` (a pinned Codex executable, under a
 scratch home: no login, no network), checks that the bundled ``gpt-6.1-sol`` entry has the pinned
 source digest, and writes the derived file into ``support/codex-evaluator/``. Run the resource
 ripple afterwards so the package mirror follows.
@@ -24,7 +24,7 @@ from finishup.adapters.providers.codex_capability import (
 from finishup.adapters.providers.codex_reviewer_catalog import (
     REVIEWER_CATALOG_DERIVED_SHA256,
     REVIEWER_CATALOG_RESOURCE,
-    REVIEWER_CATALOG_RUNTIME_VERSION,
+    REVIEWER_CATALOG_RUNTIME_VERSIONS,
     REVIEWER_CATALOG_SOURCE_ENTRY_SHA256,
     bundled_entry_sha256,
     derive_reviewer_catalog,
@@ -74,10 +74,9 @@ def write(root: Path, codex: Path) -> None:
 
     with tempfile.TemporaryDirectory(prefix="reviewer-catalog-") as scratch:
         version = codex_cli_version(codex, scratch_parent=Path(scratch))
-        if version != REVIEWER_CATALOG_RUNTIME_VERSION:
-            raise SystemExit(
-                f"codex {version} is not the pinned {REVIEWER_CATALOG_RUNTIME_VERSION}"
-            )
+        if version not in REVIEWER_CATALOG_RUNTIME_VERSIONS:
+            pinned = ", ".join(sorted(REVIEWER_CATALOG_RUNTIME_VERSIONS))
+            raise SystemExit(f"codex {version} is not a pinned release ({pinned})")
         catalog = codex_bundled_model_catalog(codex, scratch_parent=Path(scratch))
     print(f"source entry: {bundled_entry_sha256(catalog)}")
     data = derive_reviewer_catalog(catalog)
@@ -90,7 +89,7 @@ def main(argv: list[str] | None = None) -> int:
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument("--write", action="store_true")
     mode.add_argument("--check", action="store_true")
-    parser.add_argument("--codex", type=Path, help="a Codex 0.162.1 executable (for --write)")
+    parser.add_argument("--codex", type=Path, help="a pinned Codex executable (for --write)")
     parser.add_argument("--root", type=Path, default=_ROOT)
     args = parser.parse_args(argv)
     if args.write:

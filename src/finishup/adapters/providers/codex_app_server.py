@@ -42,7 +42,7 @@ from finishup.adapters.providers.codex_capability import (
 )
 from finishup.adapters.providers.codex_reviewer_catalog import (
     REVIEWER_CATALOG_MODEL,
-    REVIEWER_CATALOG_RUNTIME_VERSION,
+    REVIEWER_CATALOG_RUNTIME_VERSIONS,
     ReviewerCatalogDecision,
     bundled_entry_sha256,
     packaged_reviewer_catalog_path,
@@ -418,7 +418,11 @@ _SANDBOX_WARNING_REASONS: Final[Mapping[str, SandboxUnavailableReason]] = {
 # release ``initialize`` proved). Any other release sending either warning fails closed with
 # ``codex_sandbox_unavailable_unreviewed_runtime``; selection then falls back to an older
 # reviewed release when one is installed. Extend this set only after re-reviewing the source.
-SANDBOX_UNAVAILABLE_REVIEWED_RELEASES: Final = frozenset({"0.162.1"})
+# 0.164.0 (#1228): both warning texts are unchanged. With ``environments: []`` it now advertises
+# the catalog's ``apply_patch`` (0.162.1 hid environment tools without an environment), but the
+# handler resolves a turn environment first and fails without one, and ``read-only`` with
+# ``approval_policy=never`` still refuses the patch (``core/src/tools/handlers/apply_patch.rs``).
+SANDBOX_UNAVAILABLE_REVIEWED_RELEASES: Final = frozenset({"0.162.1", "0.164.0"})
 _LAUNCH_OVERRIDES: Final = (
     "analytics.enabled=false",
     'approval_policy="never"',
@@ -460,6 +464,13 @@ _RELEASE_LAUNCH_OVERRIDES: Final[Mapping[str, tuple[str, ...]]] = {
         "features.sleep_tool=false",
         "skills.include_instructions=false",
     ),
+    # 0.164.0 (#1228): the same four keys, each still defined and still removing its tools.
+    "0.164.0": (
+        "agents.enabled=false",
+        "features.goals=false",
+        "features.sleep_tool=false",
+        "skills.include_instructions=false",
+    ),
 }
 # The bundled reviewer-model entry digest the fence last measured from a launched executable,
 # keyed by that executable's SHA-256 (the bundled catalog is compiled into those bytes). Every
@@ -470,7 +481,9 @@ _BUNDLED_ENTRY_SHA256: dict[str, str | None] = {}
 _RECORDED_CATALOG_FALLBACKS: set[tuple[str, str, str]] = set()
 # Releases whose multi-turn reviewer session was reviewed from source (#1118 unit 3); any other
 # refuses a reviewer exchange (never falls back). Extend only after a capability cell.
-REVIEWER_LOOP_REVIEWED_RELEASES: Final = frozenset({"0.162.1"})
+# 0.164.0 (#1228): the app-server schema subset digest equals 0.162.1's; its one new
+# notification (``thread/readState/changed``) is never published for an ephemeral thread.
+REVIEWER_LOOP_REVIEWED_RELEASES: Final = frozenset({"0.162.1", "0.164.0"})
 # A reviewer turn may produce only these items: a plan or a context compaction would replace or
 # extend the known linear history with something FinishUP never inspected, so either ends it.
 _REVIEWER_ITEM_TYPES: Final = frozenset({"agentMessage", "reasoning", "userMessage"})
@@ -728,13 +741,13 @@ class CodexAppServerProfile:
     def measure_reviewer_catalog(self) -> ReviewerCatalogDecision:
         """Measure the launched bytes' bundled reviewer entry, then decide and record the outcome.
 
-        Runs only for the pinned release and model, after ``verify_local_binding`` re-hashed the
+        Runs only for a pinned release and the model, after ``verify_local_binding`` re-hashed the
         executable, under a scratch directory in the home's private ``runtime`` root. A fallback
         writes its closed reason to the owner-only diagnostics once per process.
         """
 
         if (
-            self.runtime_version == REVIEWER_CATALOG_RUNTIME_VERSION
+            self.runtime_version in REVIEWER_CATALOG_RUNTIME_VERSIONS
             and self.model == REVIEWER_CATALOG_MODEL
         ):
             runtime_root = self.codex_home / "runtime"

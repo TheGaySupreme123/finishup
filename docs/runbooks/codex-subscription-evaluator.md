@@ -16,7 +16,7 @@ Codex is enough: the next `setup` or `repair` adopts the newer release without a
 | Platforms | macOS arm64 (`@openai/codex-darwin-arm64`), Linux x86_64 (`@openai/codex-linux-x64`); x86_64 WSL2 Linux userspace follows Linux (WSL smoke pending); no native Windows |
 | Capability profile | `codex-evaluator/capability/v4` (earlier bindings move through `repair`) |
 | Isolated config SHA-256 | `bd8fffe5abd02d085c13213ab2f5aaefe362c85e8a354f4fd79a58938ce9740c` (`support/codex-evaluator/config.toml`) |
-| Reviewer-loop releases | `0.162.1` only. Every check review is a reviewer conversation since #1118, so on another admitted release a check's review ends unavailable (`capability_evidence_stale`); only background advice still uses one-shot sessions there |
+| Reviewer-loop releases | `0.162.1` and `0.164.0` (#1228). Every check review is a reviewer conversation since #1118, so on another admitted release a check's review ends unavailable (`capability_evidence_stale`); only background advice still uses one-shot sessions there |
 | Evidence expires | `2026-11-30T00:00:00Z` (this FinishUP release's reviewed subset and probe) |
 | Transport | app-server v2, stdio JSONL |
 | Credential authority | `external_runtime_oauth` |
@@ -27,7 +27,7 @@ Codex is enough: the next `setup` or `repair` adopts the newer release without a
 Profile v3 adds three restrictions to every session, one-shot or loop: `initialize` sets
 `experimentalApi: true` only so `thread/start` can send `environments: []`, which leaves no
 environment for shell, patch or file tools; the isolated config and launch overrides disable the
-`update_plan` and `experimental_request_user_input` utilities. On 0.162.1 the launch also sets
+`update_plan` and `experimental_request_user_input` utilities. On 0.162.1 and 0.164.0 the launch also sets
 `agents.enabled=false`, `features.goals=false`, `features.sleep_tool=false` and
 `skills.include_instructions=false`: the gpt-6.1-sol catalog entry (`multi_agent_version: v2`,
 `experimental_supported_tools: [send_user_message_async, clock]`) otherwise registers the
@@ -54,7 +54,7 @@ launch and every stdin write and stdout read, so a runtime that stops reading ca
 review or its close; cleanup runs after the deadline. A cancelled or timed-out turn is cleaned up,
 never kept for the next exchange. Not established yet: an authorized native cell proving `environments: []` persists
 across turns and that no non-environment utility runs internally. Until that cell passes for a
-release, only `0.162.1` (source-reviewed) runs the loop, and other releases refuse reviewer
+release, only `0.162.1` and `0.164.0` (source-reviewed) run the loop, and other releases refuse reviewer
 exchanges with `capability_evidence_stale` instead of falling back to another route.
 
 ### Reviewer model catalog (#1118)
@@ -69,14 +69,23 @@ is the bundled value (context window 272000, efforts `low` to `ultra`, truncatio
 instructions template, model messages). With `tool_mode` absent, Codex falls back to the
 `features.code_mode*` keys, which default off, so tools are registered directly.
 
+Codex 0.164.0 (#1228, checked 2026-10-26 from npm `@openai/codex@0.164.0-darwin-arm64`, executable
+SHA-256 `d8990e3e…9cf`) exposes a byte-identical bundled `gpt-6.1-sol` entry (same source digest),
+and deriving from it reproduces the committed file byte for byte, so the one file is pinned for both
+releases; its name keeps the release it was first generated from. `gpt-6.1-terra` is not in
+0.164.0's bundled catalog (only an account's live `/models` serves it), so it has no pin: a terra
+launch keeps the unchanged argv (`model_not_pinned`), its forced tools stay registered and refused
+on the wire, and its reviews keep the unsized exchange bound. Pinning terra needs a different
+source than the launched bytes and is a separate decision.
+
 | Pin | Value |
 |---|---|
-| Runtime release / model | `0.162.1` / `gpt-6.1-sol` |
+| Runtime releases / model | `0.162.1`, `0.164.0` / `gpt-6.1-sol` |
 | Source entry SHA-256 (FinishUP canonical JSON of the bundled entry) | `2723b11fc3c0791615cb5a14f6c1abade723228bd7b3d269f5eebeb7264d2cb6` |
 | Derived file SHA-256 (exact bytes) | `f2d4fd66291e1a62ed51d29555407804a3d67a4eb4791841e0b620708a58aadb` |
 
 `--check` (and the unit tests) prove the committed file against both pins without Codex: undoing
-exactly the two edits reproduces the source digest. `--write --codex <0.162.1 executable>`
+exactly the two edits reproduces the source digest. `--write --codex <pinned-release executable>`
 regenerates it; run the resource ripple afterwards.
 
 Every launch applies it only when all of these hold; otherwise the launch is unchanged (the forced
@@ -86,14 +95,14 @@ per process to the owner-only diagnostics (component `codex_app_server`, operati
 
 | Condition | Fallback reason |
 |---|---|
-| The bound release is `0.162.1` | `runtime_release_not_pinned` |
+| The bound release is `0.162.1` or `0.164.0` | `runtime_release_not_pinned` |
 | The bound model is `gpt-6.1-sol` (the catalog lists only it, so another model would vanish from `model/list`) | `model_not_pinned` |
 | After the launch fence re-hashed the executable, `codex debug models --bundled` on those exact bytes (scratch home under the dedicated home's `runtime/`, no login, no network) printed a parsable catalog | `bundled_entry_unavailable` |
 | Its `gpt-6.1-sol` entry has the pinned source digest | `bundled_entry_changed` |
 | The packaged derived file is installed as a regular file | `derived_catalog_unavailable` |
 | Its bytes have the pinned derived digest | `derived_catalog_changed` |
 
-When it applies, the launch adds `-c model_catalog_json="<packaged path>"` after the 0.162.1-only
+When it applies, the launch adds `-c model_catalog_json="<packaged path>"` after the release-bound
 keys; `--strict-config` accepts it. Every launch of the pinned release and model re-measures the
 entry (about 20 ms) and keys the result by executable SHA-256. The change is visible in each attempt's
 `runtime_evidence.launcher_sha256`, which commits to the exact argv. A launch builds its argv once
@@ -101,17 +110,17 @@ from its own measurement and the process keeps that digest, so the evidence of e
 including a retained reviewer thread, names what that process ran even when a concurrent launch
 of the same executable measured the other way (#1118 V3). The capability record, its
 checks, the isolated config and the profile (`codex-evaluator/capability/v4`) are unchanged:
-admission does not depend on the catalog, only the launch argv does, like the four 0.162.1 keys.
+admission does not depend on the catalog, only the launch argv does, like the four release-bound keys.
 
-Tool surface the model receives on 0.162.1 with gpt-6.1-sol (`environments: []`, isolated config):
+Tool surface the model receives on 0.162.1 and 0.164.0 with gpt-6.1-sol (`environments: []`, isolated config):
 
 | Tool family | Forced by | Removed by |
 |---|---|---|
-| Shell, `apply_patch`, file and view-image tools | environment tools | `environments: []`, `features.shell_tool=false`, `features.view_image=false` |
+| Shell, `apply_patch`, file and view-image tools | environment tools | `environments: []`, `features.shell_tool=false`, `features.view_image=false`; 0.164.0 still advertises the catalog's `apply_patch` without an environment, but the handler fails without one and `read-only` with `approval_policy=never` refuses the patch |
 | `update_plan`, `request_user_input` | default utilities | `tools.update_plan.enabled=false`, `tools.experimental_request_user_input.enabled=false` |
-| Collaboration (`spawn_agent` and friends) | catalog `multi_agent_version: v2` | `agents.enabled=false` (0.162.1 only) |
-| Goals (`get_goal`, `create_goal`, `update_goal`) | default-on feature | `features.goals=false` (0.162.1 only) |
-| `sleep` | default-on feature with catalog `clock` | `features.sleep_tool=false` (0.162.1 only) |
+| Collaboration (`spawn_agent` and friends) | catalog `multi_agent_version: v2` | `agents.enabled=false` (0.162.1, 0.164.0) |
+| Goals (`get_goal`, `create_goal`, `update_goal`) | default-on feature | `features.goals=false` (0.162.1, 0.164.0) |
+| `sleep` | default-on feature with catalog `clock` | `features.sleep_tool=false` (0.162.1, 0.164.0) |
 | Code-mode `exec`/`wait` | catalog `tool_mode: code_mode_only` | reviewer model catalog |
 | `request_user_input_async` | catalog `send_user_message_async` | reviewer model catalog |
 | `clock.curr_time` (`clock__curr_time` inside `exec`) | catalog `clock` | reviewer model catalog |
@@ -193,7 +202,7 @@ request is involved:
    `codex_sandbox_unavailable_reason`, and the terminal interface notes it. Any other warning text,
    including the WSL1 one, still fails closed.
 
-   The admission holds only for source-reviewed releases (today `0.162.1`). Another release
+   The admission holds only for source-reviewed releases (today `0.162.1` and `0.164.0`). Another release
    sending either warning is refused as `codex_sandbox_unavailable_unreviewed_runtime`, and setup
    or repair falls back to an older reviewed release if one is installed. To proceed, install a
    reviewed release, or install bubblewrap and enable unprivileged user namespaces.
@@ -260,6 +269,12 @@ Release-to-release changes in the reviewed subset:
   - the `thread/prediction/updated` notification is new and stays outside every allowlist;
   - `TurnStartParams` and `Turn` add the optional `parentTurnId` and `rootTurnId`;
   - `CodexErrorInfo` gains a catch-all variant.
+- **0.162.1 to 0.164.0** (#1228, 2026-10-26). The reviewed-subset digest is unchanged
+  (`sha256:fa8f2def…7bf2` for both). New: the `thread/readState/changed` notification (published
+  only for non-ephemeral threads, so never for the reviewer's) and five client requests FinishUP
+  never sends. Both bubblewrap warning texts and the four release-bound launch keys are unchanged.
+  Without an environment, 0.164.0 advertises the catalog's `apply_patch` (0.162.1 hid environment
+  tools); it cannot run without one.
 - **Every release.** Rate-limit `planType` is now accepted as any bounded identifier and
   discarded, so a new plan cannot fail pre-disclosure validation.
 

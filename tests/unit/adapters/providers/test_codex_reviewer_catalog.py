@@ -1,4 +1,9 @@
-"""#1118: the reviewer's derived Codex 0.162.1 model catalog, its pins, and its launch gate."""
+"""#1118: the reviewer's derived Codex model catalog, its pins, and its launch gate.
+
+#1228: Codex 0.164.0 exposes the same bundled ``gpt-6.1-sol`` entry, so the one derived file is
+pinned for 0.162.1 and 0.164.0. ``gpt-6.1-terra`` is not in 0.164.0's bundled catalog (only the
+live ``/models`` serves it), so it has no pin and keeps the unchanged launch.
+"""
 
 from __future__ import annotations
 
@@ -20,12 +25,14 @@ from finishup.adapters.providers.codex_reviewer_catalog import (
     REVIEWER_CATALOG_MODEL,
     REVIEWER_CATALOG_RESOURCE,
     REVIEWER_CATALOG_RUNTIME_VERSION,
+    REVIEWER_CATALOG_RUNTIME_VERSIONS,
     REVIEWER_CATALOG_SOURCE_ENTRY_SHA256,
     bundled_entry_sha256,
     derive_reviewer_catalog,
     packaged_reviewer_catalog_path,
     resolve_reviewer_catalog,
     restore_source_entry,
+    reviewer_model_context_window,
 )
 from finishup.protocol.canonical import JsonValue, canonical_encode
 
@@ -103,6 +110,14 @@ def test_generator_check_passes_on_the_committed_tree() -> None:
     assert script.check(_ROOT) == []
 
 
+def test_the_derived_catalog_is_pinned_for_exactly_the_reviewed_releases() -> None:
+    # 0.164.0's bundled gpt-6.1-sol entry has the 0.162.1 source digest (checked 2026-10-26).
+    assert REVIEWER_CATALOG_RUNTIME_VERSIONS == frozenset({"0.162.1", "0.164.0"})
+    assert REVIEWER_CATALOG_MODEL == "gpt-6.1-sol"
+    # Terra has no bundled entry to pin, so no shipped window either.
+    assert reviewer_model_context_window("gpt-6.1-terra") is None
+
+
 def test_packaged_path_is_the_installed_regular_file() -> None:
     path = packaged_reviewer_catalog_path()
 
@@ -115,6 +130,21 @@ def test_packaged_path_is_the_installed_regular_file() -> None:
     ("version", "model", "measured", "catalog", "reason"),
     [
         ("0.162.1", "gpt-6.1-sol", REVIEWER_CATALOG_SOURCE_ENTRY_SHA256, "good", "applied"),
+        ("0.164.0", "gpt-6.1-sol", REVIEWER_CATALOG_SOURCE_ENTRY_SHA256, "good", "applied"),
+        (
+            "0.164.0",
+            "gpt-6.1-terra",
+            REVIEWER_CATALOG_SOURCE_ENTRY_SHA256,
+            "good",
+            "model_not_pinned",
+        ),
+        (
+            "0.164.0",
+            "gpt-6.1-sol",
+            "sha256:" + "e" * 64,
+            "good",
+            "bundled_entry_changed",
+        ),
         (
             "0.159.0",
             "gpt-6.1-sol",
@@ -196,10 +226,11 @@ def _reviewer_profile(
     return profile_for(record_for(b"catalog codex", b"catalog host", version=version), model=model)
 
 
+@pytest.mark.parametrize("version", sorted(REVIEWER_CATALOG_RUNTIME_VERSIONS))
 def test_launch_passes_the_catalog_through_the_isolated_overrides_when_measured(
-    monkeypatch: pytest.MonkeyPatch,
+    monkeypatch: pytest.MonkeyPatch, version: str
 ) -> None:
-    profile = _reviewer_profile()
+    profile = _reviewer_profile(version=version)
     monkeypatch.setattr(module, "_BUNDLED_ENTRY_SHA256", {})
     before = profile.launcher_argv
 
@@ -215,7 +246,7 @@ def test_launch_passes_the_catalog_through_the_isolated_overrides_when_measured(
     path = packaged_reviewer_catalog_path()
 
     assert path is not None
-    # Alongside, not instead of, the 0.162.1-only keys, as one more ``-c`` after --strict-config.
+    # Alongside, not instead of, the release-bound keys, as one more ``-c`` after --strict-config.
     assert overrides[-1] == f"model_catalog_json={json.dumps(str(path))}"
     assert overrides[:-1] == _overrides(before)
     assert "agents.enabled=false" in overrides
@@ -223,7 +254,13 @@ def test_launch_passes_the_catalog_through_the_isolated_overrides_when_measured(
 
 
 @pytest.mark.parametrize(
-    ("version", "model"), [("0.159.0", REVIEWER_CATALOG_MODEL), ("0.162.1", "gpt-5.6-sol")]
+    ("version", "model"),
+    [
+        ("0.159.0", REVIEWER_CATALOG_MODEL),
+        ("0.163.0", REVIEWER_CATALOG_MODEL),
+        ("0.162.1", "gpt-5.6-sol"),
+        ("0.164.0", "gpt-6.1-terra"),
+    ],
 )
 def test_other_releases_and_models_never_get_the_catalog(
     monkeypatch: pytest.MonkeyPatch, version: str, model: str
@@ -240,11 +277,12 @@ def test_other_releases_and_models_never_get_the_catalog(
     )
 
 
+@pytest.mark.parametrize("version", sorted(REVIEWER_CATALOG_RUNTIME_VERSIONS))
 def test_measurement_applies_a_matching_runtime_and_records_a_fallback_once(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, version: str
 ) -> None:
     profile = profile_for(
-        record_for(b"measured codex", b"measured host", version="0.162.1"),
+        record_for(b"measured codex", b"measured host", version=version),
         home=tmp_path / "home",
         model=REVIEWER_CATALOG_MODEL,
     )
