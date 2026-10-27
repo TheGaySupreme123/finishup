@@ -13,6 +13,8 @@ import json
 from dataclasses import replace
 from typing import cast
 
+import pytest
+
 from finishup.application import semantic_case as composer
 from finishup.application.egress import (
     _excerpt_limit_capacity,  # pyright: ignore[reportPrivateUsage]
@@ -227,3 +229,40 @@ def test_the_label_cut_reproduction_composes_without_the_value() -> None:
     sent = composer.sent_excerpt_content_refs(case, manifest)
     assert sent is not None
     assert not composer.excerpt_content_refs((item,)) <= sent
+
+
+def test_a_source_too_full_of_values_to_redact_is_never_cut_from() -> None:
+    """Round 2: past the redaction pass bound, a cut sends no byte of its source (fail closed)."""
+
+    values = b"".join(b'password = "hunter%07dxyz"\n' % index for index in range(1_200))
+    assert composer.redact_before_cut(values) is None
+    for limit in range(1_000, 9_000, 400):
+        assert b"hunter" not in composer._head_tail(values, limit).encode()  # pyright: ignore[reportPrivateUsage]
+        assert b"hunter" not in (composer.fit_disclosed_excerpt(values, limit) or b"")
+    # A task input holds at most 16 KiB: shorter values, still more than 1,024 of them.
+    spec = b"".join(b"secret=h%05dz\n" % index for index in range(1_092))
+    assert len(spec) <= MAX_TASK_INPUT_TEXT_BYTES and composer.redact_before_cut(spec) is None
+    selection = replace(_SELECTION, max_excerpt_bytes=8_086)
+    case = _build(inputs=(TaskInputFile("DESIGN.md", spec, len(spec)),), selection=selection)
+    item = next(item for item in case.items if item.item_id == "task-input-01")
+    assert b"secret=" not in item.content
+    assert b"more credential-like values than can be replaced" in item.content
+    assert item.item_id in case.unplaced_item_ids
+    minimized = _minimize_everything(_candidate(case))
+    assert b"secret=" not in minimized.prepared_bytes
+
+
+def test_the_cut_source_memo_is_bounded_by_the_bytes_it_holds(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(composer, "_CUT_SOURCE_CACHE_MAX_BYTES", 4_096)
+    for index in range(40):
+        source = b"x" * 1_000 + b'\npassword = "hunter%04d"\n' % index
+        assert b"hunter" not in composer._cut_source(source)  # pyright: ignore[reportPrivateUsage]
+        held = sum(
+            len(value)
+            for value in composer._CUT_SOURCE_CACHE.values()  # pyright: ignore[reportPrivateUsage]
+            if value is not None
+        )
+        assert held <= 4_096
+        assert held == composer._cut_source_cache_bytes  # pyright: ignore[reportPrivateUsage]

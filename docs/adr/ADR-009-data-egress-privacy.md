@@ -1610,7 +1610,9 @@ measured the minimized row: 16,402 bytes. Egress refused the whole packet and no
   clip, a captured diff split into parts, a part cut again to its disclosed size, a clipped prose
   field) is taken from the whole text with every detected value already replaced
   (`redact_before_cut`), never from the raw text; the egress scan then checks what is sent as
-  usual. A cut of replaced text has no exact place in its source, so it places no bytes there and
+  usual. Text the bounded passes cannot redact in full (more values than the scanner reports
+  across them) is never cut from: the cut reads a fixed FinishUP line instead (fail closed). A cut
+  of replaced text has no exact place in its source, so it places no bytes there and
   never reads as showing its source whole (`SemanticCase.unplaced_item_ids`); a captured diff
   split from replaced text is placed in that text and reads as truncated.
 - **Leave out, then refuse.** If a semantic packet still exceeds an approved excerpt limit or the

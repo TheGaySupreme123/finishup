@@ -2071,20 +2071,30 @@ def _head_tail(raw: bytes, limit: int) -> str:
     return _head_tail_kept(raw, limit)[0]
 
 
-# Issue #1230: redact-then-cut results by source digest. A clean source stores ``None`` (no
-# content kept); a redacted one stores its redacted text, which holds no detected value.
+# Issue #1230: redact-then-cut results by source digest, LRU, bounded by entries and by the bytes
+# held. A clean source stores ``None`` (no content kept); a redacted one stores its redacted
+# text, which holds no detected value.
 _CUT_SOURCE_CACHE: Final[OrderedDict[str, bytes | None]] = OrderedDict()
 _CUT_SOURCE_CACHE_LOCK: Final = threading.Lock()
 _CUT_SOURCE_CACHE_ENTRIES: Final = 256
+_CUT_SOURCE_CACHE_MAX_BYTES: Final = 16 * 1024 * 1024
+_cut_source_cache_bytes: int = 0
+# What a cut is taken from when its source cannot be redacted in full: a fixed FinishUP line, so
+# no byte of that source is sent (fail closed).
+_UNREDACTABLE_CUT_SOURCE: Final = (
+    b"[FinishUP withheld this text: it holds more credential-like values than can be replaced.]\n"
+)
 
 
 def _cut_source(raw: bytes) -> bytes:
     """What a cut of ``raw`` is taken from: ``raw`` redacted in full first (#1230).
 
     ``redact_before_cut`` replaces every detected value before any byte is dropped, so a cut
-    can never keep a value whose label it removed. Clean text is returned as is.
+    can never keep a value whose label it removed. Clean text is returned as is; text that
+    cannot be redacted in full is replaced whole by ``_UNREDACTABLE_CUT_SOURCE``.
     """
 
+    global _cut_source_cache_bytes
     key = hashlib.sha256(raw).hexdigest()
     with _CUT_SOURCE_CACHE_LOCK:
         if key in _CUT_SOURCE_CACHE:
@@ -2092,11 +2102,21 @@ def _cut_source(raw: bytes) -> bytes:
             cached = _CUT_SOURCE_CACHE[key]
             return raw if cached is None else cached
     redacted = redact_before_cut(raw)
+    if redacted is None:
+        redacted = _UNREDACTABLE_CUT_SOURCE
+    stored = None if redacted == raw else redacted
     with _CUT_SOURCE_CACHE_LOCK:
-        _CUT_SOURCE_CACHE[key] = None if redacted == raw else redacted
-        _CUT_SOURCE_CACHE.move_to_end(key)
-        while len(_CUT_SOURCE_CACHE) > _CUT_SOURCE_CACHE_ENTRIES:
-            _CUT_SOURCE_CACHE.popitem(last=False)
+        if key not in _CUT_SOURCE_CACHE and (
+            stored is None or len(stored) <= _CUT_SOURCE_CACHE_MAX_BYTES
+        ):
+            _CUT_SOURCE_CACHE[key] = stored
+            _cut_source_cache_bytes += 0 if stored is None else len(stored)
+        while _CUT_SOURCE_CACHE and (
+            len(_CUT_SOURCE_CACHE) > _CUT_SOURCE_CACHE_ENTRIES
+            or _cut_source_cache_bytes > _CUT_SOURCE_CACHE_MAX_BYTES
+        ):
+            _evicted, dropped = _CUT_SOURCE_CACHE.popitem(last=False)
+            _cut_source_cache_bytes -= 0 if dropped is None else len(dropped)
     return redacted
 
 
