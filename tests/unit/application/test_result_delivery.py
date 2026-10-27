@@ -1150,7 +1150,9 @@ async def test_ordinary_results_are_one_response_through_the_daemon() -> None:
                     },
                 )
             )
-        assert len(pages) == 2  # the action page, then the rest of the receipt document
+        # The action page, then the rest of the receipt document; its findings section states the
+        # findings_suppressed way out once (#1234), which takes the document past one more page.
+        assert len(pages) == 3
         assert reassemble_delivery(pages)["format"] == "json"
     finally:
         await daemon.close()
@@ -1513,3 +1515,83 @@ def test_decision_fields_stay_on_page_one_beside_a_maximal_readiness() -> None:
     rebuilt = reassemble_delivery(pages)
     assert rebuilt["closure_readiness"] == source["closure_readiness"]
     assert rebuilt["totals"] == source["totals"]
+
+
+# -- #1234: the findings_suppressed re-run hint on every check-result surface ----------------
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("suppressed", [0, 8])
+async def test_a_suppressing_check_result_leads_with_the_findings_suppressed_hint(
+    suppressed: int,
+) -> None:
+    """rv16 sol/terra closing check: ``suppressed_count`` 8 and no way out in ``agent_next``."""
+
+    from dataclasses import replace
+
+    from builders.projection_workflow import run_projection_workflow
+    from finishup.application.check import check_internal_json
+    from finishup.domain.review_input_render import MAX_AGENT_NEXT_BYTES
+    from finishup.ports.ledger import CheckCommitResult
+    from finishup.protocol.readiness_text import FINDINGS_SUPPRESSED_NEXT_STEP
+
+    workflow = await run_projection_workflow("disabled")
+    internal = workflow.case("check").internal
+    assert isinstance(internal, CheckCommitResult) and internal.overall_next is not None
+    wire = check_internal_json(replace(internal, suppressed_count=suppressed))
+    lead = cast(str, wire["agent_next"])
+    assert len(lead.encode("ascii")) <= MAX_AGENT_NEXT_BYTES
+    # Once per result, in the bounded lead every host reads first.
+    escaped = json.dumps(FINDINGS_SUPPRESSED_NEXT_STEP)[1:-1]  # the hint quotes "10"
+    assert canonical_encode(cast(Any, wire)).decode().count(escaped) == (1 if suppressed else 0)
+    assert (FINDINGS_SUPPRESSED_NEXT_STEP in lead) is bool(suppressed)
+
+
+def _suppressing_check_wire(suppressed: int) -> dict[str, Any]:
+    from tests.unit.protocol.test_models_and_schemas import (
+        _check_result_wire,  # pyright: ignore[reportPrivateUsage]
+    )
+
+    from finishup.domain.review_input_render import render_agent_next
+
+    wire = cast(dict[str, Any], _check_result_wire())
+    wire["suppressed_count"] = str(suppressed)
+    wire["agent_next"] = render_agent_next(
+        {"action": "review_recorded_work", "status": "action_required", "target_refs": []},
+        (),
+        findings_suppressed=suppressed > 0,
+    )
+    return wire
+
+
+@pytest.mark.parametrize("suppressed", [0, 8])
+def test_claude_check_text_carries_the_findings_suppressed_hint(suppressed: int) -> None:
+    from finishup.protocol.readiness_text import FINDINGS_SUPPRESSED_NEXT_STEP
+
+    wire = _suppressing_check_wire(suppressed)
+    result = result_from_public_model(CheckResultModel.model_validate(wire), host_profile="claude")
+    text = "".join(cast(Any, block).text for block in result.content)
+    # Once in the bounded prose summary, once in the complete JSON copy's ``agent_next``.
+    assert text.count(FINDINGS_SUPPRESSED_NEXT_STEP) == (1 if suppressed else 0)
+    assert text.count(json.dumps(FINDINGS_SUPPRESSED_NEXT_STEP)[1:-1]) == (1 if suppressed else 0)
+    assert mcp_delivery_bytes(wire, text=text) <= HOST_RESULT_BUDGET_BYTES
+
+
+@pytest.mark.parametrize("suppressed", [0, 8])
+def test_codex_and_cursor_check_results_carry_the_hint_in_canonical_order(
+    suppressed: int,
+) -> None:
+    from finishup.protocol.readiness_text import FINDINGS_SUPPRESSED_NEXT_STEP
+
+    wire = _suppressing_check_wire(suppressed)
+    model = CheckResultModel.model_validate(wire)
+    codex = result_from_public_model(model, host_profile="codex")
+    structured = cast(dict[str, Any], codex.structuredContent)
+    assert (FINDINGS_SUPPRESSED_NEXT_STEP in structured["agent_next"]) is bool(suppressed)
+    cursor = result_from_public_model(model, host_profile="cursor")
+    text = "".join(cast(Any, block).text for block in cursor.content)
+    # Cursor reads an exact canonical (sorted-key) copy; the hint adds no field and no reorder.
+    assert text == canonical_encode(cast(Any, cursor.structuredContent)).decode()
+    assert list(json.loads(text)) == sorted(json.loads(text), key=str.encode)
+    escaped = json.dumps(FINDINGS_SUPPRESSED_NEXT_STEP)[1:-1]  # the hint quotes "10"
+    assert text.count(escaped) == (1 if suppressed else 0)

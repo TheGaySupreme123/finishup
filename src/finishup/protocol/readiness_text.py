@@ -75,7 +75,8 @@ CODEX_CHECK_CELL_PRAGMA: Final = '// @exec: {"yield_time_ms": 300000}'
 # #1226 (tq6 D2): a check whose ranking cap withheld findings cannot settle a repaired finding or
 # admit ``self_verified``, and the bare token left the agent looping. Fixed text, no caller
 # content; ``status`` (the finding's next steps), the ``respond`` refusal and the MCP refusal
-# summary carry it verbatim. ``10`` is ``protocol.models.MAX_FINDINGS_LIMIT`` (a test pins it).
+# summary carry it verbatim, and so do a capped check result's ``agent_next`` and text summary
+# (#1234). ``10`` is ``protocol.models.MAX_FINDINGS_LIMIT`` (a test pins it).
 FINDINGS_SUPPRESSED_TOKEN: Final = "findings_suppressed"
 FINDINGS_SUPPRESSED_NEXT_STEP: Final = (
     "that check withheld findings past its max_findings cap (findings_suppressed), so it cannot"

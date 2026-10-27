@@ -10476,7 +10476,12 @@ message names them with a next step and the `finishup-verification-limit:<obliga
 shows all carry the one fixed step `readiness_text.FINDINGS_SUPPRESSED_NEXT_STEP` (#1226): run
 `check` again with `max_findings` `"10"`, the maximum (omitting it uses the configured default),
 so no finding is withheld; if more than 10 findings are open, settle or answer the others first.
-It names no caller content and appears for no other blocker.
+It names no caller content and appears for no other blocker. The finding explanation also carries
+it when `findings_suppressed` is only among its listed resolution requirements (self-verification
+refused as `finding_not_rechecked`), once per explanation; a receipt's findings section states it
+once and later explanations point back to it with fixed text. A check result whose
+`suppressed_count` is nonzero carries it once in `agent_next` (after the instruction, so Codex's
+structured view and Cursor's canonical JSON copy read it) and once in its MCP text summary (#1234).
 Eligibility is `kernel/self_verification.self_verification_refusal(state, finding_id, records)`
 over the resolution reasons of that check (ADR-034): any `coverage:<code>` classified standing in
 `GAP_CLASSIFICATION` is a FinishUP limit. The to-do state `self_verified` is not resolved by its own

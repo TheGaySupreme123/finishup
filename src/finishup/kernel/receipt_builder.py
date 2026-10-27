@@ -201,7 +201,7 @@ from finishup.protocol.models import (
     SemanticReason,
     SemanticStatus,
 )
-from finishup.protocol.readiness_text import reason_phrases
+from finishup.protocol.readiness_text import FINDINGS_SUPPRESSED_NEXT_STEP, reason_phrases
 
 __all__ = [
     "CheckSuffixClass",
@@ -211,7 +211,32 @@ __all__ = [
     "closure_basis_from_context",
     "predict_context_conclusion",
     "route_did_not_require_review",
+    "suppressed_hint_once",
 ]
+
+# Issue #1234: the back-reference a later finding explanation uses once the section has stated
+# ``FINDINGS_SUPPRESSED_NEXT_STEP``. Fixed text, no caller content.
+_SUPPRESSED_HINT_ABOVE: Final = " Next: clear findings_suppressed as stated above."
+_SUPPRESSED_HINT: Final = f" Next: {FINDINGS_SUPPRESSED_NEXT_STEP}."
+
+
+def suppressed_hint_once(explanations: tuple[str, ...]) -> tuple[str, ...]:
+    """State the findings_suppressed way out once per receipt section (issue #1234).
+
+    Each finding explanation carries the hint on its own (``status`` reads them one by one); the
+    receipt joins them into one section, so every later copy becomes a fixed back-reference.
+    """
+
+    out: list[str] = []
+    hinted = False
+    for explanation in explanations:
+        if _SUPPRESSED_HINT in explanation:
+            if hinted:
+                explanation = explanation.replace(_SUPPRESSED_HINT, _SUPPRESSED_HINT_ABOVE)
+            hinted = True
+        out.append(explanation)
+    return tuple(out)
+
 
 _CONTEXT_INVALID: Final = "receipt_build_context_invalid"
 _CHECK_ABSENCE_GAPS: Final = frozenset(
@@ -2456,7 +2481,7 @@ def _sections(
             + resolved_sentence
         )
     if resolution_explanations:
-        for explanation in resolution_explanations:
+        for explanation in suppressed_hint_once(resolution_explanations):
             current = bodies[ReceiptSectionKey.FINDINGS_AND_DISPOSITIONS]
             if len((current + explanation).encode("utf-8")) > 30000:
                 bodies[ReceiptSectionKey.FINDINGS_AND_DISPOSITIONS] += (

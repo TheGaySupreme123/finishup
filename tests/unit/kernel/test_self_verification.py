@@ -549,3 +549,49 @@ def test_a_suppressing_check_tells_the_agent_how_to_clear_findings_suppressed(
     assert ("findings_suppressed" in blocking) is bool(suppressed)
     assert (f"Next: {FINDINGS_SUPPRESSED_NEXT_STEP}." in explanation) is bool(suppressed)
     assert ("max_findings" in explanation) is bool(suppressed)
+
+
+@pytest.mark.parametrize("suppressed", [0, 8])
+def test_a_resolution_requirement_naming_findings_suppressed_carries_the_hint(
+    suppressed: int,
+) -> None:
+    """#1234 (rv16 sol/terra distributed-dedup): the finding detail listed ``findings_suppressed``
+    among its resolution requirements, but self-verification was refused as
+    ``finding_not_rechecked`` with no blocking list, so the hint #1227 added never reached it."""
+
+    from dataclasses import replace
+
+    from finishup.protocol.readiness_text import FINDINGS_SUPPRESSED_NEXT_STEP
+
+    state = _state(_finding())
+    # Checked below the finding's frontier: not rechecked, so self-verification names no blockers.
+    records = _records(_row(10, replace(_check(tested=2), suppressed_count=suppressed)))
+    refusal, blocking = self_verification_evaluation(state, fnd(1), records)
+    assert (refusal, blocking) == (FINDING_NOT_RECHECKED, ())
+    explanation = finding_resolution_explanation(state, fnd(1), records)
+    assert ("findings_suppressed" in explanation) is bool(suppressed)
+    # Fixed text, delivered once per finding detail however many clauses name the token.
+    assert explanation.count(FINDINGS_SUPPRESSED_NEXT_STEP) == (1 if suppressed else 0)
+
+
+def test_a_receipt_section_states_the_findings_suppressed_hint_once() -> None:
+    """#1234: per-finding explanations each carry the hint; the joined receipt section keeps one."""
+
+    from finishup.kernel.receipt_builder import suppressed_hint_once
+    from finishup.protocol.readiness_text import FINDINGS_SUPPRESSED_NEXT_STEP
+
+    hint = f" Next: {FINDINGS_SUPPRESSED_NEXT_STEP}."
+    explanations = (
+        "fnd_a: unresolved." + hint + " Then answer.",
+        "fnd_b: resolved.",
+        "fnd_c: unresolved." + hint + " Then answer.",
+        "fnd_d: unresolved." + hint,
+    )
+    once = suppressed_hint_once(explanations)
+    assert once[:2] == explanations[:2]
+    assert " ".join(once).count(FINDINGS_SUPPRESSED_NEXT_STEP) == 1
+    assert (
+        once[2]
+        == "fnd_c: unresolved. Next: clear findings_suppressed as stated above. Then answer."
+    )
+    assert suppressed_hint_once(explanations[1:2]) == explanations[1:2]

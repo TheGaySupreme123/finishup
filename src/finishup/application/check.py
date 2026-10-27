@@ -928,6 +928,8 @@ def _agent_next(result: CheckCommitResult) -> str:
         # Issue #1209: the attached readiness's open fix-or-decline items (absent on a replay
         # that carries no readiness, which then names none rather than guessing).
         fix_or_decline=fix_or_decline_rows(result.closure_readiness),
+        # Issue #1234: the ranking cap withheld findings, so say how to clear it.
+        findings_suppressed=result.suppressed_count > 0,
     )
 
 

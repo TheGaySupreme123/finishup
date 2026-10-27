@@ -582,3 +582,24 @@ def test_agent_next_canonical_vectors_match_the_renderer() -> None:
             == payload["agent_next"]
         ), vector["vector_id"]
         assert re.fullmatch(r"[ -~]{1,2048}", payload["agent_next"]) is not None
+
+
+def test_agent_next_names_the_findings_suppressed_way_out_once_within_the_bound() -> None:
+    """#1234: a capped check's lead says how to clear ``findings_suppressed``, even at worst case."""
+
+    from finishup.protocol.readiness_text import FINDINGS_SUPPRESSED_NEXT_STEP
+
+    for action in _AGENT_NEXT_ACTIONS:
+        for count in (0, 8):
+            items = _missing_items(count, 4, "agent_suppliable")
+            targets = [ref for index in range(count) for ref in _item_refs(index, 4)]
+            overall = {
+                "action": action,
+                "status": "action_required",
+                "target_refs": (targets or [_agent_ref(99)])[:64],
+                "predicted_conclusion": "insufficient_coverage",
+            }
+            text = render_agent_next(overall, items, findings_suppressed=True)
+            assert len(text.encode("ascii")) <= MAX_AGENT_NEXT_BYTES
+            assert text.count(FINDINGS_SUPPRESSED_NEXT_STEP) == 1
+            assert FINDINGS_SUPPRESSED_NEXT_STEP not in render_agent_next(overall, items)
