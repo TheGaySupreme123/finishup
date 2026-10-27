@@ -45,6 +45,10 @@ from finishup.adapters.keys.macos_user_presence import (
 from finishup.adapters.keys.os_keyring import AutoUnlockPassphraseStore
 from finishup.adapters.keys.secret_memory import LocalSecretMemory
 from finishup.adapters.keys.vault_passphrase import VaultRootEnvelope
+from finishup.adapters.memory.ledger import (
+    acquire_ledger_executors,
+    release_ledger_executors,
+)
 from finishup.adapters.repository_identity import resolve_repository_privacy_context
 from finishup.adapters.session_events import SessionEventMonitor
 from finishup.adapters.sqlite.connection import StorageUnsafeError
@@ -109,6 +113,7 @@ from finishup.observability.logging import (
     record_public_error_without_raising,
     record_unexpected_exception_without_raising,
 )
+from finishup.observability.read_stages import begin_read_stages, end_read_stages, read_stage
 from finishup.ports.control import (
     ControlCallRequest,
     ControlClientKind,
@@ -396,6 +401,14 @@ _WORKFLOW_RESULT_MODELS: Final[Mapping[ControlMethod, type[BaseModel]]] = {
     ControlMethod.STATUS: StatusResult,
     ControlMethod.RECEIPT: ReceiptResult,
 }
+
+
+def _remaining_deadline_ms(deadline_ms: int | None, deadline_at: float | None) -> int | None:
+    """Return what is left of a read's one budget, or the caller's own deadline (#1231)."""
+
+    if deadline_at is None:
+        return deadline_ms
+    return max(0, int((deadline_at - asyncio.get_running_loop().time()) * 1_000))
 
 
 async def _acquire_dispatch_gate(gate: asyncio.Lock, deadline_ms: int | None) -> None:
@@ -816,6 +829,7 @@ class ServiceDaemon:
         self._started = False
         self._closed = False
         self._stopping = False
+        self._holds_ledger_pools = False
         self._state_reason = "none"
         # The serving route each session's MCP bridge last named on a status or check (#985).
         self._session_routes = SessionRouteMemory(_composition.session_route_path)
@@ -869,6 +883,11 @@ class ServiceDaemon:
                 raise LifecycleError("invalid_transition")
             lifecycle = self._composition.lifecycle
             await lifecycle.acquire_singleton()
+            # Own the process-wide ledger pools until this instance's stop() releases them; a
+            # failed start releases through close() below (#1231).
+            if not self._holds_ledger_pools:
+                acquire_ledger_executors()
+                self._holds_ledger_pools = True
             try:
                 monitor = self._composition.session_monitor
                 if monitor is not None:
@@ -1175,24 +1194,32 @@ class ServiceDaemon:
                 self._stop_event.set()
                 return
             self._stopping = True
-            await self._check_waits.close()
-            self._state_reason = reason if reason == "internal_error" else "shutdown_requested"
-            lifecycle = self._composition.lifecycle
-            if self._started:
-                async with self._activation_lock:
-                    if lifecycle.state is ServiceState.UNLOCKING:
-                        await self._composition.vault.lock()
-                        await lifecycle.transition(ServiceState.LOCKED)
-                    if lifecycle.state is not ServiceState.DRAINING:
-                        try:
-                            await lifecycle.request_stop(reason)
-                        except LifecycleError as exc:
-                            if exc.reason != "invalid_transition":
-                                raise
-            await self._close_components()
-            await lifecycle.close()
-            self._closed = True
-            self._stop_event.set()
+            try:
+                await self._check_waits.close()
+                self._state_reason = reason if reason == "internal_error" else "shutdown_requested"
+                lifecycle = self._composition.lifecycle
+                if self._started:
+                    async with self._activation_lock:
+                        if lifecycle.state is ServiceState.UNLOCKING:
+                            await self._composition.vault.lock()
+                            await lifecycle.transition(ServiceState.LOCKED)
+                        if lifecycle.state is not ServiceState.DRAINING:
+                            try:
+                                await lifecycle.request_stop(reason)
+                            except LifecycleError as exc:
+                                if exc.reason != "invalid_transition":
+                                    raise
+                await self._close_components()
+                await lifecycle.close()
+                self._closed = True
+                self._stop_event.set()
+            finally:
+                # The ledger pools are process-wide. Every teardown path (serve() cleanup, the
+                # service-stop request, close(), and a failed teardown) releases this instance's
+                # hold exactly once; the last instance to leave retires them (#1231).
+                if self._holds_ledger_pools:
+                    self._holds_ledger_pools = False
+                    release_ledger_executors()
 
     async def close(self) -> None:
         """Idempotent alias for bounded service shutdown."""
@@ -1328,6 +1355,73 @@ class ServiceDaemon:
         detached_check: bool = False,
         observations_awaited: CheckObservationsAwaited | None = None,
     ) -> object:
+        if not _request_is_read_only(request):
+            return await self._dispatch_ready_gated(
+                projection_context,
+                request,
+                repository_privacy_context,
+                detached_check=detached_check,
+                observations_awaited=observations_awaited,
+            )
+        # A read spends one budget across both gate waits and its handler (#1231). Each stage
+        # used to restart the caller's full deadline, so a read could keep the gates and the
+        # task ledger busy for up to three deadlines after its caller had already given up.
+        deadline_at = (
+            None
+            if request.deadline_ms is None
+            else asyncio.get_running_loop().time() + request.deadline_ms / 1_000
+        )
+        stages, token = begin_read_stages()
+        try:
+            result = await self._dispatch_ready_gated(
+                projection_context,
+                request,
+                repository_privacy_context,
+                detached_check=detached_check,
+                observations_awaited=observations_awaited,
+                deadline_at=deadline_at,
+            )
+        except ControlError as exc:
+            if exc.reason != "request_timeout":
+                raise
+            # Name the stage the read was still waiting on, under the id the caller receives.
+            correlation_id = stages.record(
+                component="service.daemon",
+                operation="status_read_stage_elapsed",
+                request_id=_safe_body_request_id(request),
+                correlation_id=exc.correlation_id,
+                force=True,
+            )
+            if exc.correlation_id is None and correlation_id is not None:
+                raise ControlError(
+                    exc.reason,
+                    retryable=exc.retryable,
+                    correlation_id=correlation_id,
+                    phase=exc.phase,
+                ) from exc
+            raise
+        else:
+            stages.record(
+                component="service.daemon",
+                operation="status_read_stage_elapsed",
+                request_id=_safe_body_request_id(request),
+                correlation_id=None,
+                force=False,
+            )
+            return result
+        finally:
+            end_read_stages(token)
+
+    async def _dispatch_ready_gated(
+        self,
+        projection_context: ClientProjectionContext,
+        request: ControlCallRequest,
+        repository_privacy_context: RepositoryPrivacyContext | None,
+        *,
+        detached_check: bool = False,
+        observations_awaited: CheckObservationsAwaited | None = None,
+        deadline_at: float | None = None,
+    ) -> object:
         # A recovery ceremony holds this same lock across an unbounded human wait, so an
         # unbounded acquire would hang every ordinary call for as long as someone stares at a
         # confirmation prompt. The caller's own deadline decides how long it is willing to wait.
@@ -1338,7 +1432,10 @@ class ServiceDaemon:
             self._check_read_window.enter()
             try:
                 return await self._dispatch_ready_under_maintenance_gate(
-                    projection_context, request, repository_privacy_context
+                    projection_context,
+                    request,
+                    repository_privacy_context,
+                    deadline_at=deadline_at,
                 )
             finally:
                 self._check_read_window.leave()
@@ -1352,10 +1449,16 @@ class ServiceDaemon:
         if not capture_only and isinstance(observation_gate, asyncio.Lock):
             # Do not let a structural waiter hold maintenance while a sweeper owns the row gate:
             # a following native capture must still be able to stage its ticket.
-            await _acquire_dispatch_gate(observation_gate, request.deadline_ms)
+            with read_stage("observation_gate"):
+                await _acquire_dispatch_gate(
+                    observation_gate, _remaining_deadline_ms(request.deadline_ms, deadline_at)
+                )
             observation_acquired = True
         try:
-            await _acquire_dispatch_gate(maintenance_gate, request.deadline_ms)
+            with read_stage("maintenance_gate"):
+                await _acquire_dispatch_gate(
+                    maintenance_gate, _remaining_deadline_ms(request.deadline_ms, deadline_at)
+                )
             maintenance_acquired = True
             if detached_check and observation_acquired:
                 self._check_read_window.open()
@@ -1370,6 +1473,7 @@ class ServiceDaemon:
                 repository_privacy_context,
                 detached_check=detached_check,
                 observations_awaited=observations_awaited,
+                deadline_at=deadline_at,
             )
         finally:
             try:
@@ -1453,6 +1557,7 @@ class ServiceDaemon:
         *,
         detached_check: bool = False,
         observations_awaited: CheckObservationsAwaited | None = None,
+        deadline_at: float | None = None,
     ) -> object:
         application = self._application
         if application is None:
@@ -1469,7 +1574,8 @@ class ServiceDaemon:
             )
         admission: Admission | None = None
         try:
-            admission = await self._composition.lifecycle.admit(request.method.value)
+            with read_stage("admission"):
+                admission = await self._composition.lifecycle.admit(request.method.value)
             handler = getattr(application, request.method.value, None)
             if (
                 request.method is ControlMethod.STATUS
@@ -1489,13 +1595,21 @@ class ServiceDaemon:
                         observations_awaited=observations_awaited,
                     )
                 else:
-                    async with asyncio.timeout(request.deadline_ms / 1_000):
-                        internal = await self._invoke_ready_handler(
-                            handler,
-                            routed,
-                            repository_privacy_context,
-                            observations_awaited=observations_awaited,
-                        )
+                    # A read keeps only what is left of its one budget (#1231); a write keeps
+                    # its full handler deadline after the gate waits, as before.
+                    handler_deadline = (
+                        asyncio.get_running_loop().time() + request.deadline_ms / 1_000
+                        if deadline_at is None
+                        else deadline_at
+                    )
+                    async with asyncio.timeout_at(handler_deadline):
+                        with read_stage("handler"):
+                            internal = await self._invoke_ready_handler(
+                                handler,
+                                routed,
+                                repository_privacy_context,
+                                observations_awaited=observations_awaited,
+                            )
             except TimeoutError as exc:
                 # Includes local observation-store contention inside the handler: the wire
                 # vocabulary is closed, so it stays the retryable ``request_timeout`` while
@@ -1518,13 +1632,23 @@ class ServiceDaemon:
             # The handler has returned, so a write may already be durable. Everything below only
             # shapes the response; an unexpected failure there must not be reported as a failed
             # operation.
-            projected = await self._project_completed_response(
-                projection_context,
-                request,
-                application,
-                internal,
-                repository_privacy_context,
-            )
+            try:
+                # A read shapes its response inside what is left of its one budget, so binding,
+                # privacy projection and hydration cannot hold both gates past it (#1231). A
+                # write keeps an unbounded projection: its operation may already be durable.
+                async with asyncio.timeout_at(deadline_at):
+                    with read_stage("response_projection"):
+                        projected = await self._project_completed_response(
+                            projection_context,
+                            request,
+                            application,
+                            internal,
+                            repository_privacy_context,
+                        )
+            except TimeoutError as exc:
+                raise self._read_projection_failure(
+                    request, exc, phase="projection", reason="request_timeout"
+                ) from exc
             if _request_is_read_only(request):
                 self._read_projection_recovered(request)
             return projected
@@ -1702,6 +1826,10 @@ class ServiceDaemon:
         except (ControlError, LifecycleError, PublicOperationError):
             raise
         except (asyncio.CancelledError, Exception) as exc:
+            if isinstance(exc, asyncio.CancelledError) and _request_is_read_only(request):
+                # A read changed nothing, so its cancellation (including its own deadline
+                # firing here, #1231) stays a cancellation for the caller to classify.
+                raise
             # Cancellation is reclassified here too. `dispatch` already converts a cancelled call
             # into a result rather than propagating, and past this point the operation may be
             # durable — reporting CANCELLED would say the work did not happen and would omit the

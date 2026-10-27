@@ -101,6 +101,7 @@ from finishup.observability.logging import (
     record_classified_exception_without_raising,
     record_unexpected_exception_without_raising,
 )
+from finishup.observability.read_stages import read_stage
 from finishup.ports.change_capture import (
     ChangeCapturePort,
     CheckWorkspaceSource,
@@ -2624,8 +2625,10 @@ class Application:
         route_profile: Literal["policy", "strict"] | None = None,
         repository_privacy_context: RepositoryPrivacyContext | None = None,
     ) -> StatusInternalResult:
-        await self._require_repository_route(request, repository_privacy_context)
-        await self._renew_activity_session(request.session_id, request)
+        with read_stage("repository_route"):
+            await self._require_repository_route(request, repository_privacy_context)
+        with read_stage("session_renewal"):
+            await self._renew_activity_session(request.session_id, request)
         if request.delivery_cursor is not None:
             raise invalid_cursor()
         result = await execute_status(
@@ -2633,7 +2636,8 @@ class Application:
             request,
             route_profile=route_profile,
         )
-        state = await self._credential_heuristic_state(repository_privacy_context)
+        with read_stage("credential_state"):
+            state = await self._credential_heuristic_state(repository_privacy_context)
         return result if state is None else replace(result, credential_heuristic=state)
 
     async def read_result_delivery(
