@@ -5724,6 +5724,31 @@ def _receipt_not_sent_lines(views: Iterable[object]) -> tuple[str, ...]:
             "reached a provider; its approved_categories and counts.approved_items are "
             "classification results, not data sent"
         )
+    lines.extend(_receipt_refusal_lines(views))
+    return tuple(lines)
+
+
+def _receipt_refusal_lines(views: Iterable[object]) -> tuple[str, ...]:
+    """Name why a refused network receipt was refused, in closed values and integers only.
+
+    A size refusal (#1129) keeps ``blocked_by_policy`` / ``policy_denied``; its typed
+    ``capacity_exceeded`` says it was the size, not a policy rule.
+    """
+
+    from finishup.ports.privacy import NetworkEgressReceiptView
+
+    lines: list[str] = []
+    for view in views:
+        if type(view) is not NetworkEgressReceiptView:
+            continue
+        receipt = view.receipt
+        capacity = receipt.capacity_exceeded
+        if capacity is not None:
+            lines.append(
+                f"capacity_exceeded: privacy receipt {receipt.receipt_id} was refused for size, "
+                f"not by a policy rule: {capacity.attempted} {capacity.unit} against the "
+                f"{capacity.scope} limit of {capacity.limit}; nothing was sent"
+            )
     return tuple(lines)
 
 

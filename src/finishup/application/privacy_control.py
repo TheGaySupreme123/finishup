@@ -322,6 +322,15 @@ def encode_privacy_receipt_view(view: PrivacyReceiptView) -> JsonObject:
         if network.origin_operation is not None:
             # The closed operation that asked for this disclosure (tb4n2 N-5).
             body["origin_operation"] = network.origin_operation.value
+        if network.capacity_exceeded is not None:
+            # #1129: a size refusal names the bound it exceeded, in integers only.
+            capacity = network.capacity_exceeded
+            body["capacity_exceeded"] = {
+                "scope": capacity.scope,
+                "unit": capacity.unit,
+                "attempted": str(capacity.attempted),
+                "limit": str(capacity.limit),
+            }
         destination = network.destination
         if isinstance(destination, ProviderBinding):
             body["destination"] = {

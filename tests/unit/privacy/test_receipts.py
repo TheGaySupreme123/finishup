@@ -144,6 +144,8 @@ def test_network_receipt_has_complete_frozen_schema_shape() -> None:
         "withheld_item_ids",
         "withheld_item_reason",
         "origin_operation",
+        # #1129: a size refusal's typed capacity reason (1.1.0 only).
+        "capacity_exceeded",
     }
 
 

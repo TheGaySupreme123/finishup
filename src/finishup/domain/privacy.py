@@ -101,6 +101,8 @@ __all__ = [
     "PrivacyReason",
     "ProviderBinding",
     "ProviderDataUseProfile",
+    "RECEIPT_CAPACITY_SCOPE_UNITS",
+    "ReceiptCapacity",
     "ReceiptCounts",
     "ReceiptPolicyBinding",
     "ReceiptSecretScan",
@@ -2760,6 +2762,43 @@ class ReceiptTransformations:
         _nonnegative(self.blocked_items)
 
 
+# The approved bound a size refusal exceeded (#1129), with the unit it counts in. The pairs are the
+# ones egress measures: the whole rendered disclosure in bytes or estimated model tokens, one
+# excerpt's bytes, the excerpt count, or all excerpts' bytes.
+RECEIPT_CAPACITY_SCOPE_UNITS: Final = frozenset(
+    {
+        ("disclosure", "bytes"),
+        ("disclosure", "tokens"),
+        ("excerpt", "bytes"),
+        ("excerpt", "excerpts"),
+        ("excerpt_total", "bytes"),
+    }
+)
+
+
+@dataclass(frozen=True, slots=True)
+class ReceiptCapacity:
+    """Why a size refusal was refused: the bound, its unit, and the bounded sizes (#1129).
+
+    A capacity refusal keeps ``blocked_by_policy`` / ``policy_denied`` as its outcome and reason
+    (the durable reason vocabulary is unchanged); this typed object says the refusal was for size,
+    not for a policy rule, and carries only integers, never content.
+    """
+
+    scope: Literal["disclosure", "excerpt", "excerpt_total"]
+    unit: Literal["bytes", "tokens", "excerpts"]
+    attempted: int
+    limit: int
+
+    def __post_init__(self) -> None:
+        if (self.scope, self.unit) not in RECEIPT_CAPACITY_SCOPE_UNITS:
+            raise _invalid()
+        _nonnegative(self.attempted)
+        _nonnegative(self.limit)
+        if not self.limit < self.attempted:
+            raise _invalid()
+
+
 class ReceiptSecretScanStage(str, Enum):  # noqa: UP042 - durable receipt vocabulary
     CANDIDATE = "candidate"
     PREPARED_CASE = "prepared_case"
@@ -2841,6 +2880,10 @@ class EgressReceipt:
     # The closed operation that asked for this disclosure (tb4n2 N-5); 1.1.0 only, optional so
     # every receipt written before it keeps its exact bytes.
     origin_operation: EgressOriginOperation | None = None
+    # #1129: a size refusal's typed capacity reason; 1.1.0 only, and only on a pre-dispatch
+    # ``blocked_by_policy`` / ``policy_denied`` refusal. Absent on every other receipt, so every
+    # receipt written before it keeps its exact bytes.
+    capacity_exceeded: ReceiptCapacity | None = None
 
     def __post_init__(self) -> None:
         if type(self.schema_version) is not str or self.schema_version not in {"1.0.0", "1.1.0"}:
@@ -2849,6 +2892,13 @@ class EgressReceipt:
             _enum(self.origin_operation, EgressOriginOperation)
             if self.schema_version == "1.0.0":
                 raise _invalid()
+        if self.capacity_exceeded is not None and (
+            type(self.capacity_exceeded) is not ReceiptCapacity
+            or self.schema_version == "1.0.0"
+            or self.outcome is not PrivacyOutcome.BLOCKED_BY_POLICY
+            or self.safe_failure_reason is not PrivacyReason.POLICY_DENIED
+        ):
+            raise _invalid()
         validate_id(IdKind.EGRESS_RECEIPT, self.receipt_id)
         validate_id(IdKind.REQUEST, self.request_id)
         validate_id(IdKind.PRIVACY_PROPOSAL, self.privacy_proposal_id)
