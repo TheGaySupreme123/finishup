@@ -150,8 +150,11 @@ budget hint and the `respond` descriptor. The shared sentence is
 
 - **Gate and blockers.** A repaired finding blocked by a FinishUP limit no longer keeps readiness
   `action_required`. The gate stops pushing agents toward false blockers.
-- **Receipts.** A receipt never reads clean on the agent's word alone. It discloses each
-  self-verified id and stays at best `insufficient_coverage`.
+- **Receipts.** A receipt never reads clean on the agent's word alone for an actionable finding.
+  It discloses each such self-verified id and stays at best `insufficient_coverage`. An answered
+  process note (`ledger_stale_or_incomplete` or `decision_needed`), including one answered
+  `self_verified`, is outside that set and does not cap the receipt (amendment of 2026-10-29,
+  #1243).
 - **Older artifacts.** A receipt artifact older than 1.3.0 has no terminal sections. There a
   self-verified item still counts as unresolved, as `rejection_accepted` does.
 - **Lineage (owner decision, 2026-10-07: "carry it as self-verified").** A child task's
@@ -372,3 +375,18 @@ state only the recorded verification and do not infer a repair. The receipt's op
 identify those concerns separately. The state stays final, disclosed and independently unresolved;
 its receipt cannot read clean. Historical self-verifications without a retained rejection keep
 neutral wording, because their rationale alone does not prove which outcome occurred.
+
+## Amendment (2026-10-29): an answered process note does not cap the receipt (#1243)
+
+Owner decision D8, recorded on #1247. `ledger_stale_or_incomplete` and `decision_needed` are not
+actionable. `finding_closure` returns no row for them, and that row is the only finding set the
+predictor, the receipt's terminal id lists and readiness `self_verified` read. An answer on one of
+those kinds, including `self_verified`, does not cap the receipt and does not raise
+`finding_self_verified`. `respond` still accepts the answer. A child manifest already refuses
+`self_verified` unless the kind is actionable, so the parent rollup was not kind-blind.
+
+If the predicted conclusion is cleaner than the ids the receipt is about to stamp, the builder
+keeps the lower conclusion and names the conflicting ids. It does not raise
+`invalid_receipt_conclusion`. The domain invariant stays, as a backstop the builder does not reach.
+Maintainer acknowledgement for this design-gated receipt change is the owner's 2026-10-29 decision
+on #1247.

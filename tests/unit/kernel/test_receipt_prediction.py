@@ -23,6 +23,7 @@ from finishup.kernel.receipt_prediction import (
     ClosureBasis,
     LineageBasis,
     PredictionConclusion,
+    align_receipt_conclusion,
     predict_receipt_conclusion,
 )
 
@@ -195,6 +196,45 @@ def test_a_pending_dependency_or_running_check_makes_the_prediction_provisional(
     assert predict_receipt_conclusion(
         _basis(live_blockers=("lineage_manifest_not_recorded",))
     ).provisional
+
+
+@pytest.mark.parametrize(
+    "kind_name",
+    ("ledger_stale_or_incomplete", "decision_needed"),
+)
+def test_a_self_verified_process_note_predicts_the_issued_conclusion(kind_name: str) -> None:
+    """#1243: the issued receipt conclusion is the prediction, and a process note stays clean."""
+
+    from finishup.domain.findings import FindingKind
+    from finishup.kernel.receipt_builder import predict_context_conclusion
+    from unit.kernel import test_receipt_builder as receipt_builder_tests
+
+    context = receipt_builder_tests._self_verified_context(  # pyright: ignore[reportPrivateUsage]
+        receipt_builder_tests._process_note(FindingKind(kind_name))  # pyright: ignore[reportPrivateUsage]
+    )
+    document = receipt_builder_tests._build(  # pyright: ignore[reportPrivateUsage]
+        context,
+        versions=receipt_builder_tests._terminal_versions(),  # pyright: ignore[reportPrivateUsage]
+    )
+    predicted = predict_context_conclusion(context)
+    assert document.conclusion.value == predicted.conclusion.value
+    assert predicted.conclusion is PredictionConclusion.NO_UNRESOLVED_DETERMINISTIC_FINDINGS
+    assert predicted.reasons == ()
+
+
+def test_a_mismatch_falls_back_to_the_lower_conclusion_and_names_the_ids() -> None:
+    prediction = predict_receipt_conclusion(_basis())
+    assert prediction.conclusion is PredictionConclusion.NO_UNRESOLVED_DETERMINISTIC_FINDINGS
+    aligned = align_receipt_conclusion(
+        prediction, capping_finding_ids=(str(fnd(4)), str(fnd(4)), str(fnd(9)))
+    )
+    assert aligned.conclusion is PredictionConclusion.INSUFFICIENT_COVERAGE
+    assert aligned.reasons[0].code == "findings_disclosed"
+    assert aligned.reasons[0].count == 2
+    assert set(aligned.reasons[0].refs) == {str(fnd(4)), str(fnd(9))}
+    # A prediction that is already the lower label is left alone.
+    capped = predict_receipt_conclusion(_basis(findings=(_finding(1, "self_verified"),)))
+    assert align_receipt_conclusion(capped, capping_finding_ids=(str(fnd(1)),)) is capped
 
 
 def test_reasons_are_bounded_and_the_total_is_kept() -> None:

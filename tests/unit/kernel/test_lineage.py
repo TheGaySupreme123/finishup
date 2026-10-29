@@ -237,6 +237,20 @@ def test_informational_finding_does_not_hide_lifecycle_gap(
     assert blocker in evaluation.coverage.known_gaps
 
 
+def test_a_process_note_cannot_be_stamped_self_verified() -> None:
+    """#1243: the child snapshot refuses self_verified on a non-actionable kind."""
+
+    with pytest.raises(ValueError):
+        ChildFindingSnapshot(
+            finding_id=_FINDING,
+            kind=FindingKind.LEDGER_STALE_OR_INCOMPLETE,
+            origin=FindingOrigin.DETERMINISTIC,
+            priority=FINDING_KIND_TRAITS[FindingKind.LEDGER_STALE_OR_INCOMPLETE][0],
+            resolved=False,
+            self_verified=True,
+        )
+
+
 def test_informational_finding_annotates_verified_terminal_child() -> None:
     finding = _finding(FindingKind.LEDGER_STALE_OR_INCOMPLETE)
     evaluation = evaluate_lineage(LineageManifest((_child(findings=(finding,)),)))

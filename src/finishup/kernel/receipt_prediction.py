@@ -42,6 +42,7 @@ __all__ = [
     "PredictionConclusion",
     "PredictionReason",
     "ReceiptPrediction",
+    "align_receipt_conclusion",
     "predict_receipt_conclusion",
 ]
 
@@ -314,4 +315,52 @@ def predict_receipt_conclusion(basis: ClosureBasis) -> ReceiptPrediction:
         len(reasons),
         basis.frontier,
         provisional=bool(basis.live_blockers) or basis.check_in_flight,
+    )
+
+
+def align_receipt_conclusion(
+    prediction: ReceiptPrediction,
+    *,
+    capping_finding_ids: tuple[str, ...] = (),
+    acknowledged_obligation_ids: tuple[str, ...] = (),
+) -> ReceiptPrediction:
+    """Keep the lower conclusion when the ids about to be stamped disagree with it.
+
+    A clean prediction beside a self-verified, disputed or disclosed-limitation id, or beside an
+    acknowledged obligation, used to raise ``invalid_receipt_conclusion``. The lower label is
+    ``insufficient_coverage``, and the conflicting ids are named on the reason. Callers pass only
+    ids taken from the same closures the prediction read, so an answered process note (no closure)
+    is not in ``capping_finding_ids`` and does not cap (#1243, D8).
+    """
+
+    if type(prediction) is not ReceiptPrediction:
+        raise ValueError("closure_basis_invalid")
+    if prediction.conclusion is not PredictionConclusion.NO_UNRESOLVED_DETERMINISTIC_FINDINGS:
+        return prediction
+    findings = tuple(dict.fromkeys(capping_finding_ids))
+    obligations = tuple(dict.fromkeys(acknowledged_obligation_ids))
+    if not findings and not obligations:
+        return prediction
+    added: list[PredictionReason] = []
+    if findings:
+        added.append(
+            PredictionReason("findings_disclosed", "R3", len(findings), _refs(findings), None)
+        )
+    if obligations:
+        added.append(
+            PredictionReason(
+                "obligations_acknowledged",
+                "R4",
+                len(obligations),
+                _refs(obligations),
+                None,
+            )
+        )
+    merged = (*prediction.reasons, *added)
+    return ReceiptPrediction(
+        PredictionConclusion.INSUFFICIENT_COVERAGE,
+        tuple(merged[:MAX_LISTED_REASONS]),
+        len(merged),
+        prediction.basis_frontier,
+        prediction.provisional,
     )

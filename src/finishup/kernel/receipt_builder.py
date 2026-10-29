@@ -184,6 +184,7 @@ from finishup.kernel.receipt_prediction import (
     LineageBasis,
     PredictionConclusion,
     ReceiptPrediction,
+    align_receipt_conclusion,
     predict_receipt_conclusion,
 )
 from finishup.kernel.reducers import is_material_event_family
@@ -369,7 +370,9 @@ class ReceiptFindingState:
     # Issue #905 terminal states. ``acknowledged_not_done`` stays unresolved and blocking;
     # ``rejection_accepted`` stays unresolved but no longer blocks a clean conclusion. Both are
     # disclosed by id in their own receipt sections. ``self_verified`` (issue #984) stays
-    # unresolved, is not agent work, and caps the conclusion at ``insufficient_coverage``.
+    # unresolved, is not agent work, and caps the conclusion at ``insufficient_coverage``
+    # when the kind is actionable. An answered process note has no closure and does not cap
+    # (#1243).
     acknowledged_not_done: bool = False
     rejection_accepted: bool = False
     self_verified: bool = False
@@ -1391,6 +1394,45 @@ def _flag_closure(
         None,
         (),
         state.duplicate_of_finding_id or state.finding_id,
+    )
+
+
+# Terminal id lists are views of the closures the conclusion already read (#1243). A non-actionable
+# kind has no closure, so an answered process note is absent from every list.
+_TERMINAL_ID_BASES: Final = MappingProxyType(
+    {
+        "acknowledged_not_done": frozenset(
+            {
+                "acknowledged_not_done_requirement",
+                "acknowledged_not_done_bookkeeping",
+                "limitation_acknowledged_not_done",
+            }
+        ),
+        "rejection_accepted": frozenset({"rejection_accepted"}),
+        "self_verified": frozenset({"self_verified"}),
+        "disputed_after_rebuttal": frozenset({"disputed_after_rebuttal"}),
+        "limitation_disclosed": frozenset({"limitation_disclosed"}),
+    }
+)
+
+
+def _terminal_finding_ids(
+    closures: tuple[FindingClosure, ...],
+    key: str,
+    retained_ids: frozenset[FindingId],
+) -> tuple[FindingId, ...]:
+    """Finding ids whose closure basis is the terminal list ``key``."""
+
+    bases = _TERMINAL_ID_BASES[key]
+    return tuple(
+        sorted(
+            (
+                closure.finding_id
+                for closure in closures
+                if closure.basis in bases and closure.finding_id in retained_ids
+            ),
+            key=_ascii_key,
+        )
     )
 
 
@@ -2894,8 +2936,11 @@ def build_receipt(
     settles_rejections = receipt_document_carries_terminal_sections(versions)
     # The closure classes (ADR-046) decide what is unresolved: a finding whose receipt effect is
     # ``unresolved_findings_remain`` (open, awaiting a ruling, or an acknowledged requirement).
-    # ``self_verified``, disputed, disclosed-limitation and bookkeeping-acknowledged findings stay
-    # disclosed by id but are not agent work and cap the conclusion at ``insufficient_coverage``.
+    # Actionable ``self_verified``, disputed, disclosed-limitation and bookkeeping-acknowledged
+    # findings stay disclosed by id but are not agent work and cap the conclusion at
+    # ``insufficient_coverage``. A process note (``ledger_stale_or_incomplete``,
+    # ``decision_needed``) has no closure, so an answer on it, including ``self_verified``, does
+    # not cap (#1243). The id lists below are that same closure set.
     closures = _context_closures(context, terminal_sections=settles_rejections)
     closure_by_id = {closure.finding_id: closure for closure in closures}
     unresolved_actionable = tuple(
@@ -3069,6 +3114,41 @@ def build_receipt(
     # Resolved history is named only for rows the profile retains: a profile that omits a
     # finding row must not leak its id through the summary items.
     retained_ids = frozenset(finding.finding_id for finding in retained_findings)
+    # Terminal ids are the closures the conclusion read, not the kind-blind flags (#1243).
+    # When those ids would forbid the predicted label, keep the lower label and name them.
+    acknowledged_not_done_ids = (
+        _terminal_finding_ids(closures, "acknowledged_not_done", retained_ids)
+        if settles_rejections
+        else ()
+    )
+    rejection_accepted_ids = (
+        _terminal_finding_ids(closures, "rejection_accepted", retained_ids)
+        if settles_rejections
+        else ()
+    )
+    self_verified_ids = (
+        _terminal_finding_ids(closures, "self_verified", retained_ids) if settles_rejections else ()
+    )
+    disputed_ids = (
+        _terminal_finding_ids(closures, "disputed_after_rebuttal", retained_ids)
+        if settles_rejections
+        else ()
+    )
+    limitation_disclosed_ids = (
+        _terminal_finding_ids(closures, "limitation_disclosed", retained_ids)
+        if settles_rejections
+        else ()
+    )
+    stamped_obligations = acknowledged_obligations if settles_rejections else ()
+    prediction = align_receipt_conclusion(
+        prediction,
+        capping_finding_ids=tuple(
+            str(item) for item in (*self_verified_ids, *disputed_ids, *limitation_disclosed_ids)
+        ),
+        acknowledged_obligation_ids=tuple(str(item) for item in stamped_obligations),
+    )
+    conclusion = ReceiptConclusion(prediction.conclusion.value)
+    closure_summary = _closure_summary(basis, prediction) if settles_rejections else None
     resolved_finding_ids = tuple(
         sorted(
             (
@@ -3223,69 +3303,6 @@ def build_receipt(
         0 if context.applicable_check is None else context.applicable_check.suppressed_count
     )
     terminal_sections = settles_rejections
-    acknowledged_not_done_ids = tuple(
-        sorted(
-            (
-                state.finding_id
-                for state in context.finding_states
-                if state.acknowledged_not_done and state.finding_id in retained_ids
-            ),
-            key=_ascii_key,
-        )
-        if terminal_sections
-        else ()
-    )
-    rejection_accepted_ids = tuple(
-        sorted(
-            (
-                state.finding_id
-                for state in context.finding_states
-                if state.rejection_accepted and state.finding_id in retained_ids
-            ),
-            key=_ascii_key,
-        )
-        if terminal_sections
-        else ()
-    )
-    self_verified_ids = tuple(
-        sorted(
-            (
-                state.finding_id
-                for state in context.finding_states
-                if state.self_verified and state.finding_id in retained_ids
-            ),
-            key=_ascii_key,
-        )
-        if terminal_sections
-        else ()
-    )
-    disputed_ids = tuple(
-        sorted(
-            (
-                state.finding_id
-                for state in context.finding_states
-                if state.disputed_after_rebuttal and state.finding_id in retained_ids
-            ),
-            key=_ascii_key,
-        )
-        if terminal_sections
-        else ()
-    )
-    limitation_disclosed_ids = (
-        tuple(
-            sorted(
-                (
-                    closure.finding_id
-                    for closure in closures
-                    if closure.basis == "limitation_disclosed"
-                    and closure.finding_id in retained_ids
-                ),
-                key=_ascii_key,
-            )
-        )
-        if terminal_sections
-        else ()
-    )
     duplicate_links = (
         tuple(
             ReceiptDuplicateLink(state.finding_id, state.duplicate_of_finding_id)

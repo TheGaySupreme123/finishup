@@ -1056,15 +1056,17 @@ def closure_readiness_facts(
         if finding_acknowledged_not_done(state, finding.finding_id)
         or finding_todo_state(state, finding.finding_id) is FindingTodoState.ACKNOWLEDGED_NOT_DONE
     }
+    # The same classifier as the receipt (#1243). A process note has no closure, so answering it
+    # ``self_verified`` does not raise ``finding_self_verified``.
     self_verified = {
-        duplicate_counting_id(state, finding.finding_id)
-        for finding in current
-        if finding_todo_state(state, finding.finding_id) is FindingTodoState.SELF_VERIFIED
+        closure.counts_as
+        for closure in finding_classes.values()
+        if closure.basis == "self_verified"
     }
     disputed = {
-        finding.finding_id
-        for finding in current
-        if finding_todo_state(state, finding.finding_id) is FindingTodoState.DISPUTED_AFTER_REBUTTAL
+        closure.finding_id
+        for closure in finding_classes.values()
+        if closure.basis == "disputed_after_rebuttal"
     }
     # The receipt's applicability rule reads the same observation-limitation set (issue #911).
     limitations = observation_limitation_finding_ids(state, records)

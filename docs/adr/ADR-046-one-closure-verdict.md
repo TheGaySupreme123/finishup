@@ -555,3 +555,12 @@ Verification: `tests/unit/kernel/test_draft_receipt.py`,
 (`tests/integration/closure/test_closure_shapes.py`, and with it the property test
 `tests/property/test_closure_verdict_properties.py`) now also requires every ready status view to
 carry the draft and the draft's conclusion to be the receipt's.
+
+## Amendment (2026-10-29): one finding set, and a mismatch falls back (#1243)
+
+The terminal id lists on the receipt and readiness `self_verified` are the closures from
+`finding_closure`, not a second pass over response flags. A non-actionable kind has no closure
+(ADR-034 amendment of the same date). The property test compares every surface to an independent
+oracle of the rule table in section 3, not to the predicted label copied back in. When the ids
+about to be stamped forbid a clean prediction, the builder lowers the conclusion and names those
+ids instead of raising `invalid_receipt_conclusion`.

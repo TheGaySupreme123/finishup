@@ -40,6 +40,7 @@ from finishup.domain.findings import (
     RuntimeTokenUsage,
     SemanticDispatchKind,
     SemanticProvenance,
+    finding_policy_identity,
     semantic_provenance_to_json,
 )
 from finishup.domain.receipts import (
@@ -96,6 +97,7 @@ from finishup.kernel.receipt_builder import (
     ReceiptBuildContext,
     ReceiptFindingState,
     build_receipt,
+    predict_context_conclusion,
 )
 from finishup.ports.semantic import SamplingParams
 from finishup.protocol.canonical import canonical_digest
@@ -357,6 +359,7 @@ def _build(
     *,
     profile: ReceiptRedactionProfile = ReceiptRedactionProfile.FULL_LOCAL,
     include: ReceiptInclude = ReceiptInclude.FULL,
+    versions: ReceiptVersionSlice | None = None,
 ):
     return build_receipt(
         context,
@@ -364,7 +367,7 @@ def _build(
         task_id("tsk_00000000-0000-4000-8000-000000000001"),
         session_id("ses_00000000-0000-4000-8000-000000000001"),
         timestamp_from_string("2026-07-19T00:00:00.000Z"),
-        _versions(),
+        _versions() if versions is None else versions,
         profile,
         include,
     )
@@ -3098,3 +3101,115 @@ def test_unanswered_correctness_advice_is_visible_and_never_blocks(
         else:
             assert "World AABBs" not in text
             assert "withheld" in text
+
+
+def _terminal_versions() -> ReceiptVersionSlice:
+    return replace(
+        _versions(),
+        schema_versions=(SchemaVersionEntry("receipts/receipt-document", "1.3.0"),),
+    )
+
+
+def _process_note(kind: FindingKind) -> Finding:
+    policy_id, policy_version = finding_policy_identity(kind)
+    return Finding(
+        finding_id=_FINDING_ID,
+        kind=kind,
+        origin=FindingOrigin.DETERMINISTIC,
+        priority=FINDING_KIND_TRAITS[kind][0],
+        summary="A process note.",
+        detail="The ledger row is a process note, not agent work.",
+        subject_refs=(obligation_id("obl_00000000-0000-4000-8000-000000000001"),),
+        policy_id=policy_id,
+        policy_version=policy_version,
+        subject_frontier=Frontier(1, _DIGEST),
+        coverage=_coverage(),
+    )
+
+
+def _self_verified_context(finding: Finding) -> ReceiptBuildContext:
+    """A clean check whose only finding is answered ``self_verified`` and has no closure."""
+
+    check = _check(CheckVerdict.NO_ISSUE_DETECTED, _coverage())
+    projection = _projection(finding=finding, check=check)
+    return ReceiptBuildContext(
+        projection=cast("ProjectionState", projection),
+        subject_frontier=_FRONTIER,
+        availability=CaseAvailabilityFacts(),
+        coverage=_coverage(),
+        gaps=(),
+        finding_states=(
+            ReceiptFindingState(finding.finding_id, resolved=False, self_verified=True),
+        ),
+        applicable_check=check,
+    )
+
+
+@pytest.mark.parametrize(
+    "kind",
+    (FindingKind.LEDGER_STALE_OR_INCOMPLETE, FindingKind.DECISION_NEEDED),
+)
+def test_a_self_verified_process_note_issues_the_clean_receipt_the_prediction_names(
+    kind: FindingKind,
+) -> None:
+    """#1243: the predictor and the receipt share one finding set, so a process note does not cap."""
+
+    context = _self_verified_context(_process_note(kind))
+    document = _build(context, versions=_terminal_versions())
+    predicted = predict_context_conclusion(context)
+    assert document.conclusion.value == predicted.conclusion.value
+    assert document.conclusion.value == "no_unresolved_deterministic_findings"
+    assert document.self_verified_finding_ids == ()
+    assert document.conclusion_basis is not None
+    assert document.conclusion_basis.reason_total == 0
+    assert any(item.finding_id == _FINDING_ID for item in document.findings)
+
+
+def test_a_clean_prediction_beside_a_capping_id_falls_back_instead_of_raising(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """#1243: a mismatch names the conflicting id and keeps the lower conclusion."""
+
+    from finishup.kernel import receipt_builder as builder
+    from finishup.kernel.receipt_prediction import (
+        PredictionConclusion,
+        ReceiptPrediction,
+    )
+
+    kind = FindingKind.TASK_REQUIREMENT_UNMET
+    policy_id, policy_version = finding_policy_identity(kind)
+    finding = Finding(
+        finding_id=_FINDING_ID,
+        kind=kind,
+        origin=FindingOrigin.DETERMINISTIC,
+        priority=FINDING_KIND_TRAITS[kind][0],
+        summary="A requirement is still open.",
+        detail="The repair is recorded; FinishUP could not prove it.",
+        subject_refs=(obligation_id("obl_00000000-0000-4000-8000-000000000001"),),
+        policy_id=policy_id,
+        policy_version=policy_version,
+        subject_frontier=Frontier(1, _DIGEST),
+        coverage=_coverage(),
+    )
+
+    def clean(basis: object) -> ReceiptPrediction:
+        frontier = cast(Any, basis).frontier
+        return ReceiptPrediction(
+            PredictionConclusion.NO_UNRESOLVED_DETERMINISTIC_FINDINGS,
+            (),
+            0,
+            frontier,
+            False,
+        )
+
+    monkeypatch.setattr(builder, "predict_receipt_conclusion", clean)
+    document = _build(_self_verified_context(finding), versions=_terminal_versions())
+    assert document.conclusion.value == "insufficient_coverage"
+    assert document.self_verified_finding_ids == (_FINDING_ID,)
+    assert document.conclusion_basis is not None
+    disclosed = next(
+        reason
+        for reason in document.conclusion_basis.reasons
+        if reason.code == "findings_disclosed"
+    )
+    assert str(_FINDING_ID) in disclosed.refs

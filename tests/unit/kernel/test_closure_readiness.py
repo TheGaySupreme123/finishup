@@ -7,6 +7,7 @@ from typing import cast
 
 import pytest
 
+from builders.policy_cases import evd, finding_record, fnd, record
 from builders.replay import replay_records
 from finishup.domain.events import (
     AcceptedEvent,
@@ -15,25 +16,48 @@ from finishup.domain.events import (
     CheckMode,
     CheckRecordedPayload,
     LedgerRecord,
+    ResponseRecordedPayload,
     _review_input_manifest_from_json,  # pyright: ignore[reportPrivateUsage]
     encode_payload,
 )
-from finishup.domain.findings import SemanticDispatchKind, SemanticProvenance
+from finishup.domain.findings import (
+    FINDING_KIND_TRAITS,
+    Finding,
+    FindingKind,
+    FindingOrigin,
+    ResponseDisposition,
+    SemanticDispatchKind,
+    SemanticProvenance,
+    finding_policy_identity,
+)
+from finishup.domain.values import Frontier, event_id, finding_id, obligation_id
 from finishup.domain.values import JsonValue as DomainJsonValue
-from finishup.domain.values import event_id, finding_id, obligation_id
 from finishup.kernel.closure_readiness import (
+    FINDING_SELF_VERIFIED_GAP,
     ClosureReadinessFacts,
     _review_deferred,  # pyright: ignore[reportPrivateUsage]
     closure_readiness_facts,
     derive_closure_readiness,
     live_lineage_blockers,
 )
-from finishup.kernel.projections import ProjectionState, observation_limitation_finding_ids
+from finishup.kernel.projections import (
+    ProjectionState,
+    empty_projection_state,
+    observation_limitation_finding_ids,
+)
 from finishup.kernel.receipt_capacity import receipt_blocking_finding_count
 from finishup.kernel.reducers import invalidates_recorded_check, replay
 from finishup.ports.semantic import SamplingParams
 from finishup.protocol.canonical import canonical_digest
-from finishup.protocol.coverage import CheckType
+from finishup.protocol.coverage import (
+    ArtifactObservation,
+    AuthorshipAssurance,
+    CheckType,
+    Coverage,
+    EvidenceImmutability,
+    LedgerFreshness,
+    PublicationChannel,
+)
 from finishup.protocol.models import SemanticReason, SemanticStatus
 
 _FINDING = finding_id("fnd_91300000-0000-4000-8000-000000000001")
@@ -1150,3 +1174,71 @@ def test_a_capacity_refused_closing_review_is_asked_again_after_a_material_chang
     assert facts.closing_review_current is False
     asked = derive_closure_readiness((), (), facts, semantic_review_required=True)
     assert "closing_review_required" in asked.agent_actionable
+
+
+def _self_verified_projection(kind: FindingKind) -> ProjectionState:
+    policy_id, policy_version = finding_policy_identity(kind)
+    finding = Finding(
+        finding_id=fnd(1),
+        kind=kind,
+        origin=FindingOrigin.DETERMINISTIC,
+        priority=FINDING_KIND_TRAITS[kind][0],
+        summary="A recorded finding.",
+        detail="Answered by the agent.",
+        subject_refs=(obligation_id("obl_00000000-0000-4000-8000-000000000001"),),
+        policy_id=policy_id,
+        policy_version=policy_version,
+        subject_frontier=Frontier(3, _DIGEST),
+        coverage=Coverage(
+            publication_channels=(PublicationChannel.ENGINE_DERIVED,),
+            authorship_assurance=AuthorshipAssurance.SERVICE_AUTHENTICATED,
+            artifact_observation=ArtifactObservation.PUBLISHED_ONLY,
+            evidence_immutability=EvidenceImmutability.METADATA_ONLY,
+            ledger_freshness=LedgerFreshness.CURRENT,
+            check_types=(CheckType.DETERMINISTIC,),
+            known_gaps=(),
+        ),
+    )
+    return replace(
+        empty_projection_state(),
+        frontier=8,
+        head_digest=_DIGEST,
+        findings={fnd(1): finding_record(finding, 4)},
+        responses={
+            fnd(1): record(
+                ResponseRecordedPayload(
+                    fnd(1),
+                    Frontier(5, _DIGEST),
+                    ResponseDisposition.SELF_VERIFIED,
+                    "I checked the row myself.",
+                    evidence_refs=(evd(1),),
+                ),
+                6,
+            )
+        },
+        freshness=LedgerFreshness.CURRENT,
+    )
+
+
+@pytest.mark.parametrize(
+    "kind",
+    (FindingKind.LEDGER_STALE_OR_INCOMPLETE, FindingKind.DECISION_NEEDED),
+)
+def test_a_self_verified_process_note_does_not_raise_finding_self_verified(
+    kind: FindingKind,
+) -> None:
+    """#1243: readiness reads self-verified ids from finding closures, which omit process notes."""
+
+    facts = closure_readiness_facts(_self_verified_projection(kind), ())
+    assert facts.self_verified_finding_ids == ()
+    split = derive_closure_readiness((), (), facts, semantic_review_required=False)
+    assert FINDING_SELF_VERIFIED_GAP not in split.standing_limitations
+
+
+def test_an_actionable_self_verified_finding_stays_a_standing_limitation() -> None:
+    facts = closure_readiness_facts(
+        _self_verified_projection(FindingKind.TASK_REQUIREMENT_UNMET), ()
+    )
+    assert facts.self_verified_finding_ids == (fnd(1),)
+    split = derive_closure_readiness((), (), facts, semantic_review_required=False)
+    assert FINDING_SELF_VERIFIED_GAP in split.standing_limitations

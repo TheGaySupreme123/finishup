@@ -1665,6 +1665,11 @@ A clean conclusion also needs every policy execution complete: `run/completed`, 
 member of `HOST_OBSERVATION_GUARDED_GAPS` counts only if the applicable check's own coverage
 carried it. A full check's `complete` completeness uses the same list
 (`full_check_gaps_clean`), with those host members only when `commands_complete(totals)`.
+An answered process note (`ledger_stale_or_incomplete` or `decision_needed`) is not a closure
+and does not by itself keep the conclusion below clean, including when the answer is
+`self_verified` (#1243, ADR-034 amendment of 2026-10-29). The receipt's terminal finding-id
+lists are that same closure set. A predicted clean conclusion beside ids that forbid it is
+lowered to `insufficient_coverage` and the ids are named; the builder does not fail the request.
 
 `domain/receipts.py` owns the exact schema-shaped `ReceiptDocument`, `ReceiptVersionSlice`,
 policy/schema version entries, obligation/response/gap/redaction records, and canonical sections. It
@@ -8522,8 +8527,9 @@ and three groups. `agent_actionable` lists, in order, the
 agent conditions present (`obligations_open`, `findings_unanswered`, `receipt_findings_unresolved`
 only for findings whose closure class is `agent_work` (an acknowledged requirement is
 `settled_unmet`: final, so the state stays `ready_with_limitations`, and counted in
-`receipt_blocking_finding_count`; a `self_verified` finding is `settled_disclosed` and disclosed as
-the standing code `finding_self_verified`; ADR-046), `finding_rejection_awaiting_ruling` for a
+`receipt_blocking_finding_count`; an actionable `self_verified` finding is `settled_disclosed` and
+disclosed as the standing code `finding_self_verified`; a process note has no closure and does not
+raise that code; #1243, ADR-046), `finding_rejection_awaiting_ruling` for a
 rejected finding that waits for a reviewer ruling (a check is the next move),
 `no_plan_published`, `no_obligations_declared`, `projection_stale`), then `check_in_progress`
 while a check holds the session frontier (read at the head through the ledger's

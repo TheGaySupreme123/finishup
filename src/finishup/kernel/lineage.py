@@ -268,6 +268,8 @@ class ChildFindingSnapshot:
             raise _invalid()
         object.__setattr__(self, "resolution_event_id", resolution)
         self_verified = _bool(self.self_verified)
+        # A non-actionable kind cannot carry self_verified (the kind trait is the stamp), so a
+        # process note never reaches the parent's self-verified id list (#1243).
         if self_verified and (resolved or not actionable):
             raise _invalid()
         object.__setattr__(self, "self_verified", self_verified)

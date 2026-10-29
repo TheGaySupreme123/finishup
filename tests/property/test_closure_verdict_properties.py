@@ -5,25 +5,28 @@
   ``duplicate_of`` chains (a chain counts once, under its earliest finding).
 * For any short run driven through the public operations, every surface (status in every view, the
   MCP text, the CLI and terminal lines, closure_prepare and the receipt in three formats) prints
-  the same predicted conclusion and the same counters, and the receipt carries the conclusion the
-  status predicted.
+  the same predicted conclusion and the same counters, and the receipt carries the conclusion an
+  independent oracle of the ADR-046 rule table names (#1243).
 """
 
 from __future__ import annotations
 
 import asyncio
 from dataclasses import replace
-from typing import Any
+from typing import Any, cast
 
 import pytest
 from hypothesis import HealthCheck, given, settings
 from hypothesis import strategies as st
 
 import integration.application.test_respond_status_receipt as h
+from builders.ledger_adapters import ownership_fence
 from builders.policy_cases import evd, finding_record, fnd, obl, record
+from finishup.application.closure_basis import load_closure_basis
 from finishup.domain.events import ResponseRecordedPayload
 from finishup.domain.findings import (
     FINDING_KIND_TRAITS,
+    CheckVerdict,
     Finding,
     FindingKind,
     FindingOrigin,
@@ -32,7 +35,13 @@ from finishup.domain.findings import (
 )
 from finishup.domain.receipts import SchemaVersionEntry
 from finishup.domain.values import FindingId, Frontier
-from finishup.kernel.closure_class import closure_counts, finding_closures
+from finishup.kernel.closure_class import (
+    FindingClosureClass,
+    ReceiptEffect,
+    closure_counts,
+    counted_findings,
+    finding_closures,
+)
 from finishup.kernel.closure_readiness import GAP_CLASSIFICATION
 from finishup.kernel.gap_effect import GapContext, GapEffectKind, gap_effect
 from finishup.kernel.projections import (
@@ -41,6 +50,10 @@ from finishup.kernel.projections import (
     ProjectionState,
     empty_projection_state,
 )
+from finishup.kernel.receipt_prediction import ClosureBasis, LineageBasis
+from finishup.ports.importer import ImporterPort
+from finishup.ports.objects import ObjectStorePort
+from finishup.ports.runtime import TaskRuntime
 from finishup.protocol.coverage import (
     ArtifactObservation,
     AuthorshipAssurance,
@@ -223,6 +236,74 @@ _OPS = st.lists(
 )
 
 
+def independent_conclusion(basis: ClosureBasis) -> str:
+    """ADR-046 rule order, written out here and not by calling ``predict_receipt_conclusion``.
+
+    The property test used to feed each surface the status prediction and then assert they
+    matched it, so a predictor and a receipt that shared a wrong label still passed (#1243).
+    """
+
+    live = [gap for gap in basis.gaps if gap.kind is not GapEffectKind.HISTORICAL]
+    if any(
+        gap.code in {"completion_scope_declared_none", "completion_scope_undeclared"}
+        for gap in live
+    ):
+        return "insufficient_coverage"
+    counted = counted_findings(basis.findings)
+    unresolved = any(
+        (
+            item.closure_class is FindingClosureClass.AGENT_WORK
+            and item.receipt_effect is ReceiptEffect.UNRESOLVED_FINDINGS_REMAIN
+        )
+        or item.closure_class is FindingClosureClass.AWAITING_RULING
+        or item.closure_class is FindingClosureClass.SETTLED_UNMET
+        for item in counted.values()
+    )
+    lineage: LineageBasis | None = basis.lineage
+    if unresolved or (lineage is not None and lineage.actionable_finding_ids):
+        return "unresolved_findings_remain"
+    if any(item.receipt_effect is ReceiptEffect.INSUFFICIENT_COVERAGE for item in counted.values()):
+        return "insufficient_coverage"
+    if any(item.receipt_effect is not ReceiptEffect.NONE for item in basis.obligations):
+        return "insufficient_coverage"
+    if lineage is not None and lineage.blocks_clean_completion:
+        return "insufficient_coverage"
+    check = basis.check
+    if check is None or check.suppressed_count or not check.executions_complete:
+        return "insufficient_coverage"
+    if check.verdict in {
+        CheckVerdict.INSUFFICIENT_COVERAGE,
+        CheckVerdict.INCOMPLETE_CHECK,
+        CheckVerdict.ACTION_REQUIRED,
+    }:
+        return "insufficient_coverage"
+    if any(gap.kind.bounds for gap in live):
+        return "insufficient_coverage"
+    return "no_unresolved_deterministic_findings"
+
+
+def _task_runtime(run: shapes._Run) -> TaskRuntime:  # pyright: ignore[reportPrivateUsage]
+    """The task runtime the workflow provisioned, rebuilt for a read-only basis load."""
+
+    workflow = cast(Any, run.runtime)
+    command = workflow.provisions[-1]
+    ledger, objects = workflow.resources[command.task_id]
+    return TaskRuntime(
+        command.task_id,
+        command.session_id,
+        command.writer_id,
+        frozenset(),
+        ledger,
+        cast(ObjectStorePort, objects),
+        cast(ImporterPort, object()),
+        command.projection_version,
+        command.engine_version,
+        command.protocol_version,
+        command.bundle_schema_version,
+        ownership_fence(),
+    )
+
+
 async def _run_script(script: list[str]) -> None:
     run = await shapes._begin(seed=90)  # pyright: ignore[reportPrivateUsage]
     await run.publish(
@@ -266,11 +347,17 @@ async def _run_script(script: list[str]) -> None:
             await run.publish(shapes._action(run, acted))  # pyright: ignore[reportPrivateUsage]
         # "poll" reads nothing: the surfaces below are read at the end of every script.
     gathered = await shapes._surfaces(run)  # pyright: ignore[reportPrivateUsage]
+    frontier = run.frontier
+    if not isinstance(frontier, Frontier):
+        frontier = Frontier(int(frontier.sequence), frontier.head_digest)
+    loaded = await load_closure_basis(_task_runtime(run), frontier)
+    conclusion = independent_conclusion(loaded.basis)
     readiness = gathered.status["compact"].closure_readiness
     assert readiness.predicted_receipt is not None
+    assert readiness.predicted_receipt.conclusion == conclusion
     shapes.assert_surfaces_agree(
         gathered,
-        conclusion=readiness.predicted_receipt.conclusion,
+        conclusion=conclusion,
         counts=shapes._wire_counts(readiness),  # pyright: ignore[reportPrivateUsage]
     )
 

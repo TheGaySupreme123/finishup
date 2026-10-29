@@ -10470,3 +10470,175 @@ async def test_tracked_reviewer_advice_is_answered_once_and_not_raised_again(
     assert isinstance(reopened, CheckCommitResult)
     assert [row["origin"] for row in reopened.correctness_advisories] == ["verified_not_supported"]
     assert reopened.correctness_advisories[0]["advisory_id"] != advisory_id
+
+
+async def test_a_self_verified_ledger_stale_note_receipt_matches_its_prediction() -> None:
+    """#1243: answering a ledger-stale note ``self_verified`` does not refuse the receipt.
+
+    The note stays current because its coverage is not absence proof. The answer is new material,
+    so this frontier's check no longer applies and the conclusion stays below clean. The clean
+    receipt, with the note still current, is locked in the kernel builder test. Here the public
+    path must still issue the receipt status predicted, omit the note from ``self_verified`` ids,
+    and not call it ``finding_self_verified``.
+    """
+
+    app, runtime, _ = _build_app(seed_offset=1243, semantic="disabled")
+    started = await app.start(start_request(124300, title="Process note receipt"))
+    start_frontier = Frontier(int(started.frontier.sequence), started.frontier.head_digest)
+    ledger, objects = next(iter(runtime.resources.values()))
+    records = tuple(
+        [
+            record
+            async for record in ledger.load_events(
+                started.session_id, through=start_frontier.sequence
+            )
+        ]
+    )
+    kind = FindingKind.LEDGER_STALE_OR_INCOMPLETE
+    finding_coverage = replace(
+        coverage_for_channel(PublicationChannel.ENGINE_DERIVED),
+        known_gaps=("semantic_case_capacity_exceeded",),
+    )
+    retained = Finding(
+        finding_id(protocol_id("fnd_", 124301)),
+        kind,
+        FindingOrigin.DETERMINISTIC,
+        FINDING_KIND_TRAITS[kind][0],
+        "The ledger note is stale.",
+        "A later check did not prove this process note gone.",
+        (records[0].event_id,),
+        "work-integrity",
+        "0.1.0",
+        start_frontier,
+        finding_coverage,
+        None,
+    )
+    payload = canonical_encode(encode_payload(retained))
+    now = app.clock.now_utc()
+    metadata = ObjectMetadata(
+        ObjectKind.EVENT_PAYLOAD,
+        media_type_for("finding_recorded"),
+        started.task_id,
+        now,
+    )
+    staged = await objects.stage(ObjectSource(data=payload, declared_size=len(payload)), metadata)
+    payload_ref = await objects.finalize(staged)
+    appended = await ledger.append_batch(
+        AppendCommand(
+            started.task_id,
+            started.session_id,
+            started.writer_id,
+            protocol_id("req_", 124302),
+            OperationKind.PUBLISH_WORK,
+            _DIGEST,
+            start_frontier.sequence,
+            (
+                AppendEntry(
+                    EventDraft(
+                        event_id(protocol_id("evt_", 124303)),
+                        EventSchema("finding_recorded", "1.0.0"),
+                        timestamp_from_datetime(now),
+                        (),
+                        retained,
+                        (),
+                        (),
+                    ),
+                    observation_author(),
+                    payload_ref,
+                    payload_ref.commitment,
+                    metadata.media_type,
+                    payload_ref.plaintext_size,
+                    PublicationChannel.ENGINE_DERIVED,
+                    finding_coverage,
+                    "projected",
+                ),
+            ),
+        )
+    )
+    evidence = protocol_id("evd_", 124311)
+    published = await app.publish_work(
+        PublishWorkRequest.model_validate(
+            {
+                **_request_base(protocol_id("req_", 124312)),
+                "session_id": started.session_id,
+                "writer_id": started.writer_id,
+                "expected_frontier": _frontier(appended.result_frontier),
+                "event_drafts": (
+                    {
+                        "event_id": protocol_id("evt_", 124310),
+                        "schema": {"name": "evidence_recorded", "version": "1.0.0"},
+                        "occurred_at": "2026-07-19T12:04:00.000Z",
+                        "causal_parents": (),
+                        "payload": {
+                            "evidence_id": evidence,
+                            "evidence_kind": "artifact",
+                            "strength": "mutable_reference",
+                            "observed_at": "2026-07-19T12:04:00.000Z",
+                            "reference": "ledger-row-reread",
+                        },
+                        "artifact_refs": (),
+                        "evidence_refs": (),
+                    },
+                ),
+            }
+        )
+    )
+    checked = await app.check(
+        CheckRequest.model_validate(
+            {
+                **_request_base(protocol_id("req_", 124320)),
+                "session_id": started.session_id,
+                "writer_id": started.writer_id,
+                "expected_frontier": _frontier(published.result_frontier),
+                "mode": "deterministic_only",
+                "max_findings": "8",
+            }
+        )
+    )
+    assert type(checked) is CheckCommitResult
+    answered = await app.respond(
+        RespondRequest.model_validate(
+            {
+                **_request_base(protocol_id("req_", 124330)),
+                "session_id": started.session_id,
+                "writer_id": started.writer_id,
+                "expected_frontier": _frontier(checked.result_frontier),
+                "finding_id": retained.finding_id,
+                "finding_frontier": _frontier(checked.result_frontier),
+                "disposition": "self_verified",
+                "reason": "I re-read the ledger row and the obligation is recorded.",
+                "evidence_refs": (evidence,),
+            }
+        )
+    )
+    status = await app.status(
+        StatusRequest.model_validate(
+            {
+                **_request_base(protocol_id("req_", 124340)),
+                "session_id": started.session_id,
+                "writer_id": started.writer_id,
+                "view": "compact",
+                "limit": "5",
+            }
+        )
+    )
+    receipt = await app.receipt(
+        ReceiptRequest.model_validate(
+            _receipt_wire(
+                124350,
+                task_id=started.task_id,
+                session=started.session_id,
+                writer=started.writer_id,
+                frontier=answered.result_frontier,
+            )
+        )
+    )
+    assert answered.response.disposition == "self_verified"
+    predicted = status.closure_readiness.predicted_receipt
+    assert predicted is not None
+    assert receipt.conclusion == predicted.conclusion
+    document = cast(Mapping[str, JsonValue], receipt.document)
+    assert retained.finding_id not in cast(
+        list[JsonValue], document.get("self_verified_finding_ids", [])
+    )
+    assert "finding_self_verified" not in (status.closure_readiness.standing_limitations or ())
