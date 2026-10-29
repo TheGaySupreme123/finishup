@@ -815,7 +815,9 @@ over the 262,144-byte disclosure cap, was reported `blocked_by_policy` / `networ
 although network egress was permitted. It is now `failed/case_capacity_exceeded`, ending the job
 attempt that reached the refusal; the privacy receipt keeps `blocked_by_policy` / `policy_denied`
 (no new reason, no new receipt version), and the attempted size and limit are recorded as bounded
-integers. Like the structural case, it is a retryable `failed` outcome rather than an
+integers. *Amended 2026-10-29 (#1129):* the receipt also carries those integers as its typed
+`capacity_exceeded` reason (scope, unit, attempted, limit) on egress-receipt 1.1.0, edited in place;
+the stored outcome and reason are unchanged (ADR-009). Like the structural case, it is a retryable `failed` outcome rather than an
 undeliverable one: a required closing review is still asked for, and the next check builds a new
 case. Narrowing scope creates new work; it does not replay a terminal check or imply that the
 reduced packet reviewed the whole task.

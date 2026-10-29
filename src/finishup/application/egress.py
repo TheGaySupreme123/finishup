@@ -56,6 +56,7 @@ from finishup.domain.privacy import (
     PrivacyReason,
     ProviderBinding,
     ProviderDataUseProfile,
+    ReceiptCapacity,
     ReceiptCounts,
     ReceiptPolicyBinding,
     ReceiptSecretScan,
@@ -3259,6 +3260,13 @@ class PrivacyCoordinator:
             withheld_item_ids=withheld_item_ids,
             origin_operation=egress_origin_operation(
                 candidate.purpose, (item.item_id for item in candidate.items)
+            ),
+            # #1129: a size refusal names the bound it exceeded, so the receipt never reads as a
+            # policy rule; the durable outcome and reason stay ``blocked_by_policy/policy_denied``.
+            capacity_exceeded=(
+                None
+                if capacity is None
+                else ReceiptCapacity(capacity_scope, capacity_unit, capacity[0], capacity[1])
             ),
         )
         try:

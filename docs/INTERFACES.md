@@ -4628,6 +4628,10 @@ retrievable by its recorded receipt ID and listable by `channel`, `provider_id`,
 (`semantic_check`, `observation_advice` or `credential_probe`; egress-receipt 1.1.0, ADR-009
 tb4n2 amendment), derived from its purpose and reserved structural item ids and omitted when not
 recognized, so a recurring blocked receipt can be traced to the operation that asked for it.
+A pre-dispatch size refusal's network receipt also carries `capacity_exceeded`
+(`scope`: `disclosure`|`excerpt`|`excerpt_total`; `unit`: `bytes`|`tokens`|`excerpts`; decimal
+`attempted` and `limit`; egress-receipt 1.1.0, ADR-009 #1129 amendment) beside its unchanged
+`blocked_by_policy` / `policy_denied`; no other receipt carries it.
 
 A receipt's `purpose` has two owners, and they are deliberately not the same grammar. Anything
 crossing the privacy-policy boundary — every network egress receipt, every
@@ -5067,7 +5071,8 @@ disclosure capacity: a rendered disclosure over the channel's `max_bytes`, or a 
 over its exchange budget (bytes, or estimated model tokens on a sized route), is refused by `PrivacyCoordinator` before a proposal exists
 and reported `failed/case_capacity_exceeded`, not `blocked_by_policy/network_egress_denied`. There
 a job attempt exists and ends on that terminal code, the privacy receipt records
-`blocked_by_policy` / `policy_denied` with `final_bytes` 0 (the receipt vocabulary is unchanged),
+`blocked_by_policy` / `policy_denied` with `final_bytes` 0 and its typed `capacity_exceeded`
+reason (the stored outcome and reason vocabulary is unchanged, #1129),
 provenance stays null, and nothing was sent. An over-`max_tokens` refusal keeps its policy
 mapping. The shared check/receipt gap is `semantic_case_capacity_exceeded`. A
 narrower claim/obligation scope is a new check, not a replay of the terminal request. Changing a

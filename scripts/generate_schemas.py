@@ -1907,6 +1907,42 @@ def _egress_receipt_v1_1_schema(entry: _RegistryEntry) -> dict[str, JsonValue]:
     }
     for name in ("approved_categories", "blocked_categories"):
         properties[name] = {"$ref": "#/$defs/receipt_category_set"}
+    # #1129: a size refusal's typed capacity reason. The durable outcome and reason stay
+    # ``blocked_by_policy`` / ``policy_denied``; this names the bound and its unit, in integers
+    # only. 1.1.0 is unreleased, so it is added in place; a 1.0.0 receipt never carries it.
+    from finishup.domain.privacy import RECEIPT_CAPACITY_SCOPE_UNITS
+
+    definitions["capacity_exceeded"] = {
+        "additionalProperties": False,
+        "oneOf": [
+            {
+                "properties": {"scope": {"const": scope}, "unit": {"const": unit}},
+                "required": ["scope", "unit"],
+            }
+            for scope, unit in sorted(RECEIPT_CAPACITY_SCOPE_UNITS)
+        ],
+        "properties": {
+            "attempted": {"$ref": "#/$defs/uint53_decimal"},
+            "limit": {"$ref": "#/$defs/uint53_decimal"},
+            "scope": {"enum": ["disclosure", "excerpt", "excerpt_total"], "type": "string"},
+            "unit": {"enum": ["bytes", "excerpts", "tokens"], "type": "string"},
+        },
+        "required": ["scope", "unit", "attempted", "limit"],
+        "type": "object",
+    }
+    properties["capacity_exceeded"] = {"$ref": "#/$defs/capacity_exceeded"}
+    cast(list[JsonValue], document["allOf"]).append(
+        {
+            "if": {"required": ["capacity_exceeded"]},
+            "then": {
+                "properties": {
+                    "outcome": {"const": "blocked_by_policy"},
+                    "safe_failure_reason": {"const": "policy_denied"},
+                },
+                "required": ["outcome", "safe_failure_reason"],
+            },
+        }
+    )
     document["title"] = "Yoetz egress receipt 1.1.0"
     return document
 

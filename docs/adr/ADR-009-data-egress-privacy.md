@@ -1635,3 +1635,31 @@ measured the minimized row: 16,402 bytes. Egress refused the whole packet and no
   refs and parts) comes from that provider-bound manifest, so a left-out excerpt is never counted
   shown. The privacy receipt counts the items actually included. A bounded diagnostic
   `semantic_disclosure_capacity_fitted` records how many excerpts were left out, never content.
+
+## Typed capacity reason on the privacy receipt (*Amended 2026-10-29, #1129, #1142*)
+
+**Context.** A size refusal (an excerpt over its approved bytes or count, the excerpt total, the
+channel's `max_bytes` or `max_tokens`, or a reviewer exchange over its budget) is reported to the
+check and the job as `failed` / `case_capacity_exceeded` (ADR-006, #1118). Its privacy receipt
+only said `blocked_by_policy` / `policy_denied`, which reads as a policy rule, and before #1118 the
+check's last mapping arm turned any unrecognised policy refusal into `network_egress_denied`.
+
+**Decision.**
+
+- A pre-dispatch size refusal's network egress receipt (egress-receipt 1.1.0, unreleased, edited
+  in place) carries `capacity_exceeded`: the exceeded bound's `scope` (`disclosure`, `excerpt`,
+  `excerpt_total`), its `unit` (`bytes`, `tokens`, `excerpts`), and the bounded `attempted` and
+  `limit` integers. It never carries content. Every other receipt omits it and keeps its exact
+  bytes; a 1.0.0 receipt cannot carry it.
+- The durable outcome and reason stay `blocked_by_policy` / `policy_denied`. The audit store's
+  `receipt_reason` column is a closed storage vocabulary; a new reason value would need a catalog
+  table rebuild, which is a separate storage decision and is not made here. The typed object is
+  what says the refusal was for size.
+- The schema admits `capacity_exceeded` only beside `blocked_by_policy` / `policy_denied`, and only
+  with a scope/unit pair egress measures. `finishup privacy receipts get|list` print it on
+  stderr as `capacity_exceeded: ... refused for size, not by a policy rule`.
+- Check and job side: a refusal with a measured capacity is `failed` / `case_capacity_exceeded`
+  with the `semantic_case_capacity_exceeded` gap whatever its privacy reason. No refusal maps to
+  `network_egress_denied` unless its reason is `policy_denied` without a measured size; an
+  unrecognised reason is a FinishUP fault (`coordinator_failure`), never a network denial.
+- Nothing about what is sent, the bounds themselves, consent, or the scanner changes.

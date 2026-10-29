@@ -41,6 +41,7 @@ from finishup.domain.privacy import (
     PrivacyProfile,
     PrivacyReason,
     ProviderBinding,
+    ReceiptCapacity,
     ReceiptCounts,
     ReceiptPolicyBinding,
     ReceiptSecretScan,
@@ -215,6 +216,9 @@ def _receipt_bytes(receipt: LocalDisclosureReceipt | EgressReceipt) -> bytes:
     if encoded.get("origin_operation", "") is None:
         # Absent unless named (tb4n2 N-5), so every row written before the field keeps its bytes.
         encoded.pop("origin_operation")
+    if encoded.get("capacity_exceeded", "") is None:
+        # Absent unless a size refusal (#1129), so every other row keeps its exact bytes.
+        encoded.pop("capacity_exceeded")
     return canonical_encode(cast(JsonValue, encoded))
 
 
@@ -432,6 +436,21 @@ def _network_receipt_from_bytes(data: bytes) -> EgressReceipt:
             if source.get("origin_operation") is None
             else EgressOriginOperation(cast(str, source["origin_operation"]))
         ),
+        capacity_exceeded=_receipt_capacity_from_json(source.get("capacity_exceeded")),
+    )
+
+
+def _receipt_capacity_from_json(value: JsonValue | None) -> ReceiptCapacity | None:
+    """Decode a size refusal's typed capacity reason (#1129); absent on every other receipt."""
+
+    if value is None:
+        return None
+    source = _mapping(value)
+    return ReceiptCapacity(
+        cast(Literal["disclosure", "excerpt", "excerpt_total"], source["scope"]),
+        cast(Literal["bytes", "tokens", "excerpts"], source["unit"]),
+        _uint_from_json(source["attempted"]),
+        _uint_from_json(source["limit"]),
     )
 
 
