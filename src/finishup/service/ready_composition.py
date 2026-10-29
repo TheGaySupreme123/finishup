@@ -5207,6 +5207,44 @@ def _pin_declared_tests(
     return tuple(tests)
 
 
+def _record_case_narrowing(
+    request_id: str,
+    ceiling_rounds: int,
+    approved: ReviewSelectionPolicy,
+    planned: ReviewSelectionPolicy,
+    case: SemanticCase,
+) -> None:
+    """Record which sections ceiling planning dropped and the agent-account rows kept (#1245).
+
+    One flag per narrowable section (1 when the approved selection had it and the planned one
+    does not) and the obligation and claim rows the case still carries: integers only. It is its
+    own record because ``semantic_case_built`` is already near the diagnostic line bound, and it
+    is written only when planning narrowed the case.
+    """
+
+    if not ceiling_rounds:
+        return
+    record_bounded_counts_without_raising(
+        component="semantic_composition",
+        operation="semantic_case_narrowed",
+        outcome="narrowed",
+        request_id=request_id,
+        counts={
+            "semantic_excerpt_ceiling_rounds": ceiling_rounds,
+            **{
+                f"semantic_section_dropped_{section}": int(
+                    section in approved.sections and section not in planned.sections
+                )
+                for section in ("goal", "obligations", "claims", "timeline")
+            },
+            "semantic_obligation_rows_selected": sum(
+                item_id.startswith("obligation-") for item_id in case.packet.obligation_item_ids
+            ),
+            "semantic_claim_rows_selected": len(case.packet.claim_item_ids),
+        },
+    )
+
+
 def _privacy_gated_semantic_evaluator(
     privacy: PrivacyCoordinator,
     clock: ClockPort,
@@ -5928,6 +5966,13 @@ def _privacy_gated_semantic_evaluator(
                         ),
                     ),
                 },
+            )
+            _record_case_narrowing(
+                frozen.lease.operation_id,
+                ceiling_rounds,
+                review_selection,
+                planned_selection,
+                semantic_case,
             )
             if captured_local_fence_required and captured_content_scope is not None:
                 # A resolver may authenticate a group that the active excerpt selection then

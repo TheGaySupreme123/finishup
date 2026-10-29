@@ -81,6 +81,14 @@ _QUOTE_STOPWORDS: Final = frozenset(
         "would",
     }
 )
+# Quote marks a criterion quote may spell differently from the task (#1202, owner decision D18):
+# straight and typographic single and double quotes, and guillemets. Primes and backticks are not
+# quote marks here.
+QUOTE_MARKS: Final = "'\"\u2018\u2019\u201a\u201b\u201c\u201d\u201e\u201f\u00ab\u00bb\u2039\u203a"
+_QUOTE_MARK_CLASS: Final = "[" + re.escape(QUOTE_MARKS) + "]"
+# Where one stated criterion ends: after ``.``, ``!`` or ``?`` and whitespace, or at a newline or
+# ``;``. The coverage index (``kernel.verification_coverage``) splits candidates the same way.
+CRITERION_SENTENCE_BREAK: Final = re.compile(r"(?<=[.!?])\s+|[\n;]+")
 CoverageFlag = Literal[
     "no_test",
     "failing_cases",
@@ -143,21 +151,49 @@ def criterion_quote_is_specific(quote: str) -> bool:
     )
 
 
-def criterion_quote_pattern(quote: str) -> re.Pattern[str] | None:
-    """The whole-word occurrence pattern of a specific ``quote``, or ``None`` if it is generic."""
+def _comparable(quote: str) -> str:
+    """``quote`` as a pattern that matches its words verbatim, with normalized spacing and marks.
 
+    A whitespace run matches any whitespace run, and a quote mark matches any quote mark, so a
+    line-wrapped criterion or a curly apostrophe still matches the agent's straight copy (#1202,
+    owner decision D18). Every other character must match exactly.
+    """
+
+    parts: list[str] = []
+    for run in re.split(r"(\s+)", quote):
+        if not run:
+            continue
+        if run.isspace():
+            parts.append(r"\s+")
+            continue
+        parts.append(
+            "".join(_QUOTE_MARK_CLASS if char in QUOTE_MARKS else re.escape(char) for char in run)
+        )
+    return "".join(parts)
+
+
+def criterion_quote_pattern(quote: str) -> re.Pattern[str] | None:
+    """The whole-word occurrence pattern of a specific ``quote``, or ``None`` if it is generic.
+
+    The quote is compared after its outer whitespace is stripped; inside it, whitespace runs and
+    quote marks are normalized (``_comparable``). The stored quote is never rewritten.
+    """
+
+    quote = quote.strip()
     if not quote or not criterion_quote_is_specific(quote):
         return None
     start = r"(?<!\w)(?<!\d[.,])" if re.match(r"\w", quote[0]) else ""
     end = r"(?!\w)(?![.,]\d)" if re.match(r"\w", quote[-1]) else ""
-    return re.compile(start + re.escape(quote) + end)
+    return re.compile(start + _comparable(quote) + end)
 
 
 def criterion_quote_in_text(quote: str, text: str) -> bool:
     """Whether a specific ``quote`` occurs verbatim in ``text`` at word boundaries.
 
-    ``1`` inside ``1.06`` or ``atio`` inside ``ratio`` is not an occurrence. This is the
-    admission rule and the only way a witness quote can map a longer candidate criterion.
+    ``1`` inside ``1.06`` or ``atio`` inside ``ratio`` is not an occurrence. Whitespace runs and
+    quote-mark styles are normalized before comparing (#1202, D18); words, digits and other
+    punctuation must match exactly. This is the admission rule and the only way a witness quote
+    can map a longer candidate criterion.
     """
 
     pattern = criterion_quote_pattern(quote)
@@ -170,6 +206,42 @@ def criterion_quote_position(quote: str, text: str) -> int:
     pattern = criterion_quote_pattern(quote)
     match = None if pattern is None else pattern.search(text)
     return -1 if match is None else match.start()
+
+
+def nearest_criterion_sentence(quote: str, text: str) -> tuple[int, int] | None:
+    """The task sentence sharing most content words with ``quote``: ``(ordinal, line)``, 1-based.
+
+    Sentences split as the coverage index splits criteria (after ``.``, ``!`` or ``?``, and at a
+    newline or ``;``). Only positions leave this function, so a rejection can point at the
+    sentence without repeating task text (#1202, D18). ``None`` when no sentence shares a word.
+    """
+
+    wanted = _content_words(quote)
+    if not wanted:
+        return None
+    best: tuple[int, int, int] | None = None
+    ordinal = 0
+    starts = [0, *(match.end() for match in CRITERION_SENTENCE_BREAK.finditer(text))]
+    ends = [*(match.start() for match in CRITERION_SENTENCE_BREAK.finditer(text)), len(text)]
+    for start, end in zip(starts, ends, strict=True):
+        sentence = text[start:end]
+        if not sentence.strip():
+            continue
+        ordinal += 1
+        shared = len(wanted & _content_words(sentence))
+        if shared and (best is None or shared > best[0]):
+            leading = len(sentence) - len(sentence.lstrip())
+            best = (shared, ordinal, text.count("\n", 0, start + leading) + 1)
+    return None if best is None else (best[1], best[2])
+
+
+def _content_words(text: str) -> frozenset[str]:
+    normalized = "".join("'" if char in QUOTE_MARKS else char for char in text)
+    return frozenset(
+        token.casefold()
+        for token in _QUOTE_TOKEN.findall(normalized)
+        if token.casefold() not in _QUOTE_STOPWORDS
+    )
 
 
 def coverage_flag_label(flag: str) -> str:

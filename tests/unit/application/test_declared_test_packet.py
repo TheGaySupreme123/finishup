@@ -234,8 +234,9 @@ def test_a_test_file_declared_alone_is_listed_like_one_with_a_report() -> None:
 
 
 def test_the_list_survives_the_narrowing_that_drops_obligation_rows() -> None:
-    """Root cause A (#1220): the capacity narrowing drops goal, obligation and claim rows, so
-    a question gated on them never fires. The list rides the structural envelope instead."""
+    """Root cause A (#1220): the capacity narrowing dropped goal, obligation and claim rows, so
+    a question gated on them never fired. The list rides the structural envelope instead. Since
+    #1245 (D22) the narrowing keeps obligation and claim rows unless nothing else fits."""
 
     base = _frozen(_TEST.path)
     # Enough obligation prose that the packet is above the minimal channel (16 KiB), where a
@@ -263,9 +264,21 @@ def test_the_list_survives_the_narrowing_that_drops_obligation_rows() -> None:
     ceiling = len(_prepared(full)) - 64  # just too small: primary_material_selection narrows
     assert ceiling > 16_384
     narrowed = _build(frozen, final=True, declared=(_TEST,), ceiling=ceiling)
-    assert narrowed.packet.obligation_item_ids == ()
+    # #1245 (D22): the first narrowing drops the goal and keeps the obligation rows.
+    assert narrowed.packet.goal_item_ids == ()
+    assert narrowed.packet.obligation_item_ids == full.packet.obligation_item_ids
     assert narrowed.packet.declared_tests == (_TEST,)
     assert narrowed.question_set[-1] == DECLARED_TEST_QUESTION
+    # Only when no plan that keeps them fits are the obligation rows dropped, and the list
+    # still rides the structural envelope.
+    for tighter in range(ceiling, 16_384, -512):
+        dropped = _build(frozen, final=True, declared=(_TEST,), ceiling=tighter)
+        if not dropped.packet.obligation_item_ids:
+            break
+    else:
+        raise AssertionError("no ceiling above the minimal channel drops the obligation rows")
+    assert dropped.packet.declared_tests == (_TEST,)
+    assert dropped.question_set[-1] == DECLARED_TEST_QUESTION
 
 
 def test_candidates_put_task_criteria_first_and_name_each_file_once() -> None:

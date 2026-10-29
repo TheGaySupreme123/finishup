@@ -793,7 +793,8 @@ def test_withdrawn_deliverable_is_voiced_on_the_active_stop_once(
     h.readiness.rechecks = (premise_recheck(1), ack_recheck(_OBL))
     first = _text(host, _stop(h, host, session))
     assert "Do that work unless it is genuinely impossible" in first
-    assert "keep the working deliverable; acknowledgement never requires withdrawing" in first
+    assert "If no output exists, write it on your best reading" in first
+    assert "keep the working deliverable; never empty it." in first
     h.readiness = _readiness(actionable=(gate_module.DECLARED_OUTPUT_EMPTIED_GAP,))
     h.readiness.fact_lineage = (
         SimpleNamespace(

@@ -407,18 +407,19 @@ def test_an_acceptance_entry_never_rides_beside_a_withdrawn_deliverable() -> Non
 
 
 def test_premise_and_acknowledgement_texts_keep_the_working_deliverable() -> None:
-    keep = (
-        "If you cannot finish it, keep the working deliverable; acknowledgement never requires"
-        " withdrawing or emptying it."
-    )
-    assert keep in gate_module._PREMISE_TEXT  # pyright: ignore[reportPrivateUsage]
+    # TB4 atrx-vep-crispr (#1245): "keep the working deliverable" reached an agent that had
+    # written no report at all. A missing output is written first, on the agent's best reading.
+    write = "If no output exists, write it on your best reading and record the assumption."
+    keep = "If you cannot finish it, keep the working deliverable; never empty it."
+    assert f"{write} {keep}" in gate_module._PREMISE_TEXT  # pyright: ignore[reportPrivateUsage]
     keys = (f"ack:{_OBL}",)
     for short in (False, True):
         text = gate_module._acknowledgement_text(keys, short=short)  # pyright: ignore[reportPrivateUsage]
-        assert keep in text
+        assert f"{write} {keep}" in text
+        assert "keep the working deliverable" not in text.partition(write)[0]
         # The pretrain S rescue is intact: the push back to work is still the first instruction.
         assert "do that work unless it is genuinely impossible" in text.lower()
-        assert text.index("genuinely impossible") < text.index("keep the working deliverable")
+        assert text.index("genuinely impossible") < text.index(write)
 
 
 def test_pretrain_s_gate_still_sends_an_agent_that_gave_up_back_to_work() -> None:

@@ -90,6 +90,14 @@ _FIELD_ORDER: Final = (
     "semantic_excerpt_count_cut_for_case_bound",
     "semantic_excerpt_byte_limit",
     "semantic_excerpt_ceiling_rounds",
+    # #1245 (D22): which sections ceiling planning dropped, and the agent-account rows kept
+    # (integers only, never content).
+    "semantic_section_dropped_goal",
+    "semantic_section_dropped_obligations",
+    "semantic_section_dropped_claims",
+    "semantic_section_dropped_timeline",
+    "semantic_obligation_rows_selected",
+    "semantic_claim_rows_selected",
     # #1118: a capacity refusal's rendered disclosure size and the limit it
     # exceeded (integers only, never content).
     "semantic_disclosure_attempted_bytes",

@@ -85,7 +85,10 @@ from finishup.domain.values import (
 from finishup.domain.values import (
     JsonValue as DomainJsonValue,
 )
-from finishup.domain.verification_coverage import criterion_quote_in_text
+from finishup.domain.verification_coverage import (
+    criterion_quote_in_text,
+    nearest_criterion_sentence,
+)
 from finishup.kernel.completion_scope import with_completion_scope_coverage
 from finishup.kernel.projections import PROJECTION_VERSION, ProjectionState
 from finishup.kernel.reducers import replay_extension
@@ -569,7 +572,8 @@ def _corrective_message(reason_code: str, schema_name: str | None) -> str | None
         return (
             "The event batch is invalid. verification.criterion_quote must be a verbatim "
             "substring of the current recorded task_statement that starts and ends on whole "
-            "words and names the criterion, not only punctuation or common words. Record the "
+            "words and names the criterion, not only punctuation or common words; spacing and "
+            "quote-mark style may differ, words and other punctuation may not. Record the "
             "user's request before the result, then quote one stated criterion exactly."
         )
     set_order = _SET_ORDER_CORRECTIONS.get(reason_code)
@@ -585,6 +589,15 @@ def _corrective_message(reason_code: str, schema_name: str | None) -> str | None
     return families.get(schema_name)
 
 
+# #1202 (owner decision D18): a rejected criterion quote names the nearest task sentence by its
+# position only, so the error never repeats task text (CONTRIBUTING: no user-controlled content in
+# errors). Both numbers are 1-based.
+_NEAREST_SENTENCE_HINT: Final = (
+    " The nearest stated criterion is sentence {ordinal} of the recorded task_statement (line"
+    " {line}): copy its words exactly."
+)
+
+
 def _event_invalid(
     reason_code: str = "invalid_event_value_type",
     *,
@@ -594,6 +607,7 @@ def _event_invalid(
     payload_field: str | None = None,
     schema_name: str | None = None,
     item_index: int | None = None,
+    nearest_sentence: tuple[int, int] | None = None,
 ) -> PublicOperationError:
     # Only a stale frontier is fixed by rereading status; every other reason needs the event
     # payload corrected first, and retrying it unchanged would fail the same way. A missing
@@ -628,6 +642,9 @@ def _event_invalid(
         message = _corrective_message(reason_code, schema_name) or (
             "The event batch is invalid. Correct the event payload before retrying."
         )
+        if reason_code == "verification_criterion_not_in_task" and nearest_sentence is not None:
+            ordinal, line = nearest_sentence
+            message += _NEAREST_SENTENCE_HINT.format(ordinal=ordinal, line=line)
     details: dict[str, str] = {"reason_code": reason_code}
     if event_index is not None:
         pointer = _draft_pointer(event_index, subfield, payload_field, item_index)
@@ -1836,13 +1853,15 @@ def _validate_verification_quotes(
             if revised is not None:
                 text = revised
         if type(payload) is ResultRecordedPayload and payload.verification is not None:
-            if text is None or not criterion_quote_in_text(
-                payload.verification.criterion_quote, text
-            ):
+            quote = payload.verification.criterion_quote
+            if text is None or not criterion_quote_in_text(quote, text):
                 raise _event_invalid(
                     "verification_criterion_not_in_task",
                     event_index=index,
                     subfield="payload",
+                    nearest_sentence=(
+                        None if text is None else nearest_criterion_sentence(quote, text)
+                    ),
                 )
 
 

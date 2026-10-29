@@ -2485,8 +2485,10 @@ E. Jimenez, `src/minisweagent/agents/default.py` at `40fa36522015a6bc6cf14411382
 Its copyright and permission notice is kept in `application/reviewer_loop.py`. Its shell
 environment, model framework, templating and trajectory logging are removed. The loop has one
 instruction of about 1,000 tokens in pstack's shape (goal, done condition, evidence, clues,
-constraints); it states the substantive honesty rules of the packet-only instruction once, including
-the citation union, and does not reuse that instruction's text. Among them: an unbounded
+constraints); it states a compact set of the packet-only instruction's honesty rules once, including
+the citation union, and does not reuse that instruction's text. It is not every substantive rule:
+until the 2026-10-29 amendment below (#1245) it lacked the #976 infeasibility lens and the #1079
+reachability rule. Among the rules it states: an unbounded
 requirement is judged on the tested portion with the rest stated as a limitation; an observed check
 whose source is unavailable is judged on its captured output, and an agent-supplied command is never
 the hook-observed one; an image or binary is not assessable and is not a `missing_for_assessment`
@@ -3629,7 +3631,8 @@ structured verdict rows, with a shared or vacuous expected value becoming tracke
   tag beside the reviewer's observation, so a contradiction is visible: "Your test <path> for
   '<criterion>' takes its expected value from the implementation (you tagged
   expected_from=task_text; the reviewer observed shared_with_implementation). Run: <probe>, or show
-  it fails on a deliberately broken scratch copy, or decline with a reason." The probe is runnable,
+  it fails on a deliberately broken scratch copy, or decline with a reason." (Reworded on
+  2026-10-29; see the amendment below.) The probe is runnable,
   so it is kept verbatim (only control characters other than newline and tab are dropped); a
   multi-line probe follows the sentence in a fenced block (PR #1224 review). Every other verdict
   stays in the encrypted review response only. The row is non-blocking and answered once through
@@ -3658,3 +3661,88 @@ Wire changes are in place on unreleased versions: provider-judgment 1.2.0 and re
 (`declared_test_verdicts`), check-recorded 1.6.0 (`origin` enum, `test_digest`), check-result
 1.6.0/1.7.0 and status-result 1.4.0/1.5.0 (`origin` enum), outbound-case 1.2.0 (`expected_from` on
 a listed entry). The behaviour is service-side and identical for Codex, Claude Code and Cursor.
+
+### 2026-10-29 amendment — what review cannot settle, the loop's two missing rules, obligations survive narrowing (#1245, #1145, #1202)
+
+Maintainer acknowledgement: the owner decisions of 2026-10-29 recorded on #1247 (step G6) and on
+#1245, #1145 and #1202 (D16, D18, D22). They grant no network, credential, runtime or disclosure
+authority. FinishUP is not a code reviewer: it checks that the agent does what it planned and
+claimed, and its advice stays non-blocking.
+
+In TB4 full-sol (build `5372c00d9`) every atrx-vep-crispr attempt asked AI review to rule on a
+"no qualifying variant" conclusion. Two supplied inputs conflicted, every review agreed that
+withholding the required report was right, and the task was solvable from the supplied inputs. In
+batched-eval-parity the reviewer asked for a zero-budget case the input schema forbids. Every
+review used the loop instruction, which lacked two rules the packet-only instruction states, and in
+a5 the closing packet carried no obligation text at all.
+
+1. **The loop instruction carries the two rules it had dropped**, one sentence each, in its
+   existing sections, each with the failure it catches. `## Goal`: "When the task requires an
+   outcome the agent calls infeasible, contradictory or blocked, challenge it and name the
+   strongest interpretation under which it is achievable (a full reserve assumed at every stop
+   when the inputs allow less)." `## Clues`, after the boundary-value rule that produced the
+   zero-budget advice: "Suggest only inputs and states the visible interface can reach (no zero
+   budget where the schema requires a positive one)." The instruction does not grow, so the
+   minimal policy keeps its #1173/#1203 read room: four sentences that repeated another rule were
+   shortened or removed (the `decision_needed` probe's field mapping, which the calibration
+   paragraph already states; "at most 2 extra attempts", which 3 reads in 5 attempts imply; "after
+   the last read only final_judgment is accepted", which the procedure states; "read only what
+   bears on a requirement", which "read a material gap" states), and the image and read-result
+   bullets lost one redundant clause each. It is 7,626 UTF-8 bytes (7,634 before), under the
+   unchanged 7,639-byte cap. Its text changes once, which resets a provider prompt cache once
+   (#1172).
+2. **Conflicting inputs are not inability.** The closing review's acknowledged-obligation question
+   (`ACKNOWLEDGED_REVIEW_INSTRUCTION`) adds: "Conflicting inputs are not inability: challenge a
+   withheld output and ask for a best-effort output under the strongest reading the task permits,
+   with the assumption recorded (a report withheld because two supplied references disagree). Your
+   agreeing that a conflict exists is not permission to withhold. Only a missing authority, a
+   missing credential or a destructive change the task does not permit excuses withholding a
+   requested output." It is about 440 bytes on a final-phase review that carries an
+   acknowledgement, and none on any other review, so the pinned minimal-policy budgets are
+   unchanged.
+3. **The question cites only what the packet carries.** It names an acknowledged obligation only
+   when the packet carries its `obligation-<id>` row; the rest are counted, never named ("N
+   obligations acknowledged as not done are not in this packet: do not quote or judge them; state
+   that limit in review_summary.").
+4. **Obligation and claim rows survive narrowing (D22).** The first capacity narrowing
+   (`primary_material_selection`) now drops the agent's goal and the history only. Ceiling planning
+   then shrinks excerpt bytes down to the existing diff floor, as before. Only when no plan that
+   keeps the obligation and claim rows fits is the whole search repeated without them
+   (`keep_agent_account=False`), exactly as every review was planned before, so no review that
+   fitted then is refused now and the existing ceilings bind unchanged. At the aggregate case bound
+   the order is the same: goal and history, then bulk excerpts, then earlier dialogue, and
+   obligation and claim rows last. Earlier-finding prose is packed under any narrowing (the goal's
+   absence), as it was under the old one. Diagnostics: a `semantic_case_narrowed` record (only when
+   planning narrowed the case) carries `semantic_section_dropped_goal|obligations|claims|timeline`
+   (0 or 1), `semantic_obligation_rows_selected`, `semantic_claim_rows_selected` and
+   `semantic_excerpt_ceiling_rounds`, integers only. Trade-off: a narrowed packet can carry fewer
+   excerpt bytes than before, in exchange for the rows its questions and verified rows cite.
+5. **Declared-test verdict wording (#1145).** The advisory sentence labels the reviewer's probe
+   instead of wrapping prose in "Run:": "…the reviewer observed shared_with_implementation).
+   Reviewer's counter-example: <probe>. Check it, show the test fails on a deliberately broken
+   copy, or decline with a reason." A multi-line probe keeps its fenced block after "Check the
+   reviewer's counter-example below, …". Rows recorded earlier keep their bytes.
+6. **Guidance.** `review.md` gains "What it can and cannot help with" in the section on turning
+   review on: review names gaps between the plan or claims and the record, and suggests a cheap
+   check that tells two readings apart; it cannot see a hidden grader, pick the reading a grader
+   uses, or excuse a requested output. `review.md` and `workflow.md` state owner decision D16
+   verbatim: "With conflicting inputs, pick a reading, write the requested output, and record the
+   assumption. Review agreeing that a conflict exists is not permission to withhold." The Stop
+   re-checks say to write a missing output (ADR-033's 2026-10-29 note). Interpretation misses that
+   never contradict the agent's own plan or claims stay out of scope. `review.md` is one guidance
+   page of at most 16 KiB, so the paragraph is compact, carries one failure example (the D16
+   rule's), and the rest of its section was tightened to fit; no rule left the page.
+7. **Manifest quotes (D18, #1202).** A `criterion_quote` stays verbatim, but whitespace runs and
+   quote-mark styles are normalized before it is compared, everywhere it is compared (admission,
+   the coverage index, the declared-test list). A rejection names the nearest task sentence by its
+   position only ([interfaces](../INTERFACES.md#test-records-and-declared-coverage-issue-1170)).
+
+The two TB4 patterns are offline accuracy cases
+(`tests/fixtures/reviewer_accuracy/tb4_full_cases.json`, synthetic paraphrases), each bound to its
+packet-only directive, its loop directive and, for the withheld output, the acknowledged-question
+sentences. They prove the directives are present, not that a model follows them.
+
+Changing the question set, the instruction or the narrowing changes the case digest of the reviews
+affected; a pending disclosure approval prepared by an older build for such a case fails closed
+(`audit_failed`) rather than sending a different case. The behaviour is service-side and
+identical for Codex, Claude Code and Cursor. No schema changes.

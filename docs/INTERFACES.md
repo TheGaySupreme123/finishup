@@ -11101,9 +11101,15 @@ plan. Names and contracts:
   `semantic_excerpt_count_cut_for_case_bound` (excerpts dropped to fit
   `MAX_SEMANTIC_CASE_BYTES` before ceiling planning), `semantic_excerpt_count_limit` and `semantic_excerpt_byte_limit` (the effective limits the case
   was built with after ceiling planning) and `semantic_excerpt_ceiling_rounds`. All precede privacy
-  minimization and certify neither consent nor delivery.
-- `build_semantic_case` omits ordinary plan/claim/obligation and history rows before reducing
-  excerpts, as `not_selected` omissions with `content_unselected`, when the case would otherwise
+  minimization and certify neither consent nor delivery. When ceiling planning narrowed the case,
+  a separate `semantic_case_narrowed` record (#1245, same request id) carries
+  `semantic_section_dropped_goal`, `_obligations`, `_claims` and `_timeline` (1 when the approved
+  selection had the section and the planned one does not), `semantic_obligation_rows_selected`,
+  `semantic_claim_rows_selected` and `semantic_excerpt_ceiling_rounds`: integers only, in their own
+  record because a diagnostic line is at most 1,024 bytes.
+- `build_semantic_case` omits ordinary plan and history rows before reducing excerpts, then lets
+  earlier dialogue yield, and omits obligation and claim rows last (#1245, D22), each as
+  `not_selected` omissions with `content_unselected`, when the case would otherwise
   exceed `MAX_SEMANTIC_CASE_BYTES`; a case
   within that bound is unchanged. The count is `SemanticCase.excerpts_cut_for_case_bound`, local
   composition state outside the envelope and digest. When non-excerpt items alone exceed the
@@ -11120,8 +11126,13 @@ plan. Names and contracts:
   `clean_item_data_class`. `plan_under_channel_ceiling` measures only the items that admission
   releases, and rebuilds
   an over-ceiling case without lower-priority narrative before reducing `max_total_excerpt_bytes`
-  (and `max_excerpt_bytes`). `primary_material_selection` narrows goal, obligations, claims and
-  ordinary timeline; permitted finding prose, decisions, pending missing-input context and independent lineage remain.
+  (and `max_excerpt_bytes`). `primary_material_selection(selection, *, keep_timeline=False,
+  keep_agent_account=True)` narrows the goal and ordinary timeline and keeps obligation and claim
+  rows (#1245, D22); permitted finding prose, decisions, pending missing-input context and
+  independent lineage remain. Only when no plan under that selection fits with the diff floor do
+  both planners repeat the search with `keep_agent_account=False`, which also narrows obligations
+  and claims exactly as before #1245; the returned round count is the sum of both searches.
+  Earlier-finding prose is packed (`compact`) whenever the selection lacks the goal.
   A pending request retains one ordinary timeline slot, with history narrowed around it; independent
   lineage does not consume that request slot. The final diff
   floor (`final_diff_floor`) is the lesser of initially carried diff bytes and half the lesser of
@@ -11495,6 +11506,16 @@ is withheld whole), recorded as a bounded `semantic_composition/check_time_chang
   section, and their statement and rationale, like the obligation text, travel only as
   privacy-gated packet items. Golden question:
   `tests/fixtures/tb4_replay/pretrain_blocker_review_question.json`.
+- **Closing review of acknowledged obligations (#997, #1245).** `review_question_set(phase,
+  blockers, acknowledged, *, acknowledged_not_carried=0, ...)` adds, in the final phase, the
+  acknowledged obligations whose `obligation-<id>` rows the packet carries, followed by
+  `ACKNOWLEDGED_REVIEW_INSTRUCTION` (since #1245 it also says conflicting inputs are not inability,
+  that the reviewer's agreeing a conflict exists is not permission to withhold, and that only a
+  missing authority, a missing credential or a destructive change the task does not permit
+  excuses withholding a requested output). The builder passes only carried ids;
+  `acknowledged_not_carried` counts the rest, which the question never names ("N obligations
+  acknowledged as not done are not in this packet: do not quote or judge them; state that limit in
+  review_summary.").
 - **Requested outputs.** `ChangeCapturePort` implementations may offer
   `probe_requested_paths(workspace, values) -> tuple[RequestedPathProbe, ...]`
   (`ports/change_capture.py`; `location` `inside|outside`, root-relative `relative`, `exists`,
@@ -12739,7 +12760,17 @@ an earlier statement revision in the same atomic batch. The quote must occur ver
 boundaries (`1` inside `1.06` or `atio` inside `ratio` does not count) and name at least three
 word characters beyond punctuation, articles, modals and quantifiers
 (`domain.verification_coverage.criterion_quote_in_text`); otherwise publication fails with
-`verification_criterion_not_in_task`. Omitted frontiers acquire the admission
+`verification_criterion_not_in_task`. Since #1202 (owner decision D18) the comparison strips the
+quote's outer whitespace and lets a whitespace run match any whitespace run and a quote mark
+(`QUOTE_MARKS`: straight and typographic single and double quotes, and guillemets) match any quote
+mark; words, digits and every other character match exactly, and the stored quote is never
+rewritten. The coverage index and the declared-test list compare through the same pattern
+(`criterion_quote_pattern`), so a quote admitted under the normalization maps its criterion
+everywhere; an older ledger's quote that matched verbatim still matches. The rejection names the
+nearest task sentence by position only (`nearest_criterion_sentence`: the sentence, split as the
+coverage index splits criteria, that shares the most content words; "The nearest stated
+criterion is sentence <n> of the recorded task_statement (line <m>): copy its words exactly."),
+never by its text, and omits the pointer when no sentence shares a word. Omitted frontiers acquire the admission
 frontier; explicit null remains forbidden for results. Replay of a committed operation precedes
 new admission validation. A later amended task does not inherit an obsolete quote's coverage.
 
@@ -13009,10 +13040,14 @@ present on exactly those rows). Its summary is FinishUP's fixed sentence around 
 and criterion quote (newest manifest naming the path, at most 120 characters), the agent's own tag
 beside the reviewer's observation when tagged, and the reviewer's probe: "Your test <path> for
 '<criterion>' takes its expected value from the implementation | cannot fail as written (you
-tagged expected_from=<tag>; the reviewer observed <observation>). Run: <probe>, or show it fails
-on a deliberately broken scratch copy, or decline with a reason." The probe is kept verbatim
+tagged expected_from=<tag>; the reviewer observed <observation>). Reviewer's counter-example:
+<probe>. Check it, show the test fails on a deliberately broken copy, or decline with a reason."
+(#1145, 2026-10-29; no full stop is added after a probe that already ends a sentence, and a row
+recorded earlier keeps its "Run: <probe>" bytes.) The probe is kept verbatim
 (spacing and line breaks; only control characters other than newline and tab are dropped, and
-blankness is tested on its strip); a multi-line probe follows the sentence in a fenced block
+blankness is tested on its strip); a multi-line probe follows the sentence ("…Check the
+reviewer's counter-example below, show the test fails on a deliberately broken copy, or decline
+with a reason.") in a fenced block
 whose fence outruns any backtick run in it, in both summary and detail, since the check result
 row carries the summary. Subjects: the criterion ref
 when it is an obligation or claim, the declaring result's recording event otherwise. A digest an

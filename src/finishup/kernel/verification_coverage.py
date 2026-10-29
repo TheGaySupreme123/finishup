@@ -17,6 +17,7 @@ from finishup.domain.events import ActionKind, LedgerRecord, ResultOutcome, Resu
 from finishup.domain.task_statement import current_task_statement
 from finishup.domain.values import ActionId, EventId, ObligationId, ResultId
 from finishup.domain.verification_coverage import (
+    CRITERION_SENTENCE_BREAK,
     MAX_COVERAGE_CRITERIA,
     MAX_CRITERION_WITNESSES,
     VERIFICATION_COVERAGE_FLAGS,
@@ -72,7 +73,7 @@ _CONDITION: Final = re.compile(
     rf"\b(?:{_REQUIREMENT_WORDS}|{_QUANTIFIER_WORDS})\b|[≤≥]", re.IGNORECASE
 )
 MAX_CRITERION_QUOTE_CHARACTERS: Final = 240
-_SENTENCE: Final = re.compile(r"(?<=[.!?])\s+|[\n;]+")
+_SENTENCE: Final = CRITERION_SENTENCE_BREAK
 _SOURCE_RANK: Final = {
     "independent": 4,
     "held_out": 4,
