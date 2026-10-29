@@ -56,6 +56,7 @@ from finishup.ports.semantic import (
     encode_reviewer_exchange,
     reviewer_packet_bytes,
 )
+from finishup.service.semantic_ceiling import REVIEWER_FRAME_BYTES
 from unit.application.test_egress_origin_operation import (
     _Clock,  # pyright: ignore[reportPrivateUsage]
     _Gateway,  # pyright: ignore[reportPrivateUsage]
@@ -363,6 +364,30 @@ async def test_a_later_exchange_replays_the_first_exchanges_fit(
     _, later, later_events = await _evaluate(case, _policy(), monkeypatch, history=history)
     assert later == first
     assert not [e for e in later_events if e["operation"] == "semantic_disclosure_capacity_fitted"]
+
+
+def test_the_opening_fit_stops_at_the_first_token_limit_and_the_frame() -> None:
+    """#1242: disclosure fit leaves the growth reserve; the send keeps the hard budget."""
+
+    frame = ReviewerExchangeFrame(
+        "application/vnd.finishup.reviewer-turn+json",
+        lambda packet: packet,
+        budget=ReviewerExchangeBudget(300_000, 169_144, 152_760),
+        opening=True,
+    )
+    byte_limit, token_limit = egress._reviewer_exchange_send_limits(  # pyright: ignore[reportPrivateUsage]
+        frame, opening_reserve=True
+    )
+    assert (byte_limit, token_limit) == (300_000 - REVIEWER_FRAME_BYTES, 152_760)
+    hard_bytes, hard_tokens = egress._reviewer_exchange_send_limits(  # pyright: ignore[reportPrivateUsage]
+        frame, opening_reserve=False
+    )
+    assert (hard_bytes, hard_tokens) == (300_000, 169_144)
+    later = replace(frame, opening=False)
+    kept_bytes, kept_tokens = egress._reviewer_exchange_send_limits(  # pyright: ignore[reportPrivateUsage]
+        later, opening_reserve=True
+    )
+    assert (kept_bytes, kept_tokens) == (300_000, 169_144)
 
 
 def test_the_fit_plan_never_leaves_out_the_change_or_a_served_change_section() -> None:

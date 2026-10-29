@@ -10300,8 +10300,11 @@ follow-up loop is deleted.
   holds bytes from. With `exchange_room` (#1118), `reads_allowed()` also needs `MIN_ROOM +
   READ_ACTION_ROOM` (2 KiB) of it; `execute` subtracts the `reply` turn's bytes and raises
   `ReadExchangeFull(required, available)` before reserving when less than `MIN_ROOM` is left.
-  The loop ends `case_capacity_exceeded`, carrying those minimum required and available exchange
-  bytes through `SemanticEgressBlocked.capacity` to the existing capacity outcome. It never
+  On `ReadExchangeFull` the loop asks once for a judgment and says `reviewer read not served: no room`
+  (#1242). It does not end `read_limit`. A second read after that notice ends `case_capacity_exceeded`,
+  carrying those minimum required and available exchange bytes through `SemanticEgressBlocked.capacity`
+  (`token_usage` holds the paid turn's `RuntimeTokenUsage` when the provider reported one; the attempt
+  row records it, and the public outcome stays provenance-free). It never
   becomes `response_schema_invalid`; a read after the count cap takes the one format repair
   (#1173) and, after that repair, ends `read_limit`.
   A result over its room keeps the longest head that fits, measured.
@@ -12362,11 +12365,18 @@ as `outcome_unknown` and is never resent. For it, `operation_max_retries` is `0`
   carry `capacity`; `SemanticEgressBlocked.capacity_unit` is `bytes` or `tokens`, and the bounded
   diagnostic names `semantic_disclosure_attempted_<unit>` / `semantic_disclosure_limit_<unit>`), so
   an oversize conversation never surfaces as `coordinator_failure` (#1118 smoke) or as a network
-  denial. Later exchanges are fitted, not estimated: `run_reviewer` gives the broker
-  `exchange_room() = min(byte_limit - sent_bytes[-1] - _REPAIR_NOTE_BYTES, token_limit -
-  sent_tokens[-1] - _REPAIR_NOTE_TOKENS)` (the last exchange rendered, and the room one
-  format-repair notice needs; a message adds no more estimated tokens than encoded bytes, so token
-  room is granted as bytes),
+  denial. The opening exchange's disclosure fit (#1242) uses `first_token_limit` and
+  `byte_limit - REVIEWER_FRAME_BYTES`; the send keeps `byte_limit` and `token_limit`.
+  Later exchanges are fitted, not estimated: `run_reviewer` gives the broker
+  `exchange_room()`. Before anything is sent, `planned_opening_exchange` measures the largest
+  disclosed first exchange and `reviewer_turn_room` is its room. Under `MIN_ROOM` (1 KiB) the
+  review is read-free (#1242); at or above that, turn 1 still offers a read and this room stays
+  unknown until the send. After a send `exchange_room()` is
+  `min(byte_limit - sent_bytes[-1] - _REPAIR_NOTE_BYTES -
+  _FINAL_NOTE_BYTES, token_limit - sent_tokens[-1] - _REPAIR_NOTE_TOKENS - _FINAL_NOTE_TOKENS)`
+  (the last exchange rendered, and the room one format-repair notice and the final-phase notice
+  need; a message adds no more estimated tokens than encoded bytes, so token
+  room is granted as bytes). Unknown room, when no opening was measured, still offers a read.
   `ReviewerBroker.total` is lowered to `used + exchange_room()` after each exchange, and each result
   must fit what that room leaves after its read action, both measured by
   `ports.semantic.reviewer_message_bytes(role, text)` (the exact bytes one more message adds to an

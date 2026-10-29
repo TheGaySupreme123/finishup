@@ -238,6 +238,7 @@ from finishup.domain.coordination import (
 from finishup.domain.events import CheckChangeShownFiles, RuntimeProfile, SessionOpenedPayload
 from finishup.domain.findings import (
     Finding,
+    RuntimeTokenUsage,
     SemanticDispatchKind,
     SemanticFailureClass,
     SemanticFallbackOrigin,
@@ -455,6 +456,7 @@ from finishup.service.semantic_ceiling import (
     channel_admission,
     plan_under_channel_ceiling,
     planned_exchange_size,
+    read_offer_for_opening,
     reviewer_exchange_budget,
     reviewer_exchange_limit,
     reviewer_exchange_measure,
@@ -3602,11 +3604,13 @@ def _map_egress_to_final(
             mapped = FinalSemanticEvaluation(
                 SemanticStatus.FAILED, SemanticReason.CASE_CAPACITY_EXCEEDED
             )
+        usage = result.token_usage
         return replace(
             mapped,
             semantic_withheld_item_ids=_egress_withheld_item_ids(result),
             semantic_redacted_values=_egress_redacted_values(result),
             case_content_gaps=_egress_case_content_gaps(result),
+            attempt_token_usage=usage if type(usage) is RuntimeTokenUsage else None,
         )
     if type(result) is SemanticEgressProviderOutcome:
         return _map_provider_outcome(result, attempt_id=resolved_attempt)
@@ -5847,10 +5851,10 @@ def _privacy_gated_semantic_evaluator(
                 if planned is None or not planned[4]:
                     declared_tests = ()
                     planned = await plan(())
-                # ``_fits`` stays unused on purpose: the planner's estimate can say a case does
-                # not fit when the real exchange still does. The send gate enforces the
-                # first-exchange limit (#1242).
-                semantic_case, approved_case, planned_selection, ceiling_rounds, _fits = planned
+                # ``plan_fits`` is recorded. It is not a refusal: the planner's scaled estimate
+                # can say a case does not fit when the rendered exchange still does. Turn 1's
+                # read offer follows that rendered room (#1242).
+                semantic_case, approved_case, planned_selection, ceiling_rounds, plan_fits = planned
             except SemanticCaseCapacityExceeded as exc:
                 # Same pre-dispatch contract as an envelope that cannot be reduced: local
                 # findings stay recorded, no job is created, and the caller sees a capacity
@@ -5909,7 +5913,7 @@ def _privacy_gated_semantic_evaluator(
                     ),
                     "semantic_excerpt_byte_limit": planned_selection.max_total_excerpt_bytes,
                     "semantic_excerpt_ceiling_rounds": ceiling_rounds,
-                    "semantic_plan_fits": int(_fits),
+                    "semantic_plan_fits": int(plan_fits),
                     "semantic_check_change_parts_selected": sum(
                         item.excerpt_item_id.startswith(CHECK_TIME_CHANGE_ITEM_PREFIX)
                         for item in semantic_case.packet.targeted_excerpts
@@ -6145,6 +6149,14 @@ def _privacy_gated_semantic_evaluator(
             # its original row, so replay never restarts its elapsed time (issue #571 A2).
             await _begin_semantic_progress(runtime, job, execution.expires_at, clock)
             read_roots = await read_roots_for(semantic_case)
+            # #1242: below the room a result without data needs, turn 1 does not offer a read.
+            reviewer_reads, opening_exchange = read_offer_for_opening(
+                semantic_case,
+                lambda reads: reviewer_catalog(read_roots, reads),
+                admission,
+                planned_budget,
+                reviewer_reads,
+            )
 
             def _dispatch_for(
                 binding: ProviderBinding,
@@ -6330,6 +6342,7 @@ def _privacy_gated_semantic_evaluator(
                                 # #1118: every exchange stays within this destination's budget:
                                 # its byte bound and, on a sized route, its model-token budget.
                                 exchange_budget=reviewer_exchange_budget(policy, (binding,)),
+                                opening_exchange=opening_exchange,
                             )
                             stage = "response_mapping"
                             return _with_reviewer(await _mapped(run.result), run)

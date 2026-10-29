@@ -90,6 +90,8 @@ _FIELD_ORDER: Final = (
     "semantic_excerpt_count_cut_for_case_bound",
     "semantic_excerpt_byte_limit",
     "semantic_excerpt_ceiling_rounds",
+    # #1242: 1 when ceiling planning fitted the first exchange, else 0.
+    "semantic_plan_fits",
     # #1118: a capacity refusal's rendered disclosure size and the limit it
     # exceeded (integers only, never content).
     "semantic_disclosure_attempted_bytes",

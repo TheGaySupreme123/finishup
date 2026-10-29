@@ -328,6 +328,111 @@ async def test_a_large_valid_action_asks_for_a_judgment_before_reserving_a_read(
     assert "final_judgment" in json.dumps(model.calls[1][1])
 
 
+@pytest.mark.anyio
+async def test_a_predicted_room_under_two_kib_offers_no_read() -> None:
+    """A known room under 2 KiB does not offer another read. Turn 1 uses 1 KiB (#1242)."""
+
+    loop, broker, model, _ = _setup(_FINAL)
+    broker._exchange_room = lambda: 2047  # pyright: ignore[reportPrivateUsage]
+    outcome = await loop.run()
+    assert outcome.reason is None and outcome.judgment is not None
+    assert broker.calls == 0 and len(model.calls) == 1
+    assert model.calls[0][1]["properties"] == {  # pyright: ignore[reportIndexIssue]
+        "reply": {"anyOf": [{"$ref": "#/$defs/FinalReply"}]}
+    }
+    assert all(READ_NOT_SERVED not in turn.content for turn in model.calls[0][0])
+
+
+def test_a_first_exchange_near_the_token_limit_leaves_under_two_kib() -> None:
+    """#1242: the observed closing review had about 317 tokens free, under a read."""
+
+    from finishup.application.reviewer_broker import MIN_ROOM, READ_ACTION_ROOM
+    from finishup.application.reviewer_run import reviewer_turn_room
+    from finishup.domain.reviewer_context import ReviewerExchangeBudget
+
+    budget = ReviewerExchangeBudget(524_288, 169_144, 152_760)
+    tight = reviewer_turn_room(budget, 321_611, 168_827)
+    fitted = reviewer_turn_room(budget, 200_000, 152_760)
+    assert tight is not None and tight < MIN_ROOM
+    assert fitted is not None and fitted >= MIN_ROOM + READ_ACTION_ROOM
+
+
+def test_an_unjudged_ending_keeps_the_paid_turn_usage() -> None:
+    """#1242: case_capacity_exceeded after a sent turn still records that turn's usage."""
+
+    from finishup.application.egress import SemanticEgressBlocked, SemanticEgressReply
+    from finishup.application.reviewer_loop import ReviewOutcome
+    from finishup.application.reviewer_run import _terminal  # pyright: ignore[reportPrivateUsage]
+    from finishup.domain.findings import RuntimeAttemptEvidence, RuntimeTokenUsage, SamplingParams
+    from finishup.domain.privacy import PrivacyOutcome, PrivacyReason
+    from finishup.ports.semantic import ProviderAttemptProvenance, SemanticResultReply
+    from finishup.protocol.models import SemanticStatus
+
+    digest = "sha256:" + "ab" * 32
+    usage = RuntimeTokenUsage(127_302, 40, 0, 20, 0, 127_322)
+    evidence = RuntimeAttemptEvidence(
+        credential_authority="external_runtime_oauth",
+        runtime_version="0.164.0",
+        runtime_source_identity="openai-codex-npm-linux-x64-0.164.0",
+        executable_sha256=digest,
+        app_server_schema_sha256=digest,
+        capability_cell_sha256=digest,
+        capability_profile="codex-evaluator/0.164.0/v1",
+        capability_evidence_expires_at="2026-11-30T00:00:00Z",
+        launcher_sha256=digest,
+        isolated_config_sha256=digest,
+        disclosed_case_sha256=digest,
+        instruction_sha256=digest,
+        output_schema_sha256=digest,
+        selection_sha256=digest,
+        upstream_body_observability="unavailable",
+        auth_mode="chatgpt",
+        plan_type="plus",
+        reasoning_effort="medium",
+        thread_id="thread-1",
+        turn_id="turn-1",
+        final_output_sha256=digest,
+        case_disclosed=True,
+        turn_acknowledged=True,
+        process_cleanup="retained",
+        token_usage=usage,
+    )
+    provenance = ProviderAttemptProvenance(
+        provider="openai-codex",
+        endpoint_profile_id="codex-chatgpt-subscription",
+        endpoint_profile_version="1.0.0",
+        model="gpt-6.1-sol",
+        sdk_version="codex-app-server-0.164.0",
+        prompt_digest=digest,
+        schema_digest=digest,
+        policy_digest=digest,
+        privacy_policy_digest=digest,
+        sampling_params=SamplingParams(128),
+        latency_ms=1,
+        status=SemanticStatus.SUCCEEDED,
+        runtime_evidence=evidence,
+    )
+    reply = SemanticEgressReply(SemanticResultReply({"reply": {}}, provenance), {}, None, None)
+    outcome = ReviewOutcome(
+        "incomplete",
+        None,
+        "case_capacity_exceeded",
+        (),
+        1,
+        frozenset(),
+        {},
+        (1360, 170),
+    )
+    blocked = _terminal(  # pyright: ignore[reportPrivateUsage]
+        outcome, [reply], "req_40000000-0000-4000-8000-000000000101", None
+    )
+    assert isinstance(blocked, SemanticEgressBlocked)
+    assert blocked.outcome is PrivacyOutcome.BLOCKED_BY_POLICY
+    assert blocked.reason is PrivacyReason.POLICY_DENIED
+    assert blocked.capacity == (1360, 170)
+    assert blocked.token_usage == usage
+
+
 def _late(model: _Script, loop: ReviewerLoop) -> None:
     """The model's turn ends after the job deadline."""
 

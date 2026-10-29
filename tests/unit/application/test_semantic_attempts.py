@@ -2383,6 +2383,23 @@ async def test_exception_stage_survives_cleanup_and_is_request_joined(
         assert len(records) >= 2
 
 
+def test_unjudged_capacity_usage_is_kept_without_provider_provenance() -> None:
+    from finishup.application.semantic_attempts import (
+        _attempt_token_usage,  # pyright: ignore[reportPrivateUsage]
+    )
+
+    usage = RuntimeTokenUsage(127_302, 0, 0, 12, 0, 127_314)
+
+    class _UsageEval:
+        status = SemanticStatus.FAILED
+        reason = SemanticReason.CASE_CAPACITY_EXCEEDED
+        judgment = None
+        provenance = None
+        attempt_token_usage = usage
+
+    assert _attempt_token_usage(_UsageEval()) == usage  # pyright: ignore[reportPrivateUsage]
+
+
 @pytest.mark.anyio
 async def test_response_publication_failure_keeps_runtime_usage_on_failed_attempt() -> None:
     usage = RuntimeTokenUsage(120, 60, 10, 30, 8, 150)

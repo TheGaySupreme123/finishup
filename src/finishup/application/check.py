@@ -58,6 +58,7 @@ from finishup.domain.findings import (
     FindingOrigin,
     PriorFindingVerdictRecord,
     RankedFindings,
+    RuntimeTokenUsage,
     SemanticProvenance,
     finding_demands_work,
     finding_from_json,
@@ -2465,6 +2466,9 @@ class FinalSemanticEvaluation:
     case_declared_tests: tuple[DeclaredTest, ...] = ()
     # Selector-only diagnostics; private payload in the encrypted attempt response, never public.
     reviewer_read_usage: tuple[Mapping[str, JsonValue], ...] | None = None
+    # Provider usage of a turn already paid for when the review ends unjudged (#1242).
+    # The public outcome stays provenance-free; the attempt row records this.
+    attempt_token_usage: RuntimeTokenUsage | None = None
 
     def __post_init__(self) -> None:
         if (
@@ -2513,6 +2517,11 @@ class FinalSemanticEvaluation:
         )
         if self.provenance is not None and type(self.provenance) is not SemanticProvenance:
             raise _invalid("semantic_provenance_invalid")
+        if (
+            self.attempt_token_usage is not None
+            and type(self.attempt_token_usage) is not RuntimeTokenUsage
+        ):
+            raise _invalid("semantic_token_usage_invalid")
         if self.status is SemanticStatus.SUCCEEDED:
             if type(self.judgment) is not SemanticJudgment or self.provenance is None:
                 raise _invalid("semantic_judgment_invalid")

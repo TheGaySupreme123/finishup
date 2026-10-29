@@ -1635,3 +1635,9 @@ measured the minimized row: 16,402 bytes. Egress refused the whole packet and no
   refs and parts) comes from that provider-bound manifest, so a left-out excerpt is never counted
   shown. The privacy receipt counts the items actually included. A bounded diagnostic
   `semantic_disclosure_capacity_fitted` records how many excerpts were left out, never content.
+- **Opening exchange keeps its frame (#1242, 2026-10-29).** On the first exchange of a reviewer
+  conversation the fit stops at `first_token_limit` when the route is sized, and at the byte
+  ceiling less the 8 KiB reply frame. Later exchanges keep the full exchange budget. The send
+  still refuses only an exchange over the hard byte or token budget, so a packet the fit cannot
+  shed under the first-exchange limit is sent when the model can still hold it. The review then
+  offers no read when under 1 KiB of room remains (a result without data cannot fit).

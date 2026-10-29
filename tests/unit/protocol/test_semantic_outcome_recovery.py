@@ -74,6 +74,14 @@ def test_closed_reason_tokens_cover_issue_examples() -> None:
     )
 
 
+def test_capacity_directive_says_a_recheck_hits_the_same_limit() -> None:
+    directive = directive_for("semantic_capacity_exceeded")
+    assert directive is not None
+    assert "same packet" in directive.directive
+    assert "same limit" in directive.directive
+    assert "no provider attempt" not in directive.directive
+
+
 def test_privacy_blocked_required_review_gets_safe_recovery() -> None:
     for status, reason in (
         (SemanticStatus.BLOCKED_FORBIDDEN_DATA, SemanticReason.NEVER_SEND_DETECTED),

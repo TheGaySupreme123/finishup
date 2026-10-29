@@ -2647,10 +2647,21 @@ credential probe keep their one-shot dispatch; no check uses it.
   sent, the read action as the next exchange encodes it and the room one format-repair notice
   needs, measured as the exchange encodes the result, escaping included. A result over that room
   keeps the longest head that fits, measured. A read is offered only while 2 KiB of that room is
-  left (an ordinary read action and a result without data); an action whose own bytes leave less
-  than 1 KiB is not served. The review asks for a judgment and says "reviewer read not served:
-  no room" (#1242). It does not end as `read_limit`. A second read after that notice still ends
-  the review, unread. The ceiling here is the exchange
+  left (an ordinary read action and a result without data). Before the first turn the rendered
+  opening exchange, its bytes and estimated tokens, is measured (#1242). When that leaves less
+  than 1 KiB, a result without data cannot be served, and the review is read-free instead of
+  treating the unknown room as unlimited. A first read that still fits between that and the 2 KiB
+  offer is made; once an exchange has been sent, another read needs the 2 KiB. An action whose
+  own bytes leave less than 1 KiB is not served. The review asks for a judgment and says
+  "reviewer read not served: no room".
+  It does not end as `read_limit`. A second read after that notice still ends the review,
+  unread, and the attempt keeps the paid turn's provider token usage. The continuation says a
+  re-check of the same packet hits the same limit. The opening disclosure fit stops at
+  `first_token_limit` and at the byte ceiling less the 8 KiB frame, so excerpts are not shed
+  only down to the hard exchange limit; the send still uses that hard budget. `semantic_plan_fits`
+  records whether ceiling planning fitted the first exchange. That flag does not refuse a review
+  the rendered exchange still holds: the planner's scaled estimate can miss a fit. The ceiling
+  here is the exchange
   budget below, never above what one prepared disclosure carries. Planning measures the packet in
   its largest disclosed shape, credential-like values replaced (#1230). A first exchange that still
   outgrows it has its lowest-ranked excerpts left out whole at disclosure (#1230, ADR-009

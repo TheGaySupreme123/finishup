@@ -44,7 +44,7 @@ from finishup.application.reviewer_loop import (
     ReviewOutcome,
 )
 from finishup.application.reviewer_telemetry import read_usage_from_wire
-from finishup.domain.findings import SemanticFailureClass
+from finishup.domain.findings import RuntimeTokenUsage, SemanticFailureClass
 from finishup.domain.privacy import (
     AuthorizationScope,
     CandidateContext,
@@ -79,6 +79,7 @@ __all__ = [
     "ReviewerRun",
     "reviewer_catalog",
     "reviewer_first_exchange",
+    "reviewer_turn_room",
     "run_reviewer",
 ]
 
@@ -95,6 +96,21 @@ _REPAIR_NOTE_BYTES: Final = max(reviewer_message_bytes("user", note) for note in
 _REPAIR_NOTE_TOKENS: Final = max(reviewer_message_tokens(note) for note in _REPAIR_NOTES)
 _FINAL_NOTE_BYTES: Final = reviewer_message_bytes("user", FINAL_PHASE)
 _FINAL_NOTE_TOKENS: Final = reviewer_message_tokens(FINAL_PHASE)
+
+
+def reviewer_turn_room(budget: ReviewerExchangeBudget | None, size: int, tokens: int) -> int | None:
+    """Bytes the next exchange may still add after one of ``size`` bytes and ``tokens``.
+
+    ``None`` when the route has no exchange budget. The same formula ``exchange_room`` uses
+    after a send, including the room one format-repair notice and the final-phase notice need.
+    """
+
+    if budget is None:
+        return None
+    room = budget.byte_limit - size - _REPAIR_NOTE_BYTES - _FINAL_NOTE_BYTES
+    if budget.token_limit is not None:
+        room = min(room, budget.token_limit - tokens - _REPAIR_NOTE_TOKENS - _FINAL_NOTE_TOKENS)
+    return room
 
 
 @dataclass(frozen=True, slots=True)
@@ -171,6 +187,7 @@ async def run_reviewer(
     source_commitment: Callable[[bytes], Awaitable[str]],
     reads: int = MAX_READS,
     exchange_budget: ReviewerExchangeBudget | None = None,
+    opening_exchange: tuple[int, int] | None = None,
 ) -> ReviewerRun:
     """Run the review conversation for one job attempt and return its terminal result.
 
@@ -185,22 +202,24 @@ async def run_reviewer(
     many estimated tokens as encoded bytes, so token room is granted as that many bytes.
     ``source_commitment`` is the installation's keyed object commitment; a file read's opaque
     source id is derived from it, so the id cannot be recomputed from a guessed path.
+    ``opening_exchange`` is the rendered first exchange's ``(bytes, estimated tokens)`` before
+    anything is sent (#1242). Turn 1's read offer uses that room; unknown room still offers a read.
     """
 
     retained = ReviewerHistory()
     sent: list[tuple[int, int]] = []
 
     def exchange_room() -> int | None:
-        if exchange_budget is None or not sent:
+        if exchange_budget is None:
             return None
-        size, tokens = sent[-1]
-        room = exchange_budget.byte_limit - size - _REPAIR_NOTE_BYTES - _FINAL_NOTE_BYTES
-        if exchange_budget.token_limit is not None:
-            room = min(
-                room,
-                exchange_budget.token_limit - tokens - _REPAIR_NOTE_TOKENS - _FINAL_NOTE_TOKENS,
-            )
-        return room
+        if sent:
+            size, tokens = sent[-1]
+        elif opening_exchange is not None:
+            # #1242: turn 1 is room-aware. Unknown room (no measured opening) still offers a read.
+            size, tokens = opening_exchange
+        else:
+            return None
+        return reviewer_turn_room(exchange_budget, size, tokens)
 
     broker = ReviewerBroker(
         job_id=job_id,
@@ -332,6 +351,7 @@ def _terminal(
             PrivacyOutcome.BLOCKED_BY_POLICY,
             PrivacyReason.POLICY_DENIED,
             capacity=outcome.capacity,
+            token_usage=_paid_token_usage(results),
         )
     if type(last) is SemanticEgressReply:
         provenance = last.result.provenance
@@ -383,6 +403,22 @@ def _terminal(
     return SemanticEgressBlocked(
         request_id, PrivacyOutcome.TRANSPORT_FAILED, PrivacyReason.OUTCOME_UNKNOWN
     )
+
+
+def _paid_token_usage(results: list[SemanticEgressResult]) -> RuntimeTokenUsage | None:
+    """The largest provider usage a sent turn reported, when the review ends unjudged (#1242)."""
+
+    best: RuntimeTokenUsage | None = None
+    for result in results:
+        if type(result) is not SemanticEgressReply:
+            continue
+        evidence = result.result.provenance.runtime_evidence
+        usage = None if evidence is None else evidence.token_usage
+        if type(usage) is not RuntimeTokenUsage:
+            continue
+        if best is None or usage.total_tokens > best.total_tokens:
+            best = usage
+    return best
 
 
 def _record(

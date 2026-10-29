@@ -18,7 +18,7 @@ from finishup.adapters.privacy.local_enforcer import (
     estimated_token_count,
 )
 from finishup.adapters.reviewer_artifacts import IMAGE_REVIEW_PURPOSE, read_image
-from finishup.domain.findings import SemanticDispatchKind
+from finishup.domain.findings import RuntimeTokenUsage, SemanticDispatchKind
 from finishup.domain.privacy import (
     REVIEW_PACKET_ITEM_ID,
     ApprovedLocalDisclosureCase,
@@ -528,8 +528,8 @@ class ReviewerExchangeFrame:
     # #1118: what this exchange may carry on its route: its bytes and, on a route sized to its
     # model's context, its estimated model tokens. ``None`` keeps the unsized byte bound.
     budget: ReviewerExchangeBudget | None = None
-    # #1242: only the opening exchange stops at ``first_token_limit`` and leaves the frame.
-    # Later exchanges of the same conversation may use the full exchange budget.
+    # #1242: the opening exchange's disclosure fit stops at ``first_token_limit`` and leaves
+    # the 8 KiB frame. Later exchanges, and the send gate, use the full exchange budget.
     opening: bool = False
 
 
@@ -623,6 +623,9 @@ class SemanticEgressBlocked:
     # Which approved bound was exceeded; excerpt bytes count the privacy-transformed content,
     # not its original selection size or the JSON-escaped whole disclosure.
     capacity_scope: Literal["disclosure", "excerpt", "excerpt_total"] = "disclosure"
+    # A turn already paid for when the review ends without a judgment (#1242). The public
+    # outcome stays provenance-free; the attempt row records this usage.
+    token_usage: RuntimeTokenUsage | None = None
 
     def __post_init__(self) -> None:
         _validate_withheld_item_ids(self.withheld_item_ids)
@@ -647,6 +650,8 @@ class SemanticEgressBlocked:
             ("excerpt_total", "bytes"),
         } or (self.capacity is None and scope_unit != ("disclosure", "bytes")):
             raise ValueError("semantic_capacity_invalid")
+        if self.token_usage is not None and type(self.token_usage) is not RuntimeTokenUsage:
+            raise ValueError("semantic_token_usage_invalid")
 
 
 @dataclass(frozen=True, slots=True)
@@ -2198,7 +2203,8 @@ class PrivacyCoordinator:
             # #1118: the approved packet travels inside the reviewer conversation. The whole
             # conversation is the disclosed payload, so ceilings, the proposal and the gateway's
             # final scan all see its exact bytes; earlier read results were admitted on their own.
-            # #1242: the first exchange stops at the first-token limit and leaves the frame.
+            # The send keeps the hard exchange budget. The opening fit, above, stops at the
+            # first-token limit and leaves the frame (#1242).
             payload = frame.render(packet_bytes)
             byte_limit, token_limit = _reviewer_exchange_send_limits(frame, opening_reserve=False)
             tokens = None if token_limit is None else reviewer_exchange_tokens(payload)
@@ -3745,9 +3751,10 @@ def _reviewer_exchange_send_limits(
 ) -> tuple[int, int | None]:
     """The byte and token caps one reviewer exchange is measured against.
 
-    The opening exchange's disclosure fit stops at ``first_token_limit`` so excerpts are
-    left out before the growth reserve is spent (#1242). The send gate keeps the hard
-    exchange budget: a packet that still fits the model is not refused for the reserve.
+    The opening exchange's disclosure fit stops at ``first_token_limit`` and at the byte
+    ceiling less the 8 KiB frame, so excerpts are left out before the growth reserve is
+    spent (#1242). The send gate keeps the hard exchange budget: a packet that still fits
+    the model is not refused for the reserve.
     """
 
     budget = frame.budget
@@ -3756,13 +3763,12 @@ def _reviewer_exchange_send_limits(
         MAX_MINIMIZED_DISCLOSURE_BYTES,
     )
     token_limit = None if budget is None else budget.token_limit
-    if (
-        opening_reserve
-        and frame.opening
-        and budget is not None
-        and budget.first_token_limit is not None
-    ):
-        token_limit = budget.first_token_limit
+    if opening_reserve and frame.opening:
+        from finishup.service.semantic_ceiling import REVIEWER_FRAME_BYTES
+
+        byte_limit = max(0, byte_limit - REVIEWER_FRAME_BYTES)
+        if budget is not None and budget.first_token_limit is not None:
+            token_limit = budget.first_token_limit
     return byte_limit, token_limit
 
 

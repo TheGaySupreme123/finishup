@@ -531,12 +531,12 @@ _DIRECTIVES: Final = (
     RecoveryDirective(
         token="semantic_capacity_exceeded",
         directive=(
-            "No usable review ran. For case_capacity_exceeded no provider attempt was made: narrow "
-            "the claim or obligation scope. For provider_quota_exhausted, wait for quota. Then run "
-            "one new check under a NEW request_id."
+            "No usable review ran. A re-check of the same packet hits the same limit: narrow "
+            "the claim or obligation scope before another check. For provider_quota_exhausted, "
+            "wait for quota. Then run one new check under a NEW request_id."
         ),
         guidance_uri=_SEMANTIC_COVERAGE,
-        nudge="Do not resend the same case expecting a larger admitted bound.",
+        nudge="Do not resend the same packet expecting a larger admitted bound.",
     ),
     RecoveryDirective(
         token="semantic_timeout",

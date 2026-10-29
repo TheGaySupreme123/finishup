@@ -122,9 +122,7 @@ async def test_read_action_capacity_asks_for_a_judgment_without_schema_failure(
     assert result.reviewer is not None and result.reviewer.ended is None
     assert result.reviewer.reads == ()
     assert any(
-        READ_NOT_SERVED in text
-        for _media, history in gateway.exchanges
-        for _role, text in history
+        READ_NOT_SERVED in text for _media, history in gateway.exchanges for _role, text in history
     )
     job = await runtime.ledger.load_semantic_job(runtime.writer_id or "", frozen_request())
     assert job is not None and job.terminal_code is SemanticReason.SEMANTIC_COMPLETED
@@ -538,10 +536,9 @@ async def test_the_final_phase_notice_fits_beside_a_read_that_filled_its_room(
 async def test_a_notice_without_room_is_left_out_and_the_review_concludes(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """#1172: a first exchange that ceiling planning could not keep its frame under leaves room
-    for the repair note but not for the final-phase notice beside it. After a malformed first
-    answer the loop leaves the notice out, so the repair exchange fits the cap and the review
-    concludes; with the notice it would outgrow the cap and end ``case_capacity_exceeded``."""
+    """#1172, #1242: a first exchange with no frame left has under 1 KiB of room, so the review
+    is read-free from the first turn. A malformed answer still gets its one repair. That repair
+    fits the owner's ceiling, the final-phase notice is not added, and the review concludes."""
 
     import finishup.service.semantic_ceiling as semantic_ceiling_module
 
@@ -575,8 +572,8 @@ async def test_a_notice_without_room_is_left_out_and_the_review_concludes(
     assert len(_encoded(exchanges[0])) == first and len(exchanges) == 2
     assert exchanges[1][-1] == ("user", repair) and ("user", FINAL_PHASE) not in exchanges[1]
     assert len(_encoded(exchanges[1])) <= cap < len(_encoded(exchanges[1])) + notice
-    turn, final = (f"application/vnd.finishup.reviewer-{m}+json" for m in ("turn", "final"))
-    assert [media for media, _history in gateway.exchanges] == [turn, final]
+    final = "application/vnd.finishup.reviewer-final+json"
+    assert [media for media, _history in gateway.exchanges] == [final, final]
 
 
 # #1118 token budget: the Codex subscription route running the pinned reviewer model is sized to

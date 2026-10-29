@@ -27,7 +27,8 @@ from finishup.adapters.privacy.local_enforcer import (
 )
 from finishup.adapters.providers.codex_reviewer_catalog import reviewer_model_context_window
 from finishup.adapters.providers.reviewer_reply import REVIEWER_LOOP_INSTRUCTION
-from finishup.application.reviewer_run import reviewer_first_exchange
+from finishup.application.reviewer_broker import MIN_ROOM
+from finishup.application.reviewer_run import reviewer_first_exchange, reviewer_turn_room
 from finishup.application.semantic_case import (
     SemanticCaseTooLarge,
     check_time_change_floor_bytes_carried,
@@ -55,7 +56,12 @@ from finishup.domain.reviewer_context import (
     reviewer_token_budget,
 )
 from finishup.ports.privacy import MAX_MINIMIZED_DISCLOSURE_BYTES
-from finishup.ports.semantic import SemanticCase, SemanticCaseItem, reviewer_message_tokens
+from finishup.ports.semantic import (
+    SemanticCase,
+    SemanticCaseItem,
+    reviewer_exchange_tokens,
+    reviewer_message_tokens,
+)
 from finishup.protocol.models import DataCategory
 
 __all__ = [
@@ -66,6 +72,8 @@ __all__ = [
     "channel_prepared_limit",
     "plan_under_channel_ceiling",
     "planned_exchange_size",
+    "planned_opening_exchange",
+    "read_offer_for_opening",
     "reviewer_exchange_budget",
     "reviewer_exchange_limit",
     "reviewer_exchange_measure",
@@ -280,6 +288,58 @@ def planned_exchange_size(
     the envelope cannot be bounded at all."""
 
     return _prepared_size(case, admission, measure)
+
+
+def planned_opening_exchange(
+    case: SemanticCase,
+    catalog: str,
+    admission: ChannelAdmission | None,
+    budget: ReviewerExchangeBudget | None,
+) -> tuple[int, int] | None:
+    """Bytes and estimated tokens of the disclosed first exchange planning treats as largest.
+
+    ``None`` when that exchange cannot be bounded. Turn 1's read offer uses this before
+    anything is sent (#1242). It is the same disclosed shape ``reviewer_exchange_measure``
+    compares with the first-exchange limit.
+    """
+
+    released = {item.item_id for item in case.items if admission is None or admission.admits(item)}
+    try:
+        payloads = semantic_case_to_disclosed_payloads(case, released)
+    except SemanticCaseTooLarge:
+        return None
+    measure = reviewer_exchange_measure(catalog, budget)
+    chosen: bytes | None = None
+    chosen_size = -1
+    for payload in payloads:
+        size = measure(payload)
+        if chosen is None or size > chosen_size:
+            chosen, chosen_size = payload, size
+    if chosen is None:
+        return None
+    rendered = reviewer_first_exchange(chosen, catalog)
+    return (len(rendered), reviewer_exchange_tokens(rendered))
+
+
+def read_offer_for_opening(
+    case: SemanticCase,
+    catalog_for: Callable[[int], str],
+    admission: ChannelAdmission | None,
+    budget: ReviewerExchangeBudget | None,
+    reads: int,
+) -> tuple[int, tuple[int, int] | None]:
+    """How many reads turn 1 offers, and the opening measure when that offer is none.
+
+    A result without data needs ``MIN_ROOM``. Below that the read cannot be served, so the
+    review is read-free (#1242). At or above it, turn 1 still offers a read and the room stays
+    unknown until the exchange is sent: the 2 KiB offer rule applies to the next read.
+    """
+
+    measured = planned_opening_exchange(case, catalog_for(reads), admission, budget)
+    room = None if measured is None else reviewer_turn_room(budget, measured[0], measured[1])
+    if reads and room is not None and room < MIN_ROOM:
+        return 0, planned_opening_exchange(case, catalog_for(0), admission, budget)
+    return reads, None
 
 
 def _with_excerpt_budget(selection: ReviewSelectionPolicy, budget: int) -> ReviewSelectionPolicy:

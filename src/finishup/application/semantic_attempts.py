@@ -775,8 +775,15 @@ class _AttemptEvaluation(Protocol):
 
 
 def _attempt_token_usage(evaluation: _AttemptEvaluation) -> RuntimeTokenUsage | None:
-    """Extract only bounded numeric provider usage for the durable attempt row."""
+    """Extract only bounded numeric provider usage for the durable attempt row.
 
+    An unjudged review keeps the paid turn's usage on the evaluation itself (#1242). That
+    outcome cannot carry provider provenance, so the usage does not travel with it.
+    """
+
+    direct = getattr(evaluation, "attempt_token_usage", None)
+    if type(direct) is RuntimeTokenUsage:
+        return direct
     provenance = evaluation.provenance
     if provenance is None:
         return None
