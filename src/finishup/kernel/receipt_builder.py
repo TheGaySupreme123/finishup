@@ -2267,6 +2267,58 @@ def _review_mode_sentence(context: ReceiptBuildContext) -> str:
     return f"{sentence} {_applicable_review_mode_sentence(check)}"
 
 
+_OWN_WORK_FAMILIES: Final = frozenset(
+    {"work_closed", "work_abandoned", "work_cancelled", "work_written_off"}
+)
+
+
+def _own_work_sentence(records: tuple[LedgerRecord, ...]) -> str:
+    """Say how this task's own work ended when it did not simply close (issue #1239).
+
+    Replay-only: read from the task's own ``work_*`` events in the receipt's ledger prefix, by
+    sequence and the reason code the service stamped, never from live lineage state. Open work
+    and work closed without an earlier abandonment add nothing, so those receipts keep their
+    bytes. A ``contact_lost`` abandonment the same session later closed reads as reversed.
+    """
+
+    events = [
+        record
+        for record in records
+        if type(record) is AcceptedEvent and record.schema.name in _OWN_WORK_FAMILIES
+    ]
+    if not events:
+        return ""
+    last = events[-1]
+    sequence = last.ledger.ingestion_sequence
+    reason = None if last.payload is None else getattr(last.payload, "reason_code", None)
+    named = "" if reason is None else f" (reason {reason})"
+    family = last.schema.name
+    if family == "work_abandoned":
+        return (
+            f"The service recorded this task's work as abandoned{named} at sequence {sequence}: "
+            "the work is incomplete as recorded."
+        )
+    # A cancel or write-off reason is the publisher's own token, so only the service-stamped
+    # abandonment names its reason.
+    if family == "work_cancelled":
+        return f"This task's work was recorded as cancelled at sequence {sequence}."
+    if family == "work_written_off":
+        return f"This task's work was recorded as written off at sequence {sequence}."
+    abandoned = next(
+        (record for record in reversed(events[:-1]) if record.schema.name == "work_abandoned"),
+        None,
+    )
+    if abandoned is None:
+        return ""
+    cause = None if abandoned.payload is None else getattr(abandoned.payload, "reason_code", None)
+    return (
+        "The service recorded this task's work as abandoned"
+        + ("" if cause is None else f" (reason {cause})")
+        + f" at sequence {abandoned.ledger.ingestion_sequence}; the same session closed it at "
+        f"sequence {sequence}, which reversed that abandonment."
+    )
+
+
 def _sections(
     *,
     include: ReceiptInclude,
@@ -2316,6 +2368,7 @@ def _sections(
     closure_summary: _ClosureSummary | None = None,
     gap_effects: Mapping[str, ReceiptGapEffect] | None = None,
     review_mode_sentence: str = "",
+    own_work_sentence: str = "",
     coordinator_failure: bool = False,
     claim_verification: tuple[str, ...] = (),
     claim_verification_limitation: str = "",
@@ -2689,6 +2742,10 @@ def _sections(
     # receipt of a task without a switch keeps its exact bytes.
     if review_mode_sentence:
         bodies[ReceiptSectionKey.LIMITATIONS_AND_COVERAGE] += " " + review_mode_sentence
+    # #1239: only work that was abandoned, cancelled or written off (or an abandonment the
+    # session reversed) carries this sentence; open and plainly closed work keep their bytes.
+    if own_work_sentence:
+        bodies[ReceiptSectionKey.LIMITATIONS_AND_COVERAGE] += " " + own_work_sentence
     # #1079: a holed projection omits the pairing for that obligation. The limitation is ids
     # only, or one fixed sentence, so the receipt still renders.
     if claim_verification_limitation:
@@ -3138,6 +3195,7 @@ def build_receipt(
             context.applicable_check, context.records
         ),
         review_mode_sentence=_review_mode_sentence(context),
+        own_work_sentence=_own_work_sentence(context.records),
         coordinator_failure=(
             context.applicable_check is not None
             and context.applicable_check.semantic_reason is SemanticReason.COORDINATOR_FAILURE

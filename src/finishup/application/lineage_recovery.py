@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import uuid
 from collections.abc import Awaitable, Callable, Mapping
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import TYPE_CHECKING, cast
 
 from finishup.application.lineage import (
@@ -15,7 +15,7 @@ from finishup.application.lineage import (
 )
 from finishup.application.start import provision_lineage_recovery
 from finishup.application.unit_of_work import PreparedMutation, run_prepared_append
-from finishup.domain.coordination import SessionHealth
+from finishup.domain.coordination import SESSION_LEASE_SECONDS, SessionHealth
 from finishup.domain.events import (
     LINEAGE_EVENT_SCHEMA_VERSION,
     OBSERVATION_COORDINATOR_ACTOR_ID,
@@ -180,6 +180,50 @@ def observed_activity_renewal(
     return renew
 
 
+def observed_session_end(
+    start_catalog: object,
+    lineage: LineageCoordinator,
+) -> Callable[[str, str, str, datetime], Awaitable[None]]:
+    """Build the observation hook that ends a session on its host's ``SessionEnd`` (#1239, D6).
+
+    The catalog binding is revalidated as for contact evidence. A ``SessionEnd`` drained after
+    later contact (a lease reaching past this event's own lease, as a resumed host renews it)
+    is stale and ends nothing.
+    """
+
+    binding_lookup = getattr(start_catalog, "session_binding", None)
+    states_lookup = getattr(start_catalog, "task_session_states", None)
+
+    async def end(task_id: str, session_id: str, writer_id: str, observed_at: datetime) -> None:
+        if not callable(binding_lookup):
+            return
+        binding = await cast(Callable[[str], Awaitable[SessionBinding | None]], binding_lookup)(
+            session_id
+        )
+        if (
+            binding is None
+            or binding.task_id != task_id
+            or binding.session_id != session_id
+            or binding.writer_id != writer_id
+        ):
+            return
+        if callable(states_lookup):
+            states = await cast(
+                Callable[[str], Awaitable[tuple[SessionState, ...]]], states_lookup
+            )(task_id)
+            current = next((item for item in states if item.session_id == session_id), None)
+            lease = None if current is None else current.lease_expires_at
+            if lease is not None and lease > observed_at + timedelta(seconds=SESSION_LEASE_SECONDS):
+                return
+        # Only the task's current lineage session ends; a rotated predecessor's late end is inert.
+        snapshot = await lineage.store.get_task(task_id)
+        if snapshot is None or snapshot.active_session_id != session_id:
+            return
+        await lineage.end_session(session_id=session_id)
+
+    return end
+
+
 async def lineage_recovery_runtime(app: Application, task_id: str) -> TaskRuntime:
     """Open a current route or the inert bundle of one completed reservation."""
 
@@ -224,9 +268,11 @@ async def append_abandonment(
 ) -> None:
     """Append before catalog mutation, with one stable event identity per task.
 
-    Work has no transition out of abandonment. A task-derived identity therefore survives a
-    process failure, changing writer, or a refreshed recovery deadline without duplicating the
-    event. Recovery holds the lineage transition lock until the catalog mirrors this evidence.
+    Work is abandoned at most once: the only way out of abandonment is the same session's
+    close of a ``contact_lost`` abandonment (#1239), and closed work is terminal. A task-derived
+    identity therefore survives a process failure, changing writer, or a refreshed recovery
+    deadline without duplicating the event. Recovery holds the lineage transition lock until the
+    catalog mirrors this evidence.
     """
 
     runtime = await lineage_recovery_runtime(app, snapshot.task_id)

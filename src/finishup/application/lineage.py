@@ -70,6 +70,9 @@ __all__ = [
     "LineageSnapshot",
     "LineageStatus",
     "LineageStore",
+    "ABANDONMENT_REASONS",
+    "MAX_TOP_LEVEL_CONTACT_LOST_HORIZON_SECONDS",
+    "REVERSIBLE_ABANDONMENT_REASON",
     "LineageProjectAdmission",
     "LineageProjectAdmissionResolver",
     "HostSessionCommitmentLookup",
@@ -82,6 +85,13 @@ __all__ = [
 
 _MAX_SAFE_INTEGER: Final = 2**53 - 1
 _MAX_HANDLE_BYTES: Final = 256
+# D6 (#1239): the configurable horizon after which a quiet top-level task is abandoned, at most a
+# week, so the recovery sweep's set of long-lived ``contact_lost`` tasks stays bounded.
+MAX_TOP_LEVEL_CONTACT_LOST_HORIZON_SECONDS: Final = 604_800
+# Why open work was, or will be, abandoned (``LineageSnapshot.abandonment_reason``). Only a
+# ``contact_lost`` abandonment is reversible, by the same session's ``work_closed`` (D6).
+ABANDONMENT_REASONS: Final = frozenset({"contact_lost", "session_ended", "attach_handle_expired"})
+REVERSIBLE_ABANDONMENT_REASON: Final = "contact_lost"
 _HANDLE_DOMAIN: Final = b"yoetz/lineage-attach-handle/v1\x00"
 
 # Host adapters own the source-specific annotation store.  The callback receives only validated
@@ -239,13 +249,63 @@ def _error(
     return PublicOperationError(code, message, retryable, safe_details=details)
 
 
+def _reversible(snapshot: LineageSnapshot, target: WorkState) -> bool:
+    """Whether ``target`` may follow ``snapshot``'s terminal work state (D6, #1239).
+
+    Only a ``contact_lost`` abandonment is reversible, and only by ``work_closed``: silence was
+    never evidence the agent stopped, so its own close supersedes the service's guess. Both events
+    stay in the ledger.
+    """
+
+    return (
+        target is WorkState.CLOSED
+        and snapshot.work_state is WorkState.ABANDONED
+        and snapshot.abandonment_reason == REVERSIBLE_ABANDONMENT_REASON
+    )
+
+
+def _pending_reason(snapshot: LineageSnapshot) -> str | None:
+    """The reason to keep when contact returns: none pending on open work, history otherwise."""
+
+    return None if snapshot.work_state is WorkState.OPEN else snapshot.abandonment_reason
+
+
+def _work_terminal_refusal(snapshot: LineageSnapshot) -> PublicOperationError:
+    """A refusal that names the terminal state, when it began and what to do next (#1239)."""
+
+    state = snapshot.work_state.value
+    if snapshot.work_state is WorkState.ABANDONED:
+        cause = snapshot.abandonment_reason or "recorded by the service"
+        when = (
+            ""
+            if snapshot.abandonment_deadline is None
+            else f" at {format_rfc3339_millis(snapshot.abandonment_deadline)}"
+        )
+        message = (
+            f"This task's work was abandoned ({cause}){when}; only a contact_lost abandonment "
+            "can be closed, by the same session. Keep this session for status, checks and "
+            "receipts; start a successor task for new work."
+        )
+    else:
+        message = (
+            f"This task's work is already {state}; it has no further lifecycle transition. Keep "
+            "this session for status, checks and receipts; start a successor task for new work."
+        )
+    return _error(PublicErrorCode.SESSION_CONFLICT, message, reason="lineage_work_transition")
+
+
 @dataclass(frozen=True, slots=True)
 class LineageConfig:
     """Bounded service policy for delegation and recovery timing."""
 
     start_lease_seconds: int = 60
     attach_handle_ttl_seconds: int = 300
+    # How long a child whose parent is waiting may stay out of contact (D7, #1239), and the grace
+    # after a delivered ``SessionEnd`` before its open work is abandoned.
     contact_lost_recovery_seconds: int = 300
+    # How long any other task may stay out of contact (D6, #1239): a quiet top-level task with no
+    # parent waiting is never abandoned for silence sooner. It shows ``contact_lost`` meanwhile.
+    top_level_contact_lost_horizon_seconds: int = 86_400
     max_depth: int = 8
     max_fanout: int = 32
     # Upper bound on how long one host-declared child operation (a native subagent observed
@@ -261,6 +321,11 @@ class LineageConfig:
             self.native_operation_hold_seconds,
         ):
             _bounded_int(value, minimum=1, maximum=86_400)
+        _bounded_int(
+            self.top_level_contact_lost_horizon_seconds,
+            minimum=self.contact_lost_recovery_seconds,
+            maximum=MAX_TOP_LEVEL_CONTACT_LOST_HORIZON_SECONDS,
+        )
         _bounded_int(self.max_depth, minimum=0, maximum=64)
         # Child snapshots, check previews, and receipt child sections all carry one
         # canonical bounded tuple.  Keep admission at that wire limit so a legal
@@ -312,6 +377,10 @@ class LineageSnapshot:
     contact_lost_at: datetime | None = None
     abandonment_deadline: datetime | None = None
     lineage_authority_revision: int = 1
+    # #1239: why open work will be abandoned at ``abandonment_deadline``, or why terminal work was
+    # (one of ``ABANDONMENT_REASONS``); kept after a reversed ``contact_lost`` abandonment so the
+    # closed work still says it was once abandoned.
+    abandonment_reason: str | None = None
 
     def __post_init__(self) -> None:
         _id(IdKind.TASK, self.task_id)
@@ -330,6 +399,10 @@ class LineageSnapshot:
         if self.abandonment_deadline is not None:
             _timestamp(self.abandonment_deadline)
         _bounded_int(self.lineage_authority_revision, minimum=1)
+        if self.abandonment_reason is not None and self.abandonment_reason not in (
+            ABANDONMENT_REASONS
+        ):
+            raise _invalid()
         if self.parent_task_id is None:
             if self.depth != 0 or self.origin is not None or self.acceptance is not None:
                 raise _invalid()
@@ -1181,6 +1254,7 @@ class LineageCoordinator:
                 session_health=SessionHealth.ACTIVE,
                 contact_lost_at=None,
                 abandonment_deadline=None,
+                abandonment_reason=None,
                 lineage_authority_revision=snapshot.lineage_authority_revision + 1,
             )
             await self._store.save_task(updated)
@@ -1746,6 +1820,7 @@ class LineageCoordinator:
                         session_health=SessionHealth.ACTIVE,
                         contact_lost_at=None,
                         abandonment_deadline=None,
+                        abandonment_reason=_pending_reason(snapshot),
                         lineage_authority_revision=snapshot.lineage_authority_revision + 1,
                     )
                     await self._store.save_task(snapshot)
@@ -1762,6 +1837,7 @@ class LineageCoordinator:
             session_health=SessionHealth.ACTIVE,
             contact_lost_at=None,
             abandonment_deadline=None,
+            abandonment_reason=_pending_reason(snapshot),
             lineage_authority_revision=snapshot.lineage_authority_revision + 1,
         )
         await self._store.save_handle(consumed)
@@ -2165,12 +2241,8 @@ class LineageCoordinator:
                 )
             if snapshot.work_state is target:
                 return
-            if snapshot.work_state is not WorkState.OPEN:
-                raise _error(
-                    PublicErrorCode.SESSION_CONFLICT,
-                    "The work lifecycle transition is invalid.",
-                    reason="lineage_work_transition",
-                )
+            if snapshot.work_state is not WorkState.OPEN and not _reversible(snapshot, target):
+                raise _work_terminal_refusal(snapshot)
 
     async def reject_child(self, *, parent_session_id: str, child_task_id: str) -> LineageSnapshot:
         return await self._transition_acceptance(
@@ -2318,8 +2390,13 @@ class LineageCoordinator:
                 )
             return await self._reconcile_work_locked(child, target)
 
-    async def reconcile_owned_work(self, *, task_id: str, target: WorkState) -> LineageSnapshot:
-        """Reconcile an agent-owned lifecycle event after append-before-catalog interruption."""
+    async def reconcile_owned_work(
+        self, *, task_id: str, target: WorkState, reason: str | None = None
+    ) -> LineageSnapshot:
+        """Reconcile an agent-owned lifecycle event after append-before-catalog interruption.
+
+        ``reason`` is a replayed ``work_abandoned`` event's ``reason_code``.
+        """
 
         task = _id(IdKind.TASK, task_id)
         if target not in {
@@ -2341,16 +2418,36 @@ class LineageCoordinator:
                     "The task lineage is inconsistent.",
                     reason="lineage_task_not_found",
                 )
-            return await self._reconcile_work_locked(snapshot, target)
+            return await self._reconcile_work_locked(snapshot, target, reason=reason)
 
     async def _reconcile_work_locked(
-        self, snapshot: LineageSnapshot, target: WorkState
+        self, snapshot: LineageSnapshot, target: WorkState, *, reason: str | None = None
     ) -> LineageSnapshot:
-        """Apply one already-authenticated work event while the coordinator lock is held."""
+        """Apply one already-authenticated work event while the coordinator lock is held.
+
+        ``reason`` is an abandonment's recorded reason; ``[work_abandoned(contact_lost),
+        work_closed]`` replays to ``closed`` (D6, #1239).
+        """
 
         if snapshot.work_state is target:
             return snapshot
-        if snapshot.work_state is not WorkState.OPEN:
+        if (
+            snapshot.work_state is WorkState.CLOSED
+            and target is WorkState.ABANDONED
+            and reason == REVERSIBLE_ABANDONMENT_REASON
+        ):
+            # The close already superseded this abandonment: it was accepted while only the
+            # ledger held the service event (append before catalog sync). Keep it as history.
+            if snapshot.abandonment_reason == reason:
+                return snapshot
+            history = replace(
+                snapshot,
+                abandonment_reason=reason,
+                lineage_authority_revision=snapshot.lineage_authority_revision + 1,
+            )
+            await self._store.save_task(history)
+            return history
+        if snapshot.work_state is not WorkState.OPEN and not _reversible(snapshot, target):
             raise _error(
                 PublicErrorCode.STORAGE_CORRUPT,
                 "The work lifecycle transition conflicts with the ledger.",
@@ -2359,6 +2456,11 @@ class LineageCoordinator:
         updated = replace(
             snapshot,
             work_state=target,
+            abandonment_reason=(
+                (reason if reason in ABANDONMENT_REASONS else None)
+                if target is WorkState.ABANDONED
+                else snapshot.abandonment_reason
+            ),
             lineage_authority_revision=snapshot.lineage_authority_revision + 1,
         )
         await self._store.save_task(updated)
@@ -2435,12 +2537,8 @@ class LineageCoordinator:
             )
         if snapshot.work_state is target:
             return snapshot
-        if snapshot.work_state is not WorkState.OPEN:
-            raise _error(
-                PublicErrorCode.SESSION_CONFLICT,
-                "The work lifecycle transition is invalid.",
-                reason="lineage_work_transition",
-            )
+        if snapshot.work_state is not WorkState.OPEN and not _reversible(snapshot, target):
+            raise _work_terminal_refusal(snapshot)
         updated = replace(
             snapshot,
             work_state=target,
@@ -2512,7 +2610,10 @@ class LineageCoordinator:
                 elif (
                     snapshot.session_health is SessionHealth.ACTIVE
                     and snapshot.contact_lost_at is None
-                    and snapshot.abandonment_deadline is None
+                    and (
+                        snapshot.abandonment_deadline is None
+                        or snapshot.work_state is not WorkState.OPEN
+                    )
                 ):
                     return True
                 else:
@@ -2521,7 +2622,13 @@ class LineageCoordinator:
                             snapshot,
                             session_health=SessionHealth.ACTIVE,
                             contact_lost_at=None,
-                            abandonment_deadline=None,
+                            # Terminal work keeps when and why it was abandoned (#1239).
+                            abandonment_deadline=(
+                                None
+                                if snapshot.work_state is WorkState.OPEN
+                                else snapshot.abandonment_deadline
+                            ),
+                            abandonment_reason=_pending_reason(snapshot),
                             lineage_authority_revision=snapshot.lineage_authority_revision + 1,
                         )
                     )
@@ -2534,15 +2641,22 @@ class LineageCoordinator:
             ):
                 return False
             deadline = evidence_until + timedelta(
-                seconds=self._config.contact_lost_recovery_seconds
+                seconds=await self._contact_window_seconds(snapshot)
             )
             if snapshot.abandonment_deadline is not None:
                 deadline = max(deadline, snapshot.abandonment_deadline)
+            if snapshot.work_state is not WorkState.OPEN:
+                deadline = snapshot.abandonment_deadline
             await self._store.save_task(
                 replace(
                     snapshot,
                     contact_lost_at=evidence_until,
                     abandonment_deadline=deadline,
+                    abandonment_reason=(
+                        REVERSIBLE_ABANDONMENT_REASON
+                        if snapshot.work_state is WorkState.OPEN
+                        else snapshot.abandonment_reason
+                    ),
                     lineage_authority_revision=snapshot.lineage_authority_revision + 1,
                 )
             )
@@ -2641,11 +2755,39 @@ class LineageCoordinator:
                         session_health=SessionHealth.ACTIVE,
                         contact_lost_at=None,
                         abandonment_deadline=None,
+                        abandonment_reason=None,
                         lineage_authority_revision=snapshot.lineage_authority_revision + 1,
                     )
                 )
                 held.append(snapshot.task_id)
         return tuple(held)
+
+    async def _contact_window_seconds(
+        self,
+        snapshot: LineageSnapshot,
+        tasks: Mapping[str, LineageSnapshot] | None = None,
+    ) -> int:
+        """How long ``snapshot`` may stay out of contact before its open work is abandoned.
+
+        D7 (#1239): a child whose parent is waiting on it (the parent's work is open, its session
+        has not ended, and it has not rejected the child) keeps the short window, so a parent never
+        waits long on a dead child. D6: every other task, top-level or orphaned, gets the long
+        horizon and shows ``contact_lost`` meanwhile. ``tasks`` is a sweep's snapshot of the store.
+        """
+
+        parent_id = snapshot.parent_task_id
+        if parent_id is not None:
+            parent = (
+                tasks.get(parent_id) if tasks is not None else await self._store.get_task(parent_id)
+            )
+            if (
+                parent is not None
+                and parent.work_state is WorkState.OPEN
+                and parent.session_health is not SessionHealth.ENDED
+                and snapshot.acceptance is not LineageAcceptance.REJECTED
+            ):
+                return self._config.contact_lost_recovery_seconds
+        return self._config.top_level_contact_lost_horizon_seconds
 
     async def mark_contact_lost(self, *, session_id: str) -> LineageSnapshot:
         session = _id(IdKind.SESSION, session_id)
@@ -2665,20 +2807,36 @@ class LineageCoordinator:
                     "The task lineage is inconsistent.",
                     reason="lineage_task_missing",
                 )
+            # D6/D7 (#1239): the window follows whether a parent is waiting on this task.
+            window = timedelta(seconds=await self._contact_window_seconds(snapshot))
             if snapshot.session_health is SessionHealth.CONTACT_LOST:
                 # A durable session sweep may have moved the per-session row before the lineage
-                # metadata row was updated.  Complete that metadata transition here so recovery
-                # has one stable deadline across restarts; repeated calls remain idempotent.
+                # metadata row was updated (with the short default window).  Complete that
+                # metadata transition here so recovery has one stable deadline across restarts;
+                # the deadline is a function of the loss time, so repeated calls are idempotent.
+                lost_at = snapshot.contact_lost_at or now
+                # Terminal work keeps when it was abandoned; only open work has a deadline ahead.
+                deadline = (
+                    lost_at + window
+                    if snapshot.work_state is WorkState.OPEN
+                    else snapshot.abandonment_deadline
+                )
+                reason = (
+                    REVERSIBLE_ABANDONMENT_REASON
+                    if snapshot.work_state is WorkState.OPEN
+                    else snapshot.abandonment_reason
+                )
                 if (
-                    snapshot.contact_lost_at is not None
-                    and snapshot.abandonment_deadline is not None
+                    snapshot.contact_lost_at == lost_at
+                    and snapshot.abandonment_deadline == deadline
+                    and snapshot.abandonment_reason == reason
                 ):
                     return snapshot
                 updated = replace(
                     snapshot,
-                    contact_lost_at=snapshot.contact_lost_at or now,
-                    abandonment_deadline=snapshot.abandonment_deadline
-                    or now + timedelta(seconds=self._config.contact_lost_recovery_seconds),
+                    contact_lost_at=lost_at,
+                    abandonment_deadline=deadline,
+                    abandonment_reason=reason,
                     lineage_authority_revision=snapshot.lineage_authority_revision + 1,
                 )
                 await self._store.save_task(updated)
@@ -2696,8 +2854,16 @@ class LineageCoordinator:
                 snapshot,
                 session_health=SessionHealth.CONTACT_LOST,
                 contact_lost_at=now,
-                abandonment_deadline=now
-                + timedelta(seconds=self._config.contact_lost_recovery_seconds),
+                abandonment_deadline=(
+                    now + window
+                    if snapshot.work_state is WorkState.OPEN
+                    else snapshot.abandonment_deadline
+                ),
+                abandonment_reason=(
+                    REVERSIBLE_ABANDONMENT_REASON
+                    if snapshot.work_state is WorkState.OPEN
+                    else snapshot.abandonment_reason
+                ),
                 lineage_authority_revision=snapshot.lineage_authority_revision + 1,
             )
             await self._store.save_task(updated)
@@ -2722,12 +2888,21 @@ class LineageCoordinator:
                 )
             if snapshot.session_health is SessionHealth.ENDED:
                 return snapshot
+            # D6 (#1239): a delivered ``SessionEnd`` ends the session, and its open work is
+            # abandoned (``session_ended``) after the short grace, so a host that clears and
+            # resumes the same task reattaches instead of losing it.
+            pending = snapshot.work_state is WorkState.OPEN
             updated = replace(
                 snapshot,
                 session_health=SessionHealth.ENDED,
                 active_session_id=None,
                 contact_lost_at=None,
-                abandonment_deadline=None,
+                abandonment_deadline=(
+                    self._now() + timedelta(seconds=self._config.contact_lost_recovery_seconds)
+                    if pending
+                    else snapshot.abandonment_deadline
+                ),
+                abandonment_reason="session_ended" if pending else snapshot.abandonment_reason,
                 lineage_authority_revision=snapshot.lineage_authority_revision + 1,
             )
             await self._store.save_task(updated)
@@ -2764,18 +2939,29 @@ class LineageCoordinator:
                 if handle is not None and handle.consumed_session_id is None and not handle.revoked:
                     unclaimed[operation.child_task_id] = handle.expires_at
             values = await self._store.list_tasks()
+            by_id = {item.task_id: item for item in values}
             recovered: list[LineageSnapshot] = []
             retryable_failure: Exception | None = None
             for snapshot in values:
                 if snapshot.work_state is not WorkState.OPEN:
                     continue
                 deadline = snapshot.abandonment_deadline
-                reason = "contact_lost"
+                reason = REVERSIBLE_ABANDONMENT_REASON
                 if snapshot.active_session_id is None and snapshot.task_id in unclaimed:
                     deadline = unclaimed[snapshot.task_id]
                     reason = "attach_handle_expired"
+                elif (
+                    snapshot.session_health is SessionHealth.ENDED
+                    and snapshot.abandonment_reason == "session_ended"
+                ):
+                    reason = "session_ended"
                 elif snapshot.session_health is not SessionHealth.CONTACT_LOST:
                     continue
+                elif snapshot.contact_lost_at is not None:
+                    # D6/D7 (#1239): judged at sweep time, so a child whose parent stopped waiting
+                    # moves to the long horizon. Delayed evidence already moved the loss time.
+                    window = await self._contact_window_seconds(snapshot, by_id)
+                    deadline = snapshot.contact_lost_at + timedelta(seconds=window)
                 if deadline is None or deadline > now:
                     continue
                 try:
@@ -2788,7 +2974,13 @@ class LineageCoordinator:
                 except (OSError, TimeoutError) as exc:
                     retryable_failure = retryable_failure or exc
                     continue
-                recovered.append(await self._reconcile_work_locked(snapshot, WorkState.ABANDONED))
+                recovered.append(
+                    await self._reconcile_work_locked(
+                        replace(snapshot, abandonment_deadline=deadline),
+                        WorkState.ABANDONED,
+                        reason=reason,
+                    )
+                )
             if retryable_failure is not None:
                 # Complete independent tasks but retain the daemon's failure diagnostic. The
                 # failed task remains open and its next sweep retries the same event identity.
@@ -2845,6 +3037,28 @@ class LineageCoordinator:
             )
             await self._store.save_manifest(manifest)
             return manifest
+
+    async def own_lifecycle(self, task_id: str) -> LineageSnapshot | None:
+        """The task's own lifecycle for status and receipts (#1239), or ``None`` if unknown.
+
+        A read without the coordinator lock (one store read, like status): open work out of
+        contact carries the deadline the recovery sweep will apply, judged by the same window.
+        """
+
+        snapshot = await self._store.get_task(_id(IdKind.TASK, task_id))
+        if (
+            snapshot is None
+            or snapshot.work_state is not WorkState.OPEN
+            or snapshot.session_health is not SessionHealth.CONTACT_LOST
+            or snapshot.contact_lost_at is None
+        ):
+            return snapshot
+        window = await self._contact_window_seconds(snapshot)
+        return replace(
+            snapshot,
+            abandonment_deadline=snapshot.contact_lost_at + timedelta(seconds=window),
+            abandonment_reason=REVERSIBLE_ABANDONMENT_REASON,
+        )
 
     async def status(self, task_id: str) -> LineageStatus:
         task = _id(IdKind.TASK, task_id)

@@ -270,6 +270,44 @@ than implementation notes.
    awaiting its user, and a host without subagent lifecycle hooks. Raising
    `lineage.contact_lost_recovery_seconds` is the supported mitigation.
 
+   **Silence abandons only awaited work (2026-10-29, #1239).** The 300-second window abandoned
+   about one in five benchmark attempts that were still working: one long model turn, a long
+   process polled with `write_stdin`, or a user who walked away was enough, no parent was waiting,
+   and the agent's own close was then refused. This amends §2 and the clarifications above:
+
+   - **The window follows whether a parent waits.** A child whose parent's work is open, whose
+     parent session has not ended, and that the parent has not rejected keeps
+     `lineage.contact_lost_recovery_seconds` (default 300), so a parent still never waits long on a
+     dead child (#495, #499). Every other task, top-level or orphaned, gets
+     `lineage.top_level_contact_lost_horizon_seconds` (default 86,400, at least the recovery
+     window, at most 604,800). Meanwhile it reports `contact_lost`. The recovery sweep judges the
+     window at sweep time from one listing of the catalog, so a child whose parent stops waiting
+     moves to the long horizon.
+   - **A delivered `SessionEnd` ends the session.** The observation coordinator routes it to the
+     lineage owner after it re-validates the session binding and confirms no lease outlived the
+     event's own time plus one lease. Open work is then abandoned with reason `session_ended`
+     after the recovery window, unless the session resumes first. Closed work takes no deadline.
+   - **A `contact_lost` abandonment is reversible, once, by its own close.** Silence was never
+     evidence the agent stopped. A later `work_closed` from the same active session supersedes the
+     service's `work_abandoned`. Both events stay in the ledger. Cancel and write-off stay refused.
+     Abandonment for `session_ended` or `attach_handle_expired` stays final. The catalog keeps the
+     abandonment reason as history (`abandonment_reason`, catalog migration 6). Replay of
+     `[work_abandoned, work_closed]` reaches `closed`. When the reversed task is a child, its
+     parent's dependency manifest is swept again, so the parent sees the close.
+   - **Refusals and readers say what happened.** A refused transition on terminal work keeps
+     `lineage_work_transition`. Its message names the terminal state, the abandonment reason and
+     time, and what still works. Status reports the task's own `task_lifecycle` (work state,
+     session health, contact-loss and abandonment times, the reason, and whether an abandonment
+     was reversed) in every view. The brief body omits it only for open work in contact. A
+     receipt's limitations section says when the service abandoned the task's work, when the
+     same session's close reversed it, and when the work was cancelled or written off. It reads
+     this from the task's own ledger events, never from live catalog state.
+
+   A long native tool call, a turn awaiting its user, and a host without subagent hooks are
+   therefore no longer a capability gap for a top-level task under a day. They remain one for a
+   child whose parent waits, and raising `lineage.contact_lost_recovery_seconds` stays the
+   mitigation there.
+
 4. **Parent rollup is one level and severity-dependent.** A parent receipt projects only direct
    children from the frozen manifest. Current actionable findings on accepted children block
    clean-completion wording; the receipt is still produced and names the child and finding.

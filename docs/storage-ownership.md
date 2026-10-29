@@ -16,11 +16,12 @@ open another task bundle.
 
 The catalog DDL source and generated mirror are part of the durable schema contract:
 
-* `migrations/catalog/0004.sql` and `migrations/catalog/0005.sql` are the hand-authored sources for
-  the catalog 0004 and 0005 schemas. Catalog 0005 adds the project-operation request journal; it
-  does not relocate project text or task evidence.
-* `src/finishup/resources/migrations/catalog/0004.sql` and `0005.sql` are byte mirrors produced by the
-  resource ripple. They are never edited independently.
+* `migrations/catalog/0004.sql`, `migrations/catalog/0005.sql` and `migrations/catalog/0006.sql` are
+  the hand-authored sources for the catalog 0004, 0005 and 0006 schemas. Catalog 0005 adds the
+  project-operation request journal; it does not relocate project text or task evidence. Catalog
+  0006 adds the closed `lineage_task_meta.abandonment_reason` token (#1239).
+* `src/finishup/resources/migrations/catalog/0004.sql`, `0005.sql` and `0006.sql` are byte mirrors
+  produced by the resource ripple. They are never edited independently.
 * The bundle migrations `0003`, `0004`, `0008`, `0009`, `0010`, `0011`, and `0012` remain separate
   sources. Catalog 0004 and 0005 do not move or recreate bundle tables.
 * Project, project-operation, lineage, host-annotation, and coordination tables are migration-owned. Adapters only

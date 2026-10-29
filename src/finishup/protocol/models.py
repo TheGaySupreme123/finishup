@@ -5813,6 +5813,29 @@ class StatusReviewModeModel(_ClosedModel):
     switch_sequence: CanonicalUInt64Wire | None = None
 
 
+class StatusTaskLifecycleModel(_ClosedModel):
+    """#1239: the task's own work lifecycle and session health, so a top-level task sees it too.
+
+    ``abandonment_at`` is when the service will abandon open work unless contact returns, or
+    when abandoned work was abandoned; ``abandonment_reason`` says why. A ``contact_lost``
+    abandonment the same session closed reads ``work_state: closed`` with
+    ``abandonment_reversed: true``.
+    """
+
+    optional_non_null_fields = frozenset(
+        {"contact_lost_at", "abandonment_at", "abandonment_reason", "abandonment_reversed"}
+    )
+
+    work_state: WorkStateWire
+    session_health: SessionHealthWire
+    contact_lost_at: TimestampWire | None = None
+    abandonment_at: TimestampWire | None = None
+    abandonment_reason: Literal["contact_lost", "session_ended", "attach_handle_expired"] | None = (
+        None
+    )
+    abandonment_reversed: Literal[True] | None = None
+
+
 class StatusPredictedReasonModel(_ClosedModel):
     """One rule that fired in the receipt prediction, with the lineage a reader needs."""
 
@@ -7494,6 +7517,9 @@ class StatusSuccessModel(_ClosedModel):
     credential_heuristic: StatusCredentialHeuristicModel | None = None
     # ADR-049: the conversation's review mode and the owner's setting, when composed.
     review_mode: StatusReviewModeModel | None = None
+    # #1239: the task's own lifecycle, when the service composes lineage. Unreleased in-place
+    # addition to status-result 1.5.0; absent from an earlier 0.3 build.
+    task_lifecycle: StatusTaskLifecycleModel | None = None
 
     @model_validator(mode="before")
     @classmethod
@@ -7580,6 +7606,7 @@ class StatusBriefSuccessModel(_ClosedModel):
             "closure_state",
             "credential_heuristic",
             "review_mode",
+            "task_lifecycle",
         }
     )
 
@@ -7624,6 +7651,7 @@ class StatusBriefSuccessModel(_ClosedModel):
     privacy_projection: PrivacyProjectionModel
     credential_heuristic: StatusCredentialHeuristicModel | None = None
     review_mode: StatusReviewModeModel | None = None
+    task_lifecycle: StatusTaskLifecycleModel | None = None
 
     @model_validator(mode="before")
     @classmethod
@@ -8725,6 +8753,18 @@ _STATUS_COMMON_STRUCTURAL_POINTERS: Final = (
             "switch_sequence",
         ),
     )
+    # #1239: the task's own lifecycle is closed tokens, service times and one boolean.
+    + _prefix_leaf_patterns(
+        "/task_lifecycle",
+        (
+            "abandonment_at",
+            "abandonment_reason",
+            "abandonment_reversed",
+            "contact_lost_at",
+            "session_health",
+            "work_state",
+        ),
+    )
 )
 
 _STATUS_ADVICE_STRUCTURAL_POINTERS: Final = (
@@ -9775,8 +9815,8 @@ def _build_result_leaf_rules() -> tuple[_ResultLeafRule, ...]:
         ):
             raise RuntimeError("invalid_result_leaf_classification")
     if (
-        len(result) != 2079
-    ):  # ... #1017 +3, #1027 +5, tb4n3 LO +9, W2-A +46, LF +34 (fact_lineage), W2-B +2,
+        len(result) != 2085
+    ):  # ... #1239 +6 status task_lifecycle; #1017 +3, #1027 +5, tb4n3 LO +9, W2-A +46, LF +34 (fact_lineage), W2-B +2,
         # tb4n4 #1044 +7 (closure_readiness.undeclared_references), #1048 +38 (inspection),
         # #1047 +2 (follow_up_round), tb4n5 +3 (publish action_notices),
         # ADR-049 +4 check / +8 status (review_mode), n6 item 4 +1 check_recorded 1.5.0,

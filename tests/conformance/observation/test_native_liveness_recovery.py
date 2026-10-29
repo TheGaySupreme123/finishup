@@ -24,6 +24,8 @@ from finishup.application.lineage_recovery import (
 from finishup.application.publish_work import PublishWorkInternalResult
 from finishup.application.service import Application
 from finishup.application.start import StartInternalResult
+from finishup.application.status import StatusInternalResult
+from finishup.config.models import FinishUpConfig, LineageSettings
 from finishup.domain.coordination import SESSION_LEASE_SECONDS, SessionHealth, WorkState
 from finishup.domain.events import AcceptedEvent, WorkAbandonedPayload
 from finishup.domain.host_lineage import host_lineage_from_payload
@@ -45,6 +47,11 @@ pytestmark = pytest.mark.anyio
 _REPOSITORY = RepositoryPrivacyContext("hmac-sha256:" + "d" * 64, "git_common_root")
 _HOST_SESSION = "hmac-sha256:" + "c" * 64
 _WINDOW = 300
+# #1239: a top-level task now keeps its open work for the long horizon. These tests exercise the
+# evidence, hold and successor rules on one top-level task, so they pin the horizon to the window.
+_TOP_LEVEL_AT_WINDOW = FinishUpConfig(
+    lineage=LineageSettings(top_level_contact_lost_horizon_seconds=_WINDOW)
+)
 
 
 @pytest.fixture
@@ -329,7 +336,7 @@ async def test_delayed_host_evidence_restores_contact_from_its_own_time(tmp_path
     """Queued or swept rows prove contact at receipt time, whatever their delivery time."""
 
     workspace = _workspace(tmp_path / "workspace")
-    async with multi_agent_service(tmp_path / "state") as service:
+    async with multi_agent_service(tmp_path / "state", config=_TOP_LEVEL_AT_WINDOW) as service:
         app = service.app
         assert app.lineage is not None
         start = service.clock.now_utc()
@@ -384,7 +391,7 @@ async def test_native_subagent_run_holds_parent_contact_until_its_stop(tmp_path:
     """The #837 native sequence: a parent waits on native subagents far past lease + window."""
 
     workspace = _workspace(tmp_path / "workspace")
-    async with multi_agent_service(tmp_path / "state") as service:
+    async with multi_agent_service(tmp_path / "state", config=_TOP_LEVEL_AT_WINDOW) as service:
         app = service.app
         parent = await _create(service, workspace, "native-subagent-parent")
         await _subagent(service, parent, "SubagentStart", "reviewer")
@@ -415,7 +422,7 @@ async def test_host_child_without_a_stop_is_released_by_the_hold_bound(tmp_path:
     """A host that dies mid-subagent never reports the stop; the bound still ends contact."""
 
     workspace = _workspace(tmp_path / "workspace")
-    async with multi_agent_service(tmp_path / "state") as service:
+    async with multi_agent_service(tmp_path / "state", config=_TOP_LEVEL_AT_WINDOW) as service:
         app = service.app
         assert app.lineage is not None
         bound = app.lineage.config.native_operation_hold_seconds
@@ -502,7 +509,7 @@ async def test_abandoned_parent_continues_through_a_successor_with_receipts(
     """Supported recovery after abandonment: history stays, new work moves to a successor."""
 
     workspace = _workspace(tmp_path / "workspace")
-    async with multi_agent_service(tmp_path / "state") as service:
+    async with multi_agent_service(tmp_path / "state", config=_TOP_LEVEL_AT_WINDOW) as service:
         app = service.app
         parent = await _create(service, workspace, "abandoned-parent")
         child = await _attach_child(
@@ -560,6 +567,16 @@ async def test_abandoned_parent_continues_through_a_successor_with_receipts(
         after_check = await _check(service, parent)
         after = await _receipt(service, parent, after_check, request_id=new_id(IdKind.REQUEST))
         assert _child_ids(after) == {child.task_id}
+        # #1239: the later receipt says the service abandoned the work, from the ledger event.
+        limitations = next(
+            cast(str, row["body"])
+            for row in cast(Sequence[Mapping[str, object]], after["sections"])
+            if row["key"] == "limitations_and_coverage"
+        )
+        assert "The service recorded this task's work as abandoned (reason contact_lost)" in (
+            limitations
+        )
+        assert "the work is incomplete as recorded." in limitations
         assert await _receipt(service, parent, before_check, request_id=receipt_request) == before
 
         # The successor is ordinary open work in the same workspace and can delegate again.
@@ -579,3 +596,54 @@ async def test_abandoned_parent_continues_through_a_successor_with_receipts(
         )
         assert _child_ids(successor_receipt) == {follow_up.task_id}
         assert len(await _abandonment_events(app, parent.task_id)) == 1
+
+
+async def test_a_quiet_child_whose_parent_waits_is_abandoned_and_its_close_reverses_it(
+    tmp_path: Path,
+) -> None:
+    """#1239: the short window protects a waiting parent, and the child's own close still stands.
+
+    The parent keeps working, so its child gets the short window and is abandoned for silence.
+    The child was working all along: its close supersedes the guess, status says so, and the
+    parent's manifest is refreshed right away.
+    """
+
+    workspace = _workspace(tmp_path / "workspace")
+    async with multi_agent_service(tmp_path / "state") as service:
+        app = service.app
+        refreshed: list[str] = []
+
+        async def refresh(child_task_id: str) -> None:
+            refreshed.append(child_task_id)
+
+        object.__setattr__(app, "lineage_parent_refresh", refresh)
+        parent = await _create(service, workspace, "reversal-parent")
+        child = await _attach_child(
+            service, await _delegate(service, parent, "Quiet child"), "Quiet child"
+        )
+        service.clock.advance(seconds=SESSION_LEASE_SECONDS + 1)
+        await _publish_action(service, parent, "The parent keeps working.")
+        await app.recover_lineage()
+        service.clock.advance(seconds=_WINDOW + 1)
+        await _publish_action(service, parent, "The parent is still working.")
+        await app.recover_lineage()
+        assert await _work(app, child) is WorkState.ABANDONED
+        assert await _work(app, parent) is WorkState.OPEN
+        lost = cast(StatusInternalResult, await _status(service, child))
+        assert lost.task_lifecycle is not None
+        assert lost.task_lifecycle["work_state"] == "abandoned"
+        assert lost.task_lifecycle["abandonment_reason"] == "contact_lost"
+
+        await _close(service, child)
+        assert await _work(app, child) is WorkState.CLOSED
+        assert refreshed == [child.task_id]
+        assert len(await _abandonment_events(app, child.task_id)) == 1
+        closed = cast(StatusInternalResult, await _status(service, child))
+        assert closed.task_lifecycle is not None
+        assert closed.task_lifecycle["work_state"] == "closed"
+        assert closed.task_lifecycle["abandonment_reversed"] is True
+        # The top-level parent, quiet for longer than the child's window, stays open meanwhile.
+        service.clock.advance(seconds=SESSION_LEASE_SECONDS + _WINDOW + 2)
+        await app.recover_lineage()
+        assert await _work(app, parent) is WorkState.OPEN
+        assert await _health(app, parent) is SessionHealth.CONTACT_LOST

@@ -20,6 +20,7 @@ route requires AI-powered review (#1041).
 from __future__ import annotations
 
 from dataclasses import replace
+from types import SimpleNamespace
 from typing import Any, Literal, cast
 
 import pytest
@@ -418,8 +419,10 @@ class _OwnedWorkLifecycle:
     async def validate_owned_work_transition(self, *_args: object, **_kwargs: object) -> None:
         return None
 
-    async def close_work(self, *, session_id: str, task_id: str | None = None) -> None:
+    async def close_work(self, *, session_id: str, task_id: str | None = None) -> object:
         self.closed.append(session_id)
+        # The closed snapshot: a root whose work was never abandoned (#1239 reads it).
+        return SimpleNamespace(parent_task_id=None, abandonment_reason=None)
 
 
 @pytest.mark.parametrize("ledger_backend", ("memory", "sqlite"))

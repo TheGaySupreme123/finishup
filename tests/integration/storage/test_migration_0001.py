@@ -42,7 +42,7 @@ def test_fresh_migrations_install_identified_foreign_key_clean_schemas() -> None
     initialize_bundle(bundle, {"task_id": "task_test", "owner_generation": "generation_test"})
 
     assert catalog.execute("PRAGMA application_id").fetchone() == (0x594F4554,)
-    assert catalog.execute("PRAGMA user_version").fetchone() == (5,)
+    assert catalog.execute("PRAGMA user_version").fetchone() == (6,)
     assert catalog.execute("PRAGMA foreign_keys").fetchone() == (1,)
     assert catalog.execute("PRAGMA trusted_schema").fetchone() == (0,)
     assert catalog.execute("PRAGMA foreign_key_check").fetchone() is None

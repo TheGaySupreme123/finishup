@@ -137,6 +137,7 @@ from finishup.protocol.models import (
     StatusReviewModeModel,
     StatusSemanticProgressModel,
     StatusStructuralSubjectStateModel,
+    StatusTaskLifecycleModel,
     StatusVerificationCriterionModel,
     StatusVerificationWitnessModel,
     StatusVersionSliceModel,
@@ -370,7 +371,16 @@ _RESULT_OPTIONAL_NON_NULL: tuple[tuple[type[BaseModel], frozenset[str]], ...] = 
                 "review_mode",
                 # #1139: absent when the decision-point line counts nothing.
                 "agent_status_line",
+                # #1239: absent for open work in contact (and when lineage is not composed).
+                "task_lifecycle",
             }
+        ),
+    ),
+    # #1239: times, reason and the reversal mark only when the lifecycle has them.
+    (
+        StatusTaskLifecycleModel,
+        frozenset(
+            {"contact_lost_at", "abandonment_at", "abandonment_reason", "abandonment_reversed"}
         ),
     ),
     # #1209: fix_or_decline is absent when no item is open.
@@ -2248,6 +2258,8 @@ def test_every_result_optional_non_null_field_has_an_unset_projection_case() -> 
         covered["CheckReviewModeModel", field] = "test_review_mode_omits_unset_reason_and_switch"
     for field in StatusReviewModeModel.optional_non_null_fields:
         covered["StatusReviewModeModel", field] = "test_review_mode_omits_unset_reason_and_switch"
+    for field in StatusTaskLifecycleModel.optional_non_null_fields:
+        covered["StatusTaskLifecycleModel", field] = "test_task_lifecycle_omits_unset_fields"
     for field in FactLineageModel.optional_non_null_fields:
         covered["FactLineageModel", field] = "test_fact_lineage_omits_every_unset_field"
     covered["CheckAwaitingHumanModel", "specification_preflight"] = (
@@ -2580,6 +2592,23 @@ def test_review_mode_omits_unset_reason_and_switch() -> None:
                     "ai_review_available": True,
                     field: None,
                 }
+            )
+
+
+def test_task_lifecycle_omits_unset_fields() -> None:
+    """#1239: open work in contact carries only its two tokens, never an explicit null."""
+
+    lifecycle = StatusTaskLifecycleModel.model_validate(
+        {"work_state": "open", "session_health": "active"}
+    )
+    assert lifecycle.model_dump(mode="json", exclude_unset=True) == {
+        "work_state": "open",
+        "session_health": "active",
+    }
+    for field in StatusTaskLifecycleModel.optional_non_null_fields:
+        with pytest.raises(ValidationError, match="optional_field_must_not_be_null"):
+            StatusTaskLifecycleModel.model_validate(
+                {"work_state": "open", "session_health": "active", field: None}
             )
 
 

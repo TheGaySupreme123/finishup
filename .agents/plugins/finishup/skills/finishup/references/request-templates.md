@@ -1292,8 +1292,9 @@ Do not publish service-owned `delegation_declared`, `work_abandoned`,
 ### `work_closed`
 
 Send after the receipt from the task's active session, only when the work is complete and still
-`open`. A task already cancelled, written off or abandoned refuses it as `lineage_work_transition`;
-report that state instead of retrying. A receipt and lifecycle state are separate facts.
+`open`, or abandoned by the service only for lost contact. A task already cancelled, written off,
+or abandoned for another reason refuses it as `lineage_work_transition`; report that state instead
+of retrying. A receipt and lifecycle state are separate facts.
 
 ```json
 {

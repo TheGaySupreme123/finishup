@@ -20,6 +20,7 @@ from finishup.config.models import (
     CODEX_SUBSCRIPTION_ENDPOINT_PROFILE_ID,
     CODEX_SUBSCRIPTION_PROVIDER_ID,
     DEFAULT_FINDING_ATTEMPT_BUDGET,
+    DEFAULT_TOP_LEVEL_CONTACT_LOST_HORIZON_SECONDS,
     ConfigError,
     ExternalRuntimeProfileConfig,
     FinishUpConfig,
@@ -542,17 +543,23 @@ def render_config_toml(config: FinishUpConfig) -> str:
         config.observation.semantic_advice_min_interval_seconds
     )
     _emit_table(lines, "observation", observation)
-    _emit_table(
-        lines,
-        "lineage",
-        {
-            "start_lease_seconds": config.lineage.start_lease_seconds,
-            "attach_handle_ttl_seconds": config.lineage.attach_handle_ttl_seconds,
-            "contact_lost_recovery_seconds": config.lineage.contact_lost_recovery_seconds,
-            "max_depth": config.lineage.max_depth,
-            "max_fanout": config.lineage.max_fanout,
-        },
-    )
+    lineage: dict[str, object] = {
+        "start_lease_seconds": config.lineage.start_lease_seconds,
+        "attach_handle_ttl_seconds": config.lineage.attach_handle_ttl_seconds,
+        "contact_lost_recovery_seconds": config.lineage.contact_lost_recovery_seconds,
+    }
+    # #1239: written only when the owner chose a non-default horizon, so existing files keep
+    # their bytes.
+    if (
+        config.lineage.top_level_contact_lost_horizon_seconds
+        != DEFAULT_TOP_LEVEL_CONTACT_LOST_HORIZON_SECONDS
+    ):
+        lineage["top_level_contact_lost_horizon_seconds"] = (
+            config.lineage.top_level_contact_lost_horizon_seconds
+        )
+    lineage["max_depth"] = config.lineage.max_depth
+    lineage["max_fanout"] = config.lineage.max_fanout
+    _emit_table(lines, "lineage", lineage)
     _emit_table(
         lines,
         "logging",

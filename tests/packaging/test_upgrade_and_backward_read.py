@@ -142,7 +142,7 @@ def test_each_migration_family_has_contiguous_versions(installed: _Installed) ->
         "}))\n"
     )
     payload = _run_probe(installed, probe)
-    assert payload["catalog_versions"] == ["0001", "0002", "0003", "0004", "0005"]
+    assert payload["catalog_versions"] == ["0001", "0002", "0003", "0004", "0005", "0006"]
     assert payload["bundle_versions"] == [
         "0001",
         "0002",
@@ -163,13 +163,13 @@ def test_each_migration_family_has_contiguous_versions(installed: _Installed) ->
         "0017",
         "0018",
     ]
-    assert payload["catalog_current"] == 5
+    assert payload["catalog_current"] == 6
     assert payload["bundle_current"] == 18
 
 
 def test_migration_ddl_contains_only_reviewed_table_rebuilds(installed: _Installed) -> None:
     for family, versions in (
-        ("catalog", ("0001", "0002", "0003", "0004", "0005")),
+        ("catalog", ("0001", "0002", "0003", "0004", "0005", "0006")),
         (
             "bundle",
             (
@@ -332,7 +332,7 @@ def test_newer_than_candidate_schema_fails_migration_and_identity_checks_honestl
         "from finishup.adapters.sqlite.connection import verify_schema_identity, StorageUnsafeError\n"
         "catalog = apsw.Connection(':memory:')\n"
         "initialize_catalog(catalog)\n"
-        "catalog.execute('PRAGMA user_version = 6')\n"
+        "catalog.execute('PRAGMA user_version = 7')\n"
         "identity_reason = None\n"
         "try:\n"
         "    verify_schema_identity(catalog)\n"

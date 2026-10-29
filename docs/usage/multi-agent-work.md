@@ -54,22 +54,40 @@ contact until the host reports that subagent finished. That holds for up to an h
 a host that closes without reporting it. You never need to add polling calls or filler updates
 to keep work alive.
 
-When nothing is reported for about a minute, contact is lost. After the recovery window (five
-minutes by default), FinishUP records the open work as abandoned. This can still happen during
-ordinary work with no observable activity: one long command, a reply that waits for the user, or
-a host that reports no subagent events. If your work often goes quiet for longer than that, raise
-the `lineage.contact_lost_recovery_seconds` setting.
+When nothing is reported for about a minute, contact is lost. What happens next depends on
+whether another task is waiting on yours:
+
+- **A subagent whose parent is waiting on it** is abandoned after the recovery window (five
+  minutes by default), so the parent is never left waiting on a subagent that stopped. If your
+  subagents often go quiet for longer than that, raise the `lineage.contact_lost_recovery_seconds`
+  setting.
+- **Any other task**, including every task you start yourself, keeps its work open for a day by
+  default (`lineage.top_level_contact_lost_horizon_seconds`, up to a week). Status shows that
+  contact was lost and when the work would be abandoned. One long model turn, a long-running
+  command, or a reply that waits for you does not end your work.
+
+When the host reports that the session ended, the session stops. Its open work is abandoned after
+the recovery window, unless the session resumes first. Work that was already closed stays closed.
+
+`finishup status` shows your own task's work state and contact on every view. The line is omitted
+only while the work is open and in contact.
 
 ## When your own task was abandoned
 
-Abandoned work is final. FinishUP does not reopen it, and later activity cannot undo it. Until you
-move on:
+If FinishUP abandoned your work only because it lost contact, and the same session is still
+working, close the work as usual. The close stands. Both records stay in the history, and later
+receipts say the abandonment was reversed. Cancelling or writing off such work is still refused.
+
+Any other abandonment is final. FinishUP does not reopen it, and later activity cannot undo it.
+That covers a session that ended or a subagent that never attached. Until you move on:
 
 - **The original session keeps working for history.** It can still read status, record late
-  evidence, run checks, and request receipts. Every receipt says the work is incomplete.
-  Receipts issued before abandonment stay exactly as they were.
+  evidence, run checks, and request receipts. Every receipt says the service abandoned the work
+  and that the work is incomplete as recorded. Receipts issued before abandonment stay
+  exactly as they were.
 - **It cannot continue the work.** It cannot resume the task or start new child work. FinishUP
-  refuses both and points you to a successor task.
+  refuses both and points you to a successor task. A refused close names the state, when it
+  began, and what still works.
 
 To continue, start one new task in the same workspace with a new external reference. Open it with
 a short handoff that names the abandoned task, and delegate from the new task. It starts with its

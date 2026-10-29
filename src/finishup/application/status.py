@@ -40,6 +40,7 @@ from finishup.application.status_faults import (
     status_stage,
 )
 from finishup.application.task_views import LineageStatusSnapshot, ProjectStatusSnapshot
+from finishup.domain.coordination import WorkState
 from finishup.domain.decision_status import safe_status_line
 from finishup.domain.events import (
     AcceptedEvent,
@@ -182,6 +183,7 @@ from finishup.protocol.models import (
     StatusResultsFilterModel,
     StatusResultsPageModel,
     StatusSemanticProgressModel,
+    StatusTaskLifecycleModel,
     StatusUndeclaredReferenceModel,
     StatusVersionSliceModel,
     StatusVersionsPageModel,
@@ -318,6 +320,8 @@ class StatusInternalResult:
     # ADR-049: the conversation's review mode, the owner's setting and the latest switch,
     # composed from the head projection and the owner's policy; ``None`` when not composed.
     review_mode: dict[str, JsonValue] | None = None
+    # #1239: the task's own lifecycle (``StatusTaskLifecycleModel``), when lineage is composed.
+    task_lifecycle: dict[str, JsonValue] | None = None
     # Issue #1084: ``brief`` serializes the strict subset ``brief_status_body`` keeps.
     detail: Literal["brief", "full"] = "full"
 
@@ -374,6 +378,9 @@ class StatusInternalResult:
                 }
             ),
             **({} if self.review_mode is None else {"review_mode": dict(self.review_mode)}),
+            **(
+                {} if self.task_lifecycle is None else {"task_lifecycle": dict(self.task_lifecycle)}
+            ),
         }
 
 
@@ -389,6 +396,9 @@ _EMPTY_IMPORT_STATUS: Final[Mapping[str, JsonValue]] = MappingProxyType(
 )
 _ENFORCED_CREDENTIAL_HEURISTIC: Final[Mapping[str, JsonValue]] = MappingProxyType(
     {"repository": "enforced", "machine_default": "enforced"}
+)
+_ACTIVE_OPEN_LIFECYCLE: Final[Mapping[str, JsonValue]] = MappingProxyType(
+    {"work_state": "open", "session_health": "active"}
 )
 _BRIEF_ALWAYS: Final = (
     "protocol_version",
@@ -450,7 +460,59 @@ def brief_status_body(full: Mapping[str, JsonValue]) -> dict[str, JsonValue]:
         body["credential_heuristic"] = credential
     if "review_mode" in full:
         body["review_mode"] = full["review_mode"]
+    lifecycle = full.get("task_lifecycle")
+    if lifecycle is not None and dict(cast(Mapping[str, JsonValue], lifecycle)) != dict(
+        _ACTIVE_OPEN_LIFECYCLE
+    ):
+        # #1239: an open task in contact is the ordinary state; anything else is kept.
+        body["task_lifecycle"] = lifecycle
     return body
+
+
+async def task_lifecycle_body(app: object, task_id: str) -> dict[str, JsonValue] | None:
+    """The task's own lifecycle as ``StatusTaskLifecycleModel`` wire (#1239), or ``None``.
+
+    Read live from the lineage catalog, like the child rows of ``view=lineage``; ``None`` when no
+    lineage is composed or the task has no lineage row. Never fails the status read.
+    """
+
+    lineage = getattr(app, "lineage", None)
+    own = getattr(lineage, "own_lifecycle", None)
+    if not callable(own):
+        return None
+    try:
+        snapshot = await cast(Callable[[str], Awaitable[object]], own)(task_id)
+    except PublicOperationError:
+        return None
+    if snapshot is None:
+        return None
+    from finishup.application.lineage import REVERSIBLE_ABANDONMENT_REASON, LineageSnapshot
+
+    assert type(snapshot) is LineageSnapshot
+    body: dict[str, JsonValue] = {
+        "work_state": snapshot.work_state.value,
+        "session_health": snapshot.session_health.value,
+    }
+    if snapshot.contact_lost_at is not None:
+        body["contact_lost_at"] = format_rfc3339_millis(snapshot.contact_lost_at)
+    pending = snapshot.work_state is WorkState.OPEN and snapshot.abandonment_reason is not None
+    if snapshot.work_state is WorkState.ABANDONED or pending:
+        if snapshot.abandonment_deadline is not None:
+            body["abandonment_at"] = format_rfc3339_millis(snapshot.abandonment_deadline)
+        if snapshot.abandonment_reason is not None:
+            body["abandonment_reason"] = snapshot.abandonment_reason
+    elif (
+        snapshot.work_state is WorkState.CLOSED
+        and snapshot.abandonment_reason == REVERSIBLE_ABANDONMENT_REASON
+    ):
+        if snapshot.abandonment_deadline is not None:
+            body["abandonment_at"] = format_rfc3339_millis(snapshot.abandonment_deadline)
+        body["abandonment_reason"] = snapshot.abandonment_reason
+        body["abandonment_reversed"] = True
+    return cast(
+        dict[str, JsonValue],
+        StatusTaskLifecycleModel.model_validate(body).model_dump(mode="json", exclude_none=True),
+    )
 
 
 async def _task_review_mode(
@@ -3078,6 +3140,7 @@ async def execute_status(
             item_authorship,
             leaf_authorship=leaf_authorship,
             review_mode=review_mode,
+            task_lifecycle=await task_lifecycle_body(app, runtime.task_id),
             detail="brief" if request.detail == "brief" else "full",
         )
     except (StatusFault, TypeError, ValueError) as exc:

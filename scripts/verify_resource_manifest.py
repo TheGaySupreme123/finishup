@@ -603,6 +603,7 @@ _INVENTORY_ENTRIES: Final[tuple[tuple[str, str, str, bool], ...]] = (
     ("migrations/catalog/0003.sql", "migration", "application/sql", True),
     ("migrations/catalog/0004.sql", "migration", "application/sql", True),
     ("migrations/catalog/0005.sql", "migration", "application/sql", True),
+    ("migrations/catalog/0006.sql", "migration", "application/sql", True),
     (
         "schemas/common/actor-assertion-1.0.0.schema.json",
         "json_schema",

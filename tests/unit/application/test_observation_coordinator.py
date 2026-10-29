@@ -6743,6 +6743,81 @@ async def test_native_activity_releases_runtime_before_lineage_callback(tmp_path
 
 
 @pytest.mark.anyio
+async def test_a_host_session_end_goes_to_the_session_end_hook_not_activity(tmp_path: Path) -> None:
+    """#1239: a delivered ``SessionEnd`` ends the bound session; it never renews contact."""
+
+    from types import SimpleNamespace
+
+    from builders.ledger_adapters import FixedClock
+    from finishup.domain.values import timestamp_from_datetime
+
+    local, _workspace, session, mapping = _mapped_local(tmp_path, "native-session-end")
+    db = apsw.Connection(":memory:")
+    initialize_bundle(db, {"task_id": mapping.finishup_task_id, "owner_generation": "1"})
+    store = SqliteObservationStore(db)
+    clock = FixedClock()
+    runtime = SimpleNamespace(
+        task_id=mapping.finishup_task_id,
+        session_id=mapping.finishup_session_id,
+        writer_id=observation_writer_id(mapping.finishup_task_id, mapping.finishup_session_id),
+        observation=store,
+    )
+    renewed: list[str] = []
+    ended: list[tuple[str, str, str, object]] = []
+
+    class RuntimePort:
+        async def route(self, command: object) -> object:
+            del command
+            return runtime
+
+        async def release(self, value: object) -> None:
+            assert value is runtime
+
+    async def renew(task_id: str, session_id: str, writer_id: str, observed_at: object) -> None:
+        del session_id, writer_id, observed_at
+        renewed.append(task_id)
+
+    async def end(task_id: str, session_id: str, writer_id: str, observed_at: object) -> None:
+        ended.append((task_id, session_id, writer_id, observed_at))
+
+    class Coordinator(ObservationCoordinator):
+        async def _run_advice(self, *args: object, **kwargs: object) -> None:  # type: ignore[override]
+            pass
+
+    coordinator = Coordinator(
+        runtime=RuntimePort(),  # type: ignore[arg-type]
+        local=local,
+        clock=clock,
+        ids=object(),  # type: ignore[arg-type]
+        state_root=tmp_path,
+        observed_activity_hook=renew,
+        observed_session_end_hook=end,
+        mapping_loader=lambda *_args, **_kwargs: mapping,  # pyright: ignore[reportUnknownLambdaType, reportUnknownArgumentType]
+    )
+    envelope = replace(
+        _envelope(session=session, kind="SessionEnd", identity="hook:session-end"),
+        structural_payload=JsonObject({}),
+        receipt_time=timestamp_from_datetime(clock.now_utc()),
+    )
+    try:
+        accepted = await coordinator.ingest_request(
+            ObservationIngestRequest(codex_session_id="native-session-end", envelope=envelope)
+        )
+        assert accepted.disposition is ObservationIngestDisposition.ACCEPTED
+        assert renewed == []
+        assert ended == [
+            (
+                mapping.finishup_task_id,
+                mapping.finishup_session_id,
+                mapping.finishup_writer_id,
+                clock.now_utc(),
+            )
+        ]
+    finally:
+        db.close(force=True)
+
+
+@pytest.mark.anyio
 async def test_ended_predecessor_cannot_seed_successor_host_route(tmp_path: Path) -> None:
     """A rewritten ended mapping stays structural and cannot bind the successor host lane."""
 

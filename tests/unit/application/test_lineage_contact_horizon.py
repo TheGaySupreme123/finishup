@@ -1,0 +1,394 @@
+"""Issue #1239: silence abandons only work someone waits on, and a guess can be taken back."""
+
+from __future__ import annotations
+
+import time
+from dataclasses import replace
+from datetime import datetime, timedelta
+from types import SimpleNamespace
+
+import pytest
+
+from builders.ledger_adapters import FixedIds
+from builders.multi_agent import ScenarioClock
+from finishup.application.lineage import (
+    LineageConfig,
+    LineageCoordinator,
+    LineageSnapshot,
+    MemoryLineageStore,
+)
+from finishup.application.lineage_recovery import observed_session_end
+from finishup.domain.coordination import (
+    SESSION_LEASE_SECONDS,
+    LineageAcceptance,
+    LineageOrigin,
+    SessionHealth,
+    WorkState,
+)
+from finishup.protocol.errors import PublicErrorCode, PublicOperationError
+from finishup.protocol.ids import IdKind
+
+pytestmark = pytest.mark.anyio
+
+_WINDOW = 300
+_HORIZON = 86_400
+
+
+def _coordinator(
+    clock: ScenarioClock, store: MemoryLineageStore, ids: FixedIds, **config: int
+) -> LineageCoordinator:
+    return LineageCoordinator(
+        store=store,
+        clock=clock,
+        ids=ids,
+        handle_key=b"k" * 32,
+        config=LineageConfig(**config),
+    )
+
+
+async def _root(coordinator: LineageCoordinator, ids: FixedIds) -> tuple[str, str]:
+    task, session = ids.new(IdKind.TASK), ids.new(IdKind.SESSION)
+    await coordinator.register_root(task_id=task, session_id=session)
+    return task, session
+
+
+async def _child(
+    store: MemoryLineageStore,
+    ids: FixedIds,
+    parent: str,
+    *,
+    acceptance: LineageAcceptance = LineageAcceptance.PENDING,
+) -> tuple[str, str]:
+    task, session = ids.new(IdKind.TASK), ids.new(IdKind.SESSION)
+    await store.save_task(
+        LineageSnapshot(
+            task_id=task,
+            parent_task_id=parent,
+            depth=1,
+            origin=LineageOrigin.PARENT_MINTED,
+            acceptance=acceptance,
+            work_state=WorkState.OPEN,
+            session_health=SessionHealth.ACTIVE,
+            active_session_id=session,
+        )
+    )
+    return task, session
+
+
+class _Appends:
+    def __init__(self) -> None:
+        self.rows: list[tuple[str, str, datetime]] = []
+
+    async def __call__(self, snapshot: LineageSnapshot, reason: str, deadline: datetime) -> None:
+        self.rows.append((snapshot.task_id, reason, deadline))
+
+
+async def test_a_quiet_top_level_task_keeps_open_work_until_the_long_horizon() -> None:
+    clock, store, ids = ScenarioClock(), MemoryLineageStore(), FixedIds()
+    coordinator = _coordinator(clock, store, ids)
+    task, session = await _root(coordinator, ids)
+    lost_at = clock.now_utc()
+    lost = await coordinator.mark_contact_lost(session_id=session)
+    assert lost.session_health is SessionHealth.CONTACT_LOST
+    assert lost.abandonment_deadline == lost_at + timedelta(seconds=_HORIZON)
+    assert lost.abandonment_reason == "contact_lost"
+    appends = _Appends()
+    # The six quiet minutes of the benchmark run, and then most of a day, abandon nothing.
+    for seconds in (_WINDOW + 61, _HORIZON - _WINDOW - 62):
+        clock.advance(seconds=seconds)
+        assert await coordinator.recover_abandoned(appends) == ()
+    assert appends.rows == []
+    clock.advance(seconds=1)
+    (abandoned,) = await coordinator.recover_abandoned(appends)
+    assert abandoned.work_state is WorkState.ABANDONED
+    assert abandoned.abandonment_reason == "contact_lost"
+    assert appends.rows == [(task, "contact_lost", lost_at + timedelta(seconds=_HORIZON))]
+
+
+async def test_a_child_whose_parent_waits_keeps_the_short_window() -> None:
+    clock, store, ids = ScenarioClock(), MemoryLineageStore(), FixedIds()
+    coordinator = _coordinator(clock, store, ids)
+    parent, _ = await _root(coordinator, ids)
+    child, child_session = await _child(store, ids, parent)
+    lost_at = clock.now_utc()
+    lost = await coordinator.mark_contact_lost(session_id=child_session)
+    assert lost.abandonment_deadline == lost_at + timedelta(seconds=_WINDOW)
+    clock.advance(seconds=_WINDOW)
+    appends = _Appends()
+    (abandoned,) = await coordinator.recover_abandoned(appends)
+    assert abandoned.task_id == child and abandoned.work_state is WorkState.ABANDONED
+    assert appends.rows == [(child, "contact_lost", lost_at + timedelta(seconds=_WINDOW))]
+
+
+@pytest.mark.parametrize("parent_stopped_waiting", ("parent_closed", "parent_ended", "rejected"))
+async def test_a_child_nobody_waits_on_moves_to_the_long_horizon(
+    parent_stopped_waiting: str,
+) -> None:
+    """The window is judged at sweep time, so a parent that stops waiting frees the child."""
+
+    clock, store, ids = ScenarioClock(), MemoryLineageStore(), FixedIds()
+    coordinator = _coordinator(clock, store, ids)
+    parent, parent_session = await _root(coordinator, ids)
+    acceptance = (
+        LineageAcceptance.REJECTED
+        if parent_stopped_waiting == "rejected"
+        else LineageAcceptance.PENDING
+    )
+    child, child_session = await _child(store, ids, parent, acceptance=acceptance)
+    lost_at = clock.now_utc()
+    await coordinator.mark_contact_lost(session_id=child_session)
+    if parent_stopped_waiting == "parent_closed":
+        await coordinator.close_work(session_id=parent_session)
+    elif parent_stopped_waiting == "parent_ended":
+        await coordinator.end_session(session_id=parent_session)
+    clock.advance(seconds=_WINDOW + 1)
+    appends = _Appends()
+    recovered = await coordinator.recover_abandoned(appends)
+    assert child not in {item.task_id for item in recovered}
+    still = await store.get_task(child)
+    assert still is not None and still.work_state is WorkState.OPEN
+    effective = await coordinator.own_lifecycle(child)
+    assert effective is not None
+    assert effective.abandonment_deadline == lost_at + timedelta(seconds=_HORIZON)
+
+
+async def test_the_same_session_closes_work_the_service_abandoned_for_silence() -> None:
+    clock, store, ids = ScenarioClock(), MemoryLineageStore(), FixedIds()
+    coordinator = _coordinator(clock, store, ids, top_level_contact_lost_horizon_seconds=_WINDOW)
+    task, session = await _root(coordinator, ids)
+    await coordinator.mark_contact_lost(session_id=session)
+    clock.advance(seconds=_WINDOW)
+    (abandoned,) = await coordinator.recover_abandoned(_Appends())
+    assert abandoned.work_state is WorkState.ABANDONED
+    deadline = abandoned.abandonment_deadline
+
+    async def renew(_lease_until: datetime) -> None:
+        return None
+
+    # The agent was working all along: its next call restores contact and its close stands.
+    assert await coordinator.renew_observed_activity(
+        task_id=task, session_id=session, renew_lease=renew
+    )
+    revived = await store.get_task(task)
+    assert revived is not None and revived.work_state is WorkState.ABANDONED
+    assert revived.abandonment_reason == "contact_lost"
+    assert revived.abandonment_deadline == deadline
+    closed = await coordinator.close_work(session_id=session)
+    assert closed.work_state is WorkState.CLOSED
+    # The reason stays as history, so status and receipts can say the abandonment was reversed.
+    assert closed.abandonment_reason == "contact_lost"
+    with pytest.raises(PublicOperationError) as again:
+        await coordinator.cancel_work(session_id=session)
+    assert again.value.code is PublicErrorCode.SESSION_CONFLICT
+    assert again.value.safe_details["reason_code"] == "lineage_work_transition"
+    # Closed work is terminal: a later silence loses contact but never abandons it again, so one
+    # abandonment identity per task stays enough (no second episode can exist).
+    await coordinator.mark_contact_lost(session_id=session)
+    clock.advance(seconds=_HORIZON + 1)
+    appends = _Appends()
+    assert await coordinator.recover_abandoned(appends) == ()
+    assert appends.rows == []
+    still = await store.get_task(task)
+    assert still is not None and still.work_state is WorkState.CLOSED
+
+
+@pytest.mark.parametrize("target", ("cancel", "write_off"))
+async def test_only_a_close_reverses_a_contact_lost_abandonment(target: str) -> None:
+    clock, store, ids = ScenarioClock(), MemoryLineageStore(), FixedIds()
+    coordinator = _coordinator(clock, store, ids, top_level_contact_lost_horizon_seconds=_WINDOW)
+    task, session = await _root(coordinator, ids)
+    await coordinator.mark_contact_lost(session_id=session)
+    clock.advance(seconds=_WINDOW)
+    await coordinator.recover_abandoned(_Appends())
+
+    async def renew(_lease_until: datetime) -> None:
+        return None
+
+    await coordinator.renew_observed_activity(task_id=task, session_id=session, renew_lease=renew)
+    transition = coordinator.cancel_work if target == "cancel" else coordinator.write_off_work
+    with pytest.raises(PublicOperationError) as refused:
+        await transition(session_id=session)
+    assert refused.value.safe_details["reason_code"] == "lineage_work_transition"
+    # The refusal names the state, its time and what still works.
+    assert "abandoned (contact_lost) at " in refused.value.message
+    assert "same session" in refused.value.message
+    assert "successor task" in refused.value.message
+
+
+async def test_an_abandonment_for_another_reason_stays_final() -> None:
+    clock, store, ids = ScenarioClock(), MemoryLineageStore(), FixedIds()
+    coordinator = _coordinator(clock, store, ids)
+    task, session = await _root(coordinator, ids)
+    snapshot = await store.get_task(task)
+    assert snapshot is not None
+    await store.save_task(
+        replace(
+            snapshot,
+            work_state=WorkState.ABANDONED,
+            abandonment_deadline=clock.now_utc(),
+            abandonment_reason="attach_handle_expired",
+        )
+    )
+    with pytest.raises(PublicOperationError) as refused:
+        await coordinator.close_work(session_id=session)
+    assert refused.value.safe_details["reason_code"] == "lineage_work_transition"
+    assert "(attach_handle_expired)" in refused.value.message
+
+
+async def test_a_delivered_session_end_abandons_open_work_after_the_grace() -> None:
+    clock, store, ids = ScenarioClock(), MemoryLineageStore(), FixedIds()
+    coordinator = _coordinator(clock, store, ids)
+    task, session = await _root(coordinator, ids)
+    ended_at = clock.now_utc()
+    ended = await coordinator.end_session(session_id=session)
+    assert ended.session_health is SessionHealth.ENDED
+    assert ended.abandonment_reason == "session_ended"
+    assert ended.abandonment_deadline == ended_at + timedelta(seconds=_WINDOW)
+    appends = _Appends()
+    clock.advance(seconds=_WINDOW - 1)
+    assert await coordinator.recover_abandoned(appends) == ()
+    clock.advance(seconds=1)
+    (abandoned,) = await coordinator.recover_abandoned(appends)
+    assert abandoned.work_state is WorkState.ABANDONED
+    assert abandoned.abandonment_reason == "session_ended"
+    assert appends.rows == [(task, "session_ended", ended_at + timedelta(seconds=_WINDOW))]
+
+
+async def test_closed_work_takes_no_session_end_deadline() -> None:
+    clock, store, ids = ScenarioClock(), MemoryLineageStore(), FixedIds()
+    coordinator = _coordinator(clock, store, ids)
+    task, session = await _root(coordinator, ids)
+    await coordinator.close_work(session_id=session)
+    ended = await coordinator.end_session(session_id=session)
+    assert ended.work_state is WorkState.CLOSED
+    assert ended.abandonment_deadline is None and ended.abandonment_reason is None
+    clock.advance(seconds=_WINDOW * 2)
+    assert await coordinator.recover_abandoned(_Appends()) == ()
+    assert (await store.get_task(task)) == ended
+
+
+async def test_returning_contact_clears_a_pending_abandonment() -> None:
+    clock, store, ids = ScenarioClock(), MemoryLineageStore(), FixedIds()
+    coordinator = _coordinator(clock, store, ids)
+    task, session = await _root(coordinator, ids)
+    await coordinator.mark_contact_lost(session_id=session)
+    clock.advance(seconds=_WINDOW * 4)
+
+    async def renew(_lease_until: datetime) -> None:
+        return None
+
+    assert await coordinator.renew_observed_activity(
+        task_id=task, session_id=session, renew_lease=renew
+    )
+    restored = await store.get_task(task)
+    assert restored is not None and restored.session_health is SessionHealth.ACTIVE
+    assert restored.abandonment_deadline is None and restored.abandonment_reason is None
+    assert await coordinator.own_lifecycle(task) == restored
+
+
+class _CountingStore(MemoryLineageStore):
+    """Counts single-task reads, so a sweep that re-reads each parent shows up."""
+
+    reads = 0
+
+    async def get_task(self, task_id: str) -> LineageSnapshot | None:
+        type(self).reads += 1
+        return await MemoryLineageStore.get_task(self, task_id)
+
+
+async def test_one_sweep_judges_many_quiet_tasks_from_one_store_read() -> None:
+    """A sweep over many quiet children judges each window from its listing, not per parent."""
+
+    clock, store, ids = ScenarioClock(), _CountingStore(), FixedIds()
+    coordinator = _coordinator(clock, store, ids)
+    parents = [await _root(coordinator, ids) for _ in range(20)]
+    children = [await _child(store, ids, parent) for parent, _ in parents for _ in range(10)]
+    for _, child_session in children:
+        await coordinator.mark_contact_lost(session_id=child_session)
+    clock.advance(seconds=_WINDOW - 1)
+    _CountingStore.reads = 0
+    assert await coordinator.recover_abandoned(_Appends()) == ()
+    assert _CountingStore.reads == 0
+    clock.advance(seconds=1)
+    recovered = await coordinator.recover_abandoned(_Appends())
+    assert len(recovered) == len(children)
+
+
+def test_the_horizon_is_never_shorter_than_the_recovery_window() -> None:
+    with pytest.raises(ValueError):
+        LineageConfig(contact_lost_recovery_seconds=600, top_level_contact_lost_horizon_seconds=599)
+    with pytest.raises(ValueError):
+        LineageConfig(top_level_contact_lost_horizon_seconds=604_801)
+    assert LineageConfig(top_level_contact_lost_horizon_seconds=604_800)
+
+
+class _StartCatalog:
+    """The two start-catalog reads ``observed_session_end`` makes, with fixed answers."""
+
+    def __init__(self, task: str, session: str, writer: str, lease: datetime | None) -> None:
+        self.binding = SimpleNamespace(task_id=task, session_id=session, writer_id=writer)
+        self.lease = lease
+
+    async def session_binding(self, session_id: str) -> object:
+        return self.binding if session_id == self.binding.session_id else None
+
+    async def task_session_states(self, task_id: str) -> tuple[object, ...]:
+        del task_id
+        return (SimpleNamespace(session_id=self.binding.session_id, lease_expires_at=self.lease),)
+
+
+@pytest.mark.parametrize("case", ("ends", "later_lease", "other_writer", "rotated"))
+async def test_a_delivered_session_end_ends_only_the_current_session(case: str) -> None:
+    clock, store, ids = ScenarioClock(), MemoryLineageStore(), FixedIds()
+    coordinator = _coordinator(clock, store, ids)
+    task, session = await _root(coordinator, ids)
+    writer = ids.new(IdKind.WRITER)
+    observed = clock.now_utc()
+    lease = observed + timedelta(seconds=SESSION_LEASE_SECONDS)
+    if case == "later_lease":
+        # A resumed host renewed the lease past this end's own lease: the end is stale.
+        lease += timedelta(seconds=1)
+    catalog = _StartCatalog(task, session, writer, lease)
+    if case == "rotated":
+        snapshot = await store.get_task(task)
+        assert snapshot is not None
+        await store.save_task(replace(snapshot, active_session_id=ids.new(IdKind.SESSION)))
+    hook = observed_session_end(catalog, coordinator)
+    await hook(
+        task, session, writer if case != "other_writer" else ids.new(IdKind.WRITER), observed
+    )
+    after = await store.get_task(task)
+    assert after is not None
+    if case == "ends":
+        assert after.session_health is SessionHealth.ENDED
+        assert after.abandonment_reason == "session_ended"
+    else:
+        assert after.session_health is SessionHealth.ACTIVE
+        assert after.abandonment_reason is None
+
+
+async def test_a_day_of_quiet_top_level_tasks_sweeps_well_inside_the_recovery_deadline() -> None:
+    """The horizon keeps quiet tasks ``contact_lost`` for a day; the sweep stays linear.
+
+    The daemon gives one recovery pass 30 seconds (``_LINEAGE_RECOVERY_DEADLINE_SECONDS``). The
+    sweep reads the store once and judges every window from that listing, so thousands of
+    long-lived quiet tasks cost one pass, not one read each.
+    """
+
+    clock, store, ids = ScenarioClock(), _CountingStore(), FixedIds()
+    coordinator = _coordinator(clock, store, ids)
+    sessions = [(await _root(coordinator, ids))[1] for _ in range(2_000)]
+    for session in sessions:
+        await coordinator.mark_contact_lost(session_id=session)
+    clock.advance(seconds=_HORIZON // 2)
+    _CountingStore.reads = 0
+    started = time.monotonic()
+    assert await coordinator.recover_abandoned(_Appends()) == ()
+
+    async def renew(_task_id: str, _session_id: str, _lease_until: datetime) -> bool:
+        return True
+
+    assert await coordinator.hold_in_flight_contact(renew) == ()
+    elapsed = time.monotonic() - started
+    assert _CountingStore.reads == 0
+    assert elapsed < 30, elapsed

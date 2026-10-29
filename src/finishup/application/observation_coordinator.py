@@ -944,9 +944,14 @@ class ObservationCoordinator:
     observed_host_session_binding: Callable[[str, str, str], Awaitable[None]] | None = None
     # Receives ``(task_id, session_id, writer_id, observed_at)``; lineage decides what the
     # evidence proves at ``observed_at``.  The age bound only drops evidence too old to postpone
-    # any recorded contact loss: the session lease plus the longest configurable recovery window.
+    # any recorded contact loss: the session lease plus the longest configurable contact-lost
+    # window (the top-level horizon, at most a week, #1239).
     observed_activity_hook: Callable[[str, str, str, datetime], Awaitable[None]] | None = None
-    observed_activity_max_age_seconds: int = 86_400 + 60
+    observed_activity_max_age_seconds: int = 604_800 + 60
+    # #1239 (D6): receives ``(task_id, session_id, writer_id, observed_at)`` for an admitted host
+    # ``SessionEnd`` of the bound session; lineage ends the session and schedules its open work's
+    # abandonment after the short grace.
+    observed_session_end_hook: Callable[[str, str, str, datetime], Awaitable[None]] | None = None
     _advice_event_ref_cache: dict[tuple[str, str], tuple[str, ...]] = field(
         default_factory=_empty_advice_event_ref_cache, init=False, repr=False
     )
@@ -3889,11 +3894,13 @@ class ObservationCoordinator:
         A duplicate delivery re-offers the same evidence; lineage applies it idempotently, so a
         retry whose first ingest committed before a later step failed can still count.
         ``Stop`` and ``SubagentStop`` prove the host was alive when they fired; only
-        ``SessionEnd`` ends contact.  Future receipt times and evidence older than
+        ``SessionEnd`` ends contact, and it is offered to ``observed_session_end_hook`` instead,
+        which ends the session (#1239).  Future receipt times and evidence older than
         ``observed_activity_max_age_seconds`` are never offered.
         """
 
-        hook = self.observed_activity_hook
+        session_end = envelope.event_kind == "SessionEnd"
+        hook = self.observed_session_end_hook if session_end else self.observed_activity_hook
         if (
             hook is None
             or not route_bound
@@ -3905,7 +3912,6 @@ class ObservationCoordinator:
                 ObservationSource.CLAUDE_HOOK,
                 ObservationSource.CURSOR_HOOK,
             }
-            or envelope.event_kind == "SessionEnd"
             or runtime.session_id != predecessor_session_id
             or runtime.writer_id
             not in {
@@ -3914,6 +3920,12 @@ class ObservationCoordinator:
             }
         ):
             return
+        observed_at = envelope.receipt_time.as_datetime()
+        if session_end:
+            # The bound host session ended; its own ended marker is what this event records, so
+            # it is not consulted. Lineage refuses a session that is not this route's.
+            await hook(runtime.task_id, predecessor_session_id, predecessor_writer_id, observed_at)
+            return
         ended_lookup = getattr(getattr(self, "local", None), "codex_session_ended", None)
         if callable(ended_lookup):
             try:
@@ -3921,7 +3933,6 @@ class ObservationCoordinator:
                     return
             except Exception:
                 return
-        observed_at = envelope.receipt_time.as_datetime()
         age = (self.clock.now_utc() - observed_at).total_seconds()
         if not 0 <= age <= self.observed_activity_max_age_seconds:
             return
