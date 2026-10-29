@@ -555,3 +555,12 @@ Verification: `tests/unit/kernel/test_draft_receipt.py`,
 (`tests/integration/closure/test_closure_shapes.py`, and with it the property test
 `tests/property/test_closure_verdict_properties.py`) now also requires every ready status view to
 carry the draft and the draft's conclusion to be the receipt's.
+
+## Amendment 2026-10-29 (issue #1243, owner decision D8 in #1247): the terminal lists are views of the closures
+
+The receipt's terminal id lists and the readiness `self_verified`, acknowledged and disputed lists
+are read from the closures by basis, like the conclusion. A kind the classifier leaves out (a
+process note) is never listed there, so the receipt cannot predict clean and then refuse
+(ADR-034 amendment of the same date). The property test now also checks each issued conclusion
+against an independent oracle over the document's own rows, since the receipt reusing the
+predictor's label makes agreement alone a tautology.
