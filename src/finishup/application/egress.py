@@ -528,6 +528,9 @@ class ReviewerExchangeFrame:
     # #1118: what this exchange may carry on its route: its bytes and, on a route sized to its
     # model's context, its estimated model tokens. ``None`` keeps the unsized byte bound.
     budget: ReviewerExchangeBudget | None = None
+    # #1242: only the opening exchange stops at ``first_token_limit`` and leaves the frame.
+    # Later exchanges of the same conversation may use the full exchange budget.
+    opening: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -2195,13 +2198,9 @@ class PrivacyCoordinator:
             # #1118: the approved packet travels inside the reviewer conversation. The whole
             # conversation is the disclosed payload, so ceilings, the proposal and the gateway's
             # final scan all see its exact bytes; earlier read results were admitted on their own.
+            # #1242: the first exchange stops at the first-token limit and leaves the frame.
             payload = frame.render(packet_bytes)
-            budget = frame.budget
-            byte_limit = min(
-                UNSIZED_EXCHANGE_BYTES if budget is None else budget.byte_limit,
-                MAX_MINIMIZED_DISCLOSURE_BYTES,
-            )
-            token_limit = None if budget is None else budget.token_limit
+            byte_limit, token_limit = _reviewer_exchange_send_limits(frame, opening_reserve=False)
             tokens = None if token_limit is None else reviewer_exchange_tokens(payload)
             capacity: tuple[int, int] | None = None
             capacity_unit: Literal["bytes", "tokens"] = "bytes"
@@ -2909,18 +2908,14 @@ class PrivacyCoordinator:
         payload = packet if frame is None else frame.render(packet)
         size = len(payload)
         if frame is not None:
-            budget = frame.budget
-            byte_limit = min(
-                UNSIZED_EXCHANGE_BYTES if budget is None else budget.byte_limit,
-                MAX_MINIMIZED_DISCLOSURE_BYTES,
-            )
+            byte_limit, token_limit = _reviewer_exchange_send_limits(frame, opening_reserve=True)
             exchange_excess = max(exchange_excess, size - byte_limit)
-            if budget is not None and budget.token_limit is not None:
+            if token_limit is not None:
                 tokens = reviewer_exchange_tokens(payload)
-                if tokens > budget.token_limit:
+                if tokens > token_limit:
                     exchange_excess = max(
                         exchange_excess,
-                        -(-(tokens - budget.token_limit) * size // max(1, tokens)),
+                        -(-(tokens - token_limit) * size // max(1, tokens)),
                     )
         llm = next(
             (
@@ -3743,6 +3738,32 @@ class _CapacityOverage:
 # Rounds of leave-out, re-minimize and re-measure; each round only removes items.
 _MAX_CAPACITY_FIT_ROUNDS: Final = 4
 _CAPACITY_FIT_MARGIN_BYTES: Final = 256
+
+
+def _reviewer_exchange_send_limits(
+    frame: ReviewerExchangeFrame, *, opening_reserve: bool
+) -> tuple[int, int | None]:
+    """The byte and token caps one reviewer exchange is measured against.
+
+    The opening exchange's disclosure fit stops at ``first_token_limit`` so excerpts are
+    left out before the growth reserve is spent (#1242). The send gate keeps the hard
+    exchange budget: a packet that still fits the model is not refused for the reserve.
+    """
+
+    budget = frame.budget
+    byte_limit = min(
+        UNSIZED_EXCHANGE_BYTES if budget is None else budget.byte_limit,
+        MAX_MINIMIZED_DISCLOSURE_BYTES,
+    )
+    token_limit = None if budget is None else budget.token_limit
+    if (
+        opening_reserve
+        and frame.opening
+        and budget is not None
+        and budget.first_token_limit is not None
+    ):
+        token_limit = budget.first_token_limit
+    return byte_limit, token_limit
 
 
 def _packet_excerpt_rows(packet: bytes) -> list[tuple[str, int]] | None:

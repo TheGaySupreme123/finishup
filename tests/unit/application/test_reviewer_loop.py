@@ -38,6 +38,7 @@ from finishup.application.reviewer_broker import ReadElement, ReadRoot, Reviewer
 from finishup.application.reviewer_loop import (
     FINAL_FORMAT_ERROR,
     FINAL_PHASE,
+    READ_NOT_SERVED,
     ReviewerLoop,
     ReviewerModelError,
     Turn,
@@ -315,15 +316,16 @@ async def test_native_directory_inspection_exhaustion_is_explicit(
 
 
 @pytest.mark.anyio
-async def test_a_large_valid_action_ends_as_capacity_before_reserving_a_read() -> None:
-    # Escaping can make a valid action exceed the ordinary action allowance.
-    loop, broker, model, _ = _setup(_text("w1", "\\" * 509))
+async def test_a_large_valid_action_asks_for_a_judgment_before_reserving_a_read() -> None:
+    """#1242: a read that does not fit is not served, and the review asks for the judgment."""
+
+    loop, broker, model, _ = _setup(_text("w1", "\\" * 509), _FINAL)
     broker._exchange_room = lambda: 2048  # pyright: ignore[reportPrivateUsage]
     outcome = await loop.run()
-    assert outcome.reason == "case_capacity_exceeded" and outcome.judgment is None
-    assert outcome.capacity is not None and outcome.capacity[0] > outcome.capacity[1]
-    assert broker.calls == 0 and len(model.calls) == 1
-    assert await broker.store.usage() == (1, 0)
+    assert outcome.reason is None and outcome.judgment is not None
+    assert broker.calls == 0 and len(model.calls) == 2
+    assert READ_NOT_SERVED in model.calls[1][0][-1].content
+    assert "final_judgment" in json.dumps(model.calls[1][1])
 
 
 def _late(model: _Script, loop: ReviewerLoop) -> None:

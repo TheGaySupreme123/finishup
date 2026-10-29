@@ -5847,6 +5847,9 @@ def _privacy_gated_semantic_evaluator(
                 if planned is None or not planned[4]:
                     declared_tests = ()
                     planned = await plan(())
+                # ``_fits`` stays unused on purpose: the planner's estimate can say a case does
+                # not fit when the real exchange still does. The send gate enforces the
+                # first-exchange limit (#1242).
                 semantic_case, approved_case, planned_selection, ceiling_rounds, _fits = planned
             except SemanticCaseCapacityExceeded as exc:
                 # Same pre-dispatch contract as an envelope that cannot be reduced: local
@@ -5906,6 +5909,7 @@ def _privacy_gated_semantic_evaluator(
                     ),
                     "semantic_excerpt_byte_limit": planned_selection.max_total_excerpt_bytes,
                     "semantic_excerpt_ceiling_rounds": ceiling_rounds,
+                    "semantic_plan_fits": int(_fits),
                     "semantic_check_change_parts_selected": sum(
                         item.excerpt_item_id.startswith(CHECK_TIME_CHANGE_ITEM_PREFIX)
                         for item in semantic_case.packet.targeted_excerpts

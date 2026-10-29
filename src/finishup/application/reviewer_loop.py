@@ -79,6 +79,8 @@ FINAL_FORMAT_ERROR: Final = (
 # A read action returned in the final phase: the wire schema allows it, the controller does not.
 FINAL_PHASE_READ: Final = "read_in_final_phase"
 FINAL_PHASE: Final = "FinishUP: read allowance or time reserve reached. Return final_judgment now."
+# #1242: a read whose exchange has no room is not served. The review asks for the judgment.
+READ_NOT_SERVED: Final = "FinishUP: reviewer read not served: no room. Return final_judgment now."
 
 
 @dataclass(frozen=True, slots=True)
@@ -145,6 +147,7 @@ class ReviewerLoop:
         self.messages = [Turn("system", self.instruction), Turn("user", self.packet)]
         repaired = False
         final_phase = False
+        read_closed = False
         offered: bool | None = None
         try:
             usage = await self.store.usage()
@@ -160,7 +163,11 @@ class ReviewerLoop:
                 # Revocation wins: every binding the history holds is rechecked before each turn.
                 if not await self.history_admissible(frozenset(self.broker.history_roots)):
                     return self.exit("authorization_changed")
-                reads = self.broker.reads_allowed() and self.remaining() > self.reserve
+                reads = (
+                    not read_closed
+                    and self.broker.reads_allowed()
+                    and self.remaining() > self.reserve
+                )
                 if offered is None:
                     # A review that never offers a read (ask-every-time, or a first turn already
                     # inside the final reserve) keeps the read-free schema on every turn.
@@ -239,9 +246,14 @@ class ReviewerLoop:
                         self.messages[-1].content,
                     )
                 except ReadExchangeFull as e:
-                    # The read action alone filled the room its exchange has under the cap:
-                    # nothing is read and nothing more is sent (#1118).
-                    return self.exit("case_capacity_exceeded", capacity=e.capacity)
+                    # The read action does not fit (#1242). Ask for the judgment. A second
+                    # read after that notice still ends the review; nothing was read.
+                    if read_closed:
+                        return self.exit("case_capacity_exceeded", capacity=e.capacity)
+                    read_closed = True
+                    final_phase = True
+                    self.messages.append(Turn("user", READ_NOT_SERVED))
+                    continue
                 self.remaining()
                 self.messages.append(Turn("user", observation))
         except ReviewerModelError as e:

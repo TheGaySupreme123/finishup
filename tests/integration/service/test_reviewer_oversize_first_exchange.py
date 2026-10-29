@@ -26,7 +26,7 @@ import finishup.cli.privacy_setup as privacy_setup_module
 import finishup.service.ready_composition as ready_composition_module
 from builders.privacy_policies import minimal_external_policy
 from finishup.adapters.privacy.local_enforcer import estimated_token_count
-from finishup.application.reviewer_loop import FINAL_FORMAT_ERROR, FINAL_PHASE
+from finishup.application.reviewer_loop import FINAL_FORMAT_ERROR, FINAL_PHASE, READ_NOT_SERVED
 from finishup.application.reviewer_run import reviewer_first_exchange
 from finishup.application.semantic_case import (
     check_time_change_bytes_carried,
@@ -95,11 +95,15 @@ def _code_diff(files: int, lines: int) -> bytes:
 
 
 @pytest.mark.anyio
-async def test_read_action_capacity_maps_through_the_service_without_schema_failure(
+async def test_read_action_capacity_asks_for_a_judgment_without_schema_failure(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    # #1135: force the boundary independently of changes to the first-packet planner. The real
-    # broker refuses this valid action before I/O, and the real service must map that refusal.
+    """#1242: a read that does not fit is not served, and the review still asks for a judgment.
+
+    #1135: the boundary is forced independently of the first-packet planner. The real broker
+    refuses this valid action before I/O.
+    """
+
     from finishup.application.reviewer_broker import ReviewerBroker
 
     execute = ReviewerBroker.execute
@@ -111,18 +115,20 @@ async def test_read_action_capacity_maps_through_the_service_without_schema_fail
     monkeypatch.setattr(ReviewerBroker, "execute", nearly_full)
     path = "\\" * 509
     result, gateway, runtime = await _run(
-        tmp_path, monkeypatch, _read_file(path), policy=_expanded_policy()
+        tmp_path, monkeypatch, _read_file(path), _FINAL, policy=_expanded_policy()
     )
-    assert (result.status, result.reason) == (
-        SemanticStatus.FAILED,
-        SemanticReason.CASE_CAPACITY_EXCEEDED,
-    )
-    assert result.judgment is None and len(gateway.exchanges) == 1
-    assert result.reviewer is not None and result.reviewer.ended == "case_capacity_exceeded"
+    assert result.status is SemanticStatus.SUCCEEDED and result.judgment is not None
+    assert len(gateway.exchanges) == 2
+    assert result.reviewer is not None and result.reviewer.ended is None
     assert result.reviewer.reads == ()
+    assert any(
+        READ_NOT_SERVED in text
+        for _media, history in gateway.exchanges
+        for _role, text in history
+    )
     job = await runtime.ledger.load_semantic_job(runtime.writer_id or "", frozen_request())
-    assert job is not None and job.terminal_code is SemanticReason.CASE_CAPACITY_EXCEEDED
-    assert await cast(Any, runtime.ledger).review_step_usage(job.job_id) == (1, 0)
+    assert job is not None and job.terminal_code is SemanticReason.SEMANTIC_COMPLETED
+    assert await cast(Any, runtime.ledger).review_step_usage(job.job_id) == (2, 0)
 
 
 def _decision_first_diff(files: int, lines: int, pad: int) -> bytes:

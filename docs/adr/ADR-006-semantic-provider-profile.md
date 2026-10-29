@@ -2648,7 +2648,9 @@ credential probe keep their one-shot dispatch; no check uses it.
   needs, measured as the exchange encodes the result, escaping included. A result over that room
   keeps the longest head that fits, measured. A read is offered only while 2 KiB of that room is
   left (an ordinary read action and a result without data); an action whose own bytes leave less
-  than 1 KiB ends the review `read_limit`, unread and unsent. The ceiling here is the exchange
+  than 1 KiB is not served. The review asks for a judgment and says "reviewer read not served:
+  no room" (#1242). It does not end as `read_limit`. A second read after that notice still ends
+  the review, unread. The ceiling here is the exchange
   budget below, never above what one prepared disclosure carries. Planning measures the packet in
   its largest disclosed shape, credential-like values replaced (#1230). A first exchange that still
   outgrows it has its lowest-ranked excerpts left out whole at disclosure (#1230, ADR-009

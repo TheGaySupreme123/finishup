@@ -236,7 +236,14 @@ async def run_reviewer(
             return rendered
 
         roots_held = tuple(sorted(broker.history_roots, key=str.encode))
-        frame = ReviewerExchangeFrame(media_type, render, roots_held, retained, exchange_budget)
+        frame = ReviewerExchangeFrame(
+            media_type,
+            render,
+            roots_held,
+            retained,
+            exchange_budget,
+            opening=not results,
+        )
         if not results and resume_pending is not None:
             result = await privacy.resume_reviewer_exchange(
                 first_request_id,
@@ -396,9 +403,16 @@ def _record(
         reply = json.loads(turn.content)["reply"]
         if "action" not in reply:
             continue
-        envelope = json.loads(nxt.content)
-        call = cast(int, envelope["call_index"])
-        data = envelope.get("data")
+        # A notice such as "read not served" is prose, not a read envelope (#1242).
+        try:
+            envelope = json.loads(nxt.content)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(envelope, dict) or "call_index" not in envelope:
+            continue
+        parsed = cast(dict[str, JsonValue], envelope)
+        call = cast(int, parsed["call_index"])
+        data = parsed.get("data")
         prov = _provenance(data)
         args = cast(dict[str, object], reply["args"])
         source = cast(str | None, None if prov is None else prov.get("source_ref"))
@@ -418,15 +432,15 @@ def _record(
             ReviewerRead(
                 call=call,
                 action=cast(str, reply["action"]),
-                status=cast(str, envelope["status"]),
-                reason=cast(str | None, envelope["reason"]),
+                status=cast(str, parsed["status"]),
+                reason=cast(str | None, parsed["reason"]),
                 source=source,
                 root=cast(str | None, None if prov is None else prov.get("root_id")),
                 standing=cast(str | None, None if prov is None else prov.get("standing")),
                 baseline=cast(str | None, None if prov is None else prov.get("baseline")),
                 lines=lines,
-                result_bytes=cast(int, envelope["result_utf8_bytes"]),
-                result_digest=cast(str, envelope["result_digest"]),
+                result_bytes=cast(int, parsed["result_utf8_bytes"]),
+                result_digest=cast(str, parsed["result_digest"]),
                 disclosure=_receipt(carrier),
             )
         )
