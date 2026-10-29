@@ -90,6 +90,8 @@ _FIELD_ORDER: Final = (
     "semantic_excerpt_count_cut_for_case_bound",
     "semantic_excerpt_byte_limit",
     "semantic_excerpt_ceiling_rounds",
+    # #1245: how many narrative sections the primary narrowing dropped.
+    "semantic_sections_dropped",
     # #1118: a capacity refusal's rendered disclosure size and the limit it
     # exceeded (integers only, never content).
     "semantic_disclosure_attempted_bytes",

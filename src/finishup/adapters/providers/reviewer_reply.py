@@ -196,6 +196,16 @@ defect; an answer is no verified repair.
 - Never ask the agent to deliver less, empty or withdraw working code, install or download \
 anything, or obtain what it cannot (a hidden grader, a private specification, a user answer); \
 state such a gap as state_unresolved_limitation.
+- When the agent concludes the requested outcome is impossible, infeasible, contradictory, or \
+blocked, test that conclusion against the task statement's premise. Example: a plan is called \
+infeasible because a full reserve is treated as mandatory, while the inputs give a lower minimum.
+- Before you recommend a change to an input, a guard, or a state, check that the visible \
+interface in the packet can reach it. Example: do not recommend a guard on a value the shown \
+types cannot produce.
+- With conflicting inputs, pick a reading, write the requested output, and record the \
+assumption. Review agreeing that a conflict exists is not permission to withhold. The only \
+exceptions are an authority block, a missing credential, or a destructive action. Example: two \
+files name different output formats; write one and record which.
 - A requirement over inputs the task never bounds (any input, every case): judge the part the \
 recorded tests establish as supported and state the remainder as a limitation; never rule it \
 not_supported for that quantifier or ask for a proof or a generator.

@@ -64,6 +64,34 @@
       ],
       "spec_excerpt": "Write a client that fetches the daily rates from the given service and reads the supplied currencies file.",
       "agent_claim": "The client reads the supplied currencies file and fetches the rates from the service the task names."
+    },
+    {
+      "case": "conflicting-output-formats",
+      "reviewer_detectable": true,
+      "decisive_material_in_packet": "yes",
+      "reviewer_returned": "insufficient_packet, citing the conflict and withholding the output",
+      "miss": "withheld_on_conflict",
+      "secondary": [],
+      "lenses": ["blockers"],
+      "directives": [
+        "With conflicting inputs, pick a reading, write the requested output, and record the assumption. Review agreeing that a conflict exists is not permission to withhold."
+      ],
+      "spec_excerpt": "Write the report in the format the inputs name.",
+      "agent_claim": "notes.txt says markdown and brief.txt says plain text, so I wrote nothing."
+    },
+    {
+      "case": "zero-budget-unreachable-guard",
+      "reviewer_detectable": true,
+      "decisive_material_in_packet": "yes",
+      "reviewer_returned": "challenges_returned, a guard on a state the interface cannot produce",
+      "miss": "unreachable_recommendation",
+      "secondary": [],
+      "lenses": ["blockers"],
+      "directives": [
+        "Before you recommend a change to an input, a guard, or a state, check that the visible interface in the packet can reach it"
+      ],
+      "spec_excerpt": "Reject a negative budget. The function's type is an unsigned count.",
+      "agent_claim": "The signature takes an unsigned count, so a negative budget cannot be passed."
     }
   ]
 }

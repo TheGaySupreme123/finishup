@@ -3654,6 +3654,14 @@ provider prompt cache once. The loop instruction stays 7,634 bytes. A strict rep
 `"declared_test_verdicts":null` (30 bytes); two verdict rows cost the reviewer at most about 800
 output bytes.
 
+## Amendment (2026-10-29): the loop states the infeasibility and reachability rules (#1245)
+
+The loop instruction carries the infeasibility lens and the reachability rule, one sentence each,
+inside its constraints, each with an example of the failure it catches. It also says that
+conflicting inputs are not a reason to withhold the requested output, except for an authority
+block, a missing credential, or a destructive action. The measured loop instruction is 8,461 bytes.
+Obligation and claim text survive the primary packet narrowing; goal text is dropped first.
+
 Wire changes are in place on unreleased versions: provider-judgment 1.2.0 and reviewer-reply 1.0.0
 (`declared_test_verdicts`), check-recorded 1.6.0 (`origin` enum, `test_digest`), check-result
 1.6.0/1.7.0 and status-result 1.4.0/1.5.0 (`origin` enum), outbound-case 1.2.0 (`expected_from` on

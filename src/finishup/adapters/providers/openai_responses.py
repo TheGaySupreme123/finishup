@@ -402,7 +402,12 @@ REVIEWER_LENSES: Final[Mapping[str, str]] = MappingProxyType(
             "external resource), and it never supports a claim that the work is done; a "
             "limitation the agent could reduce with available work is a discrepancy. Example: a "
             "plan is declared infeasible because a full reserve is treated as mandatory at every "
-            "stop, while the inputs give a lower minimum under which it is feasible."
+            "stop, while the inputs give a lower minimum under which it is feasible. With "
+            "conflicting inputs, pick a reading, write the requested output, and record the "
+            "assumption. Review agreeing that a conflict exists is not permission to withhold. "
+            "The only exceptions are an authority block, a missing credential, or a destructive "
+            "action. Before you recommend a change to an input, a guard, or a state, check that "
+            "the visible interface in the packet can reach it."
         ),
     }
 )

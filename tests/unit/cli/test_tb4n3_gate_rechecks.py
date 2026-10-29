@@ -408,8 +408,8 @@ def test_an_acceptance_entry_never_rides_beside_a_withdrawn_deliverable() -> Non
 
 def test_premise_and_acknowledgement_texts_keep_the_working_deliverable() -> None:
     keep = (
-        "If you cannot finish it, keep the working deliverable; acknowledgement never requires"
-        " withdrawing or emptying it."
+        "If no output exists yet, write it. If you cannot finish it, keep the working"
+        " deliverable; acknowledgement never requires withdrawing or emptying it."
     )
     assert keep in gate_module._PREMISE_TEXT  # pyright: ignore[reportPrivateUsage]
     keys = (f"ack:{_OBL}",)

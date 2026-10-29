@@ -564,7 +564,10 @@ ACKNOWLEDGED_REVIEW_INSTRUCTION: Final = (
     " blocker outside the agent's control (authority, consent, a credential, a hidden evaluator"
     " or reference it cannot obtain, an answer only the user has) that none of this contradicts"
     " stands as a disclosed limitation: do not challenge it, and where you want the limit stated"
-    " ask for state_unresolved_limitation. What FinishUP or this review could not show or prove is"
+    " ask for state_unresolved_limitation. With conflicting inputs, pick a reading, write the"
+    " requested output, and record the assumption. Review agreeing that a conflict exists is not"
+    " permission to withhold. The only exceptions are an authority block, a missing credential, or"
+    " a destructive action. What FinishUP or this review could not show or prove is"
     " never a reason to challenge. Never recommend emptying, deleting or withdrawing a deliverable"
     " that passes its recorded tests: it is a partial solution to keep and disclose, not"
     " an unsolved task."
@@ -3283,10 +3286,11 @@ def _append_omission(
 def primary_material_selection(
     selection: ReviewSelectionPolicy, *, keep_timeline: bool = False
 ) -> ReviewSelectionPolicy:
-    """Narrow only narrative, preserving the approved primary-material recipe.
+    """Narrow narrative, keeping obligation and claim text (#1245, D22).
 
     This is a capacity reduction, never a new category or an authorization change. Decisions,
-    including blockers, and independent lineage authority remain available.
+    obligations, claims and independent lineage authority remain available. Goal text is dropped
+    before those.
     """
 
     return replace(
@@ -3294,8 +3298,7 @@ def primary_material_selection(
         sections=tuple(
             section
             for section in selection.sections
-            if section not in {"goal", "obligations", "claims"}
-            and (section != "timeline" or keep_timeline)
+            if section != "goal" and (section != "timeline" or keep_timeline)
         ),
         # The original finding, its alternative and the agent's answer are the question a
         # recheck must adjudicate. Capacity fallback never disables already-permitted prose.

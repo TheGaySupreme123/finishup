@@ -148,8 +148,8 @@ PREMISE_RECHECK_ITEM: Final = "premise_recheck"
 # research and then to an emptied solver. It keeps its push to work and now says what to do when
 # the work cannot be finished: keep what works.
 _KEEP_DELIVERABLE_TEXT: Final = (
-    "If you cannot finish it, keep the working deliverable; acknowledgement never requires"
-    " withdrawing or emptying it."
+    "If no output exists yet, write it. If you cannot finish it, keep the working deliverable;"
+    " acknowledgement never requires withdrawing or emptying it."
 )
 _PREMISE_TEXT: Final = (
     "You marked finding(s) as not done that the reviewer says the task itself requires. Do that"

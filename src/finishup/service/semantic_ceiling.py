@@ -54,6 +54,7 @@ from finishup.domain.reviewer_context import (
     ReviewerExchangeBudget,
     reviewer_token_budget,
 )
+from finishup.observability.logging import record_bounded_counts_without_raising
 from finishup.ports.privacy import MAX_MINIMIZED_DISCLOSURE_BYTES
 from finishup.ports.semantic import SemanticCase, SemanticCaseItem, reviewer_message_tokens
 from finishup.protocol.models import DataCategory
@@ -332,6 +333,16 @@ def plan_under_channel_ceiling(
     approved = primary_material_selection(
         selection, keep_timeline="prior-missing-for-assessment" in case.packet.timeline_item_ids
     )
+    dropped = tuple(
+        section for section in selection.sections if section not in set(approved.sections)
+    )
+    if dropped:
+        record_bounded_counts_without_raising(
+            component="semantic_composition",
+            operation="semantic_primary_material_narrowed",
+            outcome="narrowed",
+            counts={"semantic_sections_dropped": len(dropped)},
+        )
     rounds = 1
     protected = rebuild(approved)
     protected_size = _prepared_size(protected, admission, measure)

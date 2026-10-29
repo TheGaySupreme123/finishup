@@ -368,8 +368,12 @@ to reconsider it, even right after an earlier continuation: if the task says the
 dependency is recoverable, continue the work; if it is genuinely outside your control, follow the
 confirmation step that re-check gives you, then stop. A Stop also asks you once about findings you
 marked `acknowledged_not_done` that the review says the task itself requires
-(`finding_premise_disputed`): do that work unless it is genuinely impossible. If you cannot
-finish it, keep the working deliverable: acknowledgement never requires withdrawing or emptying it.
+(`finding_premise_disputed`): do that work unless it is genuinely impossible. If no output
+exists yet, write it. If you cannot finish it, keep the working deliverable: acknowledgement
+never requires withdrawing or emptying it. With conflicting inputs, pick a reading, write the
+requested output, and record the assumption. Review agreeing that a conflict exists is not
+permission to withhold. The only exceptions are an authority block, a missing credential, or a
+destructive action.
 FinishUP never asks at Stop whether a resolved obligation meets its acceptance criteria: an
 obligation it flags (a requested item never attempted, or evidence that is unlinked or only your
 own assertion) is named once in status and recorded on the receipt as a coverage limit. If the

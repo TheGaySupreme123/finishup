@@ -153,6 +153,12 @@ finish a substantial change and want a final independent review.
 **Stay local when** the edit is small or mechanical; the work is docs or formatting; tests or
 local checks already cover what changed; or you are reading or exploring.
 
+AI-powered review can check that a deliverable matches material it was shown. It cannot settle
+a hidden grader, a private specification, or a fact the packet does not carry. With conflicting
+inputs, pick a reading, write the requested output, and record the assumption. Review agreeing
+that a conflict exists is not permission to withhold. The only exceptions are an authority
+block, a missing credential, or a destructive action.
+
 **How.** Publish one `decision_recorded` 1.1.0 draft with `review_mode: "ai_powered"`.
 `statement` and `rationale` say why in one line each; `authority` is your own actor id (a
 placeholder below). Omit `event_id` and `occurred_at`: FinishUP fills them and names them in

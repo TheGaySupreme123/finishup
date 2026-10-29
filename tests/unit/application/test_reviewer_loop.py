@@ -446,6 +446,10 @@ _LOOP_DIRECTIVES = {
     "relisted_supplied_material": "never list what the packet or a read holds",
     "deferred_to_disclosure": "never stops you judging what the material shows",
     "delivery_risk_on_correct_work": "An input or service the task supplies is no risk",
+    "withheld_on_conflict": "Review agreeing that a conflict exists is not permission to withhold",
+    "unreachable_recommendation": (
+        "check that the visible interface in the packet can reach it"
+    ),
 }
 _ACCURACY_CASES = [
     case

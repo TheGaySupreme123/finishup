@@ -43,6 +43,8 @@ _MISS_TARGETS = {
     "delivery_risk_on_correct_work": {"environment"},
     "trusted_agent_validator": {"own_checks"},
     "adopted_agent_premise": {"blockers"},
+    "withheld_on_conflict": {"blockers"},
+    "unreachable_recommendation": {"blockers"},
 }
 
 
@@ -69,7 +71,7 @@ def _case_ids() -> list[str]:
 
 def test_the_set_shares_the_n6_schema_and_names_new_cases() -> None:
     assert _DOCUMENT["schema"] == "finishup.test.reviewer-accuracy-cases/1"
-    assert len(set(_case_ids())) == len(_CASES) == 4
+    assert len(set(_case_ids())) == len(_CASES) == 6
     assert not set(_case_ids()) & {cast(str, case["case"]) for case in _N6_CASES}
     # Every n7 miss had the decisive fact in the packet: the reviewer judged wrongly with it.
     assert all(case["decisive_material_in_packet"] == "yes" for case in _CASES)
