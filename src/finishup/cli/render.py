@@ -17,6 +17,7 @@ from finishup.domain.receipts import (
     check_time_change_gap_sentence,
     historical_gaps_from_wire,
     limitations_name_coordinator_failure,
+    privacy_block_sentence,
     review_deferred_before_first_edit,
     semantic_redacted_value_text,
 )
@@ -553,6 +554,15 @@ def render_human_check(result: CheckSuccessModel) -> str:
         for item in result.semantic_withheld_items:
             lines.append(f"- {item.item_id}: {_token(item.reason)}")
     lines.extend(_semantic_redacted_value_lines(result.semantic_redacted_values))
+    if result.semantic_status == "blocked_forbidden_data":
+        # Issue #1138: the refusal named as one, with its items, stage and class.
+        lines.append(
+            privacy_block_sentence(
+                _semantic_redacted_values(result.semantic_redacted_values),
+                skipped="semantic_review_skipped_privacy_block"
+                in tuple(result.coverage.known_gaps),
+            )
+        )
     if "semantic_review_skipped_insufficient_packet" in tuple(result.coverage.known_gaps):
         lines.append(
             "AI-powered review skipped: the reviewer twice in a row (or four times since the last "
@@ -1271,19 +1281,7 @@ def _receipt_review_mode_lines(document: Mapping[str, JsonValue]) -> list[str]:
 def _semantic_redacted_value_lines(items: Sequence[object]) -> list[str]:
     """PL2-1: item refs and line numbers, then the fixed agent line once; never a value."""
 
-    values: list[SemanticRedactedValue] = []
-    for item in items:
-        try:
-            if isinstance(item, SemanticRedactedValueModel):
-                values.append(
-                    SemanticRedactedValue(
-                        item.item_id, item.disposition, tuple(item.lines), item.source_ref
-                    )
-                )
-            else:
-                values.append(SemanticRedactedValue.from_wire(item))
-        except (TypeError, ValueError):
-            continue
+    values = _semantic_redacted_values(items)
     if not values:
         return []
     return [
@@ -1291,6 +1289,30 @@ def _semantic_redacted_value_lines(items: Sequence[object]) -> list[str]:
         *(f"- {semantic_redacted_value_text(value)}" for value in values),
         SEMANTIC_REDACTED_VALUES_AGENT_LINE,
     ]
+
+
+def _semantic_redacted_values(items: Sequence[object]) -> tuple[SemanticRedactedValue, ...]:
+    """The valid entries of a rendered list (models or wire objects); invalid ones are skipped."""
+
+    values: list[SemanticRedactedValue] = []
+    for item in items:
+        try:
+            if isinstance(item, SemanticRedactedValueModel):
+                values.append(
+                    SemanticRedactedValue(
+                        item.item_id,
+                        item.disposition,
+                        tuple(item.lines),
+                        item.source_ref,
+                        item.stage,
+                        item.match_class,
+                    )
+                )
+            else:
+                values.append(SemanticRedactedValue.from_wire(item))
+        except (TypeError, ValueError):
+            continue
+    return tuple(values)
 
 
 def _semantic_withheld_item_lines(document: Mapping[str, JsonValue]) -> list[str]:

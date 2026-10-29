@@ -1889,7 +1889,21 @@ Five further codes describe a review that did run but could not deliver everythi
 its `-part-NN` parts, not the source file; renderings say "of the captured item") and `source_ref` only
   when the catalogued ref is an opaque token. Never a value, offset or path. Carried, when present,
   by the check event (1.4.0), check result, `status view=operation` page and receipt document; every
-  rendering adds the fixed agent line once (`SEMANTIC_REDACTED_VALUES_AGENT_LINE`);
+  rendering adds the fixed agent line once (`SEMANTIC_REDACTED_VALUES_AGENT_LINE`). Issue #1138
+  adds the disposition `review_blocked` (unreleased shapes, in place): a `blocked_forbidden_data` /
+  `never_send_detected` refusal lists each item its matches sat in with the refusing scan `stage`
+  (`candidate`|`prepared_case`|`reviewer_exchange`) and the match's `match_class`
+  (`high_confidence`|`heuristic`); `review-packet` stands for a match no single item explains. Only
+  that disposition carries `stage` and `match_class`. The receipt's limitations section, the
+  compact receipt sentence, the CLI check rendering and the MCP check lead name the block as one
+  (`privacy_block_sentence`);
+- `semantic_review_skipped_privacy_block` — the newest check that asked for AI-powered review was
+  refused at the privacy boundary (`blocked_forbidden_data` / `never_send_detected`) and neither an
+  edit action nor agent-published evidence followed it (`kernel.review_round.
+  privacy_block_standing`), so this check records the same status and `review_blocked` items and
+  composes or sends nothing. A closing review after a routine check's refusal is scanned once more;
+  a closing review's own refusal stands. A review-scoped FinishUP limit, never agent work; it
+  weakens neither proof class;
 - `semantic_review_credential_heuristic_disabled` — the owner's privacy policy had the
   low-confidence credential heuristic turned off (`credential_heuristic: disabled`, issue #982), so
   values that only look like passwords or tokens were sent as written to the external reviewer;
@@ -4628,6 +4642,10 @@ retrievable by its recorded receipt ID and listable by `channel`, `provider_id`,
 (`semantic_check`, `observation_advice` or `credential_probe`; egress-receipt 1.1.0, ADR-009
 tb4n2 amendment), derived from its purpose and reserved structural item ids and omitted when not
 recognized, so a recurring blocked receipt can be traced to the operation that asked for it.
+A refusing scan (#1138) also names, in `secret_scan`, its `stage` (`reviewer_exchange` is the
+scan of the whole reviewer conversation, recorded as `prepared_case` before), its `match_class`
+(`high_confidence`|`heuristic`) and up to 16 opaque `match_item_ids` the matches sat in (none when
+no single item explains them; egress-receipt 1.1.0, ADR-009 #1138 amendment).
 A pre-dispatch size refusal's network receipt also carries `capacity_exceeded`
 (`scope`: `disclosure`|`excerpt`|`excerpt_total`; `unit`: `bytes`|`tokens`|`excerpts`; decimal
 `attempted` and `limit`; egress-receipt 1.1.0, ADR-009 #1129 amendment) beside its unchanged

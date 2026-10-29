@@ -132,6 +132,7 @@ _PACKET_LIMIT_CODES: Final = frozenset(
         "semantic_review_item_withheld",
         "semantic_review_value_redacted",
         "semantic_review_skipped_insufficient_packet",
+        "semantic_review_skipped_privacy_block",
         "semantic_review_context_withheld",
         "content_redacted",
         "content_unselected",

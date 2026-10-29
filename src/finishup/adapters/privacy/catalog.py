@@ -50,6 +50,7 @@ from finishup.domain.privacy import (
     RequestCommitment,
     ReviewContextProfile,
     ReviewSelectionPolicy,
+    ScanMatchClass,
     policy_field_omitted,
     review_selection_policy_schema_version,
     validate_admitted_input_roots,
@@ -361,6 +362,9 @@ def _receipt_common_from_json(source: dict[str, JsonValue]) -> _ReceiptCommon:
                 else PrivacyReason(cast(str, scan["not_run_reason"]))
             ),
             _credential_heuristic_from_json(scan.get("credential_heuristic"), allow_enforced=False),
+            # #1138: absent unless a scan refused; written only then.
+            cast(ScanMatchClass | None, scan.get("match_class")),
+            tuple(_strings(scan.get("match_item_ids") or [])),
         ),
         "withheld_item_ids": tuple(
             sorted(_strings(source.get("withheld_item_ids") or []), key=str.encode)

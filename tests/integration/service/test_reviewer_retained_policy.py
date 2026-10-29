@@ -98,4 +98,5 @@ async def test_an_exchange_under_another_policy_generation_is_refused_once_reads
     assert len(gateway.exchanges) == 1
     assert result.status is SemanticStatus.BLOCKED_BY_POLICY
     assert result.reviewer is not None and result.reviewer.ended == "reviewer_exchange_not_sent"
-    assert result.reviewer.exchanges == 2 and result.reviewer.reads[0].disclosure is None
+    # #1138: the refused second exchange was never sent, so only the first one counts.
+    assert result.reviewer.exchanges == 1 and result.reviewer.reads[0].disclosure is None

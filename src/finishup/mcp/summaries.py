@@ -954,10 +954,36 @@ def _semantic_redacted_value_tokens(source: Mapping[str, JsonValue]) -> tuple[st
         except (TypeError, ValueError):
             continue
         ref = item.item_id if item.source_ref is None else item.source_ref
-        what = "replaced" if item.disposition == "value_replaced" else "item withheld"
+        what = (
+            "replaced"
+            if item.disposition == "value_replaced"
+            else "item withheld"
+            if item.disposition == "item_withheld"
+            # #1138: this item's match stopped the whole review before anything was sent.
+            else f"blocked review ({item.match_class}, {item.stage})"
+        )
         lines = "L" + ",".join(str(line) for line in item.lines) if item.lines else "L?"
         result.append(f"{ref} {what} {lines}")
     return tuple(result)
+
+
+def _review_blocked_tokens(source: Mapping[str, JsonValue]) -> tuple[str, ...]:
+    """#1138: the items whose match stopped the review, with class and stage; never a value."""
+
+    raw_items = source.get("semantic_redacted_values")
+    if not isinstance(raw_items, (list, tuple)):
+        return ()
+    result: list[str] = []
+    for raw in raw_items:
+        try:
+            item = SemanticRedactedValue.from_wire(raw)
+        except (TypeError, ValueError):
+            continue
+        if item.disposition != "review_blocked":
+            continue
+        ref = item.item_id if item.source_ref is None else item.source_ref
+        result.append(f"{ref} ({item.match_class} match, {item.stage} scan)")
+    return tuple(result[:4])
 
 
 def _semantic_redacted_values_part(source: Mapping[str, JsonValue]) -> Part | None:
@@ -1613,6 +1639,24 @@ def _check_lead_variants(
             f"AI-powered review skipped (verify it yourself); local check verdict: {verdict}; "
             f"{counts}",
             f"AI-powered review skipped; local check verdict: {verdict};",
+        )
+    if status == "blocked_forbidden_data":
+        # Issue #1138: name the privacy-boundary refusal as one, with its items, and say that
+        # sending the same content again will not help.
+        blocked = _review_blocked_tokens(source)
+        named = f" by {', '.join(blocked)}" if blocked else ""
+        skipped = "semantic_review_skipped_privacy_block" in _safe_gap_codes(source)
+        resend = (
+            "not sent again: nothing changed since that refusal"
+            if skipped
+            else "sending the same content again will not help"
+        )
+        return (
+            f"AI-powered review blocked at the privacy boundary{named} before anything was "
+            f"sent; {resend}; local check verdict: {verdict}; {counts}",
+            f"AI-powered review blocked at the privacy boundary{named}; {resend}; "
+            f"local check verdict: {verdict};",
+            f"AI-powered review blocked at the privacy boundary; local check verdict: {verdict};",
         )
     if scoped_local_verdict:
         return (

@@ -269,7 +269,7 @@ from finishup.protocol.models import (
     StatusVersionSliceModel,
 )
 from finishup.protocol.publish_boilerplate import ServerFilled, server_filled_from_json
-from finishup.protocol.redacted_values import SemanticRedactedValue
+from finishup.protocol.redacted_values import SemanticRedactedValue, review_blocked_recorded
 from finishup.version import build_status_version_slice_facts
 
 __all__ = ["MemoryLedgerAdapter", "MemoryLedgerState", "compact_status_coverage"]
@@ -4571,6 +4571,8 @@ class MemoryLedgerAdapter:
                 or correctness_advisories
                 or check_payload.semantic_reason is SemanticReason.ROUND_LIMIT_UNASSESSABLE
                 or review_manifest_offers_test_check(check_payload.review_input_manifest)
+                # #1138: only 1.6.0 admits a ``review_blocked`` item.
+                or review_blocked_recorded(check_payload.semantic_redacted_values)
                 else DEFERRED_CHECK_EVENT_SCHEMA_VERSION
                 if check_payload.semantic_reason is SemanticReason.DEFERRED_BEFORE_FIRST_EDIT
                 else REVIEW_CHECK_EVENT_SCHEMA_VERSION

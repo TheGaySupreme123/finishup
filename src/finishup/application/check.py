@@ -96,6 +96,7 @@ from finishup.domain.receipts import (
     SEMANTIC_REVIEW_NOT_CONFIGURED_GAP,
     SEMANTIC_REVIEW_REFS_REDUCED_GAP,
     SEMANTIC_REVIEW_SKIPPED_INSUFFICIENT_PACKET_GAP,
+    SEMANTIC_REVIEW_SKIPPED_PRIVACY_BLOCK_GAP,
     SEMANTIC_REVIEW_SNIPPET_INVALID_GAP,
     SEMANTIC_REVIEW_VALUE_REDACTED_GAP,
     TASK_INPUT_BASELINE_UNAVAILABLE_GAP,
@@ -246,7 +247,11 @@ from finishup.kernel.review_mode import (
     ConversationReviewMode,
     conversation_review_mode,
 )
-from finishup.kernel.review_round import review_round_stopped
+from finishup.kernel.review_round import (
+    PrivacyBlockStanding,
+    privacy_block_standing,
+    review_round_stopped,
+)
 from finishup.kernel.task_facts import (
     DECLARED_OUTPUT_NOT_REVIEWABLE_GAP,
     DELIVERABLE_REFERENCES_AMBIGUOUS_NAME_GAP,
@@ -1978,6 +1983,11 @@ async def _review_skip_gaps(
         if await _review_job_recorded(runtime, frozen):
             return frozenset()
         workspace_changed = None
+    if (
+        await _privacy_block_standing_at(runtime, request, frozen, route_profile=route_profile)
+        is not None
+    ):
+        return frozenset({SEMANTIC_REVIEW_SKIPPED_PRIVACY_BLOCK_GAP})
     if _review_deferred_before_first_edit(
         request,
         runtime,
@@ -1987,6 +1997,48 @@ async def _review_skip_gaps(
     ):
         return frozenset({SEMANTIC_REVIEW_DEFERRED_BEFORE_FIRST_EDIT_GAP})
     return frozenset()
+
+
+async def _privacy_block_standing_at(
+    runtime: TaskRuntime,
+    request: CheckRequest,
+    frozen: FrozenCase,
+    *,
+    route_profile: Literal["policy", "strict"],
+) -> PrivacyBlockStanding | None:
+    """The unchanged privacy-boundary refusal this check carries instead of resending (#1138).
+
+    ``privacy_block_standing`` over the frozen ledger prefix, for a check that would otherwise
+    dispatch a review. A closing review after a routine check's refusal still runs once, so the
+    final state is scanned before the receipt; a closing review's own refusal stands. A check
+    already waiting on a review keeps it. Fails open to a review.
+    """
+
+    if (
+        request.mode == "deterministic_only"
+        or route_profile != "policy"
+        or RuntimeCapability.SEMANTIC not in runtime.capabilities
+        or frozen.lease.phase is CheckPhase.SEMANTIC_WAIT
+    ):
+        return None
+    try:
+        records = tuple(
+            [
+                record
+                async for record in runtime.ledger.load_events(
+                    runtime.session_id, through=frozen.case.frontier.sequence
+                )
+            ]
+        )
+    except Exception as exc:
+        record_unexpected_exception_without_raising(
+            exc, component="check", operation="privacy_block_read", request_id=request.request_id
+        )
+        return None
+    standing = privacy_block_standing(records)
+    if standing is None or (request.final_review and not standing.final_review):
+        return None
+    return standing
 
 
 async def _review_job_recorded(runtime: TaskRuntime, frozen: FrozenCase) -> bool:
@@ -6275,7 +6327,21 @@ async def _semantic_evaluation(
     task_fact_gaps: tuple[str, ...] = (),
     round_stopped: bool = False,
     deferred_before_first_edit: bool = False,
+    privacy_block: PrivacyBlockStanding | None = None,
 ) -> FinalSemanticEvaluation:
+    if privacy_block is not None:
+        # Issue #1138: the newest review was refused at the privacy boundary and nothing that
+        # could change the refused content followed. The same refusal stands; nothing is composed
+        # or sent, and the refused items travel with it (``semantic_review_skipped_privacy_block``).
+        return FinalSemanticEvaluation(
+            SemanticStatus.BLOCKED_FORBIDDEN_DATA,
+            SemanticReason.NEVER_SEND_DETECTED,
+            semantic_redacted_values=tuple(
+                item
+                for item in privacy_block.redacted_values
+                if item.disposition == "review_blocked"
+            ),
+        )
     skipped = _skipped_review_reason(
         request,
         round_stopped=round_stopped,
@@ -6560,6 +6626,7 @@ async def _semantic_evaluation_with_follow_up(
     deferred_before_first_edit: bool,
     deterministic_output_gaps: Iterable[str],
     output_absent: bool,
+    privacy_block_skipped: bool = False,
 ) -> FinalSemanticEvaluation:
     """The check's AI-powered review: one round; the old in-check follow-up is gone (#1118).
 
@@ -6591,6 +6658,12 @@ async def _semantic_evaluation_with_follow_up(
         round_stopped=round_stopped,
         deferred_before_first_edit=deferred_before_first_edit,
         task_fact_gaps=task_fact_gaps,
+        # Issue #1138: an unchanged privacy-boundary refusal is carried, never sent again.
+        privacy_block=(
+            await _privacy_block_standing_at(runtime, request, frozen, route_profile=route_profile)
+            if privacy_block_skipped
+            else None
+        ),
     )
 
 
@@ -7007,6 +7080,7 @@ async def execute_check_commit(
             deferred_before_first_edit=deferred_before_first_edit,
             deterministic_output_gaps=deterministic_output_gaps,
             output_absent=output_absent,
+            privacy_block_skipped=SEMANTIC_REVIEW_SKIPPED_PRIVACY_BLOCK_GAP in skip_gaps,
         )
         # Durable AI-powered review attempts may renew the check lease (TTL 60s vs timeout up to 300s).
         if semantic_result.operation_lease is not None:

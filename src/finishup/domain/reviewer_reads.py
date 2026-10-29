@@ -208,7 +208,9 @@ def reviewer_record_from_wire(value: object) -> ReviewerRecord | None:
 def render_reviewer_lines(record: ReviewerRecord | None) -> tuple[str, ...]:
     """Plain lines for text surfaces: one summary line, then one line per read."""
 
-    if record is None:
+    if record is None or (record.exchanges == 0 and not record.reads):
+        # #1138: nothing was sent and nothing read (a review refused before its first exchange
+        # left); the check's own outcome says why, so no "model exchange" line is shown.
         return ()
     used = sum(read.budget_used for read in record.reads)
     total = sum(read.result_bytes for read in record.reads)

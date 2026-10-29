@@ -431,7 +431,12 @@ def _record(
             )
         )
     ended = None if outcome.status == "final" else outcome.reason
-    return ReviewerRecord(len(results), tuple(reads), ended, cleanup), paths
+    # #1138: an exchange refused before dispatch was never sent; count only those that were.
+    sent = sum(
+        type(result) is SemanticEgressReply or type(result) is SemanticEgressProviderOutcome
+        for result in results
+    )
+    return ReviewerRecord(sent, tuple(reads), ended, cleanup), paths
 
 
 def _read_call(role: str, text: str) -> int | None:

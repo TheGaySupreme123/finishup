@@ -1663,3 +1663,42 @@ check's last mapping arm turned any unrecognised policy refusal into `network_eg
   `network_egress_denied` unless its reason is `policy_denied` without a measured size; an
   unrecognised reason is a FinishUP fault (`coordinator_failure`), never a network denial.
 - Nothing about what is sent, the bounds themselves, consent, or the scanner changes.
+
+## Privacy-boundary refusals are named and not resent unchanged (*Amended 2026-10-29, #1138*)
+
+**Context.** In the TB4 full-sol run every AI-powered review of two tasks (25 reviews, 7 of them
+`semantic_required`) was refused before dispatch as `blocked_forbidden_data` /
+`never_send_detected`: FinishUP's own `[withheld-by-yoetz:possible-credential]` placeholder was
+re-detected once the reviewer conversation (#1118) nested the packet a second time. The privacy
+receipt said `prepared_case` with a hard-coded `match_count` of 1 and no item, the final receipt said
+only that the review was not run plus "1 model exchange" although nothing was sent, and every later
+check sent the same content to be refused the same way (15 repeats). The scanner and what is sent are
+the privacy workstream's (#1248, P-D1/P-D2); this amendment fixes only the records.
+
+**Decision.**
+
+- The scan of the whole reviewer conversation is its own receipt stage, `reviewer_exchange`. A
+  refusing scan's receipt (egress-receipt 1.1.0, unreleased, in place) names in `secret_scan` the
+  matches' `match_class` (`high_confidence` when a high-confidence detector also matches, else
+  `heuristic`), its real `match_count`, and up to 16 opaque `match_item_ids`. The items are found by
+  scanning each packet row's own content encoded as deeply as the refused bytes carry it (the packet
+  string, or that string inside the conversation); a classification-time refusal names the items
+  with a concrete finding. This only reads the scanner's answers: the whole-byte scans decide the
+  refusal exactly as before, and nothing is sent.
+- The check carries the same facts as `review_blocked` entries in `semantic_redacted_values`, with
+  `stage` and `match_class` (`review-packet` when no single item explains the match), on the check
+  event, check result, `status view=operation` and the receipt document. The receipt's limitations
+  section, the compact receipt sentence, the CLI and the MCP check lead name the refusal as a privacy
+  block and say that sending the same content again will not help.
+- A conversation that sent nothing counts no model exchange, and its reviewer line is dropped.
+- No unchanged re-dispatch: when the newest check that asked for AI-powered review recorded that
+  refusal and no edit action or agent-published evidence followed, the next check records the same
+  status and items with `semantic_review_skipped_privacy_block` and composes, reserves and sends
+  nothing. Hook-captured output does not end it, since the refused item stays in the case. A closing
+  review after a routine check's refusal is scanned once more, so the final state is checked before
+  the receipt; a closing review's own refusal stands. A privacy-policy change does not end it by
+  itself (the policy is not in the task ledger); the next edit does. Known limit: a write made only
+  through a shell command records no edit action, so it does not end the standing either.
+- The agent guidance and the usage page no longer promise that only a high-confidence credential
+  blocks the whole review: they say which matches do today. #1248 owns narrowing that.
+- Service-side and identical on Codex, Claude Code and Cursor.

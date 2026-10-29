@@ -3779,12 +3779,15 @@ class SemanticRedactedValueModel(_ClosedModel):
     opaque token, the disposition, and 1-based line numbers in the item's own text. Never values.
     """
 
-    optional_non_null_fields = frozenset({"source_ref"})
+    optional_non_null_fields = frozenset({"source_ref", "stage", "match_class"})
 
     item_id: OpaqueItemId
-    disposition: Literal["item_withheld", "value_replaced"]
+    disposition: Literal["item_withheld", "review_blocked", "value_replaced"]
     lines: tuple[Annotated[int, Field(strict=True, ge=1, le=MAX_SEMANTIC_REDACTED_VALUE_LINE)], ...]
     source_ref: OpaqueItemId | None = None
+    # #1138: only on ``review_blocked``: the refusing privacy scan stage and the match's class.
+    stage: Literal["candidate", "prepared_case", "reviewer_exchange"] | None = None
+    match_class: Literal["heuristic", "high_confidence"] | None = None
 
     @model_validator(mode="after")
     def _validate_lines(self) -> SemanticRedactedValueModel:
@@ -3792,6 +3795,9 @@ class SemanticRedactedValueModel(_ClosedModel):
             sorted(set(self.lines))
         ):
             raise ValueError("semantic_redacted_value_lines_invalid")
+        blocked = self.disposition == "review_blocked"
+        if blocked != (self.stage is not None) or blocked != (self.match_class is not None):
+            raise ValueError("semantic_redacted_value_block_invalid")
         return self
 
 
@@ -8296,7 +8302,7 @@ _CHECK_STRUCTURAL_POINTERS: Final = (
     )
     + _prefix_leaf_patterns(
         "/semantic_redacted_values/*",
-        ("disposition", "item_id", "lines/*", "source_ref"),
+        ("disposition", "item_id", "lines/*", "match_class", "source_ref", "stage"),
     )
     + _prefix_leaf_patterns("/review_input_manifest", _REVIEW_INPUT_MANIFEST_LEAVES)
     + _prefix_leaf_patterns(
@@ -9159,7 +9165,9 @@ _STATUS_OPERATION_STRUCTURAL_POINTERS: Final = (
         "/page/semantic_redacted_values/*/disposition",
         "/page/semantic_redacted_values/*/item_id",
         "/page/semantic_redacted_values/*/lines/*",
+        "/page/semantic_redacted_values/*/match_class",
         "/page/semantic_redacted_values/*/source_ref",
+        "/page/semantic_redacted_values/*/stage",
         "/page/state",
         "/page/subject_frontier",
     )
@@ -9383,7 +9391,7 @@ _RECEIPT_STRUCTURAL_POINTERS: Final = (
     )
     + _prefix_leaf_patterns(
         "/document/semantic_redacted_values/*",
-        ("disposition", "item_id", "lines/*", "source_ref"),
+        ("disposition", "item_id", "lines/*", "match_class", "source_ref", "stage"),
     )
     + _prefix_leaf_patterns(
         "/document/obligations/*",
@@ -9775,7 +9783,7 @@ def _build_result_leaf_rules() -> tuple[_ResultLeafRule, ...]:
         ):
             raise RuntimeError("invalid_result_leaf_classification")
     if (
-        len(result) != 2079
+        len(result) != 2085
     ):  # ... #1017 +3, #1027 +5, tb4n3 LO +9, W2-A +46, LF +34 (fact_lineage), W2-B +2,
         # tb4n4 #1044 +7 (closure_readiness.undeclared_references), #1048 +38 (inspection),
         # #1047 +2 (follow_up_round), tb4n5 +3 (publish action_notices),
@@ -9799,6 +9807,7 @@ def _build_result_leaf_rules() -> tuple[_ResultLeafRule, ...]:
         # #1219 +10 witness checks/expected_from (4 structural and 1 content leaf, on status
         # coverage and the receipt document).
         # #1220 +4 review_input_manifest test_check_offered/test_check_digests (check, status).
+        # #1138 +6 semantic_redacted_values stage/match_class (check, status, receipt document).
         raise RuntimeError("incomplete_result_leaf_registry")
     return result
 
