@@ -671,7 +671,9 @@ channel limits the longer read guidance leaves room for two reads that return co
 three.
 Each further turn of the conversation is sent with its own privacy
 check and receipt, and the whole conversation, packet and reads included, must fit your channel
-limits: with tight limits the reviewer gets fewer reads or none. If the packet cannot be made to
+limits: with tight limits the reviewer gets fewer reads or none. When a read the reviewer asks for
+has no room left, FinishUP does not serve it and asks for the reviewer's verdict in the same turn;
+the review's record says the read was not served. If the packet cannot be made to
 fit your channel's byte limit, or the conversation the 256 KiB a single send may carry, nothing is
 sent and the check reports `case_capacity_exceeded`, not a network denial: your privacy settings
 did not block it. The privacy receipt still lists that turn as blocked with nothing sent. A check over a

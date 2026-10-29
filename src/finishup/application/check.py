@@ -58,6 +58,7 @@ from finishup.domain.findings import (
     FindingOrigin,
     PriorFindingVerdictRecord,
     RankedFindings,
+    RuntimeTokenUsage,
     SemanticProvenance,
     finding_demands_work,
     finding_from_json,
@@ -2364,6 +2365,9 @@ class FinalSemanticEvaluation:
     # Bounded structural attempt accounting reconstructed from durable rows when a job ran.
     # Not part of the frozen public check-result wire; owner recovery reads the ledger.
     attempt_accounting: object | None = None
+    # #1242: provider usage of a sent exchange whose review then ended with no provenance (an
+    # unsent read continuation over capacity). Only the durable attempt row reads it.
+    attempt_token_usage: RuntimeTokenUsage | None = None
     # When the durable AI-powered review phase renewed the check operation lease (lease TTL is 60s while
     # timeout_seconds may be longer), later phase advance / commit must use this CAS fence.
     operation_lease: OperationLease | None = None

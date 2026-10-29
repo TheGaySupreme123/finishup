@@ -2650,7 +2650,9 @@ credential probe keep their one-shot dispatch; no check uses it.
   needs, measured as the exchange encodes the result, escaping included. A result over that room
   keeps the longest head that fits, measured. A read is offered only while 2 KiB of that room is
   left (an ordinary read action and a result without data); an action whose own bytes leave less
-  than 1 KiB ends the review `read_limit`, unread and unsent. The ceiling here is the exchange
+  than 1 KiB is not served, and the same exchange asks for the final judgment instead (*corrected
+  2026-10-29, #1242*: this ending was `case_capacity_exceeded` with no verdict, never `read_limit`;
+  see the amendment of that date). The ceiling here is the exchange
   budget below, never above what one prepared disclosure carries. Planning measures the packet in
   its largest disclosed shape, credential-like values replaced (#1230). A first exchange that still
   outgrows it has its lowest-ranked excerpts left out whole at disclosure (#1230, ADR-009
@@ -2795,7 +2797,9 @@ credential probe keep their one-shot dispatch; no check uses it.
   outcome. Otherwise the loop's reason maps to closed results: `format_invalid`, `read_limit` and
   `turn_limit` to `invalid`, `deadline` to `timeout`, `authorization_changed` to blocked by policy,
   and an earlier run of the job, an uncaptured step or a lost lease to `outcome_unknown`. A valid
-  action that leaves less than the minimum read-envelope room ends `case_capacity_exceeded`,
+  action that leaves less than the minimum read-envelope room is not served and the same exchange
+  asks for the final judgment (#1242); only an action that outgrows even the room kept for the
+  notices ends `case_capacity_exceeded`,
   mapped through the existing case-capacity result before reserving or reading anything; genuine
   read-count violations still map to `invalid`. The capacity counters in this path describe the
   minimum action-plus-envelope requirement and the exchange allowance remaining. The
@@ -3029,7 +3033,7 @@ At the minimal policy (4,096 tokens, a 16 KiB exchange) a review therefore fits 
 where it fitted three, and a refusal plus one content read where it fitted a refusal plus two; the
 read it can no longer afford takes the final-phase repair and the review still concludes. The
 existing #1118 rule that a read action leaving its exchange no room for even an empty result ends
-the review `case_capacity_exceeded` is also reached sooner there: a long absolute-path action
+the review (since #1242: asks for the verdict without that read) is also reached sooner there: a long absolute-path action
 after a corrected refusal can now hit it (the read offer is still measured from the last sent
 exchange, not the one the action will travel in). The shipped default ceilings are unaffected.
 Refusals keep their bytes counted. This is accepted for the clearer selectors;
@@ -3761,3 +3765,52 @@ the loop instruction (unchanged, 7,627 of 7,639 bytes), and it never rides a cha
 than the minimal policy's (#1173): there its bytes came out of the room the first read needs, so a
 closing review whose reviewer read once ended `case_capacity_exceeded`. There the receipt's
 `proxy: none chosen` line still stands. It changes no finding state and no verdict.
+## Amendment — 2026-10-29: a read with no room asks for the verdict instead of ending with none (#1242, #1135)
+
+Tracked as step G7 in #1247. In the TB4 full run, three closing reviews of long tasks were sent,
+answered, and then discarded with `case_capacity_exceeded` and no verdict. The reviewer's first
+reply asked for a read, as 296 of 300 completed reviews do, and the read's own action left its
+exchange less than an empty result needs. The first exchange had been fitted at disclosure to
+within about 300 estimated tokens of the exchange limit, spending the growth reserve later
+exchanges need. Each loss cost about 127K provider tokens, and the attempt row recorded none of
+them.
+
+- **Ask for the verdict.** When a read's action still fits beside the notices every read keeps
+  room for, but leaves less than an empty result needs, the read is not served. The same exchange
+  carries the notice `FinishUP: read not served, no room left. Return final_judgment now.`, which is
+  no longer than the final-phase notice, so it uses that notice's room. The final phase then runs
+  as before; a read returned there takes the one format repair. The review record's `ended` is
+  `read_not_served_no_room` beside a final judgment, and every text rendering says "a requested
+  read was not served (no room left), judged without it". A judgment given without that read is
+  final, labelled with the missing read. Only an action that outgrows even that room still ends
+  `case_capacity_exceeded`, unread and unsent, as before.
+- **Keep the growth reserve.** The disclosure-time fit (#1230) now first fits a reviewer
+  conversation's first exchange below its route budget's first-exchange bounds: the byte limit
+  less the 8 KiB `REVIEWER_FRAME_BYTES` frame, and `first_token_limit`, which keeps
+  `GROWTH_RESERVE_TOKENS`. That is the bound ceiling planning already plans against. When those
+  bounds cannot be met (the excess is fixed material or the change), it fits to the exchange limit
+  itself, as before, and the diagnostic counts `semantic_first_exchange_frame_unkept`. It never
+  refuses a packet the limit admits.
+- **The planner's verdict is recorded.** Whether ceiling planning kept the frame is no longer
+  discarded: `semantic_case_built` counts `semantic_first_exchange_frame_unplanned`. Reads stay
+  offered on such a review. At small channel limits (the minimal policy's 16 KiB exchange) planning
+  can never keep 8 KiB, yet the measured room after the first exchange still serves a read or two.
+  Each later offer already needs 2 KiB of measured room. The first turn, whose room is unknown
+  until its exchange is sent, offers a read, and a read with no room is now asked for the verdict
+  instead. A read-free first turn on the planner's verdict alone was tried and rejected: it cost
+  every small-channel review its reads.
+- **Records.** An unsent read continuation that ends the review after an exchange was sent keeps
+  that exchange's provider usage on the durable attempt row, where it was null. The
+  `semantic_capacity_exceeded` recovery directive no longer says "no provider attempt was made",
+  which was false on this path. It now tells the agent that an unchanged re-check meets the same
+  limit, and to narrow the scope instead.
+
+No wire schema changes: `ended` was already a closed token. The behaviour is service-side and the
+same for Codex, Claude Code and Cursor.
+
+Verification: `tests/unit/application/test_reviewer_loop.py` (served-without-read, the notice size
+and the capacity ending), `tests/integration/service/test_reviewer_oversize_first_exchange.py`
+(the service records a concluded, labelled review),
+`tests/unit/privacy/test_disclosure_capacity_fit.py` (bytes and tokens keep the frame; the
+existing fits still fall back to the limit) and `tests/unit/application/test_semantic_attempts.py`
+(usage on the attempt row).

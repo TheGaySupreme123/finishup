@@ -53,7 +53,7 @@ from finishup.domain.privacy import (
     ProviderBinding,
 )
 from finishup.domain.reviewer_context import ReviewerExchangeBudget
-from finishup.domain.reviewer_reads import ReviewerRead, ReviewerRecord
+from finishup.domain.reviewer_reads import READ_NOT_SERVED_ENDING, ReviewerRead, ReviewerRecord
 from finishup.observability.logging import record_bounded_counts_without_raising
 from finishup.ports.semantic import (
     Deadline,
@@ -320,11 +320,16 @@ def _terminal(
 
     last = results[-1] if results else None
     if outcome.reason == "case_capacity_exceeded" and outcome.capacity is not None:
+        evidence = (
+            last.result.provenance.runtime_evidence if type(last) is SemanticEgressReply else None
+        )
         return SemanticEgressBlocked(
             request_id,
             PrivacyOutcome.BLOCKED_BY_POLICY,
             PrivacyReason.POLICY_DENIED,
             capacity=outcome.capacity,
+            # #1242: the exchange already sent was a paid model turn; keep its usage.
+            token_usage=None if evidence is None else evidence.token_usage,
         )
     if type(last) is SemanticEgressReply:
         provenance = last.result.provenance
@@ -394,8 +399,8 @@ def _record(
         if turn.role != "assistant" or nxt.role != "user":
             continue
         reply = json.loads(turn.content)["reply"]
-        if "action" not in reply:
-            continue
+        if "action" not in reply or _read_call(nxt.role, nxt.content) is None:
+            continue  # the final judgment, or a read left unserved for room (#1242)
         envelope = json.loads(nxt.content)
         call = cast(int, envelope["call_index"])
         data = envelope.get("data")
@@ -430,7 +435,11 @@ def _record(
                 disclosure=_receipt(carrier),
             )
         )
-    ended = None if outcome.status == "final" else outcome.reason
+    ended = (
+        (READ_NOT_SERVED_ENDING if outcome.read_not_served else None)
+        if outcome.status == "final"
+        else outcome.reason
+    )
     return ReviewerRecord(len(results), tuple(reads), ended, cleanup), paths
 
 

@@ -1570,7 +1570,10 @@ the code repeats. A newly reduced scope or a `truncated_payload` gap still block
 has not been run yet; owner #904. `failed/case_capacity_exceeded` and
 `semantic_case_capacity_exceeded` mean the required packet, or since #1118 the rendered review
 disclosure (the channel's byte ceiling or the reviewer exchange budget: 262,144 bytes, or on the Codex subscription route with `gpt-6.1-sol` 524,288 bytes and 169,144 estimated model tokens; ADR-006), could not fit, and
-nothing was sent. Select a smaller claim/obligation scope for a new check. Shorter prose alone need
+nothing more was sent. A review whose read continuation ran out of room after its first exchange
+had already been sent (#1135) now asks for the verdict without that read instead, labelled "a
+requested read was not served" (#1242); `case_capacity_exceeded` there means even the read's own
+action did not fit, and an unchanged re-check meets the same limit. Select a smaller claim/obligation scope for a new check. Shorter prose alone need
 not fix structural capacity. A disclosure-capacity refusal has a `blocked_by_policy` /
 `policy_denied` privacy receipt with `final_bytes` 0, and `finishup service diagnostics
 --request-id req_…` shows `semantic_disclosure_capacity_exceeded` with the attempted size and the

@@ -38,6 +38,7 @@ from finishup.application.reviewer_broker import ReadElement, ReadRoot, Reviewer
 from finishup.application.reviewer_loop import (
     FINAL_FORMAT_ERROR,
     FINAL_PHASE,
+    READ_NOT_SERVED,
     ReviewerLoop,
     ReviewerModelError,
     Turn,
@@ -315,12 +316,45 @@ async def test_native_directory_inspection_exhaustion_is_explicit(
 
 
 @pytest.mark.anyio
-async def test_a_large_valid_action_ends_as_capacity_before_reserving_a_read() -> None:
-    # Escaping can make a valid action exceed the ordinary action allowance.
+async def test_a_large_valid_action_that_still_fits_asks_for_the_verdict_unread() -> None:
+    """#1242: a read whose own action leaves no room for its result is not served.
+
+    Escaping can make a valid action exceed the ordinary action allowance. The action still fits
+    beside the notices every read keeps room for, so the same exchange asks for the final
+    judgment: the review concludes, labelled, instead of ending with no verdict.
+    """
+
+    loop, broker, model, _ = _setup(_text("w1", "\\" * 509), _FINAL)
+    # The 2,206-byte action fits; what it leaves is less than an empty result needs.
+    broker._exchange_room = lambda: 2300  # pyright: ignore[reportPrivateUsage]
+    outcome = await loop.run()
+    assert outcome.status == "final" and outcome.judgment is not None
+    assert outcome.reason is None and outcome.read_not_served
+    assert broker.calls == 0 and len(model.calls) == 2
+    # Nothing was read; the unserved action and the notice travel in the final exchange.
+    assert outcome.history[-2] == Turn("user", READ_NOT_SERVED)
+    assert outcome.history[-3].role == "assistant"
+    assert await broker.store.usage() == (2, 0)
+    # The final turn offers no read: a read there is that phase's format error.
+    assert "final_judgment" in json.dumps(model.calls[1][1])
+
+
+def test_the_read_not_served_notice_fits_the_room_kept_for_the_final_notice() -> None:
+    from finishup.ports.semantic import reviewer_message_bytes, reviewer_message_tokens
+
+    assert reviewer_message_bytes("user", READ_NOT_SERVED) <= reviewer_message_bytes(
+        "user", FINAL_PHASE
+    )
+    assert reviewer_message_tokens(READ_NOT_SERVED) <= reviewer_message_tokens(FINAL_PHASE)
+
+
+@pytest.mark.anyio
+async def test_a_valid_action_that_outgrows_even_the_notice_room_ends_as_capacity() -> None:
     loop, broker, model, _ = _setup(_text("w1", "\\" * 509))
     broker._exchange_room = lambda: 2048  # pyright: ignore[reportPrivateUsage]
     outcome = await loop.run()
     assert outcome.reason == "case_capacity_exceeded" and outcome.judgment is None
+    assert not outcome.read_not_served
     assert outcome.capacity is not None and outcome.capacity[0] > outcome.capacity[1]
     assert broker.calls == 0 and len(model.calls) == 1
     assert await broker.store.usage() == (1, 0)
