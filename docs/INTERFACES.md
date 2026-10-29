@@ -10321,11 +10321,15 @@ follow-up loop is deleted.
   `(category, bytes, input_root)` tuples. `history_roots` lists every outside root the conversation
   holds bytes from. With `exchange_room` (#1118), `reads_allowed()` also needs `MIN_ROOM +
   READ_ACTION_ROOM` (2 KiB) of it; `execute` subtracts the `reply` turn's bytes and raises
-  `ReadExchangeFull(required, available)` before reserving when less than `MIN_ROOM` is left.
-  The loop ends `case_capacity_exceeded`, carrying those minimum required and available exchange
-  bytes through `SemanticEgressBlocked.capacity` to the existing capacity outcome. It never
-  becomes `response_schema_invalid`; a read after the count cap takes the one format repair
-  (#1173) and, after that repair, ends `read_limit`.
+  `ReadExchangeFull(required, available, verdict_fits)` before reserving when less than
+  `MIN_ROOM` is left. With `verdict_fits` (the read's action still fits beside the notices every
+  read keeps room for, #1242) the loop does not serve the read: the same exchange carries
+  `READ_NOT_SERVED` and the final phase runs, and the review record ends
+  `read_not_served_no_room` beside its final judgment. Otherwise the loop ends
+  `case_capacity_exceeded`, carrying those minimum required and available exchange bytes
+  through `SemanticEgressBlocked.capacity` to the existing capacity outcome. Neither becomes
+  `response_schema_invalid`; a read after the count cap takes the one format repair (#1173) and,
+  after that repair, ends `read_limit`.
   A result over its room keeps the longest head that fits, measured.
 - Steps: `ports.semantic.ReviewStepStore.reserve(kind, ordinal, selector)`, `capture(kind, ordinal,
   result)`, `usage() -> (steps, uncaptured)`; `ReviewStepRefused` on a repeated step or a lost lease.

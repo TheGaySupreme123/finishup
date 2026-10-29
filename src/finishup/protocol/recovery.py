@@ -531,7 +531,7 @@ _DIRECTIVES: Final = (
     RecoveryDirective(
         token="semantic_capacity_exceeded",
         directive=(
-            "No usable review ran. case_capacity_exceeded: it outgrew the exchange limit, as an "
+            "No usable review ran. case_capacity_exceeded: it outgrew an approved bound, as an "
             "unchanged re-check would; narrow the claim or obligation scope. "
             "provider_quota_exhausted: wait for quota. Then check once under a NEW request_id."
         ),
