@@ -122,6 +122,7 @@ from finishup.kernel.claims import (
     result_is_relevant_to_claim,
 )
 from finishup.kernel.closure_class import (
+    ACKNOWLEDGED_NOT_DONE_BASES,
     FINDING_BASES,
     FindingClosure,
     FindingClosureClass,
@@ -1422,13 +1423,7 @@ def _context_closures(
 # kind the classifier leaves out (a process note: ``ledger_stale_or_incomplete``,
 # ``decision_needed``) is never listed as settled while the conclusion ignores it.
 _TERMINAL_BASES: Final = (
-    frozenset(
-        {
-            "acknowledged_not_done_requirement",
-            "acknowledged_not_done_bookkeeping",
-            "limitation_acknowledged_not_done",
-        }
-    ),
+    ACKNOWLEDGED_NOT_DONE_BASES,
     frozenset({"rejection_accepted"}),
     frozenset({"self_verified"}),
     frozenset({"disputed_after_rebuttal"}),

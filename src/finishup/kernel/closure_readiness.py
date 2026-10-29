@@ -63,6 +63,7 @@ from finishup.kernel.closing_review_delta import (
     closing_review_delta,
 )
 from finishup.kernel.closure_class import (
+    ACKNOWLEDGED_NOT_DONE_BASES,
     FINDING_REJECTION_AWAITING_RULING_GAP,
     UNDELIVERABLE_SEMANTIC_STATUSES,
     FindingClosure,
@@ -81,9 +82,7 @@ from finishup.kernel.delivered_set import (
 from finishup.kernel.fact_lineage import MAX_FACT_LINEAGE_ITEMS, FactLineage
 from finishup.kernel.finding_resolution import finding_is_resolved
 from finishup.kernel.finding_todo import (
-    FindingTodoState,
     duplicate_counting_id,
-    finding_todo_state,
 )
 from finishup.kernel.gap_effect import (
     GAP_EFFECT_TABLE,
@@ -1050,18 +1049,13 @@ def closure_readiness_facts(
     }
     # D8 (#1243): a kind the classifier leaves out (a process note) is never listed as settled
     # here either, so readiness, the prediction and the receipt's terminal lists read one set.
+    # A limitation request answered ``acknowledged_not_done`` is listed here too: the agent said
+    # the requirement is NOT met (owner decision 2026-10-12). A disclosed one is not.
     acknowledged = {
         duplicate_counting_id(state, finding.finding_id)
         for finding in current
         if finding.finding_id in finding_classes
-        and (
-            # A limitation request answered ``acknowledged_not_done`` is listed here too: the
-            # agent said the requirement is NOT met (owner decision 2026-10-12). A disclosed one
-            # is not.
-            finding_acknowledged_not_done(state, finding.finding_id)
-            or finding_todo_state(state, finding.finding_id)
-            is FindingTodoState.ACKNOWLEDGED_NOT_DONE
-        )
+        and finding_classes[finding.finding_id].basis in ACKNOWLEDGED_NOT_DONE_BASES
     }
     self_verified = {
         closure.counts_as
