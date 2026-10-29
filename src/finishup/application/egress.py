@@ -89,12 +89,14 @@ from finishup.ports.privacy import (
     HumanAuthorityCapability,
     HumanPrivacyControlPort,
     MinimizedDisclosure,
+    NetworkEgressReceiptView,
     OutboundGatewayPort,
     PendingHumanDecision,
     PrivacyAuditPort,
     PrivacyAuditState,
     PrivacyClassifierPort,
     PrivacyPolicyStorePort,
+    PrivacyReceiptAudience,
     RepositoryPrivacyAuthority,
 )
 from finishup.ports.semantic import (
@@ -813,6 +815,71 @@ def _semantic_result_outcome(
     if type(result) is SemanticResultUnavailable:
         return PrivacyOutcome.TRANSPORT_FAILED, PrivacyReason.TRANSPORT_FAILED
     raise TypeError("semantic_egress_result_invalid")
+
+
+def _refused_proposal_receipt(
+    proposal: DisclosureProposal,
+    effective: EffectivePrivacyPolicy,
+    result: SemanticEgressBlocked,
+    finished_at: datetime,
+    ids: IdPort,
+) -> EgressReceipt:
+    """#1066: the blocked receipt of a prepared network proposal refused before dispatch.
+
+    Nothing was authorized or sent: included and final counts are zero, the prepared case's own
+    scanner identity is named, and a size refusal keeps its typed capacity reason (#1129).
+    """
+
+    binding = proposal.provider_binding
+    assert binding is not None
+    candidates = len(proposal.source_item_digests)
+    approved = len(proposal.included_item_ids)
+    capacity = (
+        None
+        if result.capacity is None
+        or result.outcome is not PrivacyOutcome.BLOCKED_BY_POLICY
+        or result.reason is not PrivacyReason.POLICY_DENIED
+        else ReceiptCapacity(
+            result.capacity_scope, result.capacity_unit, result.capacity[0], result.capacity[1]
+        )
+    )
+    return EgressReceipt(
+        "1.1.0",
+        ids.new(IdKind.EGRESS_RECEIPT),
+        proposal.request_id,
+        proposal.privacy_proposal_id,
+        EgressChannel.LLM_INFERENCE,
+        result.outcome,
+        finished_at,
+        proposal.scope,
+        proposal.purpose,
+        binding,
+        ReceiptPolicyBinding(
+            effective.policy.policy_id,
+            proposal.policy_version,
+            proposal.policy_digest,
+            _scope_digest(proposal.scope),
+        ),
+        ConsentSource.NONE,
+        proposal.approved_categories,
+        proposal.blocked_categories,
+        ReceiptCounts(candidates, 0, candidates, approved, 0, len(proposal.prepared_bytes), 0),
+        ReceiptTransformations(
+            0, _transformation_count(proposal.transformation_summary, "redacted_spans"), 0
+        ),
+        ReceiptSecretScan(
+            proposal.scanner_registry_version,
+            proposal.scanner_profile_digest,
+            0,
+            True,
+            ReceiptSecretScanStage.PREPARED_CASE,
+        ),
+        result.reason,
+        1,
+        withheld_item_ids=proposal.withheld_item_ids,
+        origin_operation=egress_origin_operation(proposal.purpose, proposal.included_item_ids),
+        capacity_exceeded=capacity,
+    )
 
 
 def _semantic_local_receipt(
@@ -1687,6 +1754,21 @@ class PrivacyCoordinator:
         *,
         loaded_state: PrivacyAuditState | None = None,
     ) -> SemanticEgressResult:
+        # #1066: a proposal refused on resume (policy changed, limits narrowed) closes at once.
+        return await self._close_refused_proposal(
+            await self._resume_admitted_once(
+                request_id, case_digest, deadline, loaded_state=loaded_state
+            )
+        )
+
+    async def _resume_admitted_once(
+        self,
+        request_id: str,
+        case_digest: str,
+        deadline: Deadline,
+        *,
+        loaded_state: PrivacyAuditState | None = None,
+    ) -> SemanticEgressResult:
         state = (
             loaded_state
             if loaded_state is not None
@@ -1744,6 +1826,24 @@ class PrivacyCoordinator:
             redacted_values = await self._redacted_values_for_proposal(
                 state.reservation.privacy_proposal_id
             )
+            if status == "decision_completed":
+                # #1066: a proposal closed by a refusal replays as that refusal.
+                stored = await self._stored_refusal(state.receipt_id)
+                if stored is not None:
+                    outcome, reason, capacity = stored
+                    return SemanticEgressBlocked(
+                        request_id,
+                        outcome,
+                        reason,
+                        privacy_proposal_id=state.reservation.privacy_proposal_id,
+                        receipt_id=state.receipt_id,
+                        withheld_item_ids=withheld_item_ids,
+                        redacted_span_count=redacted_span_count,
+                        redacted_values=redacted_values,
+                        capacity=None if capacity is None else (capacity.attempted, capacity.limit),
+                        capacity_unit="bytes" if capacity is None else capacity.unit,
+                        capacity_scope="disclosure" if capacity is None else capacity.scope,
+                    )
             return SemanticEgressBlocked(
                 request_id,
                 PrivacyOutcome.HUMAN_DENIED
@@ -2661,6 +2761,107 @@ class PrivacyCoordinator:
         )
 
     async def _dispatch_approved(
+        self,
+        candidate: CandidateContext,
+        effective: EffectivePrivacyPolicy,
+        proposal: DisclosureProposal,
+        minimized: MinimizedDisclosure,
+        consent: ConsentSource,
+        deadline: Deadline,
+        *,
+        subject_digest: str,
+        authorization: object | None = None,
+        authority_digest: str | None = None,
+    ) -> SemanticEgressResult:
+        return await self._close_refused_proposal(
+            await self._dispatch_approved_once(
+                candidate,
+                effective,
+                proposal,
+                minimized,
+                consent,
+                deadline,
+                subject_digest=subject_digest,
+                authorization=authorization,
+                authority_digest=authority_digest,
+            )
+        )
+
+    async def _stored_refusal(
+        self, receipt_id: str | None
+    ) -> tuple[PrivacyOutcome, PrivacyReason, ReceiptCapacity | None] | None:
+        """The outcome, reason and capacity a closed proposal's receipt recorded, if readable."""
+
+        if receipt_id is None:
+            return None
+        try:
+            view = await self._audit.get_receipt(
+                receipt_id, PrivacyReceiptAudience.TRUSTED_LOCAL_CONTROL
+            )
+        except Exception:  # noqa: BLE001 - an unreadable receipt keeps the generic refusal
+            return None
+        if type(view) is not NetworkEgressReceiptView:
+            return None
+        receipt = view.receipt
+        if (
+            receipt.outcome
+            not in {PrivacyOutcome.BLOCKED_BY_POLICY, PrivacyOutcome.APPROVAL_EXPIRED}
+            or receipt.safe_failure_reason is None
+        ):
+            return None
+        return receipt.outcome, receipt.safe_failure_reason, receipt.capacity_exceeded
+
+    async def _close_refused_proposal(self, result: SemanticEgressResult) -> SemanticEgressResult:
+        """#1066: close a prepared proposal refused at the final permission check, at once.
+
+        A refusal after the proposal was prepared and before the gateway call used to leave it
+        ``reserved`` (or ``awaiting_human``/``approved``) until its expiry, so ``privacy pending``
+        listed a decision nothing could act on. A policy refusal (``blocked_by_policy``) or an
+        expired approval closes it now with a blocked receipt naming the refusal; the audit store
+        moves only a proposal nothing was authorized or sent for. A timeout, an audit failure or a
+        transport outcome is not closed: a still-valid approval stays usable. Closing is best
+        effort: the refusal is returned either way, and nothing was or will be sent.
+        """
+
+        if (
+            type(result) is not SemanticEgressBlocked
+            or result.privacy_proposal_id is None
+            or result.receipt_id is not None
+            or result.outcome
+            not in {PrivacyOutcome.BLOCKED_BY_POLICY, PrivacyOutcome.APPROVAL_EXPIRED}
+        ):
+            return result
+        closer = getattr(self._audit, "close_refused_disclosure", None)
+        if not callable(closer):
+            return result
+        try:
+            proposal = await self._load_disclosure_proposal(result.privacy_proposal_id)
+            if (
+                proposal is None
+                or proposal.provider_binding is None
+                or proposal.provider_binding.transport != "external"
+            ):
+                return result
+            effective = await self._policies.effective_policy(proposal.scope)
+            receipt = _refused_proposal_receipt(
+                proposal, effective, result, self._clock.now_utc(), self._ids
+            )
+            closed = await cast(Callable[[str, EgressReceipt], Awaitable[bool]], closer)(
+                proposal.privacy_proposal_id, receipt
+            )
+        except Exception as exc:  # noqa: BLE001 - the proposal still expires as before
+            record_unexpected_exception_without_raising(
+                exc,
+                component="privacy_egress",
+                operation="refused_proposal_close_failed",
+                request_id=result.request_id,
+            )
+            return result
+        if closed is not True:
+            return result
+        return replace(result, receipt_id=receipt.receipt_id)
+
+    async def _dispatch_approved_once(
         self,
         candidate: CandidateContext,
         effective: EffectivePrivacyPolicy,

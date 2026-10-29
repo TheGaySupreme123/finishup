@@ -4691,6 +4691,15 @@ exact prepared case. MCP has no access. Initial
 reservation failure is the sole no-receipt exception and occurs before prompt/authorization/
 dispatch; `awaiting_human`, `approved`, and `receipt_pending` are nonterminal
 `PrivacyAuditState.status` values rather than receipt outcomes.
+`PrivacyAuditPort.close_refused_disclosure(proposal_id, receipt) -> bool` (#1066, ADR-009) closes a
+prepared network proposal the coordinator refused before dispatch: only a row still `reserved`,
+`awaiting_human` or `approved`, with no authorization minted and nothing consumed, moves in one
+transaction to `decision_completed` with its blocked receipt (no dispatch, zero `final_bytes`, the
+refusal's outcome and reason, and `capacity_exceeded` for a size refusal). The coordinator closes
+`blocked_by_policy` and `approval_expired` refusals at the final permission check (dispatch fence,
+repository authority, changed policy or limits on resume); a timeout, an audit failure or a
+transport outcome is not closed, so a still-valid approval stays usable. `privacy pending` excludes
+the proposal at once, and a same-request replay of it reports the refusal its receipt recorded.
 `PrivacyAuditPort.live_object_roots(task_id, route_identity_digest) -> PrivacyAuditObjectRoots`
 returns the monotonic catalog generation, sorted task-bundle `privacy_audit` ObjectRefs, and canonical
 root digest used by GC/backup/restore/recovery. These are live without task-ledger inventory.

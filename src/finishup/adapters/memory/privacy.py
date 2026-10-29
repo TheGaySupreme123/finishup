@@ -939,6 +939,38 @@ class MemoryPrivacyAudit:
             reservation_id, receipt, "decision_receipt_pending", "decision_completed"
         )
 
+    async def close_refused_disclosure(self, proposal_id: str, receipt: EgressReceipt) -> bool:
+        """#1066: close a not-yet-dispatched network proposal with its blocked receipt, once."""
+
+        if type(receipt) is not EgressReceipt or receipt.privacy_proposal_id != proposal_id:
+            raise ValueError("privacy_receipt_reservation_mismatch")
+        if receipt.dispatch_id is not None or receipt.authorization_id is not None:
+            raise ValueError("privacy_refusal_receipt_invalid")
+        async with self._lock:
+            row = self._state.audit.get(proposal_id)
+            if (
+                row is None
+                or type(row.subject) is not DisclosureProposal
+                or row.subject.provider_binding is None
+                or row.status not in {"reserved", "awaiting_human", "approved"}
+                or row.receipt is not None
+                or row.authorization_id is not None
+                or row.dispatch_id is not None
+                or row.consumed_digest is not None
+            ):
+                return False
+            self._state.audit[proposal_id] = _AuditRow(
+                row.reservation,
+                row.subject,
+                "decision_completed",
+                receipt,
+                row.object_ref,
+                row.consumed_digest,
+                row.authorization_id,
+                row.dispatch_id,
+            )
+        return True
+
     async def _complete(
         self,
         reservation_id: str,
