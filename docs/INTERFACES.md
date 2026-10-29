@@ -569,7 +569,12 @@ catch-all; truncated or overlong output maps to `semantic_response_truncated` fr
 `response_content_invalid`; schema-invalid and rejected-judgment answers map to
 `semantic_response_invalid`; capacity and quota map to `semantic_capacity_exceeded`; and
 `retry_budget_exhausted` and `outcome_unknown`, which name how a job ended rather than why, map to
-`semantic_no_judgment`. Every directive follows the check-mode coverage guidance: it never tells an
+`semantic_no_judgment`. A `never_send_detected` block maps to `semantic_privacy_blocked` (revise text
+you published, then one check under a new `request_id`) only while every recorded `review_blocked`
+item is agent-published text (`claim-`, `obligation-`, `goal-`, `decision-`, `agent-disclosures`,
+`local-finding-answer-`; `review_block_agent_revisable`); a block on anything FinishUP composed or
+captured maps to `semantic_privacy_blocked_unrecoverable` (#966): no agent action clears it, no
+retry, and a required review is reported unmet. Every directive follows the check-mode coverage guidance: it never tells an
 agent to downgrade a required review, and it never offers a second job for a truncated answer.
 Predispatch configuration and policy outcomes (`not_configured`, `credential_unavailable`,
 `blocked_by_policy`, and the rest) carry no directive. These tokens

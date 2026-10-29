@@ -74,6 +74,7 @@ from finishup.protocol.models import (
 from finishup.protocol.recovery import continuation_for_semantic_outcome, directive_for
 from finishup.protocol.redacted_values import (
     SemanticRedactedValue,
+    review_block_agent_revisable,
     semantic_redacted_values_from_wire,
     validate_semantic_redacted_values,
 )
@@ -1025,6 +1026,12 @@ def privacy_block_sentence(
             f"{lead}: a {' and '.join(classes).replace('_', '-')} credential-like match in "
             f"{named} at the {where} scan. The same content is refused the same way, so "
             "sending it again will not help."
+        )
+        # #966: the unmet operation and the shortest safe continuation, when one exists.
+        sentence += (
+            " Only a revision of that published text without the value can be reviewed."
+            if review_block_agent_revisable(tuple(blocked))
+            else " No agent action clears it: a required AI-powered review stays unmet."
         )
     if skipped:
         sentence += (

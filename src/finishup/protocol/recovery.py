@@ -600,12 +600,23 @@ _DIRECTIVES: Final = (
     RecoveryDirective(
         token="semantic_privacy_blocked",
         directive=(
-            "Blocked before dispatch; never resend this case. Supply a safe replacement to rescan, "
-            "then check once under a NEW request_id. Else, for optional review, a "
-            "local-only check may stand with the gap; required review is unmet."
+            "Blocked before dispatch; a resend is refused alike. If the refused item is text you "
+            "published, revise it without the value and check once under a NEW request_id. Else "
+            "required review is unmet; for optional review, local-only stands."
         ),
         guidance_uri=_SEMANTIC_COVERAGE,
         nudge="Never reuse the blocked bytes or case identity.",
+    ),
+    # #966: the refused item is one FinishUP composed or captured, so no agent action clears it.
+    RecoveryDirective(
+        token="semantic_privacy_blocked_unrecoverable",
+        directive=(
+            "Blocked before dispatch by content FinishUP composed or captured; no agent action "
+            "clears it and a resend is refused alike. Report the required review as unmet, "
+            "naming the item. For optional review, local-only stands."
+        ),
+        guidance_uri=_SEMANTIC_COVERAGE,
+        nudge="Never change consent, privacy settings or your work to clear it.",
     ),
     RecoveryDirective(
         token="consent_outcome_unconfirmed",
@@ -1341,6 +1352,7 @@ def continuation_for_semantic_outcome(
     reason: object = None,
     *,
     failure_class: object = None,
+    agent_revisable: bool | None = None,
 ) -> str | None:
     """Return the recovery token for a recorded AI-powered review outcome.
 
@@ -1348,6 +1360,11 @@ def continuation_for_semantic_outcome(
     tokens; this lookup never reads provider or caller text. A rejected
     credential is distinguished from transport failure by ``failure_class``,
     not by finding count or raw provider output (issue #742).
+
+    ``agent_revisable`` (#966) is ``review_block_agent_revisable`` over the check's recorded
+    ``review_blocked`` items: ``False`` turns a ``never_send_detected`` block into
+    ``semantic_privacy_blocked_unrecoverable``, since no agent action clears an item FinishUP
+    composed or captured; ``None`` (no item recorded) keeps the general directive.
     """
 
     del status  # Status is accepted for call-site symmetry; the reason pair is closed.
@@ -1361,6 +1378,8 @@ def continuation_for_semantic_outcome(
     reason_value = getattr(reason, "value", reason)
     if type(reason_value) is not str:
         return None
+    if reason_value == "never_send_detected" and agent_revisable is False:
+        return "semantic_privacy_blocked_unrecoverable"
     return _SEMANTIC_REASON_CONTINUATIONS.get(reason_value)
 
 
