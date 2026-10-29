@@ -333,20 +333,12 @@ def plan_under_channel_ceiling(
     approved = primary_material_selection(
         selection, keep_timeline="prior-missing-for-assessment" in case.packet.timeline_item_ids
     )
-    dropped = tuple(
-        section for section in selection.sections if section not in set(approved.sections)
-    )
-    if dropped:
-        record_bounded_counts_without_raising(
-            component="semantic_composition",
-            operation="semantic_primary_material_narrowed",
-            outcome="narrowed",
-            counts={"semantic_sections_dropped": len(dropped)},
-        )
+    dropped = [section for section in selection.sections if section not in set(approved.sections)]
     rounds = 1
     protected = rebuild(approved)
     protected_size = _prepared_size(protected, admission, measure)
     if protected_size is None or protected_size <= limit:
+        _record_primary_sections_dropped(tuple(dropped))
         return protected, approved, rounds
     count_rounds = 0
     for candidate_selection in prior_context_selections(protected, approved, floor):
@@ -356,10 +348,34 @@ def plan_under_channel_ceiling(
         candidate_size = _prepared_size(candidate, admission, measure)
         if candidate_size is not None and candidate_size <= limit:
             if check_time_change_floor_bytes_carried(candidate) >= floor:
+                _record_primary_sections_dropped(tuple(dropped))
                 return candidate, candidate_selection, rounds
     size, excerpt_bytes = protected_size, _excerpt_bytes(protected)
     base = rebuild(_with_excerpt_budget(approved, 0))
     base_size = _prepared_size(base, admission, measure)
+    # Goal text is already gone. Drop claims, then obligations, only when keeping them
+    # leaves no room for the protected change (#1245). Small text never reaches this.
+    while base_size is not None and base_size + max(floor, 0) > limit:
+        section = next(
+            (name for name in ("claims", "obligations") if name in approved.sections),
+            None,
+        )
+        if section is None:
+            break
+        rounds += 1
+        dropped.append(section)
+        approved = replace(
+            approved, sections=tuple(part for part in approved.sections if part != section)
+        )
+        base = rebuild(_with_excerpt_budget(approved, 0))
+        base_size = _prepared_size(base, admission, measure)
+        protected = rebuild(approved)
+        protected_size = _prepared_size(protected, admission, measure)
+        if protected_size is None:
+            size, excerpt_bytes = base_size if base_size is not None else 0, 0
+        else:
+            size, excerpt_bytes = protected_size, _excerpt_bytes(protected)
+    _record_primary_sections_dropped(tuple(dropped))
     if base_size is None or base_size >= limit:
         # Even without excerpts the packet is over the ceiling: egress refuses it as before.
         return (
@@ -387,6 +403,23 @@ def plan_under_channel_ceiling(
             break
         size, excerpt_bytes = candidate_size, _excerpt_bytes(candidate)
     return planned, planned_selection, rounds
+
+
+def _record_primary_sections_dropped(sections: tuple[str, ...]) -> None:
+    """Record which narrative sections the primary narrowing removed (#1245)."""
+
+    names = tuple(sorted(set(sections)))
+    if not names:
+        return
+    record_bounded_counts_without_raising(
+        component="semantic_composition",
+        operation="semantic_primary_material_narrowed",
+        outcome="narrowed",
+        counts={
+            "semantic_sections_dropped": len(names),
+            "semantic_primary_dropped": "_".join(names),
+        },
+    )
 
 
 def _excerpt_bytes(case: SemanticCase) -> int:

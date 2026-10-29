@@ -161,6 +161,67 @@ def test_synthetic_task_input_omission_uses_linked_subjects() -> None:
     assert [item.subject_ref for item in omissions] == [str(obl(1))]
 
 
+def test_the_acknowledged_question_names_only_obligations_the_packet_carries() -> None:
+    """#1245: the closing question cites an acknowledged obligation only when its item remains."""
+
+    frozen = _react_case()
+    obligation = frozen.projection.obligations[obl(1)]
+    assert obligation.payload is not None
+    acknowledged = obligation_record(
+        replace(
+            obligation.payload,
+            status=ObligationStatus.ACKNOWLEDGED_NOT_DONE,
+            acknowledged_not_done_reason="The inputs name two outputs.",
+        ),
+        obligation.source_frontier,
+    )
+    frozen = replace(
+        frozen,
+        projection=replace(frozen.projection, obligations={obl(1): acknowledged}),
+    )
+    carried = composer.build_semantic_case(
+        case_id="cas_10000000-0000-4000-8000-000000000001",
+        frozen_case=frozen,
+        dependency_digest="sha256:" + "b" * 64,
+        findings=(),
+        review_context_profile=ReviewContextProfile.CUSTOM,
+        review_selection=_SELECTION,
+        policy_id="pvy_10000000-0000-4000-8000-000000000001",
+        policy_version="1",
+        check_time_change=_change(
+            b"diff --git a/form.py b/form.py\n+return value is not None\n",
+            inputs=(TaskInputFile("DESIGN.md", b"Reject None.\n", 13),),
+        ),
+        workspace_root="/app",
+        final_review=True,
+    )
+    item_id = f"obligation-{obl(1)}"
+    assert item_id in {item.item_id for item in carried.items}
+    assert str(obl(1)) in " ".join(carried.question_set)
+    without = replace(
+        _SELECTION,
+        sections=tuple(section for section in _SELECTION.sections if section != "obligations"),
+    )
+    dropped = composer.build_semantic_case(
+        case_id="cas_10000000-0000-4000-8000-000000000001",
+        frozen_case=frozen,
+        dependency_digest="sha256:" + "b" * 64,
+        findings=(),
+        review_context_profile=ReviewContextProfile.CUSTOM,
+        review_selection=without,
+        policy_id="pvy_10000000-0000-4000-8000-000000000001",
+        policy_version="1",
+        check_time_change=_change(
+            b"diff --git a/form.py b/form.py\n+return value is not None\n",
+            inputs=(TaskInputFile("DESIGN.md", b"Reject None.\n", 13),),
+        ),
+        workspace_root="/app",
+        final_review=True,
+    )
+    assert item_id not in {item.item_id for item in dropped.items}
+    assert str(obl(1)) not in " ".join(dropped.question_set)
+
+
 def test_small_packet_is_byte_identical_with_final_planning() -> None:
     frozen = _react_case()
     plain = _build(frozen, small=True)

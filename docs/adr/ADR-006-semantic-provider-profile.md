@@ -3658,9 +3658,12 @@ output bytes.
 
 The loop instruction carries the infeasibility lens and the reachability rule, one sentence each,
 inside its constraints, each with an example of the failure it catches. It also says that
-conflicting inputs are not a reason to withhold the requested output, except for an authority
-block, a missing credential, or a destructive action. The measured loop instruction is 8,461 bytes.
-Obligation and claim text survive the primary packet narrowing; goal text is dropped first.
+conflicting inputs are not inability and that review agreeing a conflict exists is not permission
+to withhold, except for an authority block, a missing credential, or a destructive action. The
+measured loop instruction is 7,628 bytes, inside the existing 7,639-byte ceiling. Obligation and
+claim text survive the primary narrowing while the packet still fits; goal text is dropped first,
+and claims then obligations only when they alone exceed the ceiling. The diagnostic
+`semantic_primary_dropped` names the sections removed.
 
 Wire changes are in place on unreleased versions: provider-judgment 1.2.0 and reviewer-reply 1.0.0
 (`declared_test_verdicts`), check-recorded 1.6.0 (`origin` enum, `test_digest`), check-result

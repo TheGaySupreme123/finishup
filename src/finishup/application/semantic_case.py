@@ -564,10 +564,11 @@ ACKNOWLEDGED_REVIEW_INSTRUCTION: Final = (
     " blocker outside the agent's control (authority, consent, a credential, a hidden evaluator"
     " or reference it cannot obtain, an answer only the user has) that none of this contradicts"
     " stands as a disclosed limitation: do not challenge it, and where you want the limit stated"
-    " ask for state_unresolved_limitation. With conflicting inputs, pick a reading, write the"
-    " requested output, and record the assumption. Review agreeing that a conflict exists is not"
-    " permission to withhold. The only exceptions are an authority block, a missing credential, or"
-    " a destructive action. What FinishUP or this review could not show or prove is"
+    " ask for state_unresolved_limitation. Conflicting inputs are not inability. With conflicting"
+    " inputs, pick a reading, write the requested output, and record the assumption. Review"
+    " agreeing that a conflict exists is not permission to withhold. The only exceptions are an"
+    " authority block, a missing credential, or a destructive action. What FinishUP or this review"
+    " could not show or prove is"
     " never a reason to challenge. Never recommend emptying, deleting or withdrawing a deliverable"
     " that passes its recorded tests: it is a partial solution to keep and disclose, not"
     " an unsolved task."
@@ -7485,26 +7486,46 @@ def build_semantic_case(
         if fits(candidate) and check_time_change_floor_bytes_carried(candidate) >= floor:
             return candidate
     selection = primary
-    excerpt_bytes = sum(item.content_bytes for item in case.items if item.section == "excerpt")
-    if not excerpt_bytes:
-        return case
-    # JSON escaping makes the prepared document grow by a content-dependent factor, so search the
-    # largest excerpt byte budget whose exact document fits. Admission runs in rank order, so a
-    # smaller budget drops the lowest-ranked excerpts first.
-    # Keep an over-ceiling protected case if no fitting candidate preserves the floor. Egress
-    # then refuses it honestly; no later stage may trade away the diff for a successful dispatch.
-    best = case if floor else build(0)
-    low, high = 0, excerpt_bytes
-    while high - low > _PLANNING_GRANULARITY_BYTES:
-        middle = (low + high) // 2
-        candidate = build(middle)
-        if fits(candidate):
-            low = middle
-            if check_time_change_floor_bytes_carried(candidate) >= floor:
-                best = candidate
-        else:
-            high = middle
-    return best
+
+    def _excerpt_plan() -> SemanticCase:
+        planned = build(None)
+        excerpt_bytes = sum(
+            item.content_bytes for item in planned.items if item.section == "excerpt"
+        )
+        if not excerpt_bytes:
+            return planned
+        # JSON escaping makes the prepared document grow by a content-dependent factor, so
+        # search the largest excerpt byte budget whose exact document fits. Admission runs in
+        # rank order, so a smaller budget drops the lowest-ranked excerpts first.
+        # Keep an over-ceiling protected case if no fitting candidate preserves the floor.
+        best = planned if floor else build(0)
+        low, high = 0, excerpt_bytes
+        while high - low > _PLANNING_GRANULARITY_BYTES:
+            middle = (low + high) // 2
+            candidate = build(middle)
+            if fits(candidate):
+                low = middle
+                if check_time_change_floor_bytes_carried(candidate) >= floor:
+                    best = candidate
+            else:
+                high = middle
+        return best
+
+    case = _excerpt_plan()
+    # #1245: claims, then obligations, yield only when keeping them leaves no room for the
+    # protected change. Small obligation text never reaches this.
+    for section in ("claims", "obligations"):
+        if fits(case) is not False and (
+            not floor or check_time_change_floor_bytes_carried(case) >= floor
+        ):
+            break
+        if section not in selection.sections:
+            continue
+        selection = replace(
+            selection, sections=tuple(part for part in selection.sections if part != section)
+        )
+        case = _excerpt_plan()
+    return case
 
 
 def _build_semantic_case_once(
@@ -9458,10 +9479,21 @@ def _build_semantic_case_once(
     # #1145: an obligation row the packet still carries that links a check the reviewer can name;
     # a row the obligation cap or byte bound dropped asks nothing.
     linked_verification = any(item.item_id in verification_linked_item_ids for item in items)
+    carried_obligations = {
+        item.item_id.removeprefix("obligation-")
+        for item in items
+        if item.section == "obligation" and item.item_id.startswith("obligation-")
+    }
+    # #1245: the question names an obligation only when that item is in the packet.
+    acknowledged = tuple(
+        ref
+        for ref in acknowledged_obligation_rows(frozen_case.projection)
+        if ref in carried_obligations
+    )
     question_set = review_question_set(
         review_phase,
         recorded_blockers(frozen_case.projection),
-        acknowledged_obligation_rows(frozen_case.projection),
+        acknowledged,
         freshness=verification_freshness_asked(frozen_case),
         # #975: on a channel no larger than the minimal policy's, a closing review that already
         # carries the test-quality question has no room left for this one (#1173).

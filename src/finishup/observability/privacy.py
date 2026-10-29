@@ -329,6 +329,8 @@ _LOG_FIELDS: Final = frozenset(
         "semantic_excerpt_count_cut_for_case_bound",
         "semantic_excerpt_byte_limit",
         "semantic_excerpt_ceiling_rounds",
+        "semantic_sections_dropped",
+        "semantic_primary_dropped",
         # #1118: a capacity refusal's rendered disclosure size and the limit it
         # exceeded (integers only, never content).
         "semantic_disclosure_attempted_bytes",
@@ -425,6 +427,8 @@ _TOKEN_FIELDS: Final = frozenset(
         "client_kind",
         # #1172: the closed per-exchange prompt-cache miss label.
         "reviewer_cache_miss",
+        # #1245: closed section names the primary narrowing dropped, joined with "_".
+        "semantic_primary_dropped",
     }
 )
 _VERSION_FIELDS: Final = frozenset(
@@ -502,6 +506,7 @@ _INTEGER_FIELDS: Final = frozenset(
         "semantic_excerpt_count_cut_for_case_bound",
         "semantic_excerpt_byte_limit",
         "semantic_excerpt_ceiling_rounds",
+        "semantic_sections_dropped",
         # #1118: a capacity refusal's rendered disclosure size and the limit it
         # exceeded (integers only, never content).
         "semantic_disclosure_attempted_bytes",

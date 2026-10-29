@@ -426,6 +426,8 @@ def test_instruction_is_one_short_pstack_prompt_with_the_honesty_rules() -> None
         "not the hook-observed command",
         "Only attachments supply pixels",
         "Unattached binaries are not missing_for_assessment",
+        "name the strongest interpretation under which it is achievable",
+        "Conflicting inputs are not inability",
     ):
         assert rule in " ".join(text.split()), rule
 
@@ -447,9 +449,7 @@ _LOOP_DIRECTIVES = {
     "deferred_to_disclosure": "never stops you judging what the material shows",
     "delivery_risk_on_correct_work": "An input or service the task supplies is no risk",
     "withheld_on_conflict": "Review agreeing that a conflict exists is not permission to withhold",
-    "unreachable_recommendation": (
-        "check that the visible interface in the packet can reach it"
-    ),
+    "unreachable_recommendation": ("check that the visible interface in the packet can reach it"),
 }
 _ACCURACY_CASES = [
     case
