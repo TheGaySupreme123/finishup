@@ -35,6 +35,7 @@ from finishup.domain.findings import (
     SemanticProvenance,
     rank_key,
 )
+from finishup.domain.freshness_question import bounded_agent_reason, is_freshness_question
 from finishup.domain.receipts import (
     CHECK_CURRENT_AS_OF_EARLIER_FRONTIER_GAP,
     CHECK_TIME_CHANGE_RESOLUTION_UNVERIFIED_GAP,
@@ -167,6 +168,7 @@ from finishup.kernel.finding_resolution import (
     unverified_resolution_finding_ids,
 )
 from finishup.kernel.finding_retirement import is_observed_failed_command_finding
+from finishup.kernel.freshness_answers import freshness_answers
 from finishup.kernel.gap_effect import GapContext, gap_effect, judge_gaps
 from finishup.kernel.later_material import LaterMaterialClass, counted_later_material
 from finishup.kernel.lineage import LineageEvaluation, LineageRollupState
@@ -2428,6 +2430,7 @@ def _sections(
     claim_verification: tuple[str, ...] = (),
     claim_verification_limitation: str = "",
     decision_answers: Mapping[FindingId, str] | None = None,
+    rerun_answered: frozenset[FindingId] = frozenset(),
 ) -> tuple[ReceiptSection, ...]:
     # Issue #1017: the limitations section lists live gaps only; the human renderings list the
     # historical ones (a later check cleared them) in their own section from the gap rows.
@@ -2630,6 +2633,18 @@ def _sections(
             ascii_only=False,
         )
         for finding in choices
+    )
+    # #1241 D10: an answered verification rerun question carries the agent's own bounded reason
+    # in place of the standing question, as a fenced, self-reported item (never structural text).
+    # Only an answer that settles it (``rerun_answered``, the kernel's rule) reads as one: a
+    # rejection leaves the question standing, so it is never shown as "rerun not needed".
+    items[ReceiptSectionKey.FINDINGS_AND_DISPOSITIONS] += tuple(
+        "Verification rerun question answered (self-reported, non-blocking) "
+        f"{finding.finding_id}: rerun not needed: {bounded_agent_reason(answers[finding.finding_id])}"
+        for finding in findings
+        if is_freshness_question(finding)
+        and finding.finding_id in answers
+        and finding.finding_id in rerun_answered
     )
 
     claim_phrase = _count_phrase(len(claim_refs), "claim reference", "claim references")
@@ -3247,6 +3262,9 @@ def build_receipt(
             and response.reason
             and response.reason.strip()
         },
+        rerun_answered=frozenset(
+            answer.finding_id for answer in freshness_answers(context.projection)
+        ),
         unresolved_actionable_count=len(unresolved_actionable),
         unresolved_actionable_ids=tuple(finding.finding_id for finding in unresolved_actionable),
         obligations=retained_obligations,

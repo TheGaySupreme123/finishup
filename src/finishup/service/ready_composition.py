@@ -4076,6 +4076,12 @@ def _judgment_to_response_json(judgment: object) -> dict[str, CanonicalJsonValue
             }
             for row in judgment.declared_test_verdicts
         ]
+    # #1241 D9: emitted only when present, like the declared-test verdicts.
+    if judgment.freshness_verdicts:
+        body["freshness_verdicts"] = [
+            {"agrees": row.agrees, "finding_id": row.finding_id}
+            for row in judgment.freshness_verdicts
+        ]
     if judgment.missing_for_assessment:
         # Issue #907: the named missing items, reviewer reason included, live only in this
         # encrypted durable response object; the check record keeps the structural fields.
@@ -4092,6 +4098,7 @@ def _judgment_from_response_json(value: object) -> object:
     from finishup.domain.findings import FindingKind
     from finishup.ports.semantic import (
         DeclaredTestVerdict,
+        FreshnessVerdict,
         MissingForAssessment,
         MissingForAssessmentKind,
         PriorFindingVerdict,
@@ -4272,6 +4279,25 @@ def _judgment_from_response_json(value: object) -> object:
             )
         except ValueError as exc:
             raise ValueError("semantic_response_judgment_invalid") from exc
+    freshness_verdicts: list[FreshnessVerdict] = []
+    raw_freshness = source.get("freshness_verdicts", [])
+    if type(raw_freshness) is not list:
+        raise ValueError("semantic_response_judgment_invalid")
+    for raw_row in cast(list[object], raw_freshness):
+        if type(raw_row) is not dict or set(cast(dict[str, object], raw_row)) != {
+            "agrees",
+            "finding_id",
+        }:
+            raise ValueError("semantic_response_judgment_invalid")
+        freshness_row = cast(dict[str, object], raw_row)
+        try:
+            freshness_verdicts.append(
+                FreshnessVerdict(
+                    cast(str, freshness_row["finding_id"]), cast(bool, freshness_row["agrees"])
+                )
+            )
+        except ValueError as exc:
+            raise ValueError("semantic_response_judgment_invalid") from exc
     try:
         return SemanticJudgment(
             cast(SemanticConclusion, conclusion_raw),
@@ -4284,6 +4310,7 @@ def _judgment_from_response_json(value: object) -> object:
             verified_dropped=cast(int, source.get("verified_dropped", 0)),
             strongest_remaining_check=remaining,
             declared_test_verdicts=tuple(test_verdicts),
+            freshness_verdicts=tuple(freshness_verdicts),
         )
     except ValueError as exc:
         raise ValueError("semantic_response_judgment_invalid") from exc

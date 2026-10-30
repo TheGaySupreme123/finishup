@@ -2659,6 +2659,23 @@ DeclaredTestVerdictsWire = Annotated[
 ]
 
 
+class ProviderFreshnessVerdictModel(_ClosedModel):
+    """Whether the reviewer agrees with one rerun-question answer (#1241 D9; advisory).
+
+    ``finding_id`` names a freshness-answer row the packet carried; ``agrees`` says whether the
+    reviewer agrees that no rerun is needed. Recorded for instrumentation only.
+    """
+
+    finding_id: ProviderFindingIdWire
+    agrees: bool
+
+
+MAX_FRESHNESS_VERDICTS: Final = 4
+FreshnessVerdictsWire = Annotated[
+    tuple[ProviderFreshnessVerdictModel, ...], Field(max_length=MAX_FRESHNESS_VERDICTS)
+]
+
+
 # Issue #905: one ruling per earlier AI-powered finding the packet's prior-findings section
 # carries. ``withdrawn`` accepts the main agent's rejection; ``unassessable`` speaks only for its
 # own finding. The section carries at most sixteen findings (issue #976).
@@ -2711,6 +2728,8 @@ class ProviderJudgmentNoDiscrepancyModel(_ClosedModel):
     strongest_remaining_check: ProviderRemainingCheckModel | None = None
     # #1145: optional; strict output sends it as null, which the decoder reads as absent.
     declared_test_verdicts: DeclaredTestVerdictsWire = ()
+    # #1241 D9: optional, like the declared-test verdicts.
+    freshness_verdicts: FreshnessVerdictsWire = ()
 
 
 class ProviderJudgmentChallengesModel(_ClosedModel):
@@ -2725,6 +2744,8 @@ class ProviderJudgmentChallengesModel(_ClosedModel):
     strongest_remaining_check: ProviderRemainingCheckModel | None = None
     # #1145: optional; strict output sends it as null, which the decoder reads as absent.
     declared_test_verdicts: DeclaredTestVerdictsWire = ()
+    # #1241 D9: optional, like the declared-test verdicts.
+    freshness_verdicts: FreshnessVerdictsWire = ()
 
 
 class ProviderMissingItemModel(_ClosedModel):
@@ -2763,6 +2784,8 @@ class ProviderJudgmentInsufficientModel(_ClosedModel):
     strongest_remaining_check: ProviderRemainingCheckModel | None = None
     # #1145: optional; strict output sends it as null, which the decoder reads as absent.
     declared_test_verdicts: DeclaredTestVerdictsWire = ()
+    # #1241 D9: optional, like the declared-test verdicts.
+    freshness_verdicts: FreshnessVerdictsWire = ()
     # Required from provider-judgment 1.1.0: an unassessable packet must say what was missing,
     # or the agent can only add excerpts blind and recheck (issue #907).
     missing_for_assessment: Annotated[

@@ -68,6 +68,7 @@ from finishup.domain.events import (
     encode_payload,
 )
 from finishup.domain.findings import Finding, FindingKind, FindingOrigin, ResponseDisposition
+from finishup.domain.freshness_question import is_freshness_question
 from finishup.domain.observation import (
     ObservationContentKind,
     ObservationContentManifest,
@@ -375,6 +376,8 @@ MAX_PRIOR_FINDINGS: Final = 16
 MAX_PRIOR_FINDING_SECTION_BYTES: Final = 96 * 1024
 # Answers to local findings carried beside them (issue #976); they share the section's bounds.
 MAX_LOCAL_FINDING_ANSWERS: Final = 4
+# #1241 D9: answers to the verification rerun question, counted apart from other answers.
+MAX_FRESHNESS_ANSWERS: Final = 4
 # Refs listed per structural row; the full counts travel beside them.
 _MAX_PRIOR_FINDING_LISTED_REFS: Final = MAX_PRIOR_FINDING_LISTED_REFS
 _CANONICAL_PACKS: Final = (
@@ -479,7 +482,8 @@ FRESHNESS_REVIEW_QUESTION: Final = (
     "Verification freshness is advisory: weigh each recorded verification against the changes "
     "after it and ask the agent whether a rerun is needed (it reruns or answers via respond with a "
     "reason); never block or demand a rerun on staleness alone. A failed or missing required check "
-    "is separate."
+    "is separate. For each freshness-answer row, say in freshness_verdicts whether you agree no "
+    "rerun is needed."
 )
 _REVIEW_QUESTIONS: Final = (
     "What did you verify against the task and the change, how (the code path, output or recorded "
@@ -6821,18 +6825,26 @@ def _prior_findings_section(
     # The agent's answers to FinishUP's own local findings (issue #976). They are not rulable, so
     # they never enter prior_finding_refs, but the reviewer judges their substance: an answer that
     # says a requested output "cannot be produced" is exactly what a closing review must test.
+    # #1241 D9: answers to the verification rerun question are their own row type with their own
+    # cap, so the reviewer can say whether it agrees without crowding out other answers.
     answers = 0
+    freshness_answers = 0
     for ref, record in _local_answer_candidates(projection, allowed):
         rows = _local_answer_items(ref, record, projection, include_prose=include_prose)
         size = sum(item.content_bytes for item in rows)
+        freshness = record.payload is not None and is_freshness_question(record.payload)
         if (
-            answers >= MAX_LOCAL_FINDING_ANSWERS
+            (freshness_answers if freshness else answers)
+            >= (MAX_FRESHNESS_ANSWERS if freshness else MAX_LOCAL_FINDING_ANSWERS)
             or len(rows) > item_budget - len(items)
             or size > byte_budget
         ):
             truncated = True
             continue
-        answers += 1
+        if freshness:
+            freshness_answers += 1
+        else:
+            answers += 1
         byte_budget -= size
         items.extend(rows)
     # Findings the agent settled (issue #980): nameable in ``restates``, never rulable, so a
@@ -7417,6 +7429,10 @@ def _local_answer_items(
         # Frozen legacy identifier (ADR-048): protocol 0.1 tag, re-verified.
         "schema": "yoetz.local-finding-answer/1",
     }
+    if is_freshness_question(payload):
+        # #1241 D9: the reviewer answers freshness_verdicts on these rows.
+        body["schema"] = "yoetz.freshness-answer/1"
+        body["question"] = "verification_rerun"
     if include_prose:
         body["text_item_ids"] = {"answer": f"local-finding-answer-text-{ref}"}
     text, _omitted = _bounded_json(body)

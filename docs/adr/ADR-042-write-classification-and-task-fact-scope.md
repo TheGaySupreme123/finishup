@@ -561,3 +561,42 @@ selection over its frozen projection; this does not rejudge the stored freshness
 Issued receipts keep their bytes and optional-field absence. Coverage display and packet limits
 apply only after the full calculation; no stale, failure, scope, privacy or closure guard is
 relaxed. This alignment adds no writes, dependency inference or rerun policy.
+
+## Amendment (2026-10-30, #1241 D9-D11): the rerun question is asked less and its answer stands
+
+In the TB4 full-sol run, 57.5% of all `respond` calls answered "Is a verification rerun needed?".
+879 answers led to no rerun that changed a result. 65% of the questions with a visible change
+list named no path, and status counted the question as unanswered work while the check did not.
+The owner decided (D9-D11 in #1247):
+
+- **Asked about less.** Freshness still judges every retained run. A question is asked only
+  about the latest run of each requested verification, the latest verification overall, and runs
+  the agent's account cites. Runs sharing one change set share one question. Matching command text
+  alone no longer opens a separate question per command. A run the agent linked to a planned
+  command (#1209) is cited by that link. It decides the planned verification like a direct match
+  (ADR-033) and the task facts keep the standing marker for it, so it is asked about and an answer
+  clears the marker. Not asking it would leave a marker no answer can clear. For the same reason
+  both "latest" runs are the runs the task facts' standing markers read: each planned item's
+  deciding run, also when one run matches two requested commands, and the task facts' last
+  verification run, which a later agent-linked script run does not replace. No Stop item moves.
+- **One answer stands.** A reasoned `acknowledged` answer settles every later question whose runs
+  and changes it already covered. Only a change it did not cover asks again.
+- **Never work, and the answer shows.** The question is exempt from unanswered findings beside
+  `decision_needed`, so status and readiness agree with the check. A covered run whose inputs are
+  unknown drops the standing `verification_rerun_question` fact, and the receipt shows the agent's
+  own one-line reason as a fenced, self-reported item. A stale verification on the AI route stays a
+  standing limit under its own code: the edit after the run is a recorded fact, not a question.
+- **"The ledger is too incomplete" names its gaps.** It never takes an obligation as subject at a
+  plan-only check, retires an obligation that has resolution evidence, and names its gap classes
+  when no coverage code applies.
+- **Noise at capture.** Already handled at capture:
+  - bytecode in `__pycache__` (the walk ignores `.pyc` writes and the directory's creation);
+  - the run's own outputs (freshness exempts writes the run itself made);
+  - reports, logs and build or coverage output (`notes`, non-counting).
+
+  Untracked deletions, files restored to `HEAD` and ignored paths need Git's answer inside the
+  hook-time workspace walk, through a hardened Git runner. That is a separate change, owned by
+  #1241's follow-up. Until then such changes still ask, and the answer-stands rule above keeps
+  each change set to one question.
+- **The input list.** The per-run `finishup-verification-inputs/v1` declaration was used in 0 of
+  112 attempts. It stays readable with every rule above, but guidance no longer advertises it.

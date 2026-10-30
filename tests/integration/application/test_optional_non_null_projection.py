@@ -594,7 +594,7 @@ _RESULT_OPTIONAL_NON_NULL: tuple[tuple[type[BaseModel], frozenset[str]], ...] = 
         ),
     ),
     (StatusCheckOutcomeModel, frozenset({"agent_next", "overall_next", "semantic_conclusion"})),
-    (SemanticRedactedValueModel, frozenset({"source_ref"})),
+    (SemanticRedactedValueModel, frozenset({"match_class", "source_ref", "stage"})),
     (
         StatusSemanticProgressModel,
         frozenset({"remaining_ms", "terminal_outcome", "terminal_reason"}),
@@ -1890,7 +1890,7 @@ async def test_root_start_and_check_omit_unset_multi_agent_fields() -> None:
         (
             SemanticRedactedValueModel,
             {"item_id": "item-1", "disposition": "value_replaced", "lines": [3]},
-            ("source_ref",),
+            ("source_ref", "stage", "match_class"),
         ),
         (
             StatusHistoryItemV14Model,
@@ -2375,9 +2375,10 @@ def test_every_result_optional_non_null_field_has_an_unset_projection_case() -> 
     covered["StatusOperationPageModel", "semantic_redacted_values"] = (
         "test_nested_multi_agent_results_omit_unset_fields"
     )
-    covered["SemanticRedactedValueModel", "source_ref"] = (
-        "test_nested_multi_agent_results_omit_unset_fields"
-    )
+    for field in ("source_ref", "stage", "match_class"):
+        covered["SemanticRedactedValueModel", field] = (
+            "test_nested_multi_agent_results_omit_unset_fields"
+        )
     for model, fields in (
         ("ChildFindingSnapshotModel", ("resolution_event_id", "self_verified")),
         ("StatusLineageChildModel", ("self_verified_finding_count",)),

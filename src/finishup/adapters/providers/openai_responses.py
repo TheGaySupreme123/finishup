@@ -43,6 +43,7 @@ from finishup.ports.semantic import (
     CURRENT_REVIEWER_SESSION,
     Deadline,
     DeclaredTestVerdict,
+    FreshnessVerdict,
     MissingForAssessment,
     PriorFindingVerdict,
     ProviderAttemptProvenance,
@@ -69,11 +70,13 @@ from finishup.protocol.canonical import (
     strict_json_parse,
 )
 from finishup.protocol.models import (
+    MAX_FRESHNESS_VERDICTS,
     MAX_PRIOR_FINDING_VERDICTS,
     MAX_PROVIDER_REVIEW_TEXT_CHARS,
     MAX_REVIEW_CHALLENGES,
     ProviderChallengeModel,
     ProviderDeclaredTestVerdictModel,
+    ProviderFreshnessVerdictModel,
     ProviderJudgmentChallengesModel,
     ProviderJudgmentEnvelopeModel,
     ProviderJudgmentInsufficientModel,
@@ -1970,6 +1973,7 @@ def normalize_judgment(parsed: JsonValue, *, require_part2: bool = False) -> Sem
         body_object, verified_dropped = _separate_verified(body_object)
         body_object = _separate_remaining_check(body_object)
         body_object = _separate_declared_test_verdicts(body_object)
+        body_object = _separate_freshness_verdicts(body_object)
         if require_part2 and body_object.get("conclusion") in {
             "no_material_discrepancy",
             "challenges_returned",
@@ -2033,6 +2037,9 @@ def normalize_judgment(parsed: JsonValue, *, require_part2: bool = False) -> Sem
         verified_dropped=verified_dropped,
         strongest_remaining_check=_remaining_check_from_model(model.strongest_remaining_check),
         declared_test_verdicts=_test_verdicts_from_model(model.declared_test_verdicts),
+        freshness_verdicts=tuple(
+            FreshnessVerdict(row.finding_id, row.agrees) for row in model.freshness_verdicts
+        ),
     )
 
 
@@ -2086,6 +2093,36 @@ def _separate_declared_test_verdicts(body: dict[str, JsonValue]) -> dict[str, Js
         kept.append(row)
     rest = {key: value for key, value in body.items() if key != "declared_test_verdicts"}
     return {**rest, "declared_test_verdicts": kept} if kept else rest
+
+
+_FRESHNESS_VERDICT_ADAPTER: Final[TypeAdapter[ProviderFreshnessVerdictModel]] = TypeAdapter(
+    ProviderFreshnessVerdictModel
+)
+
+
+def _separate_freshness_verdicts(body: dict[str, JsonValue]) -> dict[str, JsonValue]:
+    """Keep the first four well-formed freshness verdicts, one per finding (#1241 D9).
+
+    Optional and advisory: a malformed or repeated row, or one past the cap, costs only itself.
+    Absent and null read as no rows.
+    """
+
+    if "freshness_verdicts" not in body:
+        return body
+    raw = body["freshness_verdicts"]
+    kept: list[JsonValue] = []
+    seen: set[str] = set()
+    for row in cast(list[JsonValue], raw) if type(raw) is list else ():
+        try:
+            parsed = _FRESHNESS_VERDICT_ADAPTER.validate_python(row)
+        except ValidationError:
+            continue
+        if parsed.finding_id in seen or len(kept) >= MAX_FRESHNESS_VERDICTS:
+            continue
+        seen.add(parsed.finding_id)
+        kept.append(row)
+    rest = {key: value for key, value in body.items() if key != "freshness_verdicts"}
+    return {**rest, "freshness_verdicts": kept} if kept else rest
 
 
 def _separate_verified(body: dict[str, JsonValue]) -> tuple[dict[str, JsonValue], int]:

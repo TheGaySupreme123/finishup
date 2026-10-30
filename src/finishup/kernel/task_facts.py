@@ -2005,6 +2005,15 @@ class TaskFactSignals:
     # the planned command alone settles it). Where the host stated no outcome it is not listed and
     # stays a plain disclosure: no agent action supplies a host's missing outcome.
     fix_or_decline: tuple[tuple[str, ObligationId], ...] = ()
+    # #1241 D9 x #1209: the observed command actions the agent linked to a planned verification
+    # these facts read, sorted. The link is the agent's account citing the run, so the rerun
+    # question asks about it like a cited run, and an answer can clear its standing marker.
+    agent_linked_events: tuple[EventId, ...] = ()
+    # #1241 D9: the observed command actions whose freshness the ``verification_rerun_question``
+    # markers read, sorted: each planned item's deciding run (the latest of each requested
+    # verification) and the last verification run (the latest verification overall). The rerun
+    # question asks about exactly these, so every marker has a question an answer can clear.
+    freshness_deciding_events: tuple[EventId, ...] = ()
 
     def __post_init__(self) -> None:
         if not set(self.codes) <= TASK_FACT_GAPS:
@@ -2041,6 +2050,22 @@ def _changed_after(
         state.latest_edit,
         () if state.latest_edit_event is None else (state.latest_edit_event,),
     )
+
+
+def _rerun_answered(state: ProjectionState, delta: VerificationFreshness) -> bool:
+    """A reasoned answer already covers this run and its later changes (#1241 D10).
+
+    The receipt then shows the agent's bounded reason instead of the standing rerun question;
+    a change the answer did not cover asks again.
+    """
+
+    from finishup.kernel.freshness_answers import covering_freshness_answer
+
+    result = state.results.get(delta.run_ref)
+    if result is None:
+        return False
+    refs = (str(result.source_event_id), *delta.change_refs)
+    return covering_freshness_answer(state, refs) is not None
 
 
 def task_fact_signals(
@@ -2098,6 +2123,8 @@ def task_fact_signals(
     keyed_runs = [run for run in state.runs if run.identity is not None]
     linked_runs = _agent_linked_runs(projection, prefix, state, observed)
     planned_runs: list[_ObservedRun] = []
+    linked_events: set[EventId] = set()
+    deciding_events: set[EventId] = set()
     if command_identity_key_registered():
         for obligation in effective_obligations(projection):
             if obligation in blocked or obligation in acknowledged:
@@ -2123,6 +2150,11 @@ def task_fact_signals(
                     ]
                 )
                 planned_runs.extend(run for run, _outcome, _kind in matching)
+                linked_events.update(
+                    run.action_event
+                    for run in linked_runs.get((obligation, item.value), ())
+                    if run.action_event is not None
+                )
                 linked = [
                     (run, run.outcome, "agent_link")
                     for run in linked_runs.get((obligation, item.value), ())
@@ -2147,6 +2179,8 @@ def task_fact_signals(
                     )
                     continue
                 latest, outcome, kind = max(matching + linked, key=lambda row: row[0].position)
+                if latest.action_event is not None:
+                    deciding_events.add(latest.action_event)
                 if kind == "agent_link":
                     # The run that decides the outcome is the agent's own link, whether or not a
                     # direct run matched earlier (#1209, #1003): a later linked run can turn a red
@@ -2197,7 +2231,11 @@ def task_fact_signals(
                         # established (#1209): running the planned command alone settles it.
                         fixable.add((PLANNED_VERIFICATION_OUTCOME_UNKNOWN_GAP, obligation))
                 delta = by_event.get(latest.action_event)
-                if delta is not None and delta.state == "unknown":
+                if (
+                    delta is not None
+                    and delta.state == "unknown"
+                    and not _rerun_answered(projection, delta)
+                ):
                     markers.add((RERUN_QUESTION, obligation))
                 if delta is not None and delta.caller_asserted:
                     markers.add((CALLER_ASSERTED_INPUTS, obligation))
@@ -2279,8 +2317,14 @@ def task_fact_signals(
         )
 
     if verification_runs:
+        if verification_runs[-1].action_event is not None:
+            deciding_events.add(verification_runs[-1].action_event)
         delta = by_event.get(verification_runs[-1].action_event)
-        if delta is not None and delta.state == "unknown":
+        if (
+            delta is not None
+            and delta.state == "unknown"
+            and not _rerun_answered(projection, delta)
+        ):
             markers.add((RERUN_QUESTION, None))
     if any(fact.caller_asserted for fact in freshness):
         # Freshness of a retained run (the latest of its command, or one the account cites) held
@@ -2341,6 +2385,8 @@ def task_fact_signals(
         fix_or_decline=tuple(
             sorted(fixable, key=lambda item: (item[0].encode(), item[1].encode()))
         ),
+        agent_linked_events=tuple(sorted(linked_events, key=str.encode)),
+        freshness_deciding_events=tuple(sorted(deciding_events, key=str.encode)),
     )
 
 

@@ -3826,3 +3826,25 @@ and the capacity ending), `tests/integration/service/test_reviewer_oversize_firs
 `tests/unit/privacy/test_disclosure_capacity_fit.py` (bytes and tokens keep the frame; the
 existing fits still fall back to the limit) and `tests/unit/application/test_semantic_attempts.py`
 (usage on the attempt row).
+
+## Amendment (2026-10-30, #1241 D9): the reviewer says whether it agrees with rerun answers
+
+A ruling on a `local-finding-answer` row is set aside: local findings are not the reviewer's to
+rule. The verification rerun question is different. FinishUP asks it because only judgment can
+weigh a change against a verification, and the owner decided the reviewer judges freshness too:
+
+- The agent's answers to the question travel as their own row type, `yoetz.freshness-answer/1`
+  with `question: verification_rerun`. There are at most four, counted apart from the four other
+  local answers. They keep the `local-finding-answer-` item prefix, so privacy treats them as
+  agent-published text.
+- `FRESHNESS_REVIEW_QUESTION` asks the reviewer, for each such row, whether it agrees that no
+  rerun is needed. The answer goes in `freshness_verdicts` (`{finding_id, agrees}`, at most four),
+  optional on every conclusion branch of provider-judgment 1.2.0 and reviewer-reply 1.0.0. Strict
+  output sends it as a required nullable field. A malformed, repeated or extra row costs only
+  itself.
+- The verdicts are advisory. They never close or reopen a finding, never change the receipt, and
+  never become a finding. The check fences them to answered questions and counts them in its
+  `rerun_question_accounting` diagnostics record, with the questions asked and answered and the
+  reruns that followed an answer. The next run can then show whether the question earns its cost.
+- The reviewer loop instruction is unchanged: the ask lives in the packet's question, so the
+  instruction keeps its byte budget.
