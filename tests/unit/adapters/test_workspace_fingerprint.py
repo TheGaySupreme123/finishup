@@ -1053,11 +1053,11 @@ def test_reading_tally_is_bounded_exact_and_payload_free(tmp_path: Path) -> None
     ]
     for index in range(200):
         # Long closed call ids push the ring against the byte bound; a path is never kept.
-        call = f"call_{index:04d}_" + "x" * 118 if index % 2 else "/home/user/secret path"
+        call = f"call_{index:04d}_" + "x" * 118 if index % 2 else "/srv/user/secret path"
         assert store.note_reading(readings[index % 4], call)
     raw = (directory / "readings.json").read_bytes()
     assert len(raw) <= fingerprint.READING_FILE_BYTES
-    assert b"/home/user" not in raw and b"secret" not in raw
+    assert b"/srv/user" not in raw and b"secret" not in raw
     summary = _tally(directory)
     assert summary["status"] == "retained"
     totals = summary["all"]

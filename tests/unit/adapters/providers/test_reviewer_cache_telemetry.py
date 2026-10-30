@@ -546,7 +546,7 @@ def test_the_miss_label_passes_the_token_fence_and_nothing_else_does(
         component="codex_app_server",
         operation="exchange_cache",
         outcome="completed",
-        counts={"reviewer_cache_miss": "/home/user/PRIVATE", "reviewer_input_tokens": "PRIVATE"},
+        counts={"reviewer_cache_miss": "/srv/user/PRIVATE", "reviewer_input_tokens": "PRIVATE"},
     )
     (found,) = lookup_diagnostic_records(correlation, root=tmp_path)
     assert found["reviewer_cache_miss"] == "unavailable"

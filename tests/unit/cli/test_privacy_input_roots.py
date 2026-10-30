@@ -39,6 +39,7 @@ from finishup.domain.privacy import (
 from finishup.domain.values import JsonObject
 from finishup.protocol.canonical import JsonValue, canonical_encode
 from finishup.protocol.models import DataCategory
+from synthetic_paths import LINUX_HOME, MACOS_HOME
 
 _INSTALLATION = "ins_10000000-0000-4000-8000-000000000001"
 _REPOSITORY = "hmac-sha256:" + "4" * 64
@@ -101,7 +102,7 @@ def shared(tmp_path: Path) -> str:
 
 
 def test_roots_are_validated_sorted_and_bounded() -> None:
-    for root in ("/shared", "/data/tasks/legacy_app", "/Users/me/datasets"):
+    for root in ("/shared", "/data/tasks/legacy_app", f"{MACOS_HOME}/me/datasets"):
         assert admitted_input_root_valid(root), root
     for root in (
         "/",
@@ -112,7 +113,7 @@ def test_roots_are_validated_sorted_and_bounded() -> None:
         "/dev",
         "/private/etc/hosts",
         "/shared/../etc",
-        "/home/me/.ssh",
+        f"{LINUX_HOME}/me/.ssh",
         "/shared//x",
         "/with space",
     ):

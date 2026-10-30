@@ -1,7 +1,7 @@
 """A declared test file is refused in HOME's private state and system trees by identity (#1220).
 
 PR #1221 review (P1): the HOME guard compared spellings, so on a case-insensitive volume
-``/Users/ALICE/Library/report.txt`` (HOME ``/Users/alice``) skipped it. The read now finds HOME
+``/Users/<ALICE>/Library/report.txt`` (HOME ``/Users/<alice>``) skipped it. The read now finds HOME
 and the system directories among the path's ancestors by device and inode. Another spelling of
 the same directory is simulated with a link the guard resolves (HOME, a system directory), since
 the test volume may be case-sensitive; the real alternate-case spelling runs where it is not.

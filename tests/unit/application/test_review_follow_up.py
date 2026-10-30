@@ -94,6 +94,7 @@ from finishup.ports.semantic import MissingForAssessment, SemanticCase, Semantic
 from finishup.protocol.canonical import JsonValue, strict_json_parse
 from finishup.protocol.coverage import EvidenceImmutability
 from finishup.protocol.models import MAX_REVIEW_FOLLOW_UP_ROUNDS, DataCategory
+from synthetic_paths import LINUX_HOME
 
 _WHEN = timestamp_from_string("2026-10-12T00:00:00.000Z")
 
@@ -1744,7 +1745,7 @@ def test_captured_command_output_stays_inside_the_follow_up_byte_budget() -> Non
 _KEY_BODY = b"b3BlbnNzaC1rZXktdjEAAAAABG5vbmUAAAAEbm9uZQAAAAAAAAABAAABlwAAAAdzc2gtcn\n"
 _KEY_END = b"-----END OPENSSH PRIVATE KEY-----\n"
 _DB_PASS = b"DB_PASS=hunter2\n"
-_HOME_ASSIGNMENT = b"HOME=/home/me\n"
+_HOME_ASSIGNMENT = f"HOME={LINUX_HOME}/me\n".encode()
 _RK_LIVE = b"RK_LIVE_abcdefghijklmnopqrstuvwxyz\n"
 _GITIGNORED = b"GITIGNORED_LOCAL_NOTE\n"
 _ENV_DUMP = b"ENV_DUMP_MARKER=present\n"
