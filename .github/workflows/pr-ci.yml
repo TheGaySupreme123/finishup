@@ -189,16 +189,51 @@ jobs:
       - name: Run public-boundary scanner over the checkout
         run: uv run --locked python scripts/scan_public_boundary.py --source-tree .
 
-      - name: Focused canonical/schema/protocol unit vectors (hash seed 0)
-        env:
-          PYTHONHASHSEED: "0"
-        run: |
-          uv run --locked pytest tests/unit/protocol tests/unit/kernel \
-            -m "not fault and not soak and not live" -q --timeout=120
+  # ---------------------------------------------------------------------------------------------
+  # hash-seed-vectors — canonical/schema/protocol unit vectors under two hash seeds. Each seed is
+  # about six minutes; run inside contracts-and-resources they left it two minutes inside its
+  # budget, so each seed is its own job.
+  # ---------------------------------------------------------------------------------------------
+  hash-seed-vectors:
+    name: hash-seed-vectors (seed ${{ matrix.seed }})
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        seed: ["0", "1"]
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout (no persisted credentials)
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+          fetch-depth: 1
+          submodules: false
+          lfs: false
 
-      - name: Focused canonical/schema/protocol unit vectors (hash seed 1)
+      - name: Install uv (locked version)
+        uses: astral-sh/setup-uv@11f9893b081a58869d3b5fccaea48c9e9e46f990 # v8.3.2
+        with:
+          version: "0.11.29"
+          python-version: "3.14.6"
+          enable-cache: true
+          cache-dependency-glob: "uv.lock"
+
+      - name: uv sync --locked
+        run: uv sync --locked --all-extras --group dev
+
+      - name: Use a private temporary root for runtime and storage tests
+        run: |
+          test_tmp="${RUNNER_TEMP}/finishup-test-tmp"
+          mkdir -p "$test_tmp"
+          chmod 700 "$test_tmp"
+          echo "TMPDIR=$test_tmp" >> "$GITHUB_ENV"
+
+      - name: Focused canonical/schema/protocol unit vectors (hash seed ${{ matrix.seed }})
         env:
-          PYTHONHASHSEED: "1"
+          PYTHONHASHSEED: ${{ matrix.seed }}
         run: |
           uv run --locked pytest tests/unit/protocol tests/unit/kernel \
             -m "not fault and not soak and not live" -q --timeout=120
@@ -631,9 +666,30 @@ jobs:
   # package-and-boundary — clean build, artifact inspection, install/verify, boundary scan.
   # ---------------------------------------------------------------------------------------------
   package-and-boundary:
-    name: package-and-boundary
+    name: package-and-boundary (${{ matrix.shard.name }})
     runs-on: ubuntu-24.04
     timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        # The packaging suite took 14 to more than 20 minutes in one process; the resource-ripple
+        # cases, which copy a checkout and run the full ripple, are most of it. Three disjoint
+        # shards; the "not (...)" and --ignore selections keep every other case in some shard.
+        # The install, help, boundary-scan and negative-control steps run once, in "artifacts".
+        shard:
+          - name: ripple-write
+            args: >-
+              tests/packaging/test_resource_ripple.py
+              -k "write_converges or write_bootstraps or write_regenerates"
+            artifacts: false
+          - name: ripple-rest
+            args: >-
+              tests/packaging/test_resource_ripple.py
+              -k "not (write_converges or write_bootstraps or write_regenerates)"
+            artifacts: false
+          - name: artifacts
+            args: tests/packaging --ignore=tests/packaging/test_resource_ripple.py
+            artifacts: true
     permissions:
       contents: read
     steps:
@@ -672,10 +728,11 @@ jobs:
       - name: Inspect sdist/wheel allowlists, metadata, entry points, and resource bytes
         run: |
           uv run --locked python scripts/verify_resource_manifest.py --check
-          uv run --locked pytest tests/packaging \
+          uv run --locked pytest ${{ matrix.shard.args }} \
             -m "not fault and not soak and not live" -q --timeout=180
 
       - name: Install the wheel outside the checkout
+        if: matrix.shard.artifacts
         run: |
           candidate_version=$(uv run --locked python -c "import tomllib; print(tomllib.load(open('pyproject.toml', 'rb'))['project']['version'])")
           uv venv "${{ runner.temp }}/pkg-venv"
@@ -684,6 +741,7 @@ jobs:
           uv pip install --python "${{ runner.temp }}/pkg-venv/bin/python" "finishup==${candidate_version}"
 
       - name: Isolate HOME/XDG/FinishUP app data inside job temp directory
+        if: matrix.shard.artifacts
         run: |
           iso="${RUNNER_TEMP}/finishup-home"
           mkdir -p "$iso"
@@ -694,6 +752,7 @@ jobs:
           echo "YZCI_DENY_NETWORK=1" >> "$GITHUB_ENV"
 
       - name: Run import, help, version --json, and strict-local vertical slice
+        if: matrix.shard.artifacts
         run: |
           cd "${{ runner.temp }}"
           "${{ runner.temp }}/pkg-venv/bin/python" -c "import finishup; print(finishup.__name__)"
@@ -701,12 +760,14 @@ jobs:
           "${{ runner.temp }}/pkg-venv/bin/finishup" version --json
 
       - name: Run public-boundary scanner over checkout, sdist, wheel, metadata
+        if: matrix.shard.artifacts
         run: |
           uv run --locked python scripts/scan_public_boundary.py --source-tree . \
             --artifact "${{ runner.temp }}"/dist/*.whl \
             --artifact "${{ runner.temp }}"/dist/*.tar.gz
 
       - name: Negative control — synthetic canary must be blocked and never logged
+        if: matrix.shard.artifacts
         run: |
           set -euo pipefail
           canary_dir="${{ runner.temp }}/negative-control"
@@ -734,6 +795,7 @@ jobs:
     needs:
       - trusted-console-boundary
       - contracts-and-resources
+      - hash-seed-vectors
       - format-lint-type
       - unit-and-conformance
       - older-python
@@ -752,6 +814,7 @@ jobs:
           declare -A results=(
             [trusted-console-boundary]="${{ needs.trusted-console-boundary.result }}"
             [contracts-and-resources]="${{ needs.contracts-and-resources.result }}"
+            [hash-seed-vectors]="${{ needs.hash-seed-vectors.result }}"
             [format-lint-type]="${{ needs.format-lint-type.result }}"
             [unit-and-conformance]="${{ needs.unit-and-conformance.result }}"
             [older-python]="${{ needs.older-python.result }}"
