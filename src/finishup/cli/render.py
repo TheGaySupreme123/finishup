@@ -11,7 +11,6 @@ from finishup.domain.findings import SELF_VERIFIED_GUIDANCE
 from finishup.domain.receipts import (
     COORDINATOR_FAILURE_LIMITATION,
     DEFERRED_BEFORE_FIRST_EDIT_TEXT,
-    SEMANTIC_REDACTED_VALUES_AGENT_LINE,
     UNRESOLVED_VERIFICATION_GAP,
     UNRESOLVED_VERIFICATION_LIMITATION,
     check_time_change_gap_sentence,
@@ -19,6 +18,7 @@ from finishup.domain.receipts import (
     limitations_name_coordinator_failure,
     privacy_block_sentence,
     review_deferred_before_first_edit,
+    semantic_redacted_value_agent_lines,
     semantic_redacted_value_text,
 )
 from finishup.domain.review_guidance import review_guidance_line
@@ -1286,7 +1286,7 @@ def _receipt_review_mode_lines(document: Mapping[str, JsonValue]) -> list[str]:
 
 
 def _semantic_redacted_value_lines(items: Sequence[object]) -> list[str]:
-    """PL2-1: item refs and line numbers, then the fixed agent line once; never a value."""
+    """PL2-1: item refs and line numbers, then each fixed agent line once; never a value."""
 
     values = _semantic_redacted_values(items)
     if not values:
@@ -1294,7 +1294,7 @@ def _semantic_redacted_value_lines(items: Sequence[object]) -> list[str]:
     return [
         "Withheld from external review (refs and lines only; no value is shown):",
         *(f"- {semantic_redacted_value_text(value)}" for value in values),
-        SEMANTIC_REDACTED_VALUES_AGENT_LINE,
+        *semantic_redacted_value_agent_lines(values),
     ]
 
 

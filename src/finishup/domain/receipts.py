@@ -84,6 +84,7 @@ __all__ = [
     "ReceiptPackageName",
     "SEMANTIC_REDACTED_VALUES_AGENT_LINE",
     "SEMANTIC_REDACTED_VALUES_AGENT_LINE_SHORT",
+    "SEMANTIC_REVIEW_BLOCKED_AGENT_LINE",
     "semantic_redacted_value_text",
     "ACKNOWLEDGED_OBLIGATIONS_SECTION_TITLE",
     "PREMISE_DISPUTED_SECTION_TITLE",
@@ -984,8 +985,30 @@ SEMANTIC_REDACTED_VALUES_AGENT_LINE_SHORT: Final = (
 )
 
 
+# #1138: the fixed line for ``review_blocked`` items. Nothing of theirs was replaced or withheld
+# piecemeal, so the line above does not apply to them; this one says what does.
+SEMANTIC_REVIEW_BLOCKED_AGENT_LINE: Final = (
+    "Items that blocked the whole review were refused at the privacy boundary; that content was "
+    "not sent, and local checks saw it. Sending it again unchanged will not help. Do not change "
+    "consent, rename, hide or reshape your work to clear this."
+)
+
+
+def semantic_redacted_value_agent_lines(
+    values: Sequence[SemanticRedactedValue],
+) -> tuple[str, ...]:
+    """The fixed agent lines for ``values``: one per kind present, never a value (#982, #1138)."""
+
+    lines: list[str] = []
+    if any(item.disposition != "review_blocked" for item in values):
+        lines.append(SEMANTIC_REDACTED_VALUES_AGENT_LINE)
+    if any(item.disposition == "review_blocked" for item in values):
+        lines.append(SEMANTIC_REVIEW_BLOCKED_AGENT_LINE)
+    return tuple(lines)
+
+
 _PRIVACY_BLOCK_LEAD: Final = (
-    "AI-powered review was blocked at the privacy boundary before anything was sent"
+    "AI-powered review was blocked at the privacy boundary; the refused content was not sent"
 )
 _REVIEW_BLOCK_STAGE_WORDS: Final[Mapping[str, str]] = MappingProxyType(
     {
@@ -1057,7 +1080,7 @@ def semantic_redacted_value_text(item: SemanticRedactedValue) -> str:
         if item.disposition == "value_replaced"
         else "item withheld"
         if item.disposition == "item_withheld"
-        # #1138: this item's match stopped the whole review before anything was sent.
+        # #1138: this item's match stopped the whole review; the refused content was not sent.
         else f"blocked the whole review ({item.match_class} match at the {item.stage} scan)"
     )
     # Line numbers count lines of the captured item (an excerpt or one of its parts), not of the
@@ -3269,7 +3292,7 @@ def render_receipt_human(document: ReceiptDocument, *, markdown: bool) -> str:
                         f"- {semantic_redacted_value_text(item)}"
                         for item in document.semantic_redacted_values
                     ),
-                    SEMANTIC_REDACTED_VALUES_AGENT_LINE,
+                    *semantic_redacted_value_agent_lines(document.semantic_redacted_values),
                 )
             )
         )
@@ -3346,7 +3369,7 @@ def _compact_not_run_clause(document: ReceiptDocument, clause: str) -> str:
         # #1138: the compact sentence names a privacy-boundary refusal as one too.
         return clause.replace(
             "AI-powered relevance review was not run",
-            "AI-powered review was blocked at the privacy boundary before anything was sent",
+            _PRIVACY_BLOCK_LEAD,
             1,
         )
     if not limitations_name_coordinator_failure(document.sections):

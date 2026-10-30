@@ -280,7 +280,8 @@ def _blocked_redacted_values(
 
     Each matched item, or the ``review-packet`` item when none is named, becomes one
     ``review_blocked`` entry with the refusing stage and class (#1138); an item's earlier
-    ``value_replaced`` lines and catalogued ref are kept, since nothing was sent at all.
+    ``value_replaced`` lines and catalogued ref are kept, since nothing was sent at all. At the
+    entry bound the refusal's own entries are kept first, so the record never loses what refused.
     """
 
     if block is None:
@@ -297,9 +298,11 @@ def _blocked_redacted_values(
             stage,
             block.match_class,
         )
-    return tuple(merged[key] for key in sorted(merged, key=str.encode))[
-        :MAX_SEMANTIC_REDACTED_VALUE_ITEMS
-    ]
+    kept = sorted(
+        merged,
+        key=lambda key: (merged[key].disposition != "review_blocked", key.encode()),
+    )[:MAX_SEMANTIC_REDACTED_VALUE_ITEMS]
+    return tuple(merged[key] for key in sorted(kept, key=str.encode))
 
 
 def _transformation_count(summary: tuple[tuple[str, int], ...], name: str) -> int:
@@ -733,10 +736,16 @@ class SemanticEgressBlocked:
     # Which approved bound was exceeded; excerpt bytes count the privacy-transformed content,
     # not its original selection size or the JSON-escaped whole disclosure.
     capacity_scope: Literal["disclosure", "excerpt", "excerpt_total"] = "disclosure"
+    # The gateway was invoked and its outcome is unknown, so the content may have been sent. Set
+    # only where the gateway call raised or returned an unmappable result; every other blocked
+    # result stopped before dispatch.
+    dispatch_attempted: bool = False
 
     def __post_init__(self) -> None:
         _validate_withheld_item_ids(self.withheld_item_ids)
         validate_semantic_redacted_values(self.redacted_values)
+        if self.dispatch_attempted and self.outcome is not PrivacyOutcome.TRANSPORT_FAILED:
+            raise ValueError("semantic_dispatch_attempt_invalid")
         if type(self.redacted_span_count) is not int or self.redacted_span_count < 0:
             raise ValueError("semantic_redacted_span_count_invalid")
         if self.capacity is not None:
@@ -2963,6 +2972,7 @@ class PrivacyCoordinator:
                     withheld_item_ids=minimized.withheld_item_ids,
                     redacted_span_count=minimized.redacted_span_count,
                     redacted_values=minimized.redacted_values,
+                    dispatch_attempted=True,
                 )
             outcome, reason = _semantic_result_outcome(result)
             receipt = _semantic_local_receipt(
@@ -3082,6 +3092,7 @@ class PrivacyCoordinator:
                 withheld_item_ids=minimized.withheld_item_ids,
                 redacted_span_count=minimized.redacted_span_count,
                 redacted_values=minimized.redacted_values,
+                dispatch_attempted=True,
             )
         dispatch_kind = (
             SemanticDispatchKind.EXTERNAL_RUNTIME_OAUTH
@@ -3215,6 +3226,7 @@ class PrivacyCoordinator:
             withheld_item_ids=tuple(sorted(set(withheld_item_ids), key=str.encode)),
             redacted_span_count=redacted_span_count,
             redacted_values=redacted_values,
+            dispatch_attempted=True,
         )
 
     def _data_use_evidence_current(self, binding: ProviderBinding) -> bool:

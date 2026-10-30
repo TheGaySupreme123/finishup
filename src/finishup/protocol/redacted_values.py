@@ -42,9 +42,10 @@ MAX_SEMANTIC_REDACTED_VALUE_ITEMS: Final = 64
 MAX_SEMANTIC_REDACTED_VALUE_LINES: Final = 32
 MAX_SEMANTIC_REDACTED_VALUE_LINE: Final = 2_147_483_647
 # ``review_blocked`` (#1138): a credential-like match in this item stopped the whole AI-powered
-# review before anything was sent; it names the privacy scan ``stage`` that refused and the
-# match's confidence ``match_class``. The ``review-packet`` item stands for a match no single
-# item explains (FinishUP's own packet structure, or content spanning items).
+# review and the refused content was not sent (an earlier exchange of the same conversation may
+# have been); it names the privacy scan ``stage`` that refused and the match's confidence
+# ``match_class``. The ``review-packet`` item stands for a match no single item explains
+# (FinishUP's own packet structure, or content spanning items).
 SEMANTIC_REDACTED_VALUE_DISPOSITIONS: Final = ("item_withheld", "review_blocked", "value_replaced")
 SEMANTIC_REVIEW_BLOCK_STAGES: Final = ("candidate", "prepared_case", "reviewer_exchange")
 SEMANTIC_REVIEW_BLOCK_MATCH_CLASSES: Final = ("heuristic", "high_confidence")
