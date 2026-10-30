@@ -216,8 +216,9 @@ def test_only_successful_owned_start_response_supplies_bridge_facts() -> None:
         # Swept or queued rows arrive after the lease they prove; they are offered with their
         # receipt time rather than dropped by delivery age.
         ("accepted", 61, False, "PostToolUse", True),
-        ("accepted", 86_460, False, "PostToolUse", True),
-        ("accepted", 86_461, False, "PostToolUse", False),
+        # The bound is the lease plus the longest contact-loss horizon, a week (#1239).
+        ("accepted", 604_860, False, "PostToolUse", True),
+        ("accepted", 604_861, False, "PostToolUse", False),
         ("accepted", -1, False, "PostToolUse", False),
         ("rejected", 0, False, "PostToolUse", False),
         ("accepted", 0, True, "PostToolUse", False),
@@ -239,10 +240,13 @@ async def test_current_native_activity_is_offered_with_its_own_time(
     payload, ids = _callback()
     envelope = replace(_envelope(payload), event_kind=event_kind)
     hook = AsyncMock()
+    session_end = AsyncMock()
     coordinator = cast(
         ObservationCoordinator,
         SimpleNamespace(
             observed_activity_hook=hook,
+            # #1239: ``SessionEnd`` goes to its own hook and never renews contact.
+            observed_session_end_hook=session_end,
             observed_activity_max_age_seconds=ObservationCoordinator.observed_activity_max_age_seconds,
             clock=SimpleNamespace(
                 now_utc=lambda: envelope.receipt_time.as_datetime() + timedelta(seconds=age)
@@ -269,6 +273,7 @@ async def test_current_native_activity_is_offered_with_its_own_time(
         codex_session_id="native-correlation",
     )
     assert hook.await_count == int(expected)
+    assert session_end.await_count == int(event_kind == "SessionEnd")
     if expected:
         hook.assert_awaited_once_with(
             ids["task_id"],

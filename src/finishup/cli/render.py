@@ -37,6 +37,7 @@ from finishup.domain.review_mode_render import (
     status_review_mode_line,
 )
 from finishup.domain.reviewer_reads import render_reviewer_lines, reviewer_record_from_wire
+from finishup.domain.task_lifecycle_render import status_task_lifecycle_line
 from finishup.kernel.fact_lineage import FactLineage, lineage_from_wire, lineage_texts
 from finishup.legacy_names import LAUNCHER_NAME
 from finishup.protocol.canonical import JsonValue
@@ -875,6 +876,17 @@ def _status_review_mode_lines(result: StatusSuccessModel) -> tuple[str, ...]:
     return tuple(line for line in lines if line)
 
 
+def _status_task_lifecycle_lines(result: StatusSuccessModel) -> tuple[str, ...]:
+    """The task's own work lifecycle when it is not open and in contact (#1239)."""
+
+    if result.task_lifecycle is None:
+        return ()
+    line = status_task_lifecycle_line(
+        result.task_lifecycle.model_dump(mode="json", exclude_none=True)
+    )
+    return (line,) if line else ()
+
+
 def render_human_status(result: StatusSuccessModel) -> str:
     """Render current structural status without dumping the ledger."""
 
@@ -897,6 +909,7 @@ def render_human_status(result: StatusSuccessModel) -> str:
         *render_closure_readiness_lines(result.closure_readiness),
         *_credential_heuristic_lines(result),
         *_status_review_mode_lines(result),
+        *_status_task_lifecycle_lines(result),
     ]
     if isinstance(result.page, StatusCoveragePageModel):
         from finishup.domain.verification_coverage import verification_coverage_wire_lines

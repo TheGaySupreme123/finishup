@@ -134,6 +134,7 @@ from finishup.application.lineage_coordinator import (
 from finishup.application.lineage_recovery import (
     observed_activity_renewal,
     observed_host_session_binding,
+    observed_session_end,
 )
 from finishup.application.missing_for_assessment import (
     check_change_binary_paths,
@@ -7120,6 +7121,9 @@ async def provide_service_ready_context(
             start_lease_seconds=config.lineage.start_lease_seconds,
             attach_handle_ttl_seconds=config.lineage.attach_handle_ttl_seconds,
             contact_lost_recovery_seconds=config.lineage.contact_lost_recovery_seconds,
+            top_level_contact_lost_horizon_seconds=(
+                config.lineage.top_level_contact_lost_horizon_seconds
+            ),
             max_depth=config.lineage.max_depth,
             max_fanout=config.lineage.max_fanout,
         ),
@@ -8289,6 +8293,7 @@ async def provide_service_ready_context(
         host_lineage_registry=host_lineage_registry,
         observed_host_session_binding=observed_host_session_binding(catalog, lineage),
         observed_activity_hook=observed_activity_renewal(catalog, lineage, clock),
+        observed_session_end_hook=observed_session_end(catalog, lineage),
         capture_budget_bootstrap=bootstrap_capture_reservations,
         capture_handoff_reconcile=reconcile_capture_handoffs,
     )
@@ -8548,6 +8553,7 @@ async def provide_service_ready_context(
         change_capture=change_capture,
         input_snapshot_scope=input_snapshot_scope,
         conversation_review_context=conversation_review_context,
+        lineage_parent_refresh=lineage_manifest_coordinator.sweep_parent_of,
     )
 
 

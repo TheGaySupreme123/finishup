@@ -81,6 +81,50 @@ max_fanout = 12
     assert config.lineage.max_fanout == 16
 
 
+def test_the_contact_loss_horizon_loads_and_never_undercuts_the_recovery_window(
+    tmp_path: Path,
+) -> None:
+    """#1239: the top-level horizon is a bounded leaf like the recovery window it may not undercut."""
+
+    config_path = tmp_path / "config.toml"
+    config_path.write_text(
+        """
+[lineage]
+contact_lost_recovery_seconds = 600
+top_level_contact_lost_horizon_seconds = 7200
+"""
+    )
+    config = load_config({}, {}, config_path)
+    assert config.lineage.top_level_contact_lost_horizon_seconds == 7_200
+    overridden = load_config(
+        {}, {"FINISHUP_LINEAGE_TOP_LEVEL_CONTACT_LOST_HORIZON_SECONDS": "604800"}, config_path
+    )
+    assert overridden.lineage.top_level_contact_lost_horizon_seconds == 604_800
+    assert load_config({}, {}, None).lineage.top_level_contact_lost_horizon_seconds == 86_400
+    for value in ("599", "604801", "0"):
+        with pytest.raises(ConfigError):
+            load_config({"lineage.top_level_contact_lost_horizon_seconds": value}, {}, config_path)
+
+
+def test_rendered_config_writes_the_horizon_only_when_the_owner_chose_one(tmp_path: Path) -> None:
+    from finishup.config.write import render_config_toml
+
+    config_path = tmp_path / "config.toml"
+    config_path.write_text('profile = "test-fake"\n')
+    assert "top_level_contact_lost_horizon_seconds" not in render_config_toml(
+        load_config({}, {}, config_path)
+    )
+    chosen = load_config(
+        {"lineage.top_level_contact_lost_horizon_seconds": "172800"}, {}, config_path
+    )
+    rendered = render_config_toml(chosen)
+    assert "top_level_contact_lost_horizon_seconds = 172800" in rendered
+    config_path.write_text(rendered)
+    assert (
+        load_config({}, {}, config_path).lineage.top_level_contact_lost_horizon_seconds == 172_800
+    )
+
+
 def test_shadowed_lower_precedence_scalar_is_not_parsed(tmp_path: Path) -> None:
     config = load_config(
         {"verification.max_findings": "7"},

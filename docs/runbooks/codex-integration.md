@@ -1160,10 +1160,18 @@ receipt time (#837). A row the hook drain, sweeper, or legacy spool delivers lat
 when it was received. A duplicate replay re-offers the same evidence without extending it, and
 `Stop` counts as contact while `SessionEnd` ends it. Stream history and predecessor sessions do not
 renew. Codex registers no subagent lifecycle hook for the parent, so no in-flight hold applies. A
-parent's own `PreToolUse` and `PostToolUse` still count, but one `wait` or other tool call that
-runs past the lease plus the recovery window, with no other parent event, loses contact and
-abandons the work after `lineage.contact_lost_recovery_seconds`. That is the recorded Codex gap,
-and raising the window is the supported mitigation. A silent child still enters contact loss and
+parent's own `PreToolUse` and `PostToolUse` still count. One `wait`, a long `write_stdin` poll (no
+hook fires for it), or one long model turn with no tool call, past the lease, loses contact.
+
+Since #1239 the abandonment that follows depends on who waits. Host decision: supported, same
+code path as Claude Code and Cursor; no Codex-specific behavior. A top-level or orphaned task keeps
+its open work for `lineage.top_level_contact_lost_horizon_seconds` (default one day) and status
+shows `task_lifecycle` with `session_health: contact_lost`. A child whose parent waits on it is
+abandoned after `lineage.contact_lost_recovery_seconds`. That short window is the remaining
+recorded Codex gap, and raising it is the supported mitigation. A delivered `SessionEnd`, including
+one the drain delivers late, ends the session unless later contact outlived it.
+Open work is then abandoned as `session_ended` after the recovery window unless the session
+resumes. A `contact_lost` abandonment is reversed by the same session's `work_closed`. A silent child still enters contact loss and
 the configured recovery window; source edits by themselves cannot prove continuing contact when
 observation is unavailable. Terminal parents are refused new child work with
 `lineage_parent_work_terminal` and continue through a successor task (`lineage_successor_task`).

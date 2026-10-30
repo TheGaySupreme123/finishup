@@ -26,12 +26,12 @@ def test_forward_migrate_catalog_0001_to_current() -> None:
     report = run_migrations(catalog, CATALOG_MIGRATIONS, maintenance=None)
 
     assert report.from_version == 1
-    assert report.to_version == 5
-    assert report.applied_versions == ("0002", "0003", "0004", "0005")
-    assert catalog.execute("PRAGMA user_version").fetchone() == (5,)
+    assert report.to_version == 6
+    assert report.applied_versions == ("0002", "0003", "0004", "0005", "0006")
+    assert catalog.execute("PRAGMA user_version").fetchone() == (6,)
     assert catalog.execute(
         "SELECT value FROM catalog_meta WHERE key = 'storage_schema_version'"
-    ).fetchone() == ("5",)
+    ).fetchone() == ("6",)
     assert catalog.execute(
         "SELECT strict, wr FROM pragma_table_list WHERE name = 'publish_responses'"
     ).fetchone() == (1, 1)
@@ -44,7 +44,7 @@ def test_fresh_catalog_initialization_includes_publish_responses() -> None:
     catalog = apsw.Connection(":memory:")
     initialize_catalog(catalog)
 
-    assert catalog.execute("PRAGMA user_version").fetchone() == (5,)
+    assert catalog.execute("PRAGMA user_version").fetchone() == (6,)
     assert tuple(row[1] for row in catalog.execute("PRAGMA table_info(publish_responses)")) == (
         "writer_id",
         "request_id",

@@ -227,16 +227,16 @@ class SqliteLineageStore(LineageStore):
             raise _error(PublicErrorCode.STORAGE_CORRUPT, "The lineage catalog is inconsistent.")
         return None if not rows else rows[0]
 
-    def _meta(self, task_id: str) -> tuple[int, datetime | None, datetime | None]:
+    def _meta(self, task_id: str) -> tuple[int, datetime | None, datetime | None, str | None]:
         rows = self._rows(
-            "SELECT lineage_authority_revision, contact_lost_at, abandonment_deadline "
-            "FROM lineage_task_meta WHERE task_id = ? LIMIT 2",
+            "SELECT lineage_authority_revision, contact_lost_at, abandonment_deadline, "
+            "abandonment_reason FROM lineage_task_meta WHERE task_id = ? LIMIT 2",
             (task_id,),
         )
         if len(rows) > 1:
             raise _error(PublicErrorCode.STORAGE_CORRUPT, "The lineage catalog is inconsistent.")
         if not rows:
-            return 1, None, None
+            return 1, None, None, None
         row = rows[0]
         revision = _integer(row[0])
         if revision < 1:
@@ -245,6 +245,7 @@ class SqliteLineageStore(LineageStore):
             revision,
             None if row[1] is None else _timestamp(row[1]),
             None if row[2] is None else _timestamp(row[2]),
+            _optional_text(row[3]),
         )
 
     def _session_for_route(
@@ -274,7 +275,9 @@ class SqliteLineageStore(LineageStore):
         route_session = _text(row[1])
         try:
             health, _changed_at, lease_expires = self._session_for_route(task_id, route_session)
-            revision, contact_lost_at, abandonment_deadline = self._meta(task_id)
+            revision, contact_lost_at, abandonment_deadline, abandonment_reason = self._meta(
+                task_id
+            )
             if health is SessionHealth.ACTIVE and (
                 lease_expires is None or lease_expires <= self._clock.now_utc()
             ):
@@ -301,6 +304,7 @@ class SqliteLineageStore(LineageStore):
                 contact_lost_at=contact_lost_at,
                 abandonment_deadline=abandonment_deadline,
                 lineage_authority_revision=revision,
+                abandonment_reason=abandonment_reason,
             )
         except PublicOperationError:
             raise
@@ -603,9 +607,11 @@ class SqliteLineageStore(LineageStore):
                 (route_session, task, now_wire, now_wire, now_wire),
             )
         self._db.execute(
-            "INSERT INTO lineage_task_meta(task_id, lineage_authority_revision, contact_lost_at, abandonment_deadline) "
-            "VALUES (?, ?, ?, ?) ON CONFLICT(task_id) DO UPDATE SET lineage_authority_revision = excluded.lineage_authority_revision, "
-            "contact_lost_at = excluded.contact_lost_at, abandonment_deadline = excluded.abandonment_deadline",
+            "INSERT INTO lineage_task_meta(task_id, lineage_authority_revision, contact_lost_at, "
+            "abandonment_deadline, abandonment_reason) VALUES (?, ?, ?, ?, ?) "
+            "ON CONFLICT(task_id) DO UPDATE SET lineage_authority_revision = excluded.lineage_authority_revision, "
+            "contact_lost_at = excluded.contact_lost_at, abandonment_deadline = excluded.abandonment_deadline, "
+            "abandonment_reason = excluded.abandonment_reason",
             (
                 task,
                 snapshot.lineage_authority_revision,
@@ -615,6 +621,7 @@ class SqliteLineageStore(LineageStore):
                 None
                 if snapshot.abandonment_deadline is None
                 else format_rfc3339_millis(snapshot.abandonment_deadline),
+                snapshot.abandonment_reason,
             ),
         )
         if snapshot.work_state in {

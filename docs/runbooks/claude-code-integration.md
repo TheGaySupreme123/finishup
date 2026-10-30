@@ -848,11 +848,19 @@ reproduces the same sequence on the released source. The per-profile decisions a
   - a turn waiting on the user;
   - in the ordinary profile, a subagent that stays silent.
 
-  Such periods still lose contact after the lease and abandon the work after
-  `lineage.contact_lost_recovery_seconds`, which operators can raise.
-- **After abandonment.** Refusals carry `lineage_resume_work_terminal` or
-  `lineage_parent_work_terminal` with the `lineage_successor_task` continuation. Keep the held
-  session for history and receipts, and start one successor task for new work and delegation.
+  Such periods still lose contact after the lease. Since #1239 (host decision: supported, same
+  code path as Codex and Cursor) a top-level or orphaned task keeps its open work for
+  `lineage.top_level_contact_lost_horizon_seconds` (default one day). Status shows
+  `task_lifecycle` with `session_health: contact_lost`. A child whose parent waits on it is
+  abandoned after `lineage.contact_lost_recovery_seconds`, which operators can raise.
+- **Session end.** A delivered `SessionEnd` ends the session unless later contact outlived it.
+  Open work is abandoned as `session_ended` after the recovery window unless the session resumes
+  first.
+- **After abandonment.** The same session's `work_closed` reverses a `contact_lost` abandonment.
+  Otherwise refusals carry `lineage_work_transition`, `lineage_resume_work_terminal`, or
+  `lineage_parent_work_terminal`; the last two continue with `lineage_successor_task`. Keep the
+  held session for history and receipts, and start one successor task for new work and
+  delegation.
 
 No Claude capability cell moves. Native re-verification of this path is still owed on a pinned
 instance.

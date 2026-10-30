@@ -6239,6 +6239,7 @@ def _status_result_v1_4_schema(entry: _RegistryEntry) -> dict[str, JsonValue]:
     _admit_current_launcher_heads(definitions)
     _add_status_credential_heuristic(definitions)
     _add_status_review_mode(definitions)
+    _add_status_task_lifecycle(definitions)
     _add_status_requested_item_role(definitions)
     _add_status_operation_server_filled(definitions)
     _add_status_check_outcome(definitions)
@@ -6401,6 +6402,39 @@ def _add_status_review_mode(definitions: dict[str, JsonValue]) -> None:
     success = cast(dict[str, JsonValue], definitions["success"])
     cast(dict[str, JsonValue], success["properties"])["review_mode"] = {
         "$ref": "#/$defs/status_review_mode"
+    }
+
+
+def _add_status_task_lifecycle(definitions: dict[str, JsonValue]) -> None:
+    """#1239: the task's own work lifecycle and session health, so a top-level task sees it.
+
+    Optional and additive, closed tokens and times only. ``abandonment_at`` is when the service
+    will abandon open work unless contact returns, or when abandoned work was abandoned;
+    ``abandonment_reversed`` marks a ``contact_lost`` abandonment the same session closed.
+    """
+
+    definitions["status_task_lifecycle"] = {
+        "additionalProperties": False,
+        "properties": {
+            "abandonment_at": {"$ref": "#/$defs/timestamp"},
+            "abandonment_reason": {
+                "enum": ["attach_handle_expired", "contact_lost", "session_ended"],
+                "type": "string",
+            },
+            "abandonment_reversed": {"const": True},
+            "contact_lost_at": {"$ref": "#/$defs/timestamp"},
+            "session_health": {"enum": ["active", "contact_lost", "ended"], "type": "string"},
+            "work_state": {
+                "enum": ["abandoned", "cancelled", "closed", "open", "written_off"],
+                "type": "string",
+            },
+        },
+        "required": ["session_health", "work_state"],
+        "type": "object",
+    }
+    success = cast(dict[str, JsonValue], definitions["success"])
+    cast(dict[str, JsonValue], success["properties"])["task_lifecycle"] = {
+        "$ref": "#/$defs/status_task_lifecycle"
     }
 
 

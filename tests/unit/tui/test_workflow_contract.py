@@ -448,7 +448,7 @@ def _lineage_status_wire() -> dict[str, Any]:
 
     wire = _lineage_status_result().model_dump(mode="json")
     # An unset optional field dumps as null here; the public wire omits it (issues #982, ADR-049).
-    for optional in ("agent_status_line", "credential_heuristic", "review_mode"):
+    for optional in ("agent_status_line", "credential_heuristic", "review_mode", "task_lifecycle"):
         if wire.get(optional) is None:
             wire.pop(optional, None)
     readiness = wire.get("closure_readiness")

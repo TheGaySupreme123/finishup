@@ -319,6 +319,8 @@ class StorageConfig(StrictConfigModel):
 
 # Mirrors ``finishup.kernel.finding_todo``; config stays free of kernel imports.
 DEFAULT_FINDING_ATTEMPT_BUDGET: Final = 5
+# #1239: how long a quiet task no parent waits on keeps its open work (one day).
+DEFAULT_TOP_LEVEL_CONTACT_LOST_HORIZON_SECONDS: Final = 86_400
 MAX_FINDING_ATTEMPT_BUDGET: Final = 50
 
 
@@ -370,6 +372,11 @@ class LineageSettings(StrictConfigModel):
     start_lease_seconds: int = Field(default=60, ge=1, le=86_400)
     attach_handle_ttl_seconds: int = Field(default=300, ge=1, le=86_400)
     contact_lost_recovery_seconds: int = Field(default=300, ge=1, le=86_400)
+    # D6 (#1239): how long a quiet task with no parent waiting stays open as ``contact_lost``.
+    # At least ``contact_lost_recovery_seconds``; at most a week.
+    top_level_contact_lost_horizon_seconds: int = Field(
+        default=DEFAULT_TOP_LEVEL_CONTACT_LOST_HORIZON_SECONDS, ge=1, le=604_800
+    )
     max_depth: int = Field(default=8, ge=0, le=64)
     max_fanout: int = Field(default=32, ge=1, le=64)
 
@@ -383,12 +390,19 @@ class LineageSettings(StrictConfigModel):
                     "start_lease_seconds",
                     "attach_handle_ttl_seconds",
                     "contact_lost_recovery_seconds",
+                    "top_level_contact_lost_horizon_seconds",
                     "max_depth",
                     "max_fanout",
                 }
             ),
         )
         return value
+
+    @model_validator(mode="after")
+    def _horizon_covers_the_child_window(self) -> LineageSettings:
+        if self.top_level_contact_lost_horizon_seconds < self.contact_lost_recovery_seconds:
+            raise ConfigError("config_value_invalid")
+        return self
 
 
 class LoggingConfig(StrictConfigModel):

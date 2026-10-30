@@ -31,6 +31,11 @@ from finishup.protocol.models import PublishWorkRequest, StartRequest, StatusReq
 pytestmark = pytest.mark.anyio
 
 _REPOSITORY = RepositoryPrivacyContext("hmac-sha256:" + "d" * 64, "git_common_root")
+# #1239: a top-level task now keeps its open work for the long horizon. These tests exercise
+# crash safety and deadline renewal on one top-level task, so they pin the horizon to the window.
+_TOP_LEVEL_AT_WINDOW = FinishUpConfig(
+    lineage=LineageSettings(top_level_contact_lost_horizon_seconds=300)
+)
 
 
 @pytest.fixture
@@ -257,7 +262,7 @@ async def test_abandonment_append_survives_catalog_failure_and_restart(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     workspace = _workspace(tmp_path / "workspace")
-    async with multi_agent_service(tmp_path / "state") as service:
+    async with multi_agent_service(tmp_path / "state", config=_TOP_LEVEL_AT_WINDOW) as service:
         parent = await _parent(service, workspace)
         service.clock.advance(seconds=61)
         await service.app.recover_lineage()
@@ -282,36 +287,42 @@ async def test_abandonment_append_survives_catalog_failure_and_restart(
         assert payload.reason_code == "contact_lost"
         assert events[0].publication_channel is PublicationChannel.ENGINE_DERIVED
         monkeypatch.setattr(SqliteLineageStore, "save_task", save)
-        # Before the periodic sweep or restart, a late close must discover the accepted service
-        # event and refuse a second terminal outcome even though the catalog still says open.
-        with pytest.raises(PublicOperationError) as conflicting_close:
-            await service.app.publish_work(
-                PublishWorkRequest.model_validate(
-                    {
-                        **_identity(),
-                        "session_id": parent.session_id,
-                        "writer_id": parent.writer_id,
-                        "expected_frontier": parent.frontier.model_dump(mode="json"),
-                        "event_drafts": [
-                            {
-                                "event_id": new_id(IdKind.EVENT),
-                                "schema": {"name": "work_closed", "version": "1.0.0"},
-                                "occurred_at": "2026-09-05T12:10:00.000Z",
-                                "causal_parents": [],
-                                "payload": {},
-                                "artifact_refs": [],
-                                "evidence_refs": [],
-                            }
-                        ],
-                    }
-                ),
-                repository_privacy_context=_REPOSITORY,
-            )
-        assert conflicting_close.value.safe_details["reason_code"] == "lineage_work_transition"
+        # #1239: the same session's late close supersedes the service's contact_lost guess, even
+        # inside the append-before-sync window where only the ledger records the abandonment.
+        await service.app.publish_work(
+            PublishWorkRequest.model_validate(
+                {
+                    **_identity(),
+                    "session_id": parent.session_id,
+                    "writer_id": parent.writer_id,
+                    "expected_frontier": parent.frontier.model_dump(mode="json"),
+                    "event_drafts": [
+                        {
+                            "event_id": new_id(IdKind.EVENT),
+                            "schema": {"name": "work_closed", "version": "1.0.0"},
+                            "occurred_at": "2026-09-05T12:10:00.000Z",
+                            "causal_parents": [],
+                            "payload": {},
+                            "artifact_refs": [],
+                            "evidence_refs": [],
+                        }
+                    ],
+                }
+            ),
+            repository_privacy_context=_REPOSITORY,
+        )
+        lineage = service.app.lineage
+        assert lineage is not None
+        closed = await lineage.store.get_task(parent.task_id)
+        assert closed is not None and closed.work_state is WorkState.CLOSED
         await relock_and_reopen_multi_agent_service(service)
         await service.app.recover_lineage()
-        repaired = await service.app.start_catalog.task_lineage(parent.task_id)
-        assert repaired is not None and repaired.work_state is WorkState.ABANDONED
+        # Replay of [work_abandoned(contact_lost), work_closed] keeps the close and records the
+        # reversed abandonment as history; the service event is never appended twice.
+        assert service.app.lineage is not None
+        repaired = await service.app.lineage.store.get_task(parent.task_id)
+        assert repaired is not None and repaired.work_state is WorkState.CLOSED
+        assert repaired.abandonment_reason == "contact_lost"
         assert await _abandonment_events(service.app, parent.task_id) == events
         await service.app.recover_lineage()
         assert await _abandonment_events(service.app, parent.task_id) == events
@@ -366,7 +377,7 @@ async def test_activity_clears_old_deadline_and_grants_new_contact_loss_window(
     tmp_path: Path,
 ) -> None:
     workspace = _workspace(tmp_path / "workspace")
-    async with multi_agent_service(tmp_path / "state") as service:
+    async with multi_agent_service(tmp_path / "state", config=_TOP_LEVEL_AT_WINDOW) as service:
         parent = await _parent(service, workspace)
         service.clock.advance(seconds=61)
         await service.app.recover_lineage()

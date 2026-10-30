@@ -36,9 +36,9 @@ This topic owns the closing procedure. Start with readiness: at `ready_with_limi
    (`predicted_receipt`).
 8. A receipt never closes work. If the work is complete, publish `work_closed` from the task's
    active session; it needs no recheck. Only `open` work closes: `lineage_work_transition` means
-   the task already ended (cancelled, written off, or abandoned after lost contact outlasted the
-   recovery window). Do not retry the close or open a new task for it; report the unclosed state
-   beside the receipt. Lead final prose with the receipt's conclusion and `conclusion_basis` reasons.
+   the task already ended (cancelled, written off, or abandoned for another reason than lost
+   contact; work the service abandoned for lost contact still takes this session's close). Do not
+   retry the close or open a new task for it; report the unclosed state beside the receipt. Lead final prose with the receipt's conclusion and `conclusion_basis` reasons.
 
 ## Stop conditions
 

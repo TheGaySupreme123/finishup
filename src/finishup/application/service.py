@@ -20,7 +20,12 @@ from finishup.application.coordination import (
 )
 from finishup.application.egress import PrivacyCoordinator
 from finishup.application.input_snapshot import InputSnapshotScope, record_input_snapshot
-from finishup.application.lineage import LineageCoordinator, LineageSnapshot, LineageStatus
+from finishup.application.lineage import (
+    REVERSIBLE_ABANDONMENT_REASON,
+    LineageCoordinator,
+    LineageSnapshot,
+    LineageStatus,
+)
 from finishup.application.lineage_recovery import (
     append_abandonment,
     extend_session_lease,
@@ -1016,6 +1021,12 @@ class Application:
     conversation_review_reader: (
         Callable[[TaskRuntime], Awaitable[ConversationReviewContext | None]] | None
     ) = field(default=None, repr=False, compare=False)
+    # #1239: refreshes a child's parent manifest (``LineageManifestCoordinator.sweep_parent_of``)
+    # after a reversed abandonment. ``None`` in embedded and test compositions: the periodic
+    # maintenance sweep then catches the parent up.
+    lineage_parent_refresh: Callable[[str], Awaitable[object]] | None = field(
+        default=None, repr=False, compare=False
+    )
     # #1244 (D12): delivered page sets, in this process's memory only (never disk or ledger).
     delivery_pages: DeliveryPageStore = field(
         default_factory=DeliveryPageStore, repr=False, compare=False
@@ -1373,11 +1384,12 @@ class Application:
         if lineage is None:
             return
         snapshot = await lineage.store.get_task(binding.task_id)
+        open_work = snapshot is not None and snapshot.work_state is WorkState.OPEN
         if snapshot is None or (
             snapshot.active_session_id == session_id
             and snapshot.session_health is SessionHealth.ACTIVE
             and snapshot.contact_lost_at is None
-            and snapshot.abandonment_deadline is None
+            and (snapshot.abandonment_deadline is None or not open_work)
         ):
             return
         if snapshot.active_session_id not in {None, session_id}:
@@ -1388,7 +1400,10 @@ class Application:
                 active_session_id=session_id,
                 session_health=SessionHealth.ACTIVE,
                 contact_lost_at=None,
-                abandonment_deadline=None,
+                # Open work has nothing pending once contact returns; terminal work keeps when and
+                # why it was abandoned (#1239).
+                abandonment_deadline=None if open_work else snapshot.abandonment_deadline,
+                abandonment_reason=None if open_work else snapshot.abandonment_reason,
                 lineage_authority_revision=snapshot.lineage_authority_revision + 1,
             )
         )
@@ -1633,16 +1648,28 @@ class Application:
                                 target=WorkState.CANCELLED,
                             )
                         elif isinstance(payload, WorkClosedPayload):
-                            await lineage.reconcile_owned_work(
+                            before = await lineage.store.get_task(task_id)
+                            closed = await lineage.reconcile_owned_work(
                                 task_id=task_id, target=WorkState.CLOSED
                             )
+                            if (
+                                before is not None
+                                and before.work_state is not WorkState.CLOSED
+                                and closed.parent_task_id is not None
+                                and closed.abandonment_reason == REVERSIBLE_ABANDONMENT_REASON
+                            ):
+                                # A close replayed after a crash reverses the abandonment too;
+                                # an already-closed row (every later sweep) refreshes nothing.
+                                await self._refresh_parent_after_reversal(closed.task_id)
                         elif isinstance(payload, WorkCancelledPayload):
                             await lineage.reconcile_owned_work(
                                 task_id=task_id, target=WorkState.CANCELLED
                             )
                         elif isinstance(payload, WorkAbandonedPayload):
                             await lineage.reconcile_owned_work(
-                                task_id=task_id, target=WorkState.ABANDONED
+                                task_id=task_id,
+                                target=WorkState.ABANDONED,
+                                reason=payload.reason_code,
                             )
                         else:
                             await lineage.reconcile_owned_work(
@@ -1692,7 +1719,12 @@ class Application:
                     child_task_id=str(payload.child_task_id),
                 )
             elif isinstance(payload, WorkClosedPayload):
-                await lineage.close_work(session_id=request.session_id)
+                closed = await lineage.close_work(session_id=request.session_id)
+                if (
+                    closed.parent_task_id is not None
+                    and closed.abandonment_reason == REVERSIBLE_ABANDONMENT_REASON
+                ):
+                    await self._refresh_parent_after_reversal(closed.task_id)
             elif isinstance(payload, WorkCancelledPayload):
                 await lineage.cancel_work(session_id=request.session_id)
             elif isinstance(payload, WorkWrittenOffPayload):
@@ -1706,6 +1738,26 @@ class Application:
                     False,
                     safe_details={"reason_code": "event_family_not_admitted"},
                 )
+
+    async def _refresh_parent_after_reversal(self, child_task_id: str) -> None:
+        """Refresh the parent manifest a reversed abandonment made stale (#1239, D6).
+
+        The parent's recorded manifest froze the child as ``abandoned``; its earlier receipts stay
+        as they were. A failed refresh never fails the child's accepted close: the maintenance
+        sweep refreshes the parent on its next pass.
+        """
+
+        refresh = self.lineage_parent_refresh
+        if refresh is None:
+            return
+        try:
+            await refresh(child_task_id)
+        except Exception as exc:  # noqa: BLE001 - the close is already durable
+            record_unexpected_exception_without_raising(
+                exc,
+                component="application.service",
+                operation="lineage_parent_refresh_failed",
+            )
 
     async def _validate_lineage_publication(
         self,
@@ -3841,6 +3893,10 @@ class ServiceReadyContext:
     conversation_review_context: (
         Callable[[TaskRuntime], Awaitable[ConversationReviewContext | None]] | None
     ) = field(default=None, repr=False, compare=False)
+    # #1239: refresh a child's parent manifest right after the child's state changes.
+    lineage_parent_refresh: Callable[[str], Awaitable[object]] | None = field(
+        default=None, repr=False, compare=False
+    )
 
     def __post_init__(self) -> None:
         if (
@@ -3948,6 +4004,7 @@ class ReadyApplicationFactory:
                 change_capture=context.change_capture,
                 input_snapshot_scope=context.input_snapshot_scope,
                 conversation_review_reader=context.conversation_review_context,
+                lineage_parent_refresh=context.lineage_parent_refresh,
             )
             if context.reconcile_started_egress_attempts is not None:
                 # Before any supervisor can admit a new physical attempt, so a live in-flight

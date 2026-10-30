@@ -46,6 +46,7 @@ from finishup.domain.review_mode_render import (
     status_review_mode_line,
 )
 from finishup.domain.reviewer_reads import render_reviewer_lines, reviewer_record_from_wire
+from finishup.domain.task_lifecycle_render import status_task_lifecycle_line
 from finishup.kernel.claim_verification import CLAIM_VERIFICATION_HEADER
 from finishup.kernel.fact_lineage import FactLineage, lineage_from_wire, lineage_texts
 from finishup.legacy_names import LAUNCHER_NAME, LAUNCHER_NAMES
@@ -2116,6 +2117,44 @@ def _receipt_review_mode_clause(source: Mapping[str, JsonValue]) -> str:
     return ""
 
 
+# #1239: the receipt's own-work sentence, recognised by its fixed openings only; the summary
+# points at it with closed wording and never carries its text.
+_RECEIPT_OWN_WORK_POINTERS: Final = (
+    (
+        "the same session closed it at sequence",
+        "work: closed after the service's abandonment was reversed (limitations section);",
+    ),
+    (
+        "The service recorded this task's work as abandoned",
+        "work: abandoned by the service, incomplete as recorded (limitations section);",
+    ),
+    ("This task's work was recorded as cancelled", "work: cancelled (limitations section);"),
+    ("This task's work was recorded as written off", "work: written off (limitations section);"),
+)
+
+
+def _receipt_own_work_clause(source: Mapping[str, JsonValue]) -> str:
+    """#1239: a fixed pointer to the receipt's own-work sentence; never its text."""
+
+    document = source.get("document")
+    if not isinstance(document, Mapping):
+        return ""
+    sections = cast(Mapping[str, JsonValue], document).get("sections")
+    if not isinstance(sections, (list, tuple)):
+        return ""
+    for raw in cast(Sequence[object], sections):
+        if not isinstance(raw, Mapping):
+            continue
+        section = cast(Mapping[str, object], raw)
+        body = section.get("body")
+        if section.get("key") != "limitations_and_coverage" or type(body) is not str:
+            continue
+        for opening, pointer in _RECEIPT_OWN_WORK_POINTERS:
+            if opening in body:
+                return pointer
+    return ""
+
+
 # #1246 (D17): the receipt's proxy sentence, recognised by its fixed wording only; the summary
 # points at it with closed wording and never carries the obligation ids or any prose.
 _RECEIPT_PROXY_NONE_CHOSEN: Final = "proxy: none chosen (no finishup-proxy decision"
@@ -2390,6 +2429,7 @@ def summary_for_status(envelope: object) -> str:
                     priority=_P_ACTION,
                 ),
                 _advice_preview_skip_part(source),
+                _task_lifecycle_part(render, source),
                 *_closure_section(render, source),
                 render.failure_part(),
             ]
@@ -2429,6 +2469,7 @@ def summary_for_status(envelope: object) -> str:
             render.text("review_mode_next", lambda: _review_mode_next_clause(source)),
             priority=_P_ACTION,
         ),
+        _task_lifecycle_part(render, source),
     ]
     if view == "evidence":
         parts.append(
@@ -2889,6 +2930,17 @@ def _operation_check_outcome_variants(source: Mapping[str, JsonValue]) -> tuple[
     return (head,)
 
 
+def _task_lifecycle_part(render: _Render, source: Mapping[str, JsonValue]) -> Part | None:
+    """#1239: the task's own lifecycle when it is not open and in contact, on every status view."""
+
+    return _opt(
+        render.text(
+            "task_lifecycle", lambda: status_task_lifecycle_line(source.get("task_lifecycle"))
+        ),
+        priority=_P_STATE,
+    )
+
+
 def _summary_for_multi_agent_status(source: Mapping[str, JsonValue], view: str) -> str:
     render = _Render("status")
     page = source.get("page")
@@ -2898,6 +2950,7 @@ def _summary_for_multi_agent_status(source: Mapping[str, JsonValue], view: str) 
             [
                 head,
                 _req("page unavailable."),
+                _task_lifecycle_part(render, source),
                 *_closure_section(render, source),
                 render.failure_part(),
             ]
@@ -2957,6 +3010,7 @@ def _summary_for_multi_agent_status(source: Mapping[str, JsonValue], view: str) 
     parts.append(
         _opt("Read the structured page for child states and row identities.", priority=_P_STATE)
     )
+    parts.append(_task_lifecycle_part(render, source))
     parts.extend(_closure_section(render, source))
     parts.append(render.failure_part())
     return _compose(parts)
@@ -3089,6 +3143,12 @@ def summary_for_receipt(envelope: object) -> str:
         _opt(
             render.text("review_mode", lambda: _receipt_review_mode_clause(source)),
             priority=_P_DISCLOSURE,
+        )
+    )
+    parts.append(
+        _opt(
+            render.text("own_work", lambda: _receipt_own_work_clause(source)),
+            priority=_P_STATE,
         )
     )
     parts.append(

@@ -3071,11 +3071,18 @@ event never establishes permanent liveness. A live task is work `open` with at l
 session.
 
 Successful routed activity renews session health and clears any previous contact-loss deadline;
-it does not reopen terminal work. After lease loss, work remains open for
-`lineage.contact_lost_recovery_seconds` (default 300 seconds). The policy applies to root and child
-tasks alike. Expiry appends one authenticated, service-stamped `work_abandoned` event to that task's
-own ledger before updating the catalog. Recovery
-replays that event idempotently after interruption. A parent-minted child whose handle expires
+it does not reopen terminal work. After lease loss, a child whose parent is waiting on it (the
+parent's work is `open`, its session has not ended, and it has not rejected the child) stays open
+for `lineage.contact_lost_recovery_seconds` (default 300 seconds). Every other task, top-level or
+orphaned, stays open for `lineage.top_level_contact_lost_horizon_seconds` (default 86,400 seconds,
+at least the recovery window, at most 604,800) and reports `contact_lost` meanwhile (#1239). The
+recovery sweep judges the window at sweep time, so a child whose parent stops waiting moves to the
+long horizon. A delivered `SessionEnd` ends the session once its binding is revalidated and no
+lease outlived the event's own time plus one lease; open work is then abandoned with reason
+`session_ended` after the recovery window unless the session resumes first. Expiry appends one
+authenticated, service-stamped `work_abandoned` event to that task's own ledger before updating
+the catalog. Recovery replays that event idempotently after interruption. The catalog keeps the
+abandonment reason (`contact_lost`, `session_ended`, or `attach_handle_expired`). A parent-minted child whose handle expires
 without any attach is abandoned with reason `attach_handle_expired`; its session health stays
 `ended`, since no attached session lost contact. Cancellation and write-off preserve the accepted
 edge. Evidence arriving after abandonment stays in the ledger and retains the incomplete outcome.
@@ -3097,7 +3104,7 @@ idempotent, so a duplicate delivery re-offers the same evidence without extendin
 already recorded by a newer call is never shortened. Every hook event except `SessionEnd` counts,
 including `Stop` and `SubagentStop`, which prove the host was alive when they fired. Session-stream
 history, future timestamps, predecessor routes, and evidence older than the lease plus the longest
-configurable recovery window are not offered. The catalog binding is revalidated before renewal;
+configurable contact-loss horizon (604,800 seconds) are not offered. The catalog binding is revalidated before renewal;
 an ended session is not revived by observation replay, and terminal work is never reopened.
 
 A host-declared child operation also holds contact. While the host lineage registry records a
@@ -3110,7 +3117,20 @@ ended work. The READY maintenance loop delivers queued host events before each o
 turn and defers a due recovery while consecutive passes are still resolving rows, for at most one
 extra interval.
 
-Terminal work stays terminal. Resuming a task whose work is `closed`, `cancelled`, `abandoned`, or
+Terminal work stays terminal, with one exception: a `contact_lost` abandonment is a guess from
+silence, so the same active session's `work_closed` supersedes it once (#1239). Both events stay in
+the ledger, replay of `[work_abandoned, work_closed]` reaches `closed`, the catalog keeps the
+reason as history, and a reversed child's parent manifest is swept again. Cancel and write-off of
+abandoned work, and any transition out of a `session_ended` or `attach_handle_expired`
+abandonment, are refused with `SESSION_CONFLICT` reason `lineage_work_transition`, whose message
+names the terminal state, the abandonment reason and time, and what still works. Status reports
+the task's own `task_lifecycle` (`work_state`, `session_health`, `contact_lost_at`,
+`abandonment_at`, `abandonment_reason`, `abandonment_reversed`) in status-result 1.4.0 and later;
+the brief body omits it only for open work in contact. A receipt's limitations section names an
+abandonment, its reversal, a cancellation, or a write-off of the task's own work, read from that
+task's ledger events only.
+
+Resuming a task whose work is `closed`, `cancelled`, `abandoned`, or
 `written_off` (`start` attach by session, attach or `create_or_attach` by pair) is refused inside
 the start-catalog transaction with `SESSION_CONFLICT` reason `lineage_resume_work_terminal`, before
 any session is reserved or the route rotates, so a session the caller still holds keeps reading
@@ -9065,7 +9085,8 @@ facade and are never MCP tools.
   lineage/delegation defaults plus a
   one-time denied first-run privacy seed and exact provider/local-model profile identifiers. The
   `[lineage]` settings are bounded `start_lease_seconds=60`, `attach_handle_ttl_seconds=300`,
-  `contact_lost_recovery_seconds=300`, `max_depth=8`, and `max_fanout=32`; typed admission
+  `contact_lost_recovery_seconds=300`, `top_level_contact_lost_horizon_seconds=86400` (at least
+  the recovery window, at most 604,800; #1239), `max_depth=8`, and `max_fanout=32`; typed admission
   refusals enforce the depth and fan-out ceilings.  `max_fanout` accepts values through 64,
   matching the bounded child-manifest, check-preview, and receipt-child sections; larger values
   are rejected at configuration load rather than silently truncating lineage state.

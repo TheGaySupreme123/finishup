@@ -743,10 +743,18 @@ capability cell are unchanged.
 Liveness follows the shared #837 rule. Admitted Cursor hook events count as contact at their own
 receipt time, including late sweeper delivery and `stop`, while `sessionEnd` ends contact. Cursor
 registers no subagent lifecycle hooks, so no in-flight hold applies. A quiet period past the lease
-plus the recovery window with no workflow call or hook event is the recorded Cursor gap, and
-raising `lineage.contact_lost_recovery_seconds` is the supported mitigation. After abandonment,
-refusals carry `lineage_successor_task`: keep the held session for history and receipts, and start
-one successor task for new work.
+with no workflow call or hook event loses contact.
+
+Since #1239 (host decision: supported, same code path as Codex and Claude Code) a top-level or
+orphaned task keeps its open work for `lineage.top_level_contact_lost_horizon_seconds` (default one
+day), and status shows `task_lifecycle` with `session_health: contact_lost`. A child whose parent
+waits on it is abandoned after `lineage.contact_lost_recovery_seconds`. That short window is the
+remaining recorded Cursor gap, and raising it is the supported mitigation. A delivered `sessionEnd`
+ends the session unless later contact outlived it. Open work is then abandoned
+as `session_ended` after the recovery window unless the session resumes. The same session's
+`work_closed` reverses a `contact_lost` abandonment. After any other abandonment, refusals keep
+`lineage_work_transition` or carry `lineage_successor_task`. Keep the held session for history and
+receipts, and start one successor task for new work.
 
 Cursor subagents inherit the parent's MCP tools, so delegated workers reach the same `finishup`
 bridge process. The bridge latches the first availability failure of that binding

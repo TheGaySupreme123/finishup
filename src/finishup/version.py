@@ -102,7 +102,7 @@ PLATFORM_CELL_UNTESTED: Final = "platform_cell_untested"
 _VERSION_WIRE_PATTERN: Final = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._+/-]{0,63}$")
 _PROFILE_ID_WIRE_PATTERN: Final = re.compile(r"^[a-z0-9][a-z0-9._/-]{0,127}$")
 _ASCII_PRINTABLE_PATTERN: Final = re.compile(r"^[ -~]+$")
-CATALOG_SCHEMA_VERSION: Final = "5"
+CATALOG_SCHEMA_VERSION: Final = "6"
 BUNDLE_SCHEMA_VERSION: Final = "13"
 # Frozen legacy identifier (ADR-048): SQLite application_id ("YOET") every open compares.
 SQLITE_APPLICATION_ID: Final = "0x594F4554"
@@ -132,7 +132,7 @@ _RESOURCE_LIMIT: Final = 4_194_304
 # #1139: +4 lossless result-delivery schemas.
 # #1170: +1 schema (result-recorded 1.1.0), +2 canonical cases (result verification 1.1.0,
 # verification coverage).
-REVIEWED_RESOURCE_COUNT: Final = 336
+REVIEWED_RESOURCE_COUNT: Final = 337
 _RESOURCE_KINDS: Final = frozenset(
     {
         "canonical_vector",
