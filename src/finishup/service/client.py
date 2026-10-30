@@ -43,6 +43,7 @@ from finishup.domain.privacy import (
     PrivacyOutcome,
     PrivacyReason,
     ProviderBinding,
+    ReceiptCapacity,
     ReceiptCounts,
     ReceiptPolicyBinding,
     ReceiptSecretScan,
@@ -830,6 +831,20 @@ def _request_commitment_from_wire(value: object) -> RequestCommitment:
     )
 
 
+def _receipt_capacity_from_wire(value: object) -> ReceiptCapacity | None:
+    """A size refusal's typed capacity reason (#1129); absent on every other receipt."""
+
+    if value is None:
+        return None
+    source = _object(value)
+    return ReceiptCapacity(
+        cast(Literal["disclosure", "excerpt", "excerpt_total"], source["scope"]),
+        cast(Literal["bytes", "tokens", "excerpts"], source["unit"]),
+        _decimal(source["attempted"]),
+        _decimal(source["limit"]),
+    )
+
+
 def _receipt_view_from_wire(value: object) -> PrivacyReceiptView:
     wrapper = _object(value)
     receipt = _object(wrapper["receipt"])
@@ -890,6 +905,7 @@ def _receipt_view_from_wire(value: object) -> PrivacyReceiptView:
                 if "origin_operation" not in receipt
                 else EgressOriginOperation(cast(str, receipt["origin_operation"]))
             ),
+            capacity_exceeded=_receipt_capacity_from_wire(receipt.get("capacity_exceeded")),
         )
         return NetworkEgressReceiptView(kind="network_egress", receipt=network_receipt)
     local_receipt = LocalDisclosureReceipt(

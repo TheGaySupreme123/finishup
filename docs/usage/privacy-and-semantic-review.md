@@ -676,7 +676,9 @@ has no room left, FinishUP does not serve it and asks for the reviewer's verdict
 the review's record says the read was not served. If the packet cannot be made to
 fit your channel's byte limit, or the conversation the 256 KiB a single send may carry, nothing is
 sent and the check reports `case_capacity_exceeded`, not a network denial: your privacy settings
-did not block it. The privacy receipt still lists that turn as blocked with nothing sent. A check over a
+did not block it. The privacy receipt still lists that turn as blocked with nothing sent, and
+names the limit it exceeded under `capacity_exceeded` (which limit, its unit, the size tried and
+the limit), so it never reads as a policy rule. A check over a
 narrower scope can fit; when your own byte limit was the one exceeded, so can a higher limit you
 approve. What a read returned keeps the
 category it was admitted under: if you withdraw that category, or your policy changes, while the
