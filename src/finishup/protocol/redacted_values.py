@@ -15,6 +15,7 @@ from finishup.protocol.errors import ProtocolValueError
 from finishup.protocol.ids import OPAQUE_ITEM_ID_PATTERN
 
 __all__ = [
+    "AGENT_REVISABLE_ITEM_PREFIXES",
     "MAX_SEMANTIC_REDACTED_VALUE_ITEMS",
     "MAX_SEMANTIC_REDACTED_VALUE_LINE",
     "MAX_SEMANTIC_REDACTED_VALUE_LINES",
@@ -25,6 +26,7 @@ __all__ = [
     "SemanticRedactedValueDisposition",
     "SemanticReviewBlockMatchClass",
     "SemanticReviewBlockStage",
+    "review_block_agent_revisable",
     "review_blocked_recorded",
     "semantic_redacted_values_from_wire",
     "validate_semantic_redacted_values",
@@ -178,3 +180,27 @@ def review_blocked_recorded(values: tuple[SemanticRedactedValue, ...]) -> bool:
     """Whether any entry is ``review_blocked`` (#1138); only the newest record versions carry it."""
 
     return any(item.disposition == "review_blocked" for item in values)
+
+
+# #966: review items whose text the agent itself published (a claim, obligation, plan goal,
+# decision, its own disclosures or finding answers). A revision without the value is new
+# content the next check composes; every other item (a task input, the check-time change,
+# captured output or published evidence, the task statement, FinishUP's own rows, the packet
+# structure) stays in the case as it is, so no agent action clears a block it caused.
+AGENT_REVISABLE_ITEM_PREFIXES: Final = (
+    "agent-disclosures",
+    "claim-",
+    "decision-",
+    "goal-",
+    "local-finding-answer-",
+    "obligation-",
+)
+
+
+def review_block_agent_revisable(values: tuple[SemanticRedactedValue, ...]) -> bool | None:
+    """Whether every ``review_blocked`` item is agent-published text; ``None`` with none named."""
+
+    blocked = tuple(item for item in values if item.disposition == "review_blocked")
+    if not blocked:
+        return None
+    return all(item.item_id.startswith(AGENT_REVISABLE_ITEM_PREFIXES) for item in blocked)

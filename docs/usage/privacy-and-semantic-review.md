@@ -166,9 +166,14 @@ stage (`candidate`, `prepared_case` or `reviewer_exchange`), the item (its `item
 item explains it) and whether the match was a concrete credential (`high_confidence`) or a value
 that only looks like one (`heuristic`); the privacy receipt names the same. FinishUP does not send
 the same content to be refused again: later checks carry the refusal forward
-(`semantic_review_skipped_privacy_block`) until an edit or newly published evidence or text, and a closing
-review after a routine check's refusal checks once more. You never need to hide or git-ignore a
-requested output to keep it out of review.
+(`semantic_review_skipped_privacy_block`) until an edit or newly published evidence or text, and a
+closing review after a routine check's refusal checks once more. The check also says what your agent
+can do: when the refused item is text the agent itself published (a claim, a plan goal, an
+obligation or a decision), a revision without the value can be reviewed; when it is something
+FinishUP composed or captured (a task input, the change read from your repository, captured command
+output, or the packet itself), nothing the agent does clears it, a required review is reported as
+not done, and the receipt says so. You never need to hide or git-ignore a requested output to keep
+it out of review.
 
 What FinishUP records on your machine follows the same split. A concrete credential shape (a known
 API-key or access-token format, a private-key header, or a password inside a URL) is replaced before

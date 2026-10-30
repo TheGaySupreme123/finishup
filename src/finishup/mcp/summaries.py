@@ -83,7 +83,7 @@ from finishup.protocol.recovery import (
     correction_for_invariant,
     directive_for,
 )
-from finishup.protocol.redacted_values import SemanticRedactedValue
+from finishup.protocol.redacted_values import SemanticRedactedValue, review_block_agent_revisable
 
 __all__ = [
     "MAX_SUMMARY_BYTES",
@@ -981,6 +981,21 @@ def _semantic_redacted_value_tokens(source: Mapping[str, JsonValue]) -> tuple[st
     return tuple(result)
 
 
+def _redacted_values(source: Mapping[str, JsonValue]) -> tuple[SemanticRedactedValue, ...]:
+    """The valid recorded PL2-1 entries of a result; invalid ones are skipped."""
+
+    raw_items = source.get("semantic_redacted_values")
+    if not isinstance(raw_items, (list, tuple)):
+        return ()
+    values: list[SemanticRedactedValue] = []
+    for raw in raw_items:
+        try:
+            values.append(SemanticRedactedValue.from_wire(raw))
+        except (TypeError, ValueError):
+            continue
+    return tuple(values)
+
+
 def _review_blocked_tokens(source: Mapping[str, JsonValue]) -> tuple[str, ...]:
     """#1138: the items whose match stopped the review, with class and stage; never a value."""
 
@@ -1742,6 +1757,8 @@ def _continuation_variants(
         status=status,
         reason=reason,
         failure_class=_failure_class_from_mapping(source.get("semantic_provenance")),
+        # #966: a block no agent action can clear says so instead of offering a replacement.
+        agent_revisable=review_block_agent_revisable(_redacted_values(source)),
     )
     recovered = directive_for(recovery)
     if recovered is None:

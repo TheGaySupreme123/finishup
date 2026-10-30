@@ -1712,4 +1712,14 @@ the privacy workstream's (#1248, P-D1/P-D2); this amendment fixes only the recor
   through a shell command records no edit action, so it does not end the standing either.
 - The agent guidance and the usage page no longer promise that only a high-confidence credential
   blocks the whole review: they say which matches do today. #1248 owns narrowing that.
+- *Amended 2026-10-29 (#966, items 1 and 4):* a block names what stays unmet and the one safe
+  continuation. Only when every `review_blocked` item is text the agent published (`claim-`,
+  `obligation-`, `goal-`, `decision-`, `agent-disclosures`, `local-finding-answer-`) does the
+  continuation offer a revision and one check under a new `request_id` (`semantic_privacy_blocked`).
+  An item FinishUP composed or captured (a task input, the check-time change, captured output or
+  published evidence, the task statement, the packet structure) gets
+  `semantic_privacy_blocked_unrecoverable`: no agent action clears it, no retry, and a required
+  review is reported unmet. The receipt sentence says the same. The check stays
+  `blocked_forbidden_data`, an undeliverable status, so it never reads as a local-only success.
+  Replacement bytes and their rescan (#966 items 2, 3 and 5) are #1248's.
 - Service-side and identical on Codex, Claude Code and Cursor.

@@ -95,7 +95,7 @@ from finishup.protocol.recovery import (
     correction_for_invariant,
     directive_for,
 )
-from finishup.protocol.redacted_values import SemanticRedactedValue
+from finishup.protocol.redacted_values import SemanticRedactedValue, review_block_agent_revisable
 
 __all__ = [
     "bounded_failure_line",
@@ -147,6 +147,7 @@ def render_semantic_outcome_recovery_lines(
     status: object,
     reason: object,
     provenance: object = None,
+    agent_revisable: bool | None = None,
 ) -> list[str]:
     """Resolve provider-review recovery from recorded status, never from findings."""
 
@@ -154,6 +155,7 @@ def render_semantic_outcome_recovery_lines(
         status=status,
         reason=reason,
         failure_class=_failure_class_from_provenance(provenance),
+        agent_revisable=agent_revisable,
     )
     directive = directive_for(token)
     if directive is None:
@@ -166,9 +168,10 @@ def _semantic_outcome_recovery_lines(
     status: object,
     reason: object,
     provenance: object = None,
+    agent_revisable: bool | None = None,
 ) -> list[str]:
     return render_semantic_outcome_recovery_lines(
-        status=status, reason=reason, provenance=provenance
+        status=status, reason=reason, provenance=provenance, agent_revisable=agent_revisable
     )
 
 
@@ -498,6 +501,10 @@ def render_human_check(result: CheckSuccessModel) -> str:
         status=result.semantic_status,
         reason=result.semantic_reason,
         provenance=result.semantic_provenance,
+        # #966: a block no agent action can clear says so instead of offering a replacement.
+        agent_revisable=review_block_agent_revisable(
+            _semantic_redacted_values(result.semantic_redacted_values)
+        ),
     )
     if recovery:
         lines.extend(recovery)
