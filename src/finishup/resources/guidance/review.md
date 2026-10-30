@@ -52,7 +52,7 @@ you set beyond the task's stated scope: fix it, or narrow it with `respond` `ack
 reason (a disclosed, non-blocking limitation); a `finishup-verification-limit` decision does not.
 If `missing_for_assessment` names an `agent_suppliable` item you can supply, publish exactly that item once, linked to any named target, then `check` again. If it is already supplied, or it is a packet, type or authority limit, go to the receipt and state that specific limit. Only new material counts. The captured output of a re-run of the target's exact command FinishUP observed counts only once it reaches the reviewer, so publish the result even after a re-run; a respond counts only when the target is a finding, and a description never does. Output FinishUP adds itself, from a run made before the request, is observed, not something you supplied.
 For verification output, cite the run's observed output (its `evd_` from `status view=evidence`) on a result; when FinishUP observed none for the run, publish the result summary as its remedy says. The reviewer reads a summary as your account of the run, not as the output. A file outside the workspace reaches the reviewer only beneath a directory the owner admitted (`finishup privacy input-roots`); you cannot admit one. If a check reports `task_input_outside_not_admitted`, do not copy, move or restate that file into the workspace for the reviewer; name the folder and the command `finishup privacy input-roots add <folder>` to the owner in your final answer.
-The reviewer is told to treat the output FinishUP observed from a check you ran as that check's witness, even when the check's own file is outside the workspace: have a check print the values and cases it compares, not only PASS.
+Have a check print the values and cases it compares, not only PASS: the reviewer treats the output FinishUP observed from it as its witness, even when the check's file is outside the workspace.
 
 When readiness names `closing_review_required`, run `check` with `final_review: true` after the
 last material change. It judges stated requirements and outputs against the task.
@@ -86,18 +86,17 @@ A `Destructive change:` label names what removal or replacement would lose; cons
 changing work matching the task, supplied inputs or an earlier passing check.
 
 **Read before answering.** A large result can arrive as `state=delivery_page` parts.
-Until `actionable_complete` is true, call `status` with `view=compact` and
-`delivery_cursor` set to the returned `next_cursor`.
+Until `actionable_complete` is true, call `status` (`view=compact`) with `delivery_cursor` set
+to the returned `next_cursor`.
 Rebuild marked containers and fragments by path, offsets and digest, then follow `inventory_read`.
 Answer a finding only once it carries its requested action, alternative interpretation and
-uncertainty, or explicitly labels them withheld.
+uncertainty, or labels them withheld. Brief check rows omit them: read `view=findings`.
 
 **Respect the frozen case.** Treat a reviewer read marked `not_in_frozen_case` as unavailable in
-that check.
-Do not infer that the item was never recorded.
+that check, not as never recorded.
 The reviewer can request it through `final_judgment.missing_for_assessment` with its kind and
 target refs, as the read's continuation says.
-As the working agent, follow the returned `missing_for_assessment` supply rule above.
+As the working agent, follow the `missing_for_assessment` supply rule above.
 
 A finding is evidence, not an order.
 Before reversing a deliberate choice or resolving conflicting inputs, including a decision-needed finding:
@@ -153,56 +152,51 @@ finish a substantial change and want a final independent review.
 **Stay local when** the edit is small or mechanical; the work is docs or formatting; tests or
 local checks already cover what changed; or you are reading or exploring.
 
+**What it can and cannot help with.** Review checks your work against the task, plan and claims;
+it is not a code reviewer. It can name gaps between your plan or claims and the record, and suggest
+a cheap check that tells two readings apart. It cannot see a hidden grader, pick a grader's
+reading, or excuse a requested output. With conflicting inputs, pick a reading, write the requested
+output, and record the assumption. Review agreeing that a conflict exists is not permission to
+withhold. Example: a report withheld because two references disagree. Only missing authority, a
+missing credential or a forbidden destructive change excuses it.
+
 **How.** Publish one `decision_recorded` 1.1.0 draft with `review_mode: "ai_powered"`.
 `statement` and `rationale` say why in one line each; `authority` is your own actor id (a
-placeholder below). Omit `event_id` and `occurred_at`: FinishUP fills them and names them in
-`server_filled`. Then omit `mode` on later checks. To go back to local checks, publish a new
+placeholder below). Omit `event_id` and `occurred_at`: FinishUP fills them (`server_filled`). Then
+omit `mode` on later checks. To go back to local checks, publish a new
 decision with `review_mode: "local"`, and publish the `ai_powered` decision again to switch back;
 each call is its own publication. Only an id-less body identical to your previous publish is
-refused, as a possible retry: change the body or send a fresh `request_id`. The complete request
-is the [`#publish-work-decision`](request-templates.md#publish-work-decision) template's second body; its
-draft is:
+refused, as a possible retry: change the body or send a fresh `request_id`. Its draft (the
+[`#publish-work-decision`](request-templates.md#publish-work-decision) template's second body):
 
 ```json
-{
-  "schema": {"name": "decision_recorded", "version": "1.1.0"},
-  "payload": {
-    "statement": "Turn on AI-powered review for the rest of this task.",
-    "rationale": "Cross-module change that local checks cannot judge.",
-    "authority": "harness:mcp-template",
-    "review_mode": "ai_powered"
-  }
-}
+{"schema": {"name": "decision_recorded", "version": "1.1.0"}, "payload": {
+  "statement": "Turn on AI-powered review for the rest of this task.",
+  "rationale": "Cross-module change that local checks cannot judge.",
+  "authority": "harness:mcp-template", "review_mode": "ai_powered"}}
 ```
 
 **What happens next.** Later checks that omit `mode` run with AI-powered review; `check` and
-`status` `review_mode` say so and name your switch. Other tasks are unaffected, and a new task
-starts local again. The receipt names each switch (sequence, event id, the actor that recorded it,
-and its declared authority) and the mode its check ran in. If `review_mode.local_reason` comes
-back instead, the task stays local and the result says what to do: `owner_local_only` (the owner
-chose local checks only; continue locally and do not ask again), `ai_review_not_set_up` (the owner
-sets it up once; continue locally meanwhile), `route_local_only` (this host connection is
-registered local-only until the owner re-registers it), or `review_disabled` (the installation's
-verification settings turn AI-powered review off for checks that omit `mode`). Status also reports
+`status` `review_mode` say so and name your switch. Other tasks are unaffected; a new task
+starts local again. The receipt names each switch, its author, and the mode its check ran in.
+If `review_mode.local_reason` comes back instead, the task stays local and the result says what to
+do: `owner_local_only` (continue locally; do not ask again), `ai_review_not_set_up` (the owner sets
+it up; continue locally), `route_local_only` (this connection is local-only) or
+`review_disabled` (installation settings turn it off). Status also reports
 `conversation_default` and `switched_to_local`, which need nothing from you. Under
 `local_owner_approval` each review waits for the owner: treat `awaiting_human` as above. Under
 `ai_powered` the owner reviews every task: a switch to local is recorded but changes nothing.
 
-**Closing review.** A task that already used AI-powered review (a check's review ran, after a
-switch or because the check named an AI-powered `mode`, or a check deferred a required review until
-the first edit) still owes its closing review after it runs local again: a `final_review: true`
-check that omits `mode` runs that review. A switch is a record like any other: switch back to local
-before the closing review, not after it, or the switch makes the closing review stale and the
-next `final_review: true` check runs it again.
+**Closing review.** A task that already used AI-powered review (a review ran, or one was deferred
+until the first edit) still owes its closing review after it runs local again: a `final_review:
+true` check that omits `mode` runs that review. A switch is a record: switch back to local before
+the closing review, not after it, or the next `final_review: true` check runs it again.
 
 **Worked example.** A task changes token refresh in `auth/` and the session cache in `cache/`.
-After the first local check, publish the switch ("Cross-module auth and cache change; local checks
-cannot judge the race.") and check again without `mode`; the result reads
-`Review mode: AI-powered review; this task turned it on`.
+After the first local check, publish the switch ("Cross-module auth and cache race.") and check
+again without `mode`; the result reads `Review mode: AI-powered review; this task turned it on`.
 
-
-**About data.** Do not hesitate over data. The owner chose this setting at setup; that choice is
-their standing permission for you to turn on AI-powered review for a task. The privacy layer
-sends only what the owner's policy allows, never-send items are always withheld, and receipts
-record what was reviewed. Your switch is a request, never a grant: the owner's policy governs and
-is enforced.
+**About data.** Do not hesitate over data. The owner's setup choice is your standing permission
+to turn it on for a task. Only what the owner's policy allows is sent, never-send items never are,
+and receipts record what was reviewed. Your switch is a request, never a grant: the owner's policy
+governs and is enforced.

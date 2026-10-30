@@ -47,8 +47,19 @@ an accepted receipt with an empty body and no pointer.
 The `finishup receipt` command and every terminal command print the whole result. Through an
 agent's MCP tools, a result too large for the host's window (a `json` receipt, often) arrives as
 numbered `state=delivery_page` parts. Keep reading with `status`, `view=compact` and the returned
-`delivery_cursor` until `complete` is true, and rebuild the result before relying on it; reading
-the parts never repeats the review or creates another receipt.
+`delivery_cursor` (a short handle; copy it exactly) until `complete` is true, and rebuild the
+result before relying on it; reading the parts never repeats the review or creates another
+receipt. New work recorded while you read does not interrupt the parts: a part says
+`ledger_moved_since` when newer records exist. After a service restart the parts are rebuilt; one
+marked `page_set_restarted` starts the result again, so discard the parts you read before it. A
+`status` read that named a filter, an inventory cursor or a selector id is not rebuilt: after a
+restart, repeat that read. Otherwise only a recorded redaction or a changed privacy setting stops
+the parts, and the error says which.
+
+Through an agent's MCP tools a check reply is brief by default: each finding is named by its id,
+kind, priority, summary and subjects, without its detail. `status` with `view=findings` shows the
+detail, and `check` with `detail` set to `full` returns it in the reply. A brief `status`
+`view=compact` likewise lists unanswered findings without their detail.
 
 **The durable receipt is recorded even when projection is blocked.** A projection failure is a
 disclosure decision, not a lost receipt.
@@ -223,7 +234,9 @@ Forbidden after a candidate read: "I checked and found nothing."
 
 Your agent can attach a small test manifest to a result: a criterion quoted word for word from the
 task, where the test data came from, how many cases ran and failed, the worst value, and whether it
-tuned on those cases. `finishup record-test` builds one from a test script and a small JSON results
+tuned on those cases. Spacing and the style of quote marks may differ from the task's; the words
+may not. A quote that does not match is refused with the number and line of the nearest task
+sentence, never its text. `finishup record-test` builds one from a test script and a small JSON results
 file the agent already produced. It reads the two files, records their digests, and never runs the
 test; the files' text stays in your workspace.
 
@@ -350,6 +363,9 @@ being your work and never counts as receipt-blocking, but it is never resolved: 
 lists `finding_self_verified` as a standing limitation, the receipt names it in its own
 "Self-verified by the agent; FinishUP could not prove the repair" section, and the receipt's
 conclusion is at best `insufficient_coverage`. A FinishUP limit is never a `finishup-blocker`.
+The exception is a process note about the record itself (`ledger_stale_or_incomplete`,
+`decision_needed`): any answer to one, `self_verified` included, stays on the receipt with your
+reason but never lowers its conclusion, so a clean receipt is still possible.
 
 Findings are advisory. When you disagree, respond `rejected` with your reasoning. If the review
 then repeats the finding without citing anything recorded after your answer, FinishUP records the
@@ -456,6 +472,13 @@ Three more things the receipt discloses in their own sections, by id only:
   readiness lists `assumption_disclosed` or `verification_limit_disclosed` as standing
   limitations, and the receipt names each one under "Assumptions and verification limits the agent
   disclosed". Nothing is blocked or resolved by it; supersede the decision to withdraw it.
+- **A proxy for a hidden reference.** When the limit is a budget or score stated against a
+  reference you cannot see (within N× of a reference run, accuracy on unseen data), also record
+  one decision with the line `finishup-proxy:<obligation id>`: the stand-in you built and the
+  ratio you measured, or why no stand-in was feasible. It blocks nothing and nothing asks for it
+  at check time. A receipt names each disclosed verification limit without one as
+  `proxy: none chosen`, and a closing review may ask once for a proxy you could build, never for
+  the hidden reference itself.
 - **Obligations acknowledged as not done.** For an obligation you truly will not do, after
   trying to repair it, publish it again with `status: "acknowledged_not_done"` and an
   `acknowledged_not_done_reason` (event version 1.1.0). It is no longer open work, readiness lists

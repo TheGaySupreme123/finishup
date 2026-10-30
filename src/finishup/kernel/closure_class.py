@@ -79,6 +79,7 @@ from finishup.kernel.task_facts import (
 from finishup.protocol.models import SemanticReason, SemanticStatus
 
 __all__ = [
+    "ACKNOWLEDGED_NOT_DONE_BASES",
     "BOOKKEEPING_KINDS",
     "UNDELIVERABLE_SEMANTIC_STATUSES",
     "FINDING_BASES",
@@ -167,6 +168,17 @@ FINDING_BASES: Final[Mapping[str, tuple[FindingClosureClass, ReceiptEffect]]] = 
         "retired_by_planned_verification": (_F.RESOLVED, _NONE),
         # #1104: the agent acknowledged an observed failed command. Disclosed, never clean.
         "failed_run_disclosed": (_F.SETTLED_DISCLOSED, _INSUFFICIENT),
+    }
+)
+
+# The bases a finding answered ``acknowledged_not_done`` closes on while it is still unproved.
+# Readiness and the receipt both list exactly these as acknowledged (D8, #1243): one closure
+# basis, never a second reading of the response disposition.
+ACKNOWLEDGED_NOT_DONE_BASES: Final = frozenset(
+    {
+        "acknowledged_not_done_requirement",
+        "acknowledged_not_done_bookkeeping",
+        "limitation_acknowledged_not_done",
     }
 )
 

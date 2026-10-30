@@ -606,7 +606,9 @@ approved earlier keeps its ceilings (256 KiB and 65,536 estimated tokens if setu
 run `finishup --privacy` and approve the proposal to take the new ones. The approval screen shows
 the higher ceilings as a widening. When a review does not fit, FinishUP
 leaves out lower-priority excerpts and says so in the review's coverage, or, if even the required
-parts do not fit, reports `case_capacity_exceeded` without sending anything.
+parts do not fit, reports `case_capacity_exceeded` without sending anything. The agent's
+obligations and claims are the last things left out: its plan summary, the history and
+lower-priority excerpts go first, so the closing review can still read what the agent promised.
 
 An Expanded policy you approved earlier keeps its 16-excerpt limit until you approve the new
 recipe. `finishup privacy show` and `finishup --privacy` show your current limits beside the ones the
@@ -632,6 +634,15 @@ a new finding linked to it. Routine checks and retries need no human prompt.
 The agent follows the review topic (`finishup://guidance/review.md`) for delivery pacing and
 independent judgment on findings, including conflicting inputs and decision-needed findings.
 
+AI-powered review checks the work against the task, the agent's plan and its claims; it is not a
+code reviewer. It can point out a gap between what the agent planned or claimed and what the record
+shows, and suggest one cheap check that tells two readings of the task apart. It cannot see a
+hidden grader or pick the reading a grader uses, and it never excuses a requested output. With
+conflicting inputs, the agent picks a reading, writes the requested output, and records the
+assumption; a reviewer agreeing that the inputs conflict is not permission to withhold. Only
+missing authority, a missing credential, or a destructive change the agent is not allowed to make
+excuses leaving a requested output unwritten.
+
 The reviewer works as a verifying reviewer: it checks the change against the task and the recorded
 verification against the change. It judges recorded test and command output itself instead of
 asking the agent to run it again, reports every distinct problem it finds (up to three per review),
@@ -640,7 +651,8 @@ so it does not report its own review, FinishUP checks, findings, or limits on wh
 carry as problems in the work, and it never asks the agent to install tools or change the
 environment. It does flag delivery risks it can see, such as an import the recorded environment
 lacks or files written outside the requested location, and it tests an "impossible" or
-"infeasible" conclusion against what the task asked for. A limitation outside the agent's control
+"infeasible" conclusion against what the task asked for. Before it suggests a test input or a
+state to try, it checks that the work's visible interface can reach it. A limitation outside the agent's control
 is acceptable when disclosed; one the agent could reduce is not support. The reviewer is told that a
 disclosure is never support for the work itself and never a reason to stop judging what the packet
 shows. It is told to read the work before the agent's account of it: the packet lists the task, the
@@ -671,7 +683,9 @@ channel limits the longer read guidance leaves room for two reads that return co
 three.
 Each further turn of the conversation is sent with its own privacy
 check and receipt, and the whole conversation, packet and reads included, must fit your channel
-limits: with tight limits the reviewer gets fewer reads or none. If the packet cannot be made to
+limits: with tight limits the reviewer gets fewer reads or none. When a read the reviewer asks for
+has no room left, FinishUP does not serve it and asks for the reviewer's verdict in the same turn;
+the review's record says the read was not served. If the packet cannot be made to
 fit your channel's byte limit, or the conversation the 256 KiB a single send may carry, nothing is
 sent and the check reports `case_capacity_exceeded`, not a network denial: your privacy settings
 did not block it. The privacy receipt still lists that turn as blocked with nothing sent, and

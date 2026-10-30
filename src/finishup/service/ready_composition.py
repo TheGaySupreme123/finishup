@@ -3617,7 +3617,9 @@ def _map_egress_to_final(
                 request_id=result.request_id,
             )
             mapped = FinalSemanticEvaluation(
-                SemanticStatus.FAILED, SemanticReason.CASE_CAPACITY_EXCEEDED
+                SemanticStatus.FAILED,
+                SemanticReason.CASE_CAPACITY_EXCEEDED,
+                attempt_token_usage=result.token_usage,
             )
         return replace(
             mapped,
@@ -5224,6 +5226,45 @@ def _pin_declared_tests(
     return tuple(tests)
 
 
+def _record_case_narrowing(
+    request_id: str,
+    ceiling_rounds: int,
+    approved: ReviewSelectionPolicy,
+    case: SemanticCase,
+) -> None:
+    """Record which sections ceiling planning dropped and the agent-account rows kept (#1245).
+
+    One flag per narrowable section (1 when the approved selection had it and the case's
+    effective selection does not, whether ceiling planning or the case builder dropped it) and
+    the obligation and claim rows the case still carries: integers only. It is its own record
+    because ``semantic_case_built`` is already near the diagnostic line bound, and it is written
+    only when the case was narrowed.
+    """
+
+    effective = case.review_selection
+    if not ceiling_rounds and effective == approved:
+        return
+    record_bounded_counts_without_raising(
+        component="semantic_composition",
+        operation="semantic_case_narrowed",
+        outcome="narrowed",
+        request_id=request_id,
+        counts={
+            "semantic_excerpt_ceiling_rounds": ceiling_rounds,
+            **{
+                f"semantic_section_dropped_{section}": int(
+                    section in approved.sections and section not in effective.sections
+                )
+                for section in ("goal", "obligations", "claims", "timeline")
+            },
+            "semantic_obligation_rows_selected": sum(
+                item_id.startswith("obligation-") for item_id in case.packet.obligation_item_ids
+            ),
+            "semantic_claim_rows_selected": len(case.packet.claim_item_ids),
+        },
+    )
+
+
 def _privacy_gated_semantic_evaluator(
     privacy: PrivacyCoordinator,
     clock: ClockPort,
@@ -5864,7 +5905,10 @@ def _privacy_gated_semantic_evaluator(
                 if planned is None or not planned[4]:
                     declared_tests = ()
                     planned = await plan(())
-                semantic_case, approved_case, planned_selection, ceiling_rounds, _fits = planned
+                # #1242: whether planning kept the frame is recorded, never discarded. Reads stay
+                # offered: at small channel limits the measured room after the first exchange
+                # still serves one, and a read with no room is asked for the verdict instead.
+                semantic_case, approved_case, planned_selection, ceiling_rounds, fits = planned
             except SemanticCaseCapacityExceeded as exc:
                 # Same pre-dispatch contract as an envelope that cannot be reduced: local
                 # findings stay recorded, no job is created, and the caller sees a capacity
@@ -5923,6 +5967,7 @@ def _privacy_gated_semantic_evaluator(
                     ),
                     "semantic_excerpt_byte_limit": planned_selection.max_total_excerpt_bytes,
                     "semantic_excerpt_ceiling_rounds": ceiling_rounds,
+                    "semantic_first_exchange_frame_unplanned": int(not fits),
                     "semantic_check_change_parts_selected": sum(
                         item.excerpt_item_id.startswith(CHECK_TIME_CHANGE_ITEM_PREFIX)
                         for item in semantic_case.packet.targeted_excerpts
@@ -5945,6 +5990,12 @@ def _privacy_gated_semantic_evaluator(
                         ),
                     ),
                 },
+            )
+            _record_case_narrowing(
+                frozen.lease.operation_id,
+                ceiling_rounds,
+                review_selection,
+                semantic_case,
             )
             if captured_local_fence_required and captured_content_scope is not None:
                 # A resolver may authenticate a group that the active excerpt selection then

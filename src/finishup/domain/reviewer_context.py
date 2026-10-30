@@ -33,6 +33,7 @@ __all__ = [
     "GROWTH_RESERVE_TOKENS",
     "MAX_SIZED_EXCHANGE_BYTES",
     "MESSAGE_OVERHEAD_TOKENS",
+    "REVIEWER_FRAME_BYTES",
     "RUNTIME_FRAMING_TOKENS",
     "TURN_RESERVE_TOKENS",
     "UNSIZED_EXCHANGE_BYTES",
@@ -69,6 +70,15 @@ MESSAGE_OVERHEAD_TOKENS: Final = 8
 MAX_SIZED_EXCHANGE_BYTES: Final = 524_288
 # A route whose model context FinishUP cannot size keeps the exchange bound it always had.
 UNSIZED_EXCHANGE_BYTES: Final = 262_144
+# #1118: every byte of the reviewer conversation counts against the exchange's byte limit: the loop
+# instruction, the packet (sent as a JSON string, so escaping grows it, up to twice for quoted code),
+# the read catalog, the reviewer's replies and the read results. The first exchange is measured
+# exactly, as ``reviewer_first_exchange`` renders it, and planned below the limit less this frame,
+# which keeps room for the reviewer's read actions, their results and a format-repair notice. Each
+# result is then fitted to what the exact next exchange leaves (``run_reviewer``'s
+# ``exchange_budget``), so no later exchange outgrows the limit either. Disclosure fits the first
+# exchange below the same frame (#1242).
+REVIEWER_FRAME_BYTES: Final = 8192
 
 _HIGH_BYTES: Final = bytes(range(0x80, 0x100))
 

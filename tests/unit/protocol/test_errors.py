@@ -117,6 +117,10 @@ cursor_mcp_route_invalid
 cursor_project_mcp_command_invalid
 cursor_project_mcp_invalid
 cursor_project_mcp_preview_required
+delivery_cursor_expired
+delivery_cursor_invalid
+delivery_disclosure_changed
+delivery_redaction_recorded
 dependency_changed
 duplicate_has_duplicates
 duplicate_link_broken
@@ -382,7 +386,8 @@ unsorted_set_field
 unsupported_json_type
 unsupported_payload_type
 verification_criterion_not_in_task
-workspace_task_exists""".splitlines()
+workspace_task_exists
+""".splitlines()
 )
 
 
@@ -551,7 +556,7 @@ def test_public_error_code_membership() -> None:
 def test_protocol_reason_registry_is_exact_and_import_order_independent() -> None:
     source_values = cast(tuple[str, ...], getattr(errors_module, "_PROTOCOL_REASON_CODE_VALUES"))
     assert source_values == _EXPECTED_REASON_CODES
-    assert len(source_values) == 351
+    assert len(source_values) == 355
     assert source_values == tuple(sorted(source_values, key=str.encode))
     assert len(source_values) == len(set(source_values))
     assert PROTOCOL_REASON_CODES == frozenset(_EXPECTED_REASON_CODES)

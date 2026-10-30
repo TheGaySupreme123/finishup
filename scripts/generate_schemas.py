@@ -2784,6 +2784,9 @@ def _check_request_v1_1_schema(entry: _RegistryEntry) -> dict[str, JsonValue]:
     # Issue #1012, unreleased in-place addition: wait, bounded, for the caller's pending hook
     # observations before the case freezes. Absent requests keep their exact shape.
     properties["await_observations"] = {"type": "boolean"}
+    # #1244 (D13), unreleased in-place addition: a brief reply names each finding's identity and
+    # action fields only. Absent requests keep their exact shape.
+    properties["detail"] = {"enum": ["brief", "full"], "type": "string"}
     # Issue #1048 (ADR-047), unreleased in-place addition: ``inspect`` reads what is left to
     # close instead of checking. It records nothing and mints no findings, so the request model
     # refuses the finding, pack, closing-review and scope options beside it. That rule stays out
@@ -13915,10 +13918,11 @@ def _result_delivery_schema(entry: _RegistryEntry) -> dict[str, JsonValue]:
     if entry.schema_name == "status-request":
         properties = cast(dict[str, JsonValue], document["properties"])
         properties["delivery"] = {"enum": ["complete", "paged"], "type": "string"}
+        # #1244 (D12): a short handle, never the earlier signed and compressed blob.
         properties["delivery_cursor"] = {
             "type": "string",
             "minLength": 1,
-            "maxLength": 4096,
+            "maxLength": 96,
             "pattern": "^[A-Za-z0-9_.-]+$",
         }
         rules = cast(list[JsonValue], document.setdefault("allOf", []))
@@ -13944,8 +13948,53 @@ def _result_delivery_schema(entry: _RegistryEntry) -> dict[str, JsonValue]:
             }
         )
     else:
-        from finishup.protocol.models import DeliveryPageModel
+        from finishup.protocol.models import CHECK_BRIEF_FINDING_KEYS, DeliveryPageModel
 
+        result_defs = cast(dict[str, JsonValue], document["$defs"])
+        if entry.schema_name == "check-result":
+            # #1244 (D13), unreleased in-place addition: a ``detail: brief`` check names each
+            # finding by its identity and action fields; full rows keep their released shape.
+            full_row = cast(dict[str, JsonValue], result_defs["projected_finding"])
+            full_properties = cast(dict[str, JsonValue], full_row["properties"])
+            brief_row = {
+                **{
+                    k: v
+                    for k, v in full_row.items()
+                    if k not in {"properties", "required", "allOf"}
+                },
+                "properties": {
+                    key: full_properties[key]
+                    for key in CHECK_BRIEF_FINDING_KEYS
+                    if key in full_properties
+                },
+                "required": [
+                    key
+                    for key in cast(list[str], full_row["required"])
+                    if key in CHECK_BRIEF_FINDING_KEYS
+                ],
+            }
+            result_defs["brief_finding"] = cast(JsonValue, brief_row)
+            success = cast(dict[str, JsonValue], result_defs["success"])
+            success_properties = cast(dict[str, JsonValue], success["properties"])
+            success_properties["detail"] = {"const": "brief"}
+            success_properties["closure_state"] = {
+                "$ref": SCHEMA_NAMESPACE
+                + "operations/status-result-1.4.0.schema.json#/$defs/closure_state"
+            }
+            findings = cast(dict[str, JsonValue], success_properties["findings"])
+            findings["items"] = {
+                "anyOf": [
+                    {"$ref": "#/$defs/projected_finding"},
+                    {"$ref": "#/$defs/brief_finding"},
+                ]
+            }
+        elif entry.schema_name == "status-result":
+            # #1244 (D13), unreleased in-place addition: a brief compact page omits each
+            # unanswered finding's detail.
+            compact = cast(dict[str, JsonValue], result_defs["compact_finding"])
+            compact["required"] = [
+                key for key in cast(list[str], compact["required"]) if key != "detail"
+            ]
         page = DeliveryPageModel.model_json_schema()
         page_defs = cast(dict[str, JsonValue], page.pop("$defs", {}))
         # Pydantic emits plain strings for BeforeValidator-backed wire types. Point the page's
@@ -13978,6 +14027,11 @@ def _result_delivery_schema(entry: _RegistryEntry) -> dict[str, JsonValue]:
         properties["result_frontier"] = {
             "$ref": SCHEMA_NAMESPACE + "common/frontier-1.0.0.schema.json"
         }
+        # #1244 (D12): absent unless the page comes from a kept set the ledger has moved past.
+        properties["ledger_moved_since"] = {
+            "$ref": SCHEMA_NAMESPACE + "common/frontier-1.0.0.schema.json"
+        }
+        properties["page_set_restarted"] = {"const": True}
         properties["privacy_projection"] = {
             "$ref": SCHEMA_NAMESPACE + "common/operation-result-1.0.0.schema.json"
             "#/$defs/privacy_projection"
