@@ -2430,6 +2430,21 @@ class LineageCoordinator:
         """
 
         if snapshot.work_state is target:
+            if (
+                target is WorkState.ABANDONED
+                and snapshot.abandonment_reason is None
+                and reason in ABANDONMENT_REASONS
+            ):
+                # A row abandoned before catalog migration 6 recorded no reason. Its ledger event
+                # names it, so a contact_lost abandonment from before the upgrade is reversible
+                # by its own session's close like any later one (#1239).
+                named = replace(
+                    snapshot,
+                    abandonment_reason=reason,
+                    lineage_authority_revision=snapshot.lineage_authority_revision + 1,
+                )
+                await self._store.save_task(named)
+                return named
             return snapshot
         if (
             snapshot.work_state is WorkState.CLOSED
