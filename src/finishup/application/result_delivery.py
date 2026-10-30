@@ -1,45 +1,41 @@
-"""Lossless, cursor-bound presentation of already privacy-projected results (#1139).
+"""Lossless, handle-bound presentation of already privacy-projected results (#1139, #1244).
 
-No response cache or new durable state: cursors select a recorded operation, or a status
-read pinned to its original frontier. Every continuation goes through disclosure again.
+A continuation is a short handle (``delivery_handle``) naming the page set's source, frontier,
+next offset and content digest prefix. The delivered page set is kept in service memory only
+(``DeliveryPageStore``; never disk, never the ledger) so later pages come from the very copy the
+first page was cut from. A miss, such as after a service restart, rebuilds the set from the
+ledger at the handle's frontier. Every continuation goes through disclosure again; only a
+recorded redaction or a changed disclosure policy refuses one, and the refusal names which.
 """
 
 from __future__ import annotations
 
 import base64
-import hashlib
-import hmac
-import zlib
+import re
+import uuid
+from collections import OrderedDict
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
-from typing import Any, Final, cast
+from typing import Any, Final, Literal, cast
 
 from finishup.domain.result_delivery import HOST_RESULT_BUDGET_BYTES, mcp_delivery_bytes
 from finishup.protocol.canonical import (
     JsonValue,
     canonical_digest,
     canonical_encode,
-    strict_json_parse,
 )
 from finishup.protocol.errors import PublicErrorCode, PublicOperationError
 
-_CURSOR_DOMAIN: Final = b"finishup.result-delivery/1\0"
 _ATOM_BYTES: Final = 1_400
 # Each page carries its read's whole privacy projection beside the items. Past this canonical
 # size its omitted pointers coalesce to containing fields (ADR-009's rule past the 512-pointer
 # bound), so a long omission list still leaves room for full-size atoms.
 _PROJECTION_BYTES: Final = 1_024
-# Live status fields a later page read would see change; the cursor freezes the first read's,
-# presence included: a brief body omits each one at its default, and an append can reveal it.
-_STATUS_LIVE_FIELDS: Final = (
-    "head_frontier",
-    "projection_lag",
-    "projection_version",
-    "rebuild_state",
-    "import_status",
-    "credential_heuristic",
-    "review_mode",
-)
+# The widest frontier a ``ledger_moved_since`` notice can name (a 20-digit sequence).
+_WIDEST_FRONTIER: Final[Mapping[str, JsonValue]] = {
+    "sequence": "9" * 20,
+    "head_digest": "sha256:" + "f" * 64,
+}
 _REQUIRED_NEXT_STEP: Final = (
     "Until actionable_complete=true, call status view=compact delivery_cursor=next_cursor with "
     "the same session_id/writer_id. Rebuild containers and fragments (path, offsets, digest) "
@@ -74,25 +70,125 @@ _ACTION_KEYS: Final = (
     "waiver_expiry",
 )
 
+# --- Short continuation handles (#1244, D12) -----------------------------------------------------
+#
+#   <kind><source request id, 22 base64url chars>.<frontier>.<offset>.<8 hex digest>[.<selector>]
+#
+# ``kind`` is c (check), r (receipt) or s (status). The source id is the original request's UUID,
+# so a recorded check or receipt is found again by its own operation. The selector segment lets a
+# miss rebuild what the request named: a receipt's format, include and redaction profile; a status
+# read's view, detail and limit, or ``x`` when the read named anything else (a filter, an
+# inventory cursor or a selector id), which a miss cannot rebuild. A handle carries no secret and
+# no signature: every read it names is one its own session and writer may already make, and the
+# kept page set is bound to that session and writer.
+_KINDS: Final[Mapping[str, Literal["check", "receipt", "status"]]] = {
+    "c": "check",
+    "r": "receipt",
+    "s": "status",
+}
+_KIND_OF: Final[Mapping[str, str]] = {value: key for key, value in _KINDS.items()}
+_HANDLE: Final = re.compile(
+    r"^([crs])([A-Za-z0-9_-]{22})\.(0|[1-9][0-9]{0,19})\.(0|[1-9][0-9]{0,9})\.([0-9a-f]{8})"
+    r"(?:\.([a-z0-9]{1,8}))?$",
+    re.ASCII,
+)
+_VIEW_CODES: Final[Mapping[str, str]] = {
+    "advice": "a",
+    "assignment": "g",
+    "candidate_findings": "n",
+    "coverage": "v",
+    "compact": "c",
+    "evidence": "e",
+    "findings": "f",
+    "history": "h",
+    "obligations": "o",
+    "operation": "p",
+    "lineage": "l",
+    "project": "j",
+    "results": "r",
+    "versions": "s",
+}
+_CODE_VIEWS: Final[Mapping[str, str]] = {value: key for key, value in _VIEW_CODES.items()}
+_DETAIL_CODES: Final[Mapping[str | None, str]] = {"brief": "b", "full": "f", None: "n"}
+_CODE_DETAILS: Final[Mapping[str, str | None]] = {v: k for k, v in _DETAIL_CODES.items()}
+_FORMAT_CODES: Final[Mapping[str, str]] = {"json": "j", "markdown": "m", "text": "t"}
+_INCLUDE_CODES: Final[Mapping[str, str]] = {"summary": "s", "standard": "d", "full": "f"}
+_REDACTION_CODES: Final[Mapping[str, str]] = {
+    "full_local": "l",
+    "default_local_export": "e",
+    "redacted_share": "r",
+}
+# Status selector keys a status handle can carry; any other key makes the set unrebuildable.
+_STATUS_HANDLE_KEYS: Final = frozenset({"request_id", "view", "limit", "detail", "at_frontier"})
+_STATUS_UNREBUILDABLE: Final = "x"
+
+DeliveryRefusal = Literal[
+    "delivery_cursor_invalid",
+    "delivery_cursor_expired",
+    "delivery_redaction_recorded",
+    "delivery_disclosure_changed",
+]
+_REFUSAL_MESSAGES: Final[Mapping[str, str]] = {
+    "delivery_cursor_invalid": (
+        "Result continuation is invalid: pass next_cursor exactly as the last page returned it. "
+        "Read current status; do not act on an incomplete finding or replay a completed check "
+        "as a new review."
+    ),
+    "delivery_cursor_expired": (
+        "Result continuation expired: the service restarted and this status read named a filter, "
+        "cursor or selector its handle cannot carry. Repeat the original status read; do not act "
+        "on an incomplete finding."
+    ),
+    "delivery_redaction_recorded": (
+        "Result continuation refused: a redaction was recorded after this page set's frontier, "
+        "so its earlier copy may hold redacted content. Read current status instead."
+    ),
+    "delivery_disclosure_changed": (
+        "Result continuation refused: the disclosure policy or sink changed since the first "
+        "page. Read current status instead; its pages follow the current policy."
+    ),
+}
+
+
+@dataclass(frozen=True, slots=True)
+class DeliveryHandle:
+    """One parsed continuation handle; ``set_key`` names its page set in service memory."""
+
+    method: Literal["check", "receipt", "status"]
+    source_request_id: str
+    frontier: int
+    position: int
+    digest_prefix: str
+    selector_code: str | None
+
+    @property
+    def set_key(self) -> str:
+        return f"{_KIND_OF[self.method]}{_compact_id(self.source_request_id)}.{self.frontier}"
+
 
 @dataclass(frozen=True, slots=True, repr=False)
 class DeliverySource:
+    """A continuation's fresh source read plus what the projection step needs to page it."""
+
     result: Any
     method: str
     selector: dict[str, JsonValue]
-    position: int
-    digest: str
+    handle: DeliveryHandle
     request_id: str
+    session_id: str
     writer_id: str
-    sink: str
+    # The ledger head when this continuation was read, and whether a redaction was recorded
+    # after the page set's frontier (that alone refuses the continuation).
+    head_frontier: dict[str, JsonValue]
+    redacted_since: bool
 
 
-def invalid_cursor() -> PublicOperationError:
+def invalid_cursor(reason: DeliveryRefusal = "delivery_cursor_invalid") -> PublicOperationError:
     return PublicOperationError(
         PublicErrorCode.INVALID_REQUEST,
-        "Result continuation is invalid or its authorized content changed. Read current status; "
-        "do not act on an incomplete finding or replay a completed check as a new review.",
+        _REFUSAL_MESSAGES[reason],
         False,
+        safe_details={"reason_code": reason},
     )
 
 
@@ -100,66 +196,237 @@ def _b64(value: bytes) -> str:
     return base64.urlsafe_b64encode(value).decode("ascii").rstrip("=")
 
 
-def _cursor_mac(key: bytes, data: bytes, position: bytes, session_id: str, writer_id: str) -> bytes:
-    # The held session and writer are bound by the signature, not repeated in the cursor body.
-    bound = b"\0".join((data, position, session_id.encode("ascii"), writer_id.encode("ascii")))
-    return hmac.new(key, _CURSOR_DOMAIN + bound, hashlib.sha256).digest()
+def _compact_id(request_id: str) -> str:
+    return _b64(uuid.UUID(request_id[4:]).bytes)
 
 
-def encode_cursor(key: bytes, body: Mapping[str, JsonValue]) -> str:
-    position = str(body["position"]).encode("ascii")
-    data = zlib.compress(
-        canonical_encode(
-            {k: v for k, v in body.items() if k not in {"position", "session_id", "writer_id"}}
-        )
-    )
-    signature = _cursor_mac(
-        key, data, position, cast(str, body["session_id"]), cast(str, body["writer_id"])
-    )
-    result = _b64(data) + "." + position.decode() + "." + _b64(signature)
-    if len(key) < 32 or len(result) > 4096:
-        raise ValueError("result_delivery_cursor_capacity")
-    return result
+def _expand_id(compact: str) -> str:
+    return "req_" + str(uuid.UUID(bytes=base64.urlsafe_b64decode(compact + "==")))
 
 
-def decode_cursor(key: bytes, cursor: str, session_id: str, writer_id: str) -> dict[str, Any]:
+def _digest_prefix(digest: str) -> str:
+    return digest.removeprefix("sha256:")[:8]
+
+
+def status_selector_code(selector: Mapping[str, JsonValue]) -> str:
+    """The status segment of a handle: view, detail and limit, or ``x`` when it names more."""
+
+    view = selector.get("view")
+    limit = selector.get("limit", "20")
+    detail = selector.get("detail")
+    if (
+        set(selector) - _STATUS_HANDLE_KEYS - {"delivery"}
+        or type(view) is not str
+        or view not in _VIEW_CODES
+        or type(limit) is not str
+        or not limit.isdigit()
+        or len(limit) > 3
+        or detail not in _DETAIL_CODES
+    ):
+        return _STATUS_UNREBUILDABLE
+    return _VIEW_CODES[view] + _DETAIL_CODES[detail] + limit
+
+
+def check_selector_code(selector: Mapping[str, JsonValue]) -> str | None:
+    """A check handle's segment: ``b`` for a brief reply, none for a full one."""
+
+    return "b" if selector.get("detail") == "brief" else None
+
+
+def receipt_selector_code(selector: Mapping[str, JsonValue]) -> str:
     try:
-        body, position, signature = cursor.split(".")
-        if (
-            len(position) > 20
-            or not position.isascii()
-            or not position.isdigit()
-            or str(int(position)) != position
-        ):
-            raise ValueError("position")
-        data = base64.urlsafe_b64decode(body + "=" * (-len(body) % 4))
-        signed = base64.urlsafe_b64decode(signature + "=" * (-len(signature) % 4))
-        if len(key) < 32 or not hmac.compare_digest(
-            signed, _cursor_mac(key, data, position.encode(), session_id, writer_id)
-        ):
-            raise ValueError("signature")
-        decoder = zlib.decompressobj()
-        decoded = decoder.decompress(data, 16_384)
-        if not decoder.eof or decoder.unconsumed_tail or decoder.unused_data:
-            raise ValueError("cursor_capacity")
-        value = strict_json_parse(decoded)
-        if not isinstance(value, dict):
-            raise ValueError("shape")
-        value["position"] = int(position)
-        if (
-            value.get("v") != "1"
-            or "session_id" in value
-            or "writer_id" in value
-            or value.get("method") not in {"check", "receipt", "status"}
-            or type(value.get("position")) is not int
-            or value["position"] < 1
-            or not isinstance(value.get("selector"), dict)
-        ):
-            raise ValueError("binding")
-        value["session_id"], value["writer_id"] = session_id, writer_id
-        return value
-    except (KeyError, TypeError, ValueError, zlib.error) as exc:
+        return (
+            _FORMAT_CODES[cast(str, selector["format"])]
+            + _INCLUDE_CODES[cast(str, selector["include"])]
+            + _REDACTION_CODES[cast(str, selector["redaction_profile"])]
+        )
+    except (KeyError, TypeError):
+        return _STATUS_UNREBUILDABLE
+
+
+def status_selector_from_code(code: str | None, handle: DeliveryHandle) -> dict[str, JsonValue]:
+    """Rebuild a status selector from a handle after a miss, or refuse it as expired."""
+
+    if (
+        code is None
+        or len(code) < 3
+        or code[0] not in _CODE_VIEWS
+        or code[1] not in _CODE_DETAILS
+        or not code[2:].isdigit()
+    ):
+        raise invalid_cursor("delivery_cursor_expired")
+    selector: dict[str, JsonValue] = {
+        "request_id": handle.source_request_id,
+        "view": _CODE_VIEWS[code[0]],
+        "limit": code[2:],
+        "at_frontier": str(handle.frontier),
+        "delivery": "paged",
+    }
+    detail = _CODE_DETAILS[code[1]]
+    if detail is not None:
+        selector["detail"] = detail
+    return selector
+
+
+def receipt_selector_from_code(code: str | None) -> dict[str, JsonValue]:
+    reverse = (
+        {v: k for k, v in _FORMAT_CODES.items()},
+        {v: k for k, v in _INCLUDE_CODES.items()},
+        {v: k for k, v in _REDACTION_CODES.items()},
+    )
+    if (
+        code is None
+        or len(code) != 3
+        or any(c not in m for c, m in zip(code, reverse, strict=True))
+    ):
+        raise invalid_cursor("delivery_cursor_expired")
+    return {
+        "format": reverse[0][code[0]],
+        "include": reverse[1][code[1]],
+        "redaction_profile": reverse[2][code[2]],
+    }
+
+
+def encode_handle(
+    method: str,
+    source_request_id: str,
+    frontier: int,
+    position: int,
+    digest: str,
+    selector_code: str | None = None,
+) -> str:
+    handle = (
+        f"{_KIND_OF[method]}{_compact_id(source_request_id)}.{frontier}.{position}."
+        f"{_digest_prefix(digest)}"
+    )
+    if selector_code is not None:
+        handle += "." + selector_code
+    if _HANDLE.fullmatch(handle) is None:
+        raise ValueError("result_delivery_handle_invalid")
+    return handle
+
+
+def decode_handle(cursor: str) -> DeliveryHandle:
+    match = _HANDLE.fullmatch(cursor)
+    if match is None:
+        raise invalid_cursor()
+    kind, compact, frontier, position, digest, code = match.groups()
+    try:
+        source_request_id = _expand_id(compact)
+    except ValueError as exc:
         raise invalid_cursor() from exc
+    if _compact_id(source_request_id) != compact or int(position) < 1:
+        raise invalid_cursor()
+    return DeliveryHandle(
+        _KINDS[kind], source_request_id, int(frontier), int(position), digest, code
+    )
+
+
+def content_digest(source: Mapping[str, JsonValue]) -> str:
+    """The page set's content identity: everything but this read's own disclosure fields."""
+
+    return canonical_digest(
+        {k: v for k, v in source.items() if k not in {"privacy_projection", "review_delivery"}}
+    )
+
+
+def disclosure_identity(source: Mapping[str, JsonValue]) -> tuple[JsonValue, ...]:
+    """What a changed disclosure decision would change: the sink and the policy it applied."""
+
+    projection = cast(Mapping[str, JsonValue], source["privacy_projection"])
+    return tuple(
+        projection.get(key) for key in ("sink", "policy_id", "policy_version", "policy_digest")
+    )
+
+
+def brief_check_body(source: Mapping[str, JsonValue]) -> dict[str, JsonValue]:
+    """A complete check reply with each finding reduced to who and what to answer (#1244, D13).
+
+    Only omission: ``CHECK_BRIEF_FINDING_KEYS`` stay, so every finding can still be named,
+    answered or questioned; ``status view=findings`` carries its detail, coverage and provenance.
+    ``closure_readiness`` gives way to the ``closure_state`` subset a brief status carries.
+    """
+    from finishup.protocol.models import CHECK_BRIEF_FINDING_KEYS
+
+    body = {k: v for k, v in source.items() if k != "closure_readiness"}
+    body["detail"] = "brief"
+    readiness = source.get("closure_readiness")
+    if isinstance(readiness, Mapping):
+        # The subset a brief status carries (#1084, #1209); status view=compact has the rest.
+        body["closure_state"] = {
+            key: cast(Mapping[str, JsonValue], readiness)[key]
+            for key in ("blocking_conditions", "state", "agent_actionable", "fix_or_decline")
+            if key in readiness
+        }
+    rows = source.get("findings")
+    if not isinstance(rows, (list, tuple)):
+        return body
+    return {
+        **body,
+        "findings": [
+            {k: row[k] for k in CHECK_BRIEF_FINDING_KEYS if k in row}
+            if isinstance(row, Mapping)
+            else row
+            for row in cast(Sequence[JsonValue], rows)
+        ],
+    }
+
+
+@dataclass(frozen=True, slots=True, repr=False)
+class DeliveryPageSet:
+    """One delivered page set kept in service memory: the projected source pages are cut from."""
+
+    session_id: str
+    writer_id: str
+    sink: str
+    method: str
+    selector: dict[str, JsonValue]
+    source: dict[str, JsonValue]
+    digest: str
+    selector_code: str | None
+    size: int
+
+
+class DeliveryPageStore:
+    """Process-memory copies of delivered page sets (#1244, D12), least recently used first out.
+
+    Never written to disk or the ledger, so a restart drops every set and a continuation then
+    rebuilds from the ledger. Bounded by count and by canonical size.
+    """
+
+    __slots__ = ("_bytes", "_max_bytes", "_max_sets", "_sets")
+
+    def __init__(self, *, max_sets: int = 256, max_bytes: int = 64 * 1_048_576) -> None:
+        self._sets: OrderedDict[str, DeliveryPageSet] = OrderedDict()
+        self._max_sets = max_sets
+        self._max_bytes = max_bytes
+        self._bytes = 0
+
+    def get(self, key: str, session_id: str, writer_id: str) -> DeliveryPageSet | None:
+        entry = self._sets.get(key)
+        if entry is None or entry.session_id != session_id or entry.writer_id != writer_id:
+            return None
+        self._sets.move_to_end(key)
+        return entry
+
+    def put(self, key: str, entry: DeliveryPageSet) -> None:
+        previous = self._sets.pop(key, None)
+        if previous is not None:
+            self._bytes -= previous.size
+        if entry.size > self._max_bytes:
+            return
+        self._sets[key] = entry
+        self._bytes += entry.size
+        while len(self._sets) > self._max_sets or self._bytes > self._max_bytes:
+            _, evicted = self._sets.popitem(last=False)
+            self._bytes -= evicted.size
+
+    def clear(self) -> None:
+        self._sets.clear()
+        self._bytes = 0
+
+    def __len__(self) -> int:
+        return len(self._sets)
 
 
 def _pointer(key: str) -> str:
@@ -379,56 +646,41 @@ def delivery_items(source: Mapping[str, JsonValue]) -> list[dict[str, JsonValue]
 def page_result(
     source: Mapping[str, JsonValue],
     *,
-    key: bytes,
     method: str,
-    selector: dict[str, JsonValue],
+    selector: Mapping[str, JsonValue],
     writer_id: str,
     sink: str,
     position: int = 0,
-    expected_digest: str | None = None,
     request_id: str | None = None,
+    selector_code: str | None = None,
+    ledger_moved_since: Mapping[str, JsonValue] | None = None,
+    page_set_restarted: bool = False,
 ) -> dict[str, JsonValue]:
-    """Page a result after disclosure; the original operation remains complete and unchanged."""
-    if method in {"status", "check"}:
-        live_fields = _STATUS_LIVE_FIELDS if method == "status" else ("observations_awaited",)
-        snapshot = selector.get("_delivery_snapshot")
-        if snapshot is None:
-            selector = {
-                **selector,
-                "_delivery_snapshot": {k: source[k] for k in live_fields if k in source},
-            }
-        elif isinstance(snapshot, Mapping):
-            # Freeze call-local wait facts as well as status watermarks, including absence.
-            # A continuation neither replaces the first call's values nor adds omitted ones.
-            frozen = cast(Mapping[str, JsonValue], snapshot)
-            source = {k: v for k, v in source.items() if k not in live_fields}
-            source.update({k: frozen[k] for k in live_fields if k in frozen})
-        else:
-            raise invalid_cursor()
-    # Each read attaches a fresh local disclosure receipt to its own page, outside the items and
-    # the content identity.
-    content = {
-        k: v for k, v in source.items() if k not in {"privacy_projection", "review_delivery"}
-    }
-    digest = canonical_digest(content)
-    if expected_digest is not None and expected_digest != digest:
-        raise invalid_cursor()
-    cursor_body: dict[str, JsonValue] = {
-        "v": "1",
-        "method": method,
-        "selector": selector,
-        "digest": digest,
-        "session_id": source["session_id"],
-        "writer_id": writer_id,
-        "sink": sink,
-    }
+    """Page a result after disclosure; the original operation remains complete and unchanged.
+
+    ``ledger_moved_since`` names the ledger head when this page comes from the kept copy of a
+    page set whose source has since changed; ``page_set_restarted`` marks the first page of a set
+    rebuilt after a miss whose content differs from the one the handle named (#1244, D12).
+    """
+    del sink  # the projection step checks the sink; a page carries its read's own projection
+    digest = content_digest(source)
+    frontier = int(cast(str, cast(Mapping[str, JsonValue], source["result_frontier"])["sequence"]))
+    source_request_id = cast(str, source["request_id"])
+
+    def handle_at(next_position: int) -> str:
+        return encode_handle(
+            method, source_request_id, frontier, next_position, digest, selector_code
+        )
+
+    # Field order is the order Codex shows a model (ADR-043): the handle leads the page.
     page: dict[str, JsonValue] = {
+        "next_cursor": None,
         "protocol_version": "0.1",
         "schema_version": "1.0.0",
         "ok": True,
         "state": "delivery_page",
-        "request_id": request_id or source["request_id"],
-        "source_request_id": source["request_id"],
+        "request_id": request_id or source_request_id,
+        "source_request_id": source_request_id,
         "source_operation": method,
         "task_id": source["task_id"],
         "session_id": source["session_id"],
@@ -454,11 +706,14 @@ def page_result(
             else None
         ),
         "items": [],
-        "next_cursor": None,
         "privacy_projection": _page_projection(
             cast(Mapping[str, JsonValue], source["privacy_projection"])
         ),
     }
+    if ledger_moved_since is not None:
+        page["ledger_moved_since"] = dict(ledger_moved_since)
+    if page_set_restarted:
+        page["page_set_restarted"] = True
     source_page = source.get("page")
     if method == "status" and isinstance(source_page, Mapping) and source_page.get("next_cursor"):
         page["inventory_read"] = {
@@ -480,13 +735,15 @@ def page_result(
             "cursor": source_page["next_cursor"],
         }
     # Admit individual atoms against the worst envelope, including both inventory cursors.
-    # A position-independent compressed cursor body makes that envelope's bound exact.
+    # The handle's length depends only on the offset's digits, so the last offset bounds it.
     limit = _ATOM_BYTES
     empty_item_bytes = mcp_delivery_bytes({"items": []})
     while True:
         items, actionable_count = _delivery_groups(source, limit)
         last = len(items)
-        longest_cursor = encode_cursor(key, {**cursor_body, "position": last})
+        longest_cursor = handle_at(last)
+        # The notices a later page of this set may carry are measured on every page, so a
+        # notice never changes the partition and offsets stay valid across the set.
         envelope_bytes = mcp_delivery_bytes(
             {
                 **page,
@@ -494,6 +751,8 @@ def page_result(
                 "next_cursor": longest_cursor,
                 "offset": last,
                 "total_items": last,
+                "ledger_moved_since": _WIDEST_FRONTIER,
+                "page_set_restarted": True,
             }
         )
         largest_item_bytes = max(
@@ -510,7 +769,7 @@ def page_result(
     selected: list[JsonValue] = []
     stop = actionable_count if position < actionable_count else len(items)
     for end in range(position + 1, stop + 1):
-        cursor = None if end == len(items) else encode_cursor(key, {**cursor_body, "position": end})
+        cursor = None if end == len(items) else handle_at(end)
         candidate: dict[str, JsonValue] = {
             **page,
             "items": [*selected, cast(JsonValue, items[end - 1])],

@@ -170,6 +170,9 @@ async def collect_status_delivery(
             if pages:
                 raise ValueError("result_delivery_invalid")
             return wrapped
+        if page.page_set_restarted is True and page.offset == 0 and pages:
+            # #1244: a miss rebuilt the set with different content; it starts again at 0.
+            pages, size, offset = [], 0, 0
         if (
             page.source_operation != "status"
             or page.session_id != request.session_id

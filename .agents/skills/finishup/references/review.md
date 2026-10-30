@@ -90,7 +90,7 @@ Until `actionable_complete` is true, call `status` with `view=compact` and
 `delivery_cursor` set to the returned `next_cursor`.
 Rebuild marked containers and fragments by path, offsets and digest, then follow `inventory_read`.
 Answer a finding only once it carries its requested action, alternative interpretation and
-uncertainty, or explicitly labels them withheld.
+uncertainty, or explicitly labels them withheld. Brief check rows omit these: read `view=findings`.
 
 **Respect the frozen case.** Treat a reviewer read marked `not_in_frozen_case` as unavailable in
 that check.

@@ -2418,12 +2418,18 @@ async def test_await_observations_absent_keeps_digest_and_result_bytes() -> None
     # The pre-field digest: the request dump with no await_observations member at all.
     legacy: dict[str, Any] = plain.model_dump(mode="json", by_alias=True)
     legacy.pop("await_observations")
+    # #1244 (D13): ``detail`` shapes only the reply, so it is outside the identity too.
+    legacy.pop("detail")
     legacy["scope"] = {"claim_ids": scope.claim_ids, "obligation_ids": scope.obligation_ids}
     legacy["policy_packs"] = packs
     legacy["route_profile"] = "policy"
     assert digest == canonical_digest(legacy)
     # The flag is outside the operation identity: a recovery may set or omit it.
     assert _request_digest(flagged, scope, packs, route_profile="policy") == digest
+    brief = CheckRequest.model_validate(
+        {**plain.model_dump(mode="json", exclude_none=True), "detail": "brief"}
+    )
+    assert _request_digest(brief, scope, packs, route_profile="policy") == digest
 
     result = await execute_check(_App(), plain)
     body = check_internal_json(result)

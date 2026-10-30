@@ -63,21 +63,18 @@ def _result_delivery_vector() -> dict[str, JsonValue]:
     }
     page = page_result(
         source,
-        key=b"fixture-delivery-key-not-a-secret",
         method="check",
         selector={"request_id": source["request_id"]},
         writer_id="wri_00000000-0000-4000-8000-000000000004",
         sink="agent_context",
     )
-    # Cursor authentication is round-tripped separately. Normalize this opaque value so the
-    # golden presentation bytes do not depend on a platform's compression-library version.
-    page["next_cursor"] = "fixture.cursor"
+    # #1244: the continuation handle is a plain function of the page set, so it stays in the
+    # golden bytes as served.
     return {
         "source": source,
         "payload": page,
         "canonical_hex": canonical_encode(page).hex(),
         "digest": canonical_digest(page),
-        "cursor_normalization": "fixture.cursor",
         "schema": "operations/check-result-1.7.0.schema.json",
     }
 

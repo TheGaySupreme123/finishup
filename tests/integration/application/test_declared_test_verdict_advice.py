@@ -542,8 +542,9 @@ async def test_a_recovered_check_outcome_keeps_its_tracked_advice(
     """#1226: ``status view=operation`` keeps the check's advice when the closure basis misses.
 
     The advice needs only the recorded check event, so a later record on a cold memo (the
-    recovery after a lost check result) or an unavailable trusted projection omits the finding
-    list and continuation, never the advisory identities.
+    recovery after a lost check result) omits the finding list and continuation, never the
+    advisory identities. An unavailable trusted projection omits nothing: the replay reads the
+    exact prefix instead (#1244).
     """
 
     import finishup.application.check as check_module
@@ -617,5 +618,9 @@ async def test_a_recovered_check_outcome_keeps_its_tracked_advice(
 
         monkeypatch.setattr(check_module, "trusted_projection_at", untrusted)
     cold = await operation_outcome(9770)
+    if miss == "no_trusted_projection":
+        # #1244: the replayed check reads its exact prefix, so the list and continuation hold.
+        assert cold == warm
+        return
     assert "overall_next" not in cold and "finding_checklist" not in cold
     assert cold["correctness_advisories"] == expected
