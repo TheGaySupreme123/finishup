@@ -57,6 +57,7 @@ from finishup.domain.reviewer_reads import ReviewerRead, ReviewerRecord
 from finishup.observability.logging import record_bounded_counts_without_raising
 from finishup.ports.semantic import (
     Deadline,
+    ProviderAttemptProvenance,
     ReviewerSession,
     ReviewStepStore,
     SemanticCase,
@@ -319,6 +320,13 @@ def _terminal(
     """One egress result for the whole conversation, without inventing an AI judgment."""
 
     last = results[-1] if results else None
+    # The newest exchange that was sent and answered. A conversation that times out after it
+    # (its next exchange refused at the deadline, or waiting on the owner) ends under its
+    # provenance, never as a FinishUP fault.
+    sent = next((item for item in reversed(results) if type(item) is SemanticEgressReply), None)
+    timed_out = outcome.reason == "deadline" or (
+        type(last) is SemanticEgressBlocked and last.outcome is PrivacyOutcome.TIMEOUT
+    )
     if outcome.reason == "case_capacity_exceeded" and outcome.capacity is not None:
         return SemanticEgressBlocked(
             request_id,
@@ -327,13 +335,7 @@ def _terminal(
             capacity=outcome.capacity,
         )
     if type(last) is SemanticEgressReply:
-        provenance = last.result.provenance
-        evidence = provenance.runtime_evidence
-        if evidence is not None and cleanup is not None:
-            # The held session's actual cleanup, never the in-session "retained" of a turn.
-            provenance = replace(
-                provenance, runtime_evidence=replace(evidence, process_cleanup=cleanup)
-            )
+        provenance = _held_provenance(last, cleanup)
         if cleanup == "failed":
             evidence = provenance.runtime_evidence
             if evidence is not None:
@@ -359,11 +361,22 @@ def _terminal(
             return last.outcome(
                 SemanticResultInvalid(replace(provenance, status=SemanticStatus.INVALID), raw)
             )
-    elif last is not None and not (type(last) is SemanticEgressAwaitingHuman and len(results) > 1):
+    elif (
+        last is not None
+        and not (type(last) is SemanticEgressAwaitingHuman and len(results) > 1)
+        and not (timed_out and sent is not None)
+    ):
         # The exchange's own outcome ended the review: blocked, awaiting the owner on the first
         # exchange, or a provider failure. It maps exactly as a one-shot review's would.
         return last
-    if outcome.reason == "deadline":
+    if timed_out:
+        if sent is not None:
+            return sent.outcome(
+                SemanticResultTimeout(
+                    replace(_held_provenance(sent, cleanup), status=SemanticStatus.TIMEOUT)
+                )
+            )
+        # Nothing of this run was sent: no attempt to certify (``_map_egress_to_final``).
         return SemanticEgressBlocked(
             request_id, PrivacyOutcome.TIMEOUT, PrivacyReason.DEADLINE_EXPIRED
         )
@@ -372,10 +385,24 @@ def _terminal(
             request_id, PrivacyOutcome.BLOCKED_BY_POLICY, PrivacyReason.POLICY_DENIED
         )
     # A lost lease, an earlier run of this job, or an uncaptured step: whether anything more was
-    # sent is not known, and the conversation is not resumed.
+    # sent is not known, and the conversation is not resumed. No receipt certifies what may have
+    # been, so it is recorded without provenance and never retried (``_map_egress_to_final``).
     return SemanticEgressBlocked(
         request_id, PrivacyOutcome.TRANSPORT_FAILED, PrivacyReason.OUTCOME_UNKNOWN
     )
+
+
+def _held_provenance(reply: SemanticEgressReply, cleanup: str | None) -> ProviderAttemptProvenance:
+    """A sent exchange's provenance, with the held session's actual cleanup when one was held."""
+
+    provenance = reply.result.provenance
+    evidence = provenance.runtime_evidence
+    if evidence is not None and cleanup is not None:
+        # The held session's actual cleanup, never the in-session "retained" of a turn.
+        provenance = replace(
+            provenance, runtime_evidence=replace(evidence, process_cleanup=cleanup)
+        )
+    return provenance
 
 
 def _record(
