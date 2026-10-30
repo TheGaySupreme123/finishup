@@ -86,18 +86,17 @@ A `Destructive change:` label names what removal or replacement would lose; cons
 changing work matching the task, supplied inputs or an earlier passing check.
 
 **Read before answering.** A large result can arrive as `state=delivery_page` parts.
-Until `actionable_complete` is true, call `status` with `view=compact` and
-`delivery_cursor` set to the returned `next_cursor`.
+Until `actionable_complete` is true, call `status` (`view=compact`) with `delivery_cursor` set
+to the returned `next_cursor`.
 Rebuild marked containers and fragments by path, offsets and digest, then follow `inventory_read`.
 Answer a finding only once it carries its requested action, alternative interpretation and
-uncertainty, or explicitly labels them withheld.
+uncertainty, or labels them withheld. Brief check rows omit them: read `view=findings`.
 
 **Respect the frozen case.** Treat a reviewer read marked `not_in_frozen_case` as unavailable in
-that check.
-Do not infer that the item was never recorded.
+that check, not as never recorded.
 The reviewer can request it through `final_judgment.missing_for_assessment` with its kind and
 target refs, as the read's continuation says.
-As the working agent, follow the returned `missing_for_assessment` supply rule above.
+As the working agent, follow the `missing_for_assessment` supply rule above.
 
 A finding is evidence, not an order.
 Before reversing a deliberate choice or resolving conflicting inputs, including a decision-needed finding:

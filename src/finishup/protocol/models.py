@@ -1832,7 +1832,15 @@ class PublishWorkRequestModel(PublicRequestModel):
 
 class CheckRequestModel(PublicRequestModel):
     optional_non_null_fields = frozenset(
-        {"mode", "scope", "max_findings", "policy_packs", "final_review", "await_observations"}
+        {
+            "mode",
+            "scope",
+            "max_findings",
+            "policy_packs",
+            "final_review",
+            "await_observations",
+            "detail",
+        }
     )
 
     session_id: SessionIdWire
@@ -1855,6 +1863,10 @@ class CheckRequestModel(PublicRequestModel):
     # Issue #1012: wait, bounded, for this task's pending hook rows before the case freezes.
     # Omitted keeps today's behaviour and request bytes.
     await_observations: bool | None = None
+    # #1244 (D13): ``brief`` returns each finding's identity and action fields (no ``detail``,
+    # coverage or provenance; ``status view=findings`` carries them). Presentation only: outside
+    # the operation identity. The MCP tool asks for ``brief`` unless the agent names a detail.
+    detail: Literal["brief", "full"] | None = None
 
     @model_validator(mode="after")
     def _validate_check_request(self) -> CheckRequestModel:
@@ -2057,6 +2069,8 @@ _STATUS_FILTER_BY_VIEW: Final[Mapping[str, type[_ClosedModel]]] = MappingProxyTy
 )
 # Issue #1084: the page size a status request gets when it omits ``limit``.
 STATUS_DEFAULT_PAGE_LIMIT: Final = "20"
+# #1244 (D12): a delivery continuation handle is short (about 50 characters), never a signed blob.
+DELIVERY_HANDLE_MAX_LENGTH: Final = 96
 
 
 class StatusRequestModel(PublicRequestModel):
@@ -2107,7 +2121,13 @@ class StatusRequestModel(PublicRequestModel):
     # names a delivery; the bridge's own recovery and closure reads keep the complete result.
     delivery: Literal["complete", "paged"] | None = None
     delivery_cursor: (
-        Annotated[str, Field(min_length=1, max_length=4096, pattern=r"^[A-Za-z0-9_.-]+$")] | None
+        Annotated[
+            str,
+            Field(
+                min_length=1, max_length=DELIVERY_HANDLE_MAX_LENGTH, pattern=r"^[A-Za-z0-9_.-]+$"
+            ),
+        ]
+        | None
     ) = None
 
     @model_validator(mode="before")
@@ -3585,6 +3605,19 @@ class CheckFindingChallengeModel(_ClosedModel):
         return self
 
 
+# #1244 (D13): what a ``detail: brief`` check names of each finding: who and what to answer.
+CHECK_BRIEF_FINDING_KEYS: Final = (
+    "finding_id",
+    "kind",
+    "origin",
+    "priority",
+    "summary",
+    "subject_refs",
+    "policy_id",
+    "challenge",
+)
+
+
 class CheckProjectedFindingModel(_ClosedModel):
     optional_non_null_fields = frozenset({"challenge"})
 
@@ -3638,6 +3671,54 @@ class CheckProjectedFindingModel(_ClosedModel):
             raise ValueError("deterministic_finding_provenance_invalid")
         if self.origin == "semantic_model_derived" and self.provenance is None:
             raise ValueError("semantic_finding_provenance_missing")
+        return self
+
+
+class CheckBriefFindingModel(_ClosedModel):
+    """One finding of a ``detail: brief`` check (#1244, D13): ``CHECK_BRIEF_FINDING_KEYS`` only."""
+
+    optional_non_null_fields = frozenset({"challenge"})
+
+    finding_id: FindingIdWire
+    kind: Literal[
+        "action_without_result",
+        "claim_without_admissible_evidence",
+        "coordination_overlap",
+        "completion_with_open_obligations",
+        "contradictory_claims_unresolved",
+        "diff_does_not_match_account",
+        "evidence_does_not_support_claim",
+        "failed_work_omitted",
+        "ledger_stale_or_incomplete",
+        "material_limitation_omitted",
+        "questionable_finding_rejection",
+        "requested_item_never_attempted",
+        "result_without_action",
+        "stale_evidence_for_changed_state",
+        "weak_or_stale_response",
+        "code_defect",
+        "task_requirement_unmet",
+        "agent_criterion_unmet",
+        "decision_needed",
+    ]
+    origin: Literal["deterministic", "semantic_model_derived"]
+    priority: Annotated[int, Field(ge=1, le=3)]
+    summary: String1To8192 | OmittedContentModel
+    subject_refs: tuple[SubjectIdWire, ...]
+    policy_id: Literal["coordination", "research-evidence", "work-integrity"]
+    challenge: CheckFindingChallengeModel | None = None
+
+    @model_validator(mode="after")
+    def _validate_brief_finding(self) -> CheckBriefFindingModel:
+        if not 1 <= len(self.subject_refs) <= 64 or len(set(self.subject_refs)) != len(
+            self.subject_refs
+        ):
+            raise ValueError("finding_subject_refs_invalid")
+        if (
+            isinstance(self.summary, OmittedContentModel)
+            and self.summary.category is not DataCategory.FINDING_SUMMARY
+        ):
+            raise ValueError("finding_omission_category_invalid")
         return self
 
 
@@ -4757,6 +4838,19 @@ class DeliveryItemModel(_ClosedModel):
 
 
 class DeliveryPageModel(_ClosedModel):
+    optional_non_null_fields = frozenset({"ledger_moved_since", "page_set_restarted"})
+
+    # The handle leads the page: it is what the next call needs, and Codex shows a model the head
+    # of a large structured result (ADR-043).
+    next_cursor: (
+        Annotated[
+            str,
+            Field(
+                min_length=1, max_length=DELIVERY_HANDLE_MAX_LENGTH, pattern=r"^[A-Za-z0-9_.-]+$"
+            ),
+        ]
+        | None
+    )
     protocol_version: Literal["0.1"]
     schema_version: Literal["1.0.0"]
     ok: Literal[True]
@@ -4779,12 +4873,15 @@ class DeliveryPageModel(_ClosedModel):
     inventory_read: JsonValue | None
     required_next_step: Annotated[str, Field(min_length=1, max_length=512)]
     items: Annotated[tuple[DeliveryItemModel, ...], Field(min_length=1)]
-    next_cursor: (
-        Annotated[str, Field(min_length=1, max_length=4096, pattern=r"^[A-Za-z0-9_.-]+$")] | None
-    )
     # This read's own local disclosure receipt. Never paged as items: each continuation is a
     # fresh disclosure, and reconstruction carries the final page's projection.
     privacy_projection: PrivacyProjectionModel
+    # #1244 (D12): this page comes from the kept copy of its page set, and the ledger has moved on
+    # since: a fresh read at the same frontier no longer matches. Names the head this read saw.
+    ledger_moved_since: FrontierModel | None = None
+    # #1244 (D12): this set was rebuilt after a miss (a service restart) and its content differs
+    # from the set the handle named, so it starts again at offset 0: discard earlier pages.
+    page_set_restarted: Literal[True] | None = None
 
 
 class CheckSuccessModel(_ClosedModel):
@@ -4813,9 +4910,14 @@ class CheckSuccessModel(_ClosedModel):
             "review_guidance",
             "verified",
             "totals",
+            "detail",
+            "closure_state",
         }
     )
 
+    # #1244 (D13): present on a ``detail: brief`` check, whose findings name only who and what to
+    # answer; ``status view=findings`` carries each finding's detail, coverage and provenance.
+    detail: Literal["brief"] | None = None
     # MCP-only presentation of already privacy-projected advisory fields (#1139). Never stored
     # as a reviewer judgment or used as proof. Other delivery paths retain the full fields.
     review_delivery: (
@@ -4850,7 +4952,8 @@ class CheckSuccessModel(_ClosedModel):
     correctness_advisories: tuple[CheckCorrectnessAdvisoryModel, ...] = Field(
         default=(), max_length=10
     )
-    findings: tuple[CheckProjectedFindingModel, ...]
+    # #1244 (D13): ``detail: brief`` rows are ``CheckBriefFindingModel``; full rows otherwise.
+    findings: tuple[CheckProjectedFindingModel | CheckBriefFindingModel, ...]
     suppressed_count: CanonicalUInt64Wire
     policy_executions: tuple[CheckPolicyExecutionModel, ...]
     semantic_status: SemanticStatusWire
@@ -4868,6 +4971,9 @@ class CheckSuccessModel(_ClosedModel):
     advisory_notes: tuple[CheckAdvisoryNoteModel, ...] = ()
     finding_checklist: CheckFindingChecklistModel | None = None
     closure_readiness: StatusClosureReadinessModel | None = None
+    # #1244 (D13): a brief check carries the readiness subset a brief status carries (#1084,
+    # #1209) in place of ``closure_readiness``; ``status view=compact`` carries the rest.
+    closure_state: StatusClosureStateModel | None = None
     semantic_withheld_items: tuple[SemanticWithheldItemModel, ...] = ()
     # PL2-1: item refs and line numbers of values the external reviewer did not see.
     semantic_redacted_values: tuple[SemanticRedactedValueModel, ...] = ()
@@ -4899,6 +5005,12 @@ class CheckSuccessModel(_ClosedModel):
     def _validate_check_success(self) -> CheckSuccessModel:
         if len(self.findings) > MAX_FINDINGS_LIMIT:
             raise ValueError("finding_count_invalid")
+        brief_row = CheckBriefFindingModel if self.detail == "brief" else CheckProjectedFindingModel
+        if any(type(row) is not brief_row for row in self.findings) or (
+            self.closure_state is not None
+            and (self.detail != "brief" or self.closure_readiness is not None)
+        ):
+            raise ValueError("finding_detail_shape_invalid")
         if len(self.advisory_notes) > 64:
             raise ValueError("advisory_note_count_invalid")
         _require_unique(
@@ -5211,11 +5323,15 @@ class StatusCandidateFindingsPageModel(_ClosedModel):
 
 
 class StatusCompactFindingModel(_ClosedModel):
+    # #1244 (D13): a brief compact page names each finding without its ``detail``; the full body
+    # and ``view=findings`` carry it.
+    optional_non_null_fields = frozenset({"detail"})
+
     finding_id: FindingIdWire
     kind: FindingKindWire
     priority: Annotated[int, Field(ge=1, le=3)]
     summary: String1To8192 | OmittedContentModel
-    detail: String1To8192 | OmittedContentModel
+    detail: String1To8192 | OmittedContentModel | None = None
 
     @model_validator(mode="after")
     def _validate_compact_finding_omissions(self) -> StatusCompactFindingModel:
@@ -8368,6 +8484,14 @@ _CHECK_STRUCTURAL_POINTERS: Final = (
         # ``/continuation/instruction``; never reviewer prose, task text, paths or commands.
         "/agent_next",
         "/agent_status_line",
+        # #1244 (D13): the closed ``brief`` marker of a brief check reply and the readiness
+        # subset it carries, closed tokens and service-minted obligation ids only.
+        "/detail",
+        "/closure_state/agent_actionable/*",
+        "/closure_state/blocking_conditions/*",
+        "/closure_state/fix_or_decline/*/code",
+        "/closure_state/fix_or_decline/*/obligation_id",
+        "/closure_state/state",
         "/review_guidance",
         "/overall_next/action",
         "/overall_next/acknowledged_incomplete_endpoint",
@@ -9775,7 +9899,7 @@ def _build_result_leaf_rules() -> tuple[_ResultLeafRule, ...]:
         ):
             raise RuntimeError("invalid_result_leaf_classification")
     if (
-        len(result) != 2079
+        len(result) != 2085
     ):  # ... #1017 +3, #1027 +5, tb4n3 LO +9, W2-A +46, LF +34 (fact_lineage), W2-B +2,
         # tb4n4 #1044 +7 (closure_readiness.undeclared_references), #1048 +38 (inspection),
         # #1047 +2 (follow_up_round), tb4n5 +3 (publish action_notices),
@@ -9799,6 +9923,7 @@ def _build_result_leaf_rules() -> tuple[_ResultLeafRule, ...]:
         # #1219 +10 witness checks/expected_from (4 structural and 1 content leaf, on status
         # coverage and the receipt document).
         # #1220 +4 review_input_manifest test_check_offered/test_check_digests (check, status).
+        # #1244 +6 check (the brief reply's detail marker and its closure_state subset).
         raise RuntimeError("incomplete_result_leaf_registry")
     return result
 

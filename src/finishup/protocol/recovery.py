@@ -863,6 +863,12 @@ LOCAL_REASON_CONTINUATION_PREFIXES: Final[tuple[tuple[str, str], ...]] = (
 # reason code cannot land with nothing to say.
 REASON_CODE_DIRECTIVE_EXEMPTIONS: Final[frozenset[str]] = frozenset(
     {
+        # #1244 (D12): a refused delivery continuation. The message names the one read to make
+        # instead (the original status read, or current status); a directive adds nothing.
+        "delivery_cursor_expired",
+        "delivery_cursor_invalid",
+        "delivery_disclosure_changed",
+        "delivery_redaction_recorded",
         # Internal contention labels do not prove that a first-start lease was released.
         # The start application emits the stronger start_* tokens only after that proof.
         "catalog_busy",

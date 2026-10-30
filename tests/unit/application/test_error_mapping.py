@@ -130,6 +130,9 @@ _MODULE_CODE_INVENTORY: dict[str, frozenset[PublicErrorCode]] = {
     ),
     "check.py": frozenset(
         {
+            # #1244: only recognized, never raised: a replayed check's pinned prefix that has
+            # since gained agent-authored records is refused by the ledger, as expected.
+            PublicErrorCode.FRONTIER_CONFLICT,
             PublicErrorCode.INTERNAL_ERROR,
             # #1164: an oversized local deterministic-result checkpoint is refused as
             # ``check_result_capacity_exceeded`` (INTERFACES "check_capacity_handoff").

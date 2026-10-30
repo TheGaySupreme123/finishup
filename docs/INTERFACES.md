@@ -12957,18 +12957,44 @@ as 1.2.0 did. The MCP `status` tool sends `paged` unless the agent names `delive
 closure inventory and write-recovery probes send none. An agent's MCP check and receipt may page;
 CLI output, the native TUI, owner exports and `view=operation` never do. Send `delivery_cursor`
 only with `view=compact`, the held session and writer and a fresh request ID, without other
-selectors, filter, frontier or inventory cursor. A cursor binds source selection, writer, session
-(by its signature), sink, position and authorized content digest, and freezes the status read's
-live fields (head frontier, projection lag and version, rebuild state, import status, credential
-heuristic, review mode), presence included, so an append between page reads leaves a brief or full
-read continuable.
+selectors, filter, frontier or inventory cursor.
+
+Since #1244 (ADR-043 amendment of 2026-10-29) `next_cursor` is a short handle of at most 96
+characters (about 40–50 in practice) and the page's first field:
+`<kind><source request id>.<frontier>.<offset>.<8 hex digest>[.<selector>]`, where `kind` is `c`
+(check), `r` (receipt) or `s` (status), the source id is the original request's UUID in 22
+base64url characters, and the selector segment is `b` (brief check), a receipt's format, include
+and redaction profile, a status read's view, detail and limit, or `x` (a status read a handle cannot
+rebuild). Handles carry no secret or signature. The service keeps each delivered page set in
+process memory only (never on disk or in the ledger), bound to its session and writer, at most 256
+sets and 64 MiB. A continuation reads and discloses its source again; then it is refused only for a
+`redaction_recorded` after the set's frontier (`delivery_redaction_recorded`) or a changed sink or
+disclosure policy (`delivery_disclosure_changed`), and is otherwise served from the fresh read when
+it still matches the kept copy, else from the kept copy with the receipt those items were disclosed
+under and, when the ledger moved past the set's frontier, `ledger_moved_since` naming the head this
+read saw. After a restart or an eviction the set is rebuilt from the ledger at the handle's
+frontier: at the handle's offset when the digest still matches, else from offset 0 with
+`page_set_restarted: true` (discard earlier pages). A status handle marked `x` is refused as
+`delivery_cursor_expired`; a malformed handle as `delivery_cursor_invalid`. Partitions are measured
+with both notices present, so a notice never moves an offset. A replayed check view replays its
+result frontier's prefix when the adapter's 16-entry trusted history misses; a prefix that has
+since gained agent-authored records is still refused as a pinned case, and that replay rebuilds
+without the checklist and restarts.
 The original complete operation is read without running it again, and disclosure runs again for
-the current reader. Every page therefore carries its own read's `privacy_projection`, never paged
-as `items` and outside the content digest; reconstruction uses the final page's projection. Past
-1,024 canonical bytes a page's `omitted_pointers` coalesce to containing fields, as past the
-512-pointer wire bound. Service restart expires these cursors, as it does existing status cursors;
-recover through current status/findings without creating a new review. Missing source, altered
-binding or changed authorized content is a bounded `INVALID_REQUEST`; it does not authorize a new review or downgrade required review.
+the current reader. A page carries its read's `privacy_projection` (or, when served from the kept
+copy, the one its items were disclosed under), never paged as `items` and outside the content
+digest; reconstruction uses the final page's projection. Past 1,024 canonical bytes a page's
+`omitted_pointers` coalesce to containing fields, as past the 512-pointer wire bound. A refusal is
+a bounded `INVALID_REQUEST` with its `reason_code`; it does not authorize a new review or downgrade
+required review. Status inventory cursors (`/page/next_cursor`) are unchanged and still expire on
+restart.
+
+`check-request` 1.1.0 adds `detail` (`brief` or `full`; #1244, D13). `brief` returns each finding's
+`finding_id`, `kind`, `origin`, `priority`, `summary`, `subject_refs`, `policy_id` and `challenge`,
+marks the result `detail: brief`, and carries the `closure_state` subset of a brief status in place
+of `closure_readiness`. It is presentation only, outside the operation identity. The MCP `check`
+tool sends `brief` unless the agent names a detail. A `detail: brief` compact status page omits each
+unanswered finding's `detail`. `status view=findings` and `detail: full` carry what brief omits.
 
 The service creates these pages before MCP rendering. The budget is 12,000 bytes, Codex's
 structured window and the tightest recorded host limit, for the larger channel a host reads (the

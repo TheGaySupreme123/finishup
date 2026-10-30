@@ -1084,7 +1084,9 @@ async def replayed_check_view(
 
     replayed = await _attach_replayed_lineage_preview(runtime, result)
     replayed = await _attach_replayed_fact_lineage(runtime, replayed)
-    return await _attach_finding_checklist(app, runtime, replayed, route_profile=route_profile)
+    return await _attach_finding_checklist(
+        app, runtime, replayed, route_profile=route_profile, replayed=True
+    )
 
 
 async def _attach_replayed_lineage_preview(
@@ -2155,14 +2157,17 @@ async def _attach_finding_checklist(
     *,
     coverage_by_ref: Mapping[FindingBasisRef, Coverage] | None = None,
     route_profile: Literal["policy", "strict"] | None = None,
+    replayed: bool = False,
 ) -> CheckCommitResult:
     """Attach the task's findings as a to-do list after this check (issue #905).
 
     Like project advice this is current projection context beside the frozen check: it never
-    changes the recorded event or its verdict. It reads only the adapter-owned projection at the
-    result frontier (never a replay or a status page); when that is unavailable, or anything
-    fails, the check is returned without the list rather than stranded after its commit, keeping
-    only the supply continuation its stored missing items determine (``_with_stored_supply_next``).
+    changes the recorded event or its verdict. It reads the projection at exactly the result
+    frontier: the adapter-owned one, else, for a replayed check, a replay of that prefix (#1244;
+    never a status page). When neither is available (on a replay, a prefix that has since gained
+    agent-authored records), or anything fails, the check is returned without the list rather
+    than stranded after its commit, keeping only the supply continuation its stored missing items
+    determine (``_with_stored_supply_next``).
 
     The list holds the current actionable items (the newest row per issue, in rank order, at most
     100); the counts and the ``next`` token are computed over all of them. Coverage limitations
@@ -2178,24 +2183,38 @@ async def _attach_finding_checklist(
         projection = await trusted_projection_at(
             runtime.ledger, result.session_id, result.result_frontier
         )
-        if projection is None:
+        if projection is None and not replayed:
             return await _with_recorded_advice(runtime, _with_stored_supply_next(result))
         # ADR-046: the receipt's own context at the result frontier gives the predicted
         # conclusion and the records the classes need. A read that fails omits the prediction
-        # (never guesses one) and leaves a bounded diagnostic.
+        # (never guesses one) and leaves a bounded diagnostic. #1244: when a replayed check's
+        # frontier has left the adapter's bounded trusted history (more than 16 appends since,
+        # such as hook rows drained while the agent pages), the same read replays that exact
+        # prefix, so the replay reads the same list as the first check did.
         loaded: LoadedClosureBasis | None = None
         try:
             loaded = await load_closure_basis(runtime, result.result_frontier)
         except (ClosureBasisUnavailable, PublicOperationError, TypeError, ValueError) as exc:
-            record_unexpected_exception_without_raising(
-                exc, component="check", operation="closure_basis_read"
+            # A replayed check whose prefix has since gained agent-authored records cannot rebuild
+            # its case there: the ledger refuses a stale pinned prefix by design. That is expected
+            # on a replay (a later page, a restart), so it leaves no diagnostic.
+            expected = (
+                replayed
+                and isinstance(exc, PublicOperationError)
+                and exc.code is PublicErrorCode.FRONTIER_CONFLICT
             )
+            if not expected:
+                record_unexpected_exception_without_raising(
+                    exc, component="check", operation="closure_basis_read"
+                )
         if loaded is None:
             # The closure classes need the ledger prefix (can a reviewer still rule, which
             # obligations are emptied or blocked). Without it any class would be a guess that
             # status, reading the real basis, could contradict; the check is returned without the
             # list, like every other failed read here (the diagnostic above is the trace).
             return await _with_recorded_advice(runtime, _with_stored_supply_next(result))
+        if projection is None:
+            projection = loaded.projection
         checklist = build_finding_checklist(
             projection, attempt_budget=budget, records=loaded.records
         )
@@ -6245,6 +6264,8 @@ def _request_digest(
     # nothing, so it stays outside the operation identity. Requests without it keep their digest,
     # and a same-request recovery may set or omit it.
     source.pop("await_observations", None)
+    # #1244 (D13): ``detail`` shapes only the reply's presentation, never what the check records.
+    source.pop("detail", None)
     source["scope"] = {"claim_ids": scope.claim_ids, "obligation_ids": scope.obligation_ids}
     source["policy_packs"] = packs
     source["route_profile"] = route_profile

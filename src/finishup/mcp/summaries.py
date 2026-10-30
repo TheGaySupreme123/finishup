@@ -658,7 +658,11 @@ def _overall_next_parts(source: Mapping[str, JsonValue]) -> list[Part]:
         parts.append(_opt("acknowledged incomplete endpoint: receipt;", priority=_P_ACTION))
     if status == "ready_with_limitations" and endpoint == "receipt":
         parts.append(_opt("disclose limitation at: receipt;", priority=_P_ACTION))
-    fixable = fix_or_decline_rows(source.get("closure_readiness"))
+    # #1244 (D13): a brief check carries the ``closure_state`` subset, these rows included.
+    readiness = source.get("closure_readiness")
+    fixable = fix_or_decline_rows(
+        readiness if isinstance(readiness, Mapping) else source.get("closure_state")
+    )
     if status == "ready_with_limitations" and fixable:
         # Issue #1209: what to fix, or decline with a reason, before that receipt (required, so a
         # tight bound keeps at least the first item rather than a bare receipt step).
