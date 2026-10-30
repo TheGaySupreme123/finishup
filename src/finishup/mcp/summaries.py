@@ -20,6 +20,7 @@ from finishup.domain.bounded_text import (
 from finishup.domain.closure import PREPARATION_REMEDIATIONS
 from finishup.domain.decision_status import find_status_line
 from finishup.domain.findings import FINDING_KIND_TRAITS, FindingKind
+from finishup.domain.receipt_closing import safe_closing_prompt
 from finishup.domain.receipts import (
     COORDINATOR_FAILURE_LIMITATION,
     DEFERRED_BEFORE_FIRST_EDIT_TEXT,
@@ -3173,6 +3174,8 @@ def summary_for_receipt(envelope: object) -> str:
         )
     )
     parts.append(_req(f"suppressed findings: {suppressed}."))
+    # #1240 D5: the service's closing line for the agent, re-gated (fixed words and counts).
+    parts.append(_req(safe_closing_prompt(source.get("agent_closing_prompt"))))
     if typed_document is not None:
         document_source = typed_document
         parts.append(

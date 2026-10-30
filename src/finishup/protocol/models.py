@@ -44,6 +44,7 @@ from finishup.domain.coordination import (
     WorkState,
 )
 from finishup.domain.correctness_advisories import ADVISORY_ID_PATTERN
+from finishup.domain.receipt_closing import CLOSING_PROMPT_PATTERN
 from finishup.domain.review_guidance import ReviewGuidance
 from finishup.legacy_names import LAUNCHER_NAMES
 from finishup.protocol.canonical import JsonValue, parse_canonical_integer_string
@@ -1052,6 +1053,11 @@ AgentStatusLineWire = Annotated[
             r"per-obligation detail: status view=obligations\.$"
         ),
     ),
+]
+# #1240 D5: the receipt reply's closing line for the agent (``domain.receipt_closing``): fixed
+# words, the conclusion token and counts, never participant text.
+AgentClosingPromptWire = Annotated[
+    str, Field(min_length=1, max_length=512, pattern=CLOSING_PROMPT_PATTERN)
 ]
 TaskStatementWire = Annotated[str, Field(min_length=1, max_length=MAX_TASK_STATEMENT_BYTES)]
 CursorWire = Annotated[str, Field(min_length=1, max_length=4096, pattern=r"^[A-Za-z0-9_-]+$")]
@@ -7952,8 +7958,10 @@ class ReceiptChildrenModel(_ClosedModel):
 
 
 class ReceiptSuccessModel(_ClosedModel):
-    optional_non_null_fields = frozenset({"correctness_advisory_counts"})
+    optional_non_null_fields = frozenset({"agent_closing_prompt", "correctness_advisory_counts"})
     correctness_advisory_counts: CorrectnessAdvisoryCountsModel | None = None
+    # #1240 D5: asks the agent to tell the user the conclusion and the open or declined notes.
+    agent_closing_prompt: AgentClosingPromptWire | None = None
 
     protocol_version: Literal["0.1"]
     schema_version: Literal["1.0.0"]
@@ -7993,6 +8001,10 @@ class ReceiptSuccessModel(_ClosedModel):
                 raise ValueError("receipt_format_body_mismatch")
         elif self.document is not None or self.human_text is None:
             raise ValueError("receipt_format_body_mismatch")
+        if self.agent_closing_prompt is not None and not self.agent_closing_prompt.startswith(
+            f"Tell the user in your final message: receipt conclusion {self.conclusion}"
+        ):
+            raise ValueError("receipt_closing_prompt_mismatch")
         _validate_model_against_schema(self, "receipt-result")
         return self
 
@@ -9780,6 +9792,7 @@ _STATUS_COMMON_CONTENT_RULES: Final[tuple[tuple[str, DataCategory], ...]] = (
     ),
 )
 _ADVISORY_RECEIPT_STRUCTURAL_POINTERS: Final = (
+    "/agent_closing_prompt",
     "/correctness_advisory_counts/total",
     "/correctness_advisory_counts/no_recorded_response",
     "/correctness_advisory_counts/withheld_may_answer",
@@ -9990,7 +10003,7 @@ def _build_result_leaf_rules() -> tuple[_ResultLeafRule, ...]:
         ):
             raise RuntimeError("invalid_result_leaf_classification")
     if (
-        len(result) != 2098
+        len(result) != 2099
     ):  # ... #1239 +7 status task_lifecycle (with quiet_until); #1017 +3, #1027 +5, tb4n3 LO +9, W2-A +46, LF +34 (fact_lineage), W2-B +2,
         # tb4n4 #1044 +7 (closure_readiness.undeclared_references), #1048 +38 (inspection),
         # #1047 +2 (follow_up_round), tb4n5 +3 (publish action_notices),
@@ -10016,6 +10029,7 @@ def _build_result_leaf_rules() -> tuple[_ResultLeafRule, ...]:
         # #1220 +4 review_input_manifest test_check_offered/test_check_digests (check, status).
         # #1138 +6 semantic_redacted_values stage/match_class (check, status, receipt document).
         # #1244 +6 check (the brief reply's detail marker and its closure_state subset).
+        # #1240 D5 +1 receipt (agent_closing_prompt).
         raise RuntimeError("incomplete_result_leaf_registry")
     return result
 

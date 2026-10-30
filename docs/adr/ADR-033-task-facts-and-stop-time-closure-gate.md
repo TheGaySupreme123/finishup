@@ -1697,9 +1697,12 @@ silence. The owner decided:
    Claude Code and Cursor share the gate, so all three hosts ask.
 3. **D5: no "optional" wording.** The readiness summary, the check's advice headers, the `respond`
    and `receipt` descriptors and the guidance ask the agent to state the receipt's conclusion and
-   name each note still open or declined, and drop the "0 unanswered findings" shorthand. FinishUP
-   injects nothing into the agent's final message and never reads it (D1 of the 2026-10-18
-   amendment holds).
+   name each note still open or declined, and drop the "0 unanswered findings" shorthand. The
+   receipt reply itself ends the same way: its `agent_closing_prompt` line (fixed words, the
+   conclusion and FinishUP's own note counts) asks the agent to tell the user the conclusion and
+   the notes not answered or declined, on every host's MCP reply and in the CLI receipt text.
+   FinishUP injects nothing into the agent's final message and never reads it (D1 of the
+   2026-10-18 amendment holds).
 
 The owner-facing Stop notice of the #1162 amendment is unchanged; the 2026-10-25 ADR-006 rule
 "no Stop gate, no receipt conclusion change" for advice is superseded by D1 and D2 above.

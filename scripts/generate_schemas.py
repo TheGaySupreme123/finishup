@@ -7888,6 +7888,17 @@ def _receipt_result_v1_3_schema(entry: _RegistryEntry) -> dict[str, JsonValue]:
     cast(dict[str, JsonValue], success["properties"])["correctness_advisory_counts"] = (
         _advisory_counts_schema()
     )
+    # #1240 D5: the closing line asking the agent to tell the user the conclusion and the open or
+    # declined reviewer notes. Additive and optional on the unreleased 1.3.0 (in place), so 1.4.0
+    # inherits it. Fixed words, the conclusion token and counts only.
+    from finishup.domain.receipt_closing import CLOSING_PROMPT_PATTERN
+
+    cast(dict[str, JsonValue], success["properties"])["agent_closing_prompt"] = {
+        "maxLength": 512,
+        "minLength": 1,
+        "pattern": CLOSING_PROMPT_PATTERN,
+        "type": "string",
+    }
     return document
 
 
