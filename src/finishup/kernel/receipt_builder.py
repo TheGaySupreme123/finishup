@@ -192,6 +192,7 @@ from finishup.kernel.task_facts import (
     acknowledged_obligation_ids,
     disclosure_declarations,
     task_fact_signals,
+    verification_limits_without_proxy,
 )
 from finishup.kernel.verification_coverage import build_verification_coverage
 from finishup.protocol.coverage import LEDGER_FRESHNESS_ORDER, Coverage, PublicationChannel, weakest
@@ -2267,6 +2268,41 @@ def _review_mode_sentence(context: ReceiptBuildContext) -> str:
     return f"{sentence} {_applicable_review_mode_sentence(check)}"
 
 
+_PROXY_IDS_LISTED: Final = 8
+
+
+def _listed_obligations(ids: tuple[ObligationId, ...]) -> str:
+    shown = ", ".join(str(item) for item in ids[:_PROXY_IDS_LISTED])
+    more = len(ids) - _PROXY_IDS_LISTED
+    return shown if more <= 0 else f"{shown} and {more} more"
+
+
+def _proxy_sentence(projection: ProjectionState) -> str:
+    """Whether each disclosed verification limit records a proxy decision (#1246, D17).
+
+    A check the agent inherently cannot run (a budget or score against a hidden reference) stays a
+    disclosed limit; the receipt only says whether the agent recorded one proxy decision for it
+    (``finishup-proxy:<obligation id>``: the proxy and the ratio it measured, or why none was
+    feasible). Obligation ids only, never the decision's prose. A receipt with no disclosed
+    verification limit keeps its exact bytes.
+    """
+
+    none_chosen, recorded = verification_limits_without_proxy(projection)
+    parts: list[str] = []
+    if none_chosen:
+        parts.append(
+            f"Disclosed verification limit {_listed_obligations(none_chosen)}: proxy: none "
+            "chosen (no finishup-proxy decision records a proxy measurement or why none was "
+            "feasible)."
+        )
+    if recorded:
+        parts.append(
+            "A finishup-proxy decision records the proxy measurement, or why none was feasible, "
+            f"for disclosed verification limit {_listed_obligations(recorded)}."
+        )
+    return " ".join(parts)
+
+
 def _sections(
     *,
     include: ReceiptInclude,
@@ -2316,6 +2352,7 @@ def _sections(
     closure_summary: _ClosureSummary | None = None,
     gap_effects: Mapping[str, ReceiptGapEffect] | None = None,
     review_mode_sentence: str = "",
+    proxy_sentence: str = "",
     coordinator_failure: bool = False,
     claim_verification: tuple[str, ...] = (),
     claim_verification_limitation: str = "",
@@ -2689,6 +2726,9 @@ def _sections(
     # receipt of a task without a switch keeps its exact bytes.
     if review_mode_sentence:
         bodies[ReceiptSectionKey.LIMITATIONS_AND_COVERAGE] += " " + review_mode_sentence
+    # #1246 (D17): only a receipt with a disclosed verification limit carries this sentence.
+    if proxy_sentence:
+        bodies[ReceiptSectionKey.LIMITATIONS_AND_COVERAGE] += " " + proxy_sentence
     # #1079: a holed projection omits the pairing for that obligation. The limitation is ids
     # only, or one fixed sentence, so the receipt still renders.
     if claim_verification_limitation:
@@ -3138,6 +3178,7 @@ def build_receipt(
             context.applicable_check, context.records
         ),
         review_mode_sentence=_review_mode_sentence(context),
+        proxy_sentence=_proxy_sentence(context.projection),
         coordinator_failure=(
             context.applicable_check is not None
             and context.applicable_check.semantic_reason is SemanticReason.COORDINATOR_FAILURE

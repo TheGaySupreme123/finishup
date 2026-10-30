@@ -458,6 +458,13 @@ Three more things the receipt discloses in their own sections, by id only:
   readiness lists `assumption_disclosed` or `verification_limit_disclosed` as standing
   limitations, and the receipt names each one under "Assumptions and verification limits the agent
   disclosed". Nothing is blocked or resolved by it; supersede the decision to withdraw it.
+- **A proxy for a hidden reference.** When the limit is a budget or score stated against a
+  reference you cannot see (within N× of a reference run, accuracy on unseen data), also record
+  one decision with the line `finishup-proxy:<obligation id>`: the stand-in you built and the
+  ratio you measured, or why no stand-in was feasible. It blocks nothing and nothing asks for it
+  at check time. A receipt names each disclosed verification limit without one as
+  `proxy: none chosen`, and a closing review may ask once for a proxy you could build, never for
+  the hidden reference itself.
 - **Obligations acknowledged as not done.** For an obligation you truly will not do, after
   trying to repair it, publish it again with `status: "acknowledged_not_done"` and an
   `acknowledged_not_done_reason` (event version 1.1.0). It is no longer open work, readiness lists

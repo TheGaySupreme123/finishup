@@ -1637,3 +1637,23 @@ characters, so "acknowledgement never requires withdrawing or emptying it" becam
 "never empty it"; that gate is now 1,994 characters and still carries both re-checks. The gate
 decides nothing differently, and the text is shared by the Codex, Claude Code and Cursor Stop
 handlers.
+
+## Amendment (2026-10-30): one recorded proxy decision for a hidden-reference budget (#1246)
+
+Owner decision D17 (#1247). In the TB4 full-sol run every distributed-dedup attempt broke a budget
+stated against a reference it could not see (warmup, shuffle and memory "within N×"), disclosed it
+as a verification limit, and never built the obvious stand-in: a simple baseline to measure the
+ratio against. The disclosure stance stays (if the agent cannot know it, FinishUP cannot either);
+what was missing is one recorded decision.
+
+- **The line.** A `decision_recorded` statement line `finishup-proxy:<obligation id>` (exact line,
+  well-formed id of a recorded obligation; the same parsing as the #995 disclosure lines) records
+  the proxy decision. Its rationale names the stand-in and the measured ratio, or why none was
+  feasible. The earliest unsuperseded decision records it, and superseding withdraws it
+  (`task_facts.proxy_decisions`).
+- **Not a disclosure kind and not a standing question.** It adds no readiness code, the Stop gate
+  never asks for it, and nothing at check time asks for it (no new noise of the #1241 kind).
+- **The receipt line.** The limitations section names each disclosed verification limit without
+  a proxy decision as `proxy: none chosen`, and each with one as recorded: obligation ids only,
+  never the rationale. A receipt with no disclosed verification limit keeps its exact bytes. The
+  MCP receipt summary points at the line with fixed wording. Same on Codex, Claude Code and Cursor.

@@ -182,6 +182,8 @@ from finishup.kernel.task_facts import (
     disclosure_declarations,
     effective_obligations,
     open_effective_obligations,
+    proxy_decisions,
+    verification_limits_without_proxy,
 )
 from finishup.kernel.test_edit_visibility import check_change_header_entries, check_change_sections
 from finishup.kernel.verification_capture import command_is_declared_verification
@@ -283,6 +285,7 @@ __all__ = [
     "REVIEW_PACKET_ITEM_ID",
     "REVIEW_PHASE_QUESTIONS",
     "WITHHELD_OUTPUT_QUESTION",
+    "PROXY_REVIEW_QUESTION",
     "SEMANTIC_REVIEW_PURPOSE",
     "assemble_filtered_review_packet",
     "build_semantic_case",
@@ -391,6 +394,15 @@ WITHHELD_OUTPUT_QUESTION: Final = (
     "Does any repair since the last review withhold or refuse a requested output for some inputs "
     "(a build that refuses affected apps, an empty-file fallback)? Challenge each, quoting the "
     "criterion it fails."
+)
+# #1246 (D17): asked only when an obligation the packet carries discloses a verification limit
+# with no recorded proxy decision. The reviewer may ask for one obtainable proxy measurement; the
+# #1024 rule stays (never the hidden reference itself), and a missing proxy is never unmet work.
+PROXY_REVIEW_QUESTION: Final = (
+    "A verification_limit in agent-disclosures with no proxy stands as a limit. If it is a budget "
+    "or score against a reference the agent cannot see and the workspace allows a stand-in (a "
+    "baseline run, held-out data), you may ask once for that proxy and its measured ratio "
+    "(provide_evidence); never for the hidden reference, and a missing proxy is never unmet work."
 )
 # The question set leads with the review phase, taken from the same pure selector that picks the
 # check's budget profile, so the reviewer judges in-progress work as in progress and a completion
@@ -652,6 +664,7 @@ def review_question_set(
     test_manifests: bool = False,
     linked_verification: bool = False,
     prior_review: bool = False,
+    proxy: bool = False,
 ) -> tuple[str, ...]:
     """Return the closed question set for one review phase.
 
@@ -667,6 +680,8 @@ def review_question_set(
     ``test_manifests`` (the packet carries the coverage index) or ``linked_verification`` (an
     obligation row in the packet links a command result or observed verification, #1145) appends
     the test-quality question, last, with the manifest rule only when the index is carried.
+    ``proxy`` (#1246) adds the proxy question to the final phase only, before the test-quality
+    question, when a carried obligation discloses a verification limit with no proxy decision.
     """
 
     parsed = parse_semantic_budget_profile(phase)
@@ -681,6 +696,7 @@ def review_question_set(
         *_REVIEW_QUESTIONS,
         *extra,
         *((WITHHELD_OUTPUT_QUESTION,) if parsed == "final" and prior_review else ()),
+        *((PROXY_REVIEW_QUESTION,) if parsed == "final" and proxy else ()),
         *(
             (_test_quality_question(test_manifests=test_manifests),)
             if test_manifests or linked_verification
@@ -7216,6 +7232,14 @@ def _obligation_disclosures(
             if str(declaration.decision_event_id) in allowed
             else True
         )
+    # #1246 (D17): a recorded proxy decision rides beside the limit it estimates, so the reviewer
+    # asks for no proxy the agent already chose or ruled out.
+    for proxy in proxy_decisions(projection):
+        row = found.get(str(proxy.obligation_id))
+        if row is not None and "verification_limit" in row:
+            row["proxy"] = (
+                str(proxy.decision_event_id) if str(proxy.decision_event_id) in allowed else True
+            )
     for row in found.values():
         row["already_disclosed"] = True
     return found
@@ -9602,6 +9626,13 @@ def _build_semantic_case_once(
         and not (small_channel and (test_manifests or linked_verification)),
         test_manifests=test_manifests,
         linked_verification=linked_verification,
+        # #1246: only for a limit whose obligation row this packet carries; a small channel that
+        # already carries the test-quality question has no room for it either (#1173).
+        proxy=any(
+            f"obligation-{ref}" in carried_item_ids
+            for ref in verification_limits_without_proxy(frozen_case.projection)[0]
+        )
+        and not (small_channel and (test_manifests or linked_verification)),
     ) + ((DECLARED_TEST_QUESTION,) if offered_tests else ())
     # tb4n5: which excerpts supply the follow-up beyond the first packet, so the provider-bound
     # manifest recomputes ``supplied`` from the ones admission kept. Bound into the digest only for

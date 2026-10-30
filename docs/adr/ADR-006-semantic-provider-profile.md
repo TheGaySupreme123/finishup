@@ -3746,3 +3746,16 @@ Changing the question set, the instruction or the narrowing changes the case dig
 affected; a pending disclosure approval prepared by an older build for such a case fails closed
 (`audit_failed`) rather than sending a different case. The behaviour is service-side and
 identical for Codex, Claude Code and Cursor. No schema changes.
+
+## Amendment — 2026-10-30: the reviewer may ask for a proxy, never for the hidden reference (#1246)
+
+Owner decision D17 (#1247). A closing review whose packet carries an obligation that discloses a
+verification limit with no recorded proxy decision (`finishup-proxy:<obligation id>`, ADR-033
+amendment of the same date) adds one packet question, `PROXY_REVIEW_QUESTION` (359 bytes): when
+the limit is a budget or score against a reference the agent cannot see and the workspace allows a
+stand-in (a baseline run, held-out data), the reviewer may ask once for that proxy and its measured
+ratio (`provide_evidence`). It never asks for the hidden reference itself (#1024 stands), and a
+missing proxy is never an unmet requirement. The `agent-disclosures` row carries `proxy` beside a
+limit that already has one, so nothing is asked twice. The question rides the review packet, not
+the loop instruction (unchanged, 7,627 of 7,639 bytes), and a small channel that already carries
+the test-quality question skips it (#1173). It changes no finding state and no verdict.

@@ -2512,6 +2512,12 @@ other hosts. The stop hook and the MCP `respond` tool take the shared path; a Cu
   requirement is NOT met and keeps `unresolved_findings_remain` like any unmet requirement. When an
   unanswered request is the only agent work left, the check's next step is `disclose_limitations`.
   The Stop hook and readiness read the same closure class on every host.
+- A proxy for a hidden-reference budget (#1246, D17): beside a `finishup-verification-limit`
+  decision the agent may record `finishup-proxy:<obligation id>` (the stand-in and its measured
+  ratio, or why none was feasible). Nothing asks for it at check time or at Stop; the receipt
+  names a disclosed limit without one as `proxy: none chosen`, and a closing review may ask once for
+  an obtainable proxy, never for the hidden reference. Host decision: supported, same code path
+  (the agent publishes the decision through MCP `publish_work` or the CLI like any decision).
 - `acknowledged_not_done` is no longer a one-way door: `respond` with `reopened` and a reason takes
   it back, and a qualifying `check` that tested the work after the answer resolves it (also for
   `self_verified`).
