@@ -289,9 +289,34 @@ jobs:
   # unit-and-conformance — pure unit, bounded property examples, adapter conformance.
   # ---------------------------------------------------------------------------------------------
   unit-and-conformance:
-    name: unit-and-conformance
+    name: unit-and-conformance (${{ matrix.shard.name }})
     runs-on: ubuntu-24.04
     timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        # The slice takes about 50 minutes in one process, past the job budget. Each shard is one
+        # pytest process over a disjoint path group, balanced by measured duration. The two
+        # --ignore shards take every unit or conformance directory the others do not name, so a
+        # new directory is never silently skipped.
+        shard:
+          - name: adapters
+            paths: tests/unit/adapters
+          - name: application
+            paths: tests/unit/application
+          - name: cli-domain
+            paths: tests/unit/cli tests/unit/domain tests/unit/config tests/unit/dogfood
+          - name: conformance-observation
+            paths: tests/conformance/observation
+          - name: protocol-property-conformance
+            paths: >-
+              tests/unit/protocol tests/property tests/conformance
+              --ignore=tests/conformance/observation
+          - name: unit-rest
+            paths: >-
+              tests/unit --ignore=tests/unit/adapters --ignore=tests/unit/application
+              --ignore=tests/unit/cli --ignore=tests/unit/domain --ignore=tests/unit/config
+              --ignore=tests/unit/dogfood --ignore=tests/unit/protocol
     permissions:
       contents: read
     env:
@@ -335,7 +360,7 @@ jobs:
 
       - name: Unit, property, and conformance (bounded, excludes fault/soak/live)
         run: |
-          uv run --locked pytest tests/unit tests/property tests/conformance \
+          uv run --locked pytest ${{ matrix.shard.paths }} \
             -m "not fault and not soak and not live" -q --timeout=120
 
   # ---------------------------------------------------------------------------------------------
@@ -343,13 +368,32 @@ jobs:
   # release cell (issue #1119). The release cell stays CPython 3.14.6 in unit-and-conformance.
   # ---------------------------------------------------------------------------------------------
   older-python:
-    name: older-python (${{ matrix.python }})
+    name: older-python (${{ matrix.python }}, ${{ matrix.shard.name }})
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     strategy:
       fail-fast: false
       matrix:
         python: ["3.12", "3.13"]
+        # The same shards as unit-and-conformance.
+        shard:
+          - name: adapters
+            paths: tests/unit/adapters
+          - name: application
+            paths: tests/unit/application
+          - name: cli-domain
+            paths: tests/unit/cli tests/unit/domain tests/unit/config tests/unit/dogfood
+          - name: conformance-observation
+            paths: tests/conformance/observation
+          - name: protocol-property-conformance
+            paths: >-
+              tests/unit/protocol tests/property tests/conformance
+              --ignore=tests/conformance/observation
+          - name: unit-rest
+            paths: >-
+              tests/unit --ignore=tests/unit/adapters --ignore=tests/unit/application
+              --ignore=tests/unit/cli --ignore=tests/unit/domain --ignore=tests/unit/config
+              --ignore=tests/unit/dogfood --ignore=tests/unit/protocol
     permissions:
       contents: read
     env:
@@ -386,7 +430,7 @@ jobs:
 
       - name: Unit, property, and conformance (bounded, excludes fault/soak/live)
         run: |
-          uv run --locked pytest tests/unit tests/property tests/conformance \
+          uv run --locked pytest ${{ matrix.shard.paths }} \
             -m "not fault and not soak and not live" -q --timeout=120
 
   # ---------------------------------------------------------------------------------------------
