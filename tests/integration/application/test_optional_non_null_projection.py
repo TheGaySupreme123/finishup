@@ -545,7 +545,8 @@ _RESULT_OPTIONAL_NON_NULL: tuple[tuple[type[BaseModel], frozenset[str]], ...] = 
         frozenset({"reason", "response_event_id", "evidence_refs"}),
     ),
     # #1162: absent unless the task has correctness advisories and the receipt is terminal.
-    (ReceiptSuccessModel, frozenset({"correctness_advisory_counts"})),
+    # #1240 D5: the closing line is absent when the conclusion is not a known token.
+    (ReceiptSuccessModel, frozenset({"agent_closing_prompt", "correctness_advisory_counts"})),
     (
         ReviewInputManifestModel,
         frozenset(
@@ -2371,6 +2372,9 @@ def test_every_result_optional_non_null_field_has_an_unset_projection_case() -> 
     covered["ReceiptSuccessModel", "correctness_advisory_counts"] = (
         "test_correctness_advisory_fields_omit_when_unset_and_refuse_null"
     )
+    covered["ReceiptSuccessModel", "agent_closing_prompt"] = (
+        "test_correctness_advisory_fields_omit_when_unset_and_refuse_null"
+    )
     covered["StatusHistoryItemV14Model", "review_input_manifest"] = (
         "test_nested_multi_agent_results_omit_unset_fields"
     )
@@ -2644,6 +2648,10 @@ def test_correctness_advisory_fields_omit_when_unset_and_refuse_null() -> None:
     assert "correctness_advisory_counts" not in parsed.model_dump(mode="json", exclude_unset=True)
     with pytest.raises(ValidationError, match="optional_field_must_not_be_null"):
         ReceiptSuccessModel.model_validate({**receipt, "correctness_advisory_counts": None})
+    # #1240 D5: the closing line likewise.
+    assert "agent_closing_prompt" not in parsed.model_dump(mode="json", exclude_unset=True)
+    with pytest.raises(ValidationError, match="optional_field_must_not_be_null"):
+        ReceiptSuccessModel.model_validate({**receipt, "agent_closing_prompt": None})
 
 
 def test_review_mode_omits_unset_reason_and_switch() -> None:
