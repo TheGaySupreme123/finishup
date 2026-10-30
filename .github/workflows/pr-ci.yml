@@ -418,6 +418,15 @@ jobs:
       - name: uv sync --locked
         run: uv sync --locked --all-extras --group dev
 
+      # The same private temporary root as unit-and-conformance: tests that build an isolated
+      # instance under tmp_path refuse the shared /tmp (path_shared_temp).
+      - name: Use a private temporary root for runtime and storage tests
+        run: |
+          test_tmp="${RUNNER_TEMP}/finishup-test-tmp"
+          mkdir -p "$test_tmp"
+          chmod 700 "$test_tmp"
+          echo "TMPDIR=$test_tmp" >> "$GITHUB_ENV"
+
       - name: Isolate HOME/XDG/FinishUP app data inside job temp directory
         run: |
           iso="${RUNNER_TEMP}/finishup-home"
