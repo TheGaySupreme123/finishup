@@ -35,6 +35,7 @@ from builders.start_application import protocol_id, start_request
 from finishup.adapters.privacy.local_enforcer import LocalPrivacyEnforcer
 from finishup.application.check import FinalSemanticEvaluation
 from finishup.application.semantic_case import (
+    WITHHELD_OUTPUT_QUESTION,
     build_semantic_case,
     semantic_case_packet_view,
     semantic_case_to_candidate_context,
@@ -668,8 +669,10 @@ async def test_closing_review_challenges_a_contradicted_blocker_and_the_agent_an
         "redundant copies are also corrupted"
         in texts[f"prior-finding-response-{raised.finding_id}"]
     )
-    # The blocker is still recorded, so the closing review is asked about it again.
-    assert second.question_set[-1].startswith("Recorded blockers: ")
+    # The blocker is still recorded, so the closing review is asked about it again. An earlier
+    # AI-powered review is now on record, so the withheld-output question follows it (#975).
+    assert second.question_set[-2].startswith("Recorded blockers: ")
+    assert second.question_set[-1] == WITHHELD_OUTPUT_QUESTION
 
 
 def _effective_policy(scope: AuthorizationScope) -> EffectivePrivacyPolicy:
