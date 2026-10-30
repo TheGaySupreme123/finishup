@@ -5333,15 +5333,18 @@ _TEST_VERDICT_PHRASES: Final = {
     "shared_with_implementation": "takes its expected value from the implementation",
     "cannot_fail": "cannot fail as written",
 }
+# TB4 full-sol (#1145, owner wording 2026-10-29): "Run: <probe>" wrapped prose that stated a
+# problem rather than something to run, so the probe is labelled as the reviewer's counter-example
+# and the three answers follow it.
 _TEST_VERDICT_ADVICE: Final = (
-    "Your test {path} for {criterion} {phrase}{tag}. Run: {probe}, or show it fails on a "
-    "deliberately broken scratch copy, or decline with a reason."
+    "Your test {path} for {criterion} {phrase}{tag}. Reviewer's counter-example: {probe}{stop} "
+    "Check it, show the test fails on a deliberately broken copy, or decline with a reason."
 )
 # A multi-line probe is shown verbatim in a fenced block after the sentence (PR #1224 review).
 _TEST_VERDICT_ADVICE_BLOCK: Final = (
-    "Your test {path} for {criterion} {phrase}{tag}. Run the reviewer's probe below, or show it "
-    "fails on a deliberately broken scratch copy, or decline with a reason.\n{fence}\n{probe}\n"
-    "{fence}"
+    "Your test {path} for {criterion} {phrase}{tag}. Check the reviewer's counter-example below, "
+    "show the test fails on a deliberately broken copy, or decline with a reason.\n{fence}\n"
+    "{probe}\n{fence}"
 )
 _TEST_VERDICT_TAG: Final = " (you tagged expected_from={tag}; the reviewer observed {observed})"
 _TEST_VERDICT_FOLDED_NOTE: Final = (
@@ -5459,6 +5462,8 @@ def _declared_test_advice(
                 )
             ),
             probe=probe,
+            # A probe that already ends a sentence gets no second full stop.
+            stop="" if probe.rstrip().endswith((".", "!", "?")) else ".",
             fence=_probe_fence(probe),
         )
         bounded = _bounded_review_text(text)

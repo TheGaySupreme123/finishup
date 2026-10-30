@@ -102,6 +102,41 @@ async def test_non_task_quote_rejected_without_append_or_echo(dry_run: bool) -> 
     assert _records(app) == before
 
 
+async def test_quote_spacing_and_marks_are_normalized_and_the_stored_quote_is_verbatim() -> None:
+    """#1202 (owner decision D18): a line-wrapped or curly-quoted task criterion admits the
+    agent's single-spaced, straight-quoted copy, and the ledger keeps the quote as sent."""
+
+    app, _policy = await build_projection_application(seed=11740)
+    request = start_request(11740).model_dump(mode="json", by_alias=True, exclude_none=True)
+    request["task_statement"] = "Keep known\nfailing cases \u201cvisible\u201d. Re-run it."
+    started = await app.start(StartRequest.model_validate(request))
+    quote = 'Keep known  failing cases "visible"'
+    await app.publish_work(_request(started, 11741, [_result(11741, quote)]))
+    row = replay(_records(app)).results[result_id(protocol_id("res_", 11741))]
+    assert isinstance(row.payload, ResultRecordedPayload)
+    assert row.payload.verification is not None
+    assert row.payload.verification.criterion_quote == quote
+
+
+async def test_a_rejected_quote_names_the_nearest_task_sentence_by_position_only() -> None:
+    """#1202 (D18): the rejection points at the nearest stated criterion without echoing it."""
+
+    app, started = await _started(11745)
+    quote = "Re-run the shipped versions"
+    with pytest.raises(PublicOperationError) as caught:
+        await app.publish_work(_request(started, 11746, [_result(11746, quote)]))
+    assert caught.value.safe_details["reason_code"] == "verification_criterion_not_in_task"
+    message = caught.value.message
+    assert "sentence 2 of the recorded task_statement (line 1)" in message
+    assert "spacing and quote-mark style may differ" in message
+    for text in (quote, "shipped", "Keep known failing cases visible"):
+        assert text not in message
+    # A quote that shares no word with any sentence gets no pointer.
+    with pytest.raises(PublicOperationError) as unrelated:
+        await app.publish_work(_request(started, 11747, [_result(11747, "PRIVATE invented")]))
+    assert "nearest stated criterion" not in unrelated.value.message
+
+
 @pytest.mark.parametrize("quote", [".", "the", "a", "eep known failing"])
 async def test_generic_or_partial_word_quote_rejected_even_though_it_occurs(quote: str) -> None:
     app, started = await _started(11715)

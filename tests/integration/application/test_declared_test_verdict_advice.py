@@ -284,8 +284,8 @@ async def test_a_shared_expected_value_becomes_tracked_advice_on_every_host() ->
     assert summary == (
         f"Your test {_TEST_FILE} for '{_CRITERION}' takes its expected value from the "
         "implementation (you tagged expected_from=task_text; the reviewer observed "
-        f"shared_with_implementation). Run: {_PROBE}, or show it fails on a deliberately broken "
-        "scratch copy, or decline with a reason."
+        f"shared_with_implementation). Reviewer's counter-example: {_PROBE}. Check it, show the "
+        "test fails on a deliberately broken copy, or decline with a reason."
     )
     assert row["subject_refs"] == [protocol_id("obl_", 9101)]
     wire = public_model_to_wire(CheckResult.model_validate(projected))
@@ -426,11 +426,12 @@ async def test_a_probe_keeps_its_exact_spacing_and_lines_on_every_surface() -> N
     )
     run = await _checks(9500, reviewer, 2)
     (one_line,) = _advice(run.wires[0])
-    assert f"Run: {spaced}, or show it fails" in cast(str, one_line["summary"])
+    assert f"Reviewer's counter-example: {spaced}. Check it," in cast(str, one_line["summary"])
     (block,) = _advice(run.wires[1])
     summary = cast(str, block["summary"])
     # The control character is dropped; every space and line break of the probe stays.
     assert f"\n```\n{multi}\n```" in summary
+    assert "Check the reviewer's counter-example below, show the test fails" in summary
     advisory_id = cast(str, block["advisory_id"])
     wire = public_model_to_wire(CheckResult.model_validate(run.wires[1]))
     for host in ("codex", "claude", "cursor"):

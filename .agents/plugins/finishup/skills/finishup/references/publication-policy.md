@@ -90,6 +90,7 @@ The plan and its obligations are published together in the first plan batch: see
 For a material test result, optionally attach `verification` to `result_recorded/1.1.0`.
 Quote one criterion verbatim, as whole words, from the recorded task statement in
 `criterion_quote`; a quote of only punctuation or common words is refused.
+Spacing and quote-mark style may differ from the statement; the words may not.
 FinishUP checks the quote, not whether the test establishes it.
 Declare `data_source`, `cases` and `failing`; add `worst` and `tuned_on_these_cases` when useful.
 On the test that decides a criterion, add `checks` (what it exercises, at most 200 characters) and

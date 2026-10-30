@@ -1622,3 +1622,18 @@ verification is the agent's link, including after an earlier direct run (a later
 could otherwise silently replace a red direct run; #1003). Readiness names each open row with its
 obligation before the receipt; a `finishup-assumption:` or `finishup-verification-limit:` decision
 on that obligation declines it, with its rationale as the reason.
+
+## Amendment (2026-10-29, issue #1245, owner decision D16): a missing output is written, not kept
+
+In TB4 full-sol (atrx-vep-crispr) the acknowledgement re-check told an agent that had written no
+report at all to "keep the working deliverable". The premise and acknowledgement re-check texts
+(`_KEEP_DELIVERABLE_TEXT`) now read: "If no output exists and you have authority and credentials,
+write it on your best reading, noting the assumption; never empty a working deliverable." The
+write carries the D16 exceptions, so an output that needs authority or a credential the agent
+lacks is never pushed. The push
+back to work still comes first, so the pretrain S rescue is unchanged. The host bound
+(`_MAX_TEXT_CHARS`, 2,000) leaves the pretrain S gate, which carries this text twice, about 75
+characters, so "acknowledgement never requires withdrawing or emptying it" became the shorter
+"never empty it"; that gate is now 1,994 characters and still carries both re-checks. The gate
+decides nothing differently, and the text is shared by the Codex, Claude Code and Cursor Stop
+handlers.

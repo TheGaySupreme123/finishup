@@ -223,7 +223,9 @@ Forbidden after a candidate read: "I checked and found nothing."
 
 Your agent can attach a small test manifest to a result: a criterion quoted word for word from the
 task, where the test data came from, how many cases ran and failed, the worst value, and whether it
-tuned on those cases. `finishup record-test` builds one from a test script and a small JSON results
+tuned on those cases. Spacing and the style of quote marks may differ from the task's; the words
+may not. A quote that does not match is refused with the number and line of the nearest task
+sentence, never its text. `finishup record-test` builds one from a test script and a small JSON results
 file the agent already produced. It reads the two files, records their digests, and never runs the
 test; the files' text stays in your workspace.
 

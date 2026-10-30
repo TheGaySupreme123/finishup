@@ -426,6 +426,13 @@ def test_instruction_is_one_short_pstack_prompt_with_the_honesty_rules() -> None
         "not the hook-observed command",
         "Only attachments supply pixels",
         "Unattached binaries are not missing_for_assessment",
+        # #1245: the #976 infeasibility lens and the #1079 reachability rule, each with the
+        # failure it catches (a reserve the inputs do not impose; a zero budget a schema forbids).
+        "When the task requires an outcome the agent calls infeasible, contradictory or blocked, "
+        "challenge it by naming the strongest interpretation under which it is achievable (a full "
+        "reserve assumed at every stop when the inputs allow less).",
+        "Suggest only inputs and states the visible interface can reach (no zero budget where the "
+        "schema requires a positive one).",
     ):
         assert rule in " ".join(text.split()), rule
 
@@ -446,10 +453,13 @@ _LOOP_DIRECTIVES = {
     "relisted_supplied_material": "never list what the packet or a read holds",
     "deferred_to_disclosure": "never stops you judging what the material shows",
     "delivery_risk_on_correct_work": "An input or service the task supplies is no risk",
+    # #1245 (TB4 full-sol): the two rules the loop had dropped from the packet-only instruction.
+    "endorsed_withheld_output": "naming the strongest interpretation under which it is achievable",
+    "unreachable_recommendation": "Suggest only inputs and states the visible interface can reach",
 }
 _ACCURACY_CASES = [
     case
-    for name in ("n6_cases.json", "n7_cases.json")
+    for name in ("n6_cases.json", "n7_cases.json", "tb4_full_cases.json")
     for case in json.loads((_REPO / "tests/fixtures/reviewer_accuracy" / name).read_text("utf-8"))[
         "cases"
     ]
