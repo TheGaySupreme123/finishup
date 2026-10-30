@@ -5211,18 +5211,19 @@ def _record_case_narrowing(
     request_id: str,
     ceiling_rounds: int,
     approved: ReviewSelectionPolicy,
-    planned: ReviewSelectionPolicy,
     case: SemanticCase,
 ) -> None:
     """Record which sections ceiling planning dropped and the agent-account rows kept (#1245).
 
-    One flag per narrowable section (1 when the approved selection had it and the planned one
-    does not) and the obligation and claim rows the case still carries: integers only. It is its
-    own record because ``semantic_case_built`` is already near the diagnostic line bound, and it
-    is written only when planning narrowed the case.
+    One flag per narrowable section (1 when the approved selection had it and the case's
+    effective selection does not, whether ceiling planning or the case builder dropped it) and
+    the obligation and claim rows the case still carries: integers only. It is its own record
+    because ``semantic_case_built`` is already near the diagnostic line bound, and it is written
+    only when the case was narrowed.
     """
 
-    if not ceiling_rounds:
+    effective = case.review_selection
+    if not ceiling_rounds and effective == approved:
         return
     record_bounded_counts_without_raising(
         component="semantic_composition",
@@ -5233,7 +5234,7 @@ def _record_case_narrowing(
             "semantic_excerpt_ceiling_rounds": ceiling_rounds,
             **{
                 f"semantic_section_dropped_{section}": int(
-                    section in approved.sections and section not in planned.sections
+                    section in approved.sections and section not in effective.sections
                 )
                 for section in ("goal", "obligations", "claims", "timeline")
             },
@@ -5971,7 +5972,6 @@ def _privacy_gated_semantic_evaluator(
                 frozen.lease.operation_id,
                 ceiling_rounds,
                 review_selection,
-                planned_selection,
                 semantic_case,
             )
             if captured_local_fence_required and captured_content_scope is not None:

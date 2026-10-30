@@ -151,10 +151,11 @@ PREMISE_RECHECK_ITEM: Final = "premise_recheck"
 # agent's best reading with the assumption recorded, as the open-obligation text says.
 # The host bound (``_MAX_TEXT_CHARS``) leaves the pretrain S gate, which carries this text twice,
 # about 75 characters, so the old "acknowledgement never requires withdrawing or emptying it" is
-# now the shorter "never empty it".
+# now the shorter "never empty a working deliverable". The write is conditioned on authority and
+# credentials (the D16 exceptions), at the same 148 characters.
 _KEEP_DELIVERABLE_TEXT: Final = (
-    "If no output exists, write it on your best reading and record the assumption. If you cannot"
-    " finish it, keep the working deliverable; never empty it."
+    "If no output exists and you have authority and credentials, write it on your best reading,"
+    " noting the assumption; never empty a working deliverable."
 )
 _PREMISE_TEXT: Final = (
     "You marked finding(s) as not done that the reviewer says the task itself requires. Do that"

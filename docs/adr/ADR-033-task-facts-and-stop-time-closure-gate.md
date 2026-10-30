@@ -1627,8 +1627,10 @@ on that obligation declines it, with its rationale as the reason.
 
 In TB4 full-sol (atrx-vep-crispr) the acknowledgement re-check told an agent that had written no
 report at all to "keep the working deliverable". The premise and acknowledgement re-check texts
-(`_KEEP_DELIVERABLE_TEXT`) now read: "If no output exists, write it on your best reading and record
-the assumption. If you cannot finish it, keep the working deliverable; never empty it." The push
+(`_KEEP_DELIVERABLE_TEXT`) now read: "If no output exists and you have authority and credentials,
+write it on your best reading, noting the assumption; never empty a working deliverable." The
+write carries the D16 exceptions, so an output that needs authority or a credential the agent
+lacks is never pushed. The push
 back to work still comes first, so the pretrain S rescue is unchanged. The host bound
 (`_MAX_TEXT_CHARS`, 2,000) leaves the pretrain S gate, which carries this text twice, about 75
 characters, so "acknowledgement never requires withdrawing or emptying it" became the shorter

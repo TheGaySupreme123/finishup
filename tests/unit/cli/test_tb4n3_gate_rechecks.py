@@ -409,14 +409,17 @@ def test_an_acceptance_entry_never_rides_beside_a_withdrawn_deliverable() -> Non
 def test_premise_and_acknowledgement_texts_keep_the_working_deliverable() -> None:
     # TB4 atrx-vep-crispr (#1245): "keep the working deliverable" reached an agent that had
     # written no report at all. A missing output is written first, on the agent's best reading.
-    write = "If no output exists, write it on your best reading and record the assumption."
-    keep = "If you cannot finish it, keep the working deliverable; never empty it."
+    write = (
+        "If no output exists and you have authority and credentials, write it on your best"
+        " reading, noting the assumption;"
+    )
+    keep = "never empty a working deliverable."
     assert f"{write} {keep}" in gate_module._PREMISE_TEXT  # pyright: ignore[reportPrivateUsage]
     keys = (f"ack:{_OBL}",)
     for short in (False, True):
         text = gate_module._acknowledgement_text(keys, short=short)  # pyright: ignore[reportPrivateUsage]
         assert f"{write} {keep}" in text
-        assert "keep the working deliverable" not in text.partition(write)[0]
+        assert "never empty a working deliverable" not in text.partition(write)[0]
         # The pretrain S rescue is intact: the push back to work is still the first instruction.
         assert "do that work unless it is genuinely impossible" in text.lower()
         assert text.index("genuinely impossible") < text.index(write)
@@ -440,7 +443,7 @@ def test_pretrain_s_gate_still_sends_an_agent_that_gave_up_back_to_work() -> Non
     assert PREMISE_RECHECK_ITEM in gate.items and ACKNOWLEDGEMENT_RECHECK_ITEM in gate.items
     assert "Do that work unless it is genuinely impossible" in gate.text
     assert "Finish each open obligation" in gate.text
-    assert "keep the working deliverable" in gate.text
+    assert "never empty a working deliverable" in gate.text
     assert "Acknowledgement re-check (asked once)" in gate.text
     assert len(gate.text) <= 2000
 

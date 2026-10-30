@@ -134,8 +134,8 @@ one JSON object: one read action, or your final_judgment.
 Decide whether the work does what the task asked. The task_statement is the specification; the \
 agent's plan, claims, checks and explanations are what you test, never the standard. Before \
 accepting coverage, unchanged files, limits or blockers, find the material that shows it. When \
-the task requires an outcome the agent calls infeasible, contradictory or blocked, challenge it and \
-name the strongest interpretation under which it is achievable (a full reserve assumed at every \
+the task requires an outcome the agent calls infeasible, contradictory or blocked, challenge it by \
+naming the strongest interpretation under which it is achievable (a full reserve assumed at every \
 stop when the inputs allow less).
 
 ## Procedure

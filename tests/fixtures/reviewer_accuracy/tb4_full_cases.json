@@ -15,12 +15,12 @@
         "Reporting such a conclusion honestly is not completing the task."
       ],
       "loop_directives": [
-        "When the task requires an outcome the agent calls infeasible, contradictory or blocked, challenge it and name the strongest interpretation under which it is achievable"
+        "When the task requires an outcome the agent calls infeasible, contradictory or blocked, challenge it by naming the strongest interpretation under which it is achievable"
       ],
       "acknowledged_directives": [
         "Conflicting inputs are not inability: challenge a withheld output and ask for a best-effort output under the strongest reading the task permits, with the assumption recorded",
         "Your agreeing that a conflict exists is not permission to withhold.",
-        "Only a missing authority, a missing credential or a destructive change the task does not permit excuses withholding a requested output."
+        "When the inputs still permit a reading, only a missing authority, a missing credential or a destructive change the task does not permit excuses withholding the output."
       ],
       "spec_excerpt": "Write one report row per qualifying variant, giving its position in the encoded protein.",
       "agent_claim": "The supplied exon coordinates rebuild one transcript while the annotation cache holds another, so no variant can be placed and no report is written."
