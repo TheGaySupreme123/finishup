@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from finishup.mcp.summaries import MAX_SUMMARY_BYTES, render_safe_compact_summary
 from finishup.protocol.canonical import JsonValue
+from finishup.protocol.readiness_text import FINDINGS_SUPPRESSED_NEXT_STEP
 
 
 def test_human_summary_is_weaker_than_structured_output() -> None:
@@ -18,8 +19,10 @@ def test_human_summary_is_weaker_than_structured_output() -> None:
         "result_frontier": {"sequence": "7", "head_digest": "sha256:" + "0" * 64},
     }
     summary = render_safe_compact_summary(check)
+    # A nonzero suppressed_count carries the fixed re-run hint once (#1235); no caller content.
     assert summary == (
-        "Check verdict: incomplete_check; findings returned: 1; suppressed: 3; AI-powered review "
+        "Check verdict: incomplete_check; findings returned: 1; suppressed: 3; "
+        f"Next: {FINDINGS_SUPPRESSED_NEXT_STEP}. AI-powered review "
         "status/reason: not_configured/provider_not_configured; frontier: 7; "
         "head_digest: sha256:" + "0" * 64 + "."
     )
