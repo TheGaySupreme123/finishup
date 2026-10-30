@@ -3022,6 +3022,7 @@ def _semantic_recovery_lines(document: ReceiptDocument) -> list[str]:
         status=provenance.status,
         reason=provenance.reason,
         failure_class=provenance.failure_class,
+        agent_revisable=review_block_agent_revisable(document.semantic_redacted_values),
     )
     directive = directive_for(token)
     if directive is None:
