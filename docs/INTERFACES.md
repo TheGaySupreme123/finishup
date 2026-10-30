@@ -13269,7 +13269,14 @@ unchanged. The receipt Summary appends "Reviewer notes: N; not answered: M (K ma
 `advice:<16 hex>` (sha256 of the sorted open set) and rule `material_advice_unanswered`; the Stop
 gate asks it once per key, after the premise ask and trimmed before it, also on an
 already-continued Stop within the per-turn cap (`advice_recheck` item,
-`closure_gate_advice_asked` diagnostic). `respond` advisory dispositions are `addressed`,
+`closure_gate_advice_asked` diagnostic, whose row also names the asked key as `advice_set`).
+The receipt result (receipt-result 1.3.0 in place, inherited by 1.4.0) carries the optional
+`agent_closing_prompt` (D5): "Tell the user in your final message: receipt conclusion
+<conclusion>[; reviewer notes: T, not answered: U[, declined: D]][; name each note not answered or
+declined]." It is derived from the stored document alone (conclusion, `correctness_advisory_counts`
+and the Summary tally for `declined`, left out when unreadable), so a replay reads the same; the
+model admits it only in that closed shape for its own conclusion, and the MCP summary and CLI
+receipt text re-gate and append it. `respond` advisory dispositions are `addressed`,
 `kept_choice` (reason only; label "checked, kept my choice") and `declined`; history and receipt
 rows add `kept_choice` and `response_unavailable`. The `default_local_export` receipt row carries
 the agent's reason as one bounded line. The MCP status line reads "unanswered findings: N;

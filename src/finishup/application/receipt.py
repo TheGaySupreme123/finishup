@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+from collections.abc import Mapping
 from dataclasses import dataclass, field, replace
 from typing import Final, Literal, Protocol, cast
 
@@ -23,8 +24,10 @@ from finishup.domain.events import (
     encode_payload,
     media_type_for,
 )
+from finishup.domain.receipt_closing import closing_prompt, declined_note_count
 from finishup.domain.receipts import (
     ReceiptDocument,
+    ReceiptSectionKey,
     ReceiptVersionSlice,
     live_receipt_gap_codes,
     receipt_document_from_json,
@@ -147,6 +150,9 @@ class ReceiptInternalResult:
     # only: never admitted from a client and never serialized on the wire.
     writer_id: str | None = field(default=None, repr=False)
     correctness_advisory_counts: JsonValue | None = None
+    # #1240 D5: the line asking the agent to tell the user this receipt's conclusion and its open
+    # or declined reviewer notes. Fixed words and counts only (``domain.receipt_closing``).
+    agent_closing_prompt: str | None = None
 
     def as_json(self) -> dict[str, JsonValue]:
         versions = {
@@ -199,6 +205,11 @@ class ReceiptInternalResult:
                 {}
                 if self.correctness_advisory_counts is None
                 else {"correctness_advisory_counts": self.correctness_advisory_counts}
+            ),
+            **(
+                {}
+                if not self.agent_closing_prompt
+                else {"agent_closing_prompt": self.agent_closing_prompt}
             ),
         }
 
@@ -515,6 +526,29 @@ def _internal_result(
         document.versions,
         request.writer_id,
         document.correctness_advisory_counts,
+        _agent_closing_prompt(document) or None,
+    )
+
+
+def _agent_closing_prompt(document: ReceiptDocument) -> str:
+    """#1240 D5: the closing line, from the stored document alone so a replay reads the same."""
+
+    counts = document.correctness_advisory_counts
+    declined: int | None = None
+    if counts is not None:
+        total, unanswered = counts.get("total"), counts.get("no_recorded_response")
+        summary = next(
+            (section for section in document.sections if section.key is ReceiptSectionKey.SUMMARY),
+            None,
+        )
+        if summary is not None and type(total) is str and type(unanswered) is str:
+            declined = declined_note_count(
+                summary.body, total=int(total), unanswered=int(unanswered)
+            )
+    return closing_prompt(
+        document.conclusion.value,
+        None if counts is None else cast(Mapping[str, object], counts),
+        declined=declined,
     )
 
 

@@ -50,6 +50,50 @@ def test_ambiguous_binding_diagnostic_exposes_only_bounded_count(
     assert "auto_attach_binding_ambiguous" in cast(dict[str, object], summary["reasons"])
 
 
+@pytest.mark.parametrize(
+    ("reason", "advice_set", "kept"),
+    [
+        ("closure_gate_advice_asked", "advice:0123456789abcdef", True),
+        ("closure_gate_advice_asked", "advice:private-note-text", False),
+        ("closure_gate_advice_asked", None, False),
+        ("closure_gate_continued", "advice:0123456789abcdef", False),
+    ],
+)
+def test_advice_ask_diagnostic_keeps_only_its_set_key(
+    tmp_path: Path, reason: str, advice_set: str | None, kept: bool
+) -> None:
+    """#1240 D2: an advice ask names its set key (a digest), so an export tells asks apart."""
+
+    record_hook_diagnostic(reason, "Stop", advice_set=advice_set, _state=tmp_path)
+    row = json.loads((tmp_path / "observation/hook-diagnostics.jsonl").read_text())
+    assert ("advice_set" in row) is kept
+    assert "private-note-text" not in json.dumps(row)
+    summary = hook_diagnostic_summary(_state=tmp_path)
+    assert summary["count"] == 1
+    assert summary["last_reason"] == reason
+
+
+def test_summary_rejects_an_advice_set_on_another_reason(tmp_path: Path) -> None:
+    _seed(
+        tmp_path / "observation",
+        [
+            {
+                "event": "Stop",
+                "reason": "closure_gate_continued",
+                "ts": "2026-10-30T00:00:00.000Z",
+                "advice_set": "advice:0123456789abcdef",
+            },
+            {
+                "event": "Stop",
+                "reason": "closure_gate_advice_asked",
+                "ts": "2026-10-30T00:00:00.000Z",
+                "advice_set": "advice:not-a-digest",
+            },
+        ],
+    )
+    assert hook_diagnostic_summary(_state=tmp_path)["count"] == 0
+
+
 @pytest.mark.parametrize("candidate_count", [None, True, 1, 1_000_001, "private-task"])
 def test_ambiguous_binding_diagnostic_drops_invalid_counts(
     tmp_path: Path, candidate_count: object

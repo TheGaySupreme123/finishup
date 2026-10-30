@@ -2,6 +2,8 @@
 consistent error mapping.
 """
 
+# pyright: reportPrivateUsage=false
+
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping
@@ -48,6 +50,7 @@ from finishup.ports.importer import ImporterPort, ImportStatusSnapshot
 from finishup.ports.ledger import CheckCommitResult
 from finishup.ports.publish_response_catalog import PublishResponseCatalogPort
 from finishup.ports.runtime import BundleRuntimePort, RouteCommand, TaskRuntime
+from finishup.ports.semantic import ReviewerChallenge
 from finishup.protocol.canonical import JsonValue, canonical_encode
 from finishup.protocol.errors import PublicErrorCode, PublicOperationError
 from finishup.protocol.models import (
@@ -484,3 +487,66 @@ async def test_response_error_parity() -> None:
             await denied_app.respond(RespondRequest.model_validate(stale_wire))
         stale_codes.append(stale_failure.value.code)
     assert stale_codes == [PublicErrorCode.INVALID_REQUEST, PublicErrorCode.INVALID_REQUEST]
+
+
+async def test_kept_choice_advisory_answer_parity() -> None:
+    """#1240 D3: "checked, kept my choice" on a reviewer note is accepted, replays idempotently,
+    and reads the same on the CLI and MCP-bridge projections; it settles the note like an answer."""
+
+    import integration.application.test_respond_status_receipt as h
+    from finishup.kernel.correctness_advisories import correctness_advisories
+
+    def round_one(_frozen: object) -> tuple[ReviewerChallenge, ...]:
+        return (
+            h._routine_note("Footprints ignore the receptacle frame.", protocol_id("res_", 605)),
+        )
+
+    app, runtime, projection = h._build_app(
+        semantic="required", semantic_evaluator=h._scripted_reviewer([round_one])
+    )
+    started, checked, _refs = await h._routine_advisory_task(app, seed=600)
+    ledger, _objects = runtime.resources[started.task_id]
+    records = tuple([record async for record in ledger.load_events(started.session_id)])
+    (note,) = correctness_advisories(records)
+    wire: dict[str, JsonValue] = {
+        **_request_base(protocol_id("req_", 610)),
+        "session_id": started.session_id,
+        "writer_id": started.writer_id,
+        "expected_frontier": _frontier(checked.result_frontier),
+        "finding_id": note.advisory_id,
+        "finding_frontier": _frontier(checked.result_frontier),
+        "disposition": "kept_choice",
+        "reason": "Receptacles are never rotated in this task; the upright case covers it.",
+    }
+    answered = await app.respond(RespondRequest.model_validate(wire))
+    replayed = await app.respond(RespondRequest.model_validate(wire))
+    assert answered.result_frontier == replayed.result_frontier
+    assert answered.response.disposition == "kept_choice"
+
+    facts = await app.projection_binding_facts(ControlMethod.RESPOND, wire, answered)
+    cli_projected = await app.project_result_for_client(
+        ClientProjectionContext(
+            ControlClientKind.CLI, ProjectionRenderMode.HUMAN_READABLE, True, owner_view=True
+        ),
+        _cli_binding(611, facts),
+        answered,
+    )
+    mcp_projected = await app.project_result_for_client(
+        ClientProjectionContext(
+            ControlClientKind.MCP_BRIDGE, ProjectionRenderMode.MACHINE_READABLE, False
+        ),
+        _cli_binding(613, facts),
+        answered,
+    )
+    assert isinstance(cli_projected, RespondResultModel)
+    assert isinstance(mcp_projected, RespondResultModel)
+    assert cli_projected.root.ok is True and mcp_projected.root.ok is True
+    cli_body = cli_projected.root.model_dump(mode="json", exclude={"privacy_projection"})
+    mcp_body = mcp_projected.root.model_dump(mode="json", exclude={"privacy_projection"})
+    assert cli_body == mcp_body
+    assert cli_projected.root.response.disposition == "kept_choice"
+    assert len(projection.candidates) == 2
+
+    records = tuple([record async for record in ledger.load_events(started.session_id)])
+    (settled,) = correctness_advisories(records)
+    assert settled.answered and settled.disposition == "kept_choice"

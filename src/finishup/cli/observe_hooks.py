@@ -4661,8 +4661,14 @@ def _record_closure_gate_emitted(
         if BLOCKER_RECHECK_ITEM in closure_gate.items:
             record_hook_diagnostic("closure_gate_blocker_rechecked", event, _state=_state)
         if ADVICE_RECHECK_ITEM in closure_gate.items:
-            # #1240 D2: every ask is counted; the answers are the agent's own decision records.
-            record_hook_diagnostic("closure_gate_advice_asked", event, _state=_state)
+            # #1240 D2: every ask is counted with its set key; the answers are the agent's own
+            # decision records.
+            advice_set = next(
+                (key for key in closure_gate.blocker_keys if key.startswith("advice:")), None
+            )
+            record_hook_diagnostic(
+                "closure_gate_advice_asked", event, advice_set=advice_set, _state=_state
+            )
         if active_stop:
             record_hook_diagnostic("closure_gate_active_stop_rechecked", event, _state=_state)
 

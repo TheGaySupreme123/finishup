@@ -90,7 +90,7 @@ async def test_the_strongest_remaining_check_is_answered_once(
         )
         return status.closure_readiness
 
-    async def receipt(serial: int, frontier: Any) -> str:
+    async def receipt(serial: int, frontier: Any) -> dict[str, Any]:
         built = await app.receipt(
             ReceiptRequest.model_validate(
                 {
@@ -106,7 +106,7 @@ async def test_the_strongest_remaining_check_is_answered_once(
                 }
             )
         )
-        return str(built.as_json())
+        return dict(built.as_json())
 
     before = await readiness(20)
     reasons = {reason.code: reason for reason in before.predicted_receipt.reasons}
@@ -115,8 +115,15 @@ async def test_the_strongest_remaining_check_is_answered_once(
     (advice,) = (item for item in before.rechecks if item.kind == "advice")
     assert advice.rule == "material_advice_unanswered"
     assert advice.subjects == (note.split(":")[0],)
-    text = await receipt(21, checked.result_frontier)
+    built = await receipt(21, checked.result_frontier)
+    text = str(built)
     assert "Reviewer notes: 1; not answered: 1 (1 material)." in text
+    # #1240 D5: the reply asks the agent to tell the user the conclusion and the open note.
+    assert built["agent_closing_prompt"] == (
+        f"Tell the user in your final message: receipt conclusion {built['conclusion']}; "
+        "reviewer notes: 1, not answered: 1, declined: 0; "
+        "name each note not answered or declined."
+    )
 
     answered = await app.respond(
         RespondRequest.model_validate(
@@ -136,6 +143,34 @@ async def test_the_strongest_remaining_check_is_answered_once(
     after = await readiness(23)
     assert "advice_unanswered" not in {reason.code for reason in after.predicted_receipt.reasons}
     assert not any(item.kind == "advice" for item in after.rechecks or ())
-    text = await receipt(24, answered.result_frontier)
+    built = await receipt(24, answered.result_frontier)
+    text = str(built)
     assert "Reviewer notes: 1; not answered: 0; answered: 1 kept my choice." in text
+    assert built["agent_closing_prompt"] == (
+        f"Tell the user in your final message: receipt conclusion {built['conclusion']}; "
+        "reviewer notes: 1, not answered: 0, declined: 0."
+    )
     assert "checked, kept my choice (agent-reported, with reason)" in text
+
+    # A later answer replaces the shown one: a declined note is named by count, too.
+    declined = await app.respond(
+        RespondRequest.model_validate(
+            {
+                **h._request_base(protocol_id("req_", seed + 25)),
+                "session_id": started.session_id,
+                "writer_id": started.writer_id,
+                "expected_frontier": h._frontier(answered.result_frontier),
+                "finding_id": note,
+                "finding_frontier": h._frontier(answered.result_frontier),
+                "disposition": "declined",
+                "reason": "Rotation is out of scope for this task.",
+            }
+        )
+    )
+    built = await receipt(26, declined.result_frontier)
+    assert "answered: 1 declined." in str(built)
+    assert built["agent_closing_prompt"] == (
+        f"Tell the user in your final message: receipt conclusion {built['conclusion']}; "
+        "reviewer notes: 1, not answered: 0, declined: 1; "
+        "name each note not answered or declined."
+    )

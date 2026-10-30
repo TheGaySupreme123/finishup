@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from typing import Any
 
@@ -145,6 +146,14 @@ def test_every_host_asks_once_and_records_the_diagnostic(tmp_path: Path, host: _
     text = _text(host, _stop(h, host, session))
     assert text.startswith("FinishUP closure gate (shown once): Reviewer notes have no recorded")
     assert h.reasons() == ["closure_gate_continued", "closure_gate_advice_asked"]
+    # The ask's row names its set key (a digest of the open note set), nothing else.
+    rows = [
+        json.loads(line)
+        for line in (h.state / "observation" / "hook-diagnostics.jsonl").read_text().splitlines()
+    ]
+    (asked,) = (row for row in rows if row.get("reason") == "closure_gate_advice_asked")
+    assert set(asked) == {"event", "reason", "ts", "advice_set"}
+    assert asked["advice_set"] == _advice(_NOTE).key
     # The same set at a later frontier is not asked again, on a fresh or a continued Stop.
     h.sequence = "6"
     assert "closure gate" not in str(_stop(h, host, session, guarded=True))
