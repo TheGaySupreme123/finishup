@@ -2825,6 +2825,11 @@ credential probe keep their one-shot dispatch; no check uses it.
   the session cleanup. It is optional
   `reviewer` on check-result 1.6.0 and check-recorded 1.6.0 (new versions; 1.4.0/1.5.0 are
   unchanged and refuse the field, so an older reader never misreads it), so the check result, a same-id replay, status recovery of the result and receipts all read it.
+  The record stays on every terminal result, including a conversation that ended without a
+  conclusion (a refused first exchange, a provider failure or timeout after any exchange, a
+  capacity refusal, a coordinator failure, an exhausted retry budget); check-recorded 1.6.0
+  admits each of those outcomes in one branch without `semantic_conclusion` (`docs/INTERFACES.md`
+  lists the pairs).
   Each file read's alias and path stays only in the encrypted review response. CLI and TUI text,
   MCP text and receipts render the same lines. A `full_local` receipt also carries the applicable
   check's recorded review summary (the final advisory and the residual reasons) as one fenced
