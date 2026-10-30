@@ -125,6 +125,40 @@ def test_rendered_config_writes_the_horizon_only_when_the_owner_chose_one(tmp_pa
     )
 
 
+def test_the_declared_quiet_cap_loads_within_a_day_and_zero_disables_it(tmp_path: Path) -> None:
+    """#1239: the quiet-period cap is a bounded leaf; 0 is allowed and means no effect."""
+
+    config_path = tmp_path / "config.toml"
+    config_path.write_text("[lineage]\nmax_declared_quiet_seconds = 900\n")
+    assert load_config({}, {}, config_path).lineage.max_declared_quiet_seconds == 900
+    overridden = load_config(
+        {}, {"FINISHUP_LINEAGE_MAX_DECLARED_QUIET_SECONDS": "86400"}, config_path
+    )
+    assert overridden.lineage.max_declared_quiet_seconds == 86_400
+    disabled = load_config({"lineage.max_declared_quiet_seconds": "0"}, {}, config_path)
+    assert disabled.lineage.max_declared_quiet_seconds == 0
+    assert load_config({}, {}, None).lineage.max_declared_quiet_seconds == 3_600
+    for value in ("-1", "86401"):
+        with pytest.raises(ConfigError):
+            load_config({"lineage.max_declared_quiet_seconds": value}, {}, config_path)
+
+
+def test_rendered_config_writes_the_quiet_cap_only_when_the_owner_chose_one(
+    tmp_path: Path,
+) -> None:
+    from finishup.config.write import render_config_toml
+
+    config_path = tmp_path / "config.toml"
+    config_path.write_text('profile = "test-fake"\n')
+    assert "max_declared_quiet_seconds" not in render_config_toml(load_config({}, {}, config_path))
+    rendered = render_config_toml(
+        load_config({"lineage.max_declared_quiet_seconds": "0"}, {}, config_path)
+    )
+    assert "max_declared_quiet_seconds = 0" in rendered
+    config_path.write_text(rendered)
+    assert load_config({}, {}, config_path).lineage.max_declared_quiet_seconds == 0
+
+
 def test_shadowed_lower_precedence_scalar_is_not_parsed(tmp_path: Path) -> None:
     config = load_config(
         {"verification.max_findings": "7"},

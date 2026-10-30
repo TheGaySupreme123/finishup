@@ -394,6 +394,95 @@ async def test_a_day_of_quiet_top_level_tasks_sweeps_well_inside_the_recovery_de
     assert elapsed < 30, elapsed
 
 
+async def test_a_declared_quiet_period_moves_a_waiting_parents_child_deadline() -> None:
+    """D6: a child declaring a long build is not abandoned inside its declared quiet period."""
+
+    clock, store, ids = ScenarioClock(), MemoryLineageStore(), FixedIds()
+    coordinator = _coordinator(clock, store, ids)
+    parent, _ = await _root(coordinator, ids)
+    child, child_session = await _child(store, ids, parent)
+    declared_at = clock.now_utc()
+    declared = await coordinator.declare_quiet_period(
+        session_id=child_session, expected_quiet_seconds=1_800
+    )
+    assert declared.quiet_until == declared_at + timedelta(seconds=1_800)
+    clock.advance(seconds=61)
+    lost = await coordinator.mark_contact_lost(session_id=child_session)
+    # The window runs from the end of the quiet period, not from the loss of contact.
+    assert lost.abandonment_deadline == declared_at + timedelta(seconds=1_800 + _WINDOW)
+    appends = _Appends()
+    clock.advance(seconds=1_800)
+    assert await coordinator.recover_abandoned(appends) == ()
+    clock.advance(seconds=_WINDOW)
+    (abandoned,) = await coordinator.recover_abandoned(appends)
+    assert abandoned.task_id == child
+    assert appends.rows == [
+        (child, "contact_lost", declared_at + timedelta(seconds=1_800 + _WINDOW))
+    ]
+
+
+@pytest.mark.parametrize(
+    ("cap", "requested", "effective"),
+    ((3_600, 86_400, 3_600), (3_600, 600, 600), (0, 1_800, None)),
+)
+async def test_the_config_clamps_or_disables_a_declared_quiet_period(
+    cap: int, requested: int, effective: int | None
+) -> None:
+    clock, store, ids = ScenarioClock(), MemoryLineageStore(), FixedIds()
+    coordinator = _coordinator(clock, store, ids, max_declared_quiet_seconds=cap)
+    _, session = await _root(coordinator, ids)
+    declared = await coordinator.declare_quiet_period(
+        session_id=session, expected_quiet_seconds=requested
+    )
+    expected = None if effective is None else clock.now_utc() + timedelta(seconds=effective)
+    assert declared.quiet_until == expected
+
+
+async def test_a_later_declaration_replaces_and_contact_never_clears_one() -> None:
+    clock, store, ids = ScenarioClock(), MemoryLineageStore(), FixedIds()
+    coordinator = _coordinator(clock, store, ids)
+    task, session = await _root(coordinator, ids)
+    await coordinator.declare_quiet_period(session_id=session, expected_quiet_seconds=3_000)
+    shorter = await coordinator.declare_quiet_period(session_id=session, expected_quiet_seconds=120)
+    assert shorter.quiet_until == clock.now_utc() + timedelta(seconds=120)
+
+    async def renew(_lease_until: datetime) -> None:
+        return None
+
+    clock.advance(seconds=30)
+    # A hook firing as the long command starts is contact; the declaration stands.
+    assert await coordinator.renew_observed_activity(
+        task_id=task, session_id=session, renew_lease=renew
+    )
+    kept = await store.get_task(task)
+    assert kept is not None and kept.quiet_until == shorter.quiet_until
+    lifecycle = await coordinator.own_lifecycle(task)
+    assert lifecycle is not None and lifecycle.quiet_until == shorter.quiet_until
+    clock.advance(seconds=91)
+    # Once it has passed, status no longer reports it.
+    passed = await coordinator.own_lifecycle(task)
+    assert passed is not None and passed.quiet_until is None
+
+
+async def test_only_the_tasks_own_session_declares_and_replay_is_idempotent() -> None:
+    clock, store, ids = ScenarioClock(), MemoryLineageStore(), FixedIds()
+    coordinator = _coordinator(clock, store, ids)
+    task, session = await _root(coordinator, ids)
+    with pytest.raises(PublicOperationError) as refused:
+        await coordinator.validate_quiet_declaration(session_id=ids.new(IdKind.SESSION))
+    assert refused.value.safe_details["reason_code"] == "lineage_session_not_active"
+    await coordinator.validate_quiet_declaration(session_id=session)
+    declared_at = clock.now_utc() - timedelta(seconds=5)
+    first = await coordinator.reconcile_quiet_period(
+        task_id=task, expected_quiet_seconds=900, declared_at=declared_at
+    )
+    assert first.quiet_until == declared_at + timedelta(seconds=900)
+    again = await coordinator.reconcile_quiet_period(
+        task_id=task, expected_quiet_seconds=900, declared_at=declared_at
+    )
+    assert again == first  # no second write, no new revision
+
+
 async def test_a_late_end_for_a_rotated_session_ends_nothing() -> None:
     """The coordinator re-checks the active session under its lock before ending it."""
 

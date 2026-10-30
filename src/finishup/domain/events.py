@@ -265,6 +265,8 @@ __all__ = [
     "WorkAbandonedPayload",
     "WorkCancelledPayload",
     "WorkClosedPayload",
+    "ContactExpectationDeclaredPayload",
+    "MAX_DECLARED_QUIET_SECONDS",
     "WorkWrittenOffPayload",
     "UnknownEvent",
     "WritePolicy",
@@ -424,6 +426,7 @@ EVENT_FAMILIES: Final = (
     "work_abandoned",
     "work_cancelled",
     "work_written_off",
+    "contact_expectation_declared",
 )
 
 
@@ -1586,6 +1589,28 @@ class ChildWrittenOffPayload:
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "child_task_id", task_id(self.child_task_id))
+        if self.reason_code is not None:
+            object.__setattr__(self, "reason_code", _lineage_token(self.reason_code))
+
+
+# #1239 (D6): the longest quiet period one declaration may ask for, a day; the service config
+# (``lineage.max_declared_quiet_seconds``) clamps what takes effect.
+MAX_DECLARED_QUIET_SECONDS: Final = 86_400
+
+
+@dataclass(frozen=True, slots=True)
+class ContactExpectationDeclaredPayload:
+    """The agent expects up to ``expected_quiet_seconds`` without contact (#1239, D6).
+
+    Published by the task's own session before a long build, poll or turn. It is a lineage fact,
+    not work: it never supersedes a check, and the service decides how much of it takes effect.
+    """
+
+    expected_quiet_seconds: int
+    reason_code: str | None = None
+
+    def __post_init__(self) -> None:
+        _bounded_integer(self.expected_quiet_seconds, 1, MAX_DECLARED_QUIET_SECONDS)
         if self.reason_code is not None:
             object.__setattr__(self, "reason_code", _lineage_token(self.reason_code))
 
@@ -3728,6 +3753,7 @@ type EventPayload = (
     | ChildRejectedPayload
     | ChildWrittenOffPayload
     | WorkClosedPayload
+    | ContactExpectationDeclaredPayload
     | WorkAbandonedPayload
     | WorkCancelledPayload
     | WorkWrittenOffPayload
@@ -3822,6 +3848,9 @@ PAYLOAD_TYPES: Final[Mapping[EventSchema, type[EventPayload]]] = MappingProxyTyp
         EventSchema("work_abandoned", LINEAGE_EVENT_SCHEMA_VERSION): WorkAbandonedPayload,
         EventSchema("work_cancelled", LINEAGE_EVENT_SCHEMA_VERSION): WorkCancelledPayload,
         EventSchema("work_written_off", LINEAGE_EVENT_SCHEMA_VERSION): WorkWrittenOffPayload,
+        EventSchema(
+            "contact_expectation_declared", LINEAGE_EVENT_SCHEMA_VERSION
+        ): ContactExpectationDeclaredPayload,
     }
 )
 
@@ -4774,6 +4803,10 @@ _PAYLOAD_SHAPES: Final[Mapping[str, tuple[frozenset[str], frozenset[str]]]] = Ma
             frozenset(),
             frozenset({"reason_code"}),
         ),
+        "contact_expectation_declared": (
+            frozenset({"expected_quiet_seconds"}),
+            frozenset({"reason_code"}),
+        ),
         "work_abandoned": (
             frozenset({"service_stamped"}),
             frozenset({"reason_code"}),
@@ -4880,6 +4913,11 @@ def decode_payload(schema: EventSchema, payload: JsonValue) -> EventPayload:
         )
     if schema.name == "work_closed":
         return WorkClosedPayload(reason_code=cast(str | None, _optional(source, "reason_code")))
+    if schema.name == "contact_expectation_declared":
+        return ContactExpectationDeclaredPayload(
+            expected_quiet_seconds=cast(int, _field(source, "expected_quiet_seconds")),
+            reason_code=cast(str | None, _optional(source, "reason_code")),
+        )
     if schema.name == "work_abandoned":
         return WorkAbandonedPayload(
             service_stamped=cast(Literal[True], _field(source, "service_stamped")),
@@ -5495,9 +5533,14 @@ def encode_payload(payload: EventPayload) -> JsonValue:
         result = {"child_task_id": value.child_task_id}
         _optional_value(result, "reason_code", value.reason_code)
         return _json_object(result)
+    if payload_type is ContactExpectationDeclaredPayload:
+        value = cast(ContactExpectationDeclaredPayload, payload)
+        result: dict[str, object] = {"expected_quiet_seconds": value.expected_quiet_seconds}
+        _optional_value(result, "reason_code", value.reason_code)
+        return _json_object(result)
     if payload_type is WorkClosedPayload:
         value = cast(WorkClosedPayload, payload)
-        result: dict[str, object] = {}
+        result = {}
         _optional_value(result, "reason_code", value.reason_code)
         return _json_object(result)
     if payload_type is WorkAbandonedPayload:

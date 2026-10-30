@@ -853,6 +853,12 @@ reproduces the same sequence on the released source. The per-profile decisions a
   `lineage.top_level_contact_lost_horizon_seconds` (default one day). Status shows
   `task_lifecycle` with `session_health: contact_lost`. A child whose parent waits on it is
   abandoned after `lineage.contact_lost_recovery_seconds`, which operators can raise.
+- **Declared quiet period.** Host decision: supported, same code path as Codex and Cursor. Before
+  a long silent step the task's active session publishes `contact_expectation_declared` through
+  MCP `publish_work` or the CLI. The window then starts no earlier than `quiet_until`, capped by
+  `lineage.max_declared_quiet_seconds` (default one hour, 0 disables). This also covers a child
+  whose parent waits, when the agent declares before the step. No hook declares it on the agent's
+  behalf.
 - **Session end.** A delivered `SessionEnd` ends the session unless later contact outlived it.
   Open work is abandoned as `session_ended` after the recovery window unless the session resumes
   first.

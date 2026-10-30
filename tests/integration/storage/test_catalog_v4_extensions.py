@@ -57,13 +57,13 @@ def test_catalog_v4_installs_provisional_and_coordination_tables() -> None:
         assert tuple(row[1] for row in db.execute("PRAGMA table_info(lineage_operations)"))[
             -2:
         ] == ("project_id", "membership_generation")
-        assert db.pragma("user_version") == 6
+        assert db.pragma("user_version") == 7
         assert db.execute("PRAGMA foreign_key_check").fetchone() is None
     finally:
         db.close(force=True)
 
 
-@pytest.mark.parametrize("failed_version", ["0004", "0005", "0006"])
+@pytest.mark.parametrize("failed_version", ["0004", "0005", "0006", "0007"])
 def test_catalog_upgrade_rolls_back_all_pending_ddl_and_retries(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, failed_version: str
 ) -> None:
@@ -113,7 +113,7 @@ def test_catalog_upgrade_rolls_back_all_pending_ddl_and_retries(
             "SELECT value FROM catalog_meta WHERE key='storage_schema_version'"
         ).fetchone() == ("3",)
         report = migrations.run_migrations(db, migrations.CATALOG_MIGRATIONS, maintenance=None)
-        assert report.applied_versions == ("0004", "0005", "0006")
+        assert report.applied_versions == ("0004", "0005", "0006", "0007")
         assert report.backup_manifest_digest is None
         assert db.execute("SELECT session_id, health FROM task_sessions").fetchall() == [
             (session, "contact_lost")

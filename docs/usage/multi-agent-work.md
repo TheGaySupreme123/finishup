@@ -66,6 +66,12 @@ whether another task is waiting on yours:
   contact was lost and when the work would be abandoned. One long model turn, a long-running
   command, or a reply that waits for you does not end your work.
 
+An agent that expects a long silent step, such as a long build or a wait for your reply, can
+declare a quiet period first. Silence during that period does not count: the window above starts
+when the period ends at the earliest. The `lineage.max_declared_quiet_seconds` setting caps the
+period (an hour by default, up to a day), and 0 turns declarations off. A new declaration replaces
+the previous one. Status shows until when the work is declared quiet.
+
 When the host reports that the session ended, the session stops. Its open work is abandoned after
 the recovery window, unless the session resumes first. Work that was already closed stays closed.
 

@@ -581,8 +581,8 @@ GUIDANCE_RESOURCES: Final = (
         description=(
             "Read when a host drops schema metadata or after an invalid request, and before setup, "
             "consent, credential/vault operations, import, or recommendation decisions. Complete "
-            "copy-ready bodies for all six operations and all eighteen publish_work families "
-            "(nine ordinary, seven lifecycle, two coordination), with explicit placeholder "
+            "copy-ready bodies for all six operations and all nineteen publish_work families "
+            "(nine ordinary, eight lifecycle, two coordination), with explicit placeholder "
             "replacement rules."
         ),
         annotations=GuidanceResourceAnnotations(audience=("assistant",), priority=0.7),

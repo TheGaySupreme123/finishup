@@ -58,6 +58,7 @@ from finishup.domain.events import (
     ChildDependenciesRecordedPayload,
     ChildRejectedPayload,
     ChildWrittenOffPayload,
+    ContactExpectationDeclaredPayload,
     CoordinationContextRecordedPayload,
     CoordinationDispositionRecordedPayload,
     CoordinationObligationDeclaredPayload,
@@ -92,6 +93,7 @@ from finishup.domain.receipts import ReceiptVersionSlice
 from finishup.domain.values import (
     Frontier,
     JsonObject,
+    Timestamp,
     frontier_from_json,
     validate_commitment,
     validate_sha256_digest,
@@ -215,6 +217,7 @@ _LINEAGE_PUBLIC_LIFECYCLE_FAMILIES = frozenset(
         "work_closed",
         "work_cancelled",
         "work_written_off",
+        "contact_expectation_declared",
     }
 )
 
@@ -1574,6 +1577,7 @@ class Application:
                         sorted({route.session_id, *(state.session_id for state in states)})
                     )
                 seen_events: set[str] = set()
+                latest_quiet: tuple[int, ContactExpectationDeclaredPayload, Timestamp] | None = None
                 for session_id in session_ids:
                     async for record in runtime.ledger.load_events(session_id):
                         if not isinstance(record, AcceptedEvent) or str(record.task_id) != task_id:
@@ -1594,10 +1598,17 @@ class Application:
                                 WorkCancelledPayload,
                                 WorkWrittenOffPayload,
                                 WorkAbandonedPayload,
+                                ContactExpectationDeclaredPayload,
                             ),
                         ):
                             continue
                         scanned += 1
+                        if isinstance(payload, ContactExpectationDeclaredPayload):
+                            # #1239: only the latest declaration stands; replay it once below.
+                            sequence = record.ledger.ingestion_sequence
+                            if latest_quiet is None or sequence > latest_quiet[0]:
+                                latest_quiet = (sequence, payload, record.ledger.accepted_at)
+                            continue
                         if isinstance(payload, ChildAcceptedPayload):
                             await lineage.reconcile_child_acceptance(
                                 parent_task_id=task_id,
@@ -1651,6 +1662,14 @@ class Application:
                                 task_id=task_id, target=WorkState.WRITTEN_OFF
                             )
                         reconciled += 1
+                if latest_quiet is not None:
+                    _, declared, accepted_at = latest_quiet
+                    await lineage.reconcile_quiet_period(
+                        task_id=task_id,
+                        expected_quiet_seconds=declared.expected_quiet_seconds,
+                        declared_at=accepted_at.as_datetime(),
+                    )
+                    reconciled += 1
             finally:
                 await self.runtime.release(runtime)
         return scanned, reconciled
@@ -1704,6 +1723,11 @@ class Application:
                 await lineage.cancel_work(session_id=request.session_id)
             elif isinstance(payload, WorkWrittenOffPayload):
                 await lineage.write_off_work(session_id=request.session_id)
+            elif isinstance(payload, ContactExpectationDeclaredPayload):
+                await lineage.declare_quiet_period(
+                    session_id=request.session_id,
+                    expected_quiet_seconds=payload.expected_quiet_seconds,
+                )
             else:
                 # Service-only families are rejected before append by ``prepare_publication``.  A
                 # defensive branch keeps a future family from silently bypassing catalog state.
@@ -1882,6 +1906,8 @@ class Application:
                     session_id=request.session_id,
                     target=WorkState.WRITTEN_OFF,
                 )
+            elif isinstance(payload, ContactExpectationDeclaredPayload):
+                await lineage.validate_quiet_declaration(session_id=request.session_id)
             elif isinstance(
                 payload,
                 (DelegationDeclaredPayload, ChildDependenciesRecordedPayload, WorkAbandonedPayload),

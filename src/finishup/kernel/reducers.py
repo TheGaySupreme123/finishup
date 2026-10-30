@@ -171,6 +171,8 @@ _LINEAGE_EVENT_FAMILIES: Final = frozenset(
         "work_abandoned",
         "work_cancelled",
         "work_written_off",
+        # #1239: a declared quiet period is a lineage fact, never material work.
+        "contact_expectation_declared",
     }
 )
 

@@ -291,6 +291,7 @@ def _generated_payload(family: str, text_value: str, integer_value: int) -> Even
         "work_abandoned",
         "work_cancelled",
         "work_written_off",
+        "contact_expectation_declared",
         "coordination_obligation_declared",
     }:
         # Lineage payloads are intentionally all structural and closed.  Their golden rows already

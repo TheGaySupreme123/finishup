@@ -598,12 +598,14 @@ _INVENTORY_ENTRIES: Final[tuple[tuple[str, str, str, bool], ...]] = (
     ("migrations/bundle/0016.sql", "migration", "application/sql", True),
     ("migrations/bundle/0017.sql", "migration", "application/sql", True),
     ("migrations/bundle/0018.sql", "migration", "application/sql", True),
+    ("migrations/bundle/0019.sql", "migration", "application/sql", True),
     ("migrations/catalog/0001.sql", "migration", "application/sql", True),
     ("migrations/catalog/0002.sql", "migration", "application/sql", True),
     ("migrations/catalog/0003.sql", "migration", "application/sql", True),
     ("migrations/catalog/0004.sql", "migration", "application/sql", True),
     ("migrations/catalog/0005.sql", "migration", "application/sql", True),
     ("migrations/catalog/0006.sql", "migration", "application/sql", True),
+    ("migrations/catalog/0007.sql", "migration", "application/sql", True),
     (
         "schemas/common/actor-assertion-1.0.0.schema.json",
         "json_schema",
@@ -1213,6 +1215,12 @@ _INVENTORY_ENTRIES: Final[tuple[tuple[str, str, str, bool], ...]] = (
     ),
     (
         "schemas/events/work-written-off-1.0.0.schema.json",
+        "json_schema",
+        "application/schema+json",
+        True,
+    ),
+    (
+        "schemas/events/contact-expectation-declared-1.0.0.schema.json",
         "json_schema",
         "application/schema+json",
         True,

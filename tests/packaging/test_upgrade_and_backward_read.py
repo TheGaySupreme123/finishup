@@ -142,7 +142,7 @@ def test_each_migration_family_has_contiguous_versions(installed: _Installed) ->
         "}))\n"
     )
     payload = _run_probe(installed, probe)
-    assert payload["catalog_versions"] == ["0001", "0002", "0003", "0004", "0005", "0006"]
+    assert payload["catalog_versions"] == ["0001", "0002", "0003", "0004", "0005", "0006", "0007"]
     assert payload["bundle_versions"] == [
         "0001",
         "0002",
@@ -162,14 +162,15 @@ def test_each_migration_family_has_contiguous_versions(installed: _Installed) ->
         "0016",
         "0017",
         "0018",
+        "0019",
     ]
-    assert payload["catalog_current"] == 6
-    assert payload["bundle_current"] == 18
+    assert payload["catalog_current"] == 7
+    assert payload["bundle_current"] == 19
 
 
 def test_migration_ddl_contains_only_reviewed_table_rebuilds(installed: _Installed) -> None:
     for family, versions in (
-        ("catalog", ("0001", "0002", "0003", "0004", "0005", "0006")),
+        ("catalog", ("0001", "0002", "0003", "0004", "0005", "0006", "0007")),
         (
             "bundle",
             (
@@ -193,6 +194,8 @@ def test_migration_ddl_contains_only_reviewed_table_rebuilds(installed: _Install
                 "0017",
                 # 0018 (#1173) rebuilds that step table with wider ordinal bounds, below.
                 "0018",
+                # 0019 (#1239) rebuilds events exactly as 0014 did, below.
+                "0019",
             ),
         ),
     ):
@@ -222,6 +225,13 @@ def test_migration_ddl_contains_only_reviewed_table_rebuilds(installed: _Install
                 copy = "INSERT INTO EVENTS_V14_NEW ("
                 drop = "DROP TABLE EVENTS;"
                 rename = "ALTER TABLE EVENTS_V14_NEW RENAME TO EVENTS;"
+                assert upper.count(drop) == 1
+                assert upper.index(copy) < upper.index(drop) < upper.index(rename)
+                upper = upper.replace(drop, "", 1)
+            if (family, version) == ("bundle", "0019"):
+                copy = "INSERT INTO EVENTS_V19_NEW ("
+                drop = "DROP TABLE EVENTS;"
+                rename = "ALTER TABLE EVENTS_V19_NEW RENAME TO EVENTS;"
                 assert upper.count(drop) == 1
                 assert upper.index(copy) < upper.index(drop) < upper.index(rename)
                 upper = upper.replace(drop, "", 1)
@@ -332,7 +342,7 @@ def test_newer_than_candidate_schema_fails_migration_and_identity_checks_honestl
         "from finishup.adapters.sqlite.connection import verify_schema_identity, StorageUnsafeError\n"
         "catalog = apsw.Connection(':memory:')\n"
         "initialize_catalog(catalog)\n"
-        "catalog.execute('PRAGMA user_version = 7')\n"
+        "catalog.execute('PRAGMA user_version = 8')\n"
         "identity_reason = None\n"
         "try:\n"
         "    verify_schema_identity(catalog)\n"

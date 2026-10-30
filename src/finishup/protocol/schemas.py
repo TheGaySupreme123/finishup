@@ -65,7 +65,7 @@ SCHEMA_NAMESPACE: Final = "https://schemas.yoetz.dev/0.1/"
 SCHEMA_MANIFEST_SCHEMA: Final = "yoetz.schema-manifest/1.0.0"
 SCHEMA_MANIFEST_VERSION: Final = "1.0.0"
 SCHEMA_MEMBER_COUNT: Final = (
-    243  # #1170: result-recorded 1.1.0; #1139: +4 lossless result-delivery schemas;
+    244  # #1239: contact-expectation-declared 1.0.0; #1170: result-recorded 1.1.0; #1139: +4 lossless result-delivery schemas;
     # #1118: reviewer-reply 1.0.0, check-result/-recorded 1.6.0, privacy-policy 1.3.0;
     # #1119: host-connection batch report and nonsecret ai-status 1.0.0
 )
@@ -831,7 +831,7 @@ def _load_catalog_state() -> _CatalogState:
     )
     request_versions_dict = _request_result_versions(entries)
     event_versions_dict = _event_payload_versions(entries)
-    if len(request_versions_dict) != 57 or len(event_versions_dict) != 29:
+    if len(request_versions_dict) != 57 or len(event_versions_dict) != 30:
         _protocol_error("schema_catalog_incomplete")
 
     catalog = SchemaCatalog(
@@ -1040,7 +1040,7 @@ def _build_manifest_index() -> _ManifestIndex:
         id_by_identity[(name, version)] = expected_id
         entries.append((name, version, member.schema_kind, member.artifact_role))
     request_versions = _request_result_versions(entries)
-    if len(request_versions) != 57 or len(_event_payload_versions(entries)) != 29:
+    if len(request_versions) != 57 or len(_event_payload_versions(entries)) != 30:
         _protocol_error("schema_catalog_incomplete")
     return _ManifestIndex(
         member_bytes=MappingProxyType(member_bytes),

@@ -20,6 +20,7 @@ from finishup.config.models import (
     CODEX_SUBSCRIPTION_ENDPOINT_PROFILE_ID,
     CODEX_SUBSCRIPTION_PROVIDER_ID,
     DEFAULT_FINDING_ATTEMPT_BUDGET,
+    DEFAULT_MAX_DECLARED_QUIET_SECONDS,
     DEFAULT_TOP_LEVEL_CONTACT_LOST_HORIZON_SECONDS,
     ConfigError,
     ExternalRuntimeProfileConfig,
@@ -557,6 +558,8 @@ def render_config_toml(config: FinishUpConfig) -> str:
         lineage["top_level_contact_lost_horizon_seconds"] = (
             config.lineage.top_level_contact_lost_horizon_seconds
         )
+    if config.lineage.max_declared_quiet_seconds != DEFAULT_MAX_DECLARED_QUIET_SECONDS:
+        lineage["max_declared_quiet_seconds"] = config.lineage.max_declared_quiet_seconds
     lineage["max_depth"] = config.lineage.max_depth
     lineage["max_fanout"] = config.lineage.max_fanout
     _emit_table(lines, "lineage", lineage)

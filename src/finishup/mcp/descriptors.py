@@ -133,6 +133,7 @@ ORDINARY_MCP_PUBLISH_EVENT_FAMILIES: Final[frozenset[str]] = frozenset(
         "work_closed",
         "work_cancelled",
         "work_written_off",
+        "contact_expectation_declared",
         "coordination_disposition_recorded",
         "coordination_obligation_declared",
     }
@@ -486,7 +487,12 @@ def _lifecycle_example(ordinal: int, family: str) -> dict[str, JsonValue]:
     """Separate requests keep mutually exclusive work transitions out of one example batch."""
 
     payload: dict[str, JsonValue] = (
-        {"child_task_id": _example_id("task", 2)} if not family.startswith("work_") else {}
+        {}
+        if family.startswith("work_")
+        # #1239: the task's own declared quiet period.
+        else {"expected_quiet_seconds": 1800}
+        if family == "contact_expectation_declared"
+        else {"child_task_id": _example_id("task", 2)}
     )
     return {
         "protocol_version": "0.1",
@@ -894,6 +900,7 @@ _INPUT_SCHEMA_EXAMPLES: Final[Mapping[str, tuple[dict[str, JsonValue], ...]]] = 
                         "work_closed",
                         "work_cancelled",
                         "work_written_off",
+                        "contact_expectation_declared",
                     )
                 )
             ),

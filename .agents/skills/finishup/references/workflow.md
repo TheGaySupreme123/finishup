@@ -510,9 +510,11 @@ not establish integration. Preserve contradictory claims until a recorded decisi
 Work state, session health, and receipt history are separate. A receipt never closes work:
 publish `work_closed` when the work is complete, from the task's active session while it is still
 `open`. Lost contact leaves work open: a child its parent waits on for the recovery window, any
-other task for a far longer horizon (status `task_lifecycle` shows the deadline). Work abandoned
-only for lost contact still takes this session's `work_closed`; any other terminal work refuses it
-as `lineage_work_transition`. Late evidence remains visible with a gap. `delegation_cancelled` revokes the FinishUP capability, not the host
+other task for a far longer horizon (status `task_lifecycle` shows the deadline). Before a long
+silent stretch, publish `contact_expectation_declared` from the active session; the window then
+starts no earlier than its capped `quiet_until`. Work abandoned only for lost contact still takes
+this session's `work_closed`; any other terminal work refuses it as `lineage_work_transition`.
+Late evidence remains visible with a gap. `delegation_cancelled` revokes the FinishUP capability, not the host
 process. `child_written_off` and cancellation preserve an accepted dependency and its incomplete
 outcome. Publish these lifecycle transitions through `publish_work`, using the request templates.
 

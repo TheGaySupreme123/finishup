@@ -41,6 +41,11 @@ def status_task_lifecycle_line(value: object) -> str:
     reason = _token(lifecycle.get("abandonment_reason"), _REASONS)
     at = _time(lifecycle.get("abandonment_at"))
     lost = _time(lifecycle.get("contact_lost_at"))
+    quiet = _time(lifecycle.get("quiet_until"))
+    if work == "open" and quiet is not None:
+        line = status_task_lifecycle_line({**lifecycle, "quiet_until": None})
+        declared = f"quiet period declared until {quiet}"
+        return f"Work: open; {declared}." if not line else f"{line[:-1]}; {declared}."
     if work == "open":
         if reason == "session_ended":
             return (

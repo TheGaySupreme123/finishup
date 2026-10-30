@@ -1168,7 +1168,11 @@ code path as Claude Code and Cursor; no Codex-specific behavior. A top-level or 
 its open work for `lineage.top_level_contact_lost_horizon_seconds` (default one day) and status
 shows `task_lifecycle` with `session_health: contact_lost`. A child whose parent waits on it is
 abandoned after `lineage.contact_lost_recovery_seconds`. That short window is the remaining
-recorded Codex gap, and raising it is the supported mitigation. A delivered `SessionEnd`, including
+recorded Codex gap. Raising it, or having the agent publish `contact_expectation_declared`
+before a long `wait` or poll, is the supported mitigation. Host decision for the declared quiet
+period: supported, same code path as Claude Code and Cursor, through MCP `publish_work` or the
+CLI; it is capped by `lineage.max_declared_quiet_seconds` (default one hour, 0 disables), and no
+hook declares it for the agent. A delivered `SessionEnd`, including
 one the drain delivers late, ends the session unless later contact outlived it.
 Open work is then abandoned as `session_ended` after the recovery window unless the session
 resumes. A `contact_lost` abandonment is reversed by the same session's `work_closed`. A silent child still enters contact loss and

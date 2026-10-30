@@ -302,11 +302,26 @@ than implementation notes.
      receipt's limitations section says when the service abandoned the task's work, when the
      same session's close reversed it, and when the work was cancelled or written off. It reads
      this from the task's own ledger events, never from live catalog state.
+   - **A task may declare an expected quiet period.** Its own active session publishes
+     `contact_expectation_declared` (`expected_quiet_seconds` 1 to 86,400, an optional reason
+     token) through `publish_work`; any other session is refused as
+     `lineage_session_not_active`. The effective period is the smaller of the request and
+     `lineage.max_declared_quiet_seconds` (default 3,600, range 0 to 86,400; 0 records the event
+     without effect), running from the declaration's acceptance time to `quiet_until`. At every
+     deadline site the abandonment deadline of open work becomes
+     `max(contact_lost_at, quiet_until) + window`. A later declaration replaces the earlier one,
+     shorter or longer. Contact does not clear it, because a hook at the start of the long step
+     would otherwise cancel it; it simply passes. The family is a non-material lineage no-op in
+     the reducer and never supersedes a check. The catalog keeps `quiet_until`
+     (`lineage_task_meta`, catalog migration 7). Reconcile replays the latest declaration from
+     the ledger, so a rebuilt catalog agrees. Status `task_lifecycle.quiet_until` shows it while
+     the work is open and the period has not passed. Bundle migration 19 rebuilds the `events`
+     table so its `summary_code` CHECK admits the family.
 
    A long native tool call, a turn awaiting its user, and a host without subagent hooks are
    therefore no longer a capability gap for a top-level task under a day. They remain one for a
-   child whose parent waits, and raising `lineage.contact_lost_recovery_seconds` stays the
-   mitigation there.
+   child whose parent waits; declaring a quiet period before the step, or raising
+   `lineage.contact_lost_recovery_seconds`, is the mitigation there.
 
 4. **Parent rollup is one level and severity-dependent.** A parent receipt projects only direct
    children from the frozen manifest. Current actionable findings on accepted children block

@@ -380,7 +380,13 @@ _RESULT_OPTIONAL_NON_NULL: tuple[tuple[type[BaseModel], frozenset[str]], ...] = 
     (
         StatusTaskLifecycleModel,
         frozenset(
-            {"contact_lost_at", "abandonment_at", "abandonment_reason", "abandonment_reversed"}
+            {
+                "contact_lost_at",
+                "abandonment_at",
+                "abandonment_reason",
+                "abandonment_reversed",
+                "quiet_until",
+            }
         ),
     ),
     # #1209: fix_or_decline is absent when no item is open.

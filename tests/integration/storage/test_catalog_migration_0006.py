@@ -38,8 +38,8 @@ def test_an_upgraded_row_keeps_its_facts_and_reads_no_reason(tmp_path: Path) -> 
     try:
         assert db.pragma("user_version") == 5
         report = migrations.run_migrations(db, migrations.CATALOG_MIGRATIONS, maintenance=None)
-        assert report.applied_versions == ("0006",)
-        assert db.pragma("user_version") == 6
+        assert report.applied_versions == ("0006", "0007")
+        assert db.pragma("user_version") == 7
         assert db.execute(
             "SELECT lineage_authority_revision, contact_lost_at, abandonment_deadline, "
             "abandonment_reason FROM lineage_task_meta WHERE task_id = ?",

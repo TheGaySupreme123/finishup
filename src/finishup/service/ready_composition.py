@@ -7029,6 +7029,7 @@ async def provide_service_ready_context(
             top_level_contact_lost_horizon_seconds=(
                 config.lineage.top_level_contact_lost_horizon_seconds
             ),
+            max_declared_quiet_seconds=config.lineage.max_declared_quiet_seconds,
             max_depth=config.lineage.max_depth,
             max_fanout=config.lineage.max_fanout,
         ),

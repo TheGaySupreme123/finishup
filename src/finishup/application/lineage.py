@@ -37,6 +37,7 @@ from finishup.domain.coordination import (
     SessionHealth,
     WorkState,
 )
+from finishup.domain.events import MAX_DECLARED_QUIET_SECONDS
 from finishup.domain.values import (
     Frontier,
     Timestamp,
@@ -270,6 +271,17 @@ def _pending_reason(snapshot: LineageSnapshot) -> str | None:
     return None if snapshot.work_state is WorkState.OPEN else snapshot.abandonment_reason
 
 
+def _quiet_deadline(snapshot: LineageSnapshot, lost_at: datetime, window: timedelta) -> datetime:
+    """When open work out of contact since ``lost_at`` is abandoned (#1239, D6).
+
+    A declared quiet period counts as contact until it ends, so the window runs from whichever
+    is later: the loss of contact or the end of the declared quiet period.
+    """
+
+    quiet = snapshot.quiet_until
+    return (lost_at if quiet is None or quiet <= lost_at else quiet) + window
+
+
 def _work_terminal_refusal(snapshot: LineageSnapshot) -> PublicOperationError:
     """A refusal that names the terminal state, when it began and what to do next (#1239)."""
 
@@ -306,6 +318,9 @@ class LineageConfig:
     # How long any other task may stay out of contact (D6, #1239): a quiet top-level task with no
     # parent waiting is never abandoned for silence sooner. It shows ``contact_lost`` meanwhile.
     top_level_contact_lost_horizon_seconds: int = 86_400
+    # The longest declared quiet period that takes effect (D6, #1239); 0 records a declaration
+    # without effect.
+    max_declared_quiet_seconds: int = 3_600
     max_depth: int = 8
     max_fanout: int = 32
     # Upper bound on how long one host-declared child operation (a native subagent observed
@@ -326,6 +341,7 @@ class LineageConfig:
             minimum=self.contact_lost_recovery_seconds,
             maximum=MAX_TOP_LEVEL_CONTACT_LOST_HORIZON_SECONDS,
         )
+        _bounded_int(self.max_declared_quiet_seconds, minimum=0, maximum=MAX_DECLARED_QUIET_SECONDS)
         _bounded_int(self.max_depth, minimum=0, maximum=64)
         # Child snapshots, check previews, and receipt child sections all carry one
         # canonical bounded tuple.  Keep admission at that wire limit so a legal
@@ -381,6 +397,10 @@ class LineageSnapshot:
     # (one of ``ABANDONMENT_REASONS``); kept after a reversed ``contact_lost`` abandonment so the
     # closed work still says it was once abandoned.
     abandonment_reason: str | None = None
+    # #1239: until when the task's own session declared it expects no contact, already clamped by
+    # ``LineageConfig.max_declared_quiet_seconds``. Open work out of contact keeps its window from
+    # this time; contact does not clear it, it simply passes.
+    quiet_until: datetime | None = None
 
     def __post_init__(self) -> None:
         _id(IdKind.TASK, self.task_id)
@@ -399,6 +419,8 @@ class LineageSnapshot:
         if self.abandonment_deadline is not None:
             _timestamp(self.abandonment_deadline)
         _bounded_int(self.lineage_authority_revision, minimum=1)
+        if self.quiet_until is not None:
+            _timestamp(self.quiet_until)
         if self.abandonment_reason is not None and self.abandonment_reason not in (
             ABANDONMENT_REASONS
         ):
@@ -2640,8 +2662,10 @@ class LineageCoordinator:
                 or lost_at >= evidence_until
             ):
                 return False
-            deadline = evidence_until + timedelta(
-                seconds=await self._contact_window_seconds(snapshot)
+            deadline = _quiet_deadline(
+                snapshot,
+                evidence_until,
+                timedelta(seconds=await self._contact_window_seconds(snapshot)),
             )
             if snapshot.abandonment_deadline is not None:
                 deadline = max(deadline, snapshot.abandonment_deadline)
@@ -2817,7 +2841,7 @@ class LineageCoordinator:
                 lost_at = snapshot.contact_lost_at or now
                 # Terminal work keeps when it was abandoned; only open work has a deadline ahead.
                 deadline = (
-                    lost_at + window
+                    _quiet_deadline(snapshot, lost_at, window)
                     if snapshot.work_state is WorkState.OPEN
                     else snapshot.abandonment_deadline
                 )
@@ -2855,7 +2879,7 @@ class LineageCoordinator:
                 session_health=SessionHealth.CONTACT_LOST,
                 contact_lost_at=now,
                 abandonment_deadline=(
-                    now + window
+                    _quiet_deadline(snapshot, now, window)
                     if snapshot.work_state is WorkState.OPEN
                     else snapshot.abandonment_deadline
                 ),
@@ -2965,7 +2989,9 @@ class LineageCoordinator:
                     # D6/D7 (#1239): judged at sweep time, so a child whose parent stopped waiting
                     # moves to the long horizon. Delayed evidence already moved the loss time.
                     window = await self._contact_window_seconds(snapshot, by_id)
-                    deadline = snapshot.contact_lost_at + timedelta(seconds=window)
+                    deadline = _quiet_deadline(
+                        snapshot, snapshot.contact_lost_at, timedelta(seconds=window)
+                    )
                 if deadline is None or deadline > now:
                     continue
                 try:
@@ -3042,6 +3068,98 @@ class LineageCoordinator:
             await self._store.save_manifest(manifest)
             return manifest
 
+    def _quiet_until(self, declared_at: datetime, expected_quiet_seconds: int) -> datetime | None:
+        """The clamped end of a declared quiet period, or ``None`` when declarations are off."""
+
+        seconds = _bounded_int(
+            expected_quiet_seconds, minimum=1, maximum=MAX_DECLARED_QUIET_SECONDS
+        )
+        effective = min(seconds, self._config.max_declared_quiet_seconds)
+        return None if effective == 0 else declared_at + timedelta(seconds=effective)
+
+    async def _apply_quiet_locked(
+        self, snapshot: LineageSnapshot, quiet_until: datetime | None
+    ) -> LineageSnapshot:
+        """Store ``quiet_until`` and re-judge a pending deadline of open work out of contact."""
+
+        updated = replace(snapshot, quiet_until=quiet_until)
+        if (
+            updated.work_state is WorkState.OPEN
+            and updated.session_health is SessionHealth.CONTACT_LOST
+            and updated.contact_lost_at is not None
+        ):
+            window = timedelta(seconds=await self._contact_window_seconds(updated))
+            updated = replace(
+                updated,
+                abandonment_deadline=_quiet_deadline(updated, updated.contact_lost_at, window),
+            )
+        if updated == snapshot:
+            return snapshot
+        updated = replace(
+            updated, lineage_authority_revision=snapshot.lineage_authority_revision + 1
+        )
+        await self._store.save_task(updated)
+        return updated
+
+    async def declare_quiet_period(
+        self, *, session_id: str, expected_quiet_seconds: int
+    ) -> LineageSnapshot:
+        """Record the task's own declared quiet period (#1239, D6) from its active session.
+
+        The effective period is clamped by ``max_declared_quiet_seconds`` (0 records nothing that
+        takes effect). A later declaration replaces an earlier one, shorter or longer; contact
+        does not clear it.
+        """
+
+        session = _id(IdKind.SESSION, session_id)
+        quiet_until = self._quiet_until(self._now(), expected_quiet_seconds)
+        async with self._lock:
+            snapshot = await self._declaring_task_locked(session)
+            return await self._apply_quiet_locked(snapshot, quiet_until)
+
+    async def validate_quiet_declaration(self, *, session_id: str) -> None:
+        """Refuse, before append, a declaration from a session that is not the task's own."""
+
+        session = _id(IdKind.SESSION, session_id)
+        async with self._lock:
+            await self._declaring_task_locked(session)
+
+    async def _declaring_task_locked(self, session: str) -> LineageSnapshot:
+        task_id = await self._store.get_session_task(session)
+        snapshot = None if task_id is None else await self._store.get_task(task_id)
+        if (
+            snapshot is None
+            or snapshot.active_session_id != session
+            or snapshot.session_health is SessionHealth.ENDED
+        ):
+            raise _error(
+                PublicErrorCode.SESSION_CONFLICT,
+                "The task session is not active.",
+                reason="lineage_session_not_active",
+            )
+        return snapshot
+
+    async def reconcile_quiet_period(
+        self, *, task_id: str, expected_quiet_seconds: int, declared_at: datetime
+    ) -> LineageSnapshot:
+        """Mirror the task's latest declared quiet period from its ledger after a restart.
+
+        Idempotent: the period runs from the declaration's accepted time, so a repeated sweep
+        writes nothing once the catalog agrees.
+        """
+
+        task = _id(IdKind.TASK, task_id)
+        quiet_until = self._quiet_until(_timestamp(declared_at), expected_quiet_seconds)
+        async with self._lock:
+            snapshot = await self._store.get_task(task)
+            if snapshot is None:
+                raise _error(
+                    PublicErrorCode.SESSION_NOT_FOUND,
+                    "The task was not found.",
+                    reason="lineage_task_not_found",
+                )
+            return await self._apply_quiet_locked(snapshot, quiet_until)
+
     async def own_lifecycle(self, task_id: str) -> LineageSnapshot | None:
         """The task's own lifecycle for status and receipts (#1239), or ``None`` if unknown.
 
@@ -3050,9 +3168,15 @@ class LineageCoordinator:
         """
 
         snapshot = await self._store.get_task(_id(IdKind.TASK, task_id))
+        if snapshot is None:
+            return None
+        if snapshot.quiet_until is not None and (
+            snapshot.work_state is not WorkState.OPEN or snapshot.quiet_until <= self._now()
+        ):
+            # A declared quiet period that has passed, or that no open work can use, is history.
+            snapshot = replace(snapshot, quiet_until=None)
         if (
-            snapshot is None
-            or snapshot.work_state is not WorkState.OPEN
+            snapshot.work_state is not WorkState.OPEN
             or snapshot.session_health is not SessionHealth.CONTACT_LOST
             or snapshot.contact_lost_at is None
         ):
@@ -3060,7 +3184,9 @@ class LineageCoordinator:
         window = await self._contact_window_seconds(snapshot)
         return replace(
             snapshot,
-            abandonment_deadline=snapshot.contact_lost_at + timedelta(seconds=window),
+            abandonment_deadline=_quiet_deadline(
+                snapshot, snapshot.contact_lost_at, timedelta(seconds=window)
+            ),
             abandonment_reason=REVERSIBLE_ABANDONMENT_REASON,
         )
 
