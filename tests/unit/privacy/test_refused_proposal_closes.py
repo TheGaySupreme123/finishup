@@ -23,6 +23,7 @@ from finishup.application.egress import (
     _refused_proposal_receipt,  # pyright: ignore[reportPrivateUsage]
 )
 from finishup.domain.privacy import (
+    CredentialHeuristic,
     DisclosureProposal,
     EgressReceipt,
     PrivacyOutcome,
@@ -310,3 +311,42 @@ async def test_an_approved_proposal_refused_at_the_dispatch_fence_closes_at_once
     (receipt,) = audit.closed
     assert result.receipt_id == receipt.receipt_id
     assert receipt.safe_failure_reason is PrivacyReason.SCOPE_MISMATCH
+
+
+@pytest.mark.anyio
+async def test_a_refused_receipt_keeps_the_heuristic_the_case_was_scanned_under() -> None:
+    # The owner had the possible-credential filter off when the case was prepared (#982), and
+    # turns it back on as the request reaches the dispatch fence. The receipt describes the
+    # prepared case's scan, so it keeps the opt-out every other blocked receipt states.
+    base = resume._effective()  # pyright: ignore[reportPrivateUsage]
+    prepared = EffectivePrivacyPolicy(
+        replace(base.policy, credential_heuristic=CredentialHeuristic.DISABLED),
+        base.generation,
+        base.effective_digest,
+    )
+    proposal = resume._proposal(expires_at=resume._NOW + timedelta(minutes=5))  # pyright: ignore[reportPrivateUsage]
+    coordinator, audit = _coordinator("approved", proposal)
+    policies = cast(
+        resume._Policies,  # pyright: ignore[reportPrivateUsage]
+        coordinator._policies,  # type: ignore[attr-defined]
+    )
+    policies.effective = prepared
+
+    def fence() -> bool:
+        policies.effective = EffectivePrivacyPolicy(
+            base.policy, base.generation + 1, "sha256:" + "f" * 64
+        )
+        return False
+
+    result = await coordinator.resume(  # type: ignore[attr-defined]
+        _REQUEST,
+        _CASE_DIGEST,
+        resume._deadline(),  # pyright: ignore[reportPrivateUsage]
+        dispatch_guard=fence,
+    )
+    assert isinstance(result, SemanticEgressBlocked)
+    assert result.reason is PrivacyReason.SCOPE_MISMATCH
+    (receipt,) = audit.closed
+    assert result.receipt_id == receipt.receipt_id
+    assert receipt.secret_scan.credential_heuristic is CredentialHeuristic.DISABLED
+    assert receipt.policy.policy_digest == base.effective_digest

@@ -837,6 +837,8 @@ def _refused_proposal_receipt(
 
     Nothing was authorized or sent: included and final counts are zero, the prepared case's own
     scanner identity is named, and a size refusal keeps its typed capacity reason (#1129).
+    *effective* is the policy the case was prepared under whenever the coordinator holds it, so
+    an owner's possible-credential opt-out (#982) is stated as every other blocked receipt does.
     """
 
     binding = proposal.provider_binding
@@ -882,6 +884,7 @@ def _refused_proposal_receipt(
             0,
             True,
             ReceiptSecretScanStage.PREPARED_CASE,
+            credential_heuristic=external_review_credential_heuristic(effective.policy, binding),
         ),
         result.reason,
         1,
@@ -2793,7 +2796,8 @@ class PrivacyCoordinator:
                 subject_digest=subject_digest,
                 authorization=authorization,
                 authority_digest=authority_digest,
-            )
+            ),
+            prepared_under=effective,
         )
 
     async def _stored_refusal(
@@ -2820,7 +2824,12 @@ class PrivacyCoordinator:
             return None
         return receipt.outcome, receipt.safe_failure_reason, receipt.capacity_exceeded
 
-    async def _close_refused_proposal(self, result: SemanticEgressResult) -> SemanticEgressResult:
+    async def _close_refused_proposal(
+        self,
+        result: SemanticEgressResult,
+        *,
+        prepared_under: EffectivePrivacyPolicy | None = None,
+    ) -> SemanticEgressResult:
         """#1066: close a prepared proposal refused at the final permission check, at once.
 
         A refusal after the proposal was prepared and before the gateway call used to leave it
@@ -2830,6 +2839,11 @@ class PrivacyCoordinator:
         moves only a proposal nothing was authorized or sent for. A timeout, an audit failure or a
         transport outcome is not closed: a still-valid approval stays usable. Closing is best
         effort: the refusal is returned either way, and nothing was or will be sent.
+
+        *prepared_under* is the policy the dispatch path holds for this exact proposal. The
+        receipt describes the case as it was prepared and scanned, so a policy that changed after
+        preparation (the refusal itself, often) never relabels it; without one, the current
+        policy is read.
         """
 
         if (
@@ -2851,7 +2865,12 @@ class PrivacyCoordinator:
                 or proposal.provider_binding.transport != "external"
             ):
                 return result
-            effective = await self._policies.effective_policy(proposal.scope)
+            effective = (
+                prepared_under
+                if prepared_under is not None
+                and prepared_under.effective_digest == proposal.policy_digest
+                else await self._policies.effective_policy(proposal.scope)
+            )
             receipt = _refused_proposal_receipt(
                 proposal, effective, result, self._clock.now_utc(), self._ids
             )

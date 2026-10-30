@@ -1733,7 +1733,9 @@ although nothing could or would be sent, and it had no receipt.
   columns already admit it).
 - The coordinator closes a `blocked_by_policy` or `approval_expired` refusal returned after the
   proposal exists (fresh dispatch and resume alike). The receipt names the refusal's outcome and
-  reason, counts zero included items and zero `final_bytes`, names the prepared case's scanner, and
+  reason, counts zero included items and zero `final_bytes`, names the prepared case's scanner and
+  the owner's possible-credential setting (`credential_heuristic`, #982) of the policy the case was
+  prepared under (of the current policy when a resume refuses before reaching dispatch), and
   carries `capacity_exceeded` for a size refusal (#1129). A timeout, an audit failure or a transport
   outcome is not closed: an owner's still-valid approval stays usable, and a proposal whose state
   cannot be read is left alone. Closing is best effort: if it fails, the proposal expires as before
