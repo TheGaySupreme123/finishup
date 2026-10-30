@@ -295,9 +295,9 @@ def test_fresh_catalog_and_bundle_initialize_at_current_schema_version(
     payload = _run_probe(installed, probe)
     assert payload == {
         "catalog_state": "current",
-        "catalog_version": 5,
+        "catalog_version": 7,
         "bundle_state": "current",
-        "bundle_version": 18,
+        "bundle_version": 19,
     }
 
 
@@ -317,7 +317,7 @@ def test_replaying_migrations_on_an_already_current_database_is_a_verified_noop(
         "}))\n"
     )
     payload = _run_probe(installed, probe)
-    assert payload == {"from_version": 5, "to_version": 5, "applied_versions": []}
+    assert payload == {"from_version": 7, "to_version": 7, "applied_versions": []}
 
 
 def test_uninitialized_database_reports_uninitialized_not_current(installed: _Installed) -> None:

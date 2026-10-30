@@ -19,6 +19,7 @@ from finishup.domain.write_scope import (
     finishup_tree_overlap,
     without_docs_scope,
 )
+from synthetic_paths import LINUX_HOME
 
 
 def _inside(path: str) -> bool:
@@ -194,9 +195,9 @@ def test_doc_extensions_under_test_or_data_dirs_count(path: str) -> None:
 @pytest.mark.parametrize(
     "workspace",
     [
-        "/home/u/repo/.claude/worktrees/feat",
-        "/home/u/.cursor/worktrees/repo/abc",
-        "/home/u/.codex/worktrees/abc/repo",
+        f"{LINUX_HOME}/u/repo/.claude/worktrees/feat",
+        f"{LINUX_HOME}/u/.cursor/worktrees/repo/abc",
+        f"{LINUX_HOME}/u/.codex/worktrees/abc/repo",
         "/srv/data/repo",
         "/work/tests/repo",
     ],
@@ -221,13 +222,15 @@ def test_an_absolute_doc_extension_without_a_root_is_an_ordinary_edit() -> None:
     )
     # A conventional name decides without a root, unless a directory on the whole path is data
     # (``/srv/data``): with no root to strip, a workspace there only loses the exemption.
-    assert classify_write_path("/home/u/repo/README.md", workspace=None, inside=None) == "docs"
+    assert (
+        classify_write_path(f"{LINUX_HOME}/u/repo/README.md", workspace=None, inside=None) == "docs"
+    )
     assert (
         classify_write_path("/srv/data/repo/README.md", workspace=None, inside=None) == "workspace"
     )
     assert classify_write_path("../data/guide.md", workspace="/app", inside=None) == "workspace"
-    assert _file_change_write_scope({"/home/u/repo/docs/a.md": {}}) is None
-    assert _file_change_write_scope({"/home/u/repo/README.md": {}}) == "docs"
+    assert _file_change_write_scope({f"{LINUX_HOME}/u/repo/docs/a.md": {}}) is None
+    assert _file_change_write_scope({f"{LINUX_HOME}/u/repo/README.md": {}}) == "docs"
 
 
 @pytest.mark.parametrize(

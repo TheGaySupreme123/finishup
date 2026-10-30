@@ -416,14 +416,14 @@ def test_quoted_ampersand_is_not_background() -> None:
 @pytest.mark.parametrize(
     ("command", "names"),
     [
-        ("/home/u/.venv/bin/finishup status --json", {"finishup"}),
+        ("/opt/u/.venv/bin/finishup status --json", {"finishup"}),
         ("./yoetz status", {"yoetz"}),
         ("bash -lc '/opt/x/bin/finishup status'", {"finishup"}),
         # A path segment or a bare name never triggers the install-record proof (#1104 round 1).
         ("cat src/finishup/kernel/x.py", set[str]()),
         ("pytest -q src/finishup/kernel/y.py", set[str]()),
         ("finishup status", set[str]()),
-        ("ls /home/user/yoetzz", set[str]()),
+        ("ls /srv/user/yoetzz", set[str]()),
     ],
 )
 def test_only_a_path_ending_in_the_launcher_name_gates_the_proof(

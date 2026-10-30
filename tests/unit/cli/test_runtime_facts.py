@@ -13,6 +13,9 @@ from builders.shell_write_vectors import VECTORS, ShellWriteVector
 from finishup.cli import runtime_facts
 from finishup.cli.runtime_facts import install_target_class, runtime_structural_facts
 from finishup.protocol.canonical import JsonValue
+from synthetic_paths import LINUX_HOME
+
+_SOMEONE_HOME = f"{LINUX_HOME}/someone"
 
 
 def _executable(path: Path) -> Path:
@@ -515,7 +518,7 @@ def test_process_temp_dir_is_scratch(monkeypatch: pytest.MonkeyPatch) -> None:
     # A host TMPDIR outside every fixed temporary root (a cluster scratch volume, say).
     scratch = "/srv/scratch-tmp"
     monkeypatch.setenv("TMPDIR", scratch + "/")
-    monkeypatch.setenv("HOME", "/home/someone")
+    monkeypatch.setenv("HOME", _SOMEONE_HOME)
     workspace = Path("/srv/work")
     assert "write_scope" not in _facts(
         "Bash", {"command": f"make > {scratch}/build.log"}, workspace
@@ -525,14 +528,14 @@ def test_process_temp_dir_is_scratch(monkeypatch: pytest.MonkeyPatch) -> None:
     }
 
 
-@pytest.mark.parametrize("tmpdir", ["/", "/home", "/home/someone"])
+@pytest.mark.parametrize("tmpdir", ["/", LINUX_HOME, _SOMEONE_HOME])
 def test_a_temp_dir_that_contains_home_is_never_trusted(
     tmpdir: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setenv("TMPDIR", tmpdir)
-    monkeypatch.setenv("HOME", "/home/someone")
+    monkeypatch.setenv("HOME", _SOMEONE_HOME)
     workspace = Path("/srv/work")
-    assert _facts("Write", {"file_path": "/home/someone/notes.txt"}, workspace) == {
+    assert _facts("Write", {"file_path": f"{_SOMEONE_HOME}/notes.txt"}, workspace) == {
         "write_scope": "outside_workspace"
     }
 
@@ -548,7 +551,7 @@ def test_temp_roots_never_probe_the_filesystem(monkeypatch: pytest.MonkeyPatch) 
     monkeypatch.setattr(tempfile, "gettempdir", unusable)
     for name in ("TMPDIR", "TEMP", "TMP"):
         monkeypatch.delenv(name, raising=False)
-    monkeypatch.setenv("HOME", "/home/someone")
+    monkeypatch.setenv("HOME", _SOMEONE_HOME)
     workspace = Path("/srv/work")
     facts = _facts("Bash", {"command": "make > /srv/elsewhere/build.log"}, workspace)
     assert facts["write_scope"] == "outside_workspace"
@@ -560,7 +563,7 @@ def test_a_temp_dir_that_is_or_contains_the_workspace_is_never_trusted(
     tmpdir: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setenv("TMPDIR", tmpdir)
-    monkeypatch.setenv("HOME", "/home/someone")
+    monkeypatch.setenv("HOME", _SOMEONE_HOME)
     workspace = Path("/srv/work")
     assert _facts("Write", {"file_path": "/srv/other/out.txt"}, workspace) == {
         "write_scope": "outside_workspace"
@@ -598,7 +601,7 @@ def test_a_temp_dir_not_named_as_temporary_space_is_never_trusted(
     """A TMPDIR pointed at a deliverable directory (`/results`) must not hide writes there."""
 
     monkeypatch.setenv("TMPDIR", "/results")
-    monkeypatch.setenv("HOME", "/home/someone")
+    monkeypatch.setenv("HOME", _SOMEONE_HOME)
     workspace = Path("/srv/work")
     assert _facts("Write", {"file_path": "/results/report.json"}, workspace) == {
         "write_scope": "outside_workspace"
@@ -610,7 +613,7 @@ def test_a_temp_dir_not_named_as_temporary_space_is_never_trusted(
     ["/mnt/c/Users/dev/AppData/Local/Temp/run.log", "/mnt/d/Windows/Temp/x.txt"],
 )
 def test_wsl_windows_temp_is_scratch(target: str, monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("HOME", "/home/someone")
+    monkeypatch.setenv("HOME", _SOMEONE_HOME)
     assert _facts("Write", {"file_path": target}, Path("/srv/work")) == {"write_scope": "scratch"}
 
 

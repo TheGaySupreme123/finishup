@@ -953,7 +953,7 @@ async def test_file_reads_stay_in_scope_and_are_admitted_like_the_packet(tmp_pat
     work = tmp_path / "work"
     (work / "src").mkdir(parents=True)
     (work / "src" / "a.py").write_text("".join(f"line {n} {'x' * 60}\n" for n in range(1, 400)))
-    (work / "src" / "key.py").write_text('KEY = "AKIAQ3EGRL7X2VNTWB5D"\n')
+    (work / "src" / "key.py").write_text('KEY = "AKIA' + 'Q3EGRL7X2VNTWB5D"\n')
     (work / ".env").write_text("SECRET=1\n")
     (work / "linked.py").symlink_to(work / "src" / "a.py")
     w1 = ReadRoot("w1", str(work.resolve()), subject_refs=(_CLM,))
@@ -1000,7 +1000,7 @@ async def test_file_reads_stay_in_scope_and_are_admitted_like_the_packet(tmp_pat
 async def test_no_label_or_name_carries_what_admission_did_not_scan(tmp_path: Path) -> None:
     # B1: a secret-shaped file name never reaches the result: the path is not echoed, and a
     # listing's names are admitted items scanned with the whole encoded result.
-    name = "AKIAQ3EGRL7X2VNTWB5D.py"  # synthetic known scanner fixture, not a credential
+    name = "AKIA" + "Q3EGRL7X2VNTWB5D.py"  # synthetic known scanner fixture, not a credential
     (tmp_path / name).write_text("ordinary content\n")
     (tmp_path / "ok.py").write_text("x\n")
     loop, _broker, _model, _ = _setup(

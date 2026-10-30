@@ -57,7 +57,7 @@ def test_an_early_end_and_an_unsent_read_are_named() -> None:
 @pytest.mark.parametrize(
     "change",
     [
-        {"root": "/home/user/project"},
+        {"root": "/srv/user/project"},
         {"source": "src/private_name.py"},
         {"status": "bogus"},
         {"result_bytes": 9000},

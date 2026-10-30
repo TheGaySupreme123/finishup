@@ -1550,13 +1550,13 @@ no way to admit a root, no unattended consent and no policy field.
   device and inode. The system directories and the home directory's private trees and files
   are refused by spelling (case-folded too) and by identity (PR #1221 review): each ancestor of
   the path is examined without following a link and compared by device and inode with the system
-  directories and with the home directory, so `/ETC/…` or `/Users/ALICE/Library/…` on a
-  case-insensitive volume, or a bind mount, is refused like the canonical spelling; a directory
-  beneath home whose name folds to a private tree's is judged as that tree when both spellings
-  are the same directory. An ancestor that cannot be examined refuses the path. A
-  top-level link that root owns (`/tmp` and `/var` on macOS) is replaced by its target; no other
-  link is followed. Only UTF-8 text without NUL, at most 1 MiB, is read; the workspace's ignore
-  rules do not apply to a file the agent declared.
+  directories and with the home directory, so `/ETC/…` or `/Users/<NAME>/Library/…` (home
+  `/Users/<name>`) on a case-insensitive volume, or a bind mount, is refused like the canonical
+  spelling; a directory beneath home whose name folds to a private tree's is judged as that tree
+  when both spellings are the same directory. An ancestor that cannot be examined refuses the
+  path. A top-level link that root owns (`/tmp` and `/var` on macOS) is replaced by its target;
+  no other link is followed. Only UTF-8 text without NUL, at most 1 MiB, is read; the workspace's
+  ignore rules do not apply to a file the agent declared.
 - **Hash pin.** Every read re-reads the file and is refused (`declared_test_changed`) unless its
   bytes still match the listed digest; nothing of a changed file is sent.
 - **Scanning.** The span passes the same admission as any reviewer read: classification,

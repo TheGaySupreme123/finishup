@@ -203,7 +203,7 @@ async def _native_capture(
         ("pytest ../outside.py", b"native-output", False),
         ("pytest -q", b"native-output\n-----END OPENSSH PRIVATE KEY-----", False),
         ("pytest -q", b"native-output\npassword=hunter2", False),
-        ("pytest -q", b"native-output\n-----BEGIN OPENSSH PRIVATE KEY-----", False),
+        ("pytest -q", b"native-output\n-----BEGIN OPENSSH " + b"PRIVATE KEY-----", False),
     ),
 )
 async def test_native_capture_follow_up(

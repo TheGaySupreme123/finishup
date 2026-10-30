@@ -149,7 +149,9 @@ def test_create_refuses_existing_marked_nonempty_or_overlong_roots(
 
     with pytest.raises(InstanceIdentityError) as missing_parent:
         create_instance(
-            root=cell / "no-such-parent" / "state",
+            # Kept short: the root-length rule (socket paths) runs first, and a CI home is
+            # deeper than a developer's.
+            root=cell / "gone" / "state",
             lifecycle="persistent",
             now=_NOW,
             runtime_prefix=prefix,

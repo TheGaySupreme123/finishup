@@ -59,6 +59,7 @@ from finishup.kernel.deterministic_checks import (
 from finishup.ports.semantic import SemanticCase
 from finishup.protocol.canonical import canonical_encode
 from finishup.protocol.models import ReviewInputManifestModel
+from synthetic_paths import LINUX_HOME
 
 _CRITERION = "Every prediction must be within 20 mm."
 _DIGEST = "sha256:" + "d" * 64
@@ -340,7 +341,7 @@ def test_candidates_put_task_criteria_first_and_name_each_file_once() -> None:
         ("/tmp/test_x.py", "/tmp/test_x.py"),
         ("../outside.py", None),
         ("tests/./x.py", None),
-        ("/home/u/.ssh/id_test.py", None),
+        (f"{LINUX_HOME}/u/.ssh/id_test.py", None),
         ("/tmp/.hidden/test.py", None),
         ("/tmp/credentials.json", None),
         ("/etc/passwd", None),

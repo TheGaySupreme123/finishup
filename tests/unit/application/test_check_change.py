@@ -18,6 +18,7 @@ from finishup.ports.change_capture import (
     CheckChangeCapture,
     CheckWorkspaceSource,
 )
+from synthetic_paths import LINUX_HOME
 
 _redacted = getattr(check_change_module, "_redacted")
 
@@ -630,7 +631,7 @@ _ON_DISK: Final = {
     "/shared/linked": ("link", _STARTED - 60),
     "/root/model.pt": ("file", _STARTED + 5),
     "/output/answer.txt": ("file", _STARTED + 5),
-    "/home/user/venv": ("dir", _STARTED + 5),
+    f"{LINUX_HOME}/user/venv": ("dir", _STARTED + 5),
     "/opt/conda/bin/python": ("file", _STARTED - 60),
     "/opt/conda/lib/python3.12/site-packages/numpy": ("dir", _STARTED - 60),
     "/tmp/result.json": ("file", _STARTED - 60),
@@ -666,7 +667,7 @@ _ON_DISK: Final = {
         # Nothing on disk there: a route, not an input (review r1-1, surfaces-r1-3, goal-r1-1).
         (("/api/v1/users", "/api/orders", "/v1/chat/completions", "/models/x.pkl"), (), (), False),
         # Written during the task: the agent's output, not an input.
-        (("/root/model.pt", "/output/answer.txt", "/home/user/venv"), (), (), False),
+        (("/root/model.pt", "/output/answer.txt", f"{LINUX_HOME}/user/venv"), (), (), False),
         # Scratch, log, tool and package trees; a final link; system trees.
         (("/tmp/result.json", "/var/log/app/server.log"), (), (), False),
         (("/opt/conda/bin/python", "/opt/conda/lib/python3.12/site-packages/numpy"), (), (), False),
@@ -674,7 +675,7 @@ _ON_DISK: Final = {
         (("/var/run/app.sock", "/proc/1/status", "/run/user/notes.md"), (), (), False),
         (("/shared/out.json",), (), ("/shared/out.json",), False),
         (("/usr/bin/python3", "/lib/x.so"), (), (), False),
-        (("/etc/app/config.yaml", "/home/me/.ssh/notes"), (), (), False),
+        (("/etc/app/config.yaml", f"{LINUX_HOME}/me/.ssh/notes"), (), (), False),
         (("/shared/secrets.pem",), (), (), False),
         (("/app/src/x.py", "/app/My Docs/spec.md", "/APP/other.md"), (), (), False),
         (("/tmp", "/opt"), (), (), False),
