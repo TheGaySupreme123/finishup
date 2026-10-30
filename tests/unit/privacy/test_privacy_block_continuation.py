@@ -9,12 +9,16 @@ with no retry and no local-only downgrade presented as review.
 
 from __future__ import annotations
 
-from typing import cast
+from types import SimpleNamespace
+from typing import Any, cast
 
 import pytest
 
 from finishup.cli.render import render_semantic_outcome_recovery_lines
-from finishup.domain.receipts import privacy_block_sentence
+from finishup.domain.receipts import (
+    _semantic_recovery_lines,  # pyright: ignore[reportPrivateUsage]
+    privacy_block_sentence,
+)
 from finishup.kernel.closure_class import UNDELIVERABLE_SEMANTIC_STATUSES
 from finishup.mcp.summaries import (
     _continuation_variants,  # pyright: ignore[reportPrivateUsage]
@@ -108,3 +112,25 @@ def test_the_blocked_state_stays_undeliverable_never_a_local_only_success() -> N
 
     assert SemanticStatus.BLOCKED_FORBIDDEN_DATA in UNDELIVERABLE_SEMANTIC_STATUSES
     assert SemanticStatus.NOT_REQUESTED not in UNDELIVERABLE_SEMANTIC_STATUSES
+
+
+@pytest.mark.parametrize(
+    ("item_id", "token"),
+    (
+        ("task-input-03", "semantic_privacy_blocked_unrecoverable"),
+        ("claim-clm_10000000-0000-4000-8000-000000000001", "semantic_privacy_blocked"),
+    ),
+)
+def test_the_human_receipt_continuation_follows_the_blocked_item(item_id: str, token: str) -> None:
+    """The receipt's recovery lines agree with its sentence about who can clear the block."""
+
+    document = SimpleNamespace(
+        semantic_provenance=SimpleNamespace(
+            status=SemanticStatus.BLOCKED_FORBIDDEN_DATA,
+            reason=SemanticReason.NEVER_SEND_DETECTED,
+            failure_class=None,
+        ),
+        semantic_redacted_values=(_blocked(item_id),),
+    )
+    lines = _semantic_recovery_lines(cast(Any, document))
+    assert lines[0] == f"Continuation: {token}"
