@@ -170,29 +170,53 @@ def _index(*records: SimpleNamespace) -> CorrectnessAdvisoryIndex:
     return correctness_advisory_index(cast(tuple[LedgerRecord, ...], records))
 
 
-def test_a_withheld_decision_is_disclosed_as_one_that_may_answer_a_note() -> None:
-    """#1162 review: a withheld payload hides whether the decision is a response at all.
+def test_a_withheld_response_answers_the_only_note_of_its_check() -> None:
+    """#1190 (owner decision B): a withheld advisory response is recognised from its envelope.
 
-    A review-mode switch whose only parent is the check has the same envelope as an advisory
-    response once its payload is withheld, so it is never attached to a note (never shown as that
-    note's response) and never called silence: it is counted as one that may answer a note.
+    ``publish_work`` refuses a review-mode switch whose only parent is a check, so a withheld
+    ``decision_recorded`` 1.1.0 whose sole parent is a noted check is an advisory response. On a
+    check with one note it answers that note; its disposition and reason stay unreadable.
+    """
+
+    from finishup.kernel.correctness_advisories import (
+        advisory_closing_text,
+        advisory_counts,
+        advisory_tally_sentence,
+        unanswered_material_notes,
+    )
+
+    single = _index(_noted_check(1), _withheld(9))
+    row = single.rows[0]
+    assert row.response is None and row.response_unavailable and row.answered
+    assert row.disposition == "response_unavailable"
+    assert single.unmatched_withheld == 0
+    assert dict(advisory_counts(single).items()) == {
+        "total": "1",
+        "no_recorded_response": "0",
+        "withheld_may_answer": "0",
+    }
+    assert advisory_closing_text(single.rows).startswith(
+        "Earlier correctness advisories with no recorded response: 0"
+    )
+    assert unanswered_material_notes(single) == ()
+    assert advisory_tally_sentence(single, ()) == (
+        " Reviewer notes: 1; not answered: 0; answered: 1 answered, response withheld."
+    )
+    # A later readable answer still replaces it (the agent's latest account).
+    later = _index(_noted_check(1), _withheld(9), _answer(10, 1, "kept_choice"))
+    assert later.rows[0].disposition == "kept_choice"
+
+
+def test_a_withheld_decision_is_disclosed_as_one_that_may_answer_a_note() -> None:
+    """#1162 review: on a check with several notes, the withheld payload hides which one.
+
+    The target ordinal travels in the payload, so the withheld response is never attached to a
+    note (never shown as that note's response) and never called silence: it is counted as one
+    that may answer a note.
     """
 
     from finishup.domain.correctness_advisories import validate_advisory_counts
     from finishup.kernel.correctness_advisories import advisory_closing_text, advisory_counts
-
-    single = _index(_noted_check(1), _withheld(9))
-    assert single.rows[0].response is None
-    assert single.rows[0].disposition == "no recorded response"
-    assert single.unmatched_withheld == 1
-    assert dict(advisory_counts(single).items()) == {
-        "total": "1",
-        "no_recorded_response": "1",
-        "withheld_may_answer": "1",
-    }
-    summary = advisory_summary(single.rows, unmatched_withheld=single.unmatched_withheld)
-    assert "no recorded response: 1" in summary
-    assert "Withheld decisions that may answer a note: 1" in summary
 
     index = _index(_noted_check(3), _answer(7, 1), _withheld(8))
     assert [row.disposition for row in index.rows] == [
@@ -215,9 +239,10 @@ def test_a_withheld_decision_is_disclosed_as_one_that_may_answer_a_note() -> Non
     closing = advisory_closing_text(index.rows)
     assert f"no recorded response: 2, newest {_CHECK_EVENT}:3 (routine correctness note" in closing
     assert f"; {_CHECK_EVENT}:2 (routine correctness note" in closing
-    # #1162 tracked advice: the owner-approved wording; a response stays optional.
-    assert "Non-blocking. For each material concern: run a proportionate check" in closing
-    assert "Recording a response is optional" in closing
+    # #1240 D5: non-blocking, but each material note takes one answer; never "optional".
+    assert "Non-blocking, but answer each material one once (respond finding_id=<id>)" in closing
+    assert "kept_choice (checked, kept your choice)" in closing
+    assert "optional" not in closing
     assert f"{_CHECK_EVENT}:1" not in closing
     # More withheld decisions than unanswered notes never count past those notes.
     capped = _index(_noted_check(2), _answer(7, 1), _withheld(8), _withheld(9), _withheld(10))
@@ -377,6 +402,178 @@ def test_addressed_advice_keeps_evidence_links_when_export_withholds_prose(profi
     assert "addressed (agent-reported, linked evidence)" in text and evidence in text
     if profile == "full_local":
         assert "Private concern prose" in text and "Private response prose" in text
+    elif profile == "default_local_export":
+        # #1240 D4: the local export shows the agent's own reason as one bounded line; the
+        # reviewer's concern stays withheld.
+        assert "Private concern prose" not in text
+        assert "\nAgent reason (self-reported, one line): Private response prose " in text
+        assert "[advisory concern prose withheld by receipt profile]" in text
     else:
         assert "Private concern prose" not in text and "Private response prose" not in text
         assert "withheld" in text
+
+
+def test_a_local_receipt_bounds_the_agent_reason_to_one_line() -> None:
+    from tests.unit.kernel.test_receipt_builder import (
+        _check,  # pyright: ignore[reportPrivateUsage]
+        _coverage,  # pyright: ignore[reportPrivateUsage]
+    )
+
+    from finishup.domain.correctness_advisories import ADVISORY_RESPONSE_STATEMENT
+    from finishup.domain.events import DecisionRecordedPayload
+    from finishup.domain.findings import CheckVerdict
+    from finishup.domain.freshness_question import MAX_AGENT_REASON_BYTES
+    from finishup.domain.receipts import ReceiptRedactionProfile
+    from finishup.domain.values import actor_id
+    from finishup.kernel.correctness_advisories import CorrectnessAdvisory, advisory_item
+
+    target = f"{_CHECK_EVENT}:1"
+    checked = cast(
+        LedgerRecord,
+        SimpleNamespace(
+            payload=_check(CheckVerdict.NO_ISSUE_DETECTED, _coverage()),
+            event_id=_CHECK_EVENT,
+            session_id=_SESSION,
+        ),
+    )
+    response = cast(
+        LedgerRecord,
+        SimpleNamespace(
+            event_id="evt_00000000-0000-4000-8000-000000000003",
+            payload=DecisionRecordedPayload(
+                statement=ADVISORY_RESPONSE_STATEMENT,
+                rationale="Kept the pinned tolerance:\nthe spec fixes it.\n" + "x" * 400,
+                authority=actor_id("harness:test"),
+                advisory_response=JsonObject(
+                    {"advisory_id": target, "disposition": "kept_choice", "evidence_refs": ()}
+                ),
+            ),
+        ),
+    )
+    row = CorrectnessAdvisory(
+        target,
+        checked,
+        JsonObject({"summary": "Concern", "detail": "Detail", "subject_refs": ()}),
+        response,
+    )
+    text = advisory_item(row, ReceiptRedactionProfile.DEFAULT_LOCAL_EXPORT)
+    assert "checked, kept my choice (agent-reported, with reason)" in text
+    line = next(part for part in text.split("\n") if part.startswith("Agent reason (self-reported"))
+    reason = line.removeprefix("Agent reason (self-reported, one line): ").removesuffix(
+        " [advisory concern prose withheld by receipt profile]"
+    )
+    assert reason.startswith("Kept the pinned tolerance: the spec fixes it. xxx")
+    assert reason.endswith("...") and len(reason.encode("utf-8")) <= MAX_AGENT_REASON_BYTES
+    # A withheld response answers the note but has no readable reason to show.
+    withheld = replace(row, response=None, response_unavailable=True)
+    text = advisory_item(withheld, ReceiptRedactionProfile.DEFAULT_LOCAL_EXPORT)
+    assert "answered (response withheld; disposition and reason unreadable)" in text
+    assert "Agent reason" not in text
+
+
+@pytest.mark.parametrize(
+    "withheld",
+    (
+        _withheld(8, version="1.0.0"),
+        _withheld(8, parents=()),
+        _withheld(8, parents=(_CHECK_EVENT, "evt_00000000-0000-4000-8000-000000000002")),
+        _withheld(8, parents=("evt_00000000-0000-4000-8000-000000000002",)),
+    ),
+)
+def test_a_withheld_decision_of_another_shape_never_answers_a_single_note(
+    withheld: SimpleNamespace,
+) -> None:
+    index = _index(_noted_check(1), withheld)
+    assert index.rows[0].disposition == "no recorded response"
+    assert not index.rows[0].answered
+
+
+def test_kept_choice_is_an_advisory_answer_with_a_reason_and_no_evidence() -> None:
+    from finishup.domain.correctness_advisories import ADVISORY_DISPOSITIONS
+    from finishup.kernel.correctness_advisories import (
+        advisory_tally_sentence,
+        unanswered_material_notes,
+    )
+
+    assert ADVISORY_DISPOSITIONS == {"addressed", "kept_choice", "declined"}
+    validate_advisory_response(
+        JsonObject(
+            {"advisory_id": f"{_CHECK_EVENT}:1", "disposition": "kept_choice", "evidence_refs": ()}
+        )
+    )
+    with pytest.raises(ProtocolValueError):
+        validate_advisory_response(
+            JsonObject(
+                {"advisory_id": f"{_CHECK_EVENT}:1", "disposition": "kept", "evidence_refs": ()}
+            )
+        )
+    index = _index(_noted_check(3), _answer(7, 1, "kept_choice"), _answer(8, 2, "declined"))
+    assert [row.disposition for row in index.rows] == [
+        "kept_choice",
+        "declined",
+        "no recorded response",
+    ]
+    # Routine notes are never material (D1): only the strongest remaining check is.
+    assert unanswered_material_notes(index) == ()
+    assert advisory_tally_sentence(index, ()) == (
+        " Reviewer notes: 3; not answered: 1; answered: 1 declined, 1 kept my choice."
+    )
+
+
+def test_only_the_strongest_remaining_check_note_is_material() -> None:
+    from finishup.kernel.correctness_advisories import (
+        advisory_tally_sentence,
+        unanswered_material_notes,
+    )
+
+    check = _noted_check(3)
+    payload = check.payload
+    origins = (None, "strongest_remaining_check", "verified_not_supported")
+    check.payload = replace(
+        payload,
+        correctness_advisories=tuple(
+            JsonObject({**dict(row.items()), "origin": origin}) if origin is not None else row
+            for row, origin in zip(payload.correctness_advisories, origins, strict=True)
+        ),
+    )
+    index = _index(check)
+    assert unanswered_material_notes(index) == (f"{_CHECK_EVENT}:2",)
+    decision = "fnd_00000000-0000-4000-8000-000000000004"
+    # The material count names only notes; an open decision choice is counted on its own, never
+    # inside the notes' "not answered" (a choice is a finding, not a note).
+    assert advisory_tally_sentence(index, (f"{_CHECK_EVENT}:2", decision)) == (
+        " Reviewer notes: 3; not answered: 3 (1 material). Decision choices not answered: 1."
+    )
+    assert unanswered_material_notes(_index(check, _answer(7, 2, "kept_choice"))) == ()
+    assert advisory_tally_sentence(_index(), ()) == ""
+    # A task with open decision choices and no notes never reads "not answered: 0 (2 material".
+    assert advisory_tally_sentence(_index(), (decision, decision.replace("4", "5"))) == (
+        " Decision choices not answered: 2."
+    )
+
+
+def test_no_shipped_text_calls_answering_advice_optional() -> None:
+    """#1240 D5: guidance and the usage pages never call answering a note or a choice optional.
+
+    An unanswered material note or ``decision_needed`` choice keeps the receipt from reading
+    clean, so a sentence that says its answer is optional sends the agent to the TB4 failure.
+    """
+
+    import re
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parents[3]
+    offending: list[str] = []
+    for page in (*sorted((root / "guidance").glob("*.md")), *sorted(root.glob("docs/usage/*.md"))):
+        text = " ".join(page.read_text(encoding="utf-8").split())
+        for sentence in re.split(r"(?<=[.;:|])\s+", text):
+            # A backticked `optional` is the review-mode token, never an answer's standing.
+            if re.search(r"(?<!`)\boptional(?:ly)?\b(?!`)", sentence, re.IGNORECASE) and re.search(
+                r"decision_needed|advisory choice|\bnotes?\b|\badvice\b|advisor|\brespon(?:d|se)\b"
+                r"|decision",
+                sentence,
+                re.IGNORECASE,
+            ):
+                offending.append(f"{page.relative_to(root)}: {sentence[:160]}")
+    # The one unrelated match: an optional package upgrade beside "notes that a check could not".
+    assert [item for item in offending if "reports the package line as optional" not in item] == []

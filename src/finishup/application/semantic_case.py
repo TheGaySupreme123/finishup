@@ -68,6 +68,7 @@ from finishup.domain.events import (
     encode_payload,
 )
 from finishup.domain.findings import Finding, FindingKind, FindingOrigin, ResponseDisposition
+from finishup.domain.freshness_question import is_freshness_question
 from finishup.domain.observation import (
     ObservationContentKind,
     ObservationContentManifest,
@@ -182,6 +183,8 @@ from finishup.kernel.task_facts import (
     disclosure_declarations,
     effective_obligations,
     open_effective_obligations,
+    proxy_decisions,
+    verification_limits_without_proxy,
 )
 from finishup.kernel.test_edit_visibility import check_change_header_entries, check_change_sections
 from finishup.kernel.verification_capture import command_is_declared_verification
@@ -283,6 +286,7 @@ __all__ = [
     "REVIEW_PACKET_ITEM_ID",
     "REVIEW_PHASE_QUESTIONS",
     "WITHHELD_OUTPUT_QUESTION",
+    "PROXY_REVIEW_QUESTION",
     "SEMANTIC_REVIEW_PURPOSE",
     "assemble_filtered_review_packet",
     "build_semantic_case",
@@ -372,6 +376,8 @@ MAX_PRIOR_FINDINGS: Final = 16
 MAX_PRIOR_FINDING_SECTION_BYTES: Final = 96 * 1024
 # Answers to local findings carried beside them (issue #976); they share the section's bounds.
 MAX_LOCAL_FINDING_ANSWERS: Final = 4
+# #1241 D9: answers to the verification rerun question, counted apart from other answers.
+MAX_FRESHNESS_ANSWERS: Final = 4
 # Refs listed per structural row; the full counts travel beside them.
 _MAX_PRIOR_FINDING_LISTED_REFS: Final = MAX_PRIOR_FINDING_LISTED_REFS
 _CANONICAL_PACKS: Final = (
@@ -391,6 +397,15 @@ WITHHELD_OUTPUT_QUESTION: Final = (
     "Does any repair since the last review withhold or refuse a requested output for some inputs "
     "(a build that refuses affected apps, an empty-file fallback)? Challenge each, quoting the "
     "criterion it fails."
+)
+# #1246 (D17): asked only when an obligation the packet carries discloses a verification limit
+# with no recorded proxy decision. The reviewer may ask for one obtainable proxy measurement; the
+# #1024 rule stays (never the hidden reference itself), and a missing proxy is never unmet work.
+PROXY_REVIEW_QUESTION: Final = (
+    "A verification_limit in agent-disclosures with no proxy stands as a limit. If it is a budget "
+    "or score against a reference the agent cannot see and the workspace allows a stand-in (a "
+    "baseline run, held-out data), you may ask once for that proxy and its measured ratio "
+    "(provide_evidence); never for the hidden reference, and a missing proxy is never unmet work."
 )
 # The question set leads with the review phase, taken from the same pure selector that picks the
 # check's budget profile, so the reviewer judges in-progress work as in progress and a completion
@@ -467,7 +482,8 @@ FRESHNESS_REVIEW_QUESTION: Final = (
     "Verification freshness is advisory: weigh each recorded verification against the changes "
     "after it and ask the agent whether a rerun is needed (it reruns or answers via respond with a "
     "reason); never block or demand a rerun on staleness alone. A failed or missing required check "
-    "is separate."
+    "is separate. For each freshness-answer row, say in freshness_verdicts whether you agree no "
+    "rerun is needed."
 )
 _REVIEW_QUESTIONS: Final = (
     "What did you verify against the task and the change, how (the code path, output or recorded "
@@ -560,7 +576,15 @@ ACKNOWLEDGED_REVIEW_INSTRUCTION: Final = (
     " item obligation-<obligation id>, then verify the acknowledgement against the task statement"
     " and the work: challenge it (one finding citing the obligation id, naming the work the agent"
     " can still do) when the task statement requires that work and the readable material shows"
-    " the agent can do it, or when the agent did not attempt the obvious prerequisite. A genuine"
+    " the agent can do it, or when the agent did not attempt the obvious prerequisite."
+    # #1245 (D16, TB4 atrx-vep-crispr): every review agreed that withholding the report was right
+    # because two supplied references conflicted; the inputs still supported one reading.
+    " Conflicting inputs are not inability: challenge a withheld output and ask for a best-effort"
+    " output under the strongest reading the task permits, with the assumption recorded (a report"
+    " withheld because two supplied references disagree)."
+    " Your agreeing that a conflict exists is not permission to withhold."
+    " When the inputs still permit a reading, only a missing authority, a missing credential or a"
+    " destructive change the task does not permit excuses withholding the output. A genuine"
     " blocker outside the agent's control (authority, consent, a credential, a hidden evaluator"
     " or reference it cannot obtain, an answer only the user has) that none of this contradicts"
     " stands as a disclosed limitation: do not challenge it, and where you want the limit stated"
@@ -572,7 +596,24 @@ ACKNOWLEDGED_REVIEW_INSTRUCTION: Final = (
 _MAX_ACKNOWLEDGED_LISTED: Final = 8
 
 
-def _acknowledged_question(acknowledged: tuple[str, ...]) -> str:
+# #1245: an acknowledged obligation whose row the packet does not carry is counted, never named,
+# so the question cites only items the reviewer was sent.
+_ACKNOWLEDGED_NOT_CARRIED_TEXT: Final = (
+    " acknowledged as not done {verb} not in this packet: do not quote or judge {pronoun};"
+    " state that limit in review_summary."
+)
+
+
+def _acknowledged_not_carried(count: int, *, more: bool) -> str:
+    noun = ("more" if more else "obligation") + ("" if count == 1 or more else "s")
+    return f"{count} {noun}" + _ACKNOWLEDGED_NOT_CARRIED_TEXT.format(
+        verb="is" if count == 1 else "are", pronoun="it" if count == 1 else "them"
+    )
+
+
+def _acknowledged_question(acknowledged: tuple[str, ...], not_carried: int = 0) -> str:
+    if not acknowledged:
+        return _acknowledged_not_carried(not_carried, more=False)
     listed = ", ".join(acknowledged[:_MAX_ACKNOWLEDGED_LISTED])
     hidden = len(acknowledged) - _MAX_ACKNOWLEDGED_LISTED
     return (
@@ -580,15 +621,17 @@ def _acknowledged_question(acknowledged: tuple[str, ...]) -> str:
         + (f" (+{hidden} more)" if hidden > 0 else "")
         + ". "
         + ACKNOWLEDGED_REVIEW_INSTRUCTION
+        + (" " + _acknowledged_not_carried(not_carried, more=True) if not_carried > 0 else "")
     )
 
 
 def _blocker_question(
     blockers: tuple[tuple[str, str, tuple[str, ...]], ...],
     acknowledged: tuple[str, ...] = (),
+    acknowledged_not_carried: int = 0,
 ) -> str:
     if not blockers:
-        return _acknowledged_question(acknowledged)
+        return _acknowledged_question(acknowledged, acknowledged_not_carried)
     rows: list[str] = []
     used = 0
     for decision, kind, obligations in blockers[:MAX_REVIEWED_BLOCKERS]:
@@ -607,7 +650,11 @@ def _blocker_question(
         + (f" (+{more} more blocker decisions)" if more > 0 else "")
         + ". "
         + BLOCKER_REVIEW_INSTRUCTION
-        + (" " + _acknowledged_question(acknowledged) if acknowledged else "")
+        + (
+            " " + _acknowledged_question(acknowledged, acknowledged_not_carried)
+            if acknowledged or acknowledged_not_carried > 0
+            else ""
+        )
     )
 
 
@@ -616,12 +663,17 @@ def review_question_set(
     blockers: tuple[tuple[str, str, tuple[str, ...]], ...] = (),
     acknowledged: tuple[str, ...] = (),
     *,
+    acknowledged_not_carried: int = 0,
     freshness: bool = False,
     test_manifests: bool = False,
     linked_verification: bool = False,
     prior_review: bool = False,
+    proxy: bool = False,
 ) -> tuple[str, ...]:
     """Return the closed question set for one review phase.
+
+    ``acknowledged`` names only the acknowledged obligations whose rows the packet carries;
+    ``acknowledged_not_carried`` counts the others, which the question never names (#1245).
 
     ``prior_review`` (``repair_review_asked``, #975) adds the withheld-output question to the
     final phase only, before the test-quality question.
@@ -632,12 +684,14 @@ def review_question_set(
     ``test_manifests`` (the packet carries the coverage index) or ``linked_verification`` (an
     obligation row in the packet links a command result or observed verification, #1145) appends
     the test-quality question, last, with the manifest rule only when the index is carried.
+    ``proxy`` (#1246) adds the proxy question to the final phase only, before the test-quality
+    question, when a carried obligation discloses a verification limit with no proxy decision.
     """
 
     parsed = parse_semantic_budget_profile(phase)
     extra = (
-        (_blocker_question(blockers, acknowledged),)
-        if parsed == "final" and (blockers or acknowledged)
+        (_blocker_question(blockers, acknowledged, acknowledged_not_carried),)
+        if parsed == "final" and (blockers or acknowledged or acknowledged_not_carried > 0)
         else ()
     )
     return (
@@ -646,6 +700,7 @@ def review_question_set(
         *_REVIEW_QUESTIONS,
         *extra,
         *((WITHHELD_OUTPUT_QUESTION,) if parsed == "final" and prior_review else ()),
+        *((PROXY_REVIEW_QUESTION,) if parsed == "final" and proxy else ()),
         *(
             (_test_quality_question(test_manifests=test_manifests),)
             if test_manifests or linked_verification
@@ -3280,22 +3335,33 @@ def _append_omission(
             continue
 
 
+# The agent-account sections the first capacity narrowing keeps unless nothing else fits (#1245,
+# owner decision D22): obligation and claim rows are small, and the closing questions (blockers,
+# acknowledgements) and the reviewer's own verified rows cite them.
+AGENT_ACCOUNT_SECTIONS: Final = ("obligations", "claims")
+
+
 def primary_material_selection(
-    selection: ReviewSelectionPolicy, *, keep_timeline: bool = False
+    selection: ReviewSelectionPolicy,
+    *,
+    keep_timeline: bool = False,
+    keep_agent_account: bool = True,
 ) -> ReviewSelectionPolicy:
     """Narrow only narrative, preserving the approved primary-material recipe.
 
     This is a capacity reduction, never a new category or an authorization change. Decisions,
-    including blockers, and independent lineage authority remain available.
+    including blockers, and independent lineage authority remain available. Obligation and claim
+    rows are kept (#1245, D22); ``keep_agent_account=False`` is the last resort, used only when no
+    plan with them fits, and drops them as every narrowing did before.
     """
 
+    dropped = {"goal", *(() if keep_agent_account else AGENT_ACCOUNT_SECTIONS)}
     return replace(
         selection,
         sections=tuple(
             section
             for section in selection.sections
-            if section not in {"goal", "obligations", "claims"}
-            and (section != "timeline" or keep_timeline)
+            if section not in dropped and (section != "timeline" or keep_timeline)
         ),
         # The original finding, its alternative and the agent's answer are the question a
         # recheck must adjudicate. Capacity fallback never disables already-permitted prose.
@@ -3408,7 +3474,9 @@ def _fit_excerpts_within_case_bound(
     case before the channel-ceiling planner could narrow it. Only an over-bound case changes.
     Every cut is a ``not_selected`` omission with ``content_unselected``; protected primary material
     and independent structural authority cause typed refusal when they cannot fit. Returns the
-    number of excerpts dropped (narrative omissions do not inflate that diagnostic).
+    number of excerpts dropped (narrative omissions do not inflate that diagnostic). Obligation
+    and claim rows are not cut here: they yield last (#1245, D22), in
+    ``_fit_agent_account_within_case_bound``.
     """
 
     by_id = {item.item_id: item for item in items}
@@ -3419,36 +3487,16 @@ def _fit_excerpts_within_case_bound(
         return 0
     # Narrative yields before primary material, including at the pre-construction bound.
     # Keep special structural rows (lineage, missing-input requests, disclosures, deliverables).
-    narrative = sorted(
-        (
-            by_id[item_id]
-            for ids in narrative_lists
-            for item_id in ids
-            if item_id in fixed_item_ids
-            and item_id.startswith(("goal-", "obligation-", "claim-", "history-", "timeline-"))
-            and item_id not in {"history-window", "timeline-frontier"}
-            and not by_id[item_id].source_ref.startswith("frontier-")
-        ),
-        key=lambda item: (-item.content_bytes, item.item_id),
+    case_bytes, case_items = _drop_narrative_within_case_bound(
+        by_id,
+        ("goal-", "history-", "timeline-"),
+        case_bytes,
+        case_items,
+        fixed_item_ids=fixed_item_ids,
+        narrative_lists=narrative_lists,
+        omissions=omissions,
+        capture_gaps=capture_gaps,
     )
-    for item in narrative:
-        if case_bytes <= MAX_SEMANTIC_CASE_BYTES and case_items <= MAX_SEMANTIC_CASE_ITEMS:
-            break
-        fixed_item_ids.discard(item.item_id)
-        for ids in narrative_lists:
-            if item.item_id in ids:
-                ids.remove(item.item_id)
-        case_bytes -= item.content_bytes
-        case_items -= 1
-        _append_omission(
-            omissions,
-            item.source_ref,
-            item.linked_subject_refs,
-            item.category,
-            item.source_kind,
-            "not_selected",
-        )
-        capture_gaps.add("content_unselected")
     selected = len(targeted)
     dropped_refs: set[str] = set()
     primary_ids = _primary_excerpt_item_ids(items, targeted)
@@ -3485,6 +3533,81 @@ def _fit_excerpts_within_case_bound(
         # Later parts of a split excerpt were cut while its earlier parts stay.
         capture_gaps.add("truncated_payload")
     return selected - len(targeted)
+
+
+def _drop_narrative_within_case_bound(
+    by_id: Mapping[str, SemanticCaseItem],
+    prefixes: tuple[str, ...],
+    case_bytes: int,
+    case_items: int,
+    *,
+    fixed_item_ids: set[str],
+    narrative_lists: Sequence[list[str]],
+    omissions: list[ReviewOmission],
+    capture_gaps: set[str],
+) -> tuple[int, int]:
+    """Drop the largest narrative rows named by ``prefixes`` until the case fits its bound."""
+
+    narrative = sorted(
+        (
+            by_id[item_id]
+            for ids in narrative_lists
+            for item_id in ids
+            if item_id in fixed_item_ids
+            and item_id.startswith(prefixes)
+            and item_id not in {"history-window", "timeline-frontier"}
+            and not by_id[item_id].source_ref.startswith("frontier-")
+        ),
+        key=lambda item: (-item.content_bytes, item.item_id),
+    )
+    for item in narrative:
+        if case_bytes <= MAX_SEMANTIC_CASE_BYTES and case_items <= MAX_SEMANTIC_CASE_ITEMS:
+            break
+        fixed_item_ids.discard(item.item_id)
+        for ids in narrative_lists:
+            if item.item_id in ids:
+                ids.remove(item.item_id)
+        case_bytes -= item.content_bytes
+        case_items -= 1
+        _append_omission(
+            omissions,
+            item.source_ref,
+            item.linked_subject_refs,
+            item.category,
+            item.source_kind,
+            "not_selected",
+        )
+        capture_gaps.add("content_unselected")
+    return case_bytes, case_items
+
+
+def _fit_agent_account_within_case_bound(
+    items: Sequence[SemanticCaseItem],
+    targeted: Sequence[TargetedExcerptRef],
+    omissions: list[ReviewOmission],
+    capture_gaps: set[str],
+    *,
+    fixed_item_ids: set[str],
+    narrative_lists: Sequence[list[str]],
+) -> None:
+    """Let obligation and claim rows yield last, after every other cut (#1245, D22).
+
+    They are small, and the closing questions and the reviewer's verdict rows cite them, so the
+    agent's goal and history, bulk excerpts and earlier dialogue give way first.
+    """
+
+    by_id = {item.item_id: item for item in items}
+    kept = fixed_item_ids | {ref.excerpt_item_id for ref in targeted}
+    _drop_narrative_within_case_bound(
+        by_id,
+        ("obligation-", "claim-"),
+        sum(by_id[item_id].content_bytes for item_id in kept if item_id in by_id),
+        sum(item_id in by_id for item_id in kept),
+        fixed_item_ids=fixed_item_ids,
+        narrative_lists=narrative_lists,
+        omissions=omissions,
+        capture_gaps=capture_gaps,
+    )
 
 
 def _fit_prior_findings_within_case_bound(
@@ -6702,18 +6825,26 @@ def _prior_findings_section(
     # The agent's answers to FinishUP's own local findings (issue #976). They are not rulable, so
     # they never enter prior_finding_refs, but the reviewer judges their substance: an answer that
     # says a requested output "cannot be produced" is exactly what a closing review must test.
+    # #1241 D9: answers to the verification rerun question are their own row type with their own
+    # cap, so the reviewer can say whether it agrees without crowding out other answers.
     answers = 0
+    freshness_answers = 0
     for ref, record in _local_answer_candidates(projection, allowed):
         rows = _local_answer_items(ref, record, projection, include_prose=include_prose)
         size = sum(item.content_bytes for item in rows)
+        freshness = record.payload is not None and is_freshness_question(record.payload)
         if (
-            answers >= MAX_LOCAL_FINDING_ANSWERS
+            (freshness_answers if freshness else answers)
+            >= (MAX_FRESHNESS_ANSWERS if freshness else MAX_LOCAL_FINDING_ANSWERS)
             or len(rows) > item_budget - len(items)
             or size > byte_budget
         ):
             truncated = True
             continue
-        answers += 1
+        if freshness:
+            freshness_answers += 1
+        else:
+            answers += 1
         byte_budget -= size
         items.extend(rows)
     # Findings the agent settled (issue #980): nameable in ``restates``, never rulable, so a
@@ -7113,6 +7244,14 @@ def _obligation_disclosures(
             if str(declaration.decision_event_id) in allowed
             else True
         )
+    # #1246 (D17): a recorded proxy decision rides beside the limit it estimates, so the reviewer
+    # asks for no proxy the agent already chose or ruled out.
+    for proxy in proxy_decisions(projection):
+        row = found.get(str(proxy.obligation_id))
+        if row is not None and "verification_limit" in row:
+            row["proxy"] = (
+                str(proxy.decision_event_id) if str(proxy.decision_event_id) in allowed else True
+            )
     for row in found.values():
         row["already_disclosed"] = True
     return found
@@ -7290,6 +7429,10 @@ def _local_answer_items(
         # Frozen legacy identifier (ADR-048): protocol 0.1 tag, re-verified.
         "schema": "yoetz.local-finding-answer/1",
     }
+    if is_freshness_question(payload):
+        # #1241 D9: the reviewer answers freshness_verdicts on these rows.
+        body["schema"] = "yoetz.freshness-answer/1"
+        body["question"] = "verification_rerun"
     if include_prose:
         body["text_item_ids"] = {"answer": f"local-finding-answer-text-{ref}"}
     text, _omitted = _bounded_json(body)
@@ -7469,39 +7612,54 @@ def build_semantic_case(
     if fits(case) is not False:
         return case
     floor = final_diff_floor(case, review_selection, prepared_byte_ceiling)
-    selection = primary_material_selection(
-        review_selection,
-        keep_timeline=frozen_case.projection.pending_missing_for_assessment is not None,
+
+    def narrowed(primary: ReviewSelectionPolicy) -> tuple[SemanticCase, bool]:
+        """The best case under ``primary`` and whether it fits with the diff floor."""
+
+        nonlocal selection
+        selection = primary
+        case = build(None)
+        if fits(case) is not False:
+            return case, True
+        for selection in prior_context_selections(case, primary, floor):
+            candidate = build(None)
+            if fits(candidate) and check_time_change_floor_bytes_carried(candidate) >= floor:
+                return candidate, True
+        selection = primary
+        excerpt_bytes = sum(item.content_bytes for item in case.items if item.section == "excerpt")
+        if not excerpt_bytes:
+            return case, False
+        # JSON escaping makes the prepared document grow by a content-dependent factor, so search
+        # the largest excerpt byte budget whose exact document fits. Admission runs in rank order,
+        # so a smaller budget drops the lowest-ranked excerpts first.
+        # Keep an over-ceiling protected case if no fitting candidate preserves the floor. Egress
+        # then refuses it honestly; no later stage may trade away the diff for a dispatch.
+        best, best_fits = (case, False) if floor else (build(0), None)
+        low, high = 0, excerpt_bytes
+        while high - low > _PLANNING_GRANULARITY_BYTES:
+            middle = (low + high) // 2
+            candidate = build(middle)
+            if fits(candidate):
+                low = middle
+                if check_time_change_floor_bytes_carried(candidate) >= floor:
+                    best, best_fits = candidate, True
+            else:
+                high = middle
+        return best, (fits(best) is not False) if best_fits is None else best_fits
+
+    keep_timeline = frozen_case.projection.pending_missing_for_assessment is not None
+    # #1245 (D22): goal and history give way before excerpt bytes; obligation and claim rows only
+    # when no plan that keeps them fits, and then exactly as every narrowing did before.
+    case, planned = narrowed(
+        primary_material_selection(review_selection, keep_timeline=keep_timeline)
     )
-    case = build(None)
-    if fits(case) is not False:
+    if planned:
         return case
-    primary = selection
-    for selection in prior_context_selections(case, primary, floor):
-        candidate = build(None)
-        if fits(candidate) and check_time_change_floor_bytes_carried(candidate) >= floor:
-            return candidate
-    selection = primary
-    excerpt_bytes = sum(item.content_bytes for item in case.items if item.section == "excerpt")
-    if not excerpt_bytes:
-        return case
-    # JSON escaping makes the prepared document grow by a content-dependent factor, so search the
-    # largest excerpt byte budget whose exact document fits. Admission runs in rank order, so a
-    # smaller budget drops the lowest-ranked excerpts first.
-    # Keep an over-ceiling protected case if no fitting candidate preserves the floor. Egress
-    # then refuses it honestly; no later stage may trade away the diff for a successful dispatch.
-    best = case if floor else build(0)
-    low, high = 0, excerpt_bytes
-    while high - low > _PLANNING_GRANULARITY_BYTES:
-        middle = (low + high) // 2
-        candidate = build(middle)
-        if fits(candidate):
-            low = middle
-            if check_time_change_floor_bytes_carried(candidate) >= floor:
-                best = candidate
-        else:
-            high = middle
-    return best
+    return narrowed(
+        primary_material_selection(
+            review_selection, keep_timeline=keep_timeline, keep_agent_account=False
+        )
+    )[0]
 
 
 def _build_semantic_case_once(
@@ -9017,7 +9175,9 @@ def _build_semantic_case_once(
             include_decision_prose=(
                 "decisions" in selection.sections if frozen_case.evidence_view is not None else None
             ),
-            compact=not bool(sections & {"goal", "obligations", "claims"}),
+            # Packed under any capacity narrowing (each drops the goal, #1245) and for a
+            # selection without the agent's account; the fields stay whole either way.
+            compact="goal" not in sections,
             remaining_items=MAX_SEMANTIC_CASE_ITEMS - len(fixed_item_ids),
             remaining_bytes=MAX_PRIOR_FINDING_SECTION_BYTES,
         )
@@ -9050,6 +9210,14 @@ def _build_semantic_case_once(
     )
     prior_findings_truncated |= _fit_prior_findings_within_case_bound(
         items, targeted, fixed_item_ids, prior_items, prior_omissions
+    )
+    _fit_agent_account_within_case_bound(
+        items,
+        targeted,
+        omissions,
+        capture_gaps=capture_gap_set,
+        fixed_item_ids=fixed_item_ids,
+        narrative_lists=(obligation_ids, claim_ids),
     )
 
     if check_change_admitted:
@@ -9455,10 +9623,18 @@ def _build_semantic_case_once(
     # #1145: an obligation row the packet still carries that links a check the reviewer can name;
     # a row the obligation cap or byte bound dropped asks nothing.
     linked_verification = any(item.item_id in verification_linked_item_ids for item in items)
+    # #1245: the acknowledgement question names only obligations whose rows this packet carries,
+    # so it never points the reviewer at an item a cap or a capacity narrowing removed.
+    carried_item_ids = {item.item_id for item in items}
+    acknowledged = acknowledged_obligation_rows(frozen_case.projection)
+    carried_acknowledged = tuple(
+        ref for ref in acknowledged if f"obligation-{ref}" in carried_item_ids
+    )
     question_set = review_question_set(
         review_phase,
         recorded_blockers(frozen_case.projection),
-        acknowledged_obligation_rows(frozen_case.projection),
+        carried_acknowledged,
+        acknowledged_not_carried=len(acknowledged) - len(carried_acknowledged),
         freshness=verification_freshness_asked(frozen_case),
         # #975: on a channel no larger than the minimal policy's, a closing review that already
         # carries the test-quality question has no room left for this one (#1173).
@@ -9466,6 +9642,14 @@ def _build_semantic_case_once(
         and not (small_channel and (test_manifests or linked_verification)),
         test_manifests=test_manifests,
         linked_verification=linked_verification,
+        # #1246: only for a limit whose obligation row this packet carries, and never on a channel
+        # no larger than the minimal policy's: there its 359 bytes came out of the room the first
+        # read needs, so a closing review that read once ended case_capacity_exceeded (#1173).
+        proxy=not small_channel
+        and any(
+            f"obligation-{ref}" in carried_item_ids
+            for ref in verification_limits_without_proxy(frozen_case.projection)[0]
+        ),
     ) + ((DECLARED_TEST_QUESTION,) if offered_tests else ())
     # tb4n5: which excerpts supply the follow-up beyond the first packet, so the provider-bound
     # manifest recomputes ``supplied`` from the ones admission kept. Bound into the digest only for

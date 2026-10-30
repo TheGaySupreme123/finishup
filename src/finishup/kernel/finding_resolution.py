@@ -83,6 +83,7 @@ from finishup.domain.receipts import (
     SEMANTIC_REVIEW_NOT_REQUESTED_GAP,
     SEMANTIC_REVIEW_REFS_REDUCED_GAP,
     SEMANTIC_REVIEW_SKIPPED_INSUFFICIENT_PACKET_GAP,
+    SEMANTIC_REVIEW_SKIPPED_PRIVACY_BLOCK_GAP,
     SEMANTIC_REVIEW_SNIPPET_INVALID_GAP,
     SEMANTIC_REVIEW_VALUE_REDACTED_GAP,
     TASK_INPUT_BASELINE_UNAVAILABLE_GAP,
@@ -239,6 +240,8 @@ _SEMANTIC_ONLY_GAPS: Final = frozenset(
         # The review round was skipped because the last two completed reviews could not assess
         # the same content (TB4 tb4n1 D3): it says nothing about a local pack.
         SEMANTIC_REVIEW_SKIPPED_INSUFFICIENT_PACKET_GAP,
+        # An unchanged privacy-boundary refusal carried forward (#1138): nothing about a local pack.
+        SEMANTIC_REVIEW_SKIPPED_PRIVACY_BLOCK_GAP,
         # The review waited for the first material edit (issue #1046): nothing about a local pack.
         SEMANTIC_REVIEW_DEFERRED_BEFORE_FIRST_EDIT_GAP,
         SEMANTIC_REVIEW_NOT_CONFIGURED_GAP,

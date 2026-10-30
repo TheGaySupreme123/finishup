@@ -11,16 +11,20 @@ advisory question and never a Stop item. These tests drive the real ``Applicatio
 
 from __future__ import annotations
 
+import json
+from pathlib import Path
 from typing import Any, Literal
 
 import pytest
 
+import finishup.observability.diagnostics as diagnostics_module
 from builders.start_application import protocol_id, start_request
 from finishup.domain.events import ActionKind
 from finishup.domain.privacy import ConversationReview
 from finishup.kernel.review_mode import ConversationReviewContext
 from finishup.ports.ledger import CheckCommitResult
-from finishup.protocol.models import CheckRequest, SemanticStatus
+from finishup.protocol.canonical import canonical_encode
+from finishup.protocol.models import CheckRequest, RespondRequest, SemanticStatus
 from integration.application import test_respond_status_receipt as h
 from integration.application import test_tb4n3_own_calls_cross_surface as s
 
@@ -144,3 +148,92 @@ async def test_an_owner_local_setting_keeps_a_required_policy_on_the_local_rule(
     assert "edited_after_last_verification" in checked.coverage.known_gaps
     assert "edited_after_last_verification" in readiness.agent_actionable
     assert "verification_rerun_question" not in readiness.standing_limitations
+
+
+async def test_an_answered_rerun_question_stands_reaches_the_receipt_and_is_counted(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """#1241 D9/D10 through the real facade, on the route that asks.
+
+    The question is never unanswered work; a reasoned answer stands, so the next check over the
+    same runs and changes does not ask again; every receipt format shows the agent's reason; and
+    each check records the question's accounting.
+    """
+
+    monkeypatch.setattr(diagnostics_module, "log_dir", lambda: tmp_path)
+    app, runtime, _ = h._build_app(seed_offset=82, semantic="required")
+    started = await app.start(start_request(5100, title="freshness route"))
+    appended = await s._append_observed(
+        app,
+        runtime,
+        started,
+        (
+            s._action(5620, ActionKind.COMMAND, "Bash", "test"),
+            s._result(5621, 5620),
+            s._action(5622, ActionKind.EDIT, "apply_patch", "compound"),
+            s._result(5623, 5622),
+        ),
+        seed=5600,
+        expected_frontier=int(started.frontier.sequence),
+    )
+
+    def check(seed: int, frontier: Any) -> CheckRequest:
+        return CheckRequest.model_validate(
+            {
+                **h._request_base(protocol_id("req_", seed)),
+                "session_id": started.session_id,
+                "writer_id": started.writer_id,
+                "expected_frontier": h._frontier(frontier),
+                "mode": "semantic_if_configured",
+                "max_findings": "5",
+            }
+        )
+
+    first = await app.check(check(5800, appended.result_frontier))
+    assert type(first) is CheckCommitResult
+    question = next(finding for finding in first.findings if finding.summary == _QUESTION)
+    asked = await s._surfaces(app, runtime, started, first.result_frontier, 6000)
+    # Visible, never unanswered work: status agrees with the check, which never counted it.
+    assert asked["compact"].unanswered_finding_count == "0"
+    assert "findings_unanswered" not in asked["status"].closure_readiness.blocking_conditions
+
+    reason = "Only a code comment changed; the test run does not read it."
+    responded = await app.respond(
+        RespondRequest.model_validate(
+            {
+                **h._request_base(protocol_id("req_", 5801)),
+                "session_id": started.session_id,
+                "writer_id": started.writer_id,
+                "expected_frontier": h._frontier(first.result_frontier),
+                "finding_id": question.finding_id,
+                "finding_frontier": h._frontier(first.result_frontier),
+                "disposition": "acknowledged",
+                "reason": reason,
+            }
+        )
+    )
+    second = await app.check(check(5802, responded.result_frontier))
+    assert type(second) is CheckCommitResult
+    assert all(finding.summary != _QUESTION for finding in second.findings)
+    surfaces = await s._surfaces(app, runtime, started, second.result_frontier, 6100)
+    readiness = surfaces["status"].closure_readiness
+    assert "findings_unanswered" not in readiness.blocking_conditions
+    # The edit after the run is still a fact: a standing limit on this route, never agent work.
+    assert "edited_after_last_verification" not in readiness.agent_actionable
+    for fmt, receipt in surfaces["receipts"].items():
+        rendered = (
+            canonical_encode(receipt.document).decode("utf-8")
+            if receipt.document is not None
+            else receipt.human_text
+        )
+        assert f"rerun not needed: {reason}" in rendered, fmt
+
+    raw = diagnostics_module.diagnostic_log_path(root=tmp_path).read_text(encoding="ascii")
+    counted = [
+        (record["rerun_questions_asked"], record["rerun_questions_answered"])
+        for record in map(json.loads, filter(None, raw.splitlines()))
+        if record["operation"] == "rerun_question_accounting"
+    ]
+    assert counted == [(1, 0), (0, 1)]
+    # Counts only: the agent's reason never reaches the diagnostics log.
+    assert reason not in raw

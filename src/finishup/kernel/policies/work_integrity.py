@@ -55,9 +55,9 @@ from finishup.kernel.deterministic_checks import (
     policy_public_root,
     policy_source_availability,
 )
+from finishup.kernel.freshness_answers import covering_freshness_answer
 from finishup.kernel.observed_failures import (
     ObservedFailureState,
-    command_identity,
     observed_action_runner_class,
     observed_edit_counts,
     observed_event_ids_from_coverage,
@@ -990,6 +990,22 @@ def _contradiction_findings(case: DeterministicCase) -> list[DeterministicAssess
 
 
 def _ledger_finding(case: DeterministicCase) -> list[DeterministicAssessment]:
+    """ "The ledger is too incomplete", raised only with named gaps (#1241 D11).
+
+    At a plan-only check (no action or result recorded yet) an obligation is never one of its
+    subjects: nothing was done, so planned work cannot be stale; an unknown, redacted or
+    provenance-limited event still counts. An obligation that already has resolution evidence
+    retires from it. Its text always names its
+    gaps (``render_deterministic_finding_text``): an unnamed limitation is not something an agent
+    can act on or a reader can weigh.
+    """
+
+    plan_only = not case.projection.actions and not case.projection.results
+    evidenced = {
+        str(key)
+        for key, row in case.projection.obligations.items()
+        if row.payload is not None and row.payload.resolution_evidence_refs
+    }
     classes: dict[str, set[FindingBasisRef]] = {
         "unknown_event_present": set(),
         "redaction_gap_present": set(),
@@ -1037,7 +1053,11 @@ def _ledger_finding(case: DeterministicCase) -> list[DeterministicAssessment]:
             fact_code = "redaction_gap_present"
         else:
             fact_code = "freshness_gap_present"
-        classes[fact_code].update(gap.subject_refs)
+        classes[fact_code].update(
+            ref
+            for ref in gap.subject_refs
+            if ref not in evidenced and not (plan_only and ref in case.projection.obligations)
+        )
     observed = tuple(
         _fact(code, *refs) for code, values in classes.items() if (refs := _refs(values))
     )
@@ -1067,63 +1087,102 @@ def _ledger_finding(case: DeterministicCase) -> list[DeterministicAssessment]:
     ]
 
 
+def _cited_runs(case: DeterministicCase) -> frozenset[str]:
+    """Runs (or their attached evidence) a claim, obligation resolution or response cites.
+
+    A run the agent linked to a planned verification (#1209) is cited by that link: it decides
+    the planned verification like a direct match (ADR-033), so the obligation's standing rerun
+    marker for it needs a question an answer can clear.
+    """
+
+    cited: set[str] = set(case.verification_linked_runs)
+    for row in case.projection.claims.values():
+        if row.payload is not None:
+            cited.update(row.payload.supporting_refs)
+            if type(row.payload) is ClaimRecordedPayloadV1_1:
+                cited.update(row.payload.limitation_refs)
+    for row in case.projection.obligations.values():
+        if row.payload is not None:
+            cited.update(row.payload.resolution_evidence_refs)
+    for row in case.projection.responses.values():
+        if row.payload is not None:
+            cited.update(row.payload.evidence_refs)
+    return frozenset(cited)
+
+
 def _verification_questions(case: DeterministicCase) -> list[DeterministicAssessment]:
+    """Ask whether a rerun is needed, far less often (#1241 D9).
+
+    Only the latest run of each requested verification, the latest verification overall and any
+    run the agent's account cites (a claim, resolution or response, or the agent's link to a
+    planned command) are asked about; matching command text alone no longer decides it. The
+    first two are the runs the task facts' ``verification_rerun_question`` markers read
+    (``verification_deciding_runs``), so every marker has a question; the latest run of each
+    freshness ``label`` is asked too. A case frozen before that field takes the latest overall
+    from the tracked runs. Runs that share one change set share one question, and a reasoned
+    answer stands for every later question it already covered (``covering_freshness_answer``):
+    only a change it did not cover asks again.
+    """
+
     if case.verification_freshness is None:
         return []
-    questions: list[DeterministicAssessment] = []
-    latest_by_identity: dict[str, int] = {}
     first_positions: dict[ActionId, int] = {}
     for result in sorted(case.projection.results.values(), key=lambda row: row.source_frontier):
         if result.payload is not None:
             first_positions.setdefault(result.payload.action_id, result.source_frontier)
-    for result in case.projection.results.values():
-        action = (
-            None
-            if result.payload is None
-            else case.projection.actions.get(result.payload.action_id)
-        )
-        if (
-            result.payload is not None
-            and action is not None
-            and action.payload is not None
-            and action.payload.command is not None
-        ):
-            identity = command_identity(action.payload.command)
-            if identity is not None:
-                latest_by_identity[identity] = max(
-                    latest_by_identity.get(identity, 0), first_positions[result.payload.action_id]
-                )
+    cited = _cited_runs(case)
+    asked: list[tuple[int, str | None, bool, VerificationFreshness, EventId]] = []
     for row in case.verification_freshness:
-        result = case.projection.results.get(row.run_ref)
-        action = (
-            None
-            if result is None or result.payload is None
-            else case.projection.actions.get(result.payload.action_id)
-        )
-        if (
-            result is not None
-            and result.payload is not None
-            and action is not None
-            and action.payload is not None
-        ):
-            identity = command_identity(action.payload.command)
-            if identity is not None and first_positions[
-                result.payload.action_id
-            ] < latest_by_identity.get(identity, 0):
-                continue
         if row.state == "current" or (row.state == "stale" and not case.verification_advisory):
             continue
-        if result is None:
+        result = case.projection.results.get(row.run_ref)
+        if result is None or result.payload is None:
             continue
-        refs = _refs((result.source_event_id, *row.change_refs))
-        if not _question_answered(case, refs):
+        position = first_positions.get(result.payload.action_id, result.source_frontier)
+        is_cited = row.run_ref in cited or bool(cited.intersection(result.payload.evidence_refs))
+        asked.append((position, row.label, is_cited, row, result.source_event_id))
+    deciding = frozenset(case.verification_deciding_runs)
+    if not asked:
+        selected: list[tuple[VerificationFreshness, EventId]] = []
+    else:
+        latest_overall: int | None = None
+        if not deciding:
+            # A case frozen before ``verification_deciding_runs``: the latest verification
+            # overall is the latest tracked run, not the latest run with a later change. A frozen
+            # case without the tracked set (before #1194) falls back to the rows.
+            tracked = (
+                first_positions.get(row.payload.action_id, row.source_frontier)
+                for ref in case.verification_tracked_runs
+                if (row := case.projection.results.get(ref)) is not None and row.payload is not None
+            )
+            latest_overall = max((*tracked, *(item[0] for item in asked)))
+        latest_by_label: dict[str, int] = {}
+        for position, label, _cited, _row, _event in asked:
+            if label is not None:
+                latest_by_label[label] = max(latest_by_label.get(label, 0), position)
+        selected = [
+            (row, event)
+            for position, label, is_cited, row, event in asked
+            if is_cited
+            or row.run_ref in deciding
+            or position == latest_overall
+            or (label is not None and position == latest_by_label[label])
+        ]
+    # One question per change set: the runs it bears on and the changes, together.
+    groups: dict[tuple[EventId, ...], list[EventId]] = {}
+    for row, event in selected:
+        groups.setdefault(row.change_refs, []).append(event)
+    questions: list[DeterministicAssessment] = []
+    for change_refs, events in sorted(groups.items(), key=lambda item: item[0]):
+        refs = _refs((*events, *change_refs))
+        if covering_freshness_answer(case.projection, refs) is None:
             questions.append(_freshness_question(case, refs))
     if case.verification_advisory and case.verification_unjudged_stale:
         # A stale verdict on a run freshness could not judge (its result never arrived or is
         # unreadable): on the AI route it is asked too, never a standing question with nothing to
         # answer (#1167 review).
         refs = _refs(case.verification_unjudged_stale)
-        if not _question_answered(case, refs):
+        if covering_freshness_answer(case.projection, refs) is None:
             questions.append(_freshness_question(case, refs))
     return questions
 
@@ -1138,27 +1197,6 @@ def _freshness_question(
         refs,
         (_fact("verification_freshness_question", *refs),),
     )
-
-
-def _question_answered(case: DeterministicCase, refs: tuple[FindingBasisRef, ...]) -> bool:
-    """A reasoned ``acknowledged`` answer to the question about exactly ``refs`` (#1143)."""
-
-    for key, finding in case.projection.findings.items():
-        if finding.payload is None or finding.payload.subject_refs != refs:
-            continue
-        response = case.projection.responses.get(key)
-        if (
-            response is not None
-            and response.payload is not None
-            and response.payload.disposition.value == "acknowledged"
-            and response.payload.reason
-            and response.payload.reason.strip()
-            and response.source_frontier > finding.source_frontier
-            and response.payload.finding_frontier.sequence
-            >= finding.payload.subject_frontier.sequence
-        ):
-            return True
-    return False
 
 
 def _response_findings(case: DeterministicCase) -> list[DeterministicAssessment]:

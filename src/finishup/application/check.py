@@ -58,6 +58,7 @@ from finishup.domain.findings import (
     FindingOrigin,
     PriorFindingVerdictRecord,
     RankedFindings,
+    RuntimeTokenUsage,
     SemanticProvenance,
     finding_demands_work,
     finding_from_json,
@@ -66,6 +67,7 @@ from finishup.domain.findings import (
     is_limitation_request,
     semantic_provenance_to_json,
 )
+from finishup.domain.freshness_question import is_freshness_question
 from finishup.domain.privacy import ConversationReview
 from finishup.domain.receipts import (
     CHECK_TIME_CHANGE_GAPS,
@@ -96,6 +98,7 @@ from finishup.domain.receipts import (
     SEMANTIC_REVIEW_NOT_CONFIGURED_GAP,
     SEMANTIC_REVIEW_REFS_REDUCED_GAP,
     SEMANTIC_REVIEW_SKIPPED_INSUFFICIENT_PACKET_GAP,
+    SEMANTIC_REVIEW_SKIPPED_PRIVACY_BLOCK_GAP,
     SEMANTIC_REVIEW_SNIPPET_INVALID_GAP,
     SEMANTIC_REVIEW_VALUE_REDACTED_GAP,
     TASK_INPUT_BASELINE_UNAVAILABLE_GAP,
@@ -205,6 +208,7 @@ from finishup.kernel.finding_todo import (
     finding_todo_state,
     todo_counts,
 )
+from finishup.kernel.freshness_answers import freshness_answers
 from finishup.kernel.limitation import limitation_standing
 from finishup.kernel.lineage import LineageEvaluation, evaluate_recorded_lineage
 from finishup.kernel.observed_failures import (
@@ -235,6 +239,7 @@ from finishup.kernel.ranking import CheckCompleteness, RankingContext, rank_find
 from finishup.kernel.receipt_capacity import current_receipt_findings
 from finishup.kernel.receipt_prediction import predict_receipt_conclusion
 from finishup.kernel.reducers import replay
+from finishup.kernel.rerun_accounting import rerun_question_accounting
 from finishup.kernel.review_frame import (
     agent_probe_only,
     finishup_process_state_only,
@@ -246,7 +251,11 @@ from finishup.kernel.review_mode import (
     ConversationReviewMode,
     conversation_review_mode,
 )
-from finishup.kernel.review_round import review_round_stopped
+from finishup.kernel.review_round import (
+    PrivacyBlockStanding,
+    privacy_block_standing,
+    review_round_stopped,
+)
 from finishup.kernel.task_facts import (
     DECLARED_OUTPUT_NOT_REVIEWABLE_GAP,
     DELIVERABLE_REFERENCES_AMBIGUOUS_NAME_GAP,
@@ -1083,7 +1092,9 @@ async def replayed_check_view(
 
     replayed = await _attach_replayed_lineage_preview(runtime, result)
     replayed = await _attach_replayed_fact_lineage(runtime, replayed)
-    return await _attach_finding_checklist(app, runtime, replayed, route_profile=route_profile)
+    return await _attach_finding_checklist(
+        app, runtime, replayed, route_profile=route_profile, replayed=True
+    )
 
 
 async def _attach_replayed_lineage_preview(
@@ -1927,7 +1938,7 @@ def _review_deferred_before_first_edit(
     those. The deferral never applies to the closing review, so a task whose work is not an edit
     still reaches one (the tb4n1 D3 stopped-round skip above is a separate rule).
     A check already waiting on a review keeps it (a resumed attempt never changes its decision);
-    a check resumed in ``ready_to_finalize`` decides through ``_review_skip_gaps`` from durable
+    a check resumed in ``ready_to_finalize`` decides through ``_review_skip_decision`` from durable
     state only, never from a fresh capture.
     """
 
@@ -1951,15 +1962,17 @@ def _review_deferred_before_first_edit(
     )
 
 
-async def _review_skip_gaps(
+async def _review_skip_decision(
     runtime: TaskRuntime,
     request: CheckRequest,
     frozen: FrozenCase,
     *,
     route_profile: Literal["policy", "strict"],
     workspace_changed: bool | None,
-) -> frozenset[str]:
+) -> tuple[frozenset[str], PrivacyBlockStanding | None]:
     """The gap that discloses why this check skips the AI-powered review, if it does.
+
+    With it, the standing privacy refusal the check carries for that gap (#1138), else ``None``.
 
     tb4n1 D3: the round stopped after the one insufficient-packet retry. Issue #1046: the check
     runs before the first material edit (``_review_deferred_before_first_edit``). Empty when the
@@ -1970,14 +1983,23 @@ async def _review_skip_gaps(
     check is never deferred on retry, so a paid review is kept; if it sent none, a capture that
     now sees a change cannot make it dispatch one in a phase that cannot send it. The live
     capture is not read there; the frozen ledger prefix decides, as for the stopped round.
+
+    The privacy refusal (#1138) is read once and returned with its gap, so the carried evaluation
+    uses the very refusal the gap was recorded for: a second read that failed open would send
+    the review the gap says was skipped.
     """
 
     if await _review_round_stopped_at(runtime, request, frozen):
-        return frozenset({SEMANTIC_REVIEW_SKIPPED_INSUFFICIENT_PACKET_GAP})
+        return frozenset({SEMANTIC_REVIEW_SKIPPED_INSUFFICIENT_PACKET_GAP}), None
     if frozen.lease.phase is CheckPhase.READY_TO_FINALIZE:
         if await _review_job_recorded(runtime, frozen):
-            return frozenset()
+            return frozenset(), None
         workspace_changed = None
+    standing = await _privacy_block_standing_at(
+        runtime, request, frozen, route_profile=route_profile
+    )
+    if standing is not None:
+        return frozenset({SEMANTIC_REVIEW_SKIPPED_PRIVACY_BLOCK_GAP}), standing
     if _review_deferred_before_first_edit(
         request,
         runtime,
@@ -1985,8 +2007,50 @@ async def _review_skip_gaps(
         route_profile=route_profile,
         workspace_changed=workspace_changed,
     ):
-        return frozenset({SEMANTIC_REVIEW_DEFERRED_BEFORE_FIRST_EDIT_GAP})
-    return frozenset()
+        return frozenset({SEMANTIC_REVIEW_DEFERRED_BEFORE_FIRST_EDIT_GAP}), None
+    return frozenset(), None
+
+
+async def _privacy_block_standing_at(
+    runtime: TaskRuntime,
+    request: CheckRequest,
+    frozen: FrozenCase,
+    *,
+    route_profile: Literal["policy", "strict"],
+) -> PrivacyBlockStanding | None:
+    """The unchanged privacy-boundary refusal this check carries instead of resending (#1138).
+
+    ``privacy_block_standing`` over the frozen ledger prefix, for a check that would otherwise
+    dispatch a review. A closing review after a routine check's refusal still runs once, so the
+    final state is scanned before the receipt; a closing review's own refusal stands. A check
+    already waiting on a review keeps it. Fails open to a review.
+    """
+
+    if (
+        request.mode == "deterministic_only"
+        or route_profile != "policy"
+        or RuntimeCapability.SEMANTIC not in runtime.capabilities
+        or frozen.lease.phase is CheckPhase.SEMANTIC_WAIT
+    ):
+        return None
+    try:
+        records = tuple(
+            [
+                record
+                async for record in runtime.ledger.load_events(
+                    runtime.session_id, through=frozen.case.frontier.sequence
+                )
+            ]
+        )
+    except Exception as exc:
+        record_unexpected_exception_without_raising(
+            exc, component="check", operation="privacy_block_read", request_id=request.request_id
+        )
+        return None
+    standing = privacy_block_standing(records)
+    if standing is None or (request.final_review and not standing.final_review):
+        return None
+    return standing
 
 
 async def _review_job_recorded(runtime: TaskRuntime, frozen: FrozenCase) -> bool:
@@ -2154,14 +2218,17 @@ async def _attach_finding_checklist(
     *,
     coverage_by_ref: Mapping[FindingBasisRef, Coverage] | None = None,
     route_profile: Literal["policy", "strict"] | None = None,
+    replayed: bool = False,
 ) -> CheckCommitResult:
     """Attach the task's findings as a to-do list after this check (issue #905).
 
     Like project advice this is current projection context beside the frozen check: it never
-    changes the recorded event or its verdict. It reads only the adapter-owned projection at the
-    result frontier (never a replay or a status page); when that is unavailable, or anything
-    fails, the check is returned without the list rather than stranded after its commit, keeping
-    only the supply continuation its stored missing items determine (``_with_stored_supply_next``).
+    changes the recorded event or its verdict. It reads the projection at exactly the result
+    frontier: the adapter-owned one, else, for a replayed check, a replay of that prefix (#1244;
+    never a status page). When neither is available (on a replay, a prefix that has since gained
+    agent-authored records), or anything fails, the check is returned without the list rather
+    than stranded after its commit, keeping only the supply continuation its stored missing items
+    determine (``_with_stored_supply_next``).
 
     The list holds the current actionable items (the newest row per issue, in rank order, at most
     100); the counts and the ``next`` token are computed over all of them. Coverage limitations
@@ -2177,24 +2244,38 @@ async def _attach_finding_checklist(
         projection = await trusted_projection_at(
             runtime.ledger, result.session_id, result.result_frontier
         )
-        if projection is None:
+        if projection is None and not replayed:
             return await _with_recorded_advice(runtime, _with_stored_supply_next(result))
         # ADR-046: the receipt's own context at the result frontier gives the predicted
         # conclusion and the records the classes need. A read that fails omits the prediction
-        # (never guesses one) and leaves a bounded diagnostic.
+        # (never guesses one) and leaves a bounded diagnostic. #1244: when a replayed check's
+        # frontier has left the adapter's bounded trusted history (more than 16 appends since,
+        # such as hook rows drained while the agent pages), the same read replays that exact
+        # prefix, so the replay reads the same list as the first check did.
         loaded: LoadedClosureBasis | None = None
         try:
             loaded = await load_closure_basis(runtime, result.result_frontier)
         except (ClosureBasisUnavailable, PublicOperationError, TypeError, ValueError) as exc:
-            record_unexpected_exception_without_raising(
-                exc, component="check", operation="closure_basis_read"
+            # A replayed check whose prefix has since gained agent-authored records cannot rebuild
+            # its case there: the ledger refuses a stale pinned prefix by design. That is expected
+            # on a replay (a later page, a restart), so it leaves no diagnostic.
+            expected = (
+                replayed
+                and isinstance(exc, PublicOperationError)
+                and exc.code is PublicErrorCode.FRONTIER_CONFLICT
             )
+            if not expected:
+                record_unexpected_exception_without_raising(
+                    exc, component="check", operation="closure_basis_read"
+                )
         if loaded is None:
             # The closure classes need the ledger prefix (can a reviewer still rule, which
             # obligations are emptied or blocked). Without it any class would be a guess that
             # status, reading the real basis, could contradict; the check is returned without the
             # list, like every other failed read here (the diagnostic above is the trace).
             return await _with_recorded_advice(runtime, _with_stored_supply_next(result))
+        if projection is None:
+            projection = loaded.projection
         checklist = build_finding_checklist(
             projection, attempt_budget=budget, records=loaded.records
         )
@@ -2364,6 +2445,9 @@ class FinalSemanticEvaluation:
     # Bounded structural attempt accounting reconstructed from durable rows when a job ran.
     # Not part of the frozen public check-result wire; owner recovery reads the ledger.
     attempt_accounting: object | None = None
+    # #1242: provider usage of a sent exchange whose review then ended with no provenance (an
+    # unsent read continuation over capacity). Only the durable attempt row reads it.
+    attempt_token_usage: RuntimeTokenUsage | None = None
     # When the durable AI-powered review phase renewed the check operation lease (lease TTL is 60s while
     # timeout_seconds may be longer), later phase advance / commit must use this CAS fence.
     operation_lease: OperationLease | None = None
@@ -4133,7 +4217,7 @@ _ADVISORY_NOTES_HEADER: Final = (
     "Reviewer correctness notes (advisory and non-blocking: a review during work in progress "
     "judges incomplete work only, so these are not findings. For each material concern: run a "
     "proportionate check, cite evidence that already settles it, or decline with a reason; "
-    "recording a response is optional):"
+    "answer each material one once):"
 )
 # Issue #1162: a note whose bounded advisory row could not be retained (never expected once its
 # subjects are fence-resolved) degrades to this summary instead of discarding the review.
@@ -5333,15 +5417,18 @@ _TEST_VERDICT_PHRASES: Final = {
     "shared_with_implementation": "takes its expected value from the implementation",
     "cannot_fail": "cannot fail as written",
 }
+# TB4 full-sol (#1145, owner wording 2026-10-29): "Run: <probe>" wrapped prose that stated a
+# problem rather than something to run, so the probe is labelled as the reviewer's counter-example
+# and the three answers follow it.
 _TEST_VERDICT_ADVICE: Final = (
-    "Your test {path} for {criterion} {phrase}{tag}. Run: {probe}, or show it fails on a "
-    "deliberately broken scratch copy, or decline with a reason."
+    "Your test {path} for {criterion} {phrase}{tag}. Reviewer's counter-example: {probe}{stop} "
+    "Check it, show the test fails on a deliberately broken copy, or decline with a reason."
 )
 # A multi-line probe is shown verbatim in a fenced block after the sentence (PR #1224 review).
 _TEST_VERDICT_ADVICE_BLOCK: Final = (
-    "Your test {path} for {criterion} {phrase}{tag}. Run the reviewer's probe below, or show it "
-    "fails on a deliberately broken scratch copy, or decline with a reason.\n{fence}\n{probe}\n"
-    "{fence}"
+    "Your test {path} for {criterion} {phrase}{tag}. Check the reviewer's counter-example below, "
+    "show the test fails on a deliberately broken copy, or decline with a reason.\n{fence}\n"
+    "{probe}\n{fence}"
 )
 _TEST_VERDICT_TAG: Final = " (you tagged expected_from={tag}; the reviewer observed {observed})"
 _TEST_VERDICT_FOLDED_NOTE: Final = (
@@ -5459,6 +5546,8 @@ def _declared_test_advice(
                 )
             ),
             probe=probe,
+            # A probe that already ends a sentence gets no second full stop.
+            stop="" if probe.rstrip().endswith((".", "!", "?")) else ".",
             fence=_probe_fence(probe),
         )
         bounded = _bounded_review_text(text)
@@ -6236,6 +6325,8 @@ def _request_digest(
     # nothing, so it stays outside the operation identity. Requests without it keep their digest,
     # and a same-request recovery may set or omit it.
     source.pop("await_observations", None)
+    # #1244 (D13): ``detail`` shapes only the reply's presentation, never what the check records.
+    source.pop("detail", None)
     source["scope"] = {"claim_ids": scope.claim_ids, "obligation_ids": scope.obligation_ids}
     source["policy_packs"] = packs
     source["route_profile"] = route_profile
@@ -6275,7 +6366,21 @@ async def _semantic_evaluation(
     task_fact_gaps: tuple[str, ...] = (),
     round_stopped: bool = False,
     deferred_before_first_edit: bool = False,
+    privacy_block: PrivacyBlockStanding | None = None,
 ) -> FinalSemanticEvaluation:
+    if privacy_block is not None:
+        # Issue #1138: the newest review was refused at the privacy boundary and nothing that
+        # could change the refused content followed. The same refusal stands; nothing is composed
+        # or sent, and the refused items travel with it (``semantic_review_skipped_privacy_block``).
+        return FinalSemanticEvaluation(
+            SemanticStatus.BLOCKED_FORBIDDEN_DATA,
+            SemanticReason.NEVER_SEND_DETECTED,
+            semantic_redacted_values=tuple(
+                item
+                for item in privacy_block.redacted_values
+                if item.disposition == "review_blocked"
+            ),
+        )
     skipped = _skipped_review_reason(
         request,
         round_stopped=round_stopped,
@@ -6430,6 +6535,59 @@ def _semantic_conclusion_token(result: FinalSemanticEvaluation) -> str:
     return judgment.conclusion
 
 
+def _record_review_accounting(
+    request: CheckRequest,
+    case: DeterministicCase,
+    candidates: tuple[Finding, ...],
+    result: FinalSemanticEvaluation,
+    review: SemanticJudgmentReview,
+    semantic: tuple[Finding, ...],
+    ranked: RankedFindings,
+) -> None:
+    """Both per-check accounting records, from one call site (keeps the commit path analyzable)."""
+
+    _record_semantic_review_accounting(request, result, review, semantic, ranked)
+    _record_rerun_question_accounting(request, case, candidates, result)
+
+
+def _record_rerun_question_accounting(
+    request: CheckRequest,
+    case: DeterministicCase,
+    candidates: tuple[Finding, ...],
+    result: FinalSemanticEvaluation,
+) -> None:
+    """Count the verification rerun question on every check (#1241 D9).
+
+    Questions this check asked, answers on record, the reviewer's agreement with the answers the
+    packet carried (fenced to those findings), and reruns that followed an answer and whether
+    they changed its run's result. Counts only, so a harness can see whether the question earns
+    its cost; the reruns are derived from the ledger, so an export reconciles with it.
+    """
+
+    accounting = rerun_question_accounting(case.projection)
+    answered = {str(answer.finding_id) for answer in freshness_answers(case.projection)}
+    judgment = result.judgment
+    verdicts = () if judgment is None else judgment.freshness_verdicts
+    fenced = [verdict for verdict in verdicts if verdict.finding_id in answered]
+    asked = sum(1 for candidate in candidates if is_freshness_question(candidate))
+    if not asked and not accounting.answered and not fenced:
+        return
+    record_bounded_counts_without_raising(
+        component="check",
+        operation="rerun_question_accounting",
+        outcome="recorded",
+        request_id=request.request_id,
+        counts={
+            "rerun_questions_asked": asked,
+            "rerun_questions_answered": accounting.answered,
+            "rerun_answers_reviewer_agreed": sum(1 for verdict in fenced if verdict.agrees),
+            "rerun_answers_reviewer_disagreed": sum(1 for verdict in fenced if not verdict.agrees),
+            "reruns_after_answer": accounting.reruns_after_answer,
+            "reruns_after_answer_changed": accounting.reruns_after_answer_changed,
+        },
+    )
+
+
 def _record_semantic_review_accounting(
     request: CheckRequest,
     result: FinalSemanticEvaluation,
@@ -6521,6 +6679,13 @@ def _judgment_rejected_evaluation(
         semantic_withheld_item_ids=result.semantic_withheld_item_ids,
         semantic_redacted_values=result.semantic_redacted_values,
         case_content_gaps=result.case_content_gaps,
+        # The review ran and the provider answered: what it was sent (the provider-bound manifest,
+        # or why there is none) and the conversation's record of what it read stay on the check,
+        # so a rejected answer never hides what was disclosed.
+        review_input_manifest=result.review_input_manifest,
+        provider_input_manifest=result.provider_input_manifest,
+        provider_input_manifest_failure=result.provider_input_manifest_failure,
+        reviewer=result.reviewer,
     )
 
 
@@ -6560,6 +6725,7 @@ async def _semantic_evaluation_with_follow_up(
     deferred_before_first_edit: bool,
     deterministic_output_gaps: Iterable[str],
     output_absent: bool,
+    privacy_block: PrivacyBlockStanding | None = None,
 ) -> FinalSemanticEvaluation:
     """The check's AI-powered review: one round; the old in-check follow-up is gone (#1118).
 
@@ -6591,6 +6757,8 @@ async def _semantic_evaluation_with_follow_up(
         round_stopped=round_stopped,
         deferred_before_first_edit=deferred_before_first_edit,
         task_fact_gaps=task_fact_gaps,
+        # Issue #1138: an unchanged privacy-boundary refusal is carried, never sent again.
+        privacy_block=privacy_block,
     )
 
 
@@ -6978,7 +7146,7 @@ async def execute_check_commit(
         # so this check skips the AI-powered review rather than loop on the same packet.
         # Issue #1046: nor before the first material edit. Either skip runs the local checks only
         # and discloses why; nothing is composed or sent.
-        skip_gaps = await _review_skip_gaps(
+        skip_gaps, privacy_block = await _review_skip_decision(
             runtime,
             request,
             frozen,
@@ -7007,6 +7175,7 @@ async def execute_check_commit(
             deferred_before_first_edit=deferred_before_first_edit,
             deterministic_output_gaps=deterministic_output_gaps,
             output_absent=output_absent,
+            privacy_block=privacy_block,
         )
         # Durable AI-powered review attempts may renew the check lease (TTL 60s vs timeout up to 300s).
         if semantic_result.operation_lease is not None:
@@ -7299,8 +7468,10 @@ async def execute_check_commit(
             RankingContext(coverage, completeness),
             maximum,
         )
-        _record_semantic_review_accounting(
+        _record_review_accounting(
             request,
+            frozen.case,
+            candidate_findings,
             semantic_result,
             review,
             semantic,

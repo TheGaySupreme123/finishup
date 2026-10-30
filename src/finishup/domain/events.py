@@ -134,6 +134,7 @@ from finishup.protocol.policy_packs import (
 from finishup.protocol.recovery import correction_for_invariant
 from finishup.protocol.redacted_values import (
     SemanticRedactedValue,
+    review_blocked_recorded,
     semantic_redacted_values_from_wire,
     validate_semantic_redacted_values,
 )
@@ -6011,6 +6012,8 @@ def _validate_event_schema_payload(
             or payload.correctness_advisories
             or payload.semantic_reason is SemanticReason.ROUND_LIMIT_UNASSESSABLE
             or review_manifest_offers_test_check(payload.review_input_manifest)
+            # #1138: only 1.6.0 admits a ``review_blocked`` item.
+            or review_blocked_recorded(payload.semantic_redacted_values)
             or schema.version == REVIEWER_CHECK_EVENT_SCHEMA_VERSION
         ):
             if schema.version != REVIEWER_CHECK_EVENT_SCHEMA_VERSION or (
@@ -6018,6 +6021,7 @@ def _validate_event_schema_payload(
                 and not payload.correctness_advisories
                 and payload.semantic_reason is not SemanticReason.ROUND_LIMIT_UNASSESSABLE
                 and not review_manifest_offers_test_check(payload.review_input_manifest)
+                and not review_blocked_recorded(payload.semantic_redacted_values)
             ):
                 raise ProtocolValueError("invalid_event_schema")
         elif payload.semantic_reason is SemanticReason.DEFERRED_BEFORE_FIRST_EDIT:

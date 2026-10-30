@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from collections.abc import Iterable, Mapping, Sequence
 from enum import Enum
 from typing import Final, cast
@@ -11,13 +12,14 @@ from finishup.domain.findings import SELF_VERIFIED_GUIDANCE
 from finishup.domain.receipts import (
     COORDINATOR_FAILURE_LIMITATION,
     DEFERRED_BEFORE_FIRST_EDIT_TEXT,
-    SEMANTIC_REDACTED_VALUES_AGENT_LINE,
     UNRESOLVED_VERIFICATION_GAP,
     UNRESOLVED_VERIFICATION_LIMITATION,
     check_time_change_gap_sentence,
     historical_gaps_from_wire,
     limitations_name_coordinator_failure,
+    privacy_block_sentence,
     review_deferred_before_first_edit,
+    semantic_redacted_value_agent_lines,
     semantic_redacted_value_text,
 )
 from finishup.domain.review_guidance import review_guidance_line
@@ -94,7 +96,7 @@ from finishup.protocol.recovery import (
     correction_for_invariant,
     directive_for,
 )
-from finishup.protocol.redacted_values import SemanticRedactedValue
+from finishup.protocol.redacted_values import SemanticRedactedValue, review_block_agent_revisable
 
 __all__ = [
     "bounded_failure_line",
@@ -146,6 +148,7 @@ def render_semantic_outcome_recovery_lines(
     status: object,
     reason: object,
     provenance: object = None,
+    agent_revisable: bool | None = None,
 ) -> list[str]:
     """Resolve provider-review recovery from recorded status, never from findings."""
 
@@ -153,6 +156,7 @@ def render_semantic_outcome_recovery_lines(
         status=status,
         reason=reason,
         failure_class=_failure_class_from_provenance(provenance),
+        agent_revisable=agent_revisable,
     )
     directive = directive_for(token)
     if directive is None:
@@ -165,9 +169,10 @@ def _semantic_outcome_recovery_lines(
     status: object,
     reason: object,
     provenance: object = None,
+    agent_revisable: bool | None = None,
 ) -> list[str]:
     return render_semantic_outcome_recovery_lines(
-        status=status, reason=reason, provenance=provenance
+        status=status, reason=reason, provenance=provenance, agent_revisable=agent_revisable
     )
 
 
@@ -497,6 +502,10 @@ def render_human_check(result: CheckSuccessModel) -> str:
         status=result.semantic_status,
         reason=result.semantic_reason,
         provenance=result.semantic_provenance,
+        # #966: a block no agent action can clear says so instead of offering a replacement.
+        agent_revisable=review_block_agent_revisable(
+            _semantic_redacted_values(result.semantic_redacted_values)
+        ),
     )
     if recovery:
         lines.extend(recovery)
@@ -554,6 +563,15 @@ def render_human_check(result: CheckSuccessModel) -> str:
         for item in result.semantic_withheld_items:
             lines.append(f"- {item.item_id}: {_token(item.reason)}")
     lines.extend(_semantic_redacted_value_lines(result.semantic_redacted_values))
+    if result.semantic_status == "blocked_forbidden_data":
+        # Issue #1138: the refusal named as one, with its items, stage and class.
+        lines.append(
+            privacy_block_sentence(
+                _semantic_redacted_values(result.semantic_redacted_values),
+                skipped="semantic_review_skipped_privacy_block"
+                in tuple(result.coverage.known_gaps),
+            )
+        )
     if "semantic_review_skipped_insufficient_packet" in tuple(result.coverage.known_gaps):
         lines.append(
             "AI-powered review skipped: the reviewer twice in a row (or four times since the last "
@@ -1032,8 +1050,15 @@ def render_human_status(result: StatusSuccessModel) -> str:
                     disposition = note.disposition.replace("_", " ")
                     if disposition == "addressed":
                         disposition = "addressed (agent-reported, linked evidence)"
+                    elif disposition == "kept choice":
+                        disposition = "checked, kept my choice (agent-reported, with reason)"
                     elif disposition == "declined":
                         disposition = "declined with reason"
+                    elif disposition == "response unavailable":
+                        # #1190: a withheld answer is an answer; the receipt's own words.
+                        disposition = (
+                            "answered (response withheld; disposition and reason unreadable)"
+                        )
                     lines.append(f"Correctness advisory {note.advisory_id}: {disposition}")
                     lines.append("  Subjects: " + ", ".join(note.subject_refs))
                     lines.append(
@@ -1219,7 +1244,14 @@ def render_human_receipt(result: ReceiptSuccessModel) -> str:
     if isinstance(document, Mapping) and result.human_text is None:
         # ADR-049: a JSON receipt names the task's review-mode switches in its limitations
         # section; markdown and text already carry that section in ``human_text``.
-        lines.extend(_receipt_review_mode_lines(document))
+        review_mode = _receipt_review_mode_lines(document)
+        lines.extend(review_mode)
+        # #1246 (D17): and its proxy sentences, unless the review-mode tail already holds them.
+        lines.extend(
+            line
+            for line in _receipt_proxy_lines(document)
+            if not any(line in shown for shown in review_mode)
+        )
     if isinstance(document, Mapping):
         declared = document.get("verification_coverage")
         if isinstance(declared, Mapping):
@@ -1281,8 +1313,47 @@ def _receipt_review_mode_lines(document: Mapping[str, JsonValue]) -> list[str]:
     return []
 
 
+# #1246 (D17): the receipt builder's two fixed proxy sentences. Obligation ids (and "and N more")
+# hold neither "." nor ":", so a match is exactly one sentence and never the agent's prose.
+_RECEIPT_PROXY_SENTENCE: Final = re.compile(
+    r"Disclosed verification limit [^.:]+: proxy: none chosen \(no finishup-proxy decision "
+    r"records a proxy measurement or why none was feasible\)\."
+    r"|A finishup-proxy decision records the proxy measurement, or why none was feasible, for "
+    r"disclosed verification limit [^.:]+\."
+)
+
+
+def _receipt_proxy_lines(document: Mapping[str, JsonValue]) -> list[str]:
+    """The receipt's proxy sentences from its limitations section, when it has them (#1246)."""
+
+    sections = document.get("sections")
+    if not isinstance(sections, (list, tuple)):
+        return []
+    for raw in cast(Sequence[object], sections):
+        if not isinstance(raw, Mapping):
+            continue
+        section = cast(Mapping[str, object], raw)
+        body = section.get("body")
+        if section.get("key") == "limitations_and_coverage" and type(body) is str:
+            return [match.group(0) for match in _RECEIPT_PROXY_SENTENCE.finditer(body)]
+    return []
+
+
 def _semantic_redacted_value_lines(items: Sequence[object]) -> list[str]:
-    """PL2-1: item refs and line numbers, then the fixed agent line once; never a value."""
+    """PL2-1: item refs and line numbers, then each fixed agent line once; never a value."""
+
+    values = _semantic_redacted_values(items)
+    if not values:
+        return []
+    return [
+        "Withheld from external review (refs and lines only; no value is shown):",
+        *(f"- {semantic_redacted_value_text(value)}" for value in values),
+        *semantic_redacted_value_agent_lines(values),
+    ]
+
+
+def _semantic_redacted_values(items: Sequence[object]) -> tuple[SemanticRedactedValue, ...]:
+    """The valid entries of a rendered list (models or wire objects); invalid ones are skipped."""
 
     values: list[SemanticRedactedValue] = []
     for item in items:
@@ -1290,20 +1361,19 @@ def _semantic_redacted_value_lines(items: Sequence[object]) -> list[str]:
             if isinstance(item, SemanticRedactedValueModel):
                 values.append(
                     SemanticRedactedValue(
-                        item.item_id, item.disposition, tuple(item.lines), item.source_ref
+                        item.item_id,
+                        item.disposition,
+                        tuple(item.lines),
+                        item.source_ref,
+                        item.stage,
+                        item.match_class,
                     )
                 )
             else:
                 values.append(SemanticRedactedValue.from_wire(item))
         except (TypeError, ValueError):
             continue
-    if not values:
-        return []
-    return [
-        "Withheld from external review (refs and lines only; no value is shown):",
-        *(f"- {semantic_redacted_value_text(value)}" for value in values),
-        SEMANTIC_REDACTED_VALUES_AGENT_LINE,
-    ]
+    return tuple(values)
 
 
 def _semantic_withheld_item_lines(document: Mapping[str, JsonValue]) -> list[str]:

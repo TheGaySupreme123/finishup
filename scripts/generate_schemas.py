@@ -1782,6 +1782,8 @@ _RECEIPT_SCAN_STAGES: Final[tuple[str, ...]] = (
     "not_run",
     "prepared_case",
     "rendered_body",
+    # #1138: the whole reviewer conversation's scan (unreleased 1.1 receipt shapes only).
+    "reviewer_exchange",
 )
 _WITHHELD_ITEM_ID_SCHEMA: Final[dict[str, JsonValue]] = {
     "maxLength": 128,
@@ -1829,6 +1831,19 @@ def _extend_receipt_schema_fields(
         # Present only when the owner policy in force had the low-confidence credential heuristic
         # turned off for this disclosure (issue #982); absent means it was enforced.
         scan_properties["credential_heuristic"] = {"const": "disabled", "type": "string"}
+        # #1138: a refusing scan's confidence class and the opaque case items its matches sat in
+        # (none listed when no single item explains them). Never matched bytes.
+        scan_properties["match_class"] = {
+            "enum": ["heuristic", "high_confidence"],
+            "type": "string",
+        }
+        scan_properties["match_item_ids"] = {
+            "items": _WITHHELD_ITEM_ID_SCHEMA,
+            "maxItems": 16,
+            "minItems": 1,
+            "type": "array",
+            "uniqueItems": True,
+        }
         scan_all_of = scan.setdefault("allOf", [])
         if not isinstance(scan_all_of, list):
             raise SchemaGenerationError("receipt_secret_scan_schema_template_invalid")
@@ -1844,6 +1859,14 @@ def _extend_receipt_schema_fields(
                         "required": ["stage"],
                         "properties": {"stage": {"const": "not_run"}},
                     },
+                },
+                {
+                    "if": {"required": ["match_item_ids"]},
+                    "then": {"required": ["match_class"]},
+                },
+                {
+                    "if": {"required": ["match_class"]},
+                    "then": {"properties": {"passed": {"const": False}}},
                 },
             ]
         )
@@ -1907,6 +1930,43 @@ def _egress_receipt_v1_1_schema(entry: _RegistryEntry) -> dict[str, JsonValue]:
     }
     for name in ("approved_categories", "blocked_categories"):
         properties[name] = {"$ref": "#/$defs/receipt_category_set"}
+    # #1129: a size refusal's typed capacity reason. The durable outcome and reason stay
+    # ``blocked_by_policy`` / ``policy_denied``; this names the bound and its unit, in integers
+    # only. 1.1.0 is unreleased, so it is added in place; a 1.0.0 receipt never carries it.
+    from finishup.domain.privacy import RECEIPT_CAPACITY_SCOPE_UNITS
+
+    definitions["capacity_exceeded"] = {
+        "additionalProperties": False,
+        "oneOf": [
+            {
+                "properties": {"scope": {"const": scope}, "unit": {"const": unit}},
+                "required": ["scope", "unit"],
+            }
+            for scope, unit in sorted(RECEIPT_CAPACITY_SCOPE_UNITS)
+        ],
+        "properties": {
+            "attempted": {"$ref": "#/$defs/uint53_decimal"},
+            "limit": {"$ref": "#/$defs/uint53_decimal"},
+            "scope": {"enum": ["disclosure", "excerpt", "excerpt_total"], "type": "string"},
+            "unit": {"enum": ["bytes", "excerpts", "tokens"], "type": "string"},
+        },
+        "required": ["scope", "unit", "attempted", "limit"],
+        "type": "object",
+    }
+    properties["capacity_exceeded"] = {"$ref": "#/$defs/capacity_exceeded"}
+    cast(list[JsonValue], document["allOf"]).append(
+        {
+            "if": {"required": ["capacity_exceeded"]},
+            "then": {
+                "properties": {
+                    "outcome": {"const": "blocked_by_policy"},
+                    "safe_failure_reason": {"const": "policy_denied"},
+                    "schema_version": {"const": "1.1.0"},
+                },
+                "required": ["outcome", "safe_failure_reason", "schema_version"],
+            },
+        }
+    )
     document["title"] = "Yoetz egress receipt 1.1.0"
     return document
 
@@ -2420,6 +2480,42 @@ def _check_recorded_v1_5_schema(entry: _RegistryEntry) -> dict[str, JsonValue]:
     return document
 
 
+def _admit_deferred_check(document: dict[str, JsonValue]) -> None:
+    """check-recorded 1.5.0 admits the deferred check the writer records on it (n6 item 4).
+
+    The writer records 1.5.0 for the pre-edit deferral alone (``not_requested`` /
+    ``deferred_before_first_edit``, never with a conclusion; ``domain.events``), yet the document
+    kept 1.4.0's recorded-review shape (``succeeded`` with a required conclusion) and so refused
+    every event written on it. 1.5.0 is unreleased and is amended in place: that pair gets its own
+    branch without ``semantic_conclusion`` (``semantic_binding`` already forbids provenance beside
+    it), and the completed-review shape stays. 1.6.0, built from 1.5.0, never carries a deferral
+    and does not get this branch.
+    """
+
+    properties = cast(dict[str, JsonValue], document["properties"])
+    if properties["semantic_status"] != {"const": "succeeded", "type": "string"}:
+        raise SchemaGenerationError("check_recorded_1_5_status_changed")
+    properties["semantic_status"] = {"enum": ["not_requested", "succeeded"], "type": "string"}
+    cast(list[JsonValue], document["required"]).remove("semantic_conclusion")
+    cast(list[JsonValue], document["allOf"]).append(
+        {
+            "oneOf": [
+                {
+                    "properties": {"semantic_status": {"const": "succeeded"}},
+                    "required": ["semantic_conclusion"],
+                },
+                {
+                    "not": {"required": ["semantic_conclusion"]},
+                    "properties": {
+                        "semantic_reason": {"const": _DEFERRED_BEFORE_FIRST_EDIT_REASON},
+                        "semantic_status": {"const": "not_requested"},
+                    },
+                },
+            ]
+        }
+    )
+
+
 def _correctness_advisories_schema(*, history: bool = False) -> dict[str, JsonValue]:
     """#1162: routine correctness notes; subjects are the fence-resolved refs of the challenge.
 
@@ -2468,7 +2564,9 @@ def _correctness_advisories_schema(*, history: bool = False) -> dict[str, JsonVa
                     "enum": [
                         "addressed",
                         "declined",
+                        "kept_choice",
                         "no_recorded_response",
+                        "response_unavailable",
                     ],
                     "type": "string",
                 },
@@ -2588,7 +2686,7 @@ def _advisory_response_schema() -> dict[str, JsonValue]:
         "additionalProperties": False,
         "properties": {
             "advisory_id": {"type": "string", "pattern": ADVISORY_ID_PATTERN},
-            "disposition": {"type": "string", "enum": ["addressed", "declined"]},
+            "disposition": {"type": "string", "enum": ["addressed", "declined", "kept_choice"]},
             "evidence_refs": {
                 "type": "array",
                 "maxItems": 64,
@@ -2617,14 +2715,17 @@ def _admit_advisory_dispositions(
     dispositions = cast(
         list[JsonValue], cast(dict[str, JsonValue], properties["disposition"])["enum"]
     )
-    dispositions.extend(["addressed", "declined"])
+    # #1240 D3: ``kept_choice`` (checked, kept my choice) answers a note like ``declined``.
+    dispositions.extend(["addressed", "declined", "kept_choice"])
     dispositions.sort(key=lambda value: str(value).encode("ascii"))
     properties["finding_id"] = {
         "anyOf": [properties["finding_id"], {"type": "string", "pattern": ADVISORY_ID_PATTERN}]
     }
     rules.append(
         {
-            "if": {"properties": {"disposition": {"enum": ["addressed", "declined"]}}},
+            "if": {
+                "properties": {"disposition": {"enum": ["addressed", "declined", "kept_choice"]}}
+            },
             "then": {
                 **_no_waiver_fields(),
                 "required": ["reason"],
@@ -2661,6 +2762,7 @@ def _check_recorded_v1_6_schema(entry: _RegistryEntry) -> dict[str, JsonValue]:
 
     document = _check_recorded_v1_5_schema(entry)
     _admit_stopped_review(document)
+    _admit_unconcluded_review(document)
     _add_test_check_to_review_input_manifest(document)
     definitions = cast(dict[str, JsonValue], document["$defs"])
     _add_reviewer_definitions(definitions)
@@ -2687,6 +2789,9 @@ def _check_request_v1_1_schema(entry: _RegistryEntry) -> dict[str, JsonValue]:
     # Issue #1012, unreleased in-place addition: wait, bounded, for the caller's pending hook
     # observations before the case freezes. Absent requests keep their exact shape.
     properties["await_observations"] = {"type": "boolean"}
+    # #1244 (D13), unreleased in-place addition: a brief reply names each finding's identity and
+    # action fields only. Absent requests keep their exact shape.
+    properties["detail"] = {"enum": ["brief", "full"], "type": "string"}
     # Issue #1048 (ADR-047), unreleased in-place addition: ``inspect`` reads what is left to
     # close instead of checking. It records nothing and mints no findings, so the request model
     # refuses the finding, pack, closing-review and scope options beside it. That rule stays out
@@ -4010,6 +4115,89 @@ def _add_deliverable_states(
     }
 
 
+def _semantic_redacted_value_def(
+    opaque: dict[str, JsonValue], *, review_blocked: bool = False
+) -> dict[str, JsonValue]:
+    """One PL2-1 entry; ``review_blocked`` admits the #1138 disposition with stage and class."""
+
+    lines: dict[str, JsonValue] = {
+        "items": {"maximum": 2147483647, "minimum": 1, "type": "integer"},
+        "maxItems": 32,
+        "type": "array",
+        "uniqueItems": True,
+    }
+    if not review_blocked:
+        return {
+            "additionalProperties": False,
+            "properties": {
+                "disposition": {"enum": ["item_withheld", "value_replaced"], "type": "string"},
+                "item_id": opaque,
+                "lines": lines,
+                "source_ref": dict(opaque),
+            },
+            "required": ["disposition", "item_id", "lines"],
+            "type": "object",
+        }
+    return {
+        "additionalProperties": False,
+        # Only a ``review_blocked`` entry names the refusing scan stage and the match's class.
+        "if": {"properties": {"disposition": {"const": "review_blocked"}}},
+        "then": {"required": ["stage", "match_class"]},
+        "else": {"not": {"anyOf": [{"required": ["stage"]}, {"required": ["match_class"]}]}},
+        "properties": {
+            "disposition": {
+                "enum": ["item_withheld", "review_blocked", "value_replaced"],
+                "type": "string",
+            },
+            "item_id": opaque,
+            "lines": lines,
+            "match_class": {"enum": ["heuristic", "high_confidence"], "type": "string"},
+            "source_ref": dict(opaque),
+            "stage": {
+                "enum": ["candidate", "prepared_case", "reviewer_exchange"],
+                "type": "string",
+            },
+        },
+        "required": ["disposition", "item_id", "lines"],
+        "type": "object",
+    }
+
+
+# #1138: the newest unreleased versions admit ``review_blocked`` in place; every earlier version
+# stays byte-identical (#1118 R7: an earlier closed version's readers must keep their bytes).
+_REVIEW_BLOCKED_SCHEMA_PATHS: Final = frozenset(
+    {
+        "events/check-recorded-1.6.0.schema.json",
+        "operations/check-result-1.7.0.schema.json",
+        "operations/status-result-1.5.0.schema.json",
+        "receipts/receipt-document-1.3.0.schema.json",
+    }
+)
+
+
+def _admit_review_blocked(document: JsonValue) -> None:
+    """Widen every embedded PL2-1 entry definition to admit ``review_blocked`` (#1138)."""
+
+    if isinstance(document, list):
+        for item in document:
+            _admit_review_blocked(item)
+        return
+    if not isinstance(document, dict):
+        return
+    for key, value in tuple(document.items()):
+        if (
+            key == "semantic_redacted_value"
+            and isinstance(value, dict)
+            and isinstance(value.get("properties"), dict)
+        ):
+            properties = cast(dict[str, JsonValue], value["properties"])
+            document[key] = _semantic_redacted_value_def(
+                cast(dict[str, JsonValue], properties["item_id"]), review_blocked=True
+            )
+        else:
+            _admit_review_blocked(value)
+
+
 def _add_semantic_redacted_values(
     definitions: dict[str, JsonValue],
     properties: dict[str, JsonValue],
@@ -4024,22 +4212,7 @@ def _add_semantic_redacted_values(
         "pattern": r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
         "type": "string",
     }
-    definitions["semantic_redacted_value"] = {
-        "additionalProperties": False,
-        "properties": {
-            "disposition": {"enum": ["item_withheld", "value_replaced"], "type": "string"},
-            "item_id": opaque,
-            "lines": {
-                "items": {"maximum": 2147483647, "minimum": 1, "type": "integer"},
-                "maxItems": 32,
-                "type": "array",
-                "uniqueItems": True,
-            },
-            "source_ref": dict(opaque),
-        },
-        "required": ["disposition", "item_id", "lines"],
-        "type": "object",
-    }
+    definitions["semantic_redacted_value"] = _semantic_redacted_value_def(opaque)
     array: dict[str, JsonValue] = {
         "items": {"$ref": "#/$defs/semantic_redacted_value"},
         "maxItems": 64,
@@ -4337,6 +4510,97 @@ def _check_result_v1_6_schema(entry: _RegistryEntry) -> dict[str, JsonValue]:
     document["$id"] = SCHEMA_NAMESPACE + entry.relative_path
     document["title"] = f"FinishUP check result {entry.schema_version}"
     return document
+
+
+# The outcomes a reviewer conversation (#1118) can end on without a conclusion, which the check
+# path records beside the conversation's reviewer record. ``run_reviewer`` attaches the record to
+# every terminal result it returns, including one whose first exchange was refused before
+# dispatch; ``_map_egress_to_final`` maps that result (a privacy or policy refusal, a capacity
+# refusal, a provider outcome, or ``failed/coordinator_failure`` for an unmappable one; a timeout
+# or unknown outcome no receipt certifies is ``receipt_persistence_unknown``); the attempt runner
+# adds ``retry_budget_exhausted``; and the check restates an answer its fence refuses as
+# ``semantic_judgment_rejected``, keeping the record. ``awaiting_human`` is never recorded (the
+# check waits), and the remaining pairs (not requested, not configured, route ceiling, revoked
+# policy generation, credential or endpoint unavailable, lease lost, stale, secret_detected, the
+# round-limit stop) are decided before any conversation runs.
+_UNCONCLUDED_REVIEW_OUTCOMES: Final[Mapping[str, tuple[str, ...]]] = MappingProxyType(
+    {
+        "approval_expired": ("human_approval_expired",),
+        "blocked_by_policy": (
+            "channel_disabled",
+            "content_category_not_authorized",
+            "network_egress_denied",
+            "provider_binding_not_authorized",
+            "scope_not_authorized",
+        ),
+        "blocked_forbidden_data": ("never_send_detected",),
+        "classification_uncertain": ("classification_uncertain",),
+        "failed": ("case_capacity_exceeded", "coordinator_failure"),
+        "human_denied": ("human_denied",),
+        "invalid": (
+            "response_content_invalid",
+            "response_schema_invalid",
+            "semantic_judgment_rejected",
+        ),
+        "late": ("deadline_authority_lost",),
+        "refused": ("provider_refused",),
+        "timeout": ("provider_timeout",),
+        "unavailable": (
+            "audit_reservation_unavailable",
+            "outcome_unknown",
+            "provider_quota_exhausted",
+            "provider_rate_limited",
+            "receipt_persistence_unknown",
+            "retry_budget_exhausted",
+            "transport_unavailable",
+        ),
+    }
+)
+
+
+def _admit_unconcluded_review(document: dict[str, JsonValue]) -> None:
+    """A review that ended without a conclusion records on check-recorded 1.6.0 (#1118, #1138).
+
+    1.6.0 is written whenever the reviewer record is present, and its recorded-review shape
+    otherwise admits only a completed review or the stopped pair. A conversation can end on any of
+    ``_UNCONCLUDED_REVIEW_OUTCOMES`` instead: a privacy refusal (whose ``review_blocked`` items
+    exist only on 1.6.0), a policy refusal, the owner's denial, a provider failure or timeout, a
+    capacity refusal or a coordinator failure. Those pairs share one branch of their own: no
+    ``semantic_conclusion``, and a reviewer record may remain. The provenance each pair needs is
+    still decided by ``semantic_binding``.
+    """
+
+    status = cast(
+        dict[str, JsonValue], cast(dict[str, JsonValue], document["properties"])["semantic_status"]
+    )
+    statuses = cast(list[JsonValue], status["enum"])
+    statuses.extend(sorted(set(_UNCONCLUDED_REVIEW_OUTCOMES) - {str(item) for item in statuses}))
+    statuses.sort(key=lambda item: str(item).encode("ascii"))
+    pairs = next(
+        cast(list[JsonValue], item["oneOf"])
+        for item in cast(list[JsonValue], document["allOf"])
+        if isinstance(item, dict)
+        and isinstance(item.get("oneOf"), list)
+        and {
+            "properties": {"semantic_status": {"const": "succeeded"}},
+            "required": ["semantic_conclusion"],
+        }
+        in cast(list[JsonValue], item["oneOf"])
+    )
+    outcomes: list[JsonValue] = []
+    for status_name in sorted(_UNCONCLUDED_REVIEW_OUTCOMES, key=lambda name: name.encode("ascii")):
+        reasons = sorted(
+            _UNCONCLUDED_REVIEW_OUTCOMES[status_name], key=lambda name: name.encode("ascii")
+        )
+        outcomes.append(
+            {
+                "properties": {
+                    "semantic_reason": {"enum": cast(list[JsonValue], reasons)},
+                    "semantic_status": {"const": status_name},
+                }
+            }
+        )
+    pairs.append({"anyOf": outcomes, "not": {"required": ["semantic_conclusion"]}})
 
 
 def _admit_stopped_review(document: dict[str, JsonValue]) -> None:
@@ -6627,6 +6891,7 @@ _FINDING_NEXT_ACTIONS: Final = (
     "self_verify",
 )
 _PREDICTION_REASON_CODES: Final = (
+    "advice_unanswered",
     "check_suppressed_findings",
     "check_verdict_insufficient",
     "child_findings_actionable",
@@ -6671,7 +6936,7 @@ def _predicted_receipt_schema() -> dict[str, JsonValue]:
                 "uniqueItems": True,
             },
             "rule": {
-                "enum": ["R1", "R10", "R2", "R3", "R4", "R5", "R6", "R7", "R8", "R9"],
+                "enum": ["R1", "R10", "R11", "R2", "R3", "R4", "R5", "R6", "R7", "R8", "R9"],
                 "type": "string",
             },
             "since_frontier": {"$ref": "#/$defs/canonical_uint"},
@@ -6860,11 +7125,17 @@ def _add_status_closure_verdict(definitions: dict[str, JsonValue]) -> None:
                     "properties": {
                         "key": {
                             "maxLength": 160,
-                            "pattern": r"^(?:accept|ack|blocker|premise):[A-Za-z0-9_.:?-]{1,140}$",
+                            "pattern": r"^(?:accept|ack|advice|blocker|premise):[A-Za-z0-9_.:?-]{1,140}$",
                             "type": "string",
                         },
                         "kind": {
-                            "enum": ["acceptance", "acknowledgement", "blocker", "premise"],
+                            "enum": [
+                                "acceptance",
+                                "acknowledgement",
+                                "advice",
+                                "blocker",
+                                "premise",
+                            ],
                             "type": "string",
                         },
                         "rule": {"$ref": "#/$defs/code"},
@@ -7576,7 +7847,7 @@ def _receipt_document_v1_3_schema(entry: _RegistryEntry) -> dict[str, JsonValue]
                 "uniqueItems": True,
             },
             "rule": {
-                "enum": ["R1", "R10", "R2", "R3", "R4", "R5", "R6", "R7", "R8", "R9"],
+                "enum": ["R1", "R10", "R11", "R2", "R3", "R4", "R5", "R6", "R7", "R8", "R9"],
                 "type": "string",
             },
             "since_frontier": {"maximum": 9007199254740991, "minimum": 0, "type": "integer"},
@@ -13727,10 +13998,11 @@ def _result_delivery_schema(entry: _RegistryEntry) -> dict[str, JsonValue]:
     if entry.schema_name == "status-request":
         properties = cast(dict[str, JsonValue], document["properties"])
         properties["delivery"] = {"enum": ["complete", "paged"], "type": "string"}
+        # #1244 (D12): a short handle, never the earlier signed and compressed blob.
         properties["delivery_cursor"] = {
             "type": "string",
             "minLength": 1,
-            "maxLength": 4096,
+            "maxLength": 96,
             "pattern": "^[A-Za-z0-9_.-]+$",
         }
         rules = cast(list[JsonValue], document.setdefault("allOf", []))
@@ -13756,8 +14028,53 @@ def _result_delivery_schema(entry: _RegistryEntry) -> dict[str, JsonValue]:
             }
         )
     else:
-        from finishup.protocol.models import DeliveryPageModel
+        from finishup.protocol.models import CHECK_BRIEF_FINDING_KEYS, DeliveryPageModel
 
+        result_defs = cast(dict[str, JsonValue], document["$defs"])
+        if entry.schema_name == "check-result":
+            # #1244 (D13), unreleased in-place addition: a ``detail: brief`` check names each
+            # finding by its identity and action fields; full rows keep their released shape.
+            full_row = cast(dict[str, JsonValue], result_defs["projected_finding"])
+            full_properties = cast(dict[str, JsonValue], full_row["properties"])
+            brief_row = {
+                **{
+                    k: v
+                    for k, v in full_row.items()
+                    if k not in {"properties", "required", "allOf"}
+                },
+                "properties": {
+                    key: full_properties[key]
+                    for key in CHECK_BRIEF_FINDING_KEYS
+                    if key in full_properties
+                },
+                "required": [
+                    key
+                    for key in cast(list[str], full_row["required"])
+                    if key in CHECK_BRIEF_FINDING_KEYS
+                ],
+            }
+            result_defs["brief_finding"] = cast(JsonValue, brief_row)
+            success = cast(dict[str, JsonValue], result_defs["success"])
+            success_properties = cast(dict[str, JsonValue], success["properties"])
+            success_properties["detail"] = {"const": "brief"}
+            success_properties["closure_state"] = {
+                "$ref": SCHEMA_NAMESPACE
+                + "operations/status-result-1.4.0.schema.json#/$defs/closure_state"
+            }
+            findings = cast(dict[str, JsonValue], success_properties["findings"])
+            findings["items"] = {
+                "anyOf": [
+                    {"$ref": "#/$defs/projected_finding"},
+                    {"$ref": "#/$defs/brief_finding"},
+                ]
+            }
+        elif entry.schema_name == "status-result":
+            # #1244 (D13), unreleased in-place addition: a brief compact page omits each
+            # unanswered finding's detail.
+            compact = cast(dict[str, JsonValue], result_defs["compact_finding"])
+            compact["required"] = [
+                key for key in cast(list[str], compact["required"]) if key != "detail"
+            ]
         page = DeliveryPageModel.model_json_schema()
         page_defs = cast(dict[str, JsonValue], page.pop("$defs", {}))
         # Pydantic emits plain strings for BeforeValidator-backed wire types. Point the page's
@@ -13790,6 +14107,11 @@ def _result_delivery_schema(entry: _RegistryEntry) -> dict[str, JsonValue]:
         properties["result_frontier"] = {
             "$ref": SCHEMA_NAMESPACE + "common/frontier-1.0.0.schema.json"
         }
+        # #1244 (D12): absent unless the page comes from a kept set the ledger has moved past.
+        properties["ledger_moved_since"] = {
+            "$ref": SCHEMA_NAMESPACE + "common/frontier-1.0.0.schema.json"
+        }
+        properties["page_set_restarted"] = {"const": True}
         properties["privacy_projection"] = {
             "$ref": SCHEMA_NAMESPACE + "common/operation-result-1.0.0.schema.json"
             "#/$defs/privacy_projection"
@@ -13893,8 +14215,10 @@ def build_schema_documents(
             normalized = _check_recorded_v1_4_schema(entry)
         elif entry.relative_path == "events/check-recorded-1.5.0.schema.json":
             normalized = _check_recorded_v1_5_schema(entry)
+            _admit_deferred_check(cast(dict[str, JsonValue], normalized))
         elif entry.relative_path == "events/check-recorded-1.6.0.schema.json":
             normalized = _check_recorded_v1_6_schema(entry)
+            _admit_review_blocked(cast(JsonValue, normalized))
         elif entry.relative_path == "findings/provider-judgment-1.1.0.schema.json":
             normalized = _provider_judgment_v1_1_schema(entry)
         elif entry.relative_path == "findings/provider-judgment-1.2.0.schema.json":
@@ -14016,6 +14340,8 @@ def build_schema_documents(
             "operations/status-request-1.3.0.schema.json",
         }:
             normalized = _result_delivery_schema(entry)
+            if entry.relative_path in _REVIEW_BLOCKED_SCHEMA_PATHS:
+                _admit_review_blocked(cast(JsonValue, normalized))
         elif entry.relative_path == "operations/check-result-1.6.0.schema.json":
             normalized = _check_result_v1_6_schema(entry)
         elif entry.relative_path == "operations/receipt-result-1.1.0.schema.json":
@@ -14081,6 +14407,7 @@ def build_schema_documents(
             )
         elif entry.relative_path == "receipts/receipt-document-1.3.0.schema.json":
             normalized = _receipt_document_v1_3_schema(entry)
+            _admit_review_blocked(cast(JsonValue, normalized))
         elif entry.relative_path in {
             "version/version-manifest-2.0.0.schema.json",
             "version/version-manifest-2.1.0.schema.json",

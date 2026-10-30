@@ -43,12 +43,14 @@ from finishup.domain.privacy import (
     PrivacyOutcome,
     PrivacyReason,
     ProviderBinding,
+    ReceiptCapacity,
     ReceiptCounts,
     ReceiptPolicyBinding,
     ReceiptSecretScan,
     ReceiptSecretScanStage,
     ReceiptTransformations,
     RequestCommitment,
+    ScanMatchClass,
 )
 from finishup.domain.values import (
     JsonObject,
@@ -775,6 +777,13 @@ def _secret_scan_from_wire(value: object, *, legacy_unknown: bool = False) -> Re
             if source.get("credential_heuristic") is None
             else CredentialHeuristic(cast(str, source["credential_heuristic"]))
         ),
+        # #1138: the refusing match's confidence class and the items it sat in.
+        match_class=cast(ScanMatchClass | None, source.get("match_class")),
+        match_item_ids=(
+            ()
+            if source.get("match_item_ids") is None
+            else tuple(cast(tuple[str, ...], source["match_item_ids"]))
+        ),
     )
 
 
@@ -827,6 +836,20 @@ def _request_commitment_from_wire(value: object) -> RequestCommitment:
             source["algorithm"],
         ),
         commitment=cast(str, source["commitment"]),
+    )
+
+
+def _receipt_capacity_from_wire(value: object) -> ReceiptCapacity | None:
+    """A size refusal's typed capacity reason (#1129); absent on every other receipt."""
+
+    if value is None:
+        return None
+    source = _object(value)
+    return ReceiptCapacity(
+        cast(Literal["disclosure", "excerpt", "excerpt_total"], source["scope"]),
+        cast(Literal["bytes", "tokens", "excerpts"], source["unit"]),
+        _decimal(source["attempted"]),
+        _decimal(source["limit"]),
     )
 
 
@@ -890,6 +913,7 @@ def _receipt_view_from_wire(value: object) -> PrivacyReceiptView:
                 if "origin_operation" not in receipt
                 else EgressOriginOperation(cast(str, receipt["origin_operation"]))
             ),
+            capacity_exceeded=_receipt_capacity_from_wire(receipt.get("capacity_exceeded")),
         )
         return NetworkEgressReceiptView(kind="network_egress", receipt=network_receipt)
     local_receipt = LocalDisclosureReceipt(

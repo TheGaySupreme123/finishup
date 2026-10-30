@@ -168,3 +168,41 @@ def test_prose_uses_the_exact_sentence_for_the_new_reason_and_the_older_gap() ->
         "deterministic_mode", ("semantic_review_deferred_before_first_edit",)
     )
     assert not review_deferred_before_first_edit("deterministic_mode", ())
+
+
+def test_check_recorded_1_5_admits_exactly_the_deferred_check_written_on_it() -> None:
+    """The writer records 1.5.0 for the deferral alone; that event, and no other pair, validates."""
+
+    from dataclasses import replace
+
+    from tests.unit.kernel import test_receipt_builder as receipt_test
+
+    from finishup.domain.events import CheckMode, EventSchema, decode_payload, encode_payload
+    from finishup.domain.findings import CheckVerdict
+    from finishup.domain.values import JsonValue as DomainJsonValue
+    from finishup.protocol.models import SemanticStatus
+
+    deferred = replace(
+        receipt_test._check(  # pyright: ignore[reportPrivateUsage]
+            CheckVerdict.INSUFFICIENT_COVERAGE,
+            receipt_test._coverage(),  # pyright: ignore[reportPrivateUsage]
+        ),
+        mode=CheckMode.SEMANTIC_REQUIRED,
+        semantic_status=SemanticStatus.NOT_REQUESTED,
+        semantic_reason=SemanticReason.DEFERRED_BEFORE_FIRST_EDIT,
+    )
+    body = cast(dict[str, Any], json.loads(canonical_encode(encode_payload(deferred))))
+    # The writer's version rule.
+    decode_payload(EventSchema("check_recorded", "1.5.0"), cast(DomainJsonValue, body))
+    validate_schema_instance("check-recorded", "1.5.0", body)
+    for change in (
+        {"semantic_conclusion": "no_material_discrepancy"},
+        {"semantic_reason": "deterministic_mode"},
+        {"semantic_status": "unavailable", "semantic_reason": "round_limit_unassessable"},
+    ):
+        with pytest.raises(SchemaInstanceInvalid):
+            validate_schema_instance("check-recorded", "1.5.0", {**body, **change})
+    # Neither 1.4.0 nor the reviewer's 1.6.0 carries a deferral.
+    for version in ("1.4.0", "1.6.0"):
+        with pytest.raises(SchemaInstanceInvalid):
+            validate_schema_instance("check-recorded", version, body)

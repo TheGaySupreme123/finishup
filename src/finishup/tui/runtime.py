@@ -2421,14 +2421,16 @@ class FinishUpRuntime:
     async def task_status(
         self,
         title: str,
-        view: Literal["lineage", "project", "findings", "coverage"],
+        view: Literal["lineage", "project", "findings", "coverage", "notes"],
         *,
         cursor: str | None = None,
     ) -> TaskStatusPage:
         """Render the same service projection used by MCP and the CLI.
 
         The ``findings`` view is the task's to-do list (issue #905): every item with its one
-        state, verified rows included, rendered by the CLI's own checklist lines.
+        state, verified rows included, rendered by the CLI's own checklist lines. ``notes``
+        (#1240) is the history view over recorded checks, which carries each reviewer note
+        with how it was answered.
         """
 
         from finishup.cli.render import render_human_status
@@ -2442,10 +2444,11 @@ class FinishUpRuntime:
                 **self._workflow_identity(),
                 "session_id": session.session_id,
                 "writer_id": session.writer_id,
-                "view": view,
+                "view": "history" if view == "notes" else view,
                 "limit": "50",
                 "cursor": cursor,
                 **({"filter": {"include_resolved": True}} if view == "findings" else {}),
+                **({"filter": {"schema_name": "check_recorded"}} if view == "notes" else {}),
             }
         )
         async with self._client() as client:

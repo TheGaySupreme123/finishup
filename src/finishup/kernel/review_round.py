@@ -19,22 +19,29 @@ unresolved on the receipt, which also discloses the skipped review.
 from __future__ import annotations
 
 from collections.abc import Iterable
+from dataclasses import dataclass
 from typing import Final
 
 from finishup.domain.events import (
     ActionKind,
     ActionRecordedPayload,
     CheckRecordedPayload,
+    EvidenceDigestProvenance,
+    EvidenceRecordedPayload,
     LedgerRecord,
 )
+from finishup.domain.receipts import SEMANTIC_REVIEW_SKIPPED_PRIVACY_BLOCK_GAP
 from finishup.domain.values import FindingId
-from finishup.protocol.models import SemanticStatus
+from finishup.protocol.models import SemanticReason, SemanticStatus
+from finishup.protocol.redacted_values import SemanticRedactedValue
 
 __all__ = [
     "INSUFFICIENT_PACKET_ROUND_LIMIT",
     "INSUFFICIENT_PACKET_TASK_LIMIT",
     "UNASSESSABLE_RULING_ROUND_LIMIT",
     "UNASSESSABLE_RULING_TASK_LIMIT",
+    "PrivacyBlockStanding",
+    "privacy_block_standing",
     "review_round_stopped",
     "unassessable_review_exhausted",
 ]
@@ -159,3 +166,87 @@ def unassessable_review_exhausted(records: Iterable[LedgerRecord]) -> frozenset[
         if not running:
             break
     return frozenset(exhausted)
+
+
+@dataclass(frozen=True, slots=True)
+class PrivacyBlockStanding:
+    """The newest AI-powered review's privacy-boundary refusal, unchanged since (#1138).
+
+    ``redacted_values`` are that refusal's recorded ``review_blocked`` items (and any other
+    recorded item dispositions), carried onto the check that does not send it again.
+    ``final_review`` says whether the refusal was a closing review's own.
+    """
+
+    redacted_values: tuple[SemanticRedactedValue, ...]
+    final_review: bool
+
+
+def _agent_published_evidence(payload: object) -> bool:
+    """Evidence an agent published (a replacement item), as opposed to a hook capture."""
+
+    if type(payload) is not EvidenceRecordedPayload:
+        return False
+    binding = payload.digest_binding
+    return (
+        binding is None or binding.provenance is not EvidenceDigestProvenance.OBSERVATION_CAPTURED
+    )
+
+
+# Agent-published text a review item is composed from (#966): a claim, plan goal, obligation,
+# decision or local-finding answer. Publishing one may replace the refused text, so it ends the
+# standing and the next check composes and scans the case again; nothing is sent unless it passes.
+_AGENT_PUBLISHED_TEXT: Final = frozenset(
+    {
+        "claim_recorded",
+        "decision_recorded",
+        "obligation_published",
+        "plan_published",
+        "plan_revised",
+        "response_recorded",
+    }
+)
+
+
+def privacy_block_standing(records: Iterable[LedgerRecord]) -> PrivacyBlockStanding | None:
+    """Whether the newest AI-powered review was refused at the privacy boundary, unchanged since.
+
+    Issue #1138: a ``blocked_forbidden_data`` / ``never_send_detected`` refusal is deterministic:
+    the same content is refused the same way. True when the newest check that asked for a review
+    recorded that refusal (or carried it forward under ``semantic_review_skipped_privacy_block``)
+    and neither an edit action, agent-published evidence nor agent-published text (a claim, plan,
+    obligation, decision or answer, #966) was recorded after it: the content the refusal named
+    cannot have changed through the ledger. Hook-captured tool output does not
+    count, since capturing more output leaves the refused item in place. A local-only check asked
+    for no review and neither counts nor resets; any other review outcome ends the standing.
+    Reads recorded payloads only; pure.
+    """
+
+    for record in reversed(tuple(records)):
+        payload = record.payload
+        name = record.schema.name
+        if (
+            name == "action_recorded"
+            and type(payload) is ActionRecordedPayload
+            and payload.action_kind is ActionKind.EDIT
+        ):
+            return None
+        if name == "evidence_recorded" and _agent_published_evidence(payload):
+            return None
+        if name in _AGENT_PUBLISHED_TEXT:
+            return None
+        if name != "check_recorded" or type(payload) is not CheckRecordedPayload:
+            continue
+        if payload.semantic_status is SemanticStatus.NOT_REQUESTED:
+            continue
+        if (
+            payload.semantic_status is not SemanticStatus.BLOCKED_FORBIDDEN_DATA
+            or payload.semantic_reason is not SemanticReason.NEVER_SEND_DETECTED
+        ):
+            return None
+        if SEMANTIC_REVIEW_SKIPPED_PRIVACY_BLOCK_GAP in payload.coverage.known_gaps:
+            # A carried refusal: the refusal it carried is older; keep walking to it.
+            continue
+        manifest = payload.review_input_manifest
+        phase = None if manifest is None else manifest.get("review_phase")
+        return PrivacyBlockStanding(payload.semantic_redacted_values, phase == "final")
+    return None

@@ -41,6 +41,7 @@ from finishup.domain.privacy import (
     PrivacyProfile,
     PrivacyReason,
     ProviderBinding,
+    ReceiptCapacity,
     ReceiptCounts,
     ReceiptPolicyBinding,
     ReceiptSecretScan,
@@ -49,6 +50,7 @@ from finishup.domain.privacy import (
     RequestCommitment,
     ReviewContextProfile,
     ReviewSelectionPolicy,
+    ScanMatchClass,
     policy_field_omitted,
     review_selection_policy_schema_version,
     validate_admitted_input_roots,
@@ -215,6 +217,9 @@ def _receipt_bytes(receipt: LocalDisclosureReceipt | EgressReceipt) -> bytes:
     if encoded.get("origin_operation", "") is None:
         # Absent unless named (tb4n2 N-5), so every row written before the field keeps its bytes.
         encoded.pop("origin_operation")
+    if encoded.get("capacity_exceeded", "") is None:
+        # Absent unless a size refusal (#1129), so every other row keeps its exact bytes.
+        encoded.pop("capacity_exceeded")
     return canonical_encode(cast(JsonValue, encoded))
 
 
@@ -357,6 +362,9 @@ def _receipt_common_from_json(source: dict[str, JsonValue]) -> _ReceiptCommon:
                 else PrivacyReason(cast(str, scan["not_run_reason"]))
             ),
             _credential_heuristic_from_json(scan.get("credential_heuristic"), allow_enforced=False),
+            # #1138: absent unless a scan refused; written only then.
+            cast(ScanMatchClass | None, scan.get("match_class")),
+            tuple(_strings(scan.get("match_item_ids") or [])),
         ),
         "withheld_item_ids": tuple(
             sorted(_strings(source.get("withheld_item_ids") or []), key=str.encode)
@@ -432,6 +440,21 @@ def _network_receipt_from_bytes(data: bytes) -> EgressReceipt:
             if source.get("origin_operation") is None
             else EgressOriginOperation(cast(str, source["origin_operation"]))
         ),
+        capacity_exceeded=_receipt_capacity_from_json(source.get("capacity_exceeded")),
+    )
+
+
+def _receipt_capacity_from_json(value: JsonValue | None) -> ReceiptCapacity | None:
+    """Decode a size refusal's typed capacity reason (#1129); absent on every other receipt."""
+
+    if value is None:
+        return None
+    source = _mapping(value)
+    return ReceiptCapacity(
+        cast(Literal["disclosure", "excerpt", "excerpt_total"], source["scope"]),
+        cast(Literal["bytes", "tokens", "excerpts"], source["unit"]),
+        _uint_from_json(source["attempted"]),
+        _uint_from_json(source["limit"]),
     )
 
 
@@ -2727,6 +2750,52 @@ class CatalogPrivacyAudit:
                 )
                 if changed != 1:
                     raise ValueError("privacy_audit_state_conflict")
+
+    async def close_refused_disclosure(self, proposal_id: str, receipt: EgressReceipt) -> bool:
+        """#1066: close a not-yet-dispatched network proposal with its blocked receipt, once."""
+
+        if type(receipt) is not EgressReceipt or receipt.privacy_proposal_id != proposal_id:
+            raise ValueError("privacy_receipt_reservation_mismatch")
+        if receipt.dispatch_id is not None or receipt.authorization_id is not None:
+            raise ValueError("privacy_refusal_receipt_invalid")
+        canonical = _receipt_bytes(receipt)
+        digest = canonical_digest(strict_json_parse(canonical))
+        now = self._clock.now_utc()
+        async with self._lock:
+            with _transaction(self._db):
+                changed = (
+                    self._db.execute(
+                        """UPDATE privacy_audit_records
+                           SET state = 'decision_completed',
+                               attempt_result_structural_canonical = ?,
+                               attempt_result_commitment = ?,
+                               receipt_id = ?, receipt_outcome = ?, receipt_reason = ?,
+                               receipt_canonical = ?, receipt_digest = ?,
+                               receipt_finished_at = ?, updated_at = ?
+                           WHERE proposal_id = ? AND subject_kind = 'disclosure'
+                             AND destination_kind = 'network'
+                             AND state IN ('reserved', 'awaiting_human', 'approved')
+                             AND authorization_id IS NULL AND dispatch_id IS NULL
+                             AND consumed_at IS NULL AND receipt_id IS NULL""",
+                        (
+                            canonical,
+                            digest,
+                            receipt.receipt_id,
+                            receipt.outcome.value,
+                            None
+                            if receipt.safe_failure_reason is None
+                            else receipt.safe_failure_reason.value,
+                            canonical,
+                            digest,
+                            format_rfc3339_millis(receipt.finished_at),
+                            format_rfc3339_millis(now),
+                            proposal_id,
+                        ),
+                    )
+                    .getconnection()
+                    .changes()
+                )
+        return changed == 1
 
     async def _complete_local(
         self,

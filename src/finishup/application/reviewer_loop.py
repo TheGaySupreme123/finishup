@@ -38,7 +38,9 @@ turn and gets no notice. When the next exchange has no room left for the notice 
 exchange admitted inside the frame the notices need), the loop leaves it out. A second
 malformed reply, a read after the repair or in a review that never offered one (only a route that
 does not enforce the schema returns one), a revoked binding, a lost lease or the deadline ends the
-review incomplete. Every model turn, the repair and every read is a durable job step, reserved
+review incomplete. A read whose own action leaves its exchange no room for a result is not served:
+that exchange asks for the final judgment instead, and the record says the read was not served
+(#1242); only an action that does not fit even beside the notices ends ``case_capacity_exceeded``. Every model turn, the repair and every read is a durable job step, reserved
 before it runs; a job that already holds steps is not resumed, except the one first turn that
 waited for the owner before anything was sent (``resume_reserved``). A failed turn is never
 retried.
@@ -79,6 +81,9 @@ FINAL_FORMAT_ERROR: Final = (
 # A read action returned in the final phase: the wire schema allows it, the controller does not.
 FINAL_PHASE_READ: Final = "read_in_final_phase"
 FINAL_PHASE: Final = "FinishUP: read allowance or time reserve reached. Return final_judgment now."
+# #1242: a read whose action left no room for its result is not served; the notice takes the
+# final-phase notice's place (it is no longer, so the room every read keeps for that carries it).
+READ_NOT_SERVED: Final = "FinishUP: read not served, no room left. Return final_judgment now."
 
 
 @dataclass(frozen=True, slots=True)
@@ -115,6 +120,8 @@ class ReviewOutcome:
     citable_refs: frozenset[str]
     text_by_ref: Mapping[str, tuple[str, ...]]
     capacity: tuple[int, int] | None = None
+    # #1242: a read the reviewer asked for was left unserved for room before its final turn.
+    read_not_served: bool = False
 
 
 class ReviewerLoop:
@@ -139,6 +146,7 @@ class ReviewerLoop:
         self.resume_reserved = resume_reserved
         self.messages: list[Turn] = []
         self.n_calls = 0
+        self.read_not_served = False
 
     async def run(self) -> ReviewOutcome:
         """Query the model and run its one read until the final judgment or an exit."""
@@ -160,7 +168,11 @@ class ReviewerLoop:
                 # Revocation wins: every binding the history holds is rechecked before each turn.
                 if not await self.history_admissible(frozenset(self.broker.history_roots)):
                     return self.exit("authorization_changed")
-                reads = self.broker.reads_allowed() and self.remaining() > self.reserve
+                reads = (
+                    not self.read_not_served
+                    and self.broker.reads_allowed()
+                    and self.remaining() > self.reserve
+                )
                 if offered is None:
                     # A review that never offers a read (ask-every-time, or a first turn already
                     # inside the final reserve) keeps the read-free schema on every turn.
@@ -239,9 +251,16 @@ class ReviewerLoop:
                         self.messages[-1].content,
                     )
                 except ReadExchangeFull as e:
-                    # The read action alone filled the room its exchange has under the cap:
-                    # nothing is read and nothing more is sent (#1118).
-                    return self.exit("case_capacity_exceeded", capacity=e.capacity)
+                    if not e.verdict_fits:
+                        # The read action alone outgrew the room its exchange has under the cap:
+                        # nothing is read and nothing more is sent (#1118).
+                        return self.exit("case_capacity_exceeded", capacity=e.capacity)
+                    # #1242: the action still fits beside the notices every read keeps room for.
+                    # The read is not served and the same exchange asks for the final judgment,
+                    # so a review fitted to the limit ends with a verdict, labelled.
+                    self.read_not_served = final_phase = True
+                    self.messages.append(Turn("user", READ_NOT_SERVED))
+                    continue
                 self.remaining()
                 self.messages.append(Turn("user", observation))
         except ReviewerModelError as e:
@@ -269,5 +288,13 @@ class ReviewerLoop:
         texts = {ref: tuple(texts) for ref, texts in self.broker.text_by_ref.items()}
         refs = frozenset(self.broker.cited_refs)
         return ReviewOutcome(
-            status, judgment, code, tuple(self.messages), self.n_calls, refs, texts, capacity
+            status,
+            judgment,
+            code,
+            tuple(self.messages),
+            self.n_calls,
+            refs,
+            texts,
+            capacity,
+            self.read_not_served,
         )

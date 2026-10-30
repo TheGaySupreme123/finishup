@@ -470,6 +470,7 @@ _REASON_PHRASES: Final[Mapping[str, str]] = {
     "check_verdict_insufficient": "the latest check read {refs}",
     "policy_execution_incomplete": "a policy did not run to completion",
     "live_gap_bounds": "{n} limitation(s) bound it ({refs})",
+    "advice_unanswered": "{n} reviewer note(s) not answered",
 }
 _CONCLUSIONS: Final = frozenset(
     {
@@ -735,6 +736,7 @@ _RECHECK_PHRASES: Final[Mapping[str, str]] = {
     "acknowledgement": "obligations you recorded as not done",
     "blocker": "a blocker you recorded",
     "premise": "findings you acknowledged that the review says the task requires",
+    "advice": "reviewer notes with no recorded answer",
 }
 _MAX_NAMED_RULING_FINDINGS: Final = 3
 

@@ -256,6 +256,117 @@ async def test_coverage_view_uses_the_service_witnesses_and_shared_renderer(
     assert isinstance(request, StatusRequestModel) and request.view == "coverage"
 
 
+async def test_notes_slash_command_dispatches_to_the_reviewer_notes_view(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    tui = FinishUpTui(cwd=tmp_path)
+    requested: list[str] = []
+
+    async def task_view(view: str) -> None:
+        requested.append(view)
+
+    monkeypatch.setattr(tui, "_command_task_view", task_view)
+    await tui._dispatch("notes")  # pyright: ignore[reportPrivateUsage]
+    assert requested == ["notes"]
+
+
+async def test_notes_view_reads_recorded_checks_through_the_history_view(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # #1240: reviewer notes and their answers ride on each recorded check's history row, so the
+    # TUI reads the same history page the CLI and MCP read, filtered to recorded checks.
+    wire = _lineage_status_wire()
+    wire["view"] = "history"
+    wire["page"] = {"items": [], "next_cursor": None}
+    result = StatusResultModel.model_validate(wire)
+    client = _Client(result)
+
+    @asynccontextmanager
+    async def connect(_runtime: FinishUpRuntime) -> AsyncGenerator[_Client]:
+        yield client
+
+    monkeypatch.setattr(FinishUpRuntime, "_client", connect)
+    runtime = FinishUpRuntime(cwd=tmp_path)
+    await runtime.open_task(_SESSION)
+    rendered = await runtime.task_status(_SESSION, "notes")
+    assert isinstance(result.root, StatusSuccessModel)
+    assert rendered.lines == tuple(render_human_status(result.root).splitlines())
+    request = client.requests[-1]
+    assert isinstance(request, StatusRequestModel) and request.view == "history"
+    assert request.filter is not None
+    assert request.filter.model_dump(exclude_none=True) == {"schema_name": "check_recorded"}
+
+
+async def test_notes_view_names_every_answer_in_the_receipt_s_words(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """#1240/#1190: /notes and the CLI history say how each note was answered, as the receipt does.
+
+    A withheld answer recognised from its envelope (``response_unavailable``) is an answer, so it
+    never reads like a missing one.
+    """
+
+    check = "evt_52000000-0000-4000-8000-000000000051"
+    notes: list[dict[str, Any]] = [
+        {
+            "summary": f"Concern {ordinal}.",
+            "detail": f"Detail {ordinal}.",
+            "subject_refs": [check],
+            "advisory_id": f"{check}:{ordinal}",
+            "disposition": disposition,
+        }
+        for ordinal, disposition in enumerate(
+            ("kept_choice", "response_unavailable", "no_recorded_response"), 1
+        )
+    ]
+    notes[0] |= {
+        "reason": "The task fixes it.",
+        "response_event_id": "evt_52000000-0000-4000-8000-000000000052",
+        "evidence_refs": [],
+    }
+    wire = _lineage_status_wire()
+    wire["view"] = "history"
+    wire["page"] = {
+        "items": [
+            {
+                "event_id": check,
+                "schema_name": "check_recorded",
+                "schema_version": "1.6.0",
+                "actor_id": "harness:test",
+                "publication_channel": "cooperative_mcp",
+                "ingestion_sequence": "3",
+                "occurred_at": "2026-10-16T00:00:00.000Z",
+                "accepted_at": "2026-10-16T00:00:00.000Z",
+                "occurred_at_consistency": "within_forward_skew_allowance",
+                "projection_status": "projected",
+                "summary_code": "check_recorded",
+                "correctness_advisories": notes,
+                "advisory_subject_frontier": {"sequence": "2", "head_digest": "sha256:" + "a" * 64},
+            }
+        ],
+        "next_cursor": None,
+    }
+    result = StatusResultModel.model_validate(wire)
+    client = _Client(result)
+
+    @asynccontextmanager
+    async def connect(_runtime: FinishUpRuntime) -> AsyncGenerator[_Client]:
+        yield client
+
+    monkeypatch.setattr(FinishUpRuntime, "_client", connect)
+    runtime = FinishUpRuntime(cwd=tmp_path)
+    await runtime.open_task(_SESSION)
+    lines = (await runtime.task_status(_SESSION, "notes")).lines
+    kept = f"Correctness advisory {check}:1: checked, kept my choice (agent-reported, with reason)"
+    assert kept in lines
+    withheld = "answered (response withheld; disposition and reason unreadable)"
+    assert f"Correctness advisory {check}:2: {withheld}" in lines
+    assert f"Correctness advisory {check}:3: no recorded response" in lines
+
+
 async def test_lineage_view_reuses_cli_renderer_and_preserves_child_facts(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

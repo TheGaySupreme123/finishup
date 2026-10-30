@@ -67,6 +67,7 @@ from finishup.protocol.canonical import JsonValue, canonical_encode
 from finishup.protocol.coverage import PublicationChannel, coverage_for_channel, coverage_to_json
 from finishup.protocol.models import (
     CheckAwaitingHumanModel,
+    CheckBriefFindingModel,
     CheckChecklistCountsModel,
     CheckChecklistItemModel,
     CheckContinuationModel,
@@ -87,6 +88,7 @@ from finishup.protocol.models import (
     ChildFindingSnapshotModel,
     DataCategory,
     DeliveryItemModel,
+    DeliveryPageModel,
     DraftReceiptCriterionModel,
     FactLineageModel,
     ProjectTextRefModel,
@@ -112,6 +114,7 @@ from finishup.protocol.models import (
     StatusCheckOutcomeModel,
     StatusClosureReadinessModel,
     StatusClosureStateModel,
+    StatusCompactFindingModel,
     StatusCompactItemModel,
     StatusCompactObligationModel,
     StatusCoveragePageModel,
@@ -261,6 +264,9 @@ _RESULT_OPTIONAL_NON_NULL: tuple[tuple[type[BaseModel], frozenset[str]], ...] = 
                 "review_input_manifest",
                 # #1118: the reviewer conversation's record.
                 "reviewer",
+                # #1244 (D13): present only on a brief check.
+                "detail",
+                "closure_state",
                 "semantic_conclusion",
                 "review_summary",
                 "verified",
@@ -508,12 +514,17 @@ _RESULT_OPTIONAL_NON_NULL: tuple[tuple[type[BaseModel], frozenset[str]], ...] = 
         ),
     ),
     (CheckProjectedFindingModel, frozenset({"challenge"})),
+    # #1244 (D13): a brief check's row and the brief compact status's finding row.
+    (CheckBriefFindingModel, frozenset({"challenge"})),
+    (StatusCompactFindingModel, frozenset({"detail"})),
     (CheckVerifiedItemModel, frozenset({"requirement_or_claim", "snippet"})),
     (StatusCompactItemModel, frozenset({"latest_check_test_edits", "latest_check"})),
     # #1139: ``review_delivery`` is the legacy MCP-only advisory preview.
     (StatusFindingsPageModel, frozenset({"attempt_budget", "review_delivery"})),
     # Issue #1139: a whole delivered value carries neither a fragment nor a container marker.
     (DeliveryItemModel, frozenset({"fragment", "container"})),
+    # Issue #1244 (D12): a page names a moved ledger or a restarted set only when either holds.
+    (DeliveryPageModel, frozenset({"ledger_moved_since", "page_set_restarted"})),
     # Issue #1084 (review R7): a service-recorded event time is labelled on the history row.
     (
         StatusHistoryItemV14Model,
@@ -599,7 +610,7 @@ _RESULT_OPTIONAL_NON_NULL: tuple[tuple[type[BaseModel], frozenset[str]], ...] = 
         ),
     ),
     (StatusCheckOutcomeModel, frozenset({"agent_next", "overall_next", "semantic_conclusion"})),
-    (SemanticRedactedValueModel, frozenset({"source_ref"})),
+    (SemanticRedactedValueModel, frozenset({"match_class", "source_ref", "stage"})),
     (
         StatusSemanticProgressModel,
         frozenset({"remaining_ms", "terminal_outcome", "terminal_reason"}),
@@ -1659,9 +1670,14 @@ async def test_root_start_and_check_omit_unset_multi_agent_fields() -> None:
         assert "closure_readiness" in projected_check
         # #1139: current bridges no longer synthesize the legacy advisory preview.
         assert "review_delivery" not in projected_check
+        # #1244 (D13): a check that asked for no brief reply carries neither brief marker.
+        assert "detail" not in projected_check
+        assert "closure_state" not in projected_check
         for field in (
             "closure_readiness",
             "review_delivery",
+            "detail",
+            "closure_state",
             "finding_checklist",
             "semantic_route_required",
             "semantic_withheld_items",
@@ -1890,7 +1906,7 @@ async def test_root_start_and_check_omit_unset_multi_agent_fields() -> None:
         (
             SemanticRedactedValueModel,
             {"item_id": "item-1", "disposition": "value_replaced", "lines": [3]},
-            ("source_ref",),
+            ("source_ref", "stage", "match_class"),
         ),
         (
             StatusHistoryItemV14Model,
@@ -2038,6 +2054,66 @@ def test_whole_delivery_item_omits_fragment_and_container() -> None:
     for field in ("fragment", "container"):
         with pytest.raises(ValidationError, match="optional_field_must_not_be_null"):
             DeliveryItemModel.model_validate({**item, field: None})
+
+
+def test_brief_rows_and_delivery_notices_omit_when_unset() -> None:
+    """Issue #1244: brief rows and page notices are omitted when unset and refused as null."""
+
+    finding = {
+        "finding_id": protocol_id("fnd_", 1244),
+        "kind": "failed_work_omitted",
+        "origin": "deterministic",
+        "priority": 1,
+        "summary": "Recorded failed work is omitted.",
+        "subject_refs": [protocol_id("obl_", 1244)],
+        "policy_id": "work-integrity",
+    }
+    assert (
+        CheckBriefFindingModel.model_validate(finding).model_dump(mode="json", exclude_unset=True)
+        == finding
+    )
+    with pytest.raises(ValidationError, match="optional_field_must_not_be_null"):
+        CheckBriefFindingModel.model_validate({**finding, "challenge": None})
+    compact = {key: finding[key] for key in ("finding_id", "kind", "priority", "summary")}
+    assert (
+        StatusCompactFindingModel.model_validate(compact).model_dump(
+            mode="json", exclude_unset=True
+        )
+        == compact
+    )
+    with pytest.raises(ValidationError, match="optional_field_must_not_be_null"):
+        StatusCompactFindingModel.model_validate({**compact, "detail": None})
+    page = {
+        "next_cursor": "c" + "A" * 22 + ".7.1.0123abcd",
+        "protocol_version": "0.1",
+        "schema_version": "1.0.0",
+        "ok": True,
+        "state": "delivery_page",
+        "request_id": protocol_id("req_", 1244),
+        "source_request_id": protocol_id("req_", 1245),
+        "source_operation": "check",
+        "task_id": protocol_id("tsk_", 1244),
+        "session_id": protocol_id("ses_", 1244),
+        "writer_id": protocol_id("wri_", 1244),
+        "result_frontier": {"sequence": "7", "head_digest": _DIGEST},
+        "source_digest": _DIGEST,
+        "offset": 0,
+        "total_items": 2,
+        "truncated": True,
+        "complete": False,
+        "budget_bytes": 12_000,
+        "actionable_complete": False,
+        "inventory_read": None,
+        "required_next_step": "Call status with this delivery_cursor.",
+        "items": [{"path": "/findings/0/detail", "value": "Measure the second mode."}],
+        "privacy_projection": _privacy_projection_payload(),
+    }
+    assert "ledger_moved_since" not in (
+        DeliveryPageModel.model_validate(page).model_dump(mode="json", exclude_unset=True)
+    )
+    for field in ("ledger_moved_since", "page_set_restarted"):
+        with pytest.raises(ValidationError, match="optional_field_must_not_be_null"):
+            DeliveryPageModel.model_validate({**page, field: None})
 
 
 def test_every_result_optional_non_null_field_has_an_unset_projection_case() -> None:
@@ -2255,11 +2331,21 @@ def test_every_result_optional_non_null_field_has_an_unset_projection_case() -> 
                 "review_mode",
                 "closure_readiness",
                 "review_delivery",
+                "detail",
+                "closure_state",
             ),
         ),
     ):
         for field in fields:
             covered[model, field] = "test_root_start_and_check_omit_unset_multi_agent_fields"
+    covered["CheckBriefFindingModel", "challenge"] = (
+        "test_brief_rows_and_delivery_notices_omit_when_unset"
+    )
+    covered["StatusCompactFindingModel", "detail"] = (
+        "test_brief_rows_and_delivery_notices_omit_when_unset"
+    )
+    for field in ("ledger_moved_since", "page_set_restarted"):
+        covered["DeliveryPageModel", field] = "test_brief_rows_and_delivery_notices_omit_when_unset"
     for field in CheckReviewModeModel.optional_non_null_fields:
         covered["CheckReviewModeModel", field] = "test_review_mode_omits_unset_reason_and_switch"
     for field in StatusReviewModeModel.optional_non_null_fields:
@@ -2307,9 +2393,10 @@ def test_every_result_optional_non_null_field_has_an_unset_projection_case() -> 
     covered["StatusOperationPageModel", "semantic_redacted_values"] = (
         "test_nested_multi_agent_results_omit_unset_fields"
     )
-    covered["SemanticRedactedValueModel", "source_ref"] = (
-        "test_nested_multi_agent_results_omit_unset_fields"
-    )
+    for field in ("source_ref", "stage", "match_class"):
+        covered["SemanticRedactedValueModel", field] = (
+            "test_nested_multi_agent_results_omit_unset_fields"
+        )
     for model, fields in (
         ("ChildFindingSnapshotModel", ("resolution_event_id", "self_verified")),
         ("StatusLineageChildModel", ("self_verified_finding_count",)),

@@ -85,7 +85,10 @@ from finishup.domain.values import (
 from finishup.domain.values import (
     JsonValue as DomainJsonValue,
 )
-from finishup.domain.verification_coverage import criterion_quote_in_text
+from finishup.domain.verification_coverage import (
+    criterion_quote_in_text,
+    nearest_criterion_sentence,
+)
 from finishup.kernel.completion_scope import with_completion_scope_coverage
 from finishup.kernel.projections import PROJECTION_VERSION, ProjectionState
 from finishup.kernel.reducers import replay_extension
@@ -571,7 +574,8 @@ def _corrective_message(reason_code: str, schema_name: str | None) -> str | None
         return (
             "The event batch is invalid. verification.criterion_quote must be a verbatim "
             "substring of the current recorded task_statement that starts and ends on whole "
-            "words and names the criterion, not only punctuation or common words. Record the "
+            "words and names the criterion, not only punctuation or common words; spacing and "
+            "quote-mark style may differ, words and other punctuation may not. Record the "
             "user's request before the result, then quote one stated criterion exactly."
         )
     set_order = _SET_ORDER_CORRECTIONS.get(reason_code)
@@ -587,6 +591,15 @@ def _corrective_message(reason_code: str, schema_name: str | None) -> str | None
     return families.get(schema_name)
 
 
+# #1202 (owner decision D18): a rejected criterion quote names the nearest task sentence by its
+# position only, so the error never repeats task text (CONTRIBUTING: no user-controlled content in
+# errors). Both numbers are 1-based.
+_NEAREST_SENTENCE_HINT: Final = (
+    " The nearest stated criterion is sentence {ordinal} of the recorded task_statement (line"
+    " {line}): copy its words exactly."
+)
+
+
 def _event_invalid(
     reason_code: str = "invalid_event_value_type",
     *,
@@ -596,6 +609,7 @@ def _event_invalid(
     payload_field: str | None = None,
     schema_name: str | None = None,
     item_index: int | None = None,
+    nearest_sentence: tuple[int, int] | None = None,
 ) -> PublicOperationError:
     # Only a stale frontier is fixed by rereading status; every other reason needs the event
     # payload corrected first, and retrying it unchanged would fail the same way. A missing
@@ -618,6 +632,12 @@ def _event_invalid(
             "respond: put the note's check-event-id:ordinal in finding_id with disposition "
             "addressed or declined. Remove advisory_response from this decision draft."
         )
+    elif reason_code == "review_mode_parent_is_check":
+        message = (
+            "The event batch is invalid. A review-mode switch cannot name a check as its only "
+            "causal parent: that shape is reserved for correctness-advisory answers, which "
+            "respond records. Name no parent, or another parent beside the check."
+        )
     elif reason_code == "frontier_changed":
         message = (
             "The event batch is invalid. Call status to read the current frontier, then retry "
@@ -630,6 +650,9 @@ def _event_invalid(
         message = _corrective_message(reason_code, schema_name) or (
             "The event batch is invalid. Correct the event payload before retrying."
         )
+        if reason_code == "verification_criterion_not_in_task" and nearest_sentence is not None:
+            ordinal, line = nearest_sentence
+            message += _NEAREST_SENTENCE_HINT.format(ordinal=ordinal, line=line)
     details: dict[str, str] = {"reason_code": reason_code}
     if event_index is not None:
         pointer = _draft_pointer(event_index, subfield, payload_field, item_index)
@@ -1672,8 +1695,6 @@ async def _preflight_dry_run_feasibility(
             writer_sequence = int(record.writer.sequence) + 1
             previous_writer_digest = record.entry_digest
 
-    _validate_verification_quotes(prepared, existing_records)
-
     # Ordinary publish passes only the integer sequence into AppendCommand; digest is not a gate.
     if request.expected_frontier is not None:
         expected_sequence = int(request.expected_frontier.sequence)
@@ -1838,14 +1859,47 @@ def _validate_verification_quotes(
             if revised is not None:
                 text = revised
         if type(payload) is ResultRecordedPayload and payload.verification is not None:
-            if text is None or not criterion_quote_in_text(
-                payload.verification.criterion_quote, text
-            ):
+            quote = payload.verification.criterion_quote
+            if text is None or not criterion_quote_in_text(quote, text):
                 raise _event_invalid(
                     "verification_criterion_not_in_task",
                     event_index=index,
                     subfield="payload",
+                    nearest_sentence=(
+                        None if text is None else nearest_criterion_sentence(quote, text)
+                    ),
                 )
+
+
+async def _validate_review_mode_parents(
+    runtime: TaskRuntime, prepared: PreparedPublication
+) -> None:
+    """#1190 (owner decision B): a review-mode switch never names a check as its only parent.
+
+    That envelope (``decision_recorded`` 1.1.0 whose sole causal parent is a ``check_recorded``)
+    is reserved for correctness-advisory answers, which only ``respond`` records, so a withheld
+    one is still recognised as an answer from its envelope alone.
+    """
+
+    candidates = tuple(
+        (index, str(item.draft.causal_parents[0]))
+        for index, item in enumerate(prepared.drafts)
+        if type(item.draft.payload) is DecisionRecordedPayload
+        and item.draft.payload.review_mode is not None
+        and len(item.draft.causal_parents) == 1
+    )
+    if not candidates:
+        return
+    checks = {
+        str(record.event_id)
+        async for record in runtime.ledger.load_events(runtime.session_id)
+        if record.schema.name == "check_recorded"
+    }
+    for index, parent in candidates:
+        if parent in checks:
+            raise _event_invalid(
+                "review_mode_parent_is_check", event_index=index, subfield="causal_parents"
+            )
 
 
 async def _validate_new_verifications(runtime: TaskRuntime, prepared: PreparedPublication) -> None:
@@ -1897,7 +1951,11 @@ async def _execute_dry_run(
     prepared = prepare_publication(
         request, channel=channel, app=app, occurred_at=occurred_at, task_id=runtime.task_id
     )
+    # The publish's own read-only admission checks, in its order, so a preview refuses exactly
+    # what the publish would and never reports would_accept for it (#1190, #1170).
     _validate_new_completion_scope(request, prepared)
+    await _validate_new_verifications(runtime, prepared)
+    await _validate_review_mode_parents(runtime, prepared)
     current, coverage, projected = await _preflight_dry_run_feasibility(runtime, request, prepared)
     notices = _blocker_notices(projected, prepared)
     action_notices = _action_notices(projected, prepared)
@@ -2069,6 +2127,7 @@ async def execute_publish_work(
         )
         _validate_new_completion_scope(request, prepared)
         await _validate_new_verifications(runtime, prepared)
+        await _validate_review_mode_parents(runtime, prepared)
         if input_capture is not None:
             # #1118 unit 1: a validated new batch, before its append; a replay returned above.
             await input_capture(runtime)

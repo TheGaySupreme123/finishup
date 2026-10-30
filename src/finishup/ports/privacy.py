@@ -1121,6 +1121,16 @@ class PrivacyAuditPort(Protocol):
 
     async def complete_egress(self, dispatch_id: str, receipt: EgressReceipt) -> None: ...
 
+    async def close_refused_disclosure(self, proposal_id: str, receipt: EgressReceipt) -> bool:
+        """Close a prepared network proposal refused before dispatch with its blocked receipt.
+
+        Issue #1066: only a proposal still ``reserved``, ``awaiting_human`` or ``approved`` (no
+        authorization minted, nothing consumed) moves, in one transaction, to
+        ``decision_completed`` with *receipt*. Returns whether it moved; any other state, or a
+        receipt for another proposal, leaves the row unchanged.
+        """
+        ...
+
     async def reconcile_started_attempts(self, consumed_before: datetime, limit: int) -> int: ...
 
     async def complete_local_disclosure(

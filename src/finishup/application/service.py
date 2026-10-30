@@ -36,11 +36,21 @@ from finishup.application.observation_verification import ObservationVerificatio
 from finishup.application.projects import ProjectApplication
 from finishup.application.result_delivery import (
     HOST_RESULT_BUDGET_BYTES,
+    DeliveryPageSet,
+    DeliveryPageStore,
     DeliverySource,
-    decode_cursor,
+    brief_check_body,
+    check_selector_code,
+    content_digest,
+    decode_handle,
+    disclosure_identity,
     invalid_cursor,
     mcp_delivery_bytes,
     page_result,
+    receipt_selector_code,
+    receipt_selector_from_code,
+    status_selector_code,
+    status_selector_from_code,
 )
 from finishup.application.start import recover_delegation
 from finishup.application.unit_of_work import run_publish_response_commit
@@ -775,6 +785,17 @@ def _internal_json(result: UnprojectedControlBody) -> dict[str, JsonValue]:
     raise TypeError("unprojected_control_body_invalid")
 
 
+def _request_body_detail(binding: ControlProjectionBinding) -> JsonValue:
+    """The ``detail`` the projected result's own request named, if any (#1244, D13)."""
+
+    try:
+        control = strict_json_parse(binding.control_request_canonical)
+    except (TypeError, ValueError):
+        return None
+    body = control.get("body") if isinstance(control, dict) else None
+    return body.get("detail") if isinstance(body, dict) else None
+
+
 def _projection_json(result: UnprojectedControlBody) -> dict[str, JsonValue]:
     """Return the client-facing pre-privacy shape without changing durable result bytes."""
 
@@ -1029,6 +1050,10 @@ class Application:
     # maintenance sweep then catches the parent up.
     lineage_parent_refresh: Callable[[str], Awaitable[object]] | None = field(
         default=None, repr=False, compare=False
+    )
+    # #1244 (D12): delivered page sets, in this process's memory only (never disk or ledger).
+    delivery_pages: DeliveryPageStore = field(
+        default_factory=DeliveryPageStore, repr=False, compare=False
     )
     _lineage_publish_lock: asyncio.Lock = field(init=False, repr=False, compare=False)
     # One ready service owns one runtime cache.  Serialize start admission so two concurrent
@@ -2766,49 +2791,58 @@ class Application:
         repository_privacy_context: RepositoryPrivacyContext | None,
         route_profile: Literal["policy", "strict"] | None,
     ) -> DeliverySource:
-        """Read only an existing complete operation or an original frozen status selection."""
+        """Re-read the source a handle names: a complete operation or a pinned status read.
+
+        The kept page set (``delivery_pages``) supplies the original selector; after a miss the
+        handle does (#1244, D12). The read also notes the current head and whether a redaction
+        was recorded after the set's frontier, which alone refuses the continuation.
+        """
         from finishup.application.check import Application as CheckApplication
         from finishup.application.check import replayed_check_view
         from finishup.application.receipt import read_recorded_receipt
         from finishup.ports.ledger import OperationKind, OperationState
 
         assert request.delivery_cursor is not None
-        cursor = decode_cursor(
-            self.status_cursor_key, request.delivery_cursor, request.session_id, request.writer_id
-        )
-        selector = cursor["selector"]
-        method = cursor["method"]
-        if method == "status":
-            source_body = request.model_dump(
-                mode="json",
-                exclude_none=True,
-                include={
-                    "protocol_version",
-                    "schema_version",
-                    "actor",
-                    "client",
-                    "session_id",
-                    "writer_id",
-                },
-            )
-            source_request = StatusRequest.model_validate(
-                {**source_body, **{k: v for k, v in selector.items() if k != "_delivery_snapshot"}}
-            )
-            internal = await self.status(
-                source_request,
-                route_profile=route_profile,
-                repository_privacy_context=repository_privacy_context,
-            )
+        handle = decode_handle(request.delivery_cursor)
+        kept = self.delivery_pages.get(handle.set_key, request.session_id, request.writer_id)
+        method = handle.method
+        selector: dict[str, JsonValue]
+        if kept is not None:
+            selector = dict(kept.selector)
+        elif method == "status":
+            selector = status_selector_from_code(handle.selector_code, handle)
+        elif method == "receipt":
+            selector = {
+                "request_id": handle.source_request_id,
+                **receipt_selector_from_code(handle.selector_code),
+            }
         else:
-            runtime = await self.runtime.route(
-                RouteCommand(
-                    request.session_id,
-                    request.writer_id,
-                    RouteAccess.PAYLOAD_READ,
-                    frozenset({RuntimeCapability.STRUCTURAL_READ, RuntimeCapability.PAYLOAD_READ}),
-                )
+            selector = {
+                "request_id": handle.source_request_id,
+                **({"detail": "brief"} if handle.selector_code == "b" else {}),
+            }
+        runtime = await self.runtime.route(
+            RouteCommand(
+                request.session_id,
+                request.writer_id,
+                RouteAccess.PAYLOAD_READ,
+                frozenset({RuntimeCapability.STRUCTURAL_READ, RuntimeCapability.PAYLOAD_READ}),
             )
-            try:
+        )
+        try:
+            head = await runtime.ledger.load_frontier()
+            redacted = False
+            if head.sequence > handle.frontier:
+                async for record in runtime.ledger.load_events(
+                    request.session_id, after=handle.frontier
+                ):
+                    if record.schema.name == "redaction_recorded":
+                        redacted = True
+                        break
+            internal: object
+            if method == "status":
+                internal = None
+            else:
                 operation = await runtime.ledger.lookup_task_operation(
                     request.writer_id, str(selector["request_id"])
                 )
@@ -2835,23 +2869,55 @@ class Application:
                                 exclude_none=True,
                                 include={"protocol_version", "schema_version", "actor", "client"},
                             ),
+                            # A miss names no expected frontier; a recorded receipt is found by
+                            # its own operation and never re-checks one.
+                            "task_id": runtime.task_id,
+                            "expected_frontier": {
+                                "sequence": str(handle.frontier),
+                                "head_digest": head.head_digest,
+                            },
                             **selector,
                             "session_id": request.session_id,
                             "writer_id": request.writer_id,
                         }
                     )
                     internal = await read_recorded_receipt(runtime, receipt_request, operation)
-            finally:
-                await self.runtime.release(runtime)
+        finally:
+            await self.runtime.release(runtime)
+        if method == "status":
+            source_body = request.model_dump(
+                mode="json",
+                exclude_none=True,
+                include={
+                    "protocol_version",
+                    "schema_version",
+                    "actor",
+                    "client",
+                    "session_id",
+                    "writer_id",
+                },
+            )
+            try:
+                source_request = StatusRequest.model_validate({**source_body, **selector})
+            except ValueError as exc:
+                # After a miss the selector is the handle's own: a mistyped id or limit is a
+                # malformed handle, not a retryable read failure.
+                raise invalid_cursor() from exc
+            internal = await self.status(
+                source_request,
+                route_profile=route_profile,
+                repository_privacy_context=repository_privacy_context,
+            )
         return DeliverySource(
             internal,
             method,
             selector,
-            cursor["position"],
-            cursor["digest"],
+            handle,
             request.request_id,
+            request.session_id,
             request.writer_id,
-            cursor["sink"],
+            {"sequence": str(head.sequence), "head_digest": head.head_digest},
+            redacted,
         )
 
     async def _credential_heuristic_state(
@@ -3215,32 +3281,20 @@ class Application:
         *,
         _source_method: ControlMethod | None = None,
         _paginate: bool = True,
+        _check_detail: str | None = None,
     ) -> ProjectedControlBody:
         if type(result) is DeliverySource:
-            if result.sink != resolve_client_disclosure_sink(context).value:
-                raise invalid_cursor()
-            projected_source = await self.project_result_for_client(
-                context,
-                binding,
-                result.result,
-                _source_method=ControlMethod(result.method),
-                _paginate=False,
-            )
             return StatusResultModel.model_validate(
-                page_result(
-                    public_model_to_wire(projected_source),
-                    key=self.status_cursor_key,
-                    method=result.method,
-                    selector=result.selector,
-                    writer_id=result.writer_id,
-                    sink=result.sink,
-                    position=result.position,
-                    expected_digest=result.digest,
-                    request_id=result.request_id,
-                )
+                await self._continue_delivery(context, binding, result)
             )
         source = _projection_json(result)
         method = _source_method or binding.method
+        if method is ControlMethod.CHECK and source.get("state") == "complete":
+            # #1244 (D13): an agent's brief check names each finding briefly. A continuation
+            # carries the first page's choice; a direct reply reads its own request.
+            detail = _check_detail if _source_method is not None else _request_body_detail(binding)
+            if detail == "brief":
+                source = brief_check_body(source)
         if "privacy_projection" in source or (
             method in _WORKFLOW_METHODS and source.get("ok") is not True
         ):
@@ -3596,7 +3650,10 @@ class Application:
             "writer_id",
         }
         selector = (
-            {"request_id": source["request_id"]}
+            {
+                "request_id": source["request_id"],
+                **({"detail": "brief"} if source.get("detail") == "brief" else {}),
+            }
             if method is ControlMethod.CHECK
             else {k: v for k, v in body.items() if k not in excluded}
         )
@@ -3604,13 +3661,23 @@ class Application:
             # A brief body omits requested_frontier when it equals result_frontier.
             requested = source.get("requested_frontier", source["result_frontier"])
             selector["at_frontier"] = cast(dict[str, JsonValue], requested)["sequence"]
+        selector_code = (
+            status_selector_code(selector)
+            if method is ControlMethod.STATUS
+            else receipt_selector_code(selector)
+            if method is ControlMethod.RECEIPT
+            else check_selector_code(selector)
+        )
         paged = page_result(
             complete,
-            key=self.status_cursor_key,
             method=method.value,
             selector=selector,
             writer_id=cast(str, body["writer_id"]),
             sink=sink.value,
+            selector_code=selector_code,
+        )
+        self._keep_page_set(
+            complete, method.value, selector, cast(str, body["writer_id"]), sink.value
         )
         model = {
             ControlMethod.CHECK: CheckResultModel,
@@ -3618,6 +3685,123 @@ class Application:
             ControlMethod.STATUS: StatusResultModel,
         }[method]
         return model.model_validate(paged)
+
+    def _keep_page_set(
+        self,
+        source: Mapping[str, JsonValue],
+        method: str,
+        selector: Mapping[str, JsonValue],
+        writer_id: str,
+        sink: str,
+    ) -> DeliveryPageSet:
+        """Keep one delivered page set in service memory, keyed as its handles name it (D12)."""
+
+        from finishup.application.result_delivery import DeliveryHandle
+
+        digest = content_digest(source)
+        code = (
+            status_selector_code(selector)
+            if method == "status"
+            else receipt_selector_code(selector)
+            if method == "receipt"
+            else check_selector_code(selector)
+        )
+        frontier = cast(Mapping[str, JsonValue], source["result_frontier"])
+        handle = DeliveryHandle(
+            cast(Literal["check", "receipt", "status"], method),
+            cast(str, source["request_id"]),
+            int(cast(str, frontier["sequence"])),
+            1,
+            digest.removeprefix("sha256:")[:8],
+            code,
+        )
+        entry = DeliveryPageSet(
+            cast(str, source["session_id"]),
+            writer_id,
+            sink,
+            method,
+            dict(selector),
+            dict(source),
+            digest,
+            code,
+            len(canonical_encode(dict(source))),
+        )
+        self.delivery_pages.put(handle.set_key, entry)
+        return entry
+
+    async def _continue_delivery(
+        self,
+        context: ClientProjectionContext,
+        binding: ControlProjectionBinding,
+        result: DeliverySource,
+    ) -> dict[str, JsonValue]:
+        """Serve the page a handle names (#1244, D12).
+
+        The source is read and disclosed again. A redaction recorded after the set's frontier, or
+        a changed sink or disclosure policy, refuses the continuation and names which. Otherwise:
+        a kept set is served from its own copy, with ``ledger_moved_since`` when the fresh read no
+        longer matches it; a miss rebuilds the set from the fresh read, at the handle's offset when
+        its digest still matches, else from offset 0 with ``page_set_restarted``.
+        """
+
+        if result.redacted_since:
+            raise invalid_cursor("delivery_redaction_recorded")
+        sink = resolve_client_disclosure_sink(context).value
+        handle = result.handle
+        projected = await self.project_result_for_client(
+            context,
+            binding,
+            result.result,
+            _source_method=ControlMethod(result.method),
+            _paginate=False,
+            _check_detail=cast(str | None, result.selector.get("detail")),
+        )
+        fresh = dict(public_model_to_wire(projected))
+        fresh_digest = content_digest(fresh)
+        kept = self.delivery_pages.get(handle.set_key, result.session_id, result.writer_id)
+
+        def page(
+            source: Mapping[str, JsonValue],
+            position: int,
+            selector_code: str | None,
+            *,
+            moved: bool = False,
+            restarted: bool = False,
+        ) -> dict[str, JsonValue]:
+            return page_result(
+                source,
+                method=result.method,
+                selector=result.selector,
+                writer_id=result.writer_id,
+                sink=sink,
+                position=position,
+                request_id=result.request_id,
+                selector_code=selector_code,
+                ledger_moved_since=result.head_frontier if moved else None,
+                page_set_restarted=restarted,
+            )
+
+        # The notice names a ledger that really moved; a call-local fact such as a check's
+        # observation wait differs on any re-read and is simply kept as first delivered.
+        moved = int(cast(str, result.head_frontier["sequence"])) > handle.frontier
+        if kept is not None:
+            if kept.sink != sink or disclosure_identity(kept.source) != disclosure_identity(fresh):
+                raise invalid_cursor("delivery_disclosure_changed")
+            if kept.digest.removeprefix("sha256:")[:8] != handle.digest_prefix:
+                # A handle of a set a rebuild replaced: its offsets name other items.
+                return page(kept.source, 0, kept.selector_code, moved=moved, restarted=True)
+            if kept.digest == fresh_digest:
+                # Unchanged: this read's own projection describes exactly these items.
+                return page(fresh, handle.position, kept.selector_code)
+            # The kept items were disclosed under the kept projection, so it travels with them.
+            return page(kept.source, handle.position, kept.selector_code, moved=moved)
+        fresh_frontier = cast(Mapping[str, JsonValue], fresh["result_frontier"])
+        if int(cast(str, fresh_frontier["sequence"])) != handle.frontier:
+            raise invalid_cursor()
+        entry = self._keep_page_set(fresh, result.method, result.selector, result.writer_id, sink)
+        if entry.digest.removeprefix("sha256:")[:8] == handle.digest_prefix:
+            return page(fresh, handle.position, entry.selector_code)
+        return page(fresh, 0, entry.selector_code, moved=moved, restarted=True)
 
     @staticmethod
     def _result_delivery_body(

@@ -66,6 +66,13 @@ _FIELD_ORDER: Final = (
     "semantic_rulings_disputed_after_rebuttal",
     "semantic_findings_selected",
     "semantic_findings_suppressed",
+    # #1241 D9: the verification rerun question, per check.
+    "rerun_questions_asked",
+    "rerun_questions_answered",
+    "rerun_answers_reviewer_agreed",
+    "rerun_answers_reviewer_disagreed",
+    "reruns_after_answer",
+    "reruns_after_answer_changed",
     "semantic_follow_up_round",
     "semantic_follow_up_items",
     "semantic_follow_up_refs_added",
@@ -81,6 +88,14 @@ _FIELD_ORDER: Final = (
     "semantic_excerpt_count_cut_for_case_bound",
     "semantic_excerpt_byte_limit",
     "semantic_excerpt_ceiling_rounds",
+    # #1245 (D22): which sections ceiling planning dropped, and the agent-account rows kept
+    # (integers only, never content).
+    "semantic_section_dropped_goal",
+    "semantic_section_dropped_obligations",
+    "semantic_section_dropped_claims",
+    "semantic_section_dropped_timeline",
+    "semantic_obligation_rows_selected",
+    "semantic_claim_rows_selected",
     # #1118: a capacity refusal's rendered disclosure size and the limit it
     # exceeded (integers only, never content).
     "semantic_disclosure_attempted_bytes",
@@ -95,6 +110,9 @@ _FIELD_ORDER: Final = (
     "semantic_excerpt_total_limit_bytes",
     # #1230: excerpts a disclosure-time fit left out (integers only).
     "semantic_excerpts_unselected_at_disclosure",
+    # #1242: the first exchange could not keep the frame later exchanges grow into.
+    "semantic_first_exchange_frame_unkept",
+    "semantic_first_exchange_frame_unplanned",
     "semantic_check_change_parts_selected",
     "semantic_edit_evidence_in_case",
     # Issue #1102: task-input pilot counters (integers only, never a path).

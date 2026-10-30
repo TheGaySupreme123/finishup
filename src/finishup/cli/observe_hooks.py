@@ -59,6 +59,7 @@ from finishup.adapters.workspace_binding import (
 from finishup.adapters.workspace_fingerprint import WorkspaceEffectReading
 from finishup.cli import hook_io
 from finishup.cli.closure_gate import (
+    ADVICE_RECHECK_ITEM,
     BLOCKER_RECHECK_ITEM,
     MAX_GATE_BLOCKS_PER_TURN,
     STOP_ADVISORY_NOTICE,
@@ -4459,7 +4460,7 @@ def _decide_closure_gate(
     session and ledger frontier. Every outcome lands in the bounded hook diagnostics so an
     operator (or a benchmark export of ``finishup observe status``) can see what the gate decided.
     On an ``active_stop`` (the host already continued this turn) only a re-check key not yet
-    asked (blocker, acknowledgement, premise) or a withdrawn deliverable not yet
+    asked (blocker, acknowledgement, premise, advice) or a withdrawn deliverable not yet
     voiced may continue the agent, within the per-turn cap; the caller records the outcome
     (#985, tb4n3 RC-8).
     """
@@ -4659,6 +4660,9 @@ def _record_closure_gate_emitted(
         record_hook_diagnostic("closure_gate_continued", event, _state=_state)
         if BLOCKER_RECHECK_ITEM in closure_gate.items:
             record_hook_diagnostic("closure_gate_blocker_rechecked", event, _state=_state)
+        if ADVICE_RECHECK_ITEM in closure_gate.items:
+            # #1240 D2: every ask is counted; the answers are the agent's own decision records.
+            record_hook_diagnostic("closure_gate_advice_asked", event, _state=_state)
         if active_stop:
             record_hook_diagnostic("closure_gate_active_stop_rechecked", event, _state=_state)
 

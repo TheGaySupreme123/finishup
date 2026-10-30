@@ -3205,7 +3205,14 @@ async def _semantic_provider_unbound(
 
 
 def _map_blocked(outcome: PrivacyOutcome, reason: object) -> FinalSemanticEvaluation:
-    """Map pre-dispatch privacy blocks to exact AI-powered review status/reason pairs."""
+    """Map pre-dispatch privacy blocks to exact AI-powered review status/reason pairs.
+
+    A blocked result carries no provider attempt, so a timeout or transport outcome, whose pairs
+    require the attempt's provenance, takes the pair ``_without_provider_provenance`` leaves
+    (``unavailable``/``receipt_persistence_unknown``), as a provider outcome without a durable
+    receipt does. It is never a FinishUP fault, and it is never retried, so content whose fate is
+    unknown is not sent again. Provenance is never invented for it.
+    """
 
     if outcome is PrivacyOutcome.CHANNEL_UNAVAILABLE:
         # Distinct from missing credential/endpoint: the channel is present but policy forbids it.
@@ -3227,14 +3234,21 @@ def _map_blocked(outcome: PrivacyOutcome, reason: object) -> FinalSemanticEvalua
             SemanticStatus.APPROVAL_EXPIRED, SemanticReason.HUMAN_APPROVAL_EXPIRED
         )
     if outcome is PrivacyOutcome.TIMEOUT:
-        return FinalSemanticEvaluation(SemanticStatus.TIMEOUT, SemanticReason.PROVIDER_TIMEOUT)
+        # A deadline that passed before dispatch: no provider attempt to certify.
+        return FinalSemanticEvaluation(
+            *_without_provider_provenance(SemanticStatus.TIMEOUT, SemanticReason.PROVIDER_TIMEOUT)
+        )
     if outcome is PrivacyOutcome.AUDIT_FAILED:
         return FinalSemanticEvaluation(
             SemanticStatus.UNAVAILABLE, SemanticReason.AUDIT_RESERVATION_UNAVAILABLE
         )
     if outcome is PrivacyOutcome.TRANSPORT_FAILED:
+        # A gateway call that raised, or a reviewer conversation that lost its lease: the content
+        # may have been sent, and no receipt certifies the attempt.
         return FinalSemanticEvaluation(
-            SemanticStatus.UNAVAILABLE, SemanticReason.TRANSPORT_UNAVAILABLE
+            *_without_provider_provenance(
+                SemanticStatus.UNAVAILABLE, SemanticReason.TRANSPORT_UNAVAILABLE
+            )
         )
     if outcome is PrivacyOutcome.BLOCKED_BY_POLICY:
         reason_name = getattr(reason, "name", None)
@@ -3574,9 +3588,12 @@ def _map_egress_to_final(
             ),
         )
     if type(result) is SemanticEgressAttemptUnknown:
+        # An admitted attempt with no reusable result: ``outcome_unknown`` needs that attempt's
+        # provenance, which nothing durable certifies, so it takes the pair the rules leave.
         return FinalSemanticEvaluation(
-            SemanticStatus.UNAVAILABLE,
-            SemanticReason.OUTCOME_UNKNOWN,
+            *_without_provider_provenance(
+                SemanticStatus.UNAVAILABLE, SemanticReason.OUTCOME_UNKNOWN
+            ),
             semantic_withheld_item_ids=_egress_withheld_item_ids(result),
             semantic_redacted_values=_egress_redacted_values(result),
             case_content_gaps=_egress_case_content_gaps(result),
@@ -3602,7 +3619,9 @@ def _map_egress_to_final(
                 request_id=result.request_id,
             )
             mapped = FinalSemanticEvaluation(
-                SemanticStatus.FAILED, SemanticReason.CASE_CAPACITY_EXCEEDED
+                SemanticStatus.FAILED,
+                SemanticReason.CASE_CAPACITY_EXCEEDED,
+                attempt_token_usage=result.token_usage,
             )
         return replace(
             mapped,
@@ -4059,6 +4078,12 @@ def _judgment_to_response_json(judgment: object) -> dict[str, CanonicalJsonValue
             }
             for row in judgment.declared_test_verdicts
         ]
+    # #1241 D9: emitted only when present, like the declared-test verdicts.
+    if judgment.freshness_verdicts:
+        body["freshness_verdicts"] = [
+            {"agrees": row.agrees, "finding_id": row.finding_id}
+            for row in judgment.freshness_verdicts
+        ]
     if judgment.missing_for_assessment:
         # Issue #907: the named missing items, reviewer reason included, live only in this
         # encrypted durable response object; the check record keeps the structural fields.
@@ -4075,6 +4100,7 @@ def _judgment_from_response_json(value: object) -> object:
     from finishup.domain.findings import FindingKind
     from finishup.ports.semantic import (
         DeclaredTestVerdict,
+        FreshnessVerdict,
         MissingForAssessment,
         MissingForAssessmentKind,
         PriorFindingVerdict,
@@ -4255,6 +4281,25 @@ def _judgment_from_response_json(value: object) -> object:
             )
         except ValueError as exc:
             raise ValueError("semantic_response_judgment_invalid") from exc
+    freshness_verdicts: list[FreshnessVerdict] = []
+    raw_freshness = source.get("freshness_verdicts", [])
+    if type(raw_freshness) is not list:
+        raise ValueError("semantic_response_judgment_invalid")
+    for raw_row in cast(list[object], raw_freshness):
+        if type(raw_row) is not dict or set(cast(dict[str, object], raw_row)) != {
+            "agrees",
+            "finding_id",
+        }:
+            raise ValueError("semantic_response_judgment_invalid")
+        freshness_row = cast(dict[str, object], raw_row)
+        try:
+            freshness_verdicts.append(
+                FreshnessVerdict(
+                    cast(str, freshness_row["finding_id"]), cast(bool, freshness_row["agrees"])
+                )
+            )
+        except ValueError as exc:
+            raise ValueError("semantic_response_judgment_invalid") from exc
     try:
         return SemanticJudgment(
             cast(SemanticConclusion, conclusion_raw),
@@ -4267,6 +4312,7 @@ def _judgment_from_response_json(value: object) -> object:
             verified_dropped=cast(int, source.get("verified_dropped", 0)),
             strongest_remaining_check=remaining,
             declared_test_verdicts=tuple(test_verdicts),
+            freshness_verdicts=tuple(freshness_verdicts),
         )
     except ValueError as exc:
         raise ValueError("semantic_response_judgment_invalid") from exc
@@ -5209,6 +5255,45 @@ def _pin_declared_tests(
     return tuple(tests)
 
 
+def _record_case_narrowing(
+    request_id: str,
+    ceiling_rounds: int,
+    approved: ReviewSelectionPolicy,
+    case: SemanticCase,
+) -> None:
+    """Record which sections ceiling planning dropped and the agent-account rows kept (#1245).
+
+    One flag per narrowable section (1 when the approved selection had it and the case's
+    effective selection does not, whether ceiling planning or the case builder dropped it) and
+    the obligation and claim rows the case still carries: integers only. It is its own record
+    because ``semantic_case_built`` is already near the diagnostic line bound, and it is written
+    only when the case was narrowed.
+    """
+
+    effective = case.review_selection
+    if not ceiling_rounds and effective == approved:
+        return
+    record_bounded_counts_without_raising(
+        component="semantic_composition",
+        operation="semantic_case_narrowed",
+        outcome="narrowed",
+        request_id=request_id,
+        counts={
+            "semantic_excerpt_ceiling_rounds": ceiling_rounds,
+            **{
+                f"semantic_section_dropped_{section}": int(
+                    section in approved.sections and section not in effective.sections
+                )
+                for section in ("goal", "obligations", "claims", "timeline")
+            },
+            "semantic_obligation_rows_selected": sum(
+                item_id.startswith("obligation-") for item_id in case.packet.obligation_item_ids
+            ),
+            "semantic_claim_rows_selected": len(case.packet.claim_item_ids),
+        },
+    )
+
+
 def _privacy_gated_semantic_evaluator(
     privacy: PrivacyCoordinator,
     clock: ClockPort,
@@ -5849,7 +5934,10 @@ def _privacy_gated_semantic_evaluator(
                 if planned is None or not planned[4]:
                     declared_tests = ()
                     planned = await plan(())
-                semantic_case, approved_case, planned_selection, ceiling_rounds, _fits = planned
+                # #1242: whether planning kept the frame is recorded, never discarded. Reads stay
+                # offered: at small channel limits the measured room after the first exchange
+                # still serves one, and a read with no room is asked for the verdict instead.
+                semantic_case, approved_case, planned_selection, ceiling_rounds, fits = planned
             except SemanticCaseCapacityExceeded as exc:
                 # Same pre-dispatch contract as an envelope that cannot be reduced: local
                 # findings stay recorded, no job is created, and the caller sees a capacity
@@ -5908,6 +5996,7 @@ def _privacy_gated_semantic_evaluator(
                     ),
                     "semantic_excerpt_byte_limit": planned_selection.max_total_excerpt_bytes,
                     "semantic_excerpt_ceiling_rounds": ceiling_rounds,
+                    "semantic_first_exchange_frame_unplanned": int(not fits),
                     "semantic_check_change_parts_selected": sum(
                         item.excerpt_item_id.startswith(CHECK_TIME_CHANGE_ITEM_PREFIX)
                         for item in semantic_case.packet.targeted_excerpts
@@ -5930,6 +6019,12 @@ def _privacy_gated_semantic_evaluator(
                         ),
                     ),
                 },
+            )
+            _record_case_narrowing(
+                frozen.lease.operation_id,
+                ceiling_rounds,
+                review_selection,
+                semantic_case,
             )
             if captured_local_fence_required and captured_content_scope is not None:
                 # A resolver may authenticate a group that the active excerpt selection then

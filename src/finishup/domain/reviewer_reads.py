@@ -18,6 +18,7 @@ from typing import Final, cast
 
 __all__ = [
     "MAX_REVIEWER_READS",
+    "READ_NOT_SERVED_ENDING",
     "ReviewerRead",
     "ReviewerRecord",
     "render_reviewer_lines",
@@ -27,6 +28,9 @@ __all__ = [
 MAX_REVIEWER_READS: Final = 3
 MAX_REVIEWER_READ_ATTEMPTS: Final = MAX_REVIEWER_READS + 2
 MAX_REVIEWER_EXCHANGES: Final = MAX_REVIEWER_READ_ATTEMPTS + 2  # final judgment and one repair
+# #1242: ``ReviewerRecord.ended`` of a review that returned its final judgment after a read it
+# asked for was left unserved, because the read's own action left its exchange no room.
+READ_NOT_SERVED_ENDING: Final = "read_not_served_no_room"
 _ACTIONS: Final = frozenset({"read_packet_section", "read_ledger", "read_file"})
 _STATUSES: Final = frozenset({"ok", "partial", "unavailable", "denied", "stale"})
 _STANDINGS: Final = frozenset(
@@ -120,8 +124,9 @@ class ReviewerRecord:
     """One review conversation: its exchanges, reads, why it ended and its runtime cleanup.
 
     ``ended`` is ``None`` for a conversation that returned its final judgment, else the closed
-    reason the loop stopped. ``cleanup`` is the held provider session's cleanup outcome (a Codex
-    thread); ``None`` when the route held nothing between exchanges.
+    reason the loop stopped; ``READ_NOT_SERVED_ENDING`` is a final judgment given without a read
+    the reviewer asked for, which had no room (#1242). ``cleanup`` is the held provider session's
+    cleanup outcome (a Codex thread); ``None`` when the route held nothing between exchanges.
     """
 
     exchanges: int
@@ -208,7 +213,9 @@ def reviewer_record_from_wire(value: object) -> ReviewerRecord | None:
 def render_reviewer_lines(record: ReviewerRecord | None) -> tuple[str, ...]:
     """Plain lines for text surfaces: one summary line, then one line per read."""
 
-    if record is None:
+    if record is None or (record.exchanges == 0 and not record.reads):
+        # #1138: nothing was sent and nothing read (a review refused before its first exchange
+        # left); the check's own outcome says why, so no "model exchange" line is shown.
         return ()
     used = sum(read.budget_used for read in record.reads)
     total = sum(read.result_bytes for read in record.reads)
@@ -218,7 +225,9 @@ def render_reviewer_lines(record: ReviewerRecord | None) -> tuple[str, ...]:
     )
     if used != len(record.reads):
         head += f"; {len(record.reads)} of {MAX_REVIEWER_READ_ATTEMPTS} read attempts"
-    if record.ended is not None:
+    if record.ended == READ_NOT_SERVED_ENDING:
+        head += "; a requested read was not served (no room left), judged without it"
+    elif record.ended is not None:
         head += f"; ended early: {record.ended}"
     lines = [head]
     for read in record.reads:
