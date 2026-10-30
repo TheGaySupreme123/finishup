@@ -399,6 +399,26 @@ def test_an_unchanged_refusal_stands_and_a_change_ends_it() -> None:
     assert _standing() is None
 
 
+@pytest.mark.parametrize(
+    "name",
+    [
+        "claim_recorded",
+        "decision_recorded",
+        "obligation_published",
+        "plan_published",
+        "plan_revised",
+        "response_recorded",
+    ],
+)
+def test_newly_published_text_ends_the_standing(name: str) -> None:
+    """#966: a revision of agent-published text is composed and scanned again, never carried."""
+
+    published = SimpleNamespace(schema=SimpleNamespace(name=name), payload=object())
+    assert _standing(_block(), published) is None
+    # Text published before the refusal leaves it standing.
+    assert _standing(published, _block()) is not None
+
+
 def test_the_skip_gap_is_a_review_only_limit() -> None:
     assert SEMANTIC_REVIEW_SKIPPED_PRIVACY_BLOCK_GAP in SEMANTIC_ONLY_GAPS
     assert SEMANTIC_REVIEW_SKIPPED_PRIVACY_BLOCK_GAP in GAP_EFFECT_TABLE

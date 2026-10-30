@@ -1912,7 +1912,8 @@ its `-part-NN` parts, not the source file; renderings say "of the captured item"
   unknown still counts as a model exchange; one refused before dispatch does not;
 - `semantic_review_skipped_privacy_block` — the newest check that asked for AI-powered review was
   refused at the privacy boundary (`blocked_forbidden_data` / `never_send_detected`) and neither an
-  edit action nor agent-published evidence followed it (`kernel.review_round.
+  edit action, agent-published evidence nor agent-published text (a claim, plan, obligation,
+  decision or answer) followed it (`kernel.review_round.
   privacy_block_standing`), so this check records the same status and `review_blocked` items and
   composes or sends nothing. A closing review after a routine check's refusal is scanned once more;
   a closing review's own refusal stands. A review-scoped FinishUP limit, never agent work; it

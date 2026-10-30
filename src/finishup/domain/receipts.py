@@ -1058,8 +1058,8 @@ def privacy_block_sentence(
         )
     if skipped:
         sentence += (
-            " This check did not send it again: no edit or newly published evidence followed "
-            "the refusal (semantic_review_skipped_privacy_block)."
+            " This check did not send it again: no edit or newly published evidence or text "
+            "followed the refusal (semantic_review_skipped_privacy_block)."
         )
     return sentence
 
