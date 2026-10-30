@@ -1961,8 +1961,9 @@ def _egress_receipt_v1_1_schema(entry: _RegistryEntry) -> dict[str, JsonValue]:
                 "properties": {
                     "outcome": {"const": "blocked_by_policy"},
                     "safe_failure_reason": {"const": "policy_denied"},
+                    "schema_version": {"const": "1.1.0"},
                 },
-                "required": ["outcome", "safe_failure_reason"],
+                "required": ["outcome", "safe_failure_reason", "schema_version"],
             },
         }
     )
