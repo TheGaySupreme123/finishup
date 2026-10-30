@@ -16,7 +16,7 @@ This topic owns the closing procedure. Start with readiness: at `ready_with_limi
    for each case. Answer each finding once; its `finding_frontier` may be the current status
    frontier, so no historical frontier search is needed. Non-actionable observation-authored
    findings are FinishUP coverage limits the receipt discloses; they need no answer.
-   `decision_needed` is an optional advisory decision, not repair work.
+   `decision_needed` is an advisory decision, not repair work: answer it once.
 4. If readiness requires a closing review, check the repaired/current record with
    `final_review: true`. Keep any required review mode; do not downgrade it to finish.
 5. After the check, answer only the findings it returned that remain unanswered. Then read
@@ -56,17 +56,18 @@ The receipt records the assessment; this separate event records closure.
 
 ## Earlier correctness advisories
 
-Routine AI-powered correctness notes are non-blocking. For each material note: run a proportionate
-check, cite evidence that already settles it, or decline with a reason
-([review guidance](review.md)); recording a response is optional. The receipt counts them
-and shows each displayed note as `addressed (agent-reported, linked evidence)`, `declined with
-reason` or `no recorded response`; include the material ones and their status in final prose,
-with their retrieval and evidence links. Silence, a later clean check or a passing count is not
-repair proof, and a withheld decision that may answer a note is not an answer. To record an
-answer, `respond` with the note's `<check-event-id>:<ordinal>` in `finding_id` and a
-`finding_frontier` at or after its check: `addressed` needs a reason and evidence or result refs,
-at least one recorded after that check; `declined` needs a reason. Either is your report, not
-independent verification, and needs no recheck. For rows the receipt omits, read
+Routine AI-powered correctness notes are non-blocking, but answer each material one (the
+reviewer's strongest remaining check, and each `decision_needed` choice) once: you ran it, you
+checked and kept your choice, or you declined ([review guidance](review.md)). An unanswered
+material note keeps the receipt from reading clean ("N notes not answered"); closing stays
+allowed. The receipt shows each note as `addressed (agent-reported, linked evidence)`, `checked,
+kept my choice`, `declined with reason` or `no recorded response`, with your one-line reason.
+Silence, a later clean check or a passing count is not repair proof, and a withheld decision that
+may answer a note is not an answer. To answer, `respond` with the note's
+`<check-event-id>:<ordinal>` in `finding_id` and a `finding_frontier` at or after its check:
+`addressed` needs a reason and evidence or result refs, at least one recorded after that check;
+`kept_choice` and `declined` need a reason. Each is your report, not independent verification,
+and needs no recheck. For rows the receipt omits, read
 `status view=history` with `filter.schema_name=check_recorded` in the session the receipt names
 for that check, following `next_cursor` with the same filter and limit.
 
@@ -74,9 +75,11 @@ for that check, following `next_cursor` with the same filter and limit.
 
 Receipt and final prose are scope-first. Lead with what recorded evidence/checks covered and what was
 not verified or remained limited. Name the checked frontier, AI-powered review status/reason, and
-material coverage gaps before counts. Then report actual actionable-unresolved, unanswered, and
-resolved-history counts. Never headline a bare “no findings”, “zero findings”, “clean”, or
-“verified” result. Say what the evidence covers and what it leaves unverified in plain language.
+material coverage gaps before counts. State the receipt's conclusion, and name every reviewer note
+that is still open or that you declined. Then report actual actionable-unresolved and
+resolved-history counts. Never write "0 unanswered findings" while a note is open, and never
+headline a bare “no findings”, “zero findings”, “clean”, or “verified” result. Say what the
+evidence covers and what it leaves unverified in plain language.
 
 Do not save the receipt as a file in the task workspace or in any output directory: the ledger
 keeps it, and a stray file can break a grader that lists an output directory. Put its conclusion

@@ -630,6 +630,12 @@ def _event_invalid(
             "respond: put the note's check-event-id:ordinal in finding_id with disposition "
             "addressed or declined. Remove advisory_response from this decision draft."
         )
+    elif reason_code == "review_mode_parent_is_check":
+        message = (
+            "The event batch is invalid. A review-mode switch cannot name a check as its only "
+            "causal parent: that shape is reserved for correctness-advisory answers, which "
+            "respond records. Name no parent, or another parent beside the check."
+        )
     elif reason_code == "frontier_changed":
         message = (
             "The event batch is invalid. Call status to read the current frontier, then retry "
@@ -1687,8 +1693,6 @@ async def _preflight_dry_run_feasibility(
             writer_sequence = int(record.writer.sequence) + 1
             previous_writer_digest = record.entry_digest
 
-    _validate_verification_quotes(prepared, existing_records)
-
     # Ordinary publish passes only the integer sequence into AppendCommand; digest is not a gate.
     if request.expected_frontier is not None:
         expected_sequence = int(request.expected_frontier.sequence)
@@ -1865,6 +1869,37 @@ def _validate_verification_quotes(
                 )
 
 
+async def _validate_review_mode_parents(
+    runtime: TaskRuntime, prepared: PreparedPublication
+) -> None:
+    """#1190 (owner decision B): a review-mode switch never names a check as its only parent.
+
+    That envelope (``decision_recorded`` 1.1.0 whose sole causal parent is a ``check_recorded``)
+    is reserved for correctness-advisory answers, which only ``respond`` records, so a withheld
+    one is still recognised as an answer from its envelope alone.
+    """
+
+    candidates = tuple(
+        (index, str(item.draft.causal_parents[0]))
+        for index, item in enumerate(prepared.drafts)
+        if type(item.draft.payload) is DecisionRecordedPayload
+        and item.draft.payload.review_mode is not None
+        and len(item.draft.causal_parents) == 1
+    )
+    if not candidates:
+        return
+    checks = {
+        str(record.event_id)
+        async for record in runtime.ledger.load_events(runtime.session_id)
+        if record.schema.name == "check_recorded"
+    }
+    for index, parent in candidates:
+        if parent in checks:
+            raise _event_invalid(
+                "review_mode_parent_is_check", event_index=index, subfield="causal_parents"
+            )
+
+
 async def _validate_new_verifications(runtime: TaskRuntime, prepared: PreparedPublication) -> None:
     if not any(
         type(item.draft.payload) is ResultRecordedPayload
@@ -1914,7 +1949,11 @@ async def _execute_dry_run(
     prepared = prepare_publication(
         request, channel=channel, app=app, occurred_at=occurred_at, task_id=runtime.task_id
     )
+    # The publish's own read-only admission checks, in its order, so a preview refuses exactly
+    # what the publish would and never reports would_accept for it (#1190, #1170).
     _validate_new_completion_scope(request, prepared)
+    await _validate_new_verifications(runtime, prepared)
+    await _validate_review_mode_parents(runtime, prepared)
     current, coverage, projected = await _preflight_dry_run_feasibility(runtime, request, prepared)
     notices = _blocker_notices(projected, prepared)
     action_notices = _action_notices(projected, prepared)
@@ -2086,6 +2125,7 @@ async def execute_publish_work(
         )
         _validate_new_completion_scope(request, prepared)
         await _validate_new_verifications(runtime, prepared)
+        await _validate_review_mode_parents(runtime, prepared)
         if input_capture is not None:
             # #1118 unit 1: a validated new batch, before its append; a replay returned above.
             await input_capture(runtime)

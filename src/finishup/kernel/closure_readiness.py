@@ -686,6 +686,7 @@ def _semantic_review_current(
                 payload.returned_finding_ids,
                 limitation_finding_ids=limitations,
                 projection=state,
+                check_event_id=record.event_id,
             )
             for later in records
         )

@@ -71,6 +71,7 @@ from finishup.kernel.claim_limitations import (
     result_is_relevant_to_claim_scope,
     scope_with_supersession_ancestry,
 )
+from finishup.kernel.correctness_advisories import withheld_response_check
 from finishup.kernel.finding_resolution import (
     apply_check_resolution,
     apply_check_rulings,
@@ -238,6 +239,7 @@ def invalidates_recorded_check(
     *,
     limitation_finding_ids: frozenset[FindingId],
     projection: ProjectionState,
+    check_event_id: EventId | None = None,
 ) -> bool:
     """True when *record* supersedes the check recorded at *check_sequence*.
 
@@ -251,7 +253,7 @@ def invalidates_recorded_check(
     if record.ledger.ingestion_sequence <= check_sequence:
         return False
     return _record_supersedes_recorded_check(
-        record, returned_finding_ids, limitation_finding_ids, projection
+        record, returned_finding_ids, limitation_finding_ids, projection, check_event_id
     )
 
 
@@ -260,8 +262,15 @@ def _record_supersedes_recorded_check(
     returned_finding_ids: tuple[FindingId, ...],
     limitation_finding_ids: frozenset[FindingId],
     projection: ProjectionState,
+    check_event_id: EventId | None = None,
 ) -> bool:
     """Apply the shared authorship-aware supersession rule to a later record."""
+
+    # #1190 (owner decision B): a withheld answer to a note of the judged check itself is an
+    # advisory response, which never makes a check stale. One answering an older check's note
+    # keeps the conservative rule: its parent cannot be told from a non-check record here.
+    if check_event_id is not None and withheld_response_check(record) == str(check_event_id):
+        return False
 
     if is_observation_authored(record):
         # Hook delivery reports what the harness observed; it does not publish new cooperative
@@ -1421,6 +1430,7 @@ def reduce_event(
             latest.returned_finding_ids,
             _answered_limitation_ids(state, accepted, replay_index),
             state,
+            latest.source_check_event_id,
         ):
             stale = True
 

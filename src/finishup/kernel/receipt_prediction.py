@@ -79,6 +79,9 @@ PREDICTION_REASON_CODES: Final = {
     "check_verdict_insufficient": "R8",
     "policy_execution_incomplete": "R9",
     "live_gap_bounds": "R10",
+    # #1240 D1: material reviewer advice with no recorded answer (the strongest remaining check
+    # notes and decision choices). It never blocks closing; it keeps the receipt from reading clean.
+    "advice_unanswered": "R11",
 }
 
 
@@ -124,6 +127,10 @@ class ClosureBasis:
     # exists the prediction is provisional.
     live_blockers: tuple[str, ...] = ()
     check_in_flight: bool = False
+    # #1240 D1: material advice with no recorded answer: advisory ids (``<check event>:<n>``) of
+    # the reviewer's strongest remaining check notes and ``decision_needed`` finding ids. Only
+    # ``fnd_`` ids are cited as refs; the count covers both.
+    advice_unanswered: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         if (
@@ -285,6 +292,12 @@ def _reasons(basis: ClosureBasis) -> list[PredictionReason]:
             add("policy_execution_incomplete", 1, (), None)
     bounding = [gap for gap in live if gap.kind.bounds]
     add("live_gap_bounds", len(bounding), (gap.code for gap in bounding), None)
+    add(
+        "advice_unanswered",
+        len(basis.advice_unanswered),
+        (ref for ref in basis.advice_unanswered if ref.startswith("fnd_")),
+        None,
+    )
     return reasons
 
 

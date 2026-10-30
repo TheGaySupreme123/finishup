@@ -232,3 +232,33 @@ def test_a_self_verified_process_note_predicts_the_issued_conclusion(
     assert predicted.conclusion is PredictionConclusion.NO_UNRESOLVED_DETERMINISTIC_FINDINGS
     assert predicted.reasons == ()
     assert issued.conclusion.value == predicted.conclusion.value
+
+
+def test_unanswered_material_advice_caps_the_conclusion_and_cites_only_findings() -> None:
+    # #1240 D1: an unanswered strongest remaining check note or decision choice keeps the receipt
+    # from reading clean; closing stays allowed (readiness never reads the prediction's reasons).
+    note = "evt_00000000-0000-4000-8000-000000000001:2"
+    prediction = predict_receipt_conclusion(_basis(advice_unanswered=(note, str(fnd(4)))))
+    assert prediction.conclusion is PredictionConclusion.INSUFFICIENT_COVERAGE
+    (reason,) = prediction.reasons
+    assert (reason.code, reason.rule, reason.count) == ("advice_unanswered", "R11", 2)
+    # The predicted-receipt ref pattern has no advisory form: notes are counted, never cited.
+    assert reason.refs == (str(fnd(4)),)
+    # An open finding still selects the stronger conclusion, and both reasons are kept.
+    both = predict_receipt_conclusion(
+        _basis(findings=(_finding(1, "open_unanswered"),), advice_unanswered=(note,))
+    )
+    assert both.conclusion is PredictionConclusion.UNRESOLVED_FINDINGS_REMAIN
+    assert [item.code for item in both.reasons][-1] == "advice_unanswered"
+
+
+def test_the_advice_reason_reads_the_same_on_every_surface() -> None:
+    from finishup.domain.receipts import CONCLUSION_REASON_CODES
+    from finishup.kernel.receipt_prediction import PREDICTION_REASON_CODES
+    from finishup.protocol.readiness_text import (
+        _REASON_PHRASES,  # pyright: ignore[reportPrivateUsage]
+    )
+
+    assert PREDICTION_REASON_CODES["advice_unanswered"] == "R11"
+    assert CONCLUSION_REASON_CODES["advice_unanswered"] == "R11"
+    assert _REASON_PHRASES["advice_unanswered"].format(n=3) == "3 reviewer note(s) not answered"

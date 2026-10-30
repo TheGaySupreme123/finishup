@@ -1119,7 +1119,7 @@ _ADVICE_ID: Final = re.compile(
 CHECK_ADVICE_HEADER: Final = (
     "Tracked reviewer advice (advisory). Non-blocking. For each material concern: run a "
     "proportionate check, cite evidence that already settles it, or decline with a reason. "
-    "Recording a response is optional (respond finding_id=<id>); zero findings does not "
+    "Answer each material one once (respond finding_id=<id>); zero findings does not "
     "establish correctness:"
 )
 
@@ -2217,6 +2217,19 @@ def _brief_without_counts(source: Mapping[str, JsonValue]) -> bool:
     )
 
 
+def _unanswered_notes_clause(source: Mapping[str, JsonValue]) -> str:
+    """``reviewer notes not answered: N; `` when readiness counts any, else ``""`` (#1240)."""
+
+    readiness = source.get("closure_readiness")
+    if not isinstance(readiness, Mapping):
+        return ""
+    counts = cast(Mapping[str, JsonValue], readiness).get("correctness_advisory_counts")
+    if not isinstance(counts, Mapping):
+        return ""
+    count = _safe_count(cast(Mapping[str, JsonValue], counts).get("no_recorded_response"))
+    return "" if count in {"0", "unavailable"} else f"reviewer notes not answered: {count}; "
+
+
 def _compact_status_fields(source: Mapping[str, JsonValue], view: str) -> tuple[str, str, str, str]:
     item = _first_page_item(source)
     readiness = source.get("closure_readiness")
@@ -2459,10 +2472,12 @@ def summary_for_status(envelope: object) -> str:
         recipe = render.variants("resolve_recipe", lambda: _obligation_resolve_recipe(source))
         if recipe:
             parts.append(_opt(*recipe, priority=_P_STATE))
+    # #1240 D5: never a bare "unanswered findings: 0" while a reviewer note has no answer.
+    notes = _unanswered_notes_clause(source)
     parts.append(
-        _req(f"reported gaps: {gaps}.")
+        _req(f"{notes}reported gaps: {gaps}.")
         if brief
-        else _req(f"unanswered findings: {unanswered}; reported gaps: {gaps}.")
+        else _req(f"unanswered findings: {unanswered}; {notes}reported gaps: {gaps}.")
     )
     deferral = _deferral_sentence(source.get("semantic_reason"), source)
     if deferral:

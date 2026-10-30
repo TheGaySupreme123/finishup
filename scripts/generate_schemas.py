@@ -2564,7 +2564,9 @@ def _correctness_advisories_schema(*, history: bool = False) -> dict[str, JsonVa
                     "enum": [
                         "addressed",
                         "declined",
+                        "kept_choice",
                         "no_recorded_response",
+                        "response_unavailable",
                     ],
                     "type": "string",
                 },
@@ -2684,7 +2686,7 @@ def _advisory_response_schema() -> dict[str, JsonValue]:
         "additionalProperties": False,
         "properties": {
             "advisory_id": {"type": "string", "pattern": ADVISORY_ID_PATTERN},
-            "disposition": {"type": "string", "enum": ["addressed", "declined"]},
+            "disposition": {"type": "string", "enum": ["addressed", "declined", "kept_choice"]},
             "evidence_refs": {
                 "type": "array",
                 "maxItems": 64,
@@ -2713,14 +2715,17 @@ def _admit_advisory_dispositions(
     dispositions = cast(
         list[JsonValue], cast(dict[str, JsonValue], properties["disposition"])["enum"]
     )
-    dispositions.extend(["addressed", "declined"])
+    # #1240 D3: ``kept_choice`` (checked, kept my choice) answers a note like ``declined``.
+    dispositions.extend(["addressed", "declined", "kept_choice"])
     dispositions.sort(key=lambda value: str(value).encode("ascii"))
     properties["finding_id"] = {
         "anyOf": [properties["finding_id"], {"type": "string", "pattern": ADVISORY_ID_PATTERN}]
     }
     rules.append(
         {
-            "if": {"properties": {"disposition": {"enum": ["addressed", "declined"]}}},
+            "if": {
+                "properties": {"disposition": {"enum": ["addressed", "declined", "kept_choice"]}}
+            },
             "then": {
                 **_no_waiver_fields(),
                 "required": ["reason"],
@@ -6843,6 +6848,7 @@ _FINDING_NEXT_ACTIONS: Final = (
     "self_verify",
 )
 _PREDICTION_REASON_CODES: Final = (
+    "advice_unanswered",
     "check_suppressed_findings",
     "check_verdict_insufficient",
     "child_findings_actionable",
@@ -6887,7 +6893,7 @@ def _predicted_receipt_schema() -> dict[str, JsonValue]:
                 "uniqueItems": True,
             },
             "rule": {
-                "enum": ["R1", "R10", "R2", "R3", "R4", "R5", "R6", "R7", "R8", "R9"],
+                "enum": ["R1", "R10", "R11", "R2", "R3", "R4", "R5", "R6", "R7", "R8", "R9"],
                 "type": "string",
             },
             "since_frontier": {"$ref": "#/$defs/canonical_uint"},
@@ -7076,11 +7082,17 @@ def _add_status_closure_verdict(definitions: dict[str, JsonValue]) -> None:
                     "properties": {
                         "key": {
                             "maxLength": 160,
-                            "pattern": r"^(?:accept|ack|blocker|premise):[A-Za-z0-9_.:?-]{1,140}$",
+                            "pattern": r"^(?:accept|ack|advice|blocker|premise):[A-Za-z0-9_.:?-]{1,140}$",
                             "type": "string",
                         },
                         "kind": {
-                            "enum": ["acceptance", "acknowledgement", "blocker", "premise"],
+                            "enum": [
+                                "acceptance",
+                                "acknowledgement",
+                                "advice",
+                                "blocker",
+                                "premise",
+                            ],
                             "type": "string",
                         },
                         "rule": {"$ref": "#/$defs/code"},
@@ -7792,7 +7804,7 @@ def _receipt_document_v1_3_schema(entry: _RegistryEntry) -> dict[str, JsonValue]
                 "uniqueItems": True,
             },
             "rule": {
-                "enum": ["R1", "R10", "R2", "R3", "R4", "R5", "R6", "R7", "R8", "R9"],
+                "enum": ["R1", "R10", "R11", "R2", "R3", "R4", "R5", "R6", "R7", "R8", "R9"],
                 "type": "string",
             },
             "since_frontier": {"maximum": 9007199254740991, "minimum": 0, "type": "integer"},

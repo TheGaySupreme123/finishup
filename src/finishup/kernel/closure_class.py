@@ -332,7 +332,7 @@ class ClosureCounts:
         return self.findings_to_do + self.findings_unmet
 
 
-type RecheckKind = Literal["acceptance", "acknowledgement", "blocker", "premise"]
+type RecheckKind = Literal["acceptance", "acknowledgement", "advice", "blocker", "premise"]
 
 
 @dataclass(frozen=True, slots=True)
@@ -354,7 +354,7 @@ class Recheck:
 
     def __post_init__(self) -> None:
         if (
-            self.kind not in {"acceptance", "acknowledgement", "blocker", "premise"}
+            self.kind not in {"acceptance", "acknowledgement", "advice", "blocker", "premise"}
             or type(self.key) is not str
             or not self.key
             or type(self.subjects) is not tuple

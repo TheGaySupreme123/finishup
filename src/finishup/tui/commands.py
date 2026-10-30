@@ -37,6 +37,7 @@ SLASH_COMMANDS: Final[tuple[SlashCommand, ...]] = (
     SlashCommand("lineage", "show child tasks, acceptance, and completion gaps"),
     SlashCommand("project", "show project members and coordination state"),
     SlashCommand("findings", "show the task's findings as a to-do list, each with its state"),
+    SlashCommand("notes", "show reviewer notes and how each was answered"),
     SlashCommand("observe", "show observation selection and change local retention capacity"),
     SlashCommand("check", "run a verification check"),
     SlashCommand("progress", "show the latest check's review phase and elapsed time"),

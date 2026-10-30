@@ -140,7 +140,7 @@ decisions and pacing. Keep the frontier you hold (the `result_frontier` of your 
 read `status` for one only when you hold none or after `frontier_changed`.
 Before the final check, read `status view=findings` for unanswered actionable defects.
 After the final check, respond only to the findings it returned that are still unanswered;
-`decision_needed` answers are optional. Inspect `resolved`, never infer it from absence.
+answer each `decision_needed` once too. Inspect `resolved`, never infer it from absence.
 Responses to the check's own findings, an acknowledgement of an observation-authored
 non-actionable finding, and `work_closed` need no recheck. A material-for-review change includes
 a recorded repair (it always gets at least one re-check), changed acceptance evidence or a

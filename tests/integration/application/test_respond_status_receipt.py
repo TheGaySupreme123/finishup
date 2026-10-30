@@ -9839,8 +9839,17 @@ async def test_history_never_shows_another_sessions_advisory_check(
     assert "Earlier correctness advisories: 1; no recorded response: 1" in str(receipt.as_json())
 
 
+_ADVISORY_LABELS = {
+    None: "no recorded response",
+    "declined": "declined with reason",
+    "addressed": "addressed (agent-reported, linked evidence)",
+    # #1240 D3: checked, kept my choice.
+    "kept_choice": "checked, kept my choice (agent-reported, with reason)",
+}
+
+
 @pytest.mark.parametrize("backend", ["memory", "sqlite"])
-@pytest.mark.parametrize("disposition", [None, "declined", "addressed"])
+@pytest.mark.parametrize("disposition", [None, "declined", "addressed", "kept_choice"])
 async def test_correctness_advisory_survives_check_response_and_receipt(
     backend: Literal["memory", "sqlite"], disposition: str | None
 ) -> None:
@@ -9951,7 +9960,7 @@ async def test_correctness_advisory_survives_check_response_and_receipt(
             "finding_frontier": _frontier(checked.result_frontier),
             "disposition": disposition,
             "reason": "Kept the existing geometry with its limitation."
-            if disposition == "declined"
+            if disposition in {"declined", "kept_choice"}
             else "Changed to the local frame and checked the linked result.",
             "evidence_refs": refs,
         }
@@ -9995,15 +10004,7 @@ async def test_correctness_advisory_survives_check_response_and_receipt(
         )
     )
     assert "world AABBs" in history_text and "AI-powered source:" in history_text
-    assert (
-        "no recorded response" in history_text
-        if disposition is None
-        else (
-            "declined with reason" in history_text
-            if disposition == "declined"
-            else "addressed (agent-reported, linked evidence)" in history_text
-        )
-    )
+    assert _ADVISORY_LABELS[disposition] in history_text
     assert status.page.next_cursor is not None
     # Following the cursor keeps the same bound frontier and omits the older check's note.
     second = await app.status(
@@ -10049,13 +10050,7 @@ async def test_correctness_advisory_survives_check_response_and_receipt(
         # History is session-scoped, so the receipt names the session that recorded the check.
         assert f"in session {started.session_id}" in text
         assert f"with session_id {started.session_id}" in text
-        assert (
-            "no recorded response"
-            if disposition is None
-            else "declined with reason"
-            if disposition == "declined"
-            else "addressed (agent-reported, linked evidence)"
-        ) in text
+        assert _ADVISORY_LABELS[disposition] in text
 
     if backend == "sqlite":
         cold = SqliteLedger(

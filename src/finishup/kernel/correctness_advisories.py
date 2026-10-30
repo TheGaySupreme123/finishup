@@ -4,12 +4,14 @@ from dataclasses import dataclass, replace
 from typing import cast
 
 from finishup.domain.bounded_text import clip_to_limit
+from finishup.domain.correctness_advisories import MATERIAL_ADVISORY_ORIGINS
 from finishup.domain.events import (
     DECISION_REVIEW_MODE_SCHEMA_VERSION,
     CheckRecordedPayload,
     DecisionRecordedPayload,
     LedgerRecord,
 )
+from finishup.domain.freshness_question import bounded_agent_reason
 from finishup.domain.receipts import ReceiptRedactionProfile
 from finishup.domain.values import JsonObject
 
@@ -20,10 +22,19 @@ class CorrectnessAdvisory:
     check: LedgerRecord
     concern: JsonObject
     response: LedgerRecord | None = None
+    # #1190 (owner decision B): a withheld advisory response that can only answer this note (its
+    # check has no other note). It answers the note; its disposition and reason are unreadable.
+    response_unavailable: bool = False
+
+    @property
+    def answered(self) -> bool:
+        return self.response is not None or self.response_unavailable
 
     @property
     def disposition(self) -> str:
         if self.response is None:
+            if self.response_unavailable:
+                return "response_unavailable"
             return "no recorded response"
         payload = self.response.payload
         assert isinstance(payload, DecisionRecordedPayload)
@@ -74,12 +85,15 @@ class CorrectnessAdvisoryIndex:
     unmatched_withheld: int = 0
 
 
-def _withheld_response_check(record: LedgerRecord) -> str | None:
-    """The check a withheld decision may answer a note of, or ``None``.
+def withheld_response_check(record: LedgerRecord) -> str | None:
+    """The check a withheld advisory response answers a note of, or ``None``.
 
     Only ``decision_recorded`` 1.1.0 can carry an advisory response, and every advisory response
-    names exactly its check as causal parent. That envelope survives when the payload does not,
-    but it does not prove the record is a response: it only says it may be one.
+    names exactly its check as causal parent. That envelope survives when the payload does not.
+    Since #1190 (owner decision B) ``publish_work`` refuses a review-mode switch whose only parent
+    is a check, so a withheld record of this shape whose parent is a check is an advisory
+    response. The caller confirms the parent is a check. The target note (its ordinal) stays
+    unreadable.
     """
 
     if getattr(record, "payload", None) is not None:
@@ -116,12 +130,17 @@ def correctness_advisory_index(records: tuple[LedgerRecord, ...]) -> Correctness
             key = str(payload.advisory_response["advisory_id"])
             if key in rows:
                 rows[key] = replace(rows[key], response=record)
-        elif (check := _withheld_response_check(record)) is not None and check in notes_by_check:
+        elif (check := withheld_response_check(record)) is not None and check in notes_by_check:
             withheld_by_check[check] = withheld_by_check.get(check, 0) + 1
-    unmatched = sum(
-        min(count, sum(rows[key].response is None for key in notes_by_check[check]))
-        for check, count in withheld_by_check.items()
-    )
+    unmatched = 0
+    for check, count in withheld_by_check.items():
+        noted = notes_by_check[check]
+        if len(noted) == 1:
+            # #1190: the only note of its check is the one a withheld response can answer.
+            if rows[noted[0]].response is None:
+                rows[noted[0]] = replace(rows[noted[0]], response_unavailable=True)
+            continue
+        unmatched += min(count, sum(rows[key].response is None for key in noted))
     return CorrectnessAdvisoryIndex(tuple(rows.values()), unmatched)
 
 
@@ -129,12 +148,61 @@ def correctness_advisories(records: tuple[LedgerRecord, ...]) -> tuple[Correctne
     return correctness_advisory_index(records).rows
 
 
+def unanswered_material_notes(index: CorrectnessAdvisoryIndex) -> tuple[str, ...]:
+    """#1240 D1: the material notes (the strongest remaining check) with no recorded answer."""
+
+    return tuple(
+        row.advisory_id
+        for row in index.rows
+        if not row.answered and row.concern.get("origin") in MATERIAL_ADVISORY_ORIGINS
+    )
+
+
+_DISPOSITION_LABELS = {
+    "addressed": "addressed",
+    "kept_choice": "kept my choice",
+    "declined": "declined",
+}
+
+
+def advisory_tally_sentence(index: CorrectnessAdvisoryIndex, advice: tuple[str, ...]) -> str:
+    """#1240 D1: the Summary line that names how the reviewer notes were answered, or ``""``.
+
+    Fixed words and counts only. ``advice`` is ``ClosureBasis.advice_unanswered``: its advisory
+    ids are the material notes counted among the notes; its ``fnd_`` ids are open decision
+    choices, findings rather than notes, so they are counted in a sentence of their own.
+    """
+
+    rows = index.rows
+    decisions = sum(ref.startswith("fnd_") for ref in advice)
+    material = len(advice) - decisions
+    text = ""
+    if rows:
+        answered: dict[str, int] = {}
+        for row in rows:
+            if row.answered:
+                label = _DISPOSITION_LABELS.get(row.disposition, "answered, response withheld")
+                answered[label] = answered.get(label, 0) + 1
+        unanswered = sum(not row.answered for row in rows)
+        text = f" Reviewer notes: {len(rows)}; not answered: {unanswered}"
+        if material:
+            text += f" ({material} material)"
+        if answered:
+            text += "; answered: " + ", ".join(
+                f"{count} {label}" for label, count in sorted(answered.items())
+            )
+        text += "."
+    if decisions:
+        text += f" Decision choices not answered: {decisions}."
+    return text
+
+
 def advisory_counts(index: CorrectnessAdvisoryIndex) -> JsonObject:
     rows = index.rows
     return JsonObject(
         {
             "total": str(len(rows)),
-            "no_recorded_response": str(sum(row.response is None for row in rows)),
+            "no_recorded_response": str(sum(not row.answered for row in rows)),
             "withheld_may_answer": str(index.unmatched_withheld),
         }
     )
@@ -143,7 +211,7 @@ def advisory_counts(index: CorrectnessAdvisoryIndex) -> JsonObject:
 def unanswered_advisory_count(index: CorrectnessAdvisoryIndex) -> int:
     """How many advisory rows have no readable recorded response (a status-line count)."""
 
-    return sum(row.response is None for row in index.rows)
+    return sum(not row.answered for row in index.rows)
 
 
 def advisory_closing_text(rows: tuple[CorrectnessAdvisory, ...]) -> str:
@@ -155,7 +223,7 @@ def advisory_closing_text(rows: tuple[CorrectnessAdvisory, ...]) -> str:
     set does, and a Stop hook can compare it instead of parsing it (#1162 review).
     """
 
-    unanswered = tuple(row for row in rows if row.response is None)
+    unanswered = tuple(row for row in rows if not row.answered)
     newest = tuple(reversed(unanswered))
 
     def named_row(row: CorrectnessAdvisory) -> str:
@@ -168,10 +236,9 @@ def advisory_closing_text(rows: tuple[CorrectnessAdvisory, ...]) -> str:
         named += f" (+{len(newest) - 3} earlier)"
     return (
         f"Earlier correctness advisories with no recorded response: {len(unanswered)}, newest "
-        f"{named}. Non-blocking. For each material concern: run a proportionate check, cite "
-        "evidence that already settles it, or decline with a reason. Recording a response is "
-        "optional (respond finding_id=<id>: addressed with newly recorded evidence, or declined "
-        "with a reason); one response closes it unless new material arrives. "
+        f"{named}. Non-blocking, but answer each material one once (respond finding_id=<id>): "
+        "addressed (you ran it; newly recorded evidence), kept_choice (checked, kept your choice) "
+        "or declined, each with a reason; one answer closes it unless new material arrives. "
         + advisory_history_continuation(unanswered)
     )
 
@@ -179,7 +246,7 @@ def advisory_closing_text(rows: tuple[CorrectnessAdvisory, ...]) -> str:
 def advisory_summary(rows: tuple[CorrectnessAdvisory, ...], *, unmatched_withheld: int = 0) -> str:
     text = (
         f"Earlier correctness advisories: {len(rows)}; no recorded response: "
-        f"{sum(row.response is None for row in rows)}. Non-blocking. "
+        f"{sum(not row.answered for row in rows)}. Non-blocking. "
     )
     if unmatched_withheld:
         text += (
@@ -193,8 +260,12 @@ def advisory_item(row: CorrectnessAdvisory, profile: ReceiptRedactionProfile) ->
     status = row.disposition
     if status == "addressed":
         status = "addressed (agent-reported, linked evidence)"
+    elif status == "kept_choice":
+        status = "checked, kept my choice (agent-reported, with reason)"
     elif status == "declined":
         status = "declined with reason"
+    elif status == "response_unavailable":
+        status = "answered (response withheld; disposition and reason unreadable)"
     payload = row.check.payload
     assert isinstance(payload, CheckRecordedPayload)
     prefix = (
@@ -212,6 +283,13 @@ def advisory_item(row: CorrectnessAdvisory, profile: ReceiptRedactionProfile) ->
         )
     # Like the existing reviewer-summary leaf, export profiles retain identity/counts but withhold
     # model and agent prose. Local client policy performs the second projection after building.
+    if profile is ReceiptRedactionProfile.DEFAULT_LOCAL_EXPORT:
+        # #1240 D4: a local receipt shows the agent's own answer as one bounded, fenced line. The
+        # reviewer's concern stays withheld; nothing here is sent anywhere.
+        if row.response is not None and isinstance(row.response.payload, DecisionRecordedPayload):
+            reason = bounded_agent_reason(row.response.payload.rationale)
+            prefix += f"\nAgent reason (self-reported, one line): {reason}"
+        return prefix + " [advisory concern prose withheld by receipt profile]"
     if profile is not ReceiptRedactionProfile.FULL_LOCAL:
         return prefix + " [advisory concern and response prose withheld by receipt profile]"
     if payload.semantic_provenance is not None:
