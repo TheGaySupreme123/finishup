@@ -150,8 +150,9 @@ budget hint and the `respond` descriptor. The shared sentence is
 
 - **Gate and blockers.** A repaired finding blocked by a FinishUP limit no longer keeps readiness
   `action_required`. The gate stops pushing agents toward false blockers.
-- **Receipts.** A receipt never reads clean on the agent's word alone. It discloses each
-  self-verified id and stays at best `insufficient_coverage`.
+- **Receipts.** A receipt never reads clean on the agent's word alone for an actionable finding.
+  It discloses each such self-verified id and stays at best `insufficient_coverage`. An answered
+  process note does not cap the receipt (amendment of 2026-10-29, #1243).
 - **Older artifacts.** A receipt artifact older than 1.3.0 has no terminal sections. There a
   self-verified item still counts as unresolved, as `rejection_accepted` does.
 - **Lineage (owner decision, 2026-10-07: "carry it as self-verified").** A child task's
@@ -383,6 +384,8 @@ the receipt as rows; they are not listed in the terminal sections.
 
 `respond` still accepts `self_verified` on these kinds under the eligibility rule above. Refusing it
 and steering the agent to `acknowledged` was considered and rejected.
+A child task's manifest already stamps `self_verified` only on an actionable kind
+(`ChildFindingSnapshot` refuses it otherwise), so the parent's lineage rollup was never kind-blind.
 
 The receipt predictor and the receipt's validator read one finding set: the closures of
 `kernel.closure_class.finding_closures` (ADR-046). The receipt's terminal id lists
@@ -400,7 +403,8 @@ discloses as self-verified, disputed or a disclosed limitation, the builder fall
 fallback keeps from being reached.
 
 Verification: `tests/unit/kernel/test_receipt_builder.py` (both kinds, the actionable control and
-the fallback), `tests/unit/kernel/test_closure_readiness.py`,
+the fallback), `tests/unit/kernel/test_receipt_prediction.py`, `tests/unit/kernel/test_lineage.py`,
+`tests/unit/kernel/test_closure_readiness.py`,
 `tests/integration/application/test_respond_status_receipt.py` (the end-to-end reproducer), and
 `tests/property/test_closure_verdict_properties.py`. That property test now also compares every
 issued conclusion with an independent oracle over the document's own rows, so a predictor bug no

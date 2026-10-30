@@ -207,3 +207,28 @@ def test_reasons_are_bounded_and_the_total_is_kept() -> None:
     first = prediction.reasons[0]
     assert first.count == 5 and len(first.refs) == 3
     assert prediction.reason_total == len(prediction.reasons)
+
+
+@pytest.mark.parametrize("application_states", (True, False))
+@pytest.mark.parametrize("kind_name", ("ledger_stale_or_incomplete", "decision_needed"))
+def test_a_self_verified_process_note_predicts_the_issued_conclusion(
+    kind_name: str, application_states: bool
+) -> None:
+    """D8 (#1243): the prediction is the conclusion the receipt issues, and it stays clean.
+
+    The predictor read the closures (which leave a process note out) while the receipt's terminal
+    lists read kind-blind flags, so status predicted clean and the receipt refused.
+    """
+
+    from finishup.domain.findings import FindingKind
+    from finishup.kernel.receipt_builder import predict_context_conclusion
+    from unit.kernel import test_receipt_builder as builder_tests
+
+    context = builder_tests._self_verified_context(  # pyright: ignore[reportPrivateUsage]
+        FindingKind(kind_name), application_states=application_states
+    )
+    predicted = predict_context_conclusion(context)
+    issued = builder_tests._build_current(context)  # pyright: ignore[reportPrivateUsage]
+    assert predicted.conclusion is PredictionConclusion.NO_UNRESOLVED_DETERMINISTIC_FINDINGS
+    assert predicted.reasons == ()
+    assert issued.conclusion.value == predicted.conclusion.value
