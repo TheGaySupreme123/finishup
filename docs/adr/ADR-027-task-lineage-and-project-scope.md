@@ -317,11 +317,37 @@ than implementation notes.
      the ledger, so a rebuilt catalog agrees. Status `task_lifecycle.quiet_until` shows it while
      the work is open and the period has not passed. Bundle migration 19 rebuilds the `events`
      table so its `summary_code` CHECK admits the family.
+   - **A tool call the host announced is an implied quiet period (2026-10-30, owner decision).**
+     A pre-tool hook (`PreToolUse`-class) that the observation route bound to the task's own
+     active session, and whose host adapter read the call's own timeout from the hook payload,
+     implies that session expects no contact until the call can end: the hook's receipt time
+     plus the timeout, clamped by the same `lineage.max_declared_quiet_seconds` (0 implies
+     nothing). The adapter carries the timeout as the bounded structural fact `tool_timeout_ms`
+     (1 to 86,400,000; control-request 2.9.0, unreleased, edited in place), and the service
+     rounds it up to whole seconds. It is offered only after the same hook was offered as
+     contact, under the same binding and active-session fences, so another session's hook, an
+     ended session, or terminal work implies nothing; the rule that only the task's own active
+     session declares does not weaken. A payload without a timeout implies nothing, and a long
+     model turn with no tool call stays uncovered. The finishing hook does not clear it; like a
+     declaration it simply passes. It is kept apart from the declared period
+     (`lineage_task_meta.implied_quiet_until`, also catalog migration 7): overlapping calls keep
+     the latest end, a declaration never shortens it, and it never revives a replaced
+     declaration. Every deadline site uses the later end of the two in the same formula, and
+     status `task_lifecycle.quiet_until` names that later end. The implied period is catalog
+     state, like a session lease: the ledger never records the timeout, so reconcile, which
+     replays only the latest declaration into `quiet_until`, leaves it alone, and a service
+     restart keeps it. Only a lost catalog loses it, and the ordinary window then applies. Host
+     decisions: Claude Code supports it on the ordinary observation profile for the session's
+     own `Bash` calls (`tool_input.timeout`, milliseconds). Its native subagents' calls reach
+     the parent's lane, not the child's, so they imply nothing. Codex and Cursor are not
+     supported here, because neither pre-tool payload carries a timeout. Each host runbook
+     records why.
 
    A long native tool call, a turn awaiting its user, and a host without subagent hooks are
    therefore no longer a capability gap for a top-level task under a day. They remain one for a
    child whose parent waits; declaring a quiet period before the step, or raising
-   `lineage.contact_lost_recovery_seconds`, is the mitigation there.
+   `lineage.contact_lost_recovery_seconds`, is the mitigation there. Where the host announces a
+   call with its own timeout on the child's own session, the running call covers itself.
 
 4. **Parent rollup is one level and severity-dependent.** A parent receipt projects only direct
    children from the frozen manifest. Current actionable findings on accepted children block

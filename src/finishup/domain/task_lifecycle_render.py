@@ -44,8 +44,9 @@ def status_task_lifecycle_line(value: object) -> str:
     quiet = _time(lifecycle.get("quiet_until"))
     if work == "open" and quiet is not None:
         line = status_task_lifecycle_line({**lifecycle, "quiet_until": None})
-        declared = f"quiet period declared until {quiet}"
-        return f"Work: open; {declared}." if not line else f"{line[:-1]}; {declared}."
+        # One line for a declared period and one a running announced tool call implies (#1239).
+        expected = f"quiet period expected until {quiet}"
+        return f"Work: open; {expected}." if not line else f"{line[:-1]}; {expected}."
     if work == "open":
         if reason == "session_ended":
             return (

@@ -17,12 +17,17 @@ from typing import cast
 
 import pytest
 
-from builders.multi_agent import MultiAgentService, multi_agent_service
+from builders.multi_agent import (
+    MultiAgentService,
+    multi_agent_service,
+    relock_and_reopen_multi_agent_service,
+)
 from finishup.adapters.sqlite.lineage_catalog import SqliteLineageStore
 from finishup.application.lineage import LineageSnapshot
 from finishup.application.lineage_recovery import (
     lineage_recovery_runtime,
     observed_activity_renewal,
+    observed_quiet_period,
 )
 from finishup.application.publish_work import PublishWorkInternalResult
 from finishup.application.service import Application
@@ -776,6 +781,91 @@ async def test_a_retried_quiet_declaration_moves_no_period(tmp_path: Path) -> No
         assert stored is not None and stored.quiet_until == second_at + timedelta(seconds=600)
         await app.recover_lineage()
         assert await app.lineage.store.get_task(task.task_id) == stored
+
+
+async def _announce(
+    service: MultiAgentService,
+    task: StartInternalResult,
+    observed: datetime,
+    seconds: int,
+    *,
+    routed: StartInternalResult | None = None,
+) -> None:
+    """Offer one admitted pre-tool hook naming its call's timeout, as the coordinator does.
+
+    ``routed`` is the session the observation route bound the hook to; by default the task's own.
+    """
+
+    lineage = service.app.lineage
+    assert lineage is not None
+    route = routed or task
+    await _offer(service, route, observed)
+    imply = observed_quiet_period(service.app.start_catalog, lineage)
+    await imply(task.task_id, route.session_id, route.writer_id, observed, seconds)
+
+
+async def test_a_childs_announced_long_build_holds_its_window_across_a_restart(
+    tmp_path: Path,
+) -> None:
+    """#1239 (D6): a running tool call the host announced with its own timeout is a quiet period.
+
+    The waited-on child declares only a short period; its pre-tool hook names a 900 s build. The
+    child stays open past ``contact_lost_at + window`` and is abandoned at
+    ``min(timeout, cap) + window`` from the hook's receipt. The period is catalog state: a READY
+    restart keeps it, and the sweep's reconcile, which replays the child's declaration on every
+    pass, never erases it. A hook bound to another session implies nothing for either task.
+    """
+
+    workspace = _workspace(tmp_path / "workspace")
+    async with multi_agent_service(tmp_path / "state") as service:
+        app = service.app
+        assert app.lineage is not None
+        parent = await _create(service, workspace, "announced-parent")
+        child = await _attach_child(
+            service, await _delegate(service, parent, "Announced build"), "Announced build"
+        )
+        await _declare_quiet(service, child, 120)
+        started = service.clock.now_utc()
+        await _announce(service, child, started, 900)
+        implied_until = started + timedelta(seconds=900)
+        # The parent's session announcing a call for the child, or the child's for the parent,
+        # is bound to another session and implies nothing.
+        await _announce(service, child, started, 3_600, routed=parent)
+        await _announce(service, parent, started, 3_600, routed=child)
+        stored = await app.lineage.store.get_task(child.task_id)
+        assert stored is not None and stored.implied_quiet_until == implied_until
+        assert stored.quiet_until == started + timedelta(seconds=120)
+        parent_row = await app.lineage.store.get_task(parent.task_id)
+        assert parent_row is not None and parent_row.implied_quiet_until is None
+        status = cast(StatusInternalResult, await _status(service, child))
+        assert status.task_lifecycle is not None
+        assert status.task_lifecycle["quiet_until"] == format_rfc3339_millis(implied_until)
+
+        service.clock.advance(seconds=SESSION_LEASE_SECONDS + 1)
+        await app.recover_lineage()
+        assert await _health(app, child) is SessionHealth.CONTACT_LOST
+        deadline = implied_until + timedelta(seconds=_WINDOW)
+        # Read as status does, without the child's own call (which would be contact again).
+        lifecycle = await app.lineage.own_lifecycle(child.task_id)
+        assert lifecycle is not None and lifecycle.abandonment_deadline == deadline
+        assert lifecycle.quiet_until == implied_until
+
+        await relock_and_reopen_multi_agent_service(service)
+        app = service.app
+        assert app.lineage is not None
+        service.clock.advance(seconds=_WINDOW + 1)  # past the ordinary contact_lost_at + window
+        await app.recover_lineage()
+        assert await _work(app, child) is WorkState.OPEN
+        kept = await app.lineage.store.get_task(child.task_id)
+        assert kept is not None and kept.implied_quiet_until == implied_until
+        service.clock.advance(seconds=int((deadline - service.clock.now_utc()).total_seconds()) - 1)
+        await app.recover_lineage()
+        assert await _work(app, child) is WorkState.OPEN
+        service.clock.advance(seconds=1)
+        await app.recover_lineage()
+        assert await _work(app, child) is WorkState.ABANDONED
+        (event,) = await _abandonment_events(app, child.task_id)
+        assert event.occurred_at.as_datetime() == deadline
 
 
 async def test_a_child_close_replayed_after_a_crash_refreshes_its_parent_once(

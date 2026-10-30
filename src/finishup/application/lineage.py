@@ -271,14 +271,24 @@ def _pending_reason(snapshot: LineageSnapshot) -> str | None:
     return None if snapshot.work_state is WorkState.OPEN else snapshot.abandonment_reason
 
 
+def _quiet_end(snapshot: LineageSnapshot) -> datetime | None:
+    """The later end of the declared and the implied quiet period, or ``None`` (#1239, D6)."""
+
+    declared, implied = snapshot.quiet_until, snapshot.implied_quiet_until
+    if declared is None or implied is None:
+        return declared if implied is None else implied
+    return max(declared, implied)
+
+
 def _quiet_deadline(snapshot: LineageSnapshot, lost_at: datetime, window: timedelta) -> datetime:
     """When open work out of contact since ``lost_at`` is abandoned (#1239, D6).
 
-    A declared quiet period counts as contact until it ends, so the window runs from whichever
-    is later: the loss of contact or the end of the declared quiet period.
+    A quiet period, declared by the task or implied by a tool call its host announced, counts as
+    contact until it ends, so the window runs from whichever is later: the loss of contact or the
+    end of the quiet period.
     """
 
-    quiet = snapshot.quiet_until
+    quiet = _quiet_end(snapshot)
     return (lost_at if quiet is None or quiet <= lost_at else quiet) + window
 
 
@@ -318,8 +328,9 @@ class LineageConfig:
     # How long any other task may stay out of contact (D6, #1239): a quiet top-level task with no
     # parent waiting is never abandoned for silence sooner. It shows ``contact_lost`` meanwhile.
     top_level_contact_lost_horizon_seconds: int = 86_400
-    # The longest declared quiet period that takes effect (D6, #1239); 0 records a declaration
-    # without effect.
+    # The longest declared quiet period that takes effect (D6, #1239), and the longest a tool call
+    # the host announced with its own timeout implies; 0 records a declaration without effect and
+    # implies nothing.
     max_declared_quiet_seconds: int = 3_600
     max_depth: int = 8
     max_fanout: int = 32
@@ -401,6 +412,11 @@ class LineageSnapshot:
     # ``LineageConfig.max_declared_quiet_seconds``. Open work out of contact keeps its window from
     # this time; contact does not clear it, it simply passes.
     quiet_until: datetime | None = None
+    # #1239: until when a tool call the host announced on the task's own active session, with the
+    # call's own timeout, implies the session expects no contact; clamped by the same setting.
+    # Kept apart from ``quiet_until`` so a declaration, or its replay, never shortens a running
+    # call's period, and the call never revives a replaced declaration. It also simply passes.
+    implied_quiet_until: datetime | None = None
 
     def __post_init__(self) -> None:
         _id(IdKind.TASK, self.task_id)
@@ -421,6 +437,8 @@ class LineageSnapshot:
         _bounded_int(self.lineage_authority_revision, minimum=1)
         if self.quiet_until is not None:
             _timestamp(self.quiet_until)
+        if self.implied_quiet_until is not None:
+            _timestamp(self.implied_quiet_until)
         if self.abandonment_reason is not None and self.abandonment_reason not in (
             ABANDONMENT_REASONS
         ):
@@ -3069,7 +3087,7 @@ class LineageCoordinator:
             return manifest
 
     def _quiet_until(self, declared_at: datetime, expected_quiet_seconds: int) -> datetime | None:
-        """The clamped end of a declared quiet period, or ``None`` when declarations are off."""
+        """The clamped end of a declared or implied quiet period, or ``None`` when the cap is 0."""
 
         seconds = _bounded_int(
             expected_quiet_seconds, minimum=1, maximum=MAX_DECLARED_QUIET_SECONDS
@@ -3078,11 +3096,13 @@ class LineageCoordinator:
         return None if effective == 0 else declared_at + timedelta(seconds=effective)
 
     async def _apply_quiet_locked(
-        self, snapshot: LineageSnapshot, quiet_until: datetime | None
+        self, snapshot: LineageSnapshot, updated: LineageSnapshot
     ) -> LineageSnapshot:
-        """Store ``quiet_until`` and re-judge a pending deadline of open work out of contact."""
+        """Store ``updated``'s quiet periods and re-judge open work's pending deadline.
 
-        updated = replace(snapshot, quiet_until=quiet_until)
+        ``updated`` is ``snapshot`` with ``quiet_until`` or ``implied_quiet_until`` replaced.
+        """
+
         if (
             updated.work_state is WorkState.OPEN
             and updated.session_health is SessionHealth.CONTACT_LOST
@@ -3121,7 +3141,50 @@ class LineageCoordinator:
         quiet_until = self._quiet_until(start, expected_quiet_seconds)
         async with self._lock:
             snapshot = await self._declaring_task_locked(session)
-            return await self._apply_quiet_locked(snapshot, quiet_until)
+            return await self._apply_quiet_locked(
+                snapshot, replace(snapshot, quiet_until=quiet_until)
+            )
+
+    async def imply_quiet_period(
+        self,
+        *,
+        task_id: str,
+        session_id: str,
+        started_at: datetime,
+        expected_quiet_seconds: int,
+    ) -> bool:
+        """Hold open work's window while a tool call its host announced runs (#1239, D6).
+
+        A pre-tool hook that the observation route bound to the task's own active session, and
+        that names the call's own timeout, implies that session expects no contact until the
+        call ends: ``started_at`` (the hook's receipt time) plus the timeout, clamped by
+        ``max_declared_quiet_seconds`` like a declaration (0 implies nothing). Another session,
+        an ended one, or terminal work records nothing. Overlapping calls keep the latest end, so
+        a later shorter call never cuts a running one short. A declaration never replaces it and
+        the finishing hook never clears it; it simply passes. A duplicate delivery writes
+        nothing. Returns whether the call holds the task's period.
+        """
+
+        task = _id(IdKind.TASK, task_id)
+        session = _id(IdKind.SESSION, session_id)
+        implied_until = self._quiet_until(_timestamp(started_at), expected_quiet_seconds)
+        if implied_until is None:
+            return False
+        async with self._lock:
+            snapshot = await self._store.get_task(task)
+            if (
+                snapshot is None
+                or snapshot.active_session_id != session
+                or snapshot.session_health is SessionHealth.ENDED
+                or snapshot.work_state is not WorkState.OPEN
+            ):
+                return False
+            current = snapshot.implied_quiet_until
+            if current is None or current < implied_until:
+                await self._apply_quiet_locked(
+                    snapshot, replace(snapshot, implied_quiet_until=implied_until)
+                )
+            return True
 
     async def validate_quiet_declaration(self, *, session_id: str) -> None:
         """Refuse, before append, a declaration from a session that is not the task's own."""
@@ -3151,7 +3214,8 @@ class LineageCoordinator:
         """Mirror the task's latest declared quiet period from its ledger after a restart.
 
         Idempotent: the period runs from the declaration's accepted time, so a repeated sweep
-        writes nothing once the catalog agrees.
+        writes nothing once the catalog agrees. It replaces only the declared period; an implied
+        one is catalog state from a host hook, never in the ledger, and is left as it is.
         """
 
         task = _id(IdKind.TASK, task_id)
@@ -3164,21 +3228,25 @@ class LineageCoordinator:
                     "The task was not found.",
                     reason="lineage_task_not_found",
                 )
-            return await self._apply_quiet_locked(snapshot, quiet_until)
+            return await self._apply_quiet_locked(
+                snapshot, replace(snapshot, quiet_until=quiet_until)
+            )
 
     async def own_lifecycle(self, task_id: str) -> LineageSnapshot | None:
         """The task's own lifecycle for status and receipts (#1239), or ``None`` if unknown.
 
         A read without the coordinator lock (one store read, like status): open work out of
         contact carries the deadline the recovery sweep will apply, judged by the same window.
+        Its ``quiet_until`` is the later end of the declared and the implied quiet period, the
+        one period status names; ``implied_quiet_until`` is folded into it.
         """
 
         snapshot = await self._store.get_task(_id(IdKind.TASK, task_id))
         if snapshot is None:
             return None
-        # A declared quiet period that has passed, or that no open work can use, is history for
-        # status. The deadline below still runs from it, as the recovery sweep's does.
-        quiet_until = snapshot.quiet_until
+        # A quiet period that has passed, or that no open work can use, is history for status.
+        # The deadline below still runs from it, as the recovery sweep's does.
+        quiet_until = _quiet_end(snapshot)
         if quiet_until is not None and (
             snapshot.work_state is not WorkState.OPEN or quiet_until <= self._now()
         ):
@@ -3188,7 +3256,7 @@ class LineageCoordinator:
             or snapshot.session_health is not SessionHealth.CONTACT_LOST
             or snapshot.contact_lost_at is None
         ):
-            return replace(snapshot, quiet_until=quiet_until)
+            return replace(snapshot, quiet_until=quiet_until, implied_quiet_until=None)
         window = await self._contact_window_seconds(snapshot)
         return replace(
             snapshot,
@@ -3197,6 +3265,7 @@ class LineageCoordinator:
             ),
             abandonment_reason=REVERSIBLE_ABANDONMENT_REASON,
             quiet_until=quiet_until,
+            implied_quiet_until=None,
         )
 
     async def status(self, task_id: str) -> LineageStatus:

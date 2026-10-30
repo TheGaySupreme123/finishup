@@ -3048,7 +3048,21 @@ time plus the smaller of the request and `lineage.max_declared_quiet_seconds` (d
 0 to 86,400; 0 records the event without effect), and open work's abandonment deadline becomes
 `max(contact_lost_at, quiet_until) + window` at every deadline site. A later declaration replaces
 the earlier one; contact does not clear it. The family is non-material, the catalog keeps
-`quiet_until` (catalog migration 7), and reconcile replays the latest declaration. A delivered
+`quiet_until` (catalog migration 7), and reconcile replays the latest declaration. A pre-tool hook
+(`PreToolUse`-class, `ANNOUNCED_CALL_EVENT_KINDS`) whose host adapter read the call's own timeout
+carries it as the structural fact `tool_timeout_ms` (integer 1 to `MAX_ANNOUNCED_TOOL_TIMEOUT_MS`
+= 86,400,000; control-request 2.9.0). After the observation coordinator offers that hook as
+contact, it offers `announced_call_quiet_seconds` (the timeout rounded up to whole seconds) to
+`observed_quiet_hook` under the same fences; `observed_quiet_period` revalidates the session
+binding and `LineageCoordinator.imply_quiet_period` sets `implied_quiet_until` to the hook's
+receipt time plus the smaller of that and `lineage.max_declared_quiet_seconds` (0 implies
+nothing), only for the task's own active session and open work. Overlapping calls keep the later
+end; a declaration, its replay, contact and the finishing hook never clear it. Every deadline site
+uses the later of `quiet_until` and `implied_quiet_until` in place of `quiet_until`. The catalog
+keeps `implied_quiet_until` beside `quiet_until` (also catalog migration 7); reconcile never touches
+it and a service restart keeps it. Host decisions: Claude Code ordinary profile, the session's own
+`Bash` `tool_input.timeout` (milliseconds) only; Codex and Cursor not supported (no timeout in
+their pre-tool payloads); see each host runbook. A delivered
 `SessionEnd` ends the session once its binding is revalidated and no
 lease outlived the event's own time plus one lease; open work is then abandoned with reason
 `session_ended` after the recovery window unless the session resumes first. Expiry appends one
@@ -3097,8 +3111,9 @@ abandoned work, and any transition out of a `session_ended` or `attach_handle_ex
 abandonment, are refused with `SESSION_CONFLICT` reason `lineage_work_transition`, whose message
 names the terminal state, the abandonment reason and time, and what still works. Status reports
 the task's own `task_lifecycle` (`work_state`, `session_health`, `contact_lost_at`,
-`abandonment_at`, `abandonment_reason`, `abandonment_reversed`, and `quiet_until` while open
-work's declared quiet period has not passed) in status-result 1.4.0 and later;
+`abandonment_at`, `abandonment_reason`, `abandonment_reversed`, and `quiet_until`, the later
+end of open work's declared and implied quiet periods while it has not passed; the status line
+reads "quiet period expected until") in status-result 1.4.0 and later;
 the brief body omits it only for open work in contact. A receipt's limitations section names an
 abandonment, its reversal, a cancellation, or a write-off of the task's own work, read from that
 task's ledger events only.
@@ -9021,8 +9036,9 @@ facade and are never MCP tools.
   one-time denied first-run privacy seed and exact provider/local-model profile identifiers. The
   `[lineage]` settings are bounded `start_lease_seconds=60`, `attach_handle_ttl_seconds=300`,
   `contact_lost_recovery_seconds=300`, `top_level_contact_lost_horizon_seconds=86400` (at least
-  the recovery window, at most 604,800; #1239), `max_declared_quiet_seconds=3600` (0 to 86,400; 0
-  records a declared quiet period without effect; #1239), `max_depth=8`, and `max_fanout=32`; typed admission
+  the recovery window, at most 604,800; #1239), `max_declared_quiet_seconds=3600` (0 to 86,400; it
+  also caps the quiet period an announced tool call implies; 0 records a declared quiet period
+  without effect and implies none; #1239), `max_depth=8`, and `max_fanout=32`; typed admission
   refusals enforce the depth and fan-out ceilings.  `max_fanout` accepts values through 64,
   matching the bounded child-manifest, check-preview, and receipt-child sections; larger values
   are rejected at configuration load rather than silently truncating lineage state.

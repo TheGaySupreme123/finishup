@@ -20,7 +20,10 @@ The catalog DDL source and generated mirror are part of the durable schema contr
   for the catalog 0004 to 0007 schemas. Catalog 0005 adds the project-operation request journal;
   it does not relocate project text or task evidence. Catalog 0006 adds the closed
   `lineage_task_meta.abandonment_reason` token and 0007 the service-clamped
-  `lineage_task_meta.quiet_until` time of a declared quiet period (#1239).
+  `lineage_task_meta.quiet_until` time of a declared quiet period and
+  `lineage_task_meta.implied_quiet_until`, the end of the quiet period a tool call the host
+  announced with its own timeout implies (#1239). The implied end is catalog state only, like a
+  session lease; no ledger event records it.
 * `src/finishup/resources/migrations/catalog/0004.sql` through `0007.sql` are byte mirrors
   produced by the resource ripple. They are never edited independently.
 * The bundle migrations `0003`, `0004`, `0008`, `0009`, `0010`, `0011`, and `0012` remain separate

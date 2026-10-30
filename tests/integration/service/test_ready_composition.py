@@ -791,10 +791,11 @@ async def test_open_ready_catalog_transactionally_migrates_v2_before_runtime_use
             "SELECT value FROM catalog_meta WHERE key = 'storage_schema_version'"
         ).fetchone() == ("7",)
         # #1239: migration 6 adds the abandonment reason beside the lineage row's deadline and
-        # migration 7 the declared quiet period's end.
+        # migration 7 the declared and the implied quiet period's ends.
         assert (
             catalog._db.execute(  # pyright: ignore[reportPrivateUsage]
-                "SELECT abandonment_reason, quiet_until FROM lineage_task_meta LIMIT 1"
+                "SELECT abandonment_reason, quiet_until, implied_quiet_until "
+                "FROM lineage_task_meta LIMIT 1"
             ).fetchone()
             is None
         )

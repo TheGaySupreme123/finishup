@@ -717,6 +717,8 @@ def test_v25_observation_wire_tracks_domain_structural_keys_without_rewriting_v2
             "workspace_write_scopes",
             # And the keyed changed-entry identities of that comparison (#1143).
             "workspace_changed_entries",
+            # And the announced call's own timeout a pre-tool hook carries (#1239, D6).
+            "tool_timeout_ms",
         }
     )
     assert set(v25_properties) == expected_observation_keys
@@ -1369,8 +1371,9 @@ def _assert_v29_request_adds_only_command_commitment(
     v28: dict[str, Any], v29: dict[str, Any]
 ) -> None:
     """The 2.9 request adds the keyed command identity, the runner class, the closed runtime
-    facts (#909, #977), the workspace-effect fact (PR #1080), its write-scope classes (#1100)
-    and its keyed changed-entry identities (#1143), and nothing else."""
+    facts (#909, #977), the workspace-effect fact (PR #1080), its write-scope classes (#1100),
+    its keyed changed-entry identities (#1143) and the announced call's own timeout (#1239), and
+    nothing else."""
 
     v28_fields = _structural_properties(v28)
     v29_fields = _structural_properties(v29)
@@ -1386,6 +1389,13 @@ def _assert_v29_request_adds_only_command_commitment(
         "workspace_effect",
         "workspace_write_scopes",
         "workspace_changed_entries",
+        "tool_timeout_ms",
+    }
+    # A bounded integer, one day in milliseconds at most: an implied quiet period, never content.
+    assert v29_fields["tool_timeout_ms"] == {
+        "maximum": 86_400_000,
+        "minimum": 1,
+        "type": "integer",
     }
     assert v29_fields["workspace_effect"] == {
         "enum": ["changed", "unavailable", "unchanged"],
@@ -1461,6 +1471,7 @@ def _assert_v29_request_adds_only_command_commitment(
         "workspace_effect",
         "workspace_write_scopes",
         "workspace_changed_entries",
+        "tool_timeout_ms",
     ):
         del _structural_properties(stripped)[added]
     assert {k: v for k, v in v28.items() if k != "$id"} == {

@@ -859,6 +859,31 @@ reproduces the same sequence on the released source. The per-profile decisions a
   `lineage.max_declared_quiet_seconds` (default one hour, 0 disables). This also covers a child
   whose parent waits, when the agent declares before the step. No hook declares it on the agent's
   behalf.
+- **Implied quiet period from an announced call (#1239, owner decision 2026-10-30).** The
+  `PreToolUse` hook fires before a tool call runs. Claude Code's `Bash` tool input carries the
+  call's own `timeout` in milliseconds (at most 600,000; absent means no implied period). Per
+  surface:
+  - **Ordinary profile: supported for the session's own calls.** The adapter carries a
+    `Bash` call's `tool_input.timeout` as `tool_timeout_ms` on its `PreToolUse` row. The service
+    holds the routed session's open work quiet from the hook's receipt time for that long, capped
+    by `lineage.max_declared_quiet_seconds`, on the same code path as a declaration. It survives
+    a service restart, and `PostToolUse` does not clear it. A background launch
+    (`run_in_background`), another tool's arguments (an MCP tool's input is its own domain data)
+    and a `PostToolUse` imply nothing.
+  - **Native subagents: not supported here.** The adapter routes every `PreToolUse` to the host
+    session's own lane, whatever child identity it carries (see the ordinary profile above). A
+    native subagent's tool call therefore reaches the parent's binding, never the child's, so it
+    cannot hold the child's work. A `PreToolUse` that carries a child identity or child
+    transcript key (`agent_id`, `agent_type`, `agent_transcript_path`) implies nothing for the
+    parent either. One that Claude Code delivers with no child key cannot be told from the
+    session's own call; it counts for the session it reached, as its contact already does. A
+    child that runs as its own Claude Code session (its own host session attached with
+    `mode=attach`) is covered, because its hooks route to its own lane. Owner of the gap: a
+    follow-up that routes `PreToolUse` carrying a validated `agent_id` to the child lane, which
+    needs installed-artifact evidence and a decision on the parent contact it would move.
+  - **Structural profile (default): not supported here.** It registers no `PreToolUse`.
+  - **Evidence boundary.** The reading rests on the documented `Bash` input and the adapter's
+    routing; no native run has recorded a `PreToolUse` timeout yet.
 - **Session end.** A delivered `SessionEnd` ends the session unless later contact outlived it.
   Open work is abandoned as `session_ended` after the recovery window unless the session resumes
   first.

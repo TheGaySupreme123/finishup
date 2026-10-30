@@ -1,4 +1,8 @@
-"""Catalog migration 0007 (#1239): the lineage row keeps a declared quiet period's end."""
+"""Catalog migration 0007 (#1239): the lineage row keeps a declared and an implied quiet period.
+
+The declared period's end and the end a tool call the host announced implies are separate
+columns, so a declaration's replay never touches the implied one.
+"""
 
 from __future__ import annotations
 
@@ -36,9 +40,10 @@ def test_an_upgraded_row_keeps_its_facts_and_reads_no_quiet_period(tmp_path: Pat
         assert db.pragma("user_version") == 7
         assert db.execute(
             "SELECT lineage_authority_revision, contact_lost_at, abandonment_deadline, "
-            "abandonment_reason, quiet_until FROM lineage_task_meta WHERE task_id = ?",
+            "abandonment_reason, quiet_until, implied_quiet_until FROM lineage_task_meta "
+            "WHERE task_id = ?",
             (_TASK,),
-        ).fetchall() == [(2, _AT, _AT, "contact_lost", None)]
+        ).fetchall() == [(2, _AT, _AT, "contact_lost", None, None)]
         assert db.execute("PRAGMA foreign_key_check").fetchone() is None
     finally:
         db.close(force=True)

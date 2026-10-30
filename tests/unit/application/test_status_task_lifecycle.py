@@ -92,7 +92,13 @@ def test_open_work_out_of_contact_carries_its_deadline_and_reason() -> None:
     )
 
 
-def test_a_declared_quiet_period_is_reported_on_open_work_only() -> None:
+def test_a_quiet_period_is_reported_on_open_work_only() -> None:
+    """One ``quiet_until`` line for a declared period and one a running announced call implies.
+
+    ``own_lifecycle`` folds the implied period into ``quiet_until`` (#1239, D6), so the line says
+    "expected", which is true of both.
+    """
+
     quiet = _LOST + timedelta(minutes=30)
     body = _body(_snapshot(quiet_until=quiet))
     assert body == {
@@ -101,7 +107,7 @@ def test_a_declared_quiet_period_is_reported_on_open_work_only() -> None:
         "quiet_until": "2026-10-29T12:30:00.000Z",
     }
     assert status_task_lifecycle_line(body) == (
-        "Work: open; quiet period declared until 2026-10-29T12:30:00.000Z."
+        "Work: open; quiet period expected until 2026-10-29T12:30:00.000Z."
     )
     lost = _body(
         _snapshot(
@@ -114,7 +120,7 @@ def test_a_declared_quiet_period_is_reported_on_open_work_only() -> None:
     )
     assert lost is not None
     assert status_task_lifecycle_line(lost).endswith(
-        "(a FinishUP call or reported host activity); quiet period declared until "
+        "(a FinishUP call or reported host activity); quiet period expected until "
         "2026-10-29T12:30:00.000Z."
     )
     closed = _body(_snapshot(work_state=WorkState.CLOSED, quiet_until=quiet))

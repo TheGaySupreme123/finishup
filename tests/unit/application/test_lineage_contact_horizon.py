@@ -518,6 +518,178 @@ async def test_only_the_tasks_own_session_declares_and_replay_is_idempotent() ->
     )
 
 
+@pytest.mark.parametrize(("cap", "effective"), ((3_600, 900), (600, 600)))
+async def test_an_announced_call_keeps_a_waited_on_child_open_past_the_window(
+    cap: int, effective: int
+) -> None:
+    """D6: a pre-tool hook naming a 900 s timeout holds the child for min(timeout, cap) + window.
+
+    The child declares nothing. Without the implied period it would be abandoned at
+    ``contact_lost_at + window``, while its own build was still running.
+    """
+
+    clock, store, ids = ScenarioClock(), MemoryLineageStore(), FixedIds()
+    coordinator = _coordinator(clock, store, ids, max_declared_quiet_seconds=cap)
+    parent, _ = await _root(coordinator, ids)
+    child, child_session = await _child(store, ids, parent)
+    started_at = clock.now_utc()
+    assert await coordinator.imply_quiet_period(
+        task_id=child,
+        session_id=child_session,
+        started_at=started_at,
+        expected_quiet_seconds=900,
+    )
+    implied = await store.get_task(child)
+    assert implied is not None
+    assert implied.implied_quiet_until == started_at + timedelta(seconds=effective)
+    assert implied.quiet_until is None  # never written into the declared period
+    clock.advance(seconds=SESSION_LEASE_SECONDS + 1)
+    lost = await coordinator.mark_contact_lost(session_id=child_session)
+    deadline = started_at + timedelta(seconds=effective + _WINDOW)
+    assert lost.abandonment_deadline == deadline
+    # Status names the running call's period with the same field a declaration uses.
+    lifecycle = await coordinator.own_lifecycle(child)
+    assert lifecycle is not None
+    assert lifecycle.quiet_until == started_at + timedelta(seconds=effective)
+    assert lifecycle.abandonment_deadline == deadline
+    appends = _Appends()
+    # Past the ordinary deadline (contact_lost_at + window) the child is still open.
+    clock.advance(seconds=_WINDOW + 1)
+    assert await coordinator.recover_abandoned(appends) == ()
+    clock.advance(seconds=int((deadline - clock.now_utc()).total_seconds()) - 1)
+    assert await coordinator.recover_abandoned(appends) == ()
+    clock.advance(seconds=1)
+    (abandoned,) = await coordinator.recover_abandoned(appends)
+    assert abandoned.task_id == child and abandoned.work_state is WorkState.ABANDONED
+    assert appends.rows == [(child, "contact_lost", deadline)]
+
+
+async def test_a_cap_of_zero_lets_an_announced_call_imply_nothing() -> None:
+    clock, store, ids = ScenarioClock(), MemoryLineageStore(), FixedIds()
+    coordinator = _coordinator(clock, store, ids, max_declared_quiet_seconds=0)
+    parent, _ = await _root(coordinator, ids)
+    child, child_session = await _child(store, ids, parent)
+    before = await store.get_task(child)
+    assert not await coordinator.imply_quiet_period(
+        task_id=child,
+        session_id=child_session,
+        started_at=clock.now_utc(),
+        expected_quiet_seconds=900,
+    )
+    assert await store.get_task(child) == before
+    clock.advance(seconds=SESSION_LEASE_SECONDS + 1)
+    lost_at = clock.now_utc()
+    lost = await coordinator.mark_contact_lost(session_id=child_session)
+    assert lost.abandonment_deadline == lost_at + timedelta(seconds=_WINDOW)
+
+
+@pytest.mark.parametrize("caller", ("parent_session", "unknown_session", "ended", "rotated"))
+async def test_a_call_bound_to_another_session_implies_nothing(caller: str) -> None:
+    """Only the task's own active session's call counts; a declaration's rule does not weaken."""
+
+    clock, store, ids = ScenarioClock(), MemoryLineageStore(), FixedIds()
+    coordinator = _coordinator(clock, store, ids)
+    parent, parent_session = await _root(coordinator, ids)
+    child, child_session = await _child(store, ids, parent)
+    session = {"parent_session": parent_session, "unknown_session": ids.new(IdKind.SESSION)}.get(
+        caller, child_session
+    )
+    if caller == "ended":
+        await coordinator.end_session(session_id=child_session)
+    elif caller == "rotated":
+        snapshot = await store.get_task(child)
+        assert snapshot is not None
+        await store.save_task(replace(snapshot, active_session_id=ids.new(IdKind.SESSION)))
+    before = await store.get_task(child)
+    parent_before = await store.get_task(parent)
+    assert not await coordinator.imply_quiet_period(
+        task_id=child,
+        session_id=session,
+        started_at=clock.now_utc(),
+        expected_quiet_seconds=900,
+    )
+    assert await store.get_task(child) == before
+    assert await store.get_task(parent) == parent_before
+
+
+async def test_an_implied_period_survives_restart_reconcile_and_later_calls() -> None:
+    """The implied period is catalog state: a restart keeps it and reconcile never erases it.
+
+    Reconcile replays only the ledger's latest declaration into ``quiet_until``; it neither
+    shortens a running call's period nor turns the call's period into a declared one. A later
+    shorter call, a shorter declaration, contact and a duplicate delivery keep the latest end.
+    """
+
+    clock, store, ids = ScenarioClock(), MemoryLineageStore(), FixedIds()
+    coordinator = _coordinator(clock, store, ids)
+    parent, _ = await _root(coordinator, ids)
+    child, child_session = await _child(store, ids, parent)
+    declared_at = clock.now_utc()
+    await coordinator.declare_quiet_period(
+        session_id=child_session, expected_quiet_seconds=120, declared_at=declared_at
+    )
+    started_at = clock.now_utc()
+    assert await coordinator.imply_quiet_period(
+        task_id=child,
+        session_id=child_session,
+        started_at=started_at,
+        expected_quiet_seconds=1_200,
+    )
+    implied_until = started_at + timedelta(seconds=1_200)
+    held = await store.get_task(child)
+    assert held is not None and held.implied_quiet_until == implied_until
+    # A duplicate delivery and a later, shorter overlapping call write nothing.
+    clock.advance(seconds=10)
+    for start, seconds in ((started_at, 1_200), (clock.now_utc(), 60)):
+        assert await coordinator.imply_quiet_period(
+            task_id=child,
+            session_id=child_session,
+            started_at=start,
+            expected_quiet_seconds=seconds,
+        )
+    assert await store.get_task(child) == held
+
+    async def renew(_lease_until: datetime) -> None:
+        return None
+
+    # Contact (the finishing hook) and a shorter declaration leave the call's period running.
+    assert await coordinator.renew_observed_activity(
+        task_id=child, session_id=child_session, renew_lease=renew
+    )
+    shorter_at = clock.now_utc()
+    shorter = await coordinator.declare_quiet_period(
+        session_id=child_session, expected_quiet_seconds=30, declared_at=shorter_at
+    )
+    assert shorter.quiet_until == shorter_at + timedelta(seconds=30)
+    assert shorter.implied_quiet_until == implied_until
+
+    # A service restart: a fresh coordinator over the same catalog. Reconcile replays the
+    # ledger's latest declaration, which the catalog already mirrors, so it writes nothing: the
+    # call's period stays, and the declared period stays the declaration's own.
+    restarted = _coordinator(clock, store, ids)
+    replayed = await restarted.reconcile_quiet_period(
+        task_id=child, expected_quiet_seconds=30, declared_at=shorter_at
+    )
+    assert replayed == shorter
+    # A replay that still has to repair the declared period (an append-before-sync crash left
+    # the earlier declaration in the catalog) replaces only that period.
+    await store.save_task(replace(shorter, quiet_until=declared_at + timedelta(seconds=120)))
+    repaired = await restarted.reconcile_quiet_period(
+        task_id=child, expected_quiet_seconds=30, declared_at=shorter_at
+    )
+    assert repaired.quiet_until == shorter.quiet_until
+    assert repaired.implied_quiet_until == implied_until
+    clock.advance(seconds=SESSION_LEASE_SECONDS + 1)
+    lost = await restarted.mark_contact_lost(session_id=child_session)
+    deadline = implied_until + timedelta(seconds=_WINDOW)
+    assert lost.abandonment_deadline == deadline
+    clock.advance(seconds=int((deadline - clock.now_utc()).total_seconds()) - 1)
+    assert await restarted.recover_abandoned(_Appends()) == ()
+    clock.advance(seconds=1)
+    (abandoned,) = await restarted.recover_abandoned(_Appends())
+    assert abandoned.task_id == child
+
+
 async def test_a_late_end_for_a_rotated_session_ends_nothing() -> None:
     """The coordinator re-checks the active session under its lock before ending it."""
 

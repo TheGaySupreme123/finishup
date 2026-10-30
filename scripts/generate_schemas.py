@@ -9653,6 +9653,16 @@ def _control_v2_9_schema(entry: _RegistryEntry) -> dict[str, JsonValue]:
             "enum": ["and_chain", "masked", "single"],
             "type": "string",
         }
+        # The announced call's own timeout a host adapter read from its pre-tool hook (#1239,
+        # D6): an implied quiet period, bounded by the longest quiet period the service clamps
+        # to, one day in milliseconds. The domain envelope admits exactly this range.
+        from finishup.domain.observation import MAX_ANNOUNCED_TOOL_TIMEOUT_MS
+
+        fields["tool_timeout_ms"] = {
+            "maximum": MAX_ANNOUNCED_TOOL_TIMEOUT_MS,
+            "minimum": 1,
+            "type": "integer",
+        }
     if entry.schema_name == "control-result":
         definitions = cast(dict[str, JsonValue], document["$defs"])
         runtime = definitions.get("observation_selection_runtime")

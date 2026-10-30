@@ -5820,8 +5820,9 @@ class StatusTaskLifecycleModel(_ClosedModel):
     ``abandonment_at`` is when the service will abandon open work unless contact returns, or
     when abandoned work was abandoned; ``abandonment_reason`` says why. A ``contact_lost``
     abandonment the same session closed reads ``work_state: closed`` with
-    ``abandonment_reversed: true``. ``quiet_until`` is a declared quiet period still ahead on
-    open work, already clamped by the service.
+    ``abandonment_reversed: true``. ``quiet_until`` is a quiet period still ahead on open work,
+    already clamped by the service: the later end of the one the task declared and the one a
+    running tool call its host announced with its own timeout implies.
     """
 
     optional_non_null_fields = frozenset(
