@@ -3100,6 +3100,79 @@ def test_unanswered_correctness_advice_is_visible_and_never_blocks(
             assert "withheld" in text
 
 
+@pytest.mark.parametrize(
+    ("profile", "response_redacted"),
+    (
+        # #1240 D4: the local export shows the agent's reason, so only the concern is withheld.
+        (ReceiptRedactionProfile.DEFAULT_LOCAL_EXPORT, False),
+        (ReceiptRedactionProfile.REDACTED_SHARE, True),
+    ),
+)
+def test_the_redaction_count_names_only_advisory_prose_the_profile_withholds(
+    profile: ReceiptRedactionProfile, response_redacted: bool
+) -> None:
+    from finishup.domain.correctness_advisories import ADVISORY_RESPONSE_STATEMENT
+    from finishup.domain.events import DecisionRecordedPayload
+    from finishup.domain.values import actor_id
+
+    baseline = _context(check=_check(CheckVerdict.NO_ISSUE_DETECTED, _coverage()))
+    check = replace(
+        cast(CheckRecordedPayload, baseline.applicable_check),
+        correctness_advisories=(
+            JsonObject(
+                {
+                    "summary": "World AABBs miss rotated receptacles.",
+                    "detail": "Use receptacle-frame footprints.",
+                    "subject_refs": (),
+                }
+            ),
+        ),
+    )
+    noted = SimpleNamespace(
+        payload=check,
+        event_id=_CHECK_EVENT_ID,
+        session_id="ses_00000000-0000-4000-8000-000000000009",
+        schema=SimpleNamespace(name="check_recorded"),
+        ledger=SimpleNamespace(ingestion_sequence=2),
+    )
+    answer = SimpleNamespace(
+        payload=DecisionRecordedPayload(
+            statement=ADVISORY_RESPONSE_STATEMENT,
+            rationale="Kept the world frame: the task fixes receptacles upright.",
+            authority=actor_id("harness:test"),
+            advisory_response=JsonObject(
+                {
+                    "advisory_id": f"{_CHECK_EVENT_ID}:1",
+                    "disposition": "kept_choice",
+                    "evidence_refs": (),
+                }
+            ),
+        ),
+        event_id=event_id("evt_00000000-0000-4000-8000-000000000003"),
+        session_id="ses_00000000-0000-4000-8000-000000000009",
+        schema=SimpleNamespace(name="decision_recorded"),
+        ledger=SimpleNamespace(ingestion_sequence=3),
+        causal_parents=(_CHECK_EVENT_ID,),
+        operation_id="op_respond",
+    )
+
+    def withheld_detail(*records: SimpleNamespace) -> tuple[int, str]:
+        context = replace(_context(check=check), records=cast(tuple[LedgerRecord, ...], records))
+        receipt = _build(context, profile=profile)
+        count = sum(
+            row.count
+            for row in receipt.redactions
+            if row.category is ReceiptRedactionCategory.FINDING_DETAIL
+            and row.reason is ReceiptRedactionReason.POLICY_REDACTED
+        )
+        return count, "\n".join(_renderings(receipt))
+
+    unanswered, _ = withheld_detail(noted)
+    answered, text = withheld_detail(noted, answer)
+    assert ("Kept the world frame" in text) is not response_redacted
+    assert answered - unanswered == (1 if response_redacted else 0)
+
+
 def _current_versions() -> ReceiptVersionSlice:
     return replace(
         _versions(), schema_versions=(SchemaVersionEntry("receipts/receipt-document", "1.3.0"),)

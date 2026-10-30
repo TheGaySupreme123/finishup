@@ -959,7 +959,7 @@ If `scope` is present, send both arrays. Either may be empty; two empty arrays m
 
 ## `respond`
 
-For `decision_needed`, a response optionally records a choice and reason, never a verified repair.
+For `decision_needed`, one response records your choice and reason, never a verified repair.
 Do not seek resolution or a repair ruling; use [review.md](review.md) for the finding procedure.
 
 Use `finding_frontier` = any frontier at or after the finding's own record: the item's

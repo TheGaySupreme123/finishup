@@ -145,9 +145,11 @@ from finishup.kernel.completion_scope import (
 from finishup.kernel.correctness_advisories import (
     advisory_counts,
     advisory_summary,
+    advisory_tally_sentence,
     correctness_advisories,
     correctness_advisory_index,
     receipt_advisory_items,
+    unanswered_material_notes,
 )
 from finishup.kernel.delivered_set import (
     ambiguous_reference_count,
@@ -1150,9 +1152,15 @@ def _apply_profile(
     }:
         notes = correctness_advisories(context.records)
         if notes:
+            # #1240 D4: the local export shows the agent's answer as one bounded line, so only
+            # the redacted share withholds (and counts) the response prose beside each concern.
             counts[
                 (ReceiptRedactionCategory.FINDING_DETAIL, ReceiptRedactionReason.POLICY_REDACTED)
-            ] += len(notes) + sum(note.response is not None for note in notes)
+            ] += len(notes) + (
+                sum(note.response is not None for note in notes)
+                if profile is ReceiptRedactionProfile.REDACTED_SHARE
+                else 0
+            )
         if _reviewer_advisory_text(context.applicable_check) is not None:
             # #1118: the reviewer's summary is withheld from export views, with an explicit item.
             counts[
@@ -1533,6 +1541,32 @@ def _applied_check(check: CheckRecordedPayload | None) -> AppliedCheck | None:
     return AppliedCheck(check.verdict, check.suppressed_count, complete)
 
 
+def material_advice_unanswered(
+    projection: ProjectionState, records: tuple[LedgerRecord, ...]
+) -> tuple[str, ...]:
+    """#1240 D1: material advice with no recorded answer, in one replay-derived order.
+
+    The reviewer's strongest remaining check notes without a readable response, then the current
+    ``decision_needed`` findings without one. A process note never counts (D8).
+    """
+
+    from finishup.kernel.receipt_capacity import current_receipt_findings
+
+    notes = unanswered_material_notes(correctness_advisory_index(records))
+    decisions = tuple(
+        sorted(
+            (
+                str(finding.finding_id)
+                for finding in current_receipt_findings(projection)
+                if finding.kind is FindingKind.DECISION_NEEDED
+                and finding.finding_id not in projection.responses
+            ),
+            key=str.encode,
+        )
+    )
+    return notes + decisions
+
+
 def closure_basis_from_context(
     context: ReceiptBuildContext,
     *,
@@ -1576,6 +1610,7 @@ def closure_basis_from_context(
             tuple(str(item) for item in lineage.actionable_finding_ids),
             lineage.blocks_clean_completion,
         ),
+        advice_unanswered=material_advice_unanswered(context.projection, context.records),
     )
 
 
@@ -2624,7 +2659,8 @@ def _sections(
                 else ""
             )
             + (
-                f"\nAgent decision (self-reported): {answers[finding.finding_id]}"
+                # #1240 D4: the agent's own reason as one bounded line.
+                f"\nAgent decision (self-reported): {bounded_agent_reason(answers[finding.finding_id])}"
                 if finding.finding_id in answers
                 else ""
             ),
@@ -2898,7 +2934,9 @@ def _plural(count: int, singular: str, plural: str) -> str:
     return f"{count} {singular if count == 1 else plural}"
 
 
-def _closure_summary(basis: ClosureBasis, prediction: ReceiptPrediction) -> _ClosureSummary:
+def _closure_summary(
+    basis: ClosureBasis, prediction: ReceiptPrediction, notes_sentence: str = ""
+) -> _ClosureSummary:
     """Build the receipt's counters sentence from ``ClosureCounts`` (one source, no second counter)."""
 
     counts = closure_counts(basis.findings, basis.obligations)
@@ -2953,7 +2991,7 @@ def _closure_summary(basis: ClosureBasis, prediction: ReceiptPrediction) -> _Clo
             f"{'has' if counts.findings_to_disclose == 1 else 'have'} not been disclosed."
         )
     return _ClosureSummary(
-        findings + obligations + why,
+        findings + obligations + notes_sentence + why,
         counts.findings_to_do + counts.findings_unmet,
         " ".join(notes),
     )
@@ -3055,7 +3093,13 @@ def build_receipt(
     )
     prediction = predict_receipt_conclusion(basis)
     conclusion = ReceiptConclusion(prediction.conclusion.value)
-    closure_summary = _closure_summary(basis, prediction) if settles_rejections else None
+    # #1240 D1: how the reviewer notes were answered, in the Summary beside the counters.
+    notes_sentence = advisory_tally_sentence(
+        correctness_advisory_index(context.records), basis.advice_unanswered
+    )
+    closure_summary = (
+        _closure_summary(basis, prediction, notes_sentence) if settles_rejections else None
+    )
     # The same judgment the conclusion used says, per live gap, whether it bounds or only
     # discloses (ADR-046); an artifact older than the effect rows records none.
     gap_context = _gap_context(context, frozenset(historical))
@@ -3222,7 +3266,7 @@ def build_receipt(
     if never_clean and conclusion is ReceiptConclusion.NO_UNRESOLVED_DETERMINISTIC_FINDINGS:
         prediction = _lowered_prediction(prediction, never_clean)
         conclusion = ReceiptConclusion(prediction.conclusion.value)
-        closure_summary = _closure_summary(basis, prediction)
+        closure_summary = _closure_summary(basis, prediction, notes_sentence)
     resolved_finding_ids = tuple(
         sorted(
             (

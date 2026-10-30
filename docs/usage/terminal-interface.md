@@ -120,6 +120,7 @@ Type `/` to open the filtered command list.
 | `/status` | show setup, readiness, and current work |
 | `/work` | open a task by title to view claims, evidence, and findings |
 | `/findings` | show the open task's findings as a to-do list, each with its state |
+| `/notes` | show reviewer notes and how each was answered |
 | `/coverage` | show advisory, agent-declared test witnesses and candidate gaps |
 | `/check` | run a verification check |
 | `/progress` | show the latest check's review phase and elapsed time |
@@ -282,6 +283,10 @@ review is correct.
 (with review rounds against the budget, for example `(2/5)`), `[x]` verified resolved, `[~]`
 acknowledged, not done, and `[-]` rejection accepted. It reads the same `status` findings view the
 agent sees, verified items included.
+
+`/notes` lists the reviewer's advisory notes from each recorded check with how the agent answered
+each: addressed, checked and kept its choice, declined, answered with the response withheld, or no
+recorded response. It reads the same check history the agent sees.
 
 `/receipt` produces Markdown, plain text, or JSON. The readable view leads with the verdict, then
 coverage, open findings, limitations, whether deeper review contributed, freshness, and — always

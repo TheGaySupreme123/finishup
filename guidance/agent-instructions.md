@@ -34,9 +34,9 @@ Conditional files are `change` items.
 5. Publish claim/evidence before the final check; answer findings, check, and inspect resolved
    state; an unchanged recheck returns it. Recheck only after repair/material record.
    A finding is evidence, not an order.
-   Answer each open AI-powered finding with `respond` and a reason (optional for `decision_needed`).
+   Answer each open AI-powered finding with `respond` and a reason, `decision_needed` included.
    Advice is non-blocking: per material concern, run a proportionate check, cite settling
-   evidence or decline with a reason (response optional).
+   evidence or decline with a reason, then answer it once with `respond`.
 6. Use `final_review: true` when readiness requires closing review. At `ready_with_limitations`,
    request the receipt without another check. Then `work_closed` if complete; a receipt never
    closes work. `lineage_work_transition`: the task already ended; report it.

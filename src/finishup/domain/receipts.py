@@ -803,6 +803,7 @@ CONCLUSION_REASON_CODES: Final = {
     "check_verdict_insufficient": "R8",
     "policy_execution_incomplete": "R9",
     "live_gap_bounds": "R10",
+    "advice_unanswered": "R11",
 }
 MAX_CONCLUSION_REASONS: Final = 8
 _REASON_REF_RE: Final = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$", re.ASCII)

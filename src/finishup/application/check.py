@@ -4217,7 +4217,7 @@ _ADVISORY_NOTES_HEADER: Final = (
     "Reviewer correctness notes (advisory and non-blocking: a review during work in progress "
     "judges incomplete work only, so these are not findings. For each material concern: run a "
     "proportionate check, cite evidence that already settles it, or decline with a reason; "
-    "recording a response is optional):"
+    "answer each material one once):"
 )
 # Issue #1162: a note whose bounded advisory row could not be retained (never expected once its
 # subjects are fence-resolved) degrades to this summary instead of discarding the review.

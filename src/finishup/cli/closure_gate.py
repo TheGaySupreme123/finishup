@@ -162,6 +162,15 @@ _PREMISE_TEXT: Final = (
     " work unless it is genuinely impossible; a FinishUP limit or a hard result is not a reason."
     f" {_KEEP_DELIVERABLE_TEXT}"
 )
+# #1240 D2: the one batched question about open material reviewer notes, asked once per set.
+ADVICE_RECHECK_ITEM: Final = "advice_recheck"
+_ADVICE_TEXT: Final = (
+    "Reviewer notes have no recorded answer. Answer each in one line with respond finding_id="
+    "<note id> (status closure_readiness names them): ran it (addressed, citing new evidence),"
+    " kept my choice (kept_choice, with a reason) or declined (with a reason); a decision choice"
+    " (fnd_ id) takes acknowledged or rejected, with a reason. Non-blocking; an unanswered note"
+    " keeps the receipt from reading clean."
+)
 _STATUS_DEADLINE_MS: Final = 4_000
 # Hard caps (#985): a host turn gets at most this many gate continuations (the first Stop's gate
 # plus one active-Stop blocker re-check), and an active Stop at most one.
@@ -401,6 +410,7 @@ _RECHECK_KEY_SHAPES: Final[Mapping[str, re.Pattern[str]]] = {
         rf"blocker:{_OBL_ID_SHAPE}:(?:authority|consent|credential|dependency_unavailable)"
     ),
     "premise": re.compile(r"premise:(?:[0-9]{1,8}|\?)"),
+    "advice": re.compile(r"advice:[0-9a-f]{16}"),
 }
 
 
@@ -835,6 +845,7 @@ def _fallback_parts(
     items: tuple[str, ...],
     premise_text: str,
     offers_blocker: bool,
+    advice_text: str = "",
     recheck: str,
     ack_keys: tuple[str, ...],
     ack_text: str,
@@ -854,8 +865,8 @@ def _fallback_parts(
     verification, receipt-blocking findings, a withdrawn deliverable) and the close instruction.
     Optional, in priority order: the blocker re-check, the acknowledgement re-check, the
     unconfirmed-blocker sentence, the blocker offer, the required limitation ids, the provenance
-    sentence, the premise ask, then the notes and, last, the fact-lineage sentence (where the fact
-    came from). This changes composition only: the short forms drop elaboration and keep the
+    sentence, the premise ask, the advice ask (#1240), then the notes and, last, the fact-lineage
+    sentence (where the fact came from). This changes composition only: the short forms drop elaboration and keep the
     instruction.
     """
 
@@ -864,6 +875,9 @@ def _fallback_parts(
         parts.append(("why", Part((why,), priority=5)))
     if premise_text:
         parts.append(("premise", Part((premise_text,), priority=6)))
+    if advice_text:
+        # #1240 D2: the non-blocking advice ask yields to every ask for work.
+        parts.append(("advice", Part((advice_text,), priority=8)))
     if lineage:
         # ADR-045: where a fact came from. The lowest-priority optional sentence: the first to go.
         parts.append(("lineage", Part(lineage, priority=10)))
@@ -923,7 +937,8 @@ def closure_gate_from_readiness(
 
     ``reasked_blockers`` holds the re-check keys this session was already asked (the historical
     name: blockers as ``<obligation id>:<kind>``, ``ack:<obligation id>``, ``premise:<n>``,
-    ``emptied:<h8>``, and ``accept:<h8>@<invite frontier>[@m<material>]`` invites remembered by
+    ``emptied:<h8>``, ``advice:<16 hex>`` (#1240), and
+    ``accept:<h8>@<invite frontier>[@m<material>]`` invites remembered by
     a build before D1). Every announced re-check is asked once.
     ``active_stop`` is a Stop the host already continued this turn
     (``stop_hook_active``, Cursor ``loop_count > 0``): only a re-check not yet asked, or a
@@ -939,6 +954,7 @@ def closure_gate_from_readiness(
     blockers: list[_Recheck] = []
     acknowledgements: list[_Recheck] = []
     premise: _Recheck | None = None
+    advice: _Recheck | None = None
     # Whether a blocker re-check readiness announced was already delivered to this session: only
     # then may the text say "you were already asked" (absence of a candidate proves nothing, e.g.
     # a service older than the gate sends no list).
@@ -961,6 +977,12 @@ def closure_gate_from_readiness(
             # D7a (#984): only on a Stop the host has not already continued this turn.
             if not active_stop and premise is None:
                 premise = recheck
+        elif recheck.kind == "advice":
+            # #1240 D2: once per set. Unlike the premise ask it may continue a Stop the host
+            # already continued (within the per-turn cap): in a single-turn run every later Stop
+            # is one, so an ask a long first gate trimmed would otherwise never be delivered.
+            if advice is None:
+                advice = recheck
     rows = _blocker_pairs(tuple(blockers))
     keys = tuple(f"{obligation}:{kind}" for obligation, kind in rows)
     ack_keys = tuple(sorted((recheck.key for recheck in acknowledgements), key=str.encode))
@@ -969,6 +991,12 @@ def closure_gate_from_readiness(
     premise_items = (PREMISE_RECHECK_ITEM,) if premise is not None else ()
     premise_keys = (premise.key,) if premise is not None else ()
     premise_text = _PREMISE_TEXT if premise is not None else ""
+    # #1240 D2: the advice ask is its own sentence, read after the premise ask and dropped before
+    # it, so it never costs the agent a re-check that asks for work. Not delivered, not remembered:
+    # a later Stop asks it again.
+    advice_items = (ADVICE_RECHECK_ITEM,) if advice is not None else ()
+    advice_keys = (advice.key,) if advice is not None else ()
+    advice_text = _ADVICE_TEXT if advice is not None else ""
     present: frozenset[str] = frozenset()
     if state == "action_required":
         tokens = _present_tokens(readiness)
@@ -997,7 +1025,7 @@ def closure_gate_from_readiness(
         drain_changed_decision = observation_pending and bool(present & _OBSERVATION_DEPENDENT)
     coord_note = coordinator_failure_note(readiness) or ""
     if not items:
-        if not rows and premise is None and not ack_keys:
+        if not rows and premise is None and advice is None and not ack_keys:
             return None
         opener = (
             "FinishUP closure gate (shown once for these blockers):"
@@ -1021,6 +1049,7 @@ def closure_gate_from_readiness(
             ("rows", blocker),
             ("ack", ack_text),
             ("premise", premise_text),
+            ("advice", advice_text),
             ("moved", moved),
         ):
             if sentence and used + 1 + len(sentence) <= _MAX_TEXT_CHARS:
@@ -1029,11 +1058,14 @@ def closure_gate_from_readiness(
         asked_rows = "rows" in chosen
         asked_ack = "ack" in chosen
         asked_premise_only = "premise" in chosen
-        if not (asked_rows or asked_ack or asked_premise_only):
+        asked_advice_only = "advice" in chosen
+        if not (asked_rows or asked_ack or asked_premise_only or asked_advice_only):
             return None
         # The predicted receipt conclusion is the lowest-priority sentence (owner decision Q1):
         # the longest variant that still fits, else none.
-        wanted = sum(1 for sentence in (blocker, ack_text, premise_text, moved) if sentence)
+        wanted = sum(
+            1 for sentence in (blocker, ack_text, premise_text, advice_text, moved) if sentence
+        )
         tail = (
             next(
                 (variant for variant in prediction if used + 1 + len(variant) <= _MAX_TEXT_CHARS),
@@ -1056,6 +1088,7 @@ def closure_gate_from_readiness(
             for name, sentence in (
                 ("opener", opener),
                 ("premise", premise_text),
+                ("advice", advice_text),
                 ("rows", blocker),
                 ("ack", ack_text),
                 ("moved", moved),
@@ -1068,10 +1101,12 @@ def closure_gate_from_readiness(
             identity,
             short_text,
             (premise_items if asked_premise_only else ())
+            + (advice_items if asked_advice_only else ())
             + ((BLOCKER_RECHECK_ITEM,) if asked_rows else ())
             + (ack_items if asked_ack else ()),
             (keys if asked_rows else ())
             + (premise_keys if asked_premise_only else ())
+            + (advice_keys if asked_advice_only else ())
             + (ack_keys if asked_ack else ()),
         )
     open_count = str(getattr(readiness, "open_obligation_count", "?"))
@@ -1131,6 +1166,7 @@ def closure_gate_from_readiness(
         limits: bool = True,
         premise_sentence: bool = True,
         lineage_sentence: bool = True,
+        advice_sentence: bool = True,
         tail: str = "",
     ) -> str:
         parts = [head]
@@ -1141,6 +1177,8 @@ def closure_gate_from_readiness(
             parts.append(lineage_variants[0])
         if premise_text and premise_sentence:
             parts.append(premise_text)
+        if advice_text and advice_sentence:
+            parts.append(advice_text)
         if "obligations_open" in items:
             parts.append(_OBLIGATION_SHORT_TEXT if short_obligation else _OBLIGATION_TEXT)
         if verification and any(token in _OBSERVATION_DEPENDENT for token in items):
@@ -1183,20 +1221,32 @@ def closure_gate_from_readiness(
     # The predicted receipt conclusion (longest variant first, then none) goes before anything else,
     # then the fact-lineage sentence (tb4n3 RC-5: the lowest-priority sentence). The cause of each
     # token stays: it is the token's own "Remaining" clause, and the awaiting-ruling "Why".
-    rungs: list[tuple[bool, bool, bool, bool, bool, bool, str]] = [
-        (True, False, True, True, True, True, tail) for tail in (*prediction, "")
+    rungs: list[tuple[bool, bool, bool, bool, bool, bool, bool, str]] = [
+        (True, False, True, True, True, True, True, tail) for tail in (*prediction, "")
     ]
     rungs += [
-        (True, False, True, True, True, False, ""),
-        (False, False, True, True, True, False, ""),
-        (False, True, True, True, True, False, ""),
+        (True, False, True, True, True, False, True, ""),
+        # #1240 D2: the non-blocking advice ask goes next; a later Stop asks it again.
+        (True, False, True, True, True, False, False, ""),
+        (False, False, True, True, True, False, False, ""),
+        (False, True, True, True, True, False, False, ""),
         # tb4n3 RC-2 (A5): the required limitation ids go before a present family's instruction
         # does; the composed fallback below shortens the rest and never drops one.
-        (False, True, True, False, True, False, ""),
+        (False, True, True, False, True, False, False, ""),
         # D7a: the premise ask goes before the re-check does.
-        (False, True, True, False, False, False, ""),
+        (False, True, True, False, False, False, False, ""),
     ]
-    for drain, short_obligation, verification, limits, premise_sentence, lineage_on, tail in rungs:
+    asked_advice = False
+    for (
+        drain,
+        short_obligation,
+        verification,
+        limits,
+        premise_sentence,
+        lineage_on,
+        advice_sentence,
+        tail,
+    ) in rungs:
         text = compose(
             drain=drain,
             short_obligation=short_obligation,
@@ -1204,10 +1254,12 @@ def closure_gate_from_readiness(
             limits=limits,
             premise_sentence=premise_sentence,
             lineage_sentence=lineage_on,
+            advice_sentence=advice_sentence,
             tail=tail,
         )
         if len(text) <= _MAX_TEXT_CHARS:
             asked_premise = premise is not None and premise_sentence
+            asked_advice = advice is not None and advice_sentence
             break
     else:
         # The ladder could not fit the whole gate. Compose it instead of clipping the head
@@ -1222,6 +1274,7 @@ def closure_gate_from_readiness(
             why=why_text,
             items=items,
             premise_text=premise_text,
+            advice_text=advice_text,
             offers_blocker=offers_blocker,
             recheck=recheck,
             ack_keys=ack_keys,
@@ -1256,6 +1309,7 @@ def closure_gate_from_readiness(
         delivered_rows = bool(recheck) and "recheck" in included
         delivered_ack = bool(ack_text) and "ack" in included
         asked_premise = premise is not None and "premise" in included
+        asked_advice = advice is not None and "advice" in included
     withdrawn_keys = (_withdrawn_key(readiness, withdrawn_items),) if withdrawn_items else ()
     if basis := getattr(readiness, "evidence_basis_summary", None):
         from finishup.domain.decision_status import safe_status_line
@@ -1274,10 +1328,12 @@ def closure_gate_from_readiness(
         text,
         items
         + ((BLOCKER_RECHECK_ITEM,) if delivered_rows else ())
-        + ((PREMISE_RECHECK_ITEM,) if asked_premise else ())
+        + (premise_items if asked_premise else ())
+        + (advice_items if asked_advice else ())
         + (ack_items if delivered_ack else ()),
         (keys if delivered_rows else ())
         + (premise_keys if asked_premise else ())
+        + (advice_keys if asked_advice else ())
         + (ack_keys if delivered_ack else ())
         + withdrawn_keys,
     )

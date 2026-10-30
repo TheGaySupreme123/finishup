@@ -1911,6 +1911,7 @@ class RespondRequestModel(PublicRequestModel):
     disposition: Literal[
         "addressed",
         "declined",
+        "kept_choice",
         "acknowledged",
         "acknowledged_not_done",
         "duplicate_of",
@@ -4239,6 +4240,7 @@ PredictionReasonCodeLiteral = Literal[
     "check_verdict_insufficient",
     "policy_execution_incomplete",
     "live_gap_bounds",
+    "advice_unanswered",
 ]
 # A prediction reason cites at most three findings, obligations or gap codes.
 PredictionRefWire = Annotated[
@@ -4252,7 +4254,10 @@ PredictionRefWire = Annotated[
     ),
 ]
 RecheckKeyWire = Annotated[
-    str, Field(max_length=160, pattern=r"^(?:accept|ack|blocker|premise):[A-Za-z0-9_.:?-]{1,140}$")
+    str,
+    Field(
+        max_length=160, pattern=r"^(?:accept|ack|advice|blocker|premise):[A-Za-z0-9_.:?-]{1,140}$"
+    ),
 ]
 
 
@@ -5132,6 +5137,7 @@ class RespondResponseModel(_ClosedModel):
     disposition: Literal[
         "addressed",
         "declined",
+        "kept_choice",
         "acknowledged",
         "acknowledged_not_done",
         "duplicate_of",
@@ -5161,7 +5167,7 @@ class RespondResponseModel(_ClosedModel):
             and self.reason.category is not DataCategory.FINDING_SUMMARY
         ):
             raise ValueError("reason_omission_category_invalid")
-        if self.disposition in {"addressed", "declined"}:
+        if self.disposition in {"addressed", "declined", "kept_choice"}:
             if (
                 self.reason is None
                 or self.waiver_scope is not None
@@ -5806,7 +5812,10 @@ class StatusHistoryCorrectnessAdvisoryModel(_ClosedModel):
     detail: String1To8192 | OmittedContentModel
     subject_refs: tuple[Annotated[str, Field(pattern=_ADVISORY_SUBJECT_REF_PATTERN)], ...]
     advisory_id: Annotated[str, Field(pattern=ADVISORY_ID_PATTERN)]
-    disposition: Literal["addressed", "declined", "no_recorded_response"]
+    # ``response_unavailable``: a withheld answer recognised from its envelope (#1190).
+    disposition: Literal[
+        "addressed", "declined", "kept_choice", "no_recorded_response", "response_unavailable"
+    ]
     reason: String1To4096 | OmittedContentModel | None = None
     response_event_id: EventIdWire | None = None
     evidence_refs: (
@@ -5964,7 +5973,7 @@ class StatusPredictedReasonModel(_ClosedModel):
     optional_non_null_fields = frozenset({"since_frontier"})
 
     code: PredictionReasonCodeLiteral
-    rule: Literal["R1", "R2", "R3", "R4", "R5", "R6", "R7", "R8", "R9", "R10"]
+    rule: Literal["R1", "R2", "R3", "R4", "R5", "R6", "R7", "R8", "R9", "R10", "R11"]
     count: CanonicalPositiveUInt64Wire
     refs: tuple[PredictionRefWire, ...]
     since_frontier: CanonicalUInt64Wire | None = None
@@ -6032,7 +6041,7 @@ class StatusRecheckModel(_ClosedModel):
     kind stays so such a result still validates.
     """
 
-    kind: Literal["acceptance", "acknowledgement", "blocker", "premise"]
+    kind: Literal["acceptance", "acknowledgement", "advice", "blocker", "premise"]
     key: RecheckKeyWire
     subjects: tuple[SubjectIdWire, ...]
     rule: CodeWire

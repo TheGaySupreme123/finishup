@@ -137,6 +137,28 @@ async def test_a_rejected_quote_names_the_nearest_task_sentence_by_position_only
     assert "nearest stated criterion" not in unrelated.value.message
 
 
+async def test_dry_run_refuses_a_verification_exactly_as_the_publish_does() -> None:
+    """The preview runs the publish's own verification admission and appends nothing."""
+
+    app, started = await _started(11750)
+    before = _records(app)
+    refusals: list[PublicOperationError] = []
+    for seed, dry_run in ((11751, True), (11752, False)):
+        with pytest.raises(PublicOperationError) as caught:
+            await app.publish_work(
+                _request(started, seed, [_result(11751, "PRIVATE invented")], dry_run=dry_run)
+            )
+        refusals.append(caught.value)
+        assert _records(app) == before
+    preview, publish = refusals
+    assert publish.safe_details["reason_code"] == "verification_criterion_not_in_task"
+    assert (preview.code, preview.safe_details, preview.message) == (
+        publish.code,
+        publish.safe_details,
+        publish.message,
+    )
+
+
 @pytest.mark.parametrize("quote", [".", "the", "a", "eep known failing"])
 async def test_generic_or_partial_word_quote_rejected_even_though_it_occurs(quote: str) -> None:
     app, started = await _started(11715)

@@ -374,6 +374,7 @@ _PROTOCOL_REASON_CODE_VALUES: tuple[str, ...] = (
     "resolution_attempt_required",
     "response_fields_invalid",
     "response_projection_failed",
+    "review_mode_parent_is_check",
     "runtime_attempt_evidence_json_shape_invalid",
     "runtime_opening_authority",
     "runtime_rebind_busy",
@@ -446,7 +447,8 @@ SERVICE_HANDSHAKE_PHASES: frozenset[str] = frozenset({"handshake", "handshake_gi
 # caller's start budget: still starting (a slow machine, or the first start after an install or
 # update), not a closed hello. ``phase`` on a retryable ``service_unavailable`` error.
 SERVICE_START_TIMEOUT_PHASE: str = "handshake_timeout"
-assert len(_PROTOCOL_REASON_CODE_VALUES) == 355  # #1244: the four delivery_* continuation refusals
+# #1244: the four delivery_* continuation refusals; #1190: review_mode_parent_is_check
+assert len(_PROTOCOL_REASON_CODE_VALUES) == 356
 assert len(_PROTOCOL_REASON_CODE_VALUES) == len(set(_PROTOCOL_REASON_CODE_VALUES))
 assert _PROTOCOL_REASON_CODE_VALUES == tuple(sorted(_PROTOCOL_REASON_CODE_VALUES, key=str.encode))
 assert all(_REASON_CODE_PATTERN.fullmatch(value) for value in _PROTOCOL_REASON_CODE_VALUES)

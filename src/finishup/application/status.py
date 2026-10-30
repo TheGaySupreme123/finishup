@@ -1892,6 +1892,7 @@ def _closure_verdict_fields(
                 facts.obligation_closures or (),
                 facts,
                 acknowledged_count=checklist.acknowledged_not_done_count,
+                advice=() if loaded is None else loaded.basis.advice_unanswered,
             )
         )
     if loaded is not None:
@@ -2181,7 +2182,7 @@ async def _closure_readiness(
         # #1162: readiness names what is still open, so the summary is present only while some
         # note has no recorded response. Hooks read its presence (never its text) to decide the
         # owner-facing Stop notice; the receipt and history keep every note and its status.
-        if any(row.response is None for row in advisory_index.rows):
+        if any(not row.answered for row in advisory_index.rows):
             optional_fields["correctness_advisory_summary"] = advisory_closing_text(
                 advisory_index.rows
             )
@@ -2325,7 +2326,7 @@ def _unanswered_advisory_ids(loaded: LoadedClosureBasis) -> tuple[str, ...]:
     from finishup.kernel.correctness_advisories import correctness_advisory_index
 
     rows = correctness_advisory_index(loaded.records).rows
-    return tuple(row.advisory_id for row in reversed(rows) if row.response is None)
+    return tuple(row.advisory_id for row in reversed(rows) if not row.answered)
 
 
 def _draft_criteria_json(loaded: LoadedClosureBasis) -> dict[str, Any]:

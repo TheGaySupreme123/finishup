@@ -176,7 +176,7 @@ Example: “Every exported value differs by at most 0.01” needs comparison wit
 | `publish_work` | One batch per material transition, usually one to eight events; a batch admits up to 100, so keep one transition in one batch rather than splitting it. A normal session is a handful of batches, never one per file, tool call, or message. Send only what you know: omit `request_id`, `expected_frontier`, and each draft's `event_id`, `occurred_at` and envelope lists; FinishUP mints the call's id (every result and error names it), fills the rest, sorts reference sets, and names what it filled in `server_filled`. After an unknown outcome, retry by sending that `request_id`; an id-less resend is never a retry (the bridge refuses one identical to your previous call). |
 | `status` | After resume, compaction, or delegate handoff, and before any completion claim. Not between routine tool calls. Never read it only for a frontier or an id a write already returned. The MCP tool answers `detail: brief` (one frontier, the page and the closure state) unless you ask for `full`; `limit` defaults to 20. |
 | `check` | Check the refined plan before editing, then changed behavior, outputs or acceptance evidence at useful milestones; [review.md](review.md) owns pacing and mode selection, [receipt.md](receipt.md) owns closure. Before the first material edit it runs local plan checks only (`semantic_review_deferred_before_first_edit`); a required closing review is never deferred. Change the work or supply the named new evidence before rechecking: a recheck with no new events returns the same finding. A check with no new events since the last one adds nothing. Track required review through `mode=semantic_required` and its reported status, never as an obligation to obtain the check. |
-| `respond` | Use [review.md](review.md)'s finding table once per unanswered defect; advisory choices are optional. Use the returned `finding_frontier` or current status frontier, never use the finding's `subject_frontier`. |
+| `respond` | Use [review.md](review.md)'s finding table once per unanswered defect; answer each material advisory note once (`addressed`, `kept_choice` or `declined`). Use the returned `finding_frontier` or current status frontier, never use the finding's `subject_frontier`. |
 | `receipt` | Once at the end; repeat only after material state changed. Then publish `work_closed` if the work is complete ([receipt.md](receipt.md)); neither a receipt nor `work_closed` requires another check. |
 
 
@@ -233,9 +233,11 @@ no `refresh_observation` MCP tool or CLI command.
 
 Final prose is scope-first: state what recorded evidence and checks covered, what was not verified or
 remained limited, the checked frontier, AI-powered review status/reason, and material coverage gaps
-before reporting actionable-unresolved, unanswered, or resolved-history counts. Never headline a bare
-“no findings”, “zero actionable findings”, “clean”, or “verified” result; an empty finding set is
-bounded by the evidence and review scope that ran. Keep the final answer no stronger than the receipt.
+before reporting actionable-unresolved or resolved-history counts. State the receipt's conclusion and
+name each reviewer note still open or declined; never write "0 unanswered findings" while one is
+open. Never headline a bare “no findings”, “zero actionable findings”, “clean”, or “verified” result;
+an empty finding set is bounded by the evidence and review scope that ran. Keep the final answer no
+stronger than the receipt.
 
 A completion claim is an assertion, not a conclusion. Follow [receipt.md](receipt.md) for the
 closing sequence, including `work_closed`.
@@ -790,8 +792,8 @@ planned verification you did not run, a missing or emptied output, a claim that 
 or ran that the record does not show, or an early stop. A correctness concern it raises then comes
 back as a note in the review summary ("Reviewer correctness notes"), non-blocking. For each
 material note: run a proportionate check, cite evidence that already settles it, or decline with a
-reason. Recording a `respond` is optional; the receipt shows an unanswered note as `no recorded
-response`. The closing review judges correctness and
+reason. Then answer each material one once with `respond`; the receipt shows an unanswered note
+as `no recorded response`. The closing review judges correctness and
 completeness against the task as findings. A finding of kind `agent_criterion_unmet` is a criterion
 you set yourself beyond the task's stated scope (your own stress sizes, inputs or configurations)
 that fails: it is not a task requirement. Fix it, or narrow the criterion by responding

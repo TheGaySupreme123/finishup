@@ -1037,8 +1037,15 @@ def render_human_status(result: StatusSuccessModel) -> str:
                     disposition = note.disposition.replace("_", " ")
                     if disposition == "addressed":
                         disposition = "addressed (agent-reported, linked evidence)"
+                    elif disposition == "kept choice":
+                        disposition = "checked, kept my choice (agent-reported, with reason)"
                     elif disposition == "declined":
                         disposition = "declined with reason"
+                    elif disposition == "response unavailable":
+                        # #1190: a withheld answer is an answer; the receipt's own words.
+                        disposition = (
+                            "answered (response withheld; disposition and reason unreadable)"
+                        )
                     lines.append(f"Correctness advisory {note.advisory_id}: {disposition}")
                     lines.append("  Subjects: " + ", ".join(note.subject_refs))
                     lines.append(

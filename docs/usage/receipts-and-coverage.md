@@ -75,7 +75,8 @@ the recorded claim, action and result to any observed execution, earlier advice,
 actual response, and applicable AI assessments. Open and resolved obligations can have detail;
 missing, historical and capped material is disclosed. A proposed test is not an executed test,
 an observed run does not establish test adequacy, and an agent's response does not prove repair.
-Optional advice may be declined or left unanswered without blocking completion. Related finding
+Advice never blocks completion and may be declined; unanswered material advice keeps the
+receipt from reading clean. Related finding
 rows also explain the latest resolution attempt and current proof-limit eligibility; recording
 `self_verified` still requires the agent's reason and its own later evidence.
 
@@ -606,16 +607,22 @@ incidental reports outside the project instead.
 
 Earlier correctness advice remains visible when you finish. The receipt shows how many notes
 were recorded and, for each displayed note, **addressed (agent-reported, linked evidence)**,
-**declined with reason**, or **no recorded response**. Advice never blocks closing. A later
-successful check does not establish that an earlier note was addressed. Export views label
-withheld prose; truncated lists link to the paginated history. While a note has no recorded
-response, your coding agent's app may show a short FinishUP notice when the agent stops, once for
-each new set of such notes; it does not block finishing and points you to the receipt.
+**checked, kept my choice (agent-reported, with reason)**, **declined with reason**, **answered
+(response withheld)**, or **no recorded response**. Its Summary says how many notes were answered
+and how. Advice never blocks closing, but material advice (the reviewer's strongest remaining
+check, and each decision it leaves to the agent) needs one answer: while any is unanswered the
+receipt reads `insufficient_coverage` and says "N reviewer notes not answered". A later successful
+check does not establish that an earlier note was addressed. Local receipts show the agent's
+one-line reason beside each answered note; export views label withheld prose; truncated lists
+link to the paginated history. When the agent stops with material notes unanswered, FinishUP asks
+it once for that set of notes to answer each in one line; it does not block finishing. Your coding
+agent's app may also show a short FinishUP notice, once for each new set of such notes.
 
-Your agent may optionally record its response through `respond`, using the advisory identity in
-`finding_id` and a current `finding_frontier`: `addressed` needs a reason and evidence or result
-refs, at least one recorded after the note, while `declined` needs a reason. This records the
-agent's account, not independent proof. Retrieve the full index through `status view=history`
+Your agent records each answer through `respond`, using the advisory identity in `finding_id` and
+a current `finding_frontier`: `addressed` (it ran the check) needs a reason and evidence or result
+refs, at least one recorded after the note; `kept_choice` (it checked and kept its choice) and
+`declined` need a reason. This records the agent's account, not independent proof. In its final
+message the agent states the receipt's conclusion and names every note still open or declined. Retrieve the full index through `status view=history`
 with `filter.schema_name=check_recorded`, following `next_cursor` with the same filter and limit.
 History lists one session's records, so read a note from the session that recorded its check: the
 receipt names that session for each note and counts every note of the task.

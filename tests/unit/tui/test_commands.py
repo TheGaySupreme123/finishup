@@ -14,6 +14,7 @@ def test_the_documented_commands_are_all_present_with_descriptions() -> None:
         "project",
         "findings",
         "coverage",
+        "notes",
         "check",
         "receipt",
         "connect",

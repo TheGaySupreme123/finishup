@@ -7,7 +7,7 @@ A check evaluates only the recorded, readable, frontier-bound packet.
 
 Reviewer correctness notes and review-summary concerns are non-blocking. For each material
 concern about a task requirement: run a proportionate check, cite evidence that already settles
-it, or decline with a reason. Recording a response is optional; zero findings does not establish
+it, or decline with a reason. Answer each material one once; zero findings does not establish
 correctness. A failing or weak test result: fix it; if you cannot, disclose it by name. A concern
 is still evidence, not an order (see below).
 
@@ -39,7 +39,7 @@ grant. Keep the same request id and never create a fresh request to escape the d
 
 `full_restart_required` is an activation mismatch. Fully restart the exact host process and verify
 the live route before a new check; it never authorizes egress. Read the check result's coverage and
-review status as reported, not as proof that the underlying code is correct. Details and recovery
+review status as reported, not as proof the code is correct. Details and recovery
 limits remain in [`coverage-and-receipts.md`](coverage-and-receipts.md#check-mode-and-ai-powered-review-coverage).
 
 When AI-powered review is selected, a check before your first material edit runs local plan checks
@@ -56,7 +56,7 @@ Have a check print the values and cases it compares, not only PASS: the reviewer
 
 When readiness names `closing_review_required`, run `check` with `final_review: true` after the
 last material change. It judges stated requirements and outputs against the task.
-Answer each open AI-powered finding with `respond` and a reason (optional for `decision_needed`);
+Answer each open AI-powered finding with `respond` and a reason (`decision_needed` included);
 `acknowledged` on a reviewer finding also cites an `evd_` or `res_` recorded after it, except for a
 question or a limitation request. A finding a check resolved (`verified_resolved`) or whose
 answer is final (`next_actions: ["none"]`) takes no response. Follow [receipt.md](receipt.md) for closure.
@@ -101,7 +101,7 @@ As the working agent, follow the `missing_for_assessment` supply rule above.
 A finding is evidence, not an order.
 Before reversing a deliberate choice or resolving conflicting inputs, including a decision-needed finding:
 
-For an advisory choice, stop after step 4 and optionally record your decision. Steps 5–6 apply
+For an advisory choice, stop after step 4 and record your decision once. Steps 5–6 apply
 only to disputed defects, never to `decision_needed`.
 
 1. Re-read the task and supplied inputs.
@@ -119,7 +119,7 @@ Read the finding's row in `status view=findings` and find its case below before 
 
 | The finding | Do this |
 | --- | --- |
-| `kind: decision_needed` (including `requested_next_step: answer_question`) | Optionally record the choice and reason (`respond` `acknowledged` or `rejected`). Non-blocking advisory history; no repair ruling or verified resolution. |
+| `kind: decision_needed` (including `requested_next_step: answer_question`) | Record the choice and reason once (`respond` `acknowledged` or `rejected`). Non-blocking, but unanswered it keeps the receipt from reading clean; no repair ruling or verified resolution. |
 | `todo_state` `verified_resolved`, `rejection_accepted` or `disputed_after_rebuttal`, or `next_actions: ["none"]` | Nothing. It takes no response; one is refused with `finding_terminal`. |
 | `todo_state` `acknowledged_not_done` | Repair and run `check`, or respond `reopened` with a reason to take the answer back. |
 | A problem you can fix | Repair it, publish the result and evidence, then run `check`. Only a later qualifying check resolves it; a response never does. |

@@ -757,8 +757,10 @@ actual summary, the field is absent from both the internal projection document a
 success body; an absent summary is never materialized as JSON `null` or reported as policy-omitted.
 Optional `dry_run: true` on `PublishWorkRequest` validates the full batch and returns
 `outcome: "dry_run"` with `evidential: false` and a `would_accept` preview (event ids, schema
-identity, refs) plus coverage/gaps. It appends nothing, records no operation, does not consume
-`request_id`, and does not move the frontier — same non-citable discipline as
+identity, refs) plus coverage/gaps. It runs the publish's own read-only admission checks in the
+publish's order (completion scope, verification quotes, review-mode parents), so it refuses what
+the publish would refuse with the same code and reason. It appends nothing, records no operation,
+does not consume `request_id`, and does not move the frontier — same non-citable discipline as
 `status view=candidate_findings`. A subsequent real publish may reuse the same `request_id`; an
 id-less dry run through the bridge or the CLI gets a fresh unbound id, and its minted event ids are
 never the commit's.
@@ -13137,18 +13139,18 @@ note is retrieved in the session that recorded its check, while the receipt is t
 receipt row names its check's recording session, and the retrieval continuation names those
 `session_id`s.
 
-An optional `respond` targets this identity using the existing `finding_id`/`finding_frontier`
+A `respond` targets this identity using the existing `finding_id`/`finding_frontier`
 keys. `addressed` means agent-reported with linked evidence, at least one ref recorded after the
 note's check (`response_fields_invalid` at `/evidence_refs` otherwise); `declined` records the
 reason; absence is `no_recorded_response`. `respond` is the only way in: `publish_work` refuses a
 decision draft carrying `advisory_response` (`event_family_not_admitted`). A withheld decision is
-never attached to a note: its envelope cannot show whether it is an advisory response or a
-review-mode switch, so it is counted in `correctness_advisory_counts.withheld_may_answer` as one
-that may answer a note, and it stales the check under the unreadable-record rule (follow-up
-#1190). Typed `decision_recorded` 1.1.0 `advisory_response` records carry the target,
+never attached to a note by ordinal: the payload carried the ordinal. Since #1190 (below) its
+envelope proves it is an advisory response, so the only note of its check reads
+`response_unavailable`; on a check with several notes it is counted in
+`correctness_advisory_counts.withheld_may_answer`. Typed `decision_recorded` 1.1.0 `advisory_response` records carry the target,
 disposition and mirrored evidence refs; `rationale` carries the reason. They are independent of
-review-mode switches and never change finding state, check applicability, closure readiness or
-receipt conclusions. Closure readiness carries `correctness_advisory_summary` only while some note
+review-mode switches and never change finding state or check applicability; since #1240 (below) an
+answer to a material note lifts its cap on the predicted and built receipt conclusion. Closure readiness carries `correctness_advisory_summary` only while some note
 has no recorded response, and its text names only those notes, so it changes exactly when that
 set does. The Stop hooks compare its digest with the last one shown for the session and show a
 fixed owner-facing notice only when the set changed, never on a `stop_hook_active` re-entry. A
@@ -13197,11 +13199,38 @@ and MCP text list the rows under a fixed "Tracked reviewer advice" header. Closu
 receipt's `total`/`no_recorded_response`/`withheld_may_answer`) whenever the task has advice, and
 `correctness_advisory_summary` labels each named identity with its origin and first two
 subjects. History rows keep their first shape (no `origin`); receipt rows carry the origin label.
-The texts on this path use the owner-approved wording ("Non-blocking. For each material concern:
-run a proportionate check, cite evidence that already settles it, or decline with a reason.
-Recording a response is optional; ..."). One optional `respond` response (addressed with evidence
-recorded after the note, or declined with a reason) closes an item; nothing blocks, and Stop is
-unchanged.
+The texts on this path ask for one answer per material note ("Non-blocking. For each material
+concern: run a proportionate check, cite evidence that already settles it, or decline with a
+reason. Answer each material one once; ..."). One `respond` answer (addressed with evidence
+recorded after the note, `kept_choice` or declined, each with a reason) closes an item; nothing
+blocks.
+
+**Answered advice (#1240, 2026-10-30).** Material advice is the `strongest_remaining_check` notes
+and the current `decision_needed` findings with no recorded response
+(`ClosureBasis.advice_unanswered`, replay-derived; `MATERIAL_ADVISORY_ORIGINS`). While any is
+open, prediction reason `advice_unanswered` (R11, `"{n} reviewer note(s) not answered"`) makes the
+predicted and built conclusion `insufficient_coverage`; readiness state and `work_closed` are
+unchanged. The receipt Summary appends "Reviewer notes: N; not answered: M (K material); answered:
+…" and, while a decision choice is open, "Decision choices not answered: D." `closure_readiness.rechecks` gains kind `advice` with key
+`advice:<16 hex>` (sha256 of the sorted open set) and rule `material_advice_unanswered`; the Stop
+gate asks it once per key, after the premise ask and trimmed before it, also on an
+already-continued Stop within the per-turn cap (`advice_recheck` item,
+`closure_gate_advice_asked` diagnostic). `respond` advisory dispositions are `addressed`,
+`kept_choice` (reason only; label "checked, kept my choice") and `declined`; history and receipt
+rows add `kept_choice` and `response_unavailable`. The `default_local_export` receipt row carries
+the agent's reason as one bounded line. The MCP status line reads "unanswered findings: N;
+reviewer notes not answered: M; reported gaps: G." The TUI `/notes` command reads
+`status view=history` filtered to `check_recorded`.
+
+**Withheld advisory responses (#1190, option B).** `publish_work` refuses a review-mode
+`decision_recorded` draft whose causal parents are exactly one `check_recorded` event
+(`review_mode_parent_is_check`, `/event_drafts/<n>/causal_parents`); a dry run refuses it the
+same way and appends nothing. A withheld
+`decision_recorded` 1.1.0 whose sole parent is a noted check is then an advisory response: on a
+check with one note the row reads `response_unavailable` (answered, unreadable), on a check with
+several it stays counted in `withheld_may_answer`. It no longer stales the check it answers
+(`invalidates_recorded_check(..., check_event_id=...)`); every other unreadable record keeps the
+conservative rule.
 
 **Declared-test verdicts (#1145, 2026-10-26).** Every provider-judgment 1.2.0 branch (in place;
 reviewer-reply 1.0.0 follows) gains the optional, nullable `declared_test_verdicts`: at most two

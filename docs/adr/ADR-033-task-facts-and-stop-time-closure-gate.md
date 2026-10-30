@@ -1659,3 +1659,47 @@ what was missing is one recorded decision.
   MCP receipt summary points at the line with fixed wording, and the CLI's human rendering of a
   JSON receipt repeats the sentences, as it does the review-mode ones (markdown and text carry the
   whole section). Same on Codex, Claude Code and Cursor.
+
+## Amendment (2026-10-30, issue #1240, owner decisions D1, D2 and D5): unanswered material advice
+
+Maintainer acknowledgement: recorded on #1247 for step G4. It grants no new network, credential,
+runtime or disclosure authority.
+
+In TB4 agents read the reviewer's strongest remaining check and its `decision_needed` choices,
+then closed with "0 unanswered findings": guidance called an answer optional, and nothing counted
+silence. The owner decided:
+
+1. **D1: unanswered material advice caps the receipt, never closing.** Material advice is the
+   reviewer's `strongest_remaining_check` notes and the current `decision_needed` findings with no
+   recorded response. Process notes, routine notes and verified-row notes are not material. The
+   shared closure basis (`ClosureBasis.advice_unanswered`, replay-derived) adds prediction reason
+   `advice_unanswered` (R11), so status, `closure_prepare` and the receipt agree that the
+   conclusion is `insufficient_coverage`, not clean. Readiness keeps its state: closing and
+   `work_closed` stay allowed. The receipt Summary adds fixed sentences after the counters
+   ("Reviewer notes: N; not answered: M (K material); answered: …", then "Decision choices not
+   answered: D." while a `decision_needed` choice is open: a choice is a finding, not a note, so it
+   is never counted among the notes), and the conclusion basis cites the reason with the `fnd_` ids it covers (advisory ids are
+   counted, never cited, because the predicted-receipt ref pattern has no advisory form). JSON,
+   markdown, text and the TUI (`/notes`) render the same rows.
+2. **D2: one batched Stop question per open set.** The verdict emits one `advice` re-check, keyed
+   `advice:<first 16 hex of sha256 over the sorted set>`, so the key changes exactly when the set
+   does. The gate asks it once per key, remembered in the same per-session closure-gate memory,
+   so the same set is never asked twice. It is its own sentence, read after the premise ask and
+   trimmed before it (right after the predicted conclusion and the fact-lineage sentence), so it
+   never costs an ask for work; a trimmed ask is not remembered. Unlike the premise ask it may
+   continue a Stop the host already continued, within the per-turn cap: in a single-turn run every
+   later Stop is one, so an ask a long first gate trimmed would otherwise never arrive. A partly
+   answered set is a new set and is asked once more. The text ("Answer each in one line with respond finding_id=…:
+   ran it, kept my choice or declined …; a decision choice (fnd_ id) takes acknowledged or rejected
+   …") names the three note answers, the two `respond` admits for a decision choice (it refuses the
+   note answers on a finding id), and that closing is not blocked.
+   Every delivered ask writes `closure_gate_advice_asked` through `record_hook_diagnostic`. Codex,
+   Claude Code and Cursor share the gate, so all three hosts ask.
+3. **D5: no "optional" wording.** The readiness summary, the check's advice headers, the `respond`
+   and `receipt` descriptors and the guidance ask the agent to state the receipt's conclusion and
+   name each note still open or declined, and drop the "0 unanswered findings" shorthand. FinishUP
+   injects nothing into the agent's final message and never reads it (D1 of the 2026-10-18
+   amendment holds).
+
+The owner-facing Stop notice of the #1162 amendment is unchanged; the 2026-10-25 ADR-006 rule
+"no Stop gate, no receipt conclusion change" for advice is superseded by D1 and D2 above.

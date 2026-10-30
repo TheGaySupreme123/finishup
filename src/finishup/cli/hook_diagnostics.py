@@ -243,6 +243,9 @@ _REASONS: Final = frozenset(
         # once-per-frontier/once-per-blocker memory could not be written.
         "closure_gate_blocker_rechecked",
         "closure_gate_memory_unwritten",
+        # #1240 D2: the delivered continuation asked the once-per-set question about material
+        # reviewer notes with no recorded answer.
+        "closure_gate_advice_asked",
         # The acceptance re-read (A-12) was asked, or a final-message attestation covered it
         # (#1050). No longer written since D1 (ADR-033: the acceptance re-read was removed and the
         # hook no longer reads the final message); kept readable so an older diagnostics file

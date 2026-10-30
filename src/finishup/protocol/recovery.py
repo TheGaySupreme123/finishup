@@ -985,6 +985,8 @@ REASON_CODE_DIRECTIVE_EXEMPTIONS: Final[frozenset[str]] = frozenset(
         "ref_mirror_mismatch",
         # Issue #977: the message names the requested item and the exact repair.
         "requested_command_placeholder",
+        # #1190: a review-mode switch named a check as its only parent.
+        "review_mode_parent_is_check",
         "verification_criterion_not_in_task",
         "response_fields_invalid",
         "runtime_attempt_evidence_json_shape_invalid",

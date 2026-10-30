@@ -3273,8 +3273,8 @@ only parent looks the same once its payload is withheld, and the payload also ca
 ordinal. So the notes keep their own status and the inventory counts it as a withheld decision
 that may answer a note (at most one per note of that check without a recorded response). The
 same ambiguity keeps the conservative rule for unreadable records: a withheld decision makes a
-check stale even when it was an advisory response. Recognising a withheld advisory response
-exactly is follow-up #1190.
+check stale even when it was an advisory response. Superseded: the 2026-10-30 amendment below
+(#1190, option B) recognises a withheld advisory response from its envelope.
 
 The response is a typed `decision_recorded` 1.1.0 `advisory_response` with a fixed statement,
 reason in `rationale`, check causal parent and mirrored evidence refs. This unreleased version
@@ -3848,3 +3848,43 @@ weigh a change against a verification, and the owner decided the reviewer judges
   reruns that followed an answer. The next run can then show whether the question earns its cost.
 - The reviewer loop instruction is unchanged: the ask lives in the packet's question, so the
   instruction keeps its byte budget.
+
+## Amendment (2026-10-30, #1240 D1/D3/D4 and #1190 option B): answered advice, exactly
+
+Maintainer acknowledgement: recorded on #1247 (step G4, owner decisions D1–D5, and the 2026-10-30
+choice of option B for #1190). It grants no new network, credential, runtime or disclosure
+authority.
+
+- **Material advice is answered (D1).** The 2026-10-25 contract's "Recording a response is
+  optional" and its "no Stop gate, no receipt conclusion change" are superseded: an unanswered
+  `strongest_remaining_check` note or `decision_needed` finding keeps the receipt from reading
+  clean (ADR-033 amendment of this date). Notes stay non-blocking: closing is allowed, and a note
+  never becomes a finding.
+- **"Checked, kept my choice" (D3).** `respond` accepts a third advisory disposition,
+  `kept_choice`, with a reason and no evidence requirement, alongside `addressed` and `declined`.
+  It is stored as `decision_recorded` 1.1.0 `advisory_response.disposition = kept_choice` and
+  renders as "checked, kept my choice (agent-reported, with reason)" in history, status and every
+  receipt rendering. It answers only an advisory, never a finding. respond-request/result 1.1.0,
+  decision-recorded 1.1.0, check-result 1.6.0/1.7.0, status-result 1.4.0/1.5.0 and
+  receipt-document 1.3.0 are on no release tag and are amended in place through the generator.
+- **Local reasons (D4).** The `default_local_export` receipt profile shows the agent's answer
+  reason as one bounded line ("Agent reason (self-reported, one line): …"), using the same bound
+  as freshness answers; the reviewer's concern prose stays withheld there. `full_local` is
+  unchanged, `redacted_share` still withholds both, and nothing sent to a provider changes.
+- **A withheld advisory response is recognised (#1190, option B).** This replaces the "follow-up
+  #1190" paragraph of the 2026-10-21 amendment. `publish_work` now refuses a review-mode
+  `decision_recorded` draft whose causal parents are exactly one `check_recorded` event
+  (`review_mode_parent_is_check` at `/event_drafts/<n>/causal_parents`; a dry run refuses it
+  the same way), and `respond` has always
+  written an advisory response with exactly its check as the sole parent. A withheld
+  `decision_recorded` 1.1.0 whose sole parent is a noted check is therefore an advisory response,
+  read from the envelope alone, with no operation index, so the projection still equals the
+  replay of the records on memory and SQLite. When that check has one note, the note reads
+  `response_unavailable` (answered; disposition and reason unreadable). When it has several, the
+  ordinal is unreadable, so the notes keep their status and the withheld record is still counted
+  in `withheld_may_answer`. Such a record no longer stales the check it answers; an unreadable
+  record with any other parent keeps the conservative rule.
+- **Limit.** A ledger written before this rule may hold a withheld review-mode switch whose only
+  parent is a check; its envelope looks the same, so it now reads as an advisory response. Both
+  shapes are recorded only on unreleased 0.3 versions (decision-recorded 1.1.0 is on no release
+  tag), so no released ledger is affected.
