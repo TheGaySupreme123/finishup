@@ -74,6 +74,13 @@ _FIELD_ORDER: Final = (
     "semantic_rulings_disputed_after_rebuttal",
     "semantic_findings_selected",
     "semantic_findings_suppressed",
+    # #1241 D9: the verification rerun question, per check.
+    "rerun_questions_asked",
+    "rerun_questions_answered",
+    "rerun_answers_reviewer_agreed",
+    "rerun_answers_reviewer_disagreed",
+    "reruns_after_answer",
+    "reruns_after_answer_changed",
     # One in-check reviewer follow-up round (#1047).
     "semantic_follow_up_round",
     "semantic_follow_up_items",

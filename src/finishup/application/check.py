@@ -67,6 +67,7 @@ from finishup.domain.findings import (
     is_limitation_request,
     semantic_provenance_to_json,
 )
+from finishup.domain.freshness_question import is_freshness_question
 from finishup.domain.privacy import ConversationReview
 from finishup.domain.receipts import (
     CHECK_TIME_CHANGE_GAPS,
@@ -207,6 +208,7 @@ from finishup.kernel.finding_todo import (
     finding_todo_state,
     todo_counts,
 )
+from finishup.kernel.freshness_answers import freshness_answers
 from finishup.kernel.limitation import limitation_standing
 from finishup.kernel.lineage import LineageEvaluation, evaluate_recorded_lineage
 from finishup.kernel.observed_failures import (
@@ -237,6 +239,7 @@ from finishup.kernel.ranking import CheckCompleteness, RankingContext, rank_find
 from finishup.kernel.receipt_capacity import current_receipt_findings
 from finishup.kernel.receipt_prediction import predict_receipt_conclusion
 from finishup.kernel.reducers import replay
+from finishup.kernel.rerun_accounting import rerun_question_accounting
 from finishup.kernel.review_frame import (
     agent_probe_only,
     finishup_process_state_only,
@@ -6532,6 +6535,59 @@ def _semantic_conclusion_token(result: FinalSemanticEvaluation) -> str:
     return judgment.conclusion
 
 
+def _record_review_accounting(
+    request: CheckRequest,
+    case: DeterministicCase,
+    candidates: tuple[Finding, ...],
+    result: FinalSemanticEvaluation,
+    review: SemanticJudgmentReview,
+    semantic: tuple[Finding, ...],
+    ranked: RankedFindings,
+) -> None:
+    """Both per-check accounting records, from one call site (keeps the commit path analyzable)."""
+
+    _record_semantic_review_accounting(request, result, review, semantic, ranked)
+    _record_rerun_question_accounting(request, case, candidates, result)
+
+
+def _record_rerun_question_accounting(
+    request: CheckRequest,
+    case: DeterministicCase,
+    candidates: tuple[Finding, ...],
+    result: FinalSemanticEvaluation,
+) -> None:
+    """Count the verification rerun question on every check (#1241 D9).
+
+    Questions this check asked, answers on record, the reviewer's agreement with the answers the
+    packet carried (fenced to those findings), and reruns that followed an answer and whether
+    they changed its run's result. Counts only, so a harness can see whether the question earns
+    its cost; the reruns are derived from the ledger, so an export reconciles with it.
+    """
+
+    accounting = rerun_question_accounting(case.projection)
+    answered = {str(answer.finding_id) for answer in freshness_answers(case.projection)}
+    judgment = result.judgment
+    verdicts = () if judgment is None else judgment.freshness_verdicts
+    fenced = [verdict for verdict in verdicts if verdict.finding_id in answered]
+    asked = sum(1 for candidate in candidates if is_freshness_question(candidate))
+    if not asked and not accounting.answered and not fenced:
+        return
+    record_bounded_counts_without_raising(
+        component="check",
+        operation="rerun_question_accounting",
+        outcome="recorded",
+        request_id=request.request_id,
+        counts={
+            "rerun_questions_asked": asked,
+            "rerun_questions_answered": accounting.answered,
+            "rerun_answers_reviewer_agreed": sum(1 for verdict in fenced if verdict.agrees),
+            "rerun_answers_reviewer_disagreed": sum(1 for verdict in fenced if not verdict.agrees),
+            "reruns_after_answer": accounting.reruns_after_answer,
+            "reruns_after_answer_changed": accounting.reruns_after_answer_changed,
+        },
+    )
+
+
 def _record_semantic_review_accounting(
     request: CheckRequest,
     result: FinalSemanticEvaluation,
@@ -7412,8 +7468,10 @@ async def execute_check_commit(
             RankingContext(coverage, completeness),
             maximum,
         )
-        _record_semantic_review_accounting(
+        _record_review_accounting(
             request,
+            frozen.case,
+            candidate_findings,
             semantic_result,
             review,
             semantic,

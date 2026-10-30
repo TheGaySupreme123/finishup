@@ -12744,6 +12744,55 @@ standing limit (G0f spec `V`, `GapContext.freshness_advisory`), like the questio
 caller-asserted reliance is disclosed for any retained run (the latest of its command or one the
 account cites); failures and missing checks retain their existing rules.
 
+**Asked less, reviewed, counted (#1241, D9-D11).**
+- *Which runs are asked about.* Only the latest run of each requested verification, the latest
+  verification overall, and runs a claim, obligation resolution or response cites; matching
+  command text alone no longer decides it. Runs that share one change set share one question
+  (`kernel/policies/work_integrity._verification_questions`). The first two are the runs whose
+  freshness the task facts' `verification_rerun_question` markers read: each planned item's
+  deciding run, also when one run matches two requested commands, and the task facts' last
+  verification run, which a later agent-linked script run does not replace
+  (`TaskFactSignals.freshness_deciding_events`, frozen as the tracked results
+  `DeterministicCase.verification_deciding_runs`). Every marker therefore has a question an answer
+  clears. The latest run of each freshness `label` is still asked too, and a case frozen before
+  the field takes the latest verification overall from its tracked runs. A run the agent linked
+  to a planned command (#1209) counts as cited: it decides the planned verification like a direct
+  match, carries no `label`, and the task facts raise the obligation's
+  `verification_rerun_question` for it, so without a question no answer could clear that marker.
+  The links the task facts read (`TaskFactSignals.agent_linked_events`) are frozen as the tracked
+  results `DeterministicCase.verification_linked_runs` (absent on a case frozen before the field).
+- *An answer stands.* `kernel.freshness_answers.covering_freshness_answer` returns the latest
+  reasoned `acknowledged` answer whose question covered every run and change now asked about; it
+  settles the new question, and only a change it did not cover asks again.
+- *Never unanswered work.* `domain.freshness_question.is_freshness_question` (the deterministic
+  question's fixed summary) is exempt from `unanswered_finding_ids` beside `decision_needed`, so
+  status's `findings_unanswered` and readiness agree with the check, which never counted it.
+- *The answer reaches the receipt.* A covered run whose inputs are unknown drops the standing
+  `verification_rerun_question` task fact. A stale verification on the AI route stays a standing
+  limit under its own code (`edited_after_last_verification`, `planned_verification_stale`): it is
+  a recorded fact, not a question. The receipt's findings section carries a fenced, self-reported
+  item "Verification rerun question answered (self-reported, non-blocking) <finding>: rerun not
+  needed: <reason>", the reason bounded to one line of 240 bytes (`bounded_agent_reason`, shared
+  with #1240) in JSON, markdown and text.
+- *The reviewer judges the answers.* Answers to the question travel as their own packet row type
+  (`yoetz.freshness-answer/1`, `question: verification_rerun`, at most four, outside the four
+  other local answers; item ids keep the `local-finding-answer-` prefix). `FRESHNESS_REVIEW_QUESTION`
+  asks for `freshness_verdicts`: optional `{finding_id, agrees}` rows (at most four) on every
+  provider-judgment 1.2.0 and reviewer-reply 1.0.0 conclusion branch, both unreleased and
+  regenerated in place. Malformed, repeated or extra rows cost only themselves. The check fences
+  verdicts to answered questions and records them for instrumentation only.
+- *Counted.* Each check records `check.rerun_question_accounting` with
+  `rerun_questions_asked`, `rerun_questions_answered`, `rerun_answers_reviewer_agreed`,
+  `rerun_answers_reviewer_disagreed`, `reruns_after_answer` and `reruns_after_answer_changed`.
+  The rerun counts derive from the ledger (`kernel.rerun_accounting`): a later run of a covered
+  run's command after the answer, and whether its outcome differs, so an export reconciles with
+  the ledger whatever the diagnostics ring kept.
+- *"The ledger is too incomplete" names its gaps.* At a plan-only check (no action or result yet) an
+  obligation is never its subject, an obligation with resolution evidence retires from it, and
+  when no coverage gap code applies its detail names the gap classes it was raised for.
+- *The input list* (`finishup-verification-inputs/v1`) stays readable with every rule above, but
+  guidance no longer advertises it (0 of 112 TB4 attempts used it).
+
 CLI/MCP check/status and TUI consume shared task-fact sentences. Encrypted finding details name the
 verification (result id and requested command), state how its inputs are known, and list named
 paths and short change summaries; keyed-only changes are counted and never described as declared.

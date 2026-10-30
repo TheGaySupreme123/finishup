@@ -276,25 +276,13 @@ verification wrote, byte-identical writes and unrelated placed changes do not de
 placed change may touch an input FinishUP cannot rule out, `verification_rerun_question` asks for a
 decision without blocking closure: inspect the recorded verification and subsequent paths/change
 summaries, then rerun or `respond` with `acknowledged` and a reasoned explanation that a rerun is
-not needed. A later change asks again. An edit made with your host's file-edit tool records no
+not needed. It asks only about the latest run of each planned verification, the latest verification
+overall and runs your account cites, once per change set; your answer stands until a change it did
+not cover. It is never counted as unanswered work, and the receipt shows your one-line reason.
+An edit made with your host's file-edit tool records no
 file path, so FinishUP cannot place it: it may be a source edit, so the verification is stale until
 you rerun it. A stale finding names the verification and the changed input, or the edit tool and
 count. A FinishUP check records the decision; it does not run tests for you.
-
-To declare a verification's exact file inputs and evidence outputs, publish an ordinary evidence
-row with reference `finishup-verification-inputs/v1:<observed res_ id>` and a JSON description:
-`{"inputs":["source.py","config.json"],"outputs":["evidence.json"],"complete":true}`.
-Use `complete:false` when this is only a partial input list. The declaration is your assertion;
-FinishUP does not observe arbitrary file reads inside a shell command. Inputs take precedence over
-outputs, and an output is exempt only when that run itself wrote it. A `complete:true` list with
-no inputs is not complete. A complete list that leaves out a file you later edit keeps the
-verification current, and FinishUP discloses `verification_inputs_caller_asserted`, so list every
-file the check reads. Name a directory with a trailing slash; a bare name is read as a file. An
-input directory (`src/`) makes the list partial, so a change inside it asks; an output directory
-(`reports/`) covers files that run itself wrote there once the record names them (list the file, or
-cite it as evidence), and `./` covers nothing. Directories and
-outside-workspace inputs remain unknown; a change whose comparison was unavailable cannot be placed
-and stays stale. Each new observed run needs its own declaration.
 
 For AI-powered review, freshness is always advisory: consider the verification together with what
 changed after it and answer the non-blocking rerun question. Actual failed checks and missing

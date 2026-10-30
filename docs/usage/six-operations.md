@@ -399,12 +399,17 @@ Local checks also report facts about the task's own work: a planned verification
 obligation's requested command) that was not matched to an observed run, failed on its latest
 run, or had a recorded input change after it ran; a recorded input that changed after your last
 test, lint, typecheck or build run stops you once at Stop. A verification's inputs are recorded
-when the task requests them as input files or when you publish its per-run input declaration
-(see the workflow guidance). FinishUP can tell which files a shell command changed. When such a
-change may touch a verification's inputs but FinishUP cannot tell, it asks whether a rerun is
-needed (`verification_rerun_question`) instead of demanding one: rerun it, or answer with
-`respond` and a reason a rerun is not needed. That question never blocks closure, and with
-AI-powered review freshness is always such a question. An edit made with the coding agent's own
+when the task requests them as input files. FinishUP can tell which files a shell command
+changed. When such a change may touch a verification's inputs but FinishUP cannot tell, it asks
+whether a rerun is needed (`verification_rerun_question`) instead of demanding one: rerun it, or
+answer with `respond` and a reason a rerun is not needed. That question never blocks closure and
+never counts as unanswered work. It is asked only about the latest run of each planned
+verification, the latest verification overall and runs your claims cite or you linked to a
+planned command, once per change set, and your answer stands until a change it did not cover.
+The receipt shows your one-line reason.
+With AI-powered review freshness is always such a question, and the reviewer is asked whether it
+agrees with your answer; its verdict is only counted and never changes the finding. An edit
+made with the coding agent's own
 file-edit tool records no file path, so FinishUP cannot tell which file it changed; it may be a
 source edit, so it makes your last verification stale and stops you once at Stop until you rerun
 it. Edits under a temporary directory outside your workspace and a
