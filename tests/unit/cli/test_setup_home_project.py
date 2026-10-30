@@ -571,6 +571,10 @@ def test_recorded_home_launchers_keep_exact_permission_and_rename_aliases(
 
 
 def test_setup_help_explains_the_opt_in() -> None:
-    result = CliRunner().invoke(app, ["setup", "run", "--help"], color=False)
+    # GitHub Actions makes Typer force a styled terminal; a dumb, wide one keeps option names
+    # whole and unstyled, as the other help tests do.
+    result = CliRunner().invoke(
+        app, ["setup", "run", "--help"], color=False, env={"COLUMNS": "300", "TERM": "dumb"}
+    )
     assert result.exit_code == 0
     assert "--allow-home-project" in result.output
