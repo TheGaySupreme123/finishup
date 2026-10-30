@@ -3062,8 +3062,10 @@ pages only; follow the source findings inventory cursor or suppressed-count inst
 reapply disclosure and never rerun review, so each page carries its own read's `privacy_projection`
 (never paged as items); reconstruct with the final page's. CLI output is never paged; hooks retain their
 bounded structural status instructions. Native TUI and exact-request authenticated owner exports
-keep the full local view. Since #1244 `next_cursor` is a short handle (about 45 characters) that
-leads each page; copy it exactly. The service keeps each delivered page set in memory only, so an
+keep the full local view. Since #1244 `next_cursor` is a short handle (about 50 characters) that
+leads each page, in the structured result and the text copy alike; copy it exactly. Its last part
+is a check over the rest, so an edited or mistyped handle (a changed offset, say) is refused as
+`delivery_cursor_invalid` instead of being served from another page. The service keeps each delivered page set in memory only, so an
 append or the agent's own publish no longer refuses a page: it is served as first delivered, with
 `ledger_moved_since` when the ledger moved on. After a service restart the set is rebuilt from the
 ledger, in place or from offset 0 with `page_set_restarted` (discard earlier pages); a status

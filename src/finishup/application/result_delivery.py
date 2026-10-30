@@ -1,7 +1,8 @@
 """Lossless, handle-bound presentation of already privacy-projected results (#1139, #1244).
 
 A continuation is a short handle (``delivery_handle``) naming the page set's source, frontier,
-next offset and content digest prefix. The delivered page set is kept in service memory only
+next offset and content digest prefix, sealed by a check segment over every other character so an
+edited or mistyped handle is refused rather than served from another offset. The delivered page set is kept in service memory only
 (``DeliveryPageStore``; never disk, never the ledger) so later pages come from the very copy the
 first page was cut from. A miss, such as after a service restart, rebuilds the set from the
 ledger at the handle's frontier. Every continuation goes through disclosure again; only a
@@ -11,6 +12,7 @@ recorded redaction or a changed disclosure policy refuses one, and the refusal n
 from __future__ import annotations
 
 import base64
+import hashlib
 import re
 import uuid
 from collections import OrderedDict
@@ -73,6 +75,7 @@ _ACTION_KEYS: Final = (
 # --- Short continuation handles (#1244, D12) -----------------------------------------------------
 #
 #   <kind><source request id, 22 base64url chars>.<frontier>.<offset>.<8 hex digest>[.<selector>]
+#   .<6 base64url check>   (one line; wrapped here)
 #
 # ``kind`` is c (check), r (receipt) or s (status). The source id is the original request's UUID,
 # so a recorded check or receipt is found again by its own operation. The selector segment lets a
@@ -81,6 +84,14 @@ _ACTION_KEYS: Final = (
 # inventory cursor or a selector id), which a miss cannot rebuild. A handle carries no secret and
 # no signature: every read it names is one its own session and writer may already make, and the
 # kept page set is bound to that session and writer.
+#
+# The check segment is the first 36 bits of a domain-separated SHA-256 over everything before it.
+# It is an integrity check against an edited or mistyped handle, not authentication: an edited
+# offset used to be served silently from another item, and an edited frontier or digest prefix
+# silently restarted or rebuilt the set. It is unkeyed on purpose. A per-service key would expire
+# every handle on restart, which D12 forbids (a restarted service rebuilds the set); a key that
+# survives restarts would be a new persistent secret guarding nothing a caller could not already
+# read. Anyone may recompute the check, and that only buys a read the caller may already make.
 _KINDS: Final[Mapping[str, Literal["check", "receipt", "status"]]] = {
     "c": "check",
     "r": "receipt",
@@ -88,10 +99,11 @@ _KINDS: Final[Mapping[str, Literal["check", "receipt", "status"]]] = {
 }
 _KIND_OF: Final[Mapping[str, str]] = {value: key for key, value in _KINDS.items()}
 _HANDLE: Final = re.compile(
-    r"^([crs])([A-Za-z0-9_-]{22})\.(0|[1-9][0-9]{0,19})\.(0|[1-9][0-9]{0,9})\.([0-9a-f]{8})"
-    r"(?:\.([a-z0-9]{1,8}))?$",
+    r"^(([crs])([A-Za-z0-9_-]{22})\.(0|[1-9][0-9]{0,19})\.(0|[1-9][0-9]{0,9})\.([0-9a-f]{8})"
+    r"(?:\.([a-z0-9]{1,8}))?)\.([A-Za-z0-9_-]{6})$",
     re.ASCII,
 )
+_HANDLE_CHECK_DOMAIN: Final = b"finishup.delivery-handle.check.v1\x00"
 _VIEW_CODES: Final[Mapping[str, str]] = {
     "advice": "a",
     "assignment": "g",
@@ -130,9 +142,10 @@ DeliveryRefusal = Literal[
 ]
 _REFUSAL_MESSAGES: Final[Mapping[str, str]] = {
     "delivery_cursor_invalid": (
-        "Result continuation is invalid: pass next_cursor exactly as the last page returned it. "
-        "Read current status; do not act on an incomplete finding or replay a completed check "
-        "as a new review."
+        "Result continuation is invalid or was edited: copy next_cursor exactly, every "
+        "character, from the last page and pass it unchanged as delivery_cursor; a handle "
+        "cannot be edited to skip or repeat a page. If that page is gone, read current status; "
+        "do not act on an incomplete finding or replay a completed check as a new review."
     ),
     "delivery_cursor_expired": (
         "Result continuation expired: the service restarted and this status read named a filter, "
@@ -206,6 +219,12 @@ def _expand_id(compact: str) -> str:
 
 def _digest_prefix(digest: str) -> str:
     return digest.removeprefix("sha256:")[:8]
+
+
+def handle_check(body: str) -> str:
+    """The check segment sealing a handle body: typo and edit detection, not authentication."""
+
+    return _b64(hashlib.sha256(_HANDLE_CHECK_DOMAIN + body.encode("ascii")).digest()[:6])[:6]
 
 
 def status_selector_code(selector: Mapping[str, JsonValue]) -> str:
@@ -301,6 +320,7 @@ def encode_handle(
     )
     if selector_code is not None:
         handle += "." + selector_code
+    handle += "." + handle_check(handle)
     if _HANDLE.fullmatch(handle) is None:
         raise ValueError("result_delivery_handle_invalid")
     return handle
@@ -310,7 +330,11 @@ def decode_handle(cursor: str) -> DeliveryHandle:
     match = _HANDLE.fullmatch(cursor)
     if match is None:
         raise invalid_cursor()
-    kind, compact, frontier, position, digest, code = match.groups()
+    body, kind, compact, frontier, position, digest, code, check = match.groups()
+    # Every other field is covered: an edited offset, frontier, digest prefix, id or selector
+    # is refused here instead of being served from another item or rebuilt as another set.
+    if check != handle_check(body):
+        raise invalid_cursor()
     try:
         source_request_id = _expand_id(compact)
     except ValueError as exc:
