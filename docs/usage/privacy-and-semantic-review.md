@@ -369,7 +369,10 @@ which normally arrives in the check result that is waiting on it, and that id ca
 closed terminal, an agent that did not relay it. The listing names the decisions you can still
 make and their expiry, and nothing about what any of them would disclose. Destination, categories,
 and prepared bytes belong to the decision preview, which is bound to the exact prepared case and
-is the only surface that renders them.
+is the only surface that renders them. A prepared request that FinishUP itself refuses before
+sending (your policy changed, a limit was narrowed, or the work it was prepared for moved on)
+leaves the list at once and gets a blocked privacy receipt naming the reason, instead of waiting
+there until it expires.
 
 `export-desired` / `apply-desired` are the reviewable path for version-controlling policy. The
 asymmetry is the point: tightening can flow through gates, widening always requires a human.

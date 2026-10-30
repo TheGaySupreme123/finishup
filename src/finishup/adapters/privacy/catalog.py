@@ -2751,6 +2751,52 @@ class CatalogPrivacyAudit:
                 if changed != 1:
                     raise ValueError("privacy_audit_state_conflict")
 
+    async def close_refused_disclosure(self, proposal_id: str, receipt: EgressReceipt) -> bool:
+        """#1066: close a not-yet-dispatched network proposal with its blocked receipt, once."""
+
+        if type(receipt) is not EgressReceipt or receipt.privacy_proposal_id != proposal_id:
+            raise ValueError("privacy_receipt_reservation_mismatch")
+        if receipt.dispatch_id is not None or receipt.authorization_id is not None:
+            raise ValueError("privacy_refusal_receipt_invalid")
+        canonical = _receipt_bytes(receipt)
+        digest = canonical_digest(strict_json_parse(canonical))
+        now = self._clock.now_utc()
+        async with self._lock:
+            with _transaction(self._db):
+                changed = (
+                    self._db.execute(
+                        """UPDATE privacy_audit_records
+                           SET state = 'decision_completed',
+                               attempt_result_structural_canonical = ?,
+                               attempt_result_commitment = ?,
+                               receipt_id = ?, receipt_outcome = ?, receipt_reason = ?,
+                               receipt_canonical = ?, receipt_digest = ?,
+                               receipt_finished_at = ?, updated_at = ?
+                           WHERE proposal_id = ? AND subject_kind = 'disclosure'
+                             AND destination_kind = 'network'
+                             AND state IN ('reserved', 'awaiting_human', 'approved')
+                             AND authorization_id IS NULL AND dispatch_id IS NULL
+                             AND consumed_at IS NULL AND receipt_id IS NULL""",
+                        (
+                            canonical,
+                            digest,
+                            receipt.receipt_id,
+                            receipt.outcome.value,
+                            None
+                            if receipt.safe_failure_reason is None
+                            else receipt.safe_failure_reason.value,
+                            canonical,
+                            digest,
+                            format_rfc3339_millis(receipt.finished_at),
+                            format_rfc3339_millis(now),
+                            proposal_id,
+                        ),
+                    )
+                    .getconnection()
+                    .changes()
+                )
+        return changed == 1
+
     async def _complete_local(
         self,
         reservation_id: str,

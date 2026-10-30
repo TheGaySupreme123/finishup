@@ -1723,3 +1723,41 @@ the privacy workstream's (#1248, P-D1/P-D2); this amendment fixes only the recor
   `blocked_forbidden_data`, an undeliverable status, so it never reads as a local-only success.
   Replacement bytes and their rescan (#966 items 2, 3 and 5) are #1248's.
 - Service-side and identical on Codex, Claude Code and Cursor.
+
+## A proposal refused at the final permission check closes at once (*Amended 2026-10-29, #1066*)
+
+Maintainer acknowledgement for this privacy-storage change is recorded on #1247 (decision D23).
+
+**Context.** When the coordinator refused an egress request after its disclosure proposal was
+prepared (the dispatch fence or repository authority no longer held, the policy or its limits
+changed before a resume), the proposal stayed `reserved` (or `awaiting_human`/`approved`) until its
+authorization timeout, at least 60 s. `privacy pending` listed it as a decision the owner could make
+although nothing could or would be sent, and it had no receipt.
+
+**Decision.**
+
+- A new audit operation, `close_refused_disclosure(proposal_id, receipt)`, moves a prepared network
+  proposal that is still `reserved`, `awaiting_human` or `approved`, with no authorization minted
+  and nothing consumed, to `decision_completed` with its blocked receipt, in one transaction, at
+  most once. Both audit stores implement it; no catalog migration is needed (the state and receipt
+  columns already admit it).
+- The coordinator closes a `blocked_by_policy` or `approval_expired` refusal returned after the
+  proposal exists (fresh dispatch and resume alike). The receipt names the refusal's outcome and
+  reason, counts zero included items and zero `final_bytes`, names the prepared case's scanner and
+  the owner's possible-credential setting (`credential_heuristic`, #982) of the policy the case was
+  prepared under (of the current policy when a resume refuses before reaching dispatch), and
+  carries `capacity_exceeded` for a size refusal (#1129). A timeout, an audit failure or a transport
+  outcome is not closed: an owner's still-valid approval stays usable, and a proposal whose state
+  cannot be read is left alone. Nor is a refusal that came from an exception rather than a
+  decision: reading the repository authority raised, or the dispatch fence guard raised. Those
+  sites mark the refusal `transient`; it is returned to the caller unchanged
+  (`blocked_by_policy`/`scope_mismatch`, no receipt) and the proposal stays `approved` or
+  `awaiting_human`, so a one-off catalog failure never costs the owner an approval. A fence that
+  answers false, an authority no longer held, and a changed policy or limit still close it.
+  Closing is best effort: if it fails, the proposal expires as before and the refusal is returned
+  either way.
+- `privacy pending` therefore excludes the proposal at once, `privacy receipts` lists its receipt,
+  and a same-request replay of the closed proposal reports the refusal its receipt recorded instead
+  of a generic policy denial.
+- Nothing about what is sent, consent, or the decision ceremony changes. Local-model proposals keep
+  their existing lifecycle.
