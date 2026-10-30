@@ -285,3 +285,50 @@ def test_an_edited_write_scope_enum_cannot_reach_an_older_service() -> None:
     assert "docs" in _wire_structural_fields()["write_scope"]["enum"]
     manifest_bytes = _read_resource(root.joinpath("manifest.json"), "missing")
     assert schema_manifest_digest() == "sha256:" + hashlib.sha256(manifest_bytes).hexdigest()
+
+
+def _bash_pre(**overrides: Any) -> dict[str, Any]:
+    """An ordinary-profile Claude Code ``Bash`` pre-tool row, as the hook builds it (#1239)."""
+
+    body = _shell_write_post(**overrides)
+    envelope = body["envelope"]
+    envelope["event_kind"] = "PreToolUse"
+    structural = envelope["structural_payload"]
+    structural.update({"action": "claude_tool_pending", "hook_name": "PreToolUse"})
+    for key in ("result_status", "success", "write_scope"):
+        structural.pop(key, None)
+    return body
+
+
+def test_an_announced_call_timeout_crosses_the_wire_within_the_domain_bound() -> None:
+    """#1239 (D6): the hook's ``tool_timeout_ms`` crosses unchanged; the wire and the domain
+    admit exactly ``1..MAX_ANNOUNCED_TOOL_TIMEOUT_MS`` integers, and the service reads whole
+    seconds rounded up from a pre-tool row only."""
+
+    from finishup.domain.events import MAX_DECLARED_QUIET_SECONDS
+    from finishup.domain.observation import (
+        MAX_ANNOUNCED_TOOL_TIMEOUT_MS,
+        announced_call_quiet_seconds,
+    )
+
+    assert MAX_ANNOUNCED_TOOL_TIMEOUT_MS == MAX_DECLARED_QUIET_SECONDS * 1_000
+    assert _wire_structural_fields()["tool_timeout_ms"] == {
+        "maximum": MAX_ANNOUNCED_TOOL_TIMEOUT_MS,
+        "minimum": 1,
+        "type": "integer",
+    }
+    for timeout, seconds in ((1, 1), (600_000, 600), (600_001, 601), (86_400_000, 86_400)):
+        received = _send(_bash_pre(tool_timeout_ms=timeout))
+        assert received.envelope.structural_payload["tool_timeout_ms"] == timeout
+        assert announced_call_quiet_seconds(received.envelope) == seconds
+    # No timeout, or a timeout on any hook other than the pre-tool one, implies nothing.
+    assert announced_call_quiet_seconds(_send(_bash_pre()).envelope) is None
+    assert (
+        announced_call_quiet_seconds(_send(_shell_write_post(tool_timeout_ms=900)).envelope) is None
+    )
+    for invalid in (0, 86_400_001, -1, True, "600000"):
+        refused = cast(JsonObject, freeze_json(_bash_pre(tool_timeout_ms=invalid)))
+        with pytest.raises((ControlProtocolError, ProtocolValueError)):
+            _frame(refused)
+        with pytest.raises(ProtocolValueError):
+            observation_ingest_request_from_json(refused)

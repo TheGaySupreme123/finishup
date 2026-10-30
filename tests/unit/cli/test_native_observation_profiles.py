@@ -595,6 +595,78 @@ def test_claude_permission_request_and_denial_keep_distinct_terminal_identity(
     assert b"DENIAL_REASON_CANARY" not in serialized
 
 
+def test_claude_ordinary_bash_pre_hook_carries_only_the_sessions_own_call_timeout(
+    tmp_path: Path,
+) -> None:
+    """#1239 (D6): the announced ``Bash`` call's own timeout (milliseconds) rides its pre-tool row.
+
+    Only the session's own call counts: a payload with no timeout, a native subagent's call (it
+    carries ``agent_id`` and lands on the parent's lane), a background launch, another tool's
+    ``timeout`` argument, and any post-tool row imply nothing. The value never changes the
+    call's source identity, so its pre and post rows still pair.
+    """
+
+    store = LocalObservationStore(_state=tmp_path / "state")
+    commitment = store.workspace_commitment(str(tmp_path.resolve()))
+    store.grant_consent(commitment)
+
+    def emit(event: str, call: str, tool_input: Mapping[str, object], **extra: object) -> None:
+        payload: dict[str, object] = {
+            "hook_event_name": event,
+            "session_id": "claude-announced-timeout",
+            "tool_name": "Bash",
+            "tool_use_id": call,
+            "tool_input": dict(tool_input),
+            **extra,
+        }
+        if event == "PostToolUse":
+            payload["tool_response"] = {"exitCode": 0}
+        assert (
+            observe_hooks.handle_claude_observe(
+                event_name=event,
+                stdin_bytes=canonical_encode(cast(JsonValue, payload)),
+                stdout=io.BytesIO(),
+                workspace=str(tmp_path),
+                _state=tmp_path / "state",
+                skip_service=True,
+                observation_profile=CLAUDE_CODE_ORDINARY_OBSERVATION_PROFILE_ID,
+            )
+            == 0
+        )
+
+    build = {"command": "make build", "timeout": 600_000}
+    emit("PreToolUse", "call-build", build)
+    emit("PostToolUse", "call-build", build)
+    emit("PreToolUse", "call-no-timeout", {"command": "make build"})
+    emit("PreToolUse", "call-subagent", build, agent_id="agent-child-1", agent_type="general")
+    emit("PreToolUse", "call-background", {**build, "run_in_background": True})
+    emit("PreToolUse", "call-text", {"command": "make build", "timeout": "600000"})
+    emit(
+        "PreToolUse",
+        "call-mcp",
+        {"timeout": 600_000},
+        tool_name="mcp__other__wait",
+    )
+
+    envelopes = LocalObservationStore(_state=tmp_path / "state").list_envelopes(commitment)
+    by_call = {
+        (item.event_kind, item.structural_payload.get("tool_call_id")): item for item in envelopes
+    }
+    announced = by_call[("PreToolUse", "call-build")]
+    assert announced.structural_payload["tool_timeout_ms"] == 600_000
+    finished = by_call[("PostToolUse", "call-build")]
+    assert "tool_timeout_ms" not in finished.structural_payload
+    assert "unpaired_event" not in finished.gap_codes
+    for call in ("call-no-timeout", "call-subagent", "call-background", "call-text", "call-mcp"):
+        assert "tool_timeout_ms" not in by_call[("PreToolUse", call)].structural_payload, call
+    state_bytes = b"".join(
+        path.read_bytes()
+        for path in (tmp_path / "state").rglob("*")
+        if path.is_file() and not path.is_symlink()
+    )
+    assert b"make build" not in state_bytes
+
+
 def test_cursor_ordinary_ingress_reads_json_string_outcomes_and_fails_closed(
     tmp_path: Path,
 ) -> None:

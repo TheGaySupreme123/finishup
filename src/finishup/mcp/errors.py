@@ -71,6 +71,8 @@ _SAFE_LOCATION_SEGMENTS: Final = frozenset(
         "acceptance_criteria",
         "attach_handle",
         "child_task_id",
+        # #1239: the declared quiet period's one integer is a schema name, never caller text.
+        "expected_quiet_seconds",
         "correlation_id",
         "expires_at",
         "handle",
@@ -460,7 +462,7 @@ _MAX_HINT_FIELDS: Final = 3
 _MAX_HINT_ENUM_MEMBERS: Final = 16
 # Schema-name unions (ordinary publish families) are larger than payload enums; keep a separate
 # bound so `/event_drafts/N` can name admitted families without dumping unbounded oneOf lists.
-_MAX_HINT_SCHEMA_NAMES: Final = 18
+_MAX_HINT_SCHEMA_NAMES: Final = 19
 _MAX_HINT_PATTERN_CHARS: Final = 96
 _MAX_HINT_REF_HOPS: Final = 8
 _MAX_HINT_POINTER_SEGMENTS: Final = 8

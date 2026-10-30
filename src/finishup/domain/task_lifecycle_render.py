@@ -41,6 +41,12 @@ def status_task_lifecycle_line(value: object) -> str:
     reason = _token(lifecycle.get("abandonment_reason"), _REASONS)
     at = _time(lifecycle.get("abandonment_at"))
     lost = _time(lifecycle.get("contact_lost_at"))
+    quiet = _time(lifecycle.get("quiet_until"))
+    if work == "open" and quiet is not None:
+        line = status_task_lifecycle_line({**lifecycle, "quiet_until": None})
+        # One line for a declared period and one a running announced tool call implies (#1239).
+        expected = f"quiet period expected until {quiet}"
+        return f"Work: open; {expected}." if not line else f"{line[:-1]}; {expected}."
     if work == "open":
         if reason == "session_ended":
             return (

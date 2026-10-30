@@ -128,6 +128,8 @@ from finishup.domain.finishup_tools import (
     finishup_tool_spelling,
 )
 from finishup.domain.observation import (
+    ANNOUNCED_CALL_EVENT_KINDS,
+    MAX_ANNOUNCED_TOOL_TIMEOUT_MS,
     OBSERVATION_CONTENT_CAPTURE_PENDING_REASON,
     ObservationContentChunk,
     ObservationContentKind,
@@ -5208,6 +5210,29 @@ def _classify_after_fingerprint(
     return without_routine_read(classification)
 
 
+def _with_announced_timeout(
+    envelope: ObservationEnvelope, tool_timeout_ms: int | None
+) -> ObservationEnvelope:
+    """Add an adapter's announced-call timeout to its own pre-tool envelope (#1239, D6).
+
+    The fact is added after the envelope's identity is fixed, so it never changes the call's
+    source identity, and only to a pre-tool row; anything else is returned unchanged.
+    """
+
+    if (
+        tool_timeout_ms is None
+        or envelope.event_kind not in ANNOUNCED_CALL_EVENT_KINDS
+        or not 1 <= tool_timeout_ms <= MAX_ANNOUNCED_TOOL_TIMEOUT_MS
+    ):
+        return envelope
+    return replace(
+        envelope,
+        structural_payload=JsonObject(
+            {**envelope.structural_payload, "tool_timeout_ms": tool_timeout_ms}
+        ),
+    )
+
+
 def handle_observe(
     *,
     event_name: str | None,
@@ -5235,6 +5260,7 @@ def handle_observe(
     _derived_runner_class: RunnerClass | None = None,
     _request_commitment: str | None = None,
     _proven_finishup_read: bool = False,
+    _tool_timeout_ms: int | None = None,
 ) -> int:
     """Bounded observation ingress for Codex lifecycle hooks. Always exits 0.
 
@@ -5250,6 +5276,10 @@ def handle_observe(
     ``_pass_timing`` is the host entry's timing sample (#915). This pass only reports how far it
     got; the entry that owns the sample records it, so nested callers and the service's spool
     replay never count as a host hook pass.
+
+    ``_tool_timeout_ms`` is the announced call's own timeout a host adapter read from its pre-tool
+    hook (#1239, D6). It is added to a pre-tool envelope after its identity is fixed, so a host
+    payload can never supply it and it never changes the call's source identity.
     """
 
     entry_started = _monotonic() if _entry_monotonic is None else _entry_monotonic
@@ -5905,6 +5935,7 @@ def handle_observe(
                         {**envelope.structural_payload, "runner_class": _derived_runner_class}
                     ),
                 )
+            envelope = _with_announced_timeout(envelope, _tool_timeout_ms)
             if resolved_event in {"PreToolUse", "PostToolUse"}:
                 # Closed runtime facts (#977): install target, write scope, effective user.
                 # Read from the host's own tool input in this process; only tokens persist.
@@ -7505,6 +7536,46 @@ def _native_profile_path(observation_profile: str | None, ordinary_profile_id: s
     return "ordinary" if observation_profile == ordinary_profile_id else "invalid_profile"
 
 
+# Keys Claude Code puts on a hook fired inside a native subagent: its child identity and its own
+# transcript (#506). A pre-tool hook carrying any of them is the subagent's call, not the session's.
+_CLAUDE_CHILD_CALLBACK_KEYS: Final = (
+    "agent_id",
+    "agent_type",
+    "agent_transcript_path",
+    "subagent_id",
+    "agent_thread_id",
+)
+
+
+def _claude_announced_timeout_ms(payload: Mapping[str, JsonValue]) -> int | None:
+    """The announced ``Bash`` call's own timeout, in milliseconds, or ``None`` (#1239, D6).
+
+    Claude Code's ``Bash`` tool takes ``tool_input.timeout`` in milliseconds (at most 600,000);
+    no other built-in tool names a host timeout, and an MCP tool's input is its own domain data.
+    Only the session's own call implies a quiet period: this adapter routes every ``PreToolUse``
+    to the host session's lane, so a call carrying a native subagent's identity or transcript
+    would land on its parent and implies nothing. A background launch returns at once, so its
+    timeout does not bound the call either. The value is a bounded integer, never content.
+    """
+
+    if payload.get("tool_name") != "Bash" or any(
+        key in payload for key in _CLAUDE_CHILD_CALLBACK_KEYS
+    ):
+        return None
+    tool_input = payload.get("tool_input")
+    if not isinstance(tool_input, Mapping):
+        return None
+    arguments = cast(Mapping[str, JsonValue], tool_input)
+    if any(key in arguments for key in _CLAUDE_CHILD_CALLBACK_KEYS):
+        return None
+    if arguments.get("run_in_background") is True:
+        return None
+    timeout = arguments.get("timeout")
+    if type(timeout) is not int or not 1 <= timeout <= MAX_ANNOUNCED_TOOL_TIMEOUT_MS:
+        return None
+    return timeout
+
+
 def handle_claude_observe(
     *,
     event_name: str | None,
@@ -7687,6 +7758,7 @@ def _handle_claude_observe(
             structural["mapping_hint"] = CLAUDE_CODE_ORDINARY_HOOK_MAPPING_VERSION
         routing_session_id: str | None = None
         child_attribution_gap = False
+        announced_timeout_ms: int | None = None
         if raw_event == "Stop" and payload.get("stop_hook_active") is True:
             structural["stop_hook_active"] = True
         if raw_event == "SessionStart":
@@ -7738,6 +7810,7 @@ def _handle_claude_observe(
             structural["action"] = "claude_tool_pending"
             if _routine_read_action(payload):
                 structural["action"] = "routine_read"
+            announced_timeout_ms = _claude_announced_timeout_ms(payload)
         if ordinary_profile and raw_event == "PermissionDenied":
             tool_token = _token_or_none(payload.get("tool_name"))
             correlation = _token_or_none(payload.get("tool_use_id")) or _token_or_none(
@@ -7957,6 +8030,7 @@ def _handle_claude_observe(
             # The structural envelope drops ``tool_input``; commit to a FinishUP call here so a
             # pending attempt FinishUP rejected can still close as rejected (tb4n5).
             _request_commitment=_finishup_request_commitment(event_map[raw_event], payload),
+            _tool_timeout_ms=announced_timeout_ms,
         )
         if denied_output is not None:
             hook_io.stdout_json(denied_output, stdout)

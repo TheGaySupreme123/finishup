@@ -134,6 +134,7 @@ from finishup.application.lineage_coordinator import (
 from finishup.application.lineage_recovery import (
     observed_activity_renewal,
     observed_host_session_binding,
+    observed_quiet_period,
     observed_session_end,
 )
 from finishup.application.missing_for_assessment import (
@@ -7124,6 +7125,7 @@ async def provide_service_ready_context(
             top_level_contact_lost_horizon_seconds=(
                 config.lineage.top_level_contact_lost_horizon_seconds
             ),
+            max_declared_quiet_seconds=config.lineage.max_declared_quiet_seconds,
             max_depth=config.lineage.max_depth,
             max_fanout=config.lineage.max_fanout,
         ),
@@ -8294,6 +8296,7 @@ async def provide_service_ready_context(
         observed_host_session_binding=observed_host_session_binding(catalog, lineage),
         observed_activity_hook=observed_activity_renewal(catalog, lineage, clock),
         observed_session_end_hook=observed_session_end(catalog, lineage),
+        observed_quiet_hook=observed_quiet_period(catalog, lineage),
         capture_budget_bootstrap=bootstrap_capture_reservations,
         capture_handoff_reconcile=reconcile_capture_handoffs,
     )

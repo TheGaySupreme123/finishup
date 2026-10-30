@@ -1168,7 +1168,23 @@ code path as Claude Code and Cursor; no Codex-specific behavior. A top-level or 
 its open work for `lineage.top_level_contact_lost_horizon_seconds` (default one day) and status
 shows `task_lifecycle` with `session_health: contact_lost`. A child whose parent waits on it is
 abandoned after `lineage.contact_lost_recovery_seconds`. That short window is the remaining
-recorded Codex gap, and raising it is the supported mitigation. A delivered `SessionEnd`, including
+recorded Codex gap. Raising it, or having the agent publish `contact_expectation_declared`
+before a long `wait` or poll, is the supported mitigation. Host decision for the declared quiet
+period: supported, same code path as Claude Code and Cursor, through MCP `publish_work` or the
+CLI; it is capped by `lineage.max_declared_quiet_seconds` (default one hour, 0 disables), and no
+hook declares it for the agent.
+
+Host decision for the implied quiet period from an announced call (#1239, owner decision
+2026-10-30): **not supported here**. Codex fires `PreToolUse` before a call, and a child thread's
+callbacks can reach the child's own lane through `subagent_id` or its own rollout (#841), so
+attribution is not what is missing. The payload carries no timeout. A shell call's `tool_input` is
+only `command` (from `exec_command`'s `cmd`; Codex 0.159.0 source, fixture OUT-005). An
+`apply_patch` or MCP call names no host limit either. `exec_command`'s `yield_time_ms` is how long
+Codex waits for output before it returns while the process runs on, and it is not in the hook
+payload. A `write_stdin` poll and a `wait` fire no hook at all. Codex rows therefore never carry
+`tool_timeout_ms` and imply nothing. Declaring the quiet period, or raising the recovery window,
+stays the mitigation. Support needs Codex to state the call's bound in the `PreToolUse` payload,
+and a hook for `write_stdin`. A delivered `SessionEnd`, including
 one the drain delivers late, ends the session unless later contact outlived it.
 Open work is then abandoned as `session_ended` after the recovery window unless the session
 resumes. A `contact_lost` abandonment is reversed by the same session's `work_closed`. A silent child still enters contact loss and

@@ -10,18 +10,24 @@ from __future__ import annotations
 
 import subprocess
 from collections.abc import Mapping, Sequence
+from dataclasses import replace
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import cast
 
 import pytest
 
-from builders.multi_agent import MultiAgentService, multi_agent_service
+from builders.multi_agent import (
+    MultiAgentService,
+    multi_agent_service,
+    relock_and_reopen_multi_agent_service,
+)
 from finishup.adapters.sqlite.lineage_catalog import SqliteLineageStore
 from finishup.application.lineage import LineageSnapshot
 from finishup.application.lineage_recovery import (
     lineage_recovery_runtime,
     observed_activity_renewal,
+    observed_quiet_period,
 )
 from finishup.application.publish_work import PublishWorkInternalResult
 from finishup.application.service import Application
@@ -29,9 +35,12 @@ from finishup.application.start import StartInternalResult
 from finishup.application.status import StatusInternalResult
 from finishup.config.models import FinishUpConfig, LineageSettings
 from finishup.domain.coordination import SESSION_LEASE_SECONDS, SessionHealth, WorkState
-from finishup.domain.events import AcceptedEvent, WorkAbandonedPayload
+from finishup.domain.events import AcceptedEvent, LedgerRecord, WorkAbandonedPayload
 from finishup.domain.host_lineage import host_lineage_from_payload
 from finishup.domain.observation import ObservationSource
+from finishup.domain.values import format_rfc3339_millis
+from finishup.kernel.check_standing import check_standing
+from finishup.kernel.reducers import replay
 from finishup.ports.control import RepositoryPrivacyContext
 from finishup.ports.ledger import CheckCommitResult
 from finishup.protocol.errors import PublicErrorCode, PublicOperationError
@@ -649,6 +658,214 @@ async def test_a_quiet_child_whose_parent_waits_is_abandoned_and_its_close_rever
         await app.recover_lineage()
         assert await _work(app, parent) is WorkState.OPEN
         assert await _health(app, parent) is SessionHealth.CONTACT_LOST
+
+
+async def _declare_quiet(
+    service: MultiAgentService, task: StartInternalResult, seconds: int
+) -> PublishWorkRequest:
+    status = await _status(service, task)
+    request = PublishWorkRequest.model_validate(
+        {
+            **_identity(),
+            "session_id": task.session_id,
+            "writer_id": task.writer_id,
+            "expected_frontier": _frontier_json(getattr(status, "head_frontier")),
+            "event_drafts": (
+                {
+                    "event_id": new_id(IdKind.EVENT),
+                    "schema": {"name": "contact_expectation_declared", "version": "1.0.0"},
+                    "occurred_at": "2026-09-05T12:00:00.000Z",
+                    "causal_parents": (),
+                    "payload": {"expected_quiet_seconds": seconds, "reason_code": "long_build"},
+                    "artifact_refs": (),
+                    "evidence_refs": (),
+                },
+            ),
+        }
+    )
+    await service.app.publish_work(request, repository_privacy_context=_REPOSITORY)
+    return request
+
+
+async def _records(app: Application, task: str) -> tuple[LedgerRecord, ...]:
+    runtime = await lineage_recovery_runtime(app, task)
+    try:
+        rows: dict[str, LedgerRecord] = {}
+        sessions = await app.start_catalog.task_session_states(task)
+        for session in {runtime.session_id, *(state.session_id for state in sessions)}:
+            async for record in runtime.ledger.load_events(session):
+                rows[str(record.event_id)] = record
+        return tuple(sorted(rows.values(), key=lambda item: item.ledger.ingestion_sequence))
+    finally:
+        await app.runtime.release(runtime)
+
+
+async def test_a_child_declares_a_quiet_build_and_is_abandoned_only_after_it(
+    tmp_path: Path,
+) -> None:
+    """#1239 (D6): a declared quiet period moves a waiting parent's child deadline.
+
+    The declaration is a recorded lineage fact: status shows it, it leaves the child's recorded
+    check standing, and recovery restores it from the ledger if the catalog lost it.
+    """
+
+    workspace = _workspace(tmp_path / "workspace")
+    async with multi_agent_service(tmp_path / "state") as service:
+        app = service.app
+        assert app.lineage is not None
+        parent = await _create(service, workspace, "quiet-parent")
+        child = await _attach_child(
+            service, await _delegate(service, parent, "Quiet build"), "Quiet build"
+        )
+        await _publish_action(service, child, "Child work before the build.")
+        await _check(service, child)
+        declared_at = service.clock.now_utc()
+        await _declare_quiet(service, child, 1_800)
+        quiet_until = declared_at + timedelta(seconds=1_800)
+        stored = await app.lineage.store.get_task(child.task_id)
+        assert stored is not None and stored.quiet_until == quiet_until
+        status = cast(StatusInternalResult, await _status(service, child))
+        assert status.task_lifecycle is not None
+        assert status.task_lifecycle["quiet_until"] == format_rfc3339_millis(quiet_until)
+        records = await _records(app, child.task_id)
+        assert check_standing(replay(records), records).superseded_by is None
+
+        # The catalog loses the declaration (a crash after the ledger append); recovery replays it.
+        lost = await app.lineage.store.get_task(child.task_id)
+        assert lost is not None
+        await app.lineage.store.save_task(replace(lost, quiet_until=None))
+        await app.recover_lineage()
+        restored = await app.lineage.store.get_task(child.task_id)
+        # Both run from the accepted time, so recovery restores exactly the same end.
+        assert restored is not None and restored.quiet_until == quiet_until
+
+        # The parent keeps working; the child is silent through its declared build.
+        for _ in range(4):
+            service.clock.advance(seconds=_WINDOW + 61)
+            await _publish_action(service, parent, "The parent keeps working.")
+            await app.recover_lineage()
+        assert await _work(app, child) is WorkState.OPEN
+        assert await _health(app, child) is SessionHealth.CONTACT_LOST
+        service.clock.advance(seconds=1_800 + _WINDOW + 1 - 4 * (_WINDOW + 61))
+        await _publish_action(service, parent, "The parent is still working.")
+        await app.recover_lineage()
+        assert await _work(app, child) is WorkState.ABANDONED
+
+
+async def test_a_retried_quiet_declaration_moves_no_period(tmp_path: Path) -> None:
+    """#1239: the period runs from its acceptance, so a retried request (a replay) moves nothing.
+
+    Neither a retry after the period began nor a late retry of an earlier declaration replaces
+    what the ledger's latest declaration set.
+    """
+
+    workspace = _workspace(tmp_path / "workspace")
+    async with multi_agent_service(tmp_path / "state") as service:
+        app = service.app
+        assert app.lineage is not None
+        task = await _create(service, workspace, "quiet-retry")
+        first_at = service.clock.now_utc()
+        first = await _declare_quiet(service, task, 1_800)
+        service.clock.advance(seconds=300)
+        retried = await app.publish_work(first, repository_privacy_context=_REPOSITORY)
+        assert isinstance(retried, PublishWorkInternalResult) and retried.outcome == "replayed"
+        stored = await app.lineage.store.get_task(task.task_id)
+        assert stored is not None and stored.quiet_until == first_at + timedelta(seconds=1_800)
+
+        service.clock.advance(seconds=120)
+        second_at = service.clock.now_utc()
+        await _declare_quiet(service, task, 600)
+        service.clock.advance(seconds=120)
+        await app.publish_work(first, repository_privacy_context=_REPOSITORY)
+        stored = await app.lineage.store.get_task(task.task_id)
+        assert stored is not None and stored.quiet_until == second_at + timedelta(seconds=600)
+        await app.recover_lineage()
+        assert await app.lineage.store.get_task(task.task_id) == stored
+
+
+async def _announce(
+    service: MultiAgentService,
+    task: StartInternalResult,
+    observed: datetime,
+    seconds: int,
+    *,
+    routed: StartInternalResult | None = None,
+) -> None:
+    """Offer one admitted pre-tool hook naming its call's timeout, as the coordinator does.
+
+    ``routed`` is the session the observation route bound the hook to; by default the task's own.
+    """
+
+    lineage = service.app.lineage
+    assert lineage is not None
+    route = routed or task
+    await _offer(service, route, observed)
+    imply = observed_quiet_period(service.app.start_catalog, lineage)
+    await imply(task.task_id, route.session_id, route.writer_id, observed, seconds)
+
+
+async def test_a_childs_announced_long_build_holds_its_window_across_a_restart(
+    tmp_path: Path,
+) -> None:
+    """#1239 (D6): a running tool call the host announced with its own timeout is a quiet period.
+
+    The waited-on child declares only a short period; its pre-tool hook names a 900 s build. The
+    child stays open past ``contact_lost_at + window`` and is abandoned at
+    ``min(timeout, cap) + window`` from the hook's receipt. The period is catalog state: a READY
+    restart keeps it, and the sweep's reconcile, which replays the child's declaration on every
+    pass, never erases it. A hook bound to another session implies nothing for either task.
+    """
+
+    workspace = _workspace(tmp_path / "workspace")
+    async with multi_agent_service(tmp_path / "state") as service:
+        app = service.app
+        assert app.lineage is not None
+        parent = await _create(service, workspace, "announced-parent")
+        child = await _attach_child(
+            service, await _delegate(service, parent, "Announced build"), "Announced build"
+        )
+        await _declare_quiet(service, child, 120)
+        started = service.clock.now_utc()
+        await _announce(service, child, started, 900)
+        implied_until = started + timedelta(seconds=900)
+        # The parent's session announcing a call for the child, or the child's for the parent,
+        # is bound to another session and implies nothing.
+        await _announce(service, child, started, 3_600, routed=parent)
+        await _announce(service, parent, started, 3_600, routed=child)
+        stored = await app.lineage.store.get_task(child.task_id)
+        assert stored is not None and stored.implied_quiet_until == implied_until
+        assert stored.quiet_until == started + timedelta(seconds=120)
+        parent_row = await app.lineage.store.get_task(parent.task_id)
+        assert parent_row is not None and parent_row.implied_quiet_until is None
+        status = cast(StatusInternalResult, await _status(service, child))
+        assert status.task_lifecycle is not None
+        assert status.task_lifecycle["quiet_until"] == format_rfc3339_millis(implied_until)
+
+        service.clock.advance(seconds=SESSION_LEASE_SECONDS + 1)
+        await app.recover_lineage()
+        assert await _health(app, child) is SessionHealth.CONTACT_LOST
+        deadline = implied_until + timedelta(seconds=_WINDOW)
+        # Read as status does, without the child's own call (which would be contact again).
+        lifecycle = await app.lineage.own_lifecycle(child.task_id)
+        assert lifecycle is not None and lifecycle.abandonment_deadline == deadline
+        assert lifecycle.quiet_until == implied_until
+
+        await relock_and_reopen_multi_agent_service(service)
+        app = service.app
+        assert app.lineage is not None
+        service.clock.advance(seconds=_WINDOW + 1)  # past the ordinary contact_lost_at + window
+        await app.recover_lineage()
+        assert await _work(app, child) is WorkState.OPEN
+        kept = await app.lineage.store.get_task(child.task_id)
+        assert kept is not None and kept.implied_quiet_until == implied_until
+        service.clock.advance(seconds=int((deadline - service.clock.now_utc()).total_seconds()) - 1)
+        await app.recover_lineage()
+        assert await _work(app, child) is WorkState.OPEN
+        service.clock.advance(seconds=1)
+        await app.recover_lineage()
+        assert await _work(app, child) is WorkState.ABANDONED
+        (event,) = await _abandonment_events(app, child.task_id)
+        assert event.occurred_at.as_datetime() == deadline
 
 
 async def test_a_child_close_replayed_after_a_crash_refreshes_its_parent_once(

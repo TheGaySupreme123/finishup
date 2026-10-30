@@ -49,7 +49,9 @@ __all__ = [
     "AdviceItem",
     "AdviceSemanticState",
     "AdviceSnapshot",
+    "ANNOUNCED_CALL_EVENT_KINDS",
     "CAPTURE_HANDOFF_RECONCILE_AGE_MS",
+    "MAX_ANNOUNCED_TOOL_TIMEOUT_MS",
     "CaptureHandoffRetirementReason",
     "CaptureHandoffRetirementStage",
     "OBSERVATION_BACKPRESSURE_REASON",
@@ -90,6 +92,7 @@ __all__ = [
     "advice_item_to_json",
     "advice_snapshot_from_json",
     "advice_snapshot_to_json",
+    "announced_call_quiet_seconds",
     "hook_source_commitment",
     "normalize_observed_command",
     "observed_command_commitment",
@@ -135,6 +138,12 @@ __all__ = [
 
 _MAX_SAFE_INTEGER: Final = 9_007_199_254_740_991
 _MAX_STRUCTURAL_BYTES: Final = 65_536
+# #1239 (D6): a host's pre-tool hook may name the call's own timeout. The bound is the longest
+# quiet period the service clamps to (``MAX_DECLARED_QUIET_SECONDS``, one day) in milliseconds.
+MAX_ANNOUNCED_TOOL_TIMEOUT_MS: Final = 86_400_000
+# The hooks a host fires before it runs a tool call (Claude Code and Codex spell it
+# ``PreToolUse``, Cursor ``preToolUse``). Only these may carry ``tool_timeout_ms``.
+ANNOUNCED_CALL_EVENT_KINDS: Final = frozenset({"PreToolUse", "preToolUse"})
 _MAX_CONTENT_REFS: Final = 16
 _MAX_GAP_CODES: Final = 64
 _MAX_UNSUPPORTED_EVENTS: Final = 64
@@ -330,6 +339,9 @@ _STRUCTURAL_KEYS: Final = frozenset(
         # whole outcome means for one of them (#977): planned-verification matching only.
         "command_segment_commitments",
         "command_composition",
+        # The announced call's own timeout in milliseconds, which a host adapter read from its
+        # pre-tool hook (#1239, D6): an implied quiet period, never content.
+        "tool_timeout_ms",
     }
 )
 _STRUCTURAL_TOKEN_KEYS: Final = frozenset(
@@ -996,6 +1008,10 @@ def _structural_payload(value: object) -> JsonObject:
                 raise _invalid("invalid_event_value_type") from exc
         if key == "command_segment_commitments":
             _command_segment_commitments(item)
+        if key == "tool_timeout_ms" and (
+            type(item) is not int or not 1 <= item <= MAX_ANNOUNCED_TOOL_TIMEOUT_MS
+        ):
+            raise _invalid("invalid_event_value_type")
         _reject_path_like(item)
     encoded = canonical_encode(payload)
     if len(encoded) > _MAX_STRUCTURAL_BYTES:
@@ -1614,6 +1630,22 @@ class ObservationEnvelope:
         )
 
     __str__ = __repr__
+
+
+def announced_call_quiet_seconds(envelope: ObservationEnvelope) -> int | None:
+    """The quiet period, in whole seconds, a pre-tool hook's announced call implies (#1239, D6).
+
+    Only a hook fired before the call runs counts, and only when its host adapter read the call's
+    own timeout (``tool_timeout_ms``). Milliseconds round up, so the period never ends before the
+    call can. ``None`` when the envelope implies nothing.
+    """
+
+    if envelope.event_kind not in ANNOUNCED_CALL_EVENT_KINDS:
+        return None
+    value = envelope.structural_payload.get("tool_timeout_ms")
+    if type(value) is not int or not 1 <= value <= MAX_ANNOUNCED_TOOL_TIMEOUT_MS:
+        return None
+    return -(-value // 1_000)
 
 
 RoutineReadSummaryPhase = Literal["pre", "post"]

@@ -6818,6 +6818,86 @@ async def test_a_host_session_end_goes_to_the_session_end_hook_not_activity(tmp_
 
 
 @pytest.mark.anyio
+async def test_an_announced_call_timeout_is_offered_as_an_implied_quiet_period(
+    tmp_path: Path,
+) -> None:
+    """#1239 (D6): only a pre-tool row carrying the call's own timeout implies a quiet period.
+
+    It is offered after the same row was offered as contact, under the same route fences, from
+    the row's receipt time, in whole seconds rounded up. A pre-tool row without a timeout, a
+    post-tool row, and a row routed to another session imply nothing.
+    """
+
+    from types import SimpleNamespace
+
+    from builders.ledger_adapters import FixedClock
+    from finishup.domain.values import timestamp_from_datetime
+
+    local, workspace, session, mapping = _mapped_local(tmp_path, "announced-call")
+    clock = FixedClock()
+    writer = observation_writer_id(mapping.finishup_task_id, mapping.finishup_session_id)
+    runtime = SimpleNamespace(
+        task_id=mapping.finishup_task_id, session_id=mapping.finishup_session_id, writer_id=writer
+    )
+    calls: list[tuple[str, ...]] = []
+
+    async def renew(task_id: str, session_id: str, writer_id: str, observed_at: object) -> None:
+        del task_id, session_id, writer_id, observed_at
+        calls.append(("contact",))
+
+    async def imply(
+        task_id: str, session_id: str, writer_id: str, observed_at: object, seconds: int
+    ) -> None:
+        assert observed_at == clock.now_utc()
+        calls.append(("quiet", task_id, session_id, writer_id, str(seconds)))
+
+    coordinator = ObservationCoordinator(
+        runtime=object(),  # type: ignore[arg-type]
+        local=local,
+        clock=clock,
+        ids=object(),  # type: ignore[arg-type]
+        state_root=tmp_path,
+        observed_activity_hook=renew,
+        observed_quiet_hook=imply,
+    )
+
+    async def offer(kind: str, *, routed_session: str | None = None, **facts: object) -> None:
+        envelope = replace(
+            _envelope(session=session, kind=kind, source=ObservationSource.CLAUDE_HOOK),
+            structural_payload=JsonObject({"tool_name": "Bash", "tool_call_id": "c1", **facts}),
+            receipt_time=timestamp_from_datetime(clock.now_utc()),
+        )
+        await coordinator._renew_observed_activity(  # pyright: ignore[reportPrivateUsage]
+            cast(TaskRuntime, runtime),
+            envelope,
+            disposition=ObservationIngestDisposition.ACCEPTED,
+            predecessor_session_id=routed_session or mapping.finishup_session_id,
+            predecessor_writer_id=writer,
+            route_bound=True,
+            workspace=workspace,
+            codex_session_id="announced-call",
+        )
+
+    await offer("PreToolUse", tool_timeout_ms=600_001)
+    assert calls == [
+        ("contact",),
+        ("quiet", mapping.finishup_task_id, mapping.finishup_session_id, writer, "601"),
+    ]
+    calls.clear()
+    await offer("PreToolUse")
+    await offer("PostToolUse", tool_timeout_ms=600_000)
+    assert calls == [("contact",), ("contact",)]
+    calls.clear()
+    # A row whose route changed under it is neither contact nor a quiet period for anyone.
+    await offer(
+        "PreToolUse",
+        routed_session=PREFIX_BY_KIND[IdKind.SESSION] + str(uuid.uuid4()),
+        tool_timeout_ms=600_000,
+    )
+    assert calls == []
+
+
+@pytest.mark.anyio
 async def test_ended_predecessor_cannot_seed_successor_host_route(tmp_path: Path) -> None:
     """A rewritten ended mapping stays structural and cannot bind the successor host lane."""
 

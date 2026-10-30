@@ -285,6 +285,7 @@ type _SummaryCode = Literal[
     "child_rejected",
     "child_written_off",
     "claim_recorded",
+    "contact_expectation_declared",
     "coordination_context_recorded",
     "coordination_disposition_recorded",
     "coordination_obligation_declared",

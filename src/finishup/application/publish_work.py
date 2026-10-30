@@ -200,6 +200,8 @@ _ORDINARY_FAMILIES = frozenset(
         "work_closed",
         "work_cancelled",
         "work_written_off",
+        # #1239: the task's own declared quiet period, synced to the lineage catalog.
+        "contact_expectation_declared",
     }
 )
 _IMPORT_FAMILIES = frozenset(

@@ -321,6 +321,8 @@ class StorageConfig(StrictConfigModel):
 DEFAULT_FINDING_ATTEMPT_BUDGET: Final = 5
 # #1239: how long a quiet task no parent waits on keeps its open work (one day).
 DEFAULT_TOP_LEVEL_CONTACT_LOST_HORIZON_SECONDS: Final = 86_400
+# #1239: the longest declared quiet period that takes effect (one hour); 0 disables declarations.
+DEFAULT_MAX_DECLARED_QUIET_SECONDS: Final = 3_600
 MAX_FINDING_ATTEMPT_BUDGET: Final = 50
 
 
@@ -377,6 +379,10 @@ class LineageSettings(StrictConfigModel):
     top_level_contact_lost_horizon_seconds: int = Field(
         default=DEFAULT_TOP_LEVEL_CONTACT_LOST_HORIZON_SECONDS, ge=1, le=604_800
     )
+    # D6 (#1239): the cap on a declared quiet period; 0 records declarations without effect.
+    max_declared_quiet_seconds: int = Field(
+        default=DEFAULT_MAX_DECLARED_QUIET_SECONDS, ge=0, le=86_400
+    )
     max_depth: int = Field(default=8, ge=0, le=64)
     max_fanout: int = Field(default=32, ge=1, le=64)
 
@@ -391,6 +397,7 @@ class LineageSettings(StrictConfigModel):
                     "attach_handle_ttl_seconds",
                     "contact_lost_recovery_seconds",
                     "top_level_contact_lost_horizon_seconds",
+                    "max_declared_quiet_seconds",
                     "max_depth",
                     "max_fanout",
                 }

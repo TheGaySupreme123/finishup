@@ -749,7 +749,19 @@ Since #1239 (host decision: supported, same code path as Codex and Claude Code) 
 orphaned task keeps its open work for `lineage.top_level_contact_lost_horizon_seconds` (default one
 day), and status shows `task_lifecycle` with `session_health: contact_lost`. A child whose parent
 waits on it is abandoned after `lineage.contact_lost_recovery_seconds`. That short window is the
-remaining recorded Cursor gap, and raising it is the supported mitigation. A delivered `sessionEnd`
+remaining recorded Cursor gap. Raising it, or having the agent publish
+`contact_expectation_declared` before a long silent step, is the supported mitigation. Host
+decision for the declared quiet period: supported, same code path as Codex and Claude Code, through
+MCP `publish_work` or the CLI; it is capped by `lineage.max_declared_quiet_seconds` (default one
+hour, 0 disables), and no hook declares it for the agent. Host decision for the implied quiet
+period from an announced call (#1239, owner decision 2026-10-30): **not supported here**. Only the
+ordinary profile subscribes `preToolUse`, and its documented `Shell` `tool_input` is `command` and
+`cwd`, with no timeout (`fixtures/observations/cursor-shell-outcomes.case.json`, derived from
+the documented shape). No subagent child identity is proven either (see the delegate section
+below), so a subagent's call could not reach the child's own lane. Cursor rows therefore never
+carry `tool_timeout_ms` and imply nothing; declaring the quiet period stays the mitigation.
+Support needs a documented and captured call bound in `preToolUse` and a proven child identity. A
+delivered `sessionEnd`
 ends the session unless later contact outlived it. Open work is then abandoned
 as `session_ended` after the recovery window unless the session resumes. The same session's
 `work_closed` reverses a `contact_lost` abandonment. After any other abandonment, refusals keep

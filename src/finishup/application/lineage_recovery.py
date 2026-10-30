@@ -180,6 +180,45 @@ def observed_activity_renewal(
     return renew
 
 
+def observed_quiet_period(
+    start_catalog: object,
+    lineage: LineageCoordinator,
+) -> Callable[[str, str, str, datetime, int], Awaitable[None]]:
+    """Build the observation hook that turns an announced tool call into a quiet period (#1239).
+
+    A pre-tool hook whose adapter read the call's own timeout implies that the routed session
+    expects no contact until the call can end. The catalog binding is revalidated exactly as for
+    contact evidence, and lineage applies the period only to the task's own active session, from
+    ``observed_at`` (the hook's receipt time) for at most the configured cap.
+    """
+
+    binding_lookup = getattr(start_catalog, "session_binding", None)
+
+    async def imply(
+        task_id: str, session_id: str, writer_id: str, observed_at: datetime, seconds: int
+    ) -> None:
+        if not callable(binding_lookup):
+            return
+        binding = await cast(Callable[[str], Awaitable[SessionBinding | None]], binding_lookup)(
+            session_id
+        )
+        if (
+            binding is None
+            or binding.task_id != task_id
+            or binding.session_id != session_id
+            or binding.writer_id != writer_id
+        ):
+            return
+        await lineage.imply_quiet_period(
+            task_id=task_id,
+            session_id=session_id,
+            started_at=observed_at,
+            expected_quiet_seconds=seconds,
+        )
+
+    return imply
+
+
 def observed_session_end(
     start_catalog: object,
     lineage: LineageCoordinator,

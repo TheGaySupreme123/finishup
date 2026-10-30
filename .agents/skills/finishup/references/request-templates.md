@@ -1387,6 +1387,44 @@ of retrying. A receipt and lifecycle state are separate facts.
 }
 ```
 
+### `contact_expectation_declared`
+
+Send from the task's active session before a stretch with no FinishUP calls or host activity,
+such as a long build or a wait for the user. Silence before `quiet_until` (status
+`task_lifecycle`) does not start the abandonment window; it starts then at the earliest.
+`lineage.max_declared_quiet_seconds` caps the period and 0 disables it. A later declaration
+replaces the earlier one; contact does not clear it. It is not material and needs no recheck.
+
+```json
+{
+  "protocol_version": "0.1",
+  "schema_version": "1.0.0",
+  "session_id": "ses_00000000-0000-4000-8000-000000000001",
+  "writer_id": "wri_00000000-0000-4000-8000-000000000001",
+  "event_drafts": [
+    {
+      "schema": {
+        "name": "contact_expectation_declared",
+        "version": "1.0.0"
+      },
+      "payload": {
+        "expected_quiet_seconds": 1800,
+        "reason_code": "long_command"
+      }
+    }
+  ],
+  "actor": {
+    "actor_id": "harness:mcp-template",
+    "actor_type": "harness"
+  },
+  "client": {
+    "kind": "cooperative_agent",
+    "version": "0.1.0",
+    "integration": "cooperative_mcp"
+  }
+}
+```
+
 ## `publish_work`: declare coordination responsibility
 
 First publish an obligation describing the coordination outcome and its acceptance evidence.

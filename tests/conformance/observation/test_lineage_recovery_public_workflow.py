@@ -86,7 +86,7 @@ async def test_append_before_lineage_sync_is_reconciled_on_recovery(
         assert before is not None and before.work_state is WorkState.OPEN
 
         async def fail_after_append(
-            _app: object, _request: object, _payloads: tuple[object, ...]
+            _app: object, _request: object, _payloads: tuple[object, ...], **_result: object
         ) -> None:
             raise RuntimeError("simulated_crash_after_ledger_append")
 

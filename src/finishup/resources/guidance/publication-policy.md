@@ -52,9 +52,9 @@ These are not publishable transitions: reading or searching, running a command w
 
 ## The sixteen event families
 
-These are the core protocol families. `publish_work` admits eighteen families in all: the nine
+These are the core protocol families. `publish_work` admits nineteen families in all: the nine
 ordinary core families below (plan, obligation, assignment, decision, action, result, evidence,
-claim, revised plan), seven delegation and work lifecycle families and two coordination families,
+claim, revised plan), eight delegation and work lifecycle families and two coordination families,
 each with a template in `finishup://guidance/request-templates.md`.
 
 - `session_opened` — establishes the recorded session; it does not prove workspace access.
@@ -533,8 +533,8 @@ their accepted evidence separately and record a decision when resolving a contra
 
 `child_accepted`, `child_rejected`, `child_written_off`, and `delegation_cancelled` target a direct
 child from the parent. `work_closed`, `work_cancelled`, and `work_written_off` describe the current
-task. These are ordinary `publish_work` events; keep mutually exclusive transitions in separate
-requests. Service facts such as `delegation_declared`, `work_abandoned`,
+task, and `contact_expectation_declared` its expected quiet period. These are ordinary
+`publish_work` events; keep mutually exclusive transitions in separate requests. Service facts such as `delegation_declared`, `work_abandoned`,
 `child_dependencies_recorded`, and `coordination_context_recorded` are not ordinary publication
 authority, even if an actor field or payload claims to be the service.
 

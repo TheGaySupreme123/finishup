@@ -5770,6 +5770,7 @@ class StatusHistoryItemModel(_ClosedModel):
         "child_rejected",
         "child_written_off",
         "claim_recorded",
+        "contact_expectation_declared",
         "coordination_context_recorded",
         "coordination_disposition_recorded",
         "coordination_obligation_declared",
@@ -5973,11 +5974,19 @@ class StatusTaskLifecycleModel(_ClosedModel):
     ``abandonment_at`` is when the service will abandon open work unless contact returns, or
     when abandoned work was abandoned; ``abandonment_reason`` says why. A ``contact_lost``
     abandonment the same session closed reads ``work_state: closed`` with
-    ``abandonment_reversed: true``.
+    ``abandonment_reversed: true``. ``quiet_until`` is a quiet period still ahead on open work,
+    already clamped by the service: the later end of the one the task declared and the one a
+    running tool call its host announced with its own timeout implies.
     """
 
     optional_non_null_fields = frozenset(
-        {"contact_lost_at", "abandonment_at", "abandonment_reason", "abandonment_reversed"}
+        {
+            "contact_lost_at",
+            "abandonment_at",
+            "abandonment_reason",
+            "abandonment_reversed",
+            "quiet_until",
+        }
     )
 
     work_state: WorkStateWire
@@ -5988,6 +5997,7 @@ class StatusTaskLifecycleModel(_ClosedModel):
         None
     )
     abandonment_reversed: Literal[True] | None = None
+    quiet_until: TimestampWire | None = None
 
 
 class StatusPredictedReasonModel(_ClosedModel):
@@ -8923,6 +8933,7 @@ _STATUS_COMMON_STRUCTURAL_POINTERS: Final = (
             "abandonment_reason",
             "abandonment_reversed",
             "contact_lost_at",
+            "quiet_until",
             "session_health",
             "work_state",
         ),
@@ -9979,8 +9990,8 @@ def _build_result_leaf_rules() -> tuple[_ResultLeafRule, ...]:
         ):
             raise RuntimeError("invalid_result_leaf_classification")
     if (
-        len(result) != 2097
-    ):  # ... #1239 +6 status task_lifecycle; #1017 +3, #1027 +5, tb4n3 LO +9, W2-A +46, LF +34 (fact_lineage), W2-B +2,
+        len(result) != 2098
+    ):  # ... #1239 +7 status task_lifecycle (with quiet_until); #1017 +3, #1027 +5, tb4n3 LO +9, W2-A +46, LF +34 (fact_lineage), W2-B +2,
         # tb4n4 #1044 +7 (closure_readiness.undeclared_references), #1048 +38 (inspection),
         # #1047 +2 (follow_up_round), tb4n5 +3 (publish action_notices),
         # ADR-049 +4 check / +8 status (review_mode), n6 item 4 +1 check_recorded 1.5.0,

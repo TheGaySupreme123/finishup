@@ -41,7 +41,7 @@ def _description(name: str) -> str:
 def test_request_templates_carry_a_body_for_every_advertised_publish_family() -> None:
     templated = frozenset(_SCHEMA_NAME.findall(_TEMPLATES.read_text(encoding="utf-8")))
     assert ORDINARY_MCP_PUBLISH_EVENT_FAMILIES <= templated
-    assert len(ORDINARY_MCP_PUBLISH_EVENT_FAMILIES) == 18
+    assert len(ORDINARY_MCP_PUBLISH_EVENT_FAMILIES) == 19  # #1239 + contact_expectation_declared
     assert _NINE_ORDINARY <= ORDINARY_MCP_PUBLISH_EVENT_FAMILIES
     lifecycle = {
         family
@@ -53,20 +53,20 @@ def test_request_templates_carry_a_body_for_every_advertised_publish_family() ->
         for family in ORDINARY_MCP_PUBLISH_EVENT_FAMILIES
         if family.startswith("coordination_")
     }
-    assert (len(lifecycle), len(coordination)) == (7, 2)
+    assert (len(lifecycle), len(coordination)) == (8, 2)
     description = _description("request-templates.md")
-    assert "all eighteen publish_work families" in description
-    assert "(nine ordinary, seven lifecycle, two coordination)" in description
+    assert "all nineteen publish_work families" in description
+    assert "(nine ordinary, eight lifecycle, two coordination)" in description
     assert "nine ordinary publication families" not in description
 
 
-def test_the_policy_lists_sixteen_core_families_and_names_the_publishable_eighteen() -> None:
+def test_the_policy_lists_sixteen_core_families_and_names_the_publishable_nineteen() -> None:
     text = _POLICY.read_text(encoding="utf-8")
     section = text.partition("## The sixteen event families")[2].partition("\n## ")[0]
     listed = re.findall(r"^- `([a-z_]+)` — ", section, flags=re.MULTILINE)
     assert len(listed) == len(set(listed)) == 16
     assert _NINE_ORDINARY <= set(listed)
-    assert "`publish_work` admits eighteen families in all" in " ".join(section.split())
+    assert "`publish_work` admits nineteen families in all" in " ".join(section.split())
     assert "the sixteen core event families" in _description("publication-policy.md")
 
 

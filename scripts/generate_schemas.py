@@ -3121,6 +3121,13 @@ def _lineage_event_schema(entry: _RegistryEntry) -> dict[str, JsonValue]:
         required = ["child_task_id"]
     elif name in {"work-closed", "work-cancelled", "work-written-off"}:
         properties = {"reason_code": reason}
+    elif name == "contact-expectation-declared":
+        # #1239 (D6): the agent's own expected quiet period; the service clamps what takes effect.
+        properties = {
+            "expected_quiet_seconds": {"maximum": 86_400, "minimum": 1, "type": "integer"},
+            "reason_code": reason,
+        }
+        required = ["expected_quiet_seconds"]
     elif name == "work-abandoned":
         properties = {"reason_code": reason, "service_stamped": {"const": True, "type": "boolean"}}
         required = ["service_stamped"]
@@ -5688,6 +5695,7 @@ def _status_result_v1_4_schema(entry: _RegistryEntry) -> dict[str, JsonValue]:
             "child_written_off",
             "coordination_context_recorded",
             "coordination_disposition_recorded",
+            "contact_expectation_declared",
             "coordination_obligation_declared",
             "delegation_cancelled",
             "delegation_declared",
@@ -6423,6 +6431,7 @@ def _add_status_task_lifecycle(definitions: dict[str, JsonValue]) -> None:
             },
             "abandonment_reversed": {"const": True},
             "contact_lost_at": {"$ref": "#/$defs/timestamp"},
+            "quiet_until": {"$ref": "#/$defs/timestamp"},
             "session_health": {"enum": ["active", "contact_lost", "ended"], "type": "string"},
             "work_state": {
                 "enum": ["abandoned", "cancelled", "closed", "open", "written_off"],
@@ -8156,6 +8165,7 @@ def _event_draft_v1_2_schema(entry: _RegistryEntry) -> dict[str, JsonValue]:
         "work_cancelled",
         "work_closed",
         "work_written_off",
+        "contact_expectation_declared",
         "coordination_context_recorded",
         "coordination_obligation_declared",
         "coordination_disposition_recorded",
@@ -8270,6 +8280,7 @@ def _opaque_unknown_event_v1_2_schema(entry: _RegistryEntry) -> dict[str, JsonVa
         "work_cancelled",
         "work_closed",
         "work_written_off",
+        "contact_expectation_declared",
         "coordination_context_recorded",
         "coordination_obligation_declared",
         "coordination_disposition_recorded",
@@ -9912,6 +9923,16 @@ def _control_v2_9_schema(entry: _RegistryEntry) -> dict[str, JsonValue]:
         fields["command_composition"] = {
             "enum": ["and_chain", "masked", "single"],
             "type": "string",
+        }
+        # The announced call's own timeout a host adapter read from its pre-tool hook (#1239,
+        # D6): an implied quiet period, bounded by the longest quiet period the service clamps
+        # to, one day in milliseconds. The domain envelope admits exactly this range.
+        from finishup.domain.observation import MAX_ANNOUNCED_TOOL_TIMEOUT_MS
+
+        fields["tool_timeout_ms"] = {
+            "maximum": MAX_ANNOUNCED_TOOL_TIMEOUT_MS,
+            "minimum": 1,
+            "type": "integer",
         }
     if entry.schema_name == "control-result":
         definitions = cast(dict[str, JsonValue], document["$defs"])
@@ -12396,6 +12417,18 @@ _REGISTRY: Final[tuple[_RegistryEntry, ...]] = (
         ),
     ),
     _RegistryEntry(
+        "events/contact-expectation-declared-1.0.0.schema.json",
+        "contact-expectation-declared",
+        "1.0.0",
+        "event",
+        "event-payload",
+        lambda: (
+            __import__(
+                "finishup.domain.events", fromlist=["ContactExpectationDeclaredPayload"]
+            ).ContactExpectationDeclaredPayload
+        ),
+    ),
+    _RegistryEntry(
         "events/work-written-off-1.0.0.schema.json",
         "work-written-off",
         "1.0.0",
@@ -13760,6 +13793,7 @@ _BUILDER_OWNED_SCHEMA_PATHS: Final[frozenset[str]] = frozenset(
         "events/work-cancelled-1.0.0.schema.json",
         "events/work-closed-1.0.0.schema.json",
         "events/work-written-off-1.0.0.schema.json",
+        "events/contact-expectation-declared-1.0.0.schema.json",
         "operations/check-result-1.3.0.schema.json",
         "operations/check-result-1.4.0.schema.json",
         "operations/check-result-1.5.0.schema.json",
@@ -14229,6 +14263,7 @@ def build_schema_documents(
             "events/work-cancelled-1.0.0.schema.json",
             "events/work-closed-1.0.0.schema.json",
             "events/work-written-off-1.0.0.schema.json",
+            "events/contact-expectation-declared-1.0.0.schema.json",
         }:
             normalized = _lineage_event_schema(entry)
         elif entry.relative_path in {

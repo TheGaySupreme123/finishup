@@ -160,6 +160,7 @@ from finishup.domain.observation import (
     ObservationSource,
     ObservationStatus,
     ObservationStatusQuery,
+    announced_call_quiet_seconds,
     observation_capture_part_descriptors,
     observation_capture_ticket_id,
     observation_content_binding_matches,
@@ -952,6 +953,11 @@ class ObservationCoordinator:
     # ``SessionEnd`` of the bound session; lineage ends the session and schedules its open work's
     # abandonment after the short grace.
     observed_session_end_hook: Callable[[str, str, str, datetime], Awaitable[None]] | None = None
+    # #1239 (D6): receives ``(task_id, session_id, writer_id, observed_at, seconds)`` for an
+    # admitted pre-tool hook whose adapter read the announced call's own timeout, after the same
+    # evidence was offered as contact. Lineage holds the bound session's open work quiet until
+    # ``observed_at`` plus ``seconds``, clamped by its setting.
+    observed_quiet_hook: Callable[[str, str, str, datetime, int], Awaitable[None]] | None = None
     _advice_event_ref_cache: dict[tuple[str, str], tuple[str, ...]] = field(
         default_factory=_empty_advice_event_ref_cache, init=False, repr=False
     )
@@ -3897,6 +3903,11 @@ class ObservationCoordinator:
         ``SessionEnd`` ends contact, and it is offered to ``observed_session_end_hook`` instead,
         which ends the session (#1239).  Future receipt times and evidence older than
         ``observed_activity_max_age_seconds`` are never offered.
+
+        A pre-tool hook whose adapter read the announced call's own timeout is then offered to
+        ``observed_quiet_hook`` under exactly the same fences, so only the routed session's own
+        call implies a quiet period from its receipt time (#1239, D6).  A duplicate re-offers
+        the same period, which lineage applies idempotently.
         """
 
         session_end = envelope.event_kind == "SessionEnd"
@@ -3944,6 +3955,16 @@ class ObservationCoordinator:
                 envelope.session_commitment,
             )
         await hook(runtime.task_id, predecessor_session_id, predecessor_writer_id, observed_at)
+        quiet_hook = getattr(self, "observed_quiet_hook", None)
+        quiet_seconds = announced_call_quiet_seconds(envelope)
+        if quiet_hook is not None and quiet_seconds is not None:
+            await quiet_hook(
+                runtime.task_id,
+                predecessor_session_id,
+                predecessor_writer_id,
+                observed_at,
+                quiet_seconds,
+            )
 
     async def _sweep_lineage(self, task_id: str) -> None:
         """Reconcile the task and its parent after observation materialization."""

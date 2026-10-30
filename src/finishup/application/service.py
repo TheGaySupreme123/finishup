@@ -68,6 +68,7 @@ from finishup.domain.events import (
     ChildDependenciesRecordedPayload,
     ChildRejectedPayload,
     ChildWrittenOffPayload,
+    ContactExpectationDeclaredPayload,
     CoordinationContextRecordedPayload,
     CoordinationDispositionRecordedPayload,
     CoordinationObligationDeclaredPayload,
@@ -102,7 +103,9 @@ from finishup.domain.receipts import ReceiptVersionSlice
 from finishup.domain.values import (
     Frontier,
     JsonObject,
+    Timestamp,
     frontier_from_json,
+    parse_rfc3339_millis,
     validate_commitment,
     validate_sha256_digest,
 )
@@ -225,6 +228,7 @@ _LINEAGE_PUBLIC_LIFECYCLE_FAMILIES = frozenset(
         "work_closed",
         "work_cancelled",
         "work_written_off",
+        "contact_expectation_declared",
     }
 )
 
@@ -298,6 +302,26 @@ def _lineage_publication_payloads(request: PublishWorkRequest) -> tuple[object, 
                 safe_details={"reason_code": "lineage_event_invalid"},
             ) from exc
     return tuple(payloads)
+
+
+def _quiet_declaration_acceptance(result: object) -> tuple[bool, datetime | None]:
+    """Whether ``result`` replayed a stored publication, and its declaration's accepted time.
+
+    #1239: a declared quiet period runs from the declaration's acceptance, as reconcile replays
+    it. The time is ``None`` when a reduced result does not carry it; the next reconcile then
+    aligns the catalog with the ledger.
+    """
+
+    root = getattr(result, "root", result)
+    accepted_at: datetime | None = None
+    for event in getattr(root, "accepted_events", None) or ():
+        if getattr(event, "schema_name", None) != "contact_expectation_declared":
+            continue
+        try:
+            accepted_at = parse_rfc3339_millis(getattr(event, "accepted_at", None))
+        except ValueError:
+            accepted_at = None
+    return getattr(root, "outcome", None) == "replayed", accepted_at
 
 
 async def _refuse_superseded_coordination(
@@ -1599,6 +1623,7 @@ class Application:
                         sorted({route.session_id, *(state.session_id for state in states)})
                     )
                 seen_events: set[str] = set()
+                latest_quiet: tuple[int, ContactExpectationDeclaredPayload, Timestamp] | None = None
                 for session_id in session_ids:
                     async for record in runtime.ledger.load_events(session_id):
                         if not isinstance(record, AcceptedEvent) or str(record.task_id) != task_id:
@@ -1619,10 +1644,17 @@ class Application:
                                 WorkCancelledPayload,
                                 WorkWrittenOffPayload,
                                 WorkAbandonedPayload,
+                                ContactExpectationDeclaredPayload,
                             ),
                         ):
                             continue
                         scanned += 1
+                        if isinstance(payload, ContactExpectationDeclaredPayload):
+                            # #1239: only the latest declaration stands; replay it once below.
+                            sequence = record.ledger.ingestion_sequence
+                            if latest_quiet is None or sequence > latest_quiet[0]:
+                                latest_quiet = (sequence, payload, record.ledger.accepted_at)
+                            continue
                         if isinstance(payload, ChildAcceptedPayload):
                             await lineage.reconcile_child_acceptance(
                                 parent_task_id=task_id,
@@ -1676,6 +1708,14 @@ class Application:
                                 task_id=task_id, target=WorkState.WRITTEN_OFF
                             )
                         reconciled += 1
+                if latest_quiet is not None:
+                    _, declared, accepted_at = latest_quiet
+                    await lineage.reconcile_quiet_period(
+                        task_id=task_id,
+                        expected_quiet_seconds=declared.expected_quiet_seconds,
+                        declared_at=accepted_at.as_datetime(),
+                    )
+                    reconciled += 1
             finally:
                 await self.runtime.release(runtime)
         return scanned, reconciled
@@ -1684,11 +1724,14 @@ class Application:
         self,
         request: PublishWorkRequest,
         payloads: tuple[object, ...],
+        *,
+        result: object = None,
     ) -> None:
         """Apply accepted public lifecycle events to the authoritative lineage catalog."""
 
         if not payloads:
             return
+        replayed, declared_at = _quiet_declaration_acceptance(result)
         lineage = self.lineage
         if lineage is None:
             raise PublicOperationError(
@@ -1729,6 +1772,17 @@ class Application:
                 await lineage.cancel_work(session_id=request.session_id)
             elif isinstance(payload, WorkWrittenOffPayload):
                 await lineage.write_off_work(session_id=request.session_id)
+            elif isinstance(payload, ContactExpectationDeclaredPayload):
+                if replayed:
+                    # #1239: a replay appends nothing. The reconcile that ran before it already
+                    # mirrored the ledger's latest declaration, which a retried earlier request
+                    # must not replace and a late retry must not extend.
+                    continue
+                await lineage.declare_quiet_period(
+                    session_id=request.session_id,
+                    expected_quiet_seconds=payload.expected_quiet_seconds,
+                    declared_at=declared_at,
+                )
             else:
                 # Service-only families are rejected before append by ``prepare_publication``.  A
                 # defensive branch keeps a future family from silently bypassing catalog state.
@@ -1907,6 +1961,8 @@ class Application:
                     session_id=request.session_id,
                     target=WorkState.WRITTEN_OFF,
                 )
+            elif isinstance(payload, ContactExpectationDeclaredPayload):
+                await lineage.validate_quiet_declaration(session_id=request.session_id)
             elif isinstance(
                 payload,
                 (DelegationDeclaredPayload, ChildDependenciesRecordedPayload, WorkAbandonedPayload),
@@ -2063,7 +2119,7 @@ class Application:
                     isinstance(result, PublishWorkResultModel)
                     and getattr(result.root, "outcome", None) == "dry_run"
                 ):
-                    await self._sync_lineage_publication(request, payloads)
+                    await self._sync_lineage_publication(request, payloads, result=result)
                     await self._sweep_project_coordination(result)
                     await self._apply_coordination_dispositions(coordination_payloads)
                 return result

@@ -66,6 +66,24 @@ whether another task is waiting on yours:
   contact was lost and when the work would be abandoned. One long model turn, a long-running
   command, or a reply that waits for you does not end your work.
 
+An agent that expects a long silent step, such as a long build or a wait for your reply, can
+declare a quiet period first. Silence during that period does not count: the window above starts
+when the period ends at the earliest. The `lineage.max_declared_quiet_seconds` setting caps the
+period (an hour by default, up to a day), and 0 turns declarations off. A new declaration replaces
+the previous one.
+
+Some hosts announce a tool call before running it and say how long the call may take. While
+such a call runs, the work counts as quiet too, until the call's own time limit ends, with the
+same cap; 0 turns this off as well. Only a call made in the task's own session counts, and the
+call does not need to report back when it finishes. A call that names no time limit, and a long
+model turn with no tool call, are not covered, so declare a quiet period for those. Today this
+covers Claude Code with ordinary-work observation turned on, for that session's own shell
+commands that set a time limit; a call made inside one of its native subagents does not count for
+that subagent. Codex and Cursor do not report a time limit before a call, so on those hosts
+declare the quiet period instead.
+
+Status shows until when the work is expected to stay quiet, whichever period ends later.
+
 When the host reports that the session ended, the session stops. Its open work is abandoned after
 the recovery window, unless the session resumes first. Work that was already closed stays closed.
 

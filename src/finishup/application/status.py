@@ -534,6 +534,10 @@ async def task_lifecycle_body(app: object, task_id: str) -> dict[str, JsonValue]
     }
     if snapshot.contact_lost_at is not None:
         body["contact_lost_at"] = format_rfc3339_millis(snapshot.contact_lost_at)
+    if snapshot.quiet_until is not None and snapshot.work_state is WorkState.OPEN:
+        # ``own_lifecycle`` already folded the declared and implied periods into the later end
+        # and dropped one that has passed.
+        body["quiet_until"] = format_rfc3339_millis(snapshot.quiet_until)
     pending = snapshot.work_state is WorkState.OPEN and snapshot.abandonment_reason is not None
     if snapshot.work_state is WorkState.ABANDONED or pending:
         if snapshot.abandonment_deadline is not None:
