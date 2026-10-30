@@ -3765,6 +3765,7 @@ the loop instruction (unchanged, 7,627 of 7,639 bytes), and it never rides a cha
 than the minimal policy's (#1173): there its bytes came out of the room the first read needs, so a
 closing review whose reviewer read once ended `case_capacity_exceeded`. There the receipt's
 `proxy: none chosen` line still stands. It changes no finding state and no verdict.
+
 ## Amendment — 2026-10-29: a read with no room asks for the verdict instead of ending with none (#1242, #1135)
 
 Tracked as step G7 in #1247. In the TB4 full run, three closing reviews of long tasks were sent,
