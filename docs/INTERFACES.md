@@ -5023,7 +5023,11 @@ audit and does not prove an expired started attempt was never admitted. Deadline
 that attempt `outcome_unknown` without re-entering authorization, retry, or fallback; a new,
 unattempted job still reports `provider_timeout` (issue #625). An uncertain started attempt retains `outcome_unknown`
 in its durable row; without reconstructable provider provenance its public gap is
-`receipt_persistence_unknown`. Each
+`receipt_persistence_unknown`. A blocked egress timeout or transport failure (a deadline that
+passed before dispatch, a gateway call that raised) and an unknown attempt carry no provider attempt
+either, so `_map_egress_to_final` gives them the same provenance-free pair, which is not retried,
+never `failed`/`coordinator_failure`; a reviewer conversation that times out after a sent exchange
+reports `timeout`/`provider_timeout` under that exchange's provenance. Each
 fallback attempt is a fresh physical attempt with its own authorization, dispatch id, credential
 handle or runtime authority, and privacy receipt; under `confirm_every_request` it needs its own
 foreground decision. `SemanticAttemptAccounting.endpoint_attempts` carries one per-endpoint
@@ -5301,7 +5305,8 @@ material edit (`kernel.task_facts.material_edit_recorded`: an observed edit or s
 counts under ADR-042/045, whether or not its result arrived, so a Codex shell `apply_patch <<EOF`
 counts by the files its patch names, or an agent-published `edit` action) while the check-time
 capture observed no workspace change, runs the local checks only: `semantic_status` `not_requested`,
-`semantic_reason` `deferred_before_first_edit` (1.5.0; a 1.4.0 record may still say
+`semantic_reason` `deferred_before_first_edit` (1.5.0, which the writer uses for this pair alone
+and which admits it without `semantic_conclusion`; a 1.4.0 record may still say
 `deterministic_mode` with the same gap), and the standing gap
 `semantic_review_deferred_before_first_edit` (rule G7, a semantic-only gap for absence proofs).
 There is no supported downgrade over a ledger that holds a projected check-recorded 1.5.0 row.
@@ -12467,7 +12472,8 @@ as `outcome_unknown` and is never resent. For it, `operation_max_retries` is `0`
   `network_egress_denied`, `provider_binding_not_authorized`, `scope_not_authorized`),
   `blocked_forbidden_data`/`never_send_detected`, `classification_uncertain`, `human_denied`,
   `approval_expired`, `refused`, `timeout`, `invalid` (`response_content_invalid`,
-  `response_schema_invalid`), `late`/`deadline_authority_lost`, `unavailable`
+  `response_schema_invalid`, and `semantic_judgment_rejected`, which keeps the record and the
+  provider-bound manifest), `late`/`deadline_authority_lost`, `unavailable`
   (`audit_reservation_unavailable`, `outcome_unknown`, `provider_quota_exhausted`,
   `provider_rate_limited`, `receipt_persistence_unknown`, `retry_budget_exhausted`,
   `transport_unavailable`) and `failed` (`case_capacity_exceeded`, `coordinator_failure`).

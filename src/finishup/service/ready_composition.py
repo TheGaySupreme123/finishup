@@ -3203,7 +3203,14 @@ async def _semantic_provider_unbound(
 
 
 def _map_blocked(outcome: PrivacyOutcome, reason: object) -> FinalSemanticEvaluation:
-    """Map pre-dispatch privacy blocks to exact AI-powered review status/reason pairs."""
+    """Map pre-dispatch privacy blocks to exact AI-powered review status/reason pairs.
+
+    A blocked result carries no provider attempt, so a timeout or transport outcome, whose pairs
+    require the attempt's provenance, takes the pair ``_without_provider_provenance`` leaves
+    (``unavailable``/``receipt_persistence_unknown``), as a provider outcome without a durable
+    receipt does. It is never a FinishUP fault, and it is never retried, so content whose fate is
+    unknown is not sent again. Provenance is never invented for it.
+    """
 
     if outcome is PrivacyOutcome.CHANNEL_UNAVAILABLE:
         # Distinct from missing credential/endpoint: the channel is present but policy forbids it.
@@ -3225,14 +3232,21 @@ def _map_blocked(outcome: PrivacyOutcome, reason: object) -> FinalSemanticEvalua
             SemanticStatus.APPROVAL_EXPIRED, SemanticReason.HUMAN_APPROVAL_EXPIRED
         )
     if outcome is PrivacyOutcome.TIMEOUT:
-        return FinalSemanticEvaluation(SemanticStatus.TIMEOUT, SemanticReason.PROVIDER_TIMEOUT)
+        # A deadline that passed before dispatch: no provider attempt to certify.
+        return FinalSemanticEvaluation(
+            *_without_provider_provenance(SemanticStatus.TIMEOUT, SemanticReason.PROVIDER_TIMEOUT)
+        )
     if outcome is PrivacyOutcome.AUDIT_FAILED:
         return FinalSemanticEvaluation(
             SemanticStatus.UNAVAILABLE, SemanticReason.AUDIT_RESERVATION_UNAVAILABLE
         )
     if outcome is PrivacyOutcome.TRANSPORT_FAILED:
+        # A gateway call that raised, or a reviewer conversation that lost its lease: the content
+        # may have been sent, and no receipt certifies the attempt.
         return FinalSemanticEvaluation(
-            SemanticStatus.UNAVAILABLE, SemanticReason.TRANSPORT_UNAVAILABLE
+            *_without_provider_provenance(
+                SemanticStatus.UNAVAILABLE, SemanticReason.TRANSPORT_UNAVAILABLE
+            )
         )
     if outcome is PrivacyOutcome.BLOCKED_BY_POLICY:
         reason_name = getattr(reason, "name", None)
@@ -3572,9 +3586,12 @@ def _map_egress_to_final(
             ),
         )
     if type(result) is SemanticEgressAttemptUnknown:
+        # An admitted attempt with no reusable result: ``outcome_unknown`` needs that attempt's
+        # provenance, which nothing durable certifies, so it takes the pair the rules leave.
         return FinalSemanticEvaluation(
-            SemanticStatus.UNAVAILABLE,
-            SemanticReason.OUTCOME_UNKNOWN,
+            *_without_provider_provenance(
+                SemanticStatus.UNAVAILABLE, SemanticReason.OUTCOME_UNKNOWN
+            ),
             semantic_withheld_item_ids=_egress_withheld_item_ids(result),
             semantic_redacted_values=_egress_redacted_values(result),
             case_content_gaps=_egress_case_content_gaps(result),

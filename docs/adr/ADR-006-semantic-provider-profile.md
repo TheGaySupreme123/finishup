@@ -2827,9 +2827,13 @@ credential probe keep their one-shot dispatch; no check uses it.
   unchanged and refuse the field, so an older reader never misreads it), so the check result, a same-id replay, status recovery of the result and receipts all read it.
   The record stays on every terminal result, including a conversation that ended without a
   conclusion (a refused first exchange, a provider failure or timeout after any exchange, a
-  capacity refusal, a coordinator failure, an exhausted retry budget); check-recorded 1.6.0
-  admits each of those outcomes in one branch without `semantic_conclusion` (`docs/INTERFACES.md`
-  lists the pairs).
+  capacity refusal, a coordinator failure, an exhausted retry budget) and an answer the check's
+  fence rejects (`semantic_judgment_rejected`, which also keeps the provider-bound manifest);
+  check-recorded 1.6.0 admits each of those outcomes in one branch without `semantic_conclusion`
+  (`docs/INTERFACES.md` lists the pairs). A conversation that times out after a sent exchange
+  reports `provider_timeout` under that exchange's provenance; a timeout or unknown outcome with no
+  receipted exchange is the provenance-free `receipt_persistence_unknown`, never a coordinator
+  failure.
   Each file read's alias and path stays only in the encrypted review response. CLI and TUI text,
   MCP text and receipts render the same lines. A `full_local` receipt also carries the applicable
   check's recorded review summary (the final advisory and the residual reasons) as one fenced
