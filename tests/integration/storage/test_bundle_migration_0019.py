@@ -1,8 +1,8 @@
 """Bundle migration 0019 (#1239): ``events`` admits the declared quiet-period family.
 
-0019 rebuilds ``events`` exactly as 0014 did, widening only the ``summary_code`` CHECK. Row
-preservation across the rebuild is exercised with real ledger rows by the ledger-port upgrade
-test; this pins the shape.
+0019 rebuilds ``events`` exactly as 0014 did, widening only the ``summary_code`` CHECK. Row and
+dependent-table preservation through both rebuilds, and a row of the new family, are exercised by
+``test_migration_0001``'s 0014 chain test; this pins the shape.
 """
 
 from __future__ import annotations

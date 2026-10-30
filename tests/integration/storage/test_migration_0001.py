@@ -231,6 +231,7 @@ def test_bundle_migration_0014_preserves_event_history_and_admits_current_famili
             (child,),
         ).fetchone()
         assert child_sql is not None and "events_v14" not in child_sql[0]
+        assert "events_v19" not in child_sql[0]
     assert (
         bundle.execute(
             "SELECT canonical_entry, summary_code FROM events WHERE event_id = 'event-1'"
@@ -275,6 +276,8 @@ def test_bundle_migration_0014_preserves_event_history_and_admits_current_famili
         "coordination_context_recorded",
         "coordination_disposition_recorded",
         "coordination_obligation_declared",
+        # #1239: admitted by the second events rebuild, 0019.
+        "contact_expectation_declared",
     )
     for writer_seq, summary_code in enumerate(current_families, start=2):
         object_id = f"object-{writer_seq}"
@@ -307,7 +310,7 @@ def test_bundle_migration_0014_preserves_event_history_and_admits_current_famili
             ),
         )
 
-    assert bundle.execute("SELECT COUNT(*) FROM events").fetchone() == (14,)
+    assert bundle.execute("SELECT COUNT(*) FROM events").fetchone() == (15,)
 
 
 def test_bundle_migration_0007_preserves_rows_and_widens_all_disposition_checks() -> None:

@@ -464,6 +464,27 @@ async def test_a_later_declaration_replaces_and_contact_never_clears_one() -> No
     assert passed is not None and passed.quiet_until is None
 
 
+async def test_status_keeps_the_quiet_deadline_after_the_period_passes() -> None:
+    """The deadline status reports is the sweep's own, also once the quiet period has passed."""
+
+    clock, store, ids = ScenarioClock(), MemoryLineageStore(), FixedIds()
+    coordinator = _coordinator(clock, store, ids)
+    parent, _ = await _root(coordinator, ids)
+    child, child_session = await _child(store, ids, parent)
+    declared_at = clock.now_utc()
+    await coordinator.declare_quiet_period(session_id=child_session, expected_quiet_seconds=1_800)
+    clock.advance(seconds=61)
+    await coordinator.mark_contact_lost(session_id=child_session)
+    deadline = declared_at + timedelta(seconds=1_800 + _WINDOW)
+    lifecycle = None
+    for seconds in (1_000, 800):  # inside the period, then just after it ends
+        clock.advance(seconds=seconds)
+        lifecycle = await coordinator.own_lifecycle(child)
+        assert lifecycle is not None and lifecycle.abandonment_deadline == deadline
+    assert lifecycle is not None and lifecycle.quiet_until is None
+    assert await coordinator.recover_abandoned(_Appends()) == ()
+
+
 async def test_only_the_tasks_own_session_declares_and_replay_is_idempotent() -> None:
     clock, store, ids = ScenarioClock(), MemoryLineageStore(), FixedIds()
     coordinator = _coordinator(clock, store, ids)
@@ -481,6 +502,20 @@ async def test_only_the_tasks_own_session_declares_and_replay_is_idempotent() ->
         task_id=task, expected_quiet_seconds=900, declared_at=declared_at
     )
     assert again == first  # no second write, no new revision
+    # The catalog sync runs after the append; it starts the period at the accepted time, so the
+    # reconcile of the same event later writes nothing either.
+    accepted_at = clock.now_utc()
+    clock.advance(seconds=2)
+    live = await coordinator.declare_quiet_period(
+        session_id=session, expected_quiet_seconds=900, declared_at=accepted_at
+    )
+    assert live.quiet_until == accepted_at + timedelta(seconds=900)
+    assert (
+        await coordinator.reconcile_quiet_period(
+            task_id=task, expected_quiet_seconds=900, declared_at=accepted_at
+        )
+        == live
+    )
 
 
 async def test_a_late_end_for_a_rotated_session_ends_nothing() -> None:

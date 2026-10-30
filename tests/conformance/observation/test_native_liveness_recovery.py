@@ -657,30 +657,29 @@ async def test_a_quiet_child_whose_parent_waits_is_abandoned_and_its_close_rever
 
 async def _declare_quiet(
     service: MultiAgentService, task: StartInternalResult, seconds: int
-) -> None:
+) -> PublishWorkRequest:
     status = await _status(service, task)
-    await service.app.publish_work(
-        PublishWorkRequest.model_validate(
-            {
-                **_identity(),
-                "session_id": task.session_id,
-                "writer_id": task.writer_id,
-                "expected_frontier": _frontier_json(getattr(status, "head_frontier")),
-                "event_drafts": (
-                    {
-                        "event_id": new_id(IdKind.EVENT),
-                        "schema": {"name": "contact_expectation_declared", "version": "1.0.0"},
-                        "occurred_at": "2026-09-05T12:00:00.000Z",
-                        "causal_parents": (),
-                        "payload": {"expected_quiet_seconds": seconds, "reason_code": "long_build"},
-                        "artifact_refs": (),
-                        "evidence_refs": (),
-                    },
-                ),
-            }
-        ),
-        repository_privacy_context=_REPOSITORY,
+    request = PublishWorkRequest.model_validate(
+        {
+            **_identity(),
+            "session_id": task.session_id,
+            "writer_id": task.writer_id,
+            "expected_frontier": _frontier_json(getattr(status, "head_frontier")),
+            "event_drafts": (
+                {
+                    "event_id": new_id(IdKind.EVENT),
+                    "schema": {"name": "contact_expectation_declared", "version": "1.0.0"},
+                    "occurred_at": "2026-09-05T12:00:00.000Z",
+                    "causal_parents": (),
+                    "payload": {"expected_quiet_seconds": seconds, "reason_code": "long_build"},
+                    "artifact_refs": (),
+                    "evidence_refs": (),
+                },
+            ),
+        }
     )
+    await service.app.publish_work(request, repository_privacy_context=_REPOSITORY)
+    return request
 
 
 async def _records(app: Application, task: str) -> tuple[LedgerRecord, ...]:
@@ -732,8 +731,8 @@ async def test_a_child_declares_a_quiet_build_and_is_abandoned_only_after_it(
         await app.lineage.store.save_task(replace(lost, quiet_until=None))
         await app.recover_lineage()
         restored = await app.lineage.store.get_task(child.task_id)
-        assert restored is not None and restored.quiet_until is not None
-        assert abs((restored.quiet_until - quiet_until).total_seconds()) < 1
+        # Both run from the accepted time, so recovery restores exactly the same end.
+        assert restored is not None and restored.quiet_until == quiet_until
 
         # The parent keeps working; the child is silent through its declared build.
         for _ in range(4):
@@ -746,6 +745,37 @@ async def test_a_child_declares_a_quiet_build_and_is_abandoned_only_after_it(
         await _publish_action(service, parent, "The parent is still working.")
         await app.recover_lineage()
         assert await _work(app, child) is WorkState.ABANDONED
+
+
+async def test_a_retried_quiet_declaration_moves_no_period(tmp_path: Path) -> None:
+    """#1239: the period runs from its acceptance, so a retried request (a replay) moves nothing.
+
+    Neither a retry after the period began nor a late retry of an earlier declaration replaces
+    what the ledger's latest declaration set.
+    """
+
+    workspace = _workspace(tmp_path / "workspace")
+    async with multi_agent_service(tmp_path / "state") as service:
+        app = service.app
+        assert app.lineage is not None
+        task = await _create(service, workspace, "quiet-retry")
+        first_at = service.clock.now_utc()
+        first = await _declare_quiet(service, task, 1_800)
+        service.clock.advance(seconds=300)
+        retried = await app.publish_work(first, repository_privacy_context=_REPOSITORY)
+        assert isinstance(retried, PublishWorkInternalResult) and retried.outcome == "replayed"
+        stored = await app.lineage.store.get_task(task.task_id)
+        assert stored is not None and stored.quiet_until == first_at + timedelta(seconds=1_800)
+
+        service.clock.advance(seconds=120)
+        second_at = service.clock.now_utc()
+        await _declare_quiet(service, task, 600)
+        service.clock.advance(seconds=120)
+        await app.publish_work(first, repository_privacy_context=_REPOSITORY)
+        stored = await app.lineage.store.get_task(task.task_id)
+        assert stored is not None and stored.quiet_until == second_at + timedelta(seconds=600)
+        await app.recover_lineage()
+        assert await app.lineage.store.get_task(task.task_id) == stored
 
 
 async def test_a_child_close_replayed_after_a_crash_refreshes_its_parent_once(

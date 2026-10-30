@@ -3102,17 +3102,23 @@ class LineageCoordinator:
         return updated
 
     async def declare_quiet_period(
-        self, *, session_id: str, expected_quiet_seconds: int
+        self,
+        *,
+        session_id: str,
+        expected_quiet_seconds: int,
+        declared_at: datetime | None = None,
     ) -> LineageSnapshot:
         """Record the task's own declared quiet period (#1239, D6) from its active session.
 
         The effective period is clamped by ``max_declared_quiet_seconds`` (0 records nothing that
-        takes effect). A later declaration replaces an earlier one, shorter or longer; contact
-        does not clear it.
+        takes effect) and runs from ``declared_at``, the declaration's accepted time (now when
+        unknown), so reconcile later computes the same end. A later declaration replaces an
+        earlier one, shorter or longer; contact does not clear it.
         """
 
         session = _id(IdKind.SESSION, session_id)
-        quiet_until = self._quiet_until(self._now(), expected_quiet_seconds)
+        start = self._now() if declared_at is None else _timestamp(declared_at)
+        quiet_until = self._quiet_until(start, expected_quiet_seconds)
         async with self._lock:
             snapshot = await self._declaring_task_locked(session)
             return await self._apply_quiet_locked(snapshot, quiet_until)
@@ -3170,17 +3176,19 @@ class LineageCoordinator:
         snapshot = await self._store.get_task(_id(IdKind.TASK, task_id))
         if snapshot is None:
             return None
-        if snapshot.quiet_until is not None and (
-            snapshot.work_state is not WorkState.OPEN or snapshot.quiet_until <= self._now()
+        # A declared quiet period that has passed, or that no open work can use, is history for
+        # status. The deadline below still runs from it, as the recovery sweep's does.
+        quiet_until = snapshot.quiet_until
+        if quiet_until is not None and (
+            snapshot.work_state is not WorkState.OPEN or quiet_until <= self._now()
         ):
-            # A declared quiet period that has passed, or that no open work can use, is history.
-            snapshot = replace(snapshot, quiet_until=None)
+            quiet_until = None
         if (
             snapshot.work_state is not WorkState.OPEN
             or snapshot.session_health is not SessionHealth.CONTACT_LOST
             or snapshot.contact_lost_at is None
         ):
-            return snapshot
+            return replace(snapshot, quiet_until=quiet_until)
         window = await self._contact_window_seconds(snapshot)
         return replace(
             snapshot,
@@ -3188,6 +3196,7 @@ class LineageCoordinator:
                 snapshot, snapshot.contact_lost_at, timedelta(seconds=window)
             ),
             abandonment_reason=REVERSIBLE_ABANDONMENT_REASON,
+            quiet_until=quiet_until,
         )
 
     async def status(self, task_id: str) -> LineageStatus:
