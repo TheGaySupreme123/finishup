@@ -65,13 +65,17 @@ from unit.application import test_undeclared_names_never_egress as named_checks
 
 _ROOT = Path(__file__).resolve().parents[3]
 _FIXTURE = _ROOT / "fixtures/canonical/check-reviewer-record-1.6.0.case.json"
-# SHA-256 of each document as it stood before the reviewer integration (7bd8eb2fe).
+# SHA-256 of each document as it stood before the reviewer integration (7bd8eb2fe), except as noted.
 _FROZEN = {
     "schemas/events/check-recorded-1.4.0.schema.json": (
         "57544bb1480c906a8edfbcbeafe9976f9ce31755ee613b95b268e748973fba1a"
     ),
+    # Not the pre-reviewer bytes any more: 1.5.0 (unreleased, absent from release 84a4b245) now
+    # admits the deferred check the writer records on it (``not_requested`` /
+    # ``deferred_before_first_edit``, no conclusion), which its 1.4.0-derived shape refused. It
+    # still carries no reviewer record, which is what this pin guards.
     "schemas/events/check-recorded-1.5.0.schema.json": (
-        "6aa755d7038c695fa4929f26ef2386f95a7a325bedca367650a965e4d5ffcd4b"
+        "176314aea3f48a7a0bfd3c798d57632d91ef59a7b87419a3ed25bb7d04f500da"
     ),
     "schemas/operations/check-result-1.4.0.schema.json": (
         "9fcd3c474fdcb5caf2d5e8e6e814ec3bc3152b173f9a4fb65d633ccc46b62e17"
@@ -421,6 +425,8 @@ _UNCONCLUDED_OUTCOMES = (
     ("human_denied", "human_denied"),
     ("invalid", "response_content_invalid"),
     ("invalid", "response_schema_invalid"),
+    # The check's own fence refused the answer; the record of what was read stays.
+    ("invalid", "semantic_judgment_rejected"),
     ("late", "deadline_authority_lost"),
     ("refused", "provider_refused"),
     ("timeout", "provider_timeout"),
@@ -558,11 +564,10 @@ def test_an_unconcluded_review_still_refuses_a_conclusion(status: str, reason: s
 @pytest.mark.parametrize(
     ("status", "reason"),
     (
-        # Decided before any conversation runs, or (a rejected judgment) recorded without it.
+        # Decided before any conversation runs, or (awaiting the owner) never recorded.
         ("awaiting_human", "human_approval_required"),
         ("blocked_by_policy", "route_semantic_ceiling"),
         ("blocked_forbidden_data", "secret_detected"),
-        ("invalid", "semantic_judgment_rejected"),
         ("late", "lease_authority_lost"),
         ("stale", "frontier_changed"),
         ("unavailable", "credential_unavailable"),

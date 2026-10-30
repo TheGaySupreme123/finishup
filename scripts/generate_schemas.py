@@ -2480,6 +2480,42 @@ def _check_recorded_v1_5_schema(entry: _RegistryEntry) -> dict[str, JsonValue]:
     return document
 
 
+def _admit_deferred_check(document: dict[str, JsonValue]) -> None:
+    """check-recorded 1.5.0 admits the deferred check the writer records on it (n6 item 4).
+
+    The writer records 1.5.0 for the pre-edit deferral alone (``not_requested`` /
+    ``deferred_before_first_edit``, never with a conclusion; ``domain.events``), yet the document
+    kept 1.4.0's recorded-review shape (``succeeded`` with a required conclusion) and so refused
+    every event written on it. 1.5.0 is unreleased and is amended in place: that pair gets its own
+    branch without ``semantic_conclusion`` (``semantic_binding`` already forbids provenance beside
+    it), and the completed-review shape stays. 1.6.0, built from 1.5.0, never carries a deferral
+    and does not get this branch.
+    """
+
+    properties = cast(dict[str, JsonValue], document["properties"])
+    if properties["semantic_status"] != {"const": "succeeded", "type": "string"}:
+        raise SchemaGenerationError("check_recorded_1_5_status_changed")
+    properties["semantic_status"] = {"enum": ["not_requested", "succeeded"], "type": "string"}
+    cast(list[JsonValue], document["required"]).remove("semantic_conclusion")
+    cast(list[JsonValue], document["allOf"]).append(
+        {
+            "oneOf": [
+                {
+                    "properties": {"semantic_status": {"const": "succeeded"}},
+                    "required": ["semantic_conclusion"],
+                },
+                {
+                    "not": {"required": ["semantic_conclusion"]},
+                    "properties": {
+                        "semantic_reason": {"const": _DEFERRED_BEFORE_FIRST_EDIT_REASON},
+                        "semantic_status": {"const": "not_requested"},
+                    },
+                },
+            ]
+        }
+    )
+
+
 def _correctness_advisories_schema(*, history: bool = False) -> dict[str, JsonValue]:
     """#1162: routine correctness notes; subjects are the fence-resolved refs of the challenge.
 
@@ -4465,12 +4501,13 @@ def _check_result_v1_6_schema(entry: _RegistryEntry) -> dict[str, JsonValue]:
 # path records beside the conversation's reviewer record. ``run_reviewer`` attaches the record to
 # every terminal result it returns, including one whose first exchange was refused before
 # dispatch; ``_map_egress_to_final`` maps that result (a privacy or policy refusal, a capacity
-# refusal, a provider outcome, or ``failed/coordinator_failure`` for an unmappable one); the
-# attempt runner adds ``retry_budget_exhausted`` and, where the attempt's provenance cannot be
-# kept, ``receipt_persistence_unknown``. ``awaiting_human`` is never recorded (the check waits),
-# ``semantic_judgment_rejected`` drops the record, and the remaining pairs (not requested, not
-# configured, route ceiling, revoked policy generation, credential or endpoint unavailable, lease
-# lost, stale, secret_detected, the round-limit stop) are decided before any conversation runs.
+# refusal, a provider outcome, or ``failed/coordinator_failure`` for an unmappable one; a timeout
+# or unknown outcome no receipt certifies is ``receipt_persistence_unknown``); the attempt runner
+# adds ``retry_budget_exhausted``; and the check restates an answer its fence refuses as
+# ``semantic_judgment_rejected``, keeping the record. ``awaiting_human`` is never recorded (the
+# check waits), and the remaining pairs (not requested, not configured, route ceiling, revoked
+# policy generation, credential or endpoint unavailable, lease lost, stale, secret_detected, the
+# round-limit stop) are decided before any conversation runs.
 _UNCONCLUDED_REVIEW_OUTCOMES: Final[Mapping[str, tuple[str, ...]]] = MappingProxyType(
     {
         "approval_expired": ("human_approval_expired",),
@@ -4485,7 +4522,11 @@ _UNCONCLUDED_REVIEW_OUTCOMES: Final[Mapping[str, tuple[str, ...]]] = MappingProx
         "classification_uncertain": ("classification_uncertain",),
         "failed": ("case_capacity_exceeded", "coordinator_failure"),
         "human_denied": ("human_denied",),
-        "invalid": ("response_content_invalid", "response_schema_invalid"),
+        "invalid": (
+            "response_content_invalid",
+            "response_schema_invalid",
+            "semantic_judgment_rejected",
+        ),
         "late": ("deadline_authority_lost",),
         "refused": ("provider_refused",),
         "timeout": ("provider_timeout",),
@@ -14040,6 +14081,7 @@ def build_schema_documents(
             normalized = _check_recorded_v1_4_schema(entry)
         elif entry.relative_path == "events/check-recorded-1.5.0.schema.json":
             normalized = _check_recorded_v1_5_schema(entry)
+            _admit_deferred_check(cast(dict[str, JsonValue], normalized))
         elif entry.relative_path == "events/check-recorded-1.6.0.schema.json":
             normalized = _check_recorded_v1_6_schema(entry)
             _admit_review_blocked(cast(JsonValue, normalized))

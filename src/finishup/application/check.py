@@ -6593,6 +6593,13 @@ def _judgment_rejected_evaluation(
         semantic_withheld_item_ids=result.semantic_withheld_item_ids,
         semantic_redacted_values=result.semantic_redacted_values,
         case_content_gaps=result.case_content_gaps,
+        # The review ran and the provider answered: what it was sent (the provider-bound manifest,
+        # or why there is none) and the conversation's record of what it read stay on the check,
+        # so a rejected answer never hides what was disclosed.
+        review_input_manifest=result.review_input_manifest,
+        provider_input_manifest=result.provider_input_manifest,
+        provider_input_manifest_failure=result.provider_input_manifest_failure,
+        reviewer=result.reviewer,
     )
 
 
