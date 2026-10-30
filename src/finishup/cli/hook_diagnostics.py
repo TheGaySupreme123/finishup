@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
@@ -387,9 +388,15 @@ def record_hook_diagnostic(
     event: str,
     *,
     candidate_count: int | None = None,
+    advice_set: str | None = None,
     _state: Path | None = None,
 ) -> None:
-    """Append one bounded structural hook failure record, rotating one prior file."""
+    """Append one bounded structural hook failure record, rotating one prior file.
+
+    ``advice_set`` is the Stop advice ask's set key (``advice:<16 hex>``, a digest of the open
+    note set, #1240 D2); it is kept only on a ``closure_gate_advice_asked`` row, so an export can
+    tell one ask per set from a repeat.
+    """
 
     row: dict[str, object] = {
         "event": _closed(event, _EVENTS, "unknown_event"),
@@ -402,7 +409,16 @@ def record_hook_diagnostic(
         and 2 <= candidate_count <= 1_000_000
     ):
         row["candidate_count"] = candidate_count
+    if reason == "closure_gate_advice_asked" and _advice_set_valid(advice_set):
+        row["advice_set"] = advice_set
     _append_row(row, _state=_state)
+
+
+_ADVICE_SET: Final = re.compile(r"advice:[0-9a-f]{16}", re.ASCII)
+
+
+def _advice_set_valid(value: object) -> bool:
+    return type(value) is str and _ADVICE_SET.fullmatch(value) is not None
 
 
 def observe_exception_reason(failure: BaseException) -> str:
@@ -957,6 +973,11 @@ def _read_rows(
                         row["reason"] != "auto_attach_binding_ambiguous"
                         or type(candidate_count) is not int
                         or not 2 <= candidate_count <= 1_000_000
+                    ):
+                        continue
+                elif keys == {"event", "reason", "ts", "advice_set"}:
+                    if row["reason"] != "closure_gate_advice_asked" or not _advice_set_valid(
+                        row["advice_set"]
                     ):
                         continue
                 elif keys != {"event", "reason", "ts"}:

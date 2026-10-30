@@ -76,7 +76,8 @@ for that check, following `next_cursor` with the same filter and limit.
 Receipt and final prose are scope-first. Lead with what recorded evidence/checks covered and what was
 not verified or remained limited. Name the checked frontier, AI-powered review status/reason, and
 material coverage gaps before counts. State the receipt's conclusion, and name every reviewer note
-that is still open or that you declined. Then report actual actionable-unresolved and
+that is still open or that you declined; the reply's `agent_closing_prompt` gives the counts to
+relay. Then report actual actionable-unresolved and
 resolved-history counts. Never write "0 unanswered findings" while a note is open, and never
 headline a bare “no findings”, “zero findings”, “clean”, or “verified” result. Say what the
 evidence covers and what it leaves unverified in plain language.

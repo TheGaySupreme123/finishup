@@ -1282,6 +1282,9 @@ def render_human_receipt(result: ReceiptSuccessModel) -> str:
             )
     if result.suppressed_finding_count:
         lines.append(f"Suppressed findings: {result.suppressed_finding_count}")
+    if result.agent_closing_prompt is not None:
+        # #1240 D5: the same closing line the MCP reply carries (fixed words and counts only).
+        lines.append(result.agent_closing_prompt)
     return "\n".join(lines)
 
 
