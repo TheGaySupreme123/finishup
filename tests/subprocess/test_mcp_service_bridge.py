@@ -245,7 +245,10 @@ def _install_clients(
 ) -> list[_FakeClient]:
     remaining = list(clients)
 
-    async def connect(_kind: object, *, workspace_locator: object = None) -> object:
+    async def connect(
+        _kind: object, *, workspace_locator: object = None, timeout_seconds: float | None = None
+    ) -> object:
+        del timeout_seconds
         if observed_locators is not None:
             observed_locators.append(workspace_locator)
         return remaining.pop(0)
@@ -261,8 +264,10 @@ def _install_clients(
 def _install_connect_failure(monkeypatch: pytest.MonkeyPatch, failure: BaseException) -> None:
     """Raise at connect time so `_RECONNECT_REASONS` cannot swallow service_unavailable."""
 
-    async def connect(_kind: object, *, workspace_locator: object = None) -> object:
-        del _kind, workspace_locator
+    async def connect(
+        _kind: object, *, workspace_locator: object = None, timeout_seconds: float | None = None
+    ) -> object:
+        del _kind, workspace_locator, timeout_seconds
         raise failure
 
     monkeypatch.setattr(
@@ -330,14 +335,22 @@ async def test_exact_six_dispatchers_use_one_ordinary_client(
     )
     assert guidance.isError is False
     assert client.calls[-1][0] == "receipt"
-    assert client.deadlines == [
+    expected_deadlines = [
         ("start", 30_000),
         ("publish_work", 30_000),
-        ("check", 300_000),
+        ("check", 280_000),
         ("respond", 50_000),
         ("status", 30_000),
         ("receipt", 50_000),
     ]
+    # Each RPC carries what is left of its one call budget (#1233), so the deadline a fake
+    # client sees is the tool default less the few milliseconds spent before the send.
+    assert [name for name, _deadline in client.deadlines] == [
+        name for name, _limit in expected_deadlines
+    ]
+    for (_name, deadline), (_tool, limit) in zip(client.deadlines, expected_deadlines, strict=True):
+        assert deadline is not None
+        assert limit - 5_000 < deadline <= limit
     assert client.closed is False
     await bridge.close_bridge_runtime(runtime)
     assert client.closed is True
@@ -1215,16 +1228,18 @@ def test_rpc_deadlines_are_configurable_per_tool_with_sane_defaults() -> None:
     assert [deadline(tool, {}) for tool in ("start", "status", "publish_work")] == [30_000] * 3
     assert deadline("respond", {}) == 50_000
     assert deadline("receipt", {}) == 50_000
-    assert deadline("check", {}) == 300_000
+    # Below Codex's 300-second tool-call limit so the bridge's typed timeout arrives first (#1226).
+    assert deadline("check", {}) == 280_000
     env = {"FINISHUP_MCP_DEADLINE_MS": "90000", "FINISHUP_MCP_DEADLINE_MS_RECEIPT": " 45000 "}
     assert deadline("receipt", env) == 45_000
     assert deadline("respond", env) == 90_000
     # The global knob never shortens or lengthens check's semantic-review budget.
-    assert deadline("check", env) == 300_000
-    assert deadline("check", {"FINISHUP_MCP_DEADLINE_MS_CHECK": "600000"}) == 600_000
-    # Clamped and fail-safe.
+    assert deadline("check", env) == 280_000
+    assert deadline("check", {"FINISHUP_MCP_DEADLINE_MS_CHECK": "120000"}) == 120_000
+    # Clamped below the host limit, and fail-safe.
+    assert deadline("check", {"FINISHUP_MCP_DEADLINE_MS_CHECK": "600000"}) == 285_000
     assert deadline("status", {"FINISHUP_MCP_DEADLINE_MS": "5"}) == 1_000
-    assert deadline("status", {"FINISHUP_MCP_DEADLINE_MS": "99999999"}) == 900_000
+    assert deadline("status", {"FINISHUP_MCP_DEADLINE_MS": "99999999"}) == 285_000
     assert deadline("status", {"FINISHUP_MCP_DEADLINE_MS": "-1"}) == 30_000
     assert deadline("status", {"FINISHUP_MCP_DEADLINE_MS": "1e5"}) == 30_000
 
