@@ -155,23 +155,25 @@ item and the line numbers involved, counted within the captured excerpt rather t
 (`semantic_redacted_values`), never the value. Both limit only
 the AI-powered review; local checks still see your
 work in full, and you never need to change consent or your code to clear them. A concrete
-credential, a private key, or a scanner that cannot finish blocks the whole review. So, for now,
-does a credential-like match found only when the packet is checked inside the reviewer conversation,
-which FinishUP's own `[withheld-by-yoetz:possible-credential]` marker can trigger in some layouts
-(for example a nested YAML password followed by an indented line). Nothing is sent then. The check,
-status and receipt say the review was blocked at the privacy boundary and name the scan stage
-(`candidate`, `prepared_case` or `reviewer_exchange`), the item (`review_blocked` in
-`semantic_redacted_values`; `review-packet` when no single item explains it) and whether the match
-was a concrete credential (`high_confidence`) or a value that only looks like one (`heuristic`); the
-privacy receipt names the same. FinishUP does not send the same content to be refused again: later
-checks carry the refusal forward (`semantic_review_skipped_privacy_block`) until an edit or newly
-published evidence, and a closing review after a routine check's refusal checks once more. The
-check also says what your agent can do: when the refused item is text the agent itself published (a
-claim, a plan goal, an obligation or a decision), a revision without the value can be reviewed; when
-it is something FinishUP composed or captured (a task input, the change read from your repository,
-captured command output, or the packet itself), nothing the agent does clears it, a required review
-is reported as not done, and the receipt says so. You never need to hide or git-ignore a requested
-output to keep it out of review.
+credential, a private key, or a scanner that cannot finish blocks the whole review. For now, a
+credential-like match found only when the packet is checked inside the reviewer conversation also
+blocks the whole review; FinishUP's own `[withheld-by-yoetz:possible-credential]` marker can
+trigger one in some layouts (for example a nested YAML password followed by an indented line). The
+refused content is not sent; an earlier exchange of the same conversation may already have been.
+The check, status and receipt say the review was blocked at the privacy boundary and name the scan
+stage (`candidate`, `prepared_case` or `reviewer_exchange`), the item (its `item_id` in
+`semantic_redacted_values`, with disposition `review_blocked`; item `review-packet` when no single
+item explains it) and whether the match was a concrete credential (`high_confidence`) or a value
+that only looks like one (`heuristic`); the privacy receipt names the same. FinishUP does not send
+the same content to be refused again: later checks carry the refusal forward
+(`semantic_review_skipped_privacy_block`) until an edit or newly published evidence, and a closing
+review after a routine check's refusal checks once more. The check also says what your agent can
+do: when the refused item is text the agent itself published (a claim, a plan goal, an obligation
+or a decision), a revision without the value can be reviewed; when it is something FinishUP
+composed or captured (a task input, the change read from your repository, captured command output,
+or the packet itself), nothing the agent does clears it, a required review is reported as not done,
+and the receipt says so. You never need to hide or git-ignore a requested output to keep it out of
+review.
 
 What FinishUP records on your machine follows the same split. A concrete credential shape (a known
 API-key or access-token format, a private-key header, or a password inside a URL) is replaced before

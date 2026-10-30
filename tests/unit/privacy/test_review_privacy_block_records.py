@@ -25,7 +25,7 @@ from finishup.adapters.privacy.catalog import (
 )
 from finishup.adapters.privacy.local_enforcer import LocalPrivacyEnforcer
 from finishup.application.check import (
-    _review_skip_gaps,  # pyright: ignore[reportPrivateUsage]
+    _review_skip_decision,  # pyright: ignore[reportPrivateUsage]
     _semantic_evaluation,  # pyright: ignore[reportPrivateUsage]
 )
 from finishup.application.egress import (
@@ -404,6 +404,13 @@ def test_the_skip_gap_is_a_review_only_limit() -> None:
     assert SEMANTIC_REVIEW_SKIPPED_PRIVACY_BLOCK_GAP in GAP_EFFECT_TABLE
 
 
+async def _review_skip_gaps(*args: Any, **kwargs: Any) -> frozenset[str]:
+    """The skip gap of ``_review_skip_decision``, without the carried refusal."""
+
+    gaps, _standing = await _review_skip_decision(*args, **kwargs)
+    return gaps
+
+
 def _runtime(*records: object) -> Any:
     async def load_events(session_id: object, *, through: int) -> Any:
         del session_id, through
@@ -553,3 +560,153 @@ def test_the_final_receipt_names_a_privacy_block_as_one_on_every_rendering() -> 
         for markdown in (True, False):
             assert expected in render_receipt_human(receipt, markdown=markdown)
         assert "blocked at the privacy boundary" in render_receipt_compact(receipt)
+
+
+# -- CodeRabbit review of #1256 ------------------------------------------------------------------
+
+
+def test_the_refusal_entries_survive_the_entry_bound() -> None:
+    """A refusal over a full list keeps its own entries; it never sorts itself out of the bound."""
+
+    from finishup.application.egress import (
+        _blocked_redacted_values,  # pyright: ignore[reportPrivateUsage]
+        _ScanBlock,  # pyright: ignore[reportPrivateUsage]
+    )
+    from finishup.protocol.redacted_values import MAX_SEMANTIC_REDACTED_VALUE_ITEMS
+
+    replaced = tuple(
+        SemanticRedactedValue(f"excerpt-a{index:02d}", "value_replaced", (1,))
+        for index in range(MAX_SEMANTIC_REDACTED_VALUE_ITEMS)
+    )
+    merged = _blocked_redacted_values(
+        replaced, _ScanBlock(ReceiptSecretScanStage.REVIEWER_EXCHANGE, "heuristic", ("zz-item",))
+    )
+    assert len(merged) == MAX_SEMANTIC_REDACTED_VALUE_ITEMS
+    assert [item.item_id for item in merged] == sorted(item.item_id for item in merged)
+    (blocked,) = [item for item in merged if item.disposition == "review_blocked"]
+    assert (blocked.item_id, blocked.stage) == ("zz-item", "reviewer_exchange")
+
+
+def test_an_exchange_whose_dispatch_failed_still_counts_as_sent() -> None:
+    from finishup.application.reviewer_loop import ReviewOutcome
+    from finishup.application.reviewer_run import _record  # pyright: ignore[reportPrivateUsage]
+
+    outcome = ReviewOutcome(
+        "incomplete", None, "reviewer_exchange_not_sent", (), 1, frozenset(), {}
+    )
+    request_id = "req_40000000-0000-4000-8000-000000001138"
+    refused = SemanticEgressBlocked(
+        request_id, PrivacyOutcome.BLOCKED_FORBIDDEN_DATA, PrivacyReason.NEVER_SEND_DETECTED
+    )
+    attempted = SemanticEgressBlocked(
+        request_id,
+        PrivacyOutcome.TRANSPORT_FAILED,
+        PrivacyReason.OUTCOME_UNKNOWN,
+        dispatch_attempted=True,
+    )
+    assert _record(outcome, [refused], {}, None)[0].exchanges == 0
+    # The gateway was called and its outcome is unknown: the content may have been sent.
+    assert _record(outcome, [attempted, refused], {}, None)[0].exchanges == 1
+    with pytest.raises(ValueError):
+        SemanticEgressBlocked(
+            request_id,
+            PrivacyOutcome.BLOCKED_FORBIDDEN_DATA,
+            PrivacyReason.NEVER_SEND_DETECTED,
+            dispatch_attempted=True,
+        )
+
+
+def test_the_replacement_line_is_only_for_replaced_or_withheld_values() -> None:
+    from finishup.cli.render import (
+        _semantic_redacted_value_lines,  # pyright: ignore[reportPrivateUsage]
+    )
+    from finishup.domain.receipts import (
+        SEMANTIC_REDACTED_VALUES_AGENT_LINE,
+        SEMANTIC_REVIEW_BLOCKED_AGENT_LINE,
+    )
+    from finishup.mcp.summaries import (
+        _semantic_redacted_values_line_part,  # pyright: ignore[reportPrivateUsage]
+    )
+
+    blocked_wire = cast(JsonValue, _BLOCKED_VALUE.as_wire())
+    replaced_wire = cast(
+        JsonValue, SemanticRedactedValue("excerpt-a", "value_replaced", (2,)).as_wire()
+    )
+    blocked_only = _semantic_redacted_value_lines((blocked_wire,))
+    assert SEMANTIC_REVIEW_BLOCKED_AGENT_LINE in blocked_only
+    assert SEMANTIC_REDACTED_VALUES_AGENT_LINE not in blocked_only
+    mixed = _semantic_redacted_value_lines((replaced_wire, blocked_wire))
+    assert SEMANTIC_REDACTED_VALUES_AGENT_LINE in mixed
+    assert SEMANTIC_REVIEW_BLOCKED_AGENT_LINE in mixed
+    assert SEMANTIC_REVIEW_BLOCKED_AGENT_LINE not in _semantic_redacted_value_lines(
+        (replaced_wire,)
+    )
+    # MCP: the check lead names the refusal; the replacement line needs a replaced value.
+    assert _semantic_redacted_values_line_part({"semantic_redacted_values": [blocked_wire]}) is None
+    assert (
+        _semantic_redacted_values_line_part(
+            {"semantic_redacted_values": [blocked_wire, replaced_wire]}
+        )
+        is not None
+    )
+
+
+def test_no_rendering_claims_that_nothing_was_sent() -> None:
+    """A later exchange can be refused after an earlier one was sent; only the refused is unsent."""
+
+    sentence = privacy_block_sentence((_BLOCKED_VALUE,))
+    assert "the refused content was not sent" in sentence
+    assert "before anything was sent" not in sentence
+    source: dict[str, JsonValue] = {
+        "findings": [],
+        "suppressed_count": "0",
+        "semantic_redacted_values": [cast(JsonValue, _BLOCKED_VALUE.as_wire())],
+        "coverage": {"known_gaps": []},
+    }
+    lead = _check_lead_variants(source, "insufficient_coverage", "blocked_forbidden_data", "x")[0]
+    assert "the refused content was not sent" in lead
+    assert "before anything was sent" not in lead
+
+
+def test_the_mcp_lead_keeps_the_item_id_beside_its_ref() -> None:
+    ref = "evd_10000000-0000-4000-8000-000000000001"
+    blocked = SemanticRedactedValue(
+        _EXCERPT, "review_blocked", (), ref, "reviewer_exchange", "heuristic"
+    )
+    source: dict[str, JsonValue] = {
+        "findings": [],
+        "suppressed_count": "0",
+        "semantic_redacted_values": [cast(JsonValue, blocked.as_wire())],
+        "coverage": {"known_gaps": []},
+    }
+    lead = _check_lead_variants(source, "insufficient_coverage", "blocked_forbidden_data", "x")[0]
+    assert f"by {_EXCERPT} ({ref}, heuristic match, reviewer_exchange scan)" in lead
+
+
+@pytest.mark.anyio
+async def test_the_skip_and_the_carried_refusal_come_from_one_read() -> None:
+    """A second read failing open would send the review the recorded gap says was skipped."""
+
+    reads: list[int] = []
+    block = _block()
+
+    async def load_events(session_id: object, *, through: int) -> Any:
+        # The round-stop read, then the privacy-block read; any further read fails open.
+        del session_id, through
+        reads.append(1)
+        if len(reads) > 2:
+            raise RuntimeError("ledger unavailable")
+        yield block
+
+    runtime = SimpleNamespace(
+        session_id="ses",
+        task_id="tsk",
+        capabilities=frozenset({RuntimeCapability.SEMANTIC}),
+        ledger=SimpleNamespace(load_events=load_events),
+    )
+    gaps, standing = await _review_skip_decision(
+        cast(Any, runtime), _request(), _frozen(), route_profile="policy", workspace_changed=True
+    )
+    assert gaps == frozenset({SEMANTIC_REVIEW_SKIPPED_PRIVACY_BLOCK_GAP})
+    assert standing is not None and standing.redacted_values == (_BLOCKED_VALUE,)
+    assert len(reads) == 2
