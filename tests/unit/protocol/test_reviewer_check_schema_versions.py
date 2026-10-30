@@ -346,3 +346,34 @@ def test_advisory_decisions_are_typed_and_never_switch_review_mode() -> None:
                 },
             },
         )
+
+
+def test_check_recorded_1_6_admits_a_review_refused_at_the_privacy_boundary() -> None:
+    """#1138: a privacy-blocked check names its ``review_blocked`` item, which only 1.6.0 admits."""
+
+    from finishup.protocol.redacted_values import SemanticRedactedValue
+
+    body = _event_body()
+    for name in ("semantic_provenance", "semantic_conclusion", "semantic_included_refs"):
+        body.pop(name, None)
+    body["semantic_status"] = "blocked_forbidden_data"
+    body["semantic_reason"] = "never_send_detected"
+    body["semantic_redacted_values"] = [
+        SemanticRedactedValue(
+            "excerpt-evd_10000000-0000-4000-8000-000000000001",
+            "review_blocked",
+            (),
+            None,
+            "reviewer_exchange",
+            "heuristic",
+        ).as_wire()
+    ]
+    validate_schema_instance("check-recorded", "1.6.0", body)
+    assert canonical_encode(encode_payload(_decode("1.6.0", body))) == canonical_encode(body)
+    # A refusal composes no conclusion, and the pair stays exact.
+    for change in (
+        {"semantic_conclusion": "no_material_discrepancy"},
+        {"semantic_reason": "secret_detected"},
+    ):
+        with pytest.raises(SchemaInstanceInvalid):
+            validate_schema_instance("check-recorded", "1.6.0", {**body, **change})

@@ -1684,7 +1684,8 @@ the privacy workstream's (#1248, P-D1/P-D2); this amendment fixes only the recor
   scanning each packet row's own content encoded as deeply as the refused bytes carry it (the packet
   string, or that string inside the conversation); a classification-time refusal names the items
   with a concrete finding. This only reads the scanner's answers: the whole-byte scans decide the
-  refusal exactly as before, and nothing is sent.
+  refusal exactly as before, and the refused content is not sent. An earlier exchange of the same
+  conversation may already have been sent, so no record claims that nothing was.
 - The check carries the same facts as `review_blocked` entries in `semantic_redacted_values`, with
   `stage` and `match_class` (`review-packet` when no single item explains the match), on the check
   event, check result, `status view=operation` and the receipt document. The receipt's limitations

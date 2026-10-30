@@ -941,25 +941,35 @@ def _semantic_withheld_items_part(source: Mapping[str, JsonValue]) -> Part | Non
     )
 
 
-def _semantic_redacted_value_tokens(source: Mapping[str, JsonValue]) -> tuple[str, ...]:
-    """PL2-1: validated item refs and line numbers only; never a value."""
+def _semantic_redacted_value_items(
+    source: Mapping[str, JsonValue],
+) -> tuple[SemanticRedactedValue, ...]:
+    """The valid PL2-1 entries of a result; an invalid one is skipped."""
 
     raw_items = source.get("semantic_redacted_values")
     if not isinstance(raw_items, (list, tuple)):
         return ()
-    result: list[str] = []
+    items: list[SemanticRedactedValue] = []
     for raw in raw_items:
         try:
-            item = SemanticRedactedValue.from_wire(raw)
+            items.append(SemanticRedactedValue.from_wire(raw))
         except (TypeError, ValueError):
             continue
+    return tuple(items)
+
+
+def _semantic_redacted_value_tokens(source: Mapping[str, JsonValue]) -> tuple[str, ...]:
+    """PL2-1: validated item refs and line numbers only; never a value."""
+
+    result: list[str] = []
+    for item in _semantic_redacted_value_items(source):
         ref = item.item_id if item.source_ref is None else item.source_ref
         what = (
             "replaced"
             if item.disposition == "value_replaced"
             else "item withheld"
             if item.disposition == "item_withheld"
-            # #1138: this item's match stopped the whole review before anything was sent.
+            # #1138: this item's match stopped the whole review; the refused content was not sent.
             else f"blocked review ({item.match_class}, {item.stage})"
         )
         lines = "L" + ",".join(str(line) for line in item.lines) if item.lines else "L?"
@@ -970,19 +980,13 @@ def _semantic_redacted_value_tokens(source: Mapping[str, JsonValue]) -> tuple[st
 def _review_blocked_tokens(source: Mapping[str, JsonValue]) -> tuple[str, ...]:
     """#1138: the items whose match stopped the review, with class and stage; never a value."""
 
-    raw_items = source.get("semantic_redacted_values")
-    if not isinstance(raw_items, (list, tuple)):
-        return ()
     result: list[str] = []
-    for raw in raw_items:
-        try:
-            item = SemanticRedactedValue.from_wire(raw)
-        except (TypeError, ValueError):
-            continue
+    for item in _semantic_redacted_value_items(source):
         if item.disposition != "review_blocked":
             continue
-        ref = item.item_id if item.source_ref is None else item.source_ref
-        result.append(f"{ref} ({item.match_class} match, {item.stage} scan)")
+        # The item id always, with its catalogued ref as context, as the receipt sentence does.
+        ref = "" if item.source_ref is None else f"{item.source_ref}, "
+        result.append(f"{item.item_id} ({ref}{item.match_class} match, {item.stage} scan)")
     return tuple(result[:4])
 
 
@@ -999,9 +1003,13 @@ def _semantic_redacted_values_line_part(source: Mapping[str, JsonValue]) -> Part
 
     The full line is used when it fits beside the required text, else the shorter fixed form,
     else nothing (the structured result still has it). It outranks every other optional clause.
+    A ``review_blocked`` item had no value replaced, so it alone adds no line: the check lead
+    names that refusal and that sending it again will not help (#1138).
     """
 
-    if not _semantic_redacted_value_tokens(source):
+    if not any(
+        item.disposition != "review_blocked" for item in _semantic_redacted_value_items(source)
+    ):
         return None
     return Part(
         (SEMANTIC_REDACTED_VALUES_AGENT_LINE, SEMANTIC_REDACTED_VALUES_AGENT_LINE_SHORT),
@@ -1652,8 +1660,8 @@ def _check_lead_variants(
             else "sending the same content again will not help"
         )
         return (
-            f"AI-powered review blocked at the privacy boundary{named} before anything was "
-            f"sent; {resend}; local check verdict: {verdict}; {counts}",
+            f"AI-powered review blocked at the privacy boundary{named}; the refused content "
+            f"was not sent; {resend}; local check verdict: {verdict}; {counts}",
             f"AI-powered review blocked at the privacy boundary{named}; {resend}; "
             f"local check verdict: {verdict};",
             f"AI-powered review blocked at the privacy boundary; local check verdict: {verdict};",

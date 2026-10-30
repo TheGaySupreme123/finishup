@@ -1889,14 +1889,22 @@ Five further codes describe a review that did run but could not deliver everythi
 its `-part-NN` parts, not the source file; renderings say "of the captured item") and `source_ref` only
   when the catalogued ref is an opaque token. Never a value, offset or path. Carried, when present,
   by the check event (1.4.0), check result, `status view=operation` page and receipt document; every
-  rendering adds the fixed agent line once (`SEMANTIC_REDACTED_VALUES_AGENT_LINE`). Issue #1138
+  rendering adds the fixed agent line once (`SEMANTIC_REDACTED_VALUES_AGENT_LINE`) when a value was
+  replaced or an item withheld. Issue #1138
   adds the disposition `review_blocked` (unreleased shapes, in place): a `blocked_forbidden_data` /
   `never_send_detected` refusal lists each item its matches sat in with the refusing scan `stage`
   (`candidate`|`prepared_case`|`reviewer_exchange`) and the match's `match_class`
   (`high_confidence`|`heuristic`); `review-packet` stands for a match no single item explains. Only
-  that disposition carries `stage` and `match_class`. The receipt's limitations section, the
+  that disposition carries `stage` and `match_class`, and only check-recorded 1.6.0 admits it, with
+  its own `blocked_forbidden_data` / `never_send_detected` branch (no `semantic_conclusion`; a
+  reviewer record may remain from an earlier exchange). At the 64-entry bound the refusal's own
+  entries are kept first. The receipt's limitations section, the
   compact receipt sentence, the CLI check rendering and the MCP check lead name the block as one
-  (`privacy_block_sentence`);
+  (`privacy_block_sentence`) and say the refused content was not sent, never that nothing was: an
+  earlier exchange of the same conversation may have been. The CLI and receipt renderings add
+  `SEMANTIC_REVIEW_BLOCKED_AGENT_LINE` for those items instead of the replacement line; the MCP
+  check lead already says it. A reviewer exchange whose gateway call failed with its outcome
+  unknown still counts as a model exchange; one refused before dispatch does not;
 - `semantic_review_skipped_privacy_block` — the newest check that asked for AI-powered review was
   refused at the privacy boundary (`blocked_forbidden_data` / `never_send_detected`) and neither an
   edit action nor agent-published evidence followed it (`kernel.review_round.
