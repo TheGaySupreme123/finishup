@@ -328,12 +328,15 @@ class _Ledger:
         review_input_manifest: object | None = None,
         review_summary: str | None = None,
         semantic_redacted_values: tuple[SemanticRedactedValue, ...] = (),
+        reviewer: object | None = None,
     ) -> CheckCommitResult:
         assert frozen == self.frozen
         self.last_review_summary = review_summary
         self.last_verdicts = prior_finding_verdicts
         self.last_missing = missing_for_assessment
         self.last_conclusion = semantic_conclusion
+        self.last_review_input_manifest = review_input_manifest
+        self.last_reviewer = reviewer
         if self.commit_failure is not None:
             raise self.commit_failure
         self.commit_count += 1
@@ -1717,6 +1720,38 @@ async def test_rejected_judgment_commits_the_check_instead_of_failing_the_reques
     raw = diagnostics_module.diagnostic_log_path(root=tmp_path).read_text(encoding="ascii")
     operations = {json.loads(line)["operation"] for line in raw.splitlines() if line}
     assert "semantic_judgment_rejected" in operations
+
+
+@pytest.mark.anyio
+async def test_a_rejected_judgment_keeps_what_the_review_read_and_was_sent(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The provider answered; only its answer is unusable. What it read and was sent stays."""
+
+    from finishup.domain.reviewer_reads import ReviewerRecord, reviewer_record_from_wire
+
+    monkeypatch.setattr(diagnostics_module, "log_dir", lambda: tmp_path)
+
+    def _raise(*_args: object, **_kwargs: object) -> object:
+        raise check_module.SemanticJudgmentRejected("semantic_judgment_invalid")
+
+    monkeypatch.setattr(check_module, "validate_semantic_judgment", _raise)
+    record = ReviewerRecord(2, (), None, None)
+    manifest = _provider_bound_manifest()
+    app = _App(semantic=True)
+    app.semantic_result = replace(
+        _succeeded(SemanticJudgment("no_material_discrepancy", ())),
+        provider_input_manifest=manifest,
+        reviewer=record,
+    )
+
+    result = await execute_check_commit(app, _request("semantic_if_configured"))
+
+    assert result.semantic_status is SemanticStatus.INVALID
+    assert result.semantic_reason is SemanticReason.SEMANTIC_JUDGMENT_REJECTED
+    assert reviewer_record_from_wire(app.ledger.last_reviewer) == record
+    assert app.ledger.last_review_input_manifest == manifest
+    assert app.ledger.last_conclusion is None
 
 
 @pytest.mark.anyio

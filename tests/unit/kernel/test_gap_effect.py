@@ -154,7 +154,8 @@ def test_the_classification_is_a_view_of_the_table_with_the_same_readiness_group
     # task_input_outside_not_admitted disclosure + the #1118 task_input_baseline_unavailable one.
     # + the #1118 unit 4 verification_input_directory_unresolved one + the #1143
     # verification_rerun_question limit and verification_inputs_caller_asserted disclosure.
-    assert len(GAP_EFFECT_TABLE) == 227
+    # + the #1138 semantic_review_skipped_privacy_block limit.
+    assert len(GAP_EFFECT_TABLE) == 228
     for code, group in GAP_CLASSIFICATION.items():
         assert GAP_EFFECT_TABLE[code].readiness is group, code
     assert {row.why for row in GAP_EFFECT_TABLE.values()} <= set(GAP_EFFECT_WHY)

@@ -592,7 +592,8 @@ async def test_a_tightened_repository_category_ends_the_review_before_a_read_is_
     assert getattr(checked, "semantic_status") is SemanticStatus.BLOCKED_BY_POLICY
     record = reviewer_record_from_wire(getattr(checked, "reviewer", None))
     assert record is not None and record.ended == "reviewer_exchange_not_sent"
-    assert record.exchanges == 2 and record.reads[0].disclosure is None
+    # #1138: the refused second exchange was never sent, so only the first one counts.
+    assert record.exchanges == 1 and record.reads[0].disclosure is None
 
 
 async def test_a_narrowed_task_policy_ends_the_conversation_before_its_next_turn(

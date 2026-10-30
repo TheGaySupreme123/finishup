@@ -83,6 +83,7 @@ __all__ = [
     "ReceiptPackageName",
     "SEMANTIC_REDACTED_VALUES_AGENT_LINE",
     "SEMANTIC_REDACTED_VALUES_AGENT_LINE_SHORT",
+    "SEMANTIC_REVIEW_BLOCKED_AGENT_LINE",
     "semantic_redacted_value_text",
     "ACKNOWLEDGED_OBLIGATIONS_SECTION_TITLE",
     "PREMISE_DISPUTED_SECTION_TITLE",
@@ -164,6 +165,8 @@ __all__ = [
     "SEMANTIC_REVIEW_DEFERRED_BEFORE_FIRST_EDIT_GAP",
     "review_deferred_before_first_edit",
     "SEMANTIC_REVIEW_SKIPPED_INSUFFICIENT_PACKET_GAP",
+    "SEMANTIC_REVIEW_SKIPPED_PRIVACY_BLOCK_GAP",
+    "privacy_block_sentence",
     "SEMANTIC_MISSING_UNAVAILABLE_GAP",
     "SEMANTIC_MISSING_FINISHUP_LIMIT_GAP",
     "SEMANTIC_PROVIDER_INPUT_MANIFEST_FAILURES",
@@ -321,6 +324,12 @@ SEMANTIC_MISSING_NON_CONVERGENT_GAP: Final = "semantic_missing_non_convergent"
 SEMANTIC_REVIEW_SKIPPED_INSUFFICIENT_PACKET_GAP: Final = (
     "semantic_review_skipped_insufficient_packet"
 )
+# Issue #1138: the newest AI-powered review was refused at the privacy boundary
+# (``blocked_forbidden_data`` / ``never_send_detected``) and neither an edit nor agent-published
+# evidence followed it, so this check does not send the same content to be refused the same way:
+# it carries the recorded refusal forward and runs its local checks. A FinishUP limit, never agent
+# work; the next check after a change reviews as configured.
+SEMANTIC_REVIEW_SKIPPED_PRIVACY_BLOCK_GAP: Final = "semantic_review_skipped_privacy_block"
 # Issue #1046 (tb4n4: 18 of 61 semantic-arm tasks reviewed the plan before any work): a routine
 # check with no material edit recorded and no workspace change observed runs the local plan checks
 # only; the AI-powered review waits for the first edit, and the closing review is never deferred.
@@ -975,6 +984,79 @@ SEMANTIC_REDACTED_VALUES_AGENT_LINE_SHORT: Final = (
 )
 
 
+# #1138: the fixed line for ``review_blocked`` items. Nothing of theirs was replaced or withheld
+# piecemeal, so the line above does not apply to them; this one says what does.
+SEMANTIC_REVIEW_BLOCKED_AGENT_LINE: Final = (
+    "Items that blocked the whole review were refused at the privacy boundary; that content was "
+    "not sent, and local checks saw it. Sending it again unchanged will not help. Do not change "
+    "consent, rename, hide or reshape your work to clear this."
+)
+
+
+def semantic_redacted_value_agent_lines(
+    values: Sequence[SemanticRedactedValue],
+) -> tuple[str, ...]:
+    """The fixed agent lines for ``values``: one per kind present, never a value (#982, #1138)."""
+
+    lines: list[str] = []
+    if any(item.disposition != "review_blocked" for item in values):
+        lines.append(SEMANTIC_REDACTED_VALUES_AGENT_LINE)
+    if any(item.disposition == "review_blocked" for item in values):
+        lines.append(SEMANTIC_REVIEW_BLOCKED_AGENT_LINE)
+    return tuple(lines)
+
+
+_PRIVACY_BLOCK_LEAD: Final = (
+    "AI-powered review was blocked at the privacy boundary; the refused content was not sent"
+)
+_REVIEW_BLOCK_STAGE_WORDS: Final[Mapping[str, str]] = MappingProxyType(
+    {
+        "candidate": "item classification",
+        "prepared_case": "prepared packet",
+        "reviewer_exchange": "reviewer conversation",
+    }
+)
+
+
+def privacy_block_sentence(
+    redacted_values: Sequence[SemanticRedactedValue], *, skipped: bool = False
+) -> str:
+    """Name a review refused at the privacy boundary as one, with its stage, items and class.
+
+    Issue #1138: the receipt said only that AI-powered review was not run. Closed tokens and
+    opaque item ids only; never a value. ``skipped`` adds that this check did not send the same
+    content again (``semantic_review_skipped_privacy_block``).
+    """
+
+    blocked = [item for item in redacted_values if item.disposition == "review_blocked"]
+    lead = f"{_PRIVACY_BLOCK_LEAD} (blocked_forbidden_data / never_send_detected)"
+    if not blocked:
+        sentence = f"{lead}; the check did not record which item."
+    else:
+        stages = sorted({cast(str, item.stage) for item in blocked})
+        classes = sorted({cast(str, item.match_class) for item in blocked})
+        named = ", ".join(
+            "FinishUP's own packet structure (review-packet)"
+            if item.item_id == "review-packet"
+            else item.item_id
+            if item.source_ref is None
+            else f"{item.item_id} ({item.source_ref})"
+            for item in blocked
+        )
+        where = ", ".join(f"{stage} ({_REVIEW_BLOCK_STAGE_WORDS[stage]})" for stage in stages)
+        sentence = (
+            f"{lead}: a {' and '.join(classes).replace('_', '-')} credential-like match in "
+            f"{named} at the {where} scan. The same content is refused the same way, so "
+            "sending it again will not help."
+        )
+    if skipped:
+        sentence += (
+            " This check did not send it again: no edit or newly published evidence or text "
+            "followed the refusal (semantic_review_skipped_privacy_block)."
+        )
+    return sentence
+
+
 def semantic_redacted_value_text(item: SemanticRedactedValue) -> str:
     """One bounded ASCII line naming the item, its ref and lines; never a value."""
 
@@ -986,7 +1068,14 @@ def semantic_redacted_value_text(item: SemanticRedactedValue) -> str:
         if item.lines
         else "lines not located"
     )
-    what = "value replaced" if item.disposition == "value_replaced" else "item withheld"
+    what = (
+        "value replaced"
+        if item.disposition == "value_replaced"
+        else "item withheld"
+        if item.disposition == "item_withheld"
+        # #1138: this item's match stopped the whole review; the refused content was not sent.
+        else f"blocked the whole review ({item.match_class} match at the {item.stage} scan)"
+    )
     # Line numbers count lines of the captured item (an excerpt or one of its parts), not of the
     # file it came from; say so, so an agent never reads them as file line numbers.
     located = f"{lines} of the captured item" if item.lines else lines
@@ -3196,7 +3285,7 @@ def render_receipt_human(document: ReceiptDocument, *, markdown: bool) -> str:
                         f"- {semantic_redacted_value_text(item)}"
                         for item in document.semantic_redacted_values
                     ),
-                    SEMANTIC_REDACTED_VALUES_AGENT_LINE,
+                    *semantic_redacted_value_agent_lines(document.semantic_redacted_values),
                 )
             )
         )
@@ -3256,9 +3345,26 @@ def limitations_name_coordinator_failure(sections: object) -> bool:
     return False
 
 
+def _limitations_name_privacy_block(sections: Sequence[ReceiptSection]) -> bool:
+    """Whether a limitations section names a privacy-boundary refusal (#1138)."""
+
+    return any(
+        section.key is ReceiptSectionKey.LIMITATIONS_AND_COVERAGE
+        and _PRIVACY_BLOCK_LEAD in section.body
+        for section in sections
+    )
+
+
 def _compact_not_run_clause(document: ReceiptDocument, clause: str) -> str:
     """Name a coordinator failure in the compact sentence when the limitations section does."""
 
+    if _limitations_name_privacy_block(document.sections):
+        # #1138: the compact sentence names a privacy-boundary refusal as one too.
+        return clause.replace(
+            "AI-powered relevance review was not run",
+            _PRIVACY_BLOCK_LEAD,
+            1,
+        )
     if not limitations_name_coordinator_failure(document.sections):
         return clause
     return clause.replace(

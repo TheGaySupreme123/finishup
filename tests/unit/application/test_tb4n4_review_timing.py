@@ -19,7 +19,7 @@ import pytest
 from builders.observed_runs import INSTALLATION_KEY, ObservedLedger, command_identity_for
 from finishup.application.check import (
     _review_deferred_before_first_edit,  # pyright: ignore[reportPrivateUsage]
-    _review_skip_gaps,  # pyright: ignore[reportPrivateUsage]
+    _review_skip_decision,  # pyright: ignore[reportPrivateUsage]
 )
 from finishup.domain.events import (
     ActionKind,
@@ -56,6 +56,13 @@ from finishup.ports.ledger import CheckPhase
 pytestmark = pytest.mark.anyio
 
 _OBLIGATION = obligation_id("obl_00000000-0000-4000-8000-000000000001")
+
+
+async def _review_skip_gaps(*args: Any, **kwargs: Any) -> frozenset[str]:
+    """The skip gap of ``_review_skip_decision``, without the carried refusal."""
+
+    gaps, _standing = await _review_skip_decision(*args, **kwargs)
+    return gaps
 
 
 @pytest.fixture(autouse=True)

@@ -5732,7 +5732,8 @@ def _receipt_refusal_lines(views: Iterable[object]) -> tuple[str, ...]:
     """Name why a refused network receipt was refused, in closed values and integers only.
 
     A size refusal (#1129) keeps ``blocked_by_policy`` / ``policy_denied``; its typed
-    ``capacity_exceeded`` says it was the size, not a policy rule.
+    ``capacity_exceeded`` says it was the size, not a policy rule. A refusing scan (#1138) names
+    its stage, its matches' confidence class and the opaque case items they sat in.
     """
 
     from finishup.ports.privacy import NetworkEgressReceiptView
@@ -5748,6 +5749,14 @@ def _receipt_refusal_lines(views: Iterable[object]) -> tuple[str, ...]:
                 f"capacity_exceeded: privacy receipt {receipt.receipt_id} was refused for size, "
                 f"not by a policy rule: {capacity.attempted} {capacity.unit} against the "
                 f"{capacity.scope} limit of {capacity.limit}; nothing was sent"
+            )
+        scan = receipt.secret_scan
+        if scan.match_class is not None:
+            items = ", ".join(scan.match_item_ids) or "no single item (the packet structure)"
+            lines.append(
+                f"scan refusal: privacy receipt {receipt.receipt_id} was refused at the "
+                f"{scan.stage.value} scan by a {scan.match_class} match in {items}; "
+                "nothing was sent"
             )
     return tuple(lines)
 

@@ -282,6 +282,11 @@ def encode_privacy_receipt_view(view: PrivacyReceiptView) -> JsonObject:
         if receipt.secret_scan.credential_heuristic.value != "enforced":
             # The owner had the low-confidence credential heuristic off for this disclosure.
             secret_scan["credential_heuristic"] = receipt.secret_scan.credential_heuristic.value
+        if receipt.secret_scan.match_class is not None:
+            # #1138: a refusing scan names its match class and the opaque items it sat in.
+            secret_scan["match_class"] = receipt.secret_scan.match_class
+            if receipt.secret_scan.match_item_ids:
+                secret_scan["match_item_ids"] = list(receipt.secret_scan.match_item_ids)
     body: dict[str, JsonValue] = {
         "schema_version": receipt.schema_version,
         "receipt_id": receipt.receipt_id,

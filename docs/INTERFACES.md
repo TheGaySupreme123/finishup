@@ -1895,7 +1895,30 @@ Five further codes describe a review that did run but could not deliver everythi
 its `-part-NN` parts, not the source file; renderings say "of the captured item") and `source_ref` only
   when the catalogued ref is an opaque token. Never a value, offset or path. Carried, when present,
   by the check event (1.4.0), check result, `status view=operation` page and receipt document; every
-  rendering adds the fixed agent line once (`SEMANTIC_REDACTED_VALUES_AGENT_LINE`);
+  rendering adds the fixed agent line once (`SEMANTIC_REDACTED_VALUES_AGENT_LINE`) when a value was
+  replaced or an item withheld. Issue #1138
+  adds the disposition `review_blocked` (unreleased shapes, in place): a `blocked_forbidden_data` /
+  `never_send_detected` refusal lists each item its matches sat in with the refusing scan `stage`
+  (`candidate`|`prepared_case`|`reviewer_exchange`) and the match's `match_class`
+  (`high_confidence`|`heuristic`); `review-packet` stands for a match no single item explains. Only
+  that disposition carries `stage` and `match_class`, and only check-recorded 1.6.0 admits it, in
+  the branch of a review that ended without a conclusion (no `semantic_conclusion`; a
+  reviewer record may remain from an earlier exchange). At the 64-entry bound the refusal's own
+  entries are kept first. The receipt's limitations section, the
+  compact receipt sentence, the CLI check rendering and the MCP check lead name the block as one
+  (`privacy_block_sentence`) and say the refused content was not sent, never that nothing was: an
+  earlier exchange of the same conversation may have been. The CLI and receipt renderings add
+  `SEMANTIC_REVIEW_BLOCKED_AGENT_LINE` for those items instead of the replacement line; the MCP
+  check lead already says it. A reviewer exchange whose gateway call failed with its outcome
+  unknown still counts as a model exchange; one refused before dispatch does not;
+- `semantic_review_skipped_privacy_block` — the newest check that asked for AI-powered review was
+  refused at the privacy boundary (`blocked_forbidden_data` / `never_send_detected`) and neither an
+  edit action, agent-published evidence nor agent-published text (a claim, plan, obligation,
+  decision or answer) followed it (`kernel.review_round.
+  privacy_block_standing`), so this check records the same status and `review_blocked` items and
+  composes or sends nothing. A closing review after a routine check's refusal is scanned once more;
+  a closing review's own refusal stands. A review-scoped FinishUP limit, never agent work; it
+  weakens neither proof class;
 - `semantic_review_credential_heuristic_disabled` — the owner's privacy policy had the
   low-confidence credential heuristic turned off (`credential_heuristic: disabled`, issue #982), so
   values that only look like passwords or tokens were sent as written to the external reviewer;
@@ -4634,6 +4657,10 @@ retrievable by its recorded receipt ID and listable by `channel`, `provider_id`,
 (`semantic_check`, `observation_advice` or `credential_probe`; egress-receipt 1.1.0, ADR-009
 tb4n2 amendment), derived from its purpose and reserved structural item ids and omitted when not
 recognized, so a recurring blocked receipt can be traced to the operation that asked for it.
+A refusing scan (#1138) also names, in `secret_scan`, its `stage` (`reviewer_exchange` is the
+scan of the whole reviewer conversation, recorded as `prepared_case` before), its `match_class`
+(`high_confidence`|`heuristic`) and up to 16 opaque `match_item_ids` the matches sat in (none when
+no single item explains them; egress-receipt 1.1.0, ADR-009 #1138 amendment).
 A pre-dispatch size refusal's network receipt also carries `capacity_exceeded`
 (`scope`: `disclosure`|`excerpt`|`excerpt_total`; `unit`: `bytes`|`tokens`|`excerpts`; decimal
 `attempted` and `limit`; egress-receipt 1.1.0, ADR-009 #1129 amendment) beside its unchanged
@@ -5003,7 +5030,11 @@ audit and does not prove an expired started attempt was never admitted. Deadline
 that attempt `outcome_unknown` without re-entering authorization, retry, or fallback; a new,
 unattempted job still reports `provider_timeout` (issue #625). An uncertain started attempt retains `outcome_unknown`
 in its durable row; without reconstructable provider provenance its public gap is
-`receipt_persistence_unknown`. Each
+`receipt_persistence_unknown`. A blocked egress timeout or transport failure (a deadline that
+passed before dispatch, a gateway call that raised) and an unknown attempt carry no provider attempt
+either, so `_map_egress_to_final` gives them the same provenance-free pair, which is not retried,
+never `failed`/`coordinator_failure`; a reviewer conversation that times out after a sent exchange
+reports `timeout`/`provider_timeout` under that exchange's provenance. Each
 fallback attempt is a fresh physical attempt with its own authorization, dispatch id, credential
 handle or runtime authority, and privacy receipt; under `confirm_every_request` it needs its own
 foreground decision. `SemanticAttemptAccounting.endpoint_attempts` carries one per-endpoint
@@ -5281,7 +5312,8 @@ material edit (`kernel.task_facts.material_edit_recorded`: an observed edit or s
 counts under ADR-042/045, whether or not its result arrived, so a Codex shell `apply_patch <<EOF`
 counts by the files its patch names, or an agent-published `edit` action) while the check-time
 capture observed no workspace change, runs the local checks only: `semantic_status` `not_requested`,
-`semantic_reason` `deferred_before_first_edit` (1.5.0; a 1.4.0 record may still say
+`semantic_reason` `deferred_before_first_edit` (1.5.0, which the writer uses for this pair alone
+and which admits it without `semantic_conclusion`; a 1.4.0 record may still say
 `deterministic_mode` with the same gap), and the standing gap
 `semantic_review_deferred_before_first_edit` (rule G7, a semantic-only gap for absence proofs).
 There is no supported downgrade over a ledger that holds a projected check-recorded 1.5.0 row.
@@ -12489,7 +12521,22 @@ as `outcome_unknown` and is never resent. For it, `operation_max_retries` is `0`
 - Wire: optional `reviewer` (`$defs/reviewer_record`, `$defs/reviewer_read`) on the check-result
   1.6.0 success branch and on check-recorded 1.6.0, both new versions; check-recorded 1.6.0 is
   written exactly when the record is present, and the 1.4.0/1.5.0 documents stay unchanged and
-  refuse the field (`unknown_payload_field`). MCP `check` outputs and control-result 2.9.0 name
+  refuse the field (`unknown_payload_field`). The record stays on every terminal result the
+  conversation returns, including one whose first exchange was refused before dispatch, so
+  check-recorded 1.6.0 (unreleased, in place) admits, besides a completed review, each outcome a
+  conversation can end on without a conclusion, in one branch that forbids `semantic_conclusion`:
+  `blocked_by_policy` (`channel_disabled`, `content_category_not_authorized`,
+  `network_egress_denied`, `provider_binding_not_authorized`, `scope_not_authorized`),
+  `blocked_forbidden_data`/`never_send_detected`, `classification_uncertain`, `human_denied`,
+  `approval_expired`, `refused`, `timeout`, `invalid` (`response_content_invalid`,
+  `response_schema_invalid`, and `semantic_judgment_rejected`, which keeps the record and the
+  provider-bound manifest), `late`/`deadline_authority_lost`, `unavailable`
+  (`audit_reservation_unavailable`, `outcome_unknown`, `provider_quota_exhausted`,
+  `provider_rate_limited`, `receipt_persistence_unknown`, `retry_budget_exhausted`,
+  `transport_unavailable`) and `failed` (`case_capacity_exceeded`, `coordinator_failure`).
+  `semantic_binding` still decides each pair's provenance. Check-result 1.7.0 and the status
+  operation's `check_outcome` already admitted every pair; receipt-document 1.3.0 carries none of
+  them. MCP `check` outputs and control-result 2.9.0 name
   check-result 1.6.0; golden vector `fixtures/canonical/check-reviewer-record-1.6.0.case.json`
   (CHK-160). Its leaves are public structural in the result-leaf registry. `CheckCommitResult.reviewer` and
   `FinalSemanticEvaluation.reviewer` carry it in process; `FinalSemanticEvaluation`

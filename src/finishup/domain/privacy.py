@@ -105,7 +105,10 @@ __all__ = [
     "ReceiptCapacity",
     "ReceiptCounts",
     "ReceiptPolicyBinding",
+    "MAX_SCAN_MATCH_ITEM_IDS",
+    "SCAN_MATCH_CLASSES",
     "ReceiptSecretScan",
+    "ScanMatchClass",
     "ReceiptSecretScanStage",
     "ReceiptTransformations",
     "OBSERVATION_ADVICE_PACKET_ITEM_ID",
@@ -379,6 +382,9 @@ def policy_field_omitted(name: str, value: object) -> bool:
         value is CredentialHeuristic.ENFORCED
         or (name == "conversation_review" and value is None)
         or (name == "admitted_input_roots" and value == ())
+        # #1138: a receipt scan names its match class and items only when a scan refused.
+        or (name == "match_class" and value is None)
+        or (name == "match_item_ids" and value == ())
     )
 
 
@@ -2808,6 +2814,18 @@ class ReceiptSecretScanStage(str, Enum):  # noqa: UP042 - durable receipt vocabu
     # result came from a prepared scan or from a pre-dispatch refusal; readers preserve that
     # uncertainty instead of presenting it as a clean scan.
     LEGACY_UNKNOWN = "legacy_unknown"
+    # #1138: the scan of the whole reviewer conversation (#1118) that carries the approved packet
+    # one JSON level deeper. A refusal there was recorded as ``prepared_case`` before.
+    REVIEWER_EXCHANGE = "reviewer_exchange"
+
+
+# #1138: the confidence class of a refusing scan match. ``high_confidence`` is a known credential
+# shape, a private-key marker, a URI password, a canary or scanner saturation; ``heuristic`` is
+# only the low-confidence credential-assignment heuristic.
+type ScanMatchClass = Literal["high_confidence", "heuristic"]
+SCAN_MATCH_CLASSES: Final = ("heuristic", "high_confidence")
+# At most this many item ids name where a refusing match sat; more are not listed.
+MAX_SCAN_MATCH_ITEM_IDS: Final = 16
 
 
 @dataclass(frozen=True, slots=True)
@@ -2822,10 +2840,28 @@ class ReceiptSecretScan:
     # heuristic turned off, so only high-confidence detectors ran (issue #982). Encoded only when
     # disabled; every receipt written before the field existed keeps its exact bytes.
     credential_heuristic: CredentialHeuristic = CredentialHeuristic.ENFORCED
+    # #1138: on a refusing scan, the confidence class of its matches and the opaque case item ids
+    # they sat in (none listed when no single item explains them). Never matched bytes. Absent on
+    # every other receipt, so receipts written before the fields keep their exact bytes.
+    match_class: ScanMatchClass | None = None
+    match_item_ids: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         _text(self.registry_version, _VERSION)
         _enum(self.credential_heuristic, CredentialHeuristic)
+        if self.match_class is not None and (
+            self.match_class not in SCAN_MATCH_CLASSES or self.match_count == 0
+        ):
+            raise _invalid()
+        if (
+            type(self.match_item_ids) is not tuple
+            or len(self.match_item_ids) > MAX_SCAN_MATCH_ITEM_IDS
+            or self.match_item_ids != tuple(sorted(set(self.match_item_ids), key=str.encode))
+            or (self.match_item_ids and self.match_class is None)
+        ):
+            raise _invalid()
+        for item_id in self.match_item_ids:
+            _text(item_id, _OPAQUE)
         validate_sha256_digest(self.scanner_profile_digest)
         _nonnegative(self.match_count)
         if type(self.passed) is not bool:
@@ -3006,7 +3042,11 @@ class EgressReceipt:
             self.withheld_item_ids
             or (
                 type(self.secret_scan) is ReceiptSecretScan
-                and self.secret_scan.credential_heuristic is not CredentialHeuristic.ENFORCED
+                and (
+                    self.secret_scan.credential_heuristic is not CredentialHeuristic.ENFORCED
+                    # #1138: the released 1.0 shape has no match class or item fields.
+                    or self.secret_scan.match_class is not None
+                )
             )
             # The released 1.0 vocabulary stops at 262,144 final bytes (#1118 widened only 1.1).
             or (
@@ -3076,7 +3116,11 @@ class LocalDisclosureReceipt:
             self.withheld_item_ids
             or (
                 type(self.secret_scan) is ReceiptSecretScan
-                and self.secret_scan.credential_heuristic is not CredentialHeuristic.ENFORCED
+                and (
+                    self.secret_scan.credential_heuristic is not CredentialHeuristic.ENFORCED
+                    # #1138: the released 1.0 shape has no match class or item fields.
+                    or self.secret_scan.match_class is not None
+                )
             )
             # The released 1.0 vocabulary stops at 262,144 final bytes (#1118 widened only 1.1).
             or (

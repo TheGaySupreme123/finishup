@@ -51,6 +51,7 @@ from finishup.domain.receipts import (
     SEMANTIC_REVIEW_NOT_CONFIGURED_GAP,
     SEMANTIC_REVIEW_NOT_REQUESTED_GAP,
     SEMANTIC_REVIEW_SKIPPED_INSUFFICIENT_PACKET_GAP,
+    SEMANTIC_REVIEW_SKIPPED_PRIVACY_BLOCK_GAP,
     ReceiptChildFinding,
     ReceiptChildOutcome,
     ReceiptChildren,
@@ -74,6 +75,7 @@ from finishup.domain.receipts import (
     ReceiptSemanticWithheldItem,
     ReceiptVersionSlice,
     check_time_change_gap_sentence,
+    privacy_block_sentence,
     receipt_document_carries_terminal_sections,
 )
 from finishup.domain.review_input_render import (
@@ -2105,6 +2107,17 @@ def _provider_manifest_spec_status(check: CheckRecordedPayload | None) -> str | 
     return status if type(status) is str and status in _REVIEW_INPUT_SECTION_STATUSES else None
 
 
+def _privacy_block_text(check: CheckRecordedPayload | None) -> str:
+    """#1138: the applicable check's privacy-boundary refusal, named as one; else empty."""
+
+    if check is None or check.semantic_status is not SemanticStatus.BLOCKED_FORBIDDEN_DATA:
+        return ""
+    return privacy_block_sentence(
+        check.semantic_redacted_values,
+        skipped=SEMANTIC_REVIEW_SKIPPED_PRIVACY_BLOCK_GAP in check.coverage.known_gaps,
+    )
+
+
 def _reviewer_sentence(check: CheckRecordedPayload | None) -> str:
     """#1118: what the applicable check's reviewer conversation read, as FinishUP recorded it.
 
@@ -2411,6 +2424,7 @@ def _sections(
     review_mode_sentence: str = "",
     proxy_sentence: str = "",
     coordinator_failure: bool = False,
+    privacy_block: str = "",
     claim_verification: tuple[str, ...] = (),
     claim_verification_limitation: str = "",
     decision_answers: Mapping[FindingId, str] | None = None,
@@ -2768,6 +2782,16 @@ def _sections(
             body = body.replace(lead, COORDINATOR_FAILURE_LIMITATION, 1)
         elif COORDINATOR_FAILURE_LIMITATION not in body:
             body = f"{body} {COORDINATOR_FAILURE_LIMITATION}"
+        bodies[ReceiptSectionKey.LIMITATIONS_AND_COVERAGE] = body
+    if privacy_block:
+        # Issue #1138: a review refused at the privacy boundary is named as one, with its stage,
+        # the items and the match class, on every rendering of this section.
+        body = bodies[ReceiptSectionKey.LIMITATIONS_AND_COVERAGE]
+        lead = "AI-powered relevance review was not run."
+        if lead in body:
+            body = body.replace(lead, privacy_block, 1)
+        elif privacy_block not in body:
+            body = f"{body} {privacy_block}"
         bodies[ReceiptSectionKey.LIMITATIONS_AND_COVERAGE] = body
     if observed_failure_sentence:
         bodies[ReceiptSectionKey.LIMITATIONS_AND_COVERAGE] += " " + observed_failure_sentence
@@ -3258,6 +3282,7 @@ def build_receipt(
             context.applicable_check is not None
             and context.applicable_check.semantic_reason is SemanticReason.COORDINATOR_FAILURE
         ),
+        privacy_block=_privacy_block_text(context.applicable_check),
         semantic_usage_sentence=_semantic_usage_sentence(
             None
             if context.applicable_check is None
