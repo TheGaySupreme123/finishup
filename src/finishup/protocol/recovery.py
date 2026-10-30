@@ -531,9 +531,9 @@ _DIRECTIVES: Final = (
     RecoveryDirective(
         token="semantic_capacity_exceeded",
         directive=(
-            "No usable review ran. For case_capacity_exceeded no provider attempt was made: narrow "
-            "the claim or obligation scope. For provider_quota_exhausted, wait for quota. Then run "
-            "one new check under a NEW request_id."
+            "No usable review ran. case_capacity_exceeded: it outgrew an approved bound, as an "
+            "unchanged re-check would; narrow the claim or obligation scope. "
+            "provider_quota_exhausted: wait for quota. Then check once under a NEW request_id."
         ),
         guidance_uri=_SEMANTIC_COVERAGE,
         nudge="Do not resend the same case expecting a larger admitted bound.",
@@ -600,12 +600,23 @@ _DIRECTIVES: Final = (
     RecoveryDirective(
         token="semantic_privacy_blocked",
         directive=(
-            "Blocked before dispatch; never resend this case. Supply a safe replacement to rescan, "
-            "then check once under a NEW request_id. Else, for optional review, a "
-            "local-only check may stand with the gap; required review is unmet."
+            "Blocked before dispatch; a resend is refused alike. If the refused item is text you "
+            "published, revise it without the value and check once under a NEW request_id. Else "
+            "required review is unmet; for optional review, local-only stands."
         ),
         guidance_uri=_SEMANTIC_COVERAGE,
         nudge="Never reuse the blocked bytes or case identity.",
+    ),
+    # #966: the refused item is one FinishUP composed or captured, so no agent action clears it.
+    RecoveryDirective(
+        token="semantic_privacy_blocked_unrecoverable",
+        directive=(
+            "Blocked before dispatch by content FinishUP composed or captured; no agent action "
+            "clears it and a resend is refused alike. Report the required review as unmet, "
+            "naming the item. For optional review, local-only stands."
+        ),
+        guidance_uri=_SEMANTIC_COVERAGE,
+        nudge="Never change consent, privacy settings or your work to clear it.",
     ),
     RecoveryDirective(
         token="consent_outcome_unconfirmed",
@@ -863,6 +874,12 @@ LOCAL_REASON_CONTINUATION_PREFIXES: Final[tuple[tuple[str, str], ...]] = (
 # reason code cannot land with nothing to say.
 REASON_CODE_DIRECTIVE_EXEMPTIONS: Final[frozenset[str]] = frozenset(
     {
+        # #1244 (D12): a refused delivery continuation. The message names the one read to make
+        # instead (the original status read, or current status); a directive adds nothing.
+        "delivery_cursor_expired",
+        "delivery_cursor_invalid",
+        "delivery_disclosure_changed",
+        "delivery_redaction_recorded",
         # Internal contention labels do not prove that a first-start lease was released.
         # The start application emits the stronger start_* tokens only after that proof.
         "catalog_busy",
@@ -968,6 +985,8 @@ REASON_CODE_DIRECTIVE_EXEMPTIONS: Final[frozenset[str]] = frozenset(
         "ref_mirror_mismatch",
         # Issue #977: the message names the requested item and the exact repair.
         "requested_command_placeholder",
+        # #1190: a review-mode switch named a check as its only parent.
+        "review_mode_parent_is_check",
         "verification_criterion_not_in_task",
         "response_fields_invalid",
         "runtime_attempt_evidence_json_shape_invalid",
@@ -1341,6 +1360,7 @@ def continuation_for_semantic_outcome(
     reason: object = None,
     *,
     failure_class: object = None,
+    agent_revisable: bool | None = None,
 ) -> str | None:
     """Return the recovery token for a recorded AI-powered review outcome.
 
@@ -1348,6 +1368,11 @@ def continuation_for_semantic_outcome(
     tokens; this lookup never reads provider or caller text. A rejected
     credential is distinguished from transport failure by ``failure_class``,
     not by finding count or raw provider output (issue #742).
+
+    ``agent_revisable`` (#966) is ``review_block_agent_revisable`` over the check's recorded
+    ``review_blocked`` items: ``False`` turns a ``never_send_detected`` block into
+    ``semantic_privacy_blocked_unrecoverable``, since no agent action clears an item FinishUP
+    composed or captured; ``None`` (no item recorded) keeps the general directive.
     """
 
     del status  # Status is accepted for call-site symmetry; the reason pair is closed.
@@ -1361,6 +1386,8 @@ def continuation_for_semantic_outcome(
     reason_value = getattr(reason, "value", reason)
     if type(reason_value) is not str:
         return None
+    if reason_value == "never_send_detected" and agent_revisable is False:
+        return "semantic_privacy_blocked_unrecoverable"
     return _SEMANTIC_REASON_CONTINUATIONS.get(reason_value)
 
 

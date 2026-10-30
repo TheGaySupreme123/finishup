@@ -49,6 +49,7 @@ from finishup.domain.privacy import (
 )
 from finishup.domain.reviewer_context import (
     MAX_SIZED_EXCHANGE_BYTES,
+    REVIEWER_FRAME_BYTES,
     UNSIZED_EXCHANGE_BYTES,
     ReviewerContextWindow,
     ReviewerExchangeBudget,
@@ -79,16 +80,6 @@ MAX_CEILING_PLANNING_ROUNDS: Final = 4
 # does not repeat the same budget.
 _ROUND_MARGIN_BYTES: Final = 2_048
 CEILING_PLANNING_GAP: Final = "content_unselected"
-
-
-# #1118: every byte of the reviewer conversation counts against the exchange's byte limit: the loop
-# instruction, the packet (sent as a JSON string, so escaping grows it, up to twice for quoted code),
-# the read catalog, the reviewer's replies and the read results. The first exchange is measured
-# exactly, as ``reviewer_first_exchange`` renders it, and planned below the limit less this frame,
-# which keeps room for the reviewer's read actions, their results and a format-repair notice. Each
-# result is then fitted to what the exact next exchange leaves (``run_reviewer``'s
-# ``exchange_budget``), so no later exchange outgrows the limit either.
-REVIEWER_FRAME_BYTES: Final = 8192
 
 
 def reviewer_route_window(binding: ProviderBinding | None) -> ReviewerContextWindow | None:
@@ -314,29 +305,62 @@ def plan_under_channel_ceiling(
     exact reviewer exchange that carries it (#1118), so escaping is counted, not estimated.
 
     ``rebuild`` builds the same case under a narrower selection and adds the planning gap. The
-    first rebuild omits lower-priority narrative with the primary excerpt budget intact. A
+    first rebuild omits lower-priority narrative (the agent's goal and the history) with the
+    primary excerpt budget and the obligation and claim rows intact. A
     no-excerpt probe measures the remaining fixed part; it is never returned below the diff floor.
     Later rebuilds
     size the excerpt budget from how many prepared bytes each excerpt byte actually cost, since
-    JSON escaping can multiply it. A case whose envelope cannot be bounded at all is returned
-    unchanged, and egress decides it as before.
+    JSON escaping can multiply it. Only when no such plan fits with the diff floor is the whole
+    search repeated without the obligation and claim rows (#1245, D22), exactly as every review
+    was planned before, so no review that fitted then is refused now. A case whose envelope
+    cannot be bounded at all is returned unchanged, and egress decides it as before.
     """
 
     if limit is None:
         return case, selection, 0
     size = _prepared_size(case, admission, measure)
-    excerpt_bytes = _excerpt_bytes(case)
     if size is None or size <= limit:
         return case, selection, 0
     floor = final_diff_floor(case, selection, limit)
-    approved = primary_material_selection(
-        selection, keep_timeline="prior-missing-for-assessment" in case.packet.timeline_item_ids
+    keep_timeline = "prior-missing-for-assessment" in case.packet.timeline_item_ids
+    planned, planned_selection, rounds, fitted = _plan_narrowed(
+        primary_material_selection(selection, keep_timeline=keep_timeline),
+        limit,
+        floor,
+        rebuild,
+        admission,
+        measure,
     )
+    if fitted:
+        return planned, planned_selection, rounds
+    planned, planned_selection, legacy_rounds, _fitted = _plan_narrowed(
+        primary_material_selection(
+            selection, keep_timeline=keep_timeline, keep_agent_account=False
+        ),
+        limit,
+        floor,
+        rebuild,
+        admission,
+        measure,
+    )
+    return planned, planned_selection, rounds + legacy_rounds
+
+
+def _plan_narrowed(
+    approved: ReviewSelectionPolicy,
+    limit: int,
+    floor: int,
+    rebuild: Callable[[ReviewSelectionPolicy], SemanticCase],
+    admission: ChannelAdmission | None,
+    measure: Callable[[bytes], int],
+) -> tuple[SemanticCase, ReviewSelectionPolicy, int, bool]:
+    """One narrowing search under ``approved``; the flag says whether its plan fits."""
+
     rounds = 1
     protected = rebuild(approved)
     protected_size = _prepared_size(protected, admission, measure)
     if protected_size is None or protected_size <= limit:
-        return protected, approved, rounds
+        return protected, approved, rounds, True
     count_rounds = 0
     for candidate_selection in prior_context_selections(protected, approved, floor):
         rounds += 1
@@ -345,20 +369,21 @@ def plan_under_channel_ceiling(
         candidate_size = _prepared_size(candidate, admission, measure)
         if candidate_size is not None and candidate_size <= limit:
             if check_time_change_floor_bytes_carried(candidate) >= floor:
-                return candidate, candidate_selection, rounds
+                return candidate, candidate_selection, rounds, True
     size, excerpt_bytes = protected_size, _excerpt_bytes(protected)
     base = rebuild(_with_excerpt_budget(approved, 0))
     base_size = _prepared_size(base, admission, measure)
     if base_size is None or base_size >= limit:
         # Even without excerpts the packet is over the ceiling: egress refuses it as before.
         return (
-            (protected, approved, rounds)
+            (protected, approved, rounds, False)
             if floor
-            else (base, _with_excerpt_budget(approved, 0), rounds)
+            else (base, _with_excerpt_budget(approved, 0), rounds, False)
         )
     planned, planned_selection = (
         (protected, approved) if floor else (base, _with_excerpt_budget(approved, 0))
     )
+    fitted = not floor
     while (
         rounds - count_rounds < MAX_CEILING_PLANNING_ROUNDS and size > base_size and excerpt_bytes
     ):
@@ -373,9 +398,10 @@ def plan_under_channel_ceiling(
         if candidate_size <= limit:
             if check_time_change_floor_bytes_carried(candidate) >= floor:
                 planned, planned_selection = candidate, candidate_selection
+                fitted = True
             break
         size, excerpt_bytes = candidate_size, _excerpt_bytes(candidate)
-    return planned, planned_selection, rounds
+    return planned, planned_selection, rounds, fitted
 
 
 def _excerpt_bytes(case: SemanticCase) -> int:

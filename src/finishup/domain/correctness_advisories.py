@@ -27,6 +27,12 @@ ADVISORY_ORIGINS = frozenset(
     }
 )
 DECLARED_TEST_VERDICT_ORIGIN = "declared_test_verdict"
+# #1240 D1 (owner, 2026-10-29): the notes whose missing answer keeps a receipt from reading clean.
+# ``decision_needed`` findings are the other material advice; process notes never count.
+MATERIAL_ADVISORY_ORIGINS = frozenset({"strongest_remaining_check"})
+# #1240 D3: the three answers to a note. ``addressed`` links evidence recorded after the note;
+# ``kept_choice`` (checked, kept my choice) and ``declined`` carry a reason.
+ADVISORY_DISPOSITIONS = frozenset({"addressed", "kept_choice", "declined"})
 # Origins whose re-raise without new material is folded onto the earlier row (finding_frontier
 # and concern identity), never minted again: both ``verified_*`` origins are one family.
 TRACKED_ADVICE_FAMILIES = {
@@ -93,7 +99,7 @@ def validate_advisory_response(row: JsonObject) -> None:
         type(target) is not str
         or not is_advisory_id(target)
         or type(disposition) is not str
-        or disposition not in {"addressed", "declined"}
+        or disposition not in ADVISORY_DISPOSITIONS
         or type(refs) is not tuple
         or len(refs) > 64
         or any(

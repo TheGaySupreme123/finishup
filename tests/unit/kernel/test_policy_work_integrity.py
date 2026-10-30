@@ -1217,3 +1217,53 @@ def test_finding_coverage_adds_only_engine_and_deterministic_dimensions() -> Non
     assert coverage.artifact_observation is BASE_COVERAGE.artifact_observation
     assert coverage.evidence_immutability is BASE_COVERAGE.evidence_immutability
     assert coverage.ledger_freshness is BASE_COVERAGE.ledger_freshness
+
+
+def _ledger(case: object) -> list[object]:
+    result = run_deterministic_policies(case, WORK_INTEGRITY_POLICY_PACK)  # type: ignore[arg-type]
+    return [
+        item
+        for item in result.assessments
+        if item.candidate.kind is FindingKind.LEDGER_STALE_OR_INCOMPLETE
+    ]
+
+
+def test_ledger_incomplete_skips_planned_work_at_a_plan_only_check() -> None:
+    """#1241 D11: before any action or result, planned work cannot be stale."""
+
+    gap = CaseGap(
+        f"planned_verification_unobserved:{obl(1)}", "planned_verification_unobserved", (obl(1),)
+    )
+    obligations = {obl(1): obligation_record(_open_obligation(1), 3)}
+    assert not _ledger(make_case(obligations=obligations, gaps=(gap,)))
+    worked = make_case(
+        obligations=obligations,
+        actions={act(1): record(_action(1, 1), 4)},
+        gaps=(gap,),
+    )
+    (finding,) = _ledger(worked)
+    detail = finding.candidate.detail  # type: ignore[attr-defined]
+    # Never raised without named gaps: the text names the gap code or the gap class.
+    assert "Gaps: " in detail
+
+
+def test_ledger_incomplete_retires_an_obligation_that_has_evidence() -> None:
+    gap = CaseGap(
+        f"planned_verification_unobserved:{obl(1)}", "planned_verification_unobserved", (obl(1),)
+    )
+    evidenced = replace(
+        _open_obligation(1), status=ObligationStatus.RESOLVED, resolution_evidence_refs=(evd(1),)
+    )
+    case = make_case(
+        obligations={obl(1): obligation_record(evidenced, 3)},
+        actions={act(1): record(_action(1, 1), 4)},
+        gaps=(gap,),
+        extra_refs=(evd(1),),
+    )
+    assert not _ledger(case)
+
+
+def test_ledger_incomplete_names_its_gap_classes_without_a_coverage_code() -> None:
+    gap = CaseGap(f"unknown_event:{evt(9)}:future_event@2.0.0", "unknown_event", (evt(9),))
+    (finding,) = _ledger(make_case(gaps=(gap,), extra_refs=(evt(9),)))
+    assert "Gaps: an event this build cannot read." in finding.candidate.detail  # type: ignore[attr-defined]

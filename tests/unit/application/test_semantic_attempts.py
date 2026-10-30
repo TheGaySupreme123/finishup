@@ -2424,3 +2424,57 @@ async def test_response_publication_failure_keeps_runtime_usage_on_failed_attemp
     assert accounting.attempt_usages[0].token_usage == usage
     assert ledger.attempts is not None
     assert ledger.attempts[_ATT1].token_usage == usage
+
+
+@pytest.mark.anyio
+async def test_a_review_ended_for_capacity_after_a_sent_exchange_keeps_its_usage() -> None:
+    """#1242: an unsent read continuation ended the review after a paid model turn.
+
+    The check reports ``case_capacity_exceeded`` with no provenance, yet the attempt row still
+    records the provider usage of the exchange that was sent; it used to be null.
+    """
+
+    from finishup.application.egress import SemanticEgressBlocked
+    from finishup.domain.privacy import PrivacyOutcome, PrivacyReason
+    from finishup.service.ready_composition import (
+        _map_egress_to_final,  # pyright: ignore[reportPrivateUsage]
+    )
+
+    usage = RuntimeTokenUsage(127_302, 0, 0, 230, 100, 127_532)
+    mapped = _map_egress_to_final(
+        SemanticEgressBlocked(
+            "req_40000000-0000-4000-8000-000000000009",
+            PrivacyOutcome.BLOCKED_BY_POLICY,
+            PrivacyReason.POLICY_DENIED,
+            capacity=(1360, 170),
+            token_usage=usage,
+        ),
+        attempt_id=_ATT1,
+    )
+    assert (mapped.status, mapped.reason, mapped.provenance) == (
+        SemanticStatus.FAILED,
+        SemanticReason.CASE_CAPACITY_EXCEEDED,
+        None,
+    )
+    ledger = _FakeLedger(_queued_job(), _lease())
+
+    async def dispatch(handle: SemanticAttemptHandle, deadline: Deadline) -> object:
+        del handle, deadline
+        return mapped
+
+    async def publish(handle: SemanticAttemptHandle, evaluation: object) -> ObjectRef:
+        raise AssertionError("nothing succeeded, so nothing is published")
+
+    await run_durable_semantic_attempts(
+        ledger=ledger,
+        lease=ledger.lease,
+        job=ledger.job,
+        deadline=Deadline(datetime(2030, 1, 1, tzinfo=UTC), 1000.0),
+        max_retries=0,
+        now_monotonic=lambda: 0.0,
+        dispatch=dispatch,  # pyright: ignore[reportArgumentType]
+        publish_success_response=publish,
+        build_final=lambda status, reason, evaluation, accounting: (status, reason, accounting),
+    )
+    assert ledger.attempts is not None
+    assert ledger.attempts[_ATT1].token_usage == usage

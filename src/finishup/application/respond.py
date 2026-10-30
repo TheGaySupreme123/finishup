@@ -9,7 +9,11 @@ from typing import Final, Literal, Protocol, cast
 
 from finishup.application.ledger_snapshot import projection_for_records
 from finishup.application.unit_of_work import PreparedMutation, run_prepared_append
-from finishup.domain.correctness_advisories import ADVISORY_RESPONSE_STATEMENT, is_advisory_id
+from finishup.domain.correctness_advisories import (
+    ADVISORY_DISPOSITIONS,
+    ADVISORY_RESPONSE_STATEMENT,
+    is_advisory_id,
+)
 from finishup.domain.events import (
     RESPONSE_EVENT_SCHEMA_VERSION,
     CheckRecordedPayload,
@@ -1177,7 +1181,7 @@ async def _record_advisory_response(
         )
     refs = () if request.evidence_refs is None else request.evidence_refs
     if (
-        request.disposition not in {"addressed", "declined"}
+        request.disposition not in ADVISORY_DISPOSITIONS
         or request.reason is None
         or not request.reason.strip()
         or len(request.reason.encode("utf-8")) > 4096
@@ -1188,7 +1192,11 @@ async def _record_advisory_response(
     ):
         raise _error(
             PublicErrorCode.INVALID_REQUEST,
-            "Advisories accept addressed with linked evidence and a reason, or declined with a reason; no response is required.",
+            (
+                "A note takes one answer: addressed (you ran it; a reason and evidence_refs "
+                "recorded after the note), kept_choice (you checked and kept your choice; a "
+                "reason) or declined (a reason)."
+            ),
             reason_code="response_fields_invalid",
         )
     after_note = False
@@ -1313,7 +1321,7 @@ async def execute_respond(app: Application, request: RespondRequest) -> RespondI
             if result is None:
                 result = await _record_advisory_response(app, runtime, request, digest)
             return await _public_result(request, runtime, result)
-        if request.disposition in {"addressed", "declined"}:
+        if request.disposition in ADVISORY_DISPOSITIONS:
             raise _error(
                 PublicErrorCode.INVALID_REQUEST, "This disposition requires an advisory identity."
             )

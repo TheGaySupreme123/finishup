@@ -8,7 +8,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from dataclasses import replace
 from datetime import UTC, datetime
-from typing import cast
+from typing import Any, cast
 from unittest.mock import AsyncMock
 
 import pytest
@@ -2098,6 +2098,27 @@ async def test_brief_status_is_a_strict_subset_of_the_full_body(view: str) -> No
     assert "detail" not in full_body
     for key, value in brief_body.items():
         if key in {"detail", "closure_state", "privacy_projection"}:
+            continue
+        if key == "page" and view == "compact":
+            # #1244 (D13): the brief compact page names each unanswered finding without its detail.
+            page = cast(dict[str, Any], full_body["page"])
+            full_page = {
+                **page,
+                "items": [
+                    {
+                        **item,
+                        "unanswered_findings": [
+                            {k: v for k, v in row.items() if k != "detail"}
+                            for row in item["unanswered_findings"]
+                        ],
+                    }
+                    for item in page["items"]
+                ],
+            }
+            assert any(
+                "detail" in row for item in page["items"] for row in item["unanswered_findings"]
+            )
+            assert full_page == value, key
             continue
         assert full_body[key] == value, key
     # One frontier when they agree; projection metadata at its defaults is omitted.

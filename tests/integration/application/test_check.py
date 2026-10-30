@@ -328,12 +328,15 @@ class _Ledger:
         review_input_manifest: object | None = None,
         review_summary: str | None = None,
         semantic_redacted_values: tuple[SemanticRedactedValue, ...] = (),
+        reviewer: object | None = None,
     ) -> CheckCommitResult:
         assert frozen == self.frozen
         self.last_review_summary = review_summary
         self.last_verdicts = prior_finding_verdicts
         self.last_missing = missing_for_assessment
         self.last_conclusion = semantic_conclusion
+        self.last_review_input_manifest = review_input_manifest
+        self.last_reviewer = reviewer
         if self.commit_failure is not None:
             raise self.commit_failure
         self.commit_count += 1
@@ -1720,6 +1723,38 @@ async def test_rejected_judgment_commits_the_check_instead_of_failing_the_reques
 
 
 @pytest.mark.anyio
+async def test_a_rejected_judgment_keeps_what_the_review_read_and_was_sent(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The provider answered; only its answer is unusable. What it read and was sent stays."""
+
+    from finishup.domain.reviewer_reads import ReviewerRecord, reviewer_record_from_wire
+
+    monkeypatch.setattr(diagnostics_module, "log_dir", lambda: tmp_path)
+
+    def _raise(*_args: object, **_kwargs: object) -> object:
+        raise check_module.SemanticJudgmentRejected("semantic_judgment_invalid")
+
+    monkeypatch.setattr(check_module, "validate_semantic_judgment", _raise)
+    record = ReviewerRecord(2, (), None, None)
+    manifest = _provider_bound_manifest()
+    app = _App(semantic=True)
+    app.semantic_result = replace(
+        _succeeded(SemanticJudgment("no_material_discrepancy", ())),
+        provider_input_manifest=manifest,
+        reviewer=record,
+    )
+
+    result = await execute_check_commit(app, _request("semantic_if_configured"))
+
+    assert result.semantic_status is SemanticStatus.INVALID
+    assert result.semantic_reason is SemanticReason.SEMANTIC_JUDGMENT_REJECTED
+    assert reviewer_record_from_wire(app.ledger.last_reviewer) == record
+    assert app.ledger.last_review_input_manifest == manifest
+    assert app.ledger.last_conclusion is None
+
+
+@pytest.mark.anyio
 async def test_partial_rejection_keeps_accepted_challenges_and_declares_the_gap(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -2418,12 +2453,18 @@ async def test_await_observations_absent_keeps_digest_and_result_bytes() -> None
     # The pre-field digest: the request dump with no await_observations member at all.
     legacy: dict[str, Any] = plain.model_dump(mode="json", by_alias=True)
     legacy.pop("await_observations")
+    # #1244 (D13): ``detail`` shapes only the reply, so it is outside the identity too.
+    legacy.pop("detail")
     legacy["scope"] = {"claim_ids": scope.claim_ids, "obligation_ids": scope.obligation_ids}
     legacy["policy_packs"] = packs
     legacy["route_profile"] = "policy"
     assert digest == canonical_digest(legacy)
     # The flag is outside the operation identity: a recovery may set or omit it.
     assert _request_digest(flagged, scope, packs, route_profile="policy") == digest
+    brief = CheckRequest.model_validate(
+        {**plain.model_dump(mode="json", exclude_none=True), "detail": "brief"}
+    )
+    assert _request_digest(brief, scope, packs, route_profile="policy") == digest
 
     result = await execute_check(_App(), plain)
     body = check_internal_json(result)

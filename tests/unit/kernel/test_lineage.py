@@ -658,3 +658,21 @@ def test_self_verified_child_finding_round_trips_the_recorded_event_and_schema()
         row(resolved=True, resolution_event_id=_CHECK, self_verified=True)
     with pytest.raises(ValueError):
         ChildFindingSnapshotModel.model_validate(resolved["children"][0]["findings"][0])
+
+
+def test_a_process_note_cannot_be_stamped_self_verified() -> None:
+    """#1243: a child snapshot refuses ``self_verified`` on a non-actionable kind.
+
+    So a self-verified process note in a child never reaches the parent's self-verified ids, and
+    the lineage rollup needs no kind filter of its own.
+    """
+
+    with pytest.raises(ValueError):
+        ChildFindingSnapshot(
+            finding_id=_FINDING,
+            kind=FindingKind.LEDGER_STALE_OR_INCOMPLETE,
+            origin=FindingOrigin.DETERMINISTIC,
+            priority=FINDING_KIND_TRAITS[FindingKind.LEDGER_STALE_OR_INCOMPLETE][0],
+            resolved=False,
+            self_verified=True,
+        )

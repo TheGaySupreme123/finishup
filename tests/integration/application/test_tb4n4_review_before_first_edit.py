@@ -13,6 +13,7 @@ composition with a hermetic reviewer that records every case it is shown:
 
 from __future__ import annotations
 
+import json
 from collections.abc import Mapping
 from dataclasses import dataclass, field, replace
 from typing import Any
@@ -264,3 +265,46 @@ async def test_the_closing_review_runs_before_any_edit() -> None:
     body = _body(closing)
     assert body["semantic_status"] == "succeeded"
     assert SEMANTIC_REVIEW_DEFERRED_BEFORE_FIRST_EDIT_GAP not in body["coverage"]["known_gaps"]
+
+
+async def test_the_deferred_check_the_writer_records_validates_on_its_own_schema() -> None:
+    """The real ledger writer records a deferred check on check-recorded 1.5.0, which admits it."""
+
+    from finishup.domain.events import AcceptedEvent, encode_payload
+    from finishup.protocol.canonical import canonical_encode
+    from finishup.protocol.schemas import validate_schema_instance
+
+    seed = 10491
+    session, frontier = await _planned(_Reviewer(), seed)
+    planned = await session.app.check(
+        CheckRequest.model_validate(
+            {
+                **request_base(protocol_id("req_", seed + 10)),
+                "session_id": session.session_id,
+                "writer_id": session.writer_id,
+                "expected_frontier": frontier,
+                "mode": "semantic_required",
+                "max_findings": "5",
+                # Only the packs every check-recorded version names: the deferral is under test.
+                "policy_packs": ["research-evidence/0.2.0", "work-integrity/0.3.0"],
+            }
+        )
+    )
+    assert type(planned) is CheckCommitResult
+    assert _body(planned)["semantic_reason"] == "deferred_before_first_edit"
+    runtime: Any = session.app.runtime
+    ((ledger, _objects),) = runtime.resources.values()
+    (recorded,) = (
+        record
+        for record in ledger._state.records  # pyright: ignore[reportPrivateUsage]
+        if type(record) is AcceptedEvent and record.schema.name == "check_recorded"
+    )
+    assert recorded.schema.version == "1.5.0"
+    assert recorded.payload is not None
+    body = json.loads(canonical_encode(encode_payload(recorded.payload)))
+    assert (body["semantic_status"], body["semantic_reason"]) == (
+        "not_requested",
+        "deferred_before_first_edit",
+    )
+    assert "semantic_conclusion" not in body
+    validate_schema_instance("check-recorded", "1.5.0", body)

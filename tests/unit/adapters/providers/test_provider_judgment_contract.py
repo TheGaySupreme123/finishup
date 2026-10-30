@@ -298,6 +298,8 @@ def test_request_schema_root_is_an_object_never_a_union() -> None:
                     optional.add("strongest_remaining_check")
                     # #1145: declared-test verdicts are optional the same way.
                     optional.add("declared_test_verdicts")
+                    # #1241 D9: the reviewer's freshness verdicts too.
+                    optional.add("freshness_verdicts")
                 assert set(properties) - optional == set(required), path
             for key, value in source.items():
                 if key in {"properties", "$defs"}:
@@ -360,6 +362,7 @@ def test_strict_wire_output_with_null_snippet_decodes_under_the_contract() -> No
             # Strict output sends every optional field, null when absent (#1162).
             "strongest_remaining_check": None,
             "declared_test_verdicts": None,
+            "freshness_verdicts": None,
             "verified": [
                 {
                     "requirement_or_claim": "Supported row",

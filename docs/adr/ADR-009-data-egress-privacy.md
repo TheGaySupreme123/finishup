@@ -1635,3 +1635,129 @@ measured the minimized row: 16,402 bytes. Egress refused the whole packet and no
   refs and parts) comes from that provider-bound manifest, so a left-out excerpt is never counted
   shown. The privacy receipt counts the items actually included. A bounded diagnostic
   `semantic_disclosure_capacity_fitted` records how many excerpts were left out, never content.
+- **A first exchange keeps its frame (*Amended 2026-10-29, #1242*).** The fit first holds a
+  reviewer conversation's first exchange to its route budget's first-exchange bounds: the byte
+  limit less the 8 KiB `REVIEWER_FRAME_BYTES` frame and, on a sized route, `first_token_limit`.
+  Later exchanges grow into that room. When those bounds cannot be met (the excess is fixed
+  material or the change), the fit falls back to the exchange limit itself, and
+  `semantic_first_exchange_frame_unkept` counts it. The dispatch check is unchanged: it refuses
+  only an exchange over the exchange limit, so keeping the frame never refuses a packet that
+  limit admits, and it never raises an approved limit or changes consent or privacy rules (see
+  ADR-006, amendment of 2026-10-29).
+
+## Typed capacity reason on the privacy receipt (*Amended 2026-10-29, #1129, #1142*)
+
+**Context.** A size refusal (an excerpt over its approved bytes or count, the excerpt total, the
+channel's `max_bytes` or `max_tokens`, or a reviewer exchange over its budget) is reported to the
+check and the job as `failed` / `case_capacity_exceeded` (ADR-006, #1118). Its privacy receipt
+only said `blocked_by_policy` / `policy_denied`, which reads as a policy rule, and before #1118 the
+check's last mapping arm turned any unrecognised policy refusal into `network_egress_denied`.
+
+**Decision.**
+
+- A pre-dispatch size refusal's network egress receipt (egress-receipt 1.1.0, unreleased, edited
+  in place) carries `capacity_exceeded`: the exceeded bound's `scope` (`disclosure`, `excerpt`,
+  `excerpt_total`), its `unit` (`bytes`, `tokens`, `excerpts`), and the bounded `attempted` and
+  `limit` integers. It never carries content. Every other receipt omits it and keeps its exact
+  bytes; a 1.0.0 receipt cannot carry it.
+- The durable outcome and reason stay `blocked_by_policy` / `policy_denied`. The audit store's
+  `receipt_reason` column is a closed storage vocabulary; a new reason value would need a catalog
+  table rebuild, which is a separate storage decision and is not made here. The typed object is
+  what says the refusal was for size.
+- The schema admits `capacity_exceeded` only beside `blocked_by_policy` / `policy_denied`, and only
+  with a scope/unit pair egress measures. `finishup privacy receipts get|list` print it on
+  stderr as `capacity_exceeded: ... refused for size, not by a policy rule`.
+- Check and job side: a refusal with a measured capacity is `failed` / `case_capacity_exceeded`
+  with the `semantic_case_capacity_exceeded` gap whatever its privacy reason. No refusal maps to
+  `network_egress_denied` unless its reason is `policy_denied` without a measured size; an
+  unrecognised reason is a FinishUP fault (`coordinator_failure`), never a network denial.
+- Nothing about what is sent, the bounds themselves, consent, or the scanner changes.
+
+## Privacy-boundary refusals are named and not resent unchanged (*Amended 2026-10-29, #1138*)
+
+**Context.** In the TB4 full-sol run every AI-powered review of two tasks (25 reviews, 7 of them
+`semantic_required`) was refused before dispatch as `blocked_forbidden_data` /
+`never_send_detected`: FinishUP's own `[withheld-by-yoetz:possible-credential]` placeholder was
+re-detected once the reviewer conversation (#1118) nested the packet a second time. The privacy
+receipt said `prepared_case` with a hard-coded `match_count` of 1 and no item, the final receipt said
+only that the review was not run plus "1 model exchange" although nothing was sent, and every later
+check sent the same content to be refused the same way (15 repeats). The scanner and what is sent are
+the privacy workstream's (#1248, P-D1/P-D2); this amendment fixes only the records.
+
+**Decision.**
+
+- The scan of the whole reviewer conversation is its own receipt stage, `reviewer_exchange`. A
+  refusing scan's receipt (egress-receipt 1.1.0, unreleased, in place) names in `secret_scan` the
+  matches' `match_class` (`high_confidence` when a high-confidence detector also matches, else
+  `heuristic`), its real `match_count`, and up to 16 opaque `match_item_ids`. The items are found by
+  scanning each packet row's own content encoded as deeply as the refused bytes carry it (the packet
+  string, or that string inside the conversation); a classification-time refusal names the items
+  with a concrete finding. This only reads the scanner's answers: the whole-byte scans decide the
+  refusal exactly as before, and the refused content is not sent. An earlier exchange of the same
+  conversation may already have been sent, so no record claims that nothing was.
+- The check carries the same facts as `review_blocked` entries in `semantic_redacted_values`, with
+  `stage` and `match_class` (`review-packet` when no single item explains the match), on the check
+  event, check result, `status view=operation` and the receipt document. The receipt's limitations
+  section, the compact receipt sentence, the CLI and the MCP check lead name the refusal as a privacy
+  block and say that sending the same content again will not help.
+- A conversation that sent nothing counts no model exchange, and its reviewer line is dropped.
+- No unchanged re-dispatch: when the newest check that asked for AI-powered review recorded that
+  refusal and no edit action, agent-published evidence or agent-published text (a claim, plan,
+  obligation, decision or answer, so a revised text is composed and scanned again) followed, the
+  next check records the same status and items with `semantic_review_skipped_privacy_block` and
+  composes, reserves and sends nothing. Hook-captured output does not end it, since the refused item stays in the case. A closing
+  review after a routine check's refusal is scanned once more, so the final state is checked before
+  the receipt; a closing review's own refusal stands. A privacy-policy change does not end it by
+  itself (the policy is not in the task ledger); the next edit does. Known limit: a write made only
+  through a shell command records no edit action, so it does not end the standing either.
+- The agent guidance and the usage page no longer promise that only a high-confidence credential
+  blocks the whole review: they say which matches do today. #1248 owns narrowing that.
+- *Amended 2026-10-29 (#966, items 1 and 4):* a block names what stays unmet and the one safe
+  continuation. Only when every `review_blocked` item is text the agent published (`claim-`,
+  `obligation-`, `goal-`, `decision-`, `agent-disclosures`, `local-finding-answer-`) does the
+  continuation offer a revision and one check under a new `request_id` (`semantic_privacy_blocked`).
+  An item FinishUP composed or captured (a task input, the check-time change, captured output or
+  published evidence, the task statement, the packet structure) gets
+  `semantic_privacy_blocked_unrecoverable`: no agent action clears it, no retry, and a required
+  review is reported unmet. The receipt sentence says the same. The check stays
+  `blocked_forbidden_data`, an undeliverable status, so it never reads as a local-only success.
+  Replacement bytes and their rescan (#966 items 2, 3 and 5) are #1248's.
+- Service-side and identical on Codex, Claude Code and Cursor.
+
+## A proposal refused at the final permission check closes at once (*Amended 2026-10-29, #1066*)
+
+Maintainer acknowledgement for this privacy-storage change is recorded on #1247 (decision D23).
+
+**Context.** When the coordinator refused an egress request after its disclosure proposal was
+prepared (the dispatch fence or repository authority no longer held, the policy or its limits
+changed before a resume), the proposal stayed `reserved` (or `awaiting_human`/`approved`) until its
+authorization timeout, at least 60 s. `privacy pending` listed it as a decision the owner could make
+although nothing could or would be sent, and it had no receipt.
+
+**Decision.**
+
+- A new audit operation, `close_refused_disclosure(proposal_id, receipt)`, moves a prepared network
+  proposal that is still `reserved`, `awaiting_human` or `approved`, with no authorization minted
+  and nothing consumed, to `decision_completed` with its blocked receipt, in one transaction, at
+  most once. Both audit stores implement it; no catalog migration is needed (the state and receipt
+  columns already admit it).
+- The coordinator closes a `blocked_by_policy` or `approval_expired` refusal returned after the
+  proposal exists (fresh dispatch and resume alike). The receipt names the refusal's outcome and
+  reason, counts zero included items and zero `final_bytes`, names the prepared case's scanner and
+  the owner's possible-credential setting (`credential_heuristic`, #982) of the policy the case was
+  prepared under (of the current policy when a resume refuses before reaching dispatch), and
+  carries `capacity_exceeded` for a size refusal (#1129). A timeout, an audit failure or a transport
+  outcome is not closed: an owner's still-valid approval stays usable, and a proposal whose state
+  cannot be read is left alone. Nor is a refusal that came from an exception rather than a
+  decision: reading the repository authority raised, or the dispatch fence guard raised. Those
+  sites mark the refusal `transient`; it is returned to the caller unchanged
+  (`blocked_by_policy`/`scope_mismatch`, no receipt) and the proposal stays `approved` or
+  `awaiting_human`, so a one-off catalog failure never costs the owner an approval. A fence that
+  answers false, an authority no longer held, and a changed policy or limit still close it.
+  Closing is best effort: if it fails, the proposal expires as before and the refusal is returned
+  either way.
+- `privacy pending` therefore excludes the proposal at once, `privacy receipts` lists its receipt,
+  and a same-request replay of the closed proposal reports the refusal its receipt recorded instead
+  of a generic policy denial.
+- Nothing about what is sent, consent, or the decision ceremony changes. Local-model proposals keep
+  their existing lifecycle.

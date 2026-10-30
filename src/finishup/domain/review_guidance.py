@@ -6,7 +6,7 @@ from enum import StrEnum
 class ReviewGuidance(StrEnum):
     MATERIAL_CONCERNS = (
         "Non-blocking. For each material concern: run a proportionate check, cite evidence that "
-        "already settles it, or decline with a reason. Recording a response is optional; zero "
+        "already settles it, or decline with a reason. Answer each material one once; zero "
         "findings does not establish correctness. A failing or weak test result: fix it; if you "
         "cannot, disclose it by name."
     )

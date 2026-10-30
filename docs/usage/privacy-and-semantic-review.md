@@ -154,9 +154,26 @@ only the item that carries it and reviews the rest; the check lists the withheld
 item and the line numbers involved, counted within the captured excerpt rather than the whole file
 (`semantic_redacted_values`), never the value. Both limit only
 the AI-powered review; local checks still see your
-work in full, and you never need to change consent or your code to clear them. Only a concrete credential, a private key, or a scanner that cannot finish
-blocks the whole review. You never need to hide or git-ignore a requested output to keep it out of
-review.
+work in full, and you never need to change consent or your code to clear them. A concrete
+credential, a private key, or a scanner that cannot finish blocks the whole review. For now, a
+credential-like match found only when the packet is checked inside the reviewer conversation also
+blocks the whole review; FinishUP's own `[withheld-by-yoetz:possible-credential]` marker can
+trigger one in some layouts (for example a nested YAML password followed by an indented line). The
+refused content is not sent; an earlier exchange of the same conversation may already have been.
+The check, status and receipt say the review was blocked at the privacy boundary and name the scan
+stage (`candidate`, `prepared_case` or `reviewer_exchange`), the item (its `item_id` in
+`semantic_redacted_values`, with disposition `review_blocked`; item `review-packet` when no single
+item explains it) and whether the match was a concrete credential (`high_confidence`) or a value
+that only looks like one (`heuristic`); the privacy receipt names the same. FinishUP does not send
+the same content to be refused again: later checks carry the refusal forward
+(`semantic_review_skipped_privacy_block`) until an edit or newly published evidence or text, and a
+closing review after a routine check's refusal checks once more. The check also says what your agent
+can do: when the refused item is text the agent itself published (a claim, a plan goal, an
+obligation or a decision), a revision without the value can be reviewed; when it is something
+FinishUP composed or captured (a task input, the change read from your repository, captured command
+output, or the packet itself), nothing the agent does clears it, a required review is reported as
+not done, and the receipt says so. You never need to hide or git-ignore a requested output to keep
+it out of review.
 
 What FinishUP records on your machine follows the same split. A concrete credential shape (a known
 API-key or access-token format, a private-key header, or a password inside a URL) is replaced before
@@ -352,7 +369,10 @@ which normally arrives in the check result that is waiting on it, and that id ca
 closed terminal, an agent that did not relay it. The listing names the decisions you can still
 make and their expiry, and nothing about what any of them would disclose. Destination, categories,
 and prepared bytes belong to the decision preview, which is bound to the exact prepared case and
-is the only surface that renders them.
+is the only surface that renders them. A prepared request that FinishUP itself refuses before
+sending (your policy changed, a limit was narrowed, or the work it was prepared for moved on)
+leaves the list at once and gets a blocked privacy receipt naming the reason, instead of waiting
+there until it expires.
 
 `export-desired` / `apply-desired` are the reviewable path for version-controlling policy. The
 asymmetry is the point: tightening can flow through gates, widening always requires a human.
@@ -594,7 +614,9 @@ approved earlier keeps its ceilings (256 KiB and 65,536 estimated tokens if setu
 run `finishup --privacy` and approve the proposal to take the new ones. The approval screen shows
 the higher ceilings as a widening. When a review does not fit, FinishUP
 leaves out lower-priority excerpts and says so in the review's coverage, or, if even the required
-parts do not fit, reports `case_capacity_exceeded` without sending anything.
+parts do not fit, reports `case_capacity_exceeded` without sending anything. The agent's
+obligations and claims are the last things left out: its plan summary, the history and
+lower-priority excerpts go first, so the closing review can still read what the agent promised.
 
 An Expanded policy you approved earlier keeps its 16-excerpt limit until you approve the new
 recipe. `finishup privacy show` and `finishup --privacy` show your current limits beside the ones the
@@ -620,6 +642,15 @@ a new finding linked to it. Routine checks and retries need no human prompt.
 The agent follows the review topic (`finishup://guidance/review.md`) for delivery pacing and
 independent judgment on findings, including conflicting inputs and decision-needed findings.
 
+AI-powered review checks the work against the task, the agent's plan and its claims; it is not a
+code reviewer. It can point out a gap between what the agent planned or claimed and what the record
+shows, and suggest one cheap check that tells two readings of the task apart. It cannot see a
+hidden grader or pick the reading a grader uses, and it never excuses a requested output. With
+conflicting inputs, the agent picks a reading, writes the requested output, and records the
+assumption; a reviewer agreeing that the inputs conflict is not permission to withhold. Only
+missing authority, a missing credential, or a destructive change the agent is not allowed to make
+excuses leaving a requested output unwritten.
+
 The reviewer works as a verifying reviewer: it checks the change against the task and the recorded
 verification against the change. It judges recorded test and command output itself instead of
 asking the agent to run it again, reports every distinct problem it finds (up to three per review),
@@ -628,7 +659,8 @@ so it does not report its own review, FinishUP checks, findings, or limits on wh
 carry as problems in the work, and it never asks the agent to install tools or change the
 environment. It does flag delivery risks it can see, such as an import the recorded environment
 lacks or files written outside the requested location, and it tests an "impossible" or
-"infeasible" conclusion against what the task asked for. A limitation outside the agent's control
+"infeasible" conclusion against what the task asked for. Before it suggests a test input or a
+state to try, it checks that the work's visible interface can reach it. A limitation outside the agent's control
 is acceptable when disclosed; one the agent could reduce is not support. The reviewer is told that a
 disclosure is never support for the work itself and never a reason to stop judging what the packet
 shows. It is told to read the work before the agent's account of it: the packet lists the task, the
@@ -659,10 +691,14 @@ channel limits the longer read guidance leaves room for two reads that return co
 three.
 Each further turn of the conversation is sent with its own privacy
 check and receipt, and the whole conversation, packet and reads included, must fit your channel
-limits: with tight limits the reviewer gets fewer reads or none. If the packet cannot be made to
+limits: with tight limits the reviewer gets fewer reads or none. When a read the reviewer asks for
+has no room left, FinishUP does not serve it and asks for the reviewer's verdict in the same turn;
+the review's record says the read was not served. If the packet cannot be made to
 fit your channel's byte limit, or the conversation the 256 KiB a single send may carry, nothing is
 sent and the check reports `case_capacity_exceeded`, not a network denial: your privacy settings
-did not block it. The privacy receipt still lists that turn as blocked with nothing sent. A check over a
+did not block it. The privacy receipt still lists that turn as blocked with nothing sent, and
+names the limit it exceeded under `capacity_exceeded` (which limit, its unit, the size tried and
+the limit), so it never reads as a policy rule. A check over a
 narrower scope can fit; when your own byte limit was the one exceeded, so can a higher limit you
 approve. What a read returned keeps the
 category it was admitted under: if you withdraw that category, or your policy changes, while the

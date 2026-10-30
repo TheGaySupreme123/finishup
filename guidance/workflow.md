@@ -176,7 +176,7 @@ Example: “Every exported value differs by at most 0.01” needs comparison wit
 | `publish_work` | One batch per material transition, usually one to eight events; a batch admits up to 100, so keep one transition in one batch rather than splitting it. A normal session is a handful of batches, never one per file, tool call, or message. Send only what you know: omit `request_id`, `expected_frontier`, and each draft's `event_id`, `occurred_at` and envelope lists; FinishUP mints the call's id (every result and error names it), fills the rest, sorts reference sets, and names what it filled in `server_filled`. After an unknown outcome, retry by sending that `request_id`; an id-less resend is never a retry (the bridge refuses one identical to your previous call). |
 | `status` | After resume, compaction, or delegate handoff, and before any completion claim. Not between routine tool calls. Never read it only for a frontier or an id a write already returned. The MCP tool answers `detail: brief` (one frontier, the page and the closure state) unless you ask for `full`; `limit` defaults to 20. |
 | `check` | Check the refined plan before editing, then changed behavior, outputs or acceptance evidence at useful milestones; [review.md](review.md) owns pacing and mode selection, [receipt.md](receipt.md) owns closure. Before the first material edit it runs local plan checks only (`semantic_review_deferred_before_first_edit`); a required closing review is never deferred. Change the work or supply the named new evidence before rechecking: a recheck with no new events returns the same finding. A check with no new events since the last one adds nothing. Track required review through `mode=semantic_required` and its reported status, never as an obligation to obtain the check. |
-| `respond` | Use [review.md](review.md)'s finding table once per unanswered defect; advisory choices are optional. Use the returned `finding_frontier` or current status frontier, never use the finding's `subject_frontier`. |
+| `respond` | Use [review.md](review.md)'s finding table once per unanswered defect; answer each material advisory note once (`addressed`, `kept_choice` or `declined`). Use the returned `finding_frontier` or current status frontier, never use the finding's `subject_frontier`. |
 | `receipt` | Once at the end; repeat only after material state changed. Then publish `work_closed` if the work is complete ([receipt.md](receipt.md)); neither a receipt nor `work_closed` requires another check. |
 
 
@@ -233,9 +233,11 @@ no `refresh_observation` MCP tool or CLI command.
 
 Final prose is scope-first: state what recorded evidence and checks covered, what was not verified or
 remained limited, the checked frontier, AI-powered review status/reason, and material coverage gaps
-before reporting actionable-unresolved, unanswered, or resolved-history counts. Never headline a bare
-“no findings”, “zero actionable findings”, “clean”, or “verified” result; an empty finding set is
-bounded by the evidence and review scope that ran. Keep the final answer no stronger than the receipt.
+before reporting actionable-unresolved or resolved-history counts. State the receipt's conclusion and
+name each reviewer note still open or declined; never write "0 unanswered findings" while one is
+open. Never headline a bare “no findings”, “zero actionable findings”, “clean”, or “verified” result;
+an empty finding set is bounded by the evidence and review scope that ran. Keep the final answer no
+stronger than the receipt.
 
 A completion claim is an assertion, not a conclusion. Follow [receipt.md](receipt.md) for the
 closing sequence, including `work_closed`.
@@ -276,25 +278,13 @@ verification wrote, byte-identical writes and unrelated placed changes do not de
 placed change may touch an input FinishUP cannot rule out, `verification_rerun_question` asks for a
 decision without blocking closure: inspect the recorded verification and subsequent paths/change
 summaries, then rerun or `respond` with `acknowledged` and a reasoned explanation that a rerun is
-not needed. A later change asks again. An edit made with your host's file-edit tool records no
+not needed. It asks only about the latest run of each planned verification, the latest verification
+overall and runs your account cites, once per change set; your answer stands until a change it did
+not cover. It is never counted as unanswered work, and the receipt shows your one-line reason.
+An edit made with your host's file-edit tool records no
 file path, so FinishUP cannot place it: it may be a source edit, so the verification is stale until
 you rerun it. A stale finding names the verification and the changed input, or the edit tool and
 count. A FinishUP check records the decision; it does not run tests for you.
-
-To declare a verification's exact file inputs and evidence outputs, publish an ordinary evidence
-row with reference `finishup-verification-inputs/v1:<observed res_ id>` and a JSON description:
-`{"inputs":["source.py","config.json"],"outputs":["evidence.json"],"complete":true}`.
-Use `complete:false` when this is only a partial input list. The declaration is your assertion;
-FinishUP does not observe arbitrary file reads inside a shell command. Inputs take precedence over
-outputs, and an output is exempt only when that run itself wrote it. A `complete:true` list with
-no inputs is not complete. A complete list that leaves out a file you later edit keeps the
-verification current, and FinishUP discloses `verification_inputs_caller_asserted`, so list every
-file the check reads. Name a directory with a trailing slash; a bare name is read as a file. An
-input directory (`src/`) makes the list partial, so a change inside it asks; an output directory
-(`reports/`) covers files that run itself wrote there once the record names them (list the file, or
-cite it as evidence), and `./` covers nothing. Directories and
-outside-workspace inputs remain unknown; a change whose comparison was unavailable cannot be placed
-and stays stale. Each new observed run needs its own declaration.
 
 For AI-powered review, freshness is always advisory: consider the verification together with what
 changed after it and answer the non-blocking rerun question. Actual failed checks and missing
@@ -368,8 +358,10 @@ to reconsider it, even right after an earlier continuation: if the task says the
 dependency is recoverable, continue the work; if it is genuinely outside your control, follow the
 confirmation step that re-check gives you, then stop. A Stop also asks you once about findings you
 marked `acknowledged_not_done` that the review says the task itself requires
-(`finding_premise_disputed`): do that work unless it is genuinely impossible. If you cannot
-finish it, keep the working deliverable: acknowledgement never requires withdrawing or emptying it.
+(`finding_premise_disputed`): do that work unless it is genuinely impossible. If the requested
+output does not exist yet, write it on your best reading and record the assumption
+(`finishup-assumption:<obligation id>`). If you cannot finish it, keep the working deliverable:
+acknowledgement never requires withdrawing or emptying it.
 FinishUP never asks at Stop whether a resolved obligation meets its acceptance criteria: an
 obligation it flags (a requested item never attempted, or evidence that is unlinked or only your
 own assertion) is named once in status and recorded on the receipt as a coverage limit. If the
@@ -387,6 +379,8 @@ a blocker: finish the work and disclose it in a `decision_recorded` whose statem
 exact line `finishup-verification-limit:<obligation id>` or `finishup-assumption:<obligation id>`, with
 the limit or assumption as the rationale. A disclosure never blocks, resolves or reopens anything;
 readiness lists `verification_limit_disclosed` or `assumption_disclosed`, and the receipt names it.
+A budget against a reference you cannot see also takes a line `finishup-proxy:<obligation id>`
+(rationale: your stand-in's measured ratio, or why none was feasible).
 Supersede the decision (`supersedes_event_id`) to withdraw it. For an open obligation you truly
 will not do, after repair, republish it on `obligation_published` 1.1.0 with the same meaning
 fields, `status: "acknowledged_not_done"` and an `acknowledged_not_done_reason`: the honest last
@@ -799,8 +793,8 @@ planned verification you did not run, a missing or emptied output, a claim that 
 or ran that the record does not show, or an early stop. A correctness concern it raises then comes
 back as a note in the review summary ("Reviewer correctness notes"), non-blocking. For each
 material note: run a proportionate check, cite evidence that already settles it, or decline with a
-reason. Recording a `respond` is optional; the receipt shows an unanswered note as `no recorded
-response`. The closing review judges correctness and
+reason. Then answer each material one once with `respond`; the receipt shows an unanswered note
+as `no recorded response`. The closing review judges correctness and
 completeness against the task as findings. A finding of kind `agent_criterion_unmet` is a criterion
 you set yourself beyond the task's stated scope (your own stress sizes, inputs or configurations)
 that fails: it is not a task requirement. Fix it, or narrow the criterion by responding
@@ -864,7 +858,10 @@ blocker instead of widening disclosure, credentials or runtime authority: publis
 line `finishup-blocker:<authority|consent|credential|dependency_unavailable>` and a rationale. Missing
 or inconsistent data the task says is recoverable, a failing test, or a result that looks
 infeasible is not a blocker: deliver a best-effort result in the requested form and disclose the
-assumption with a `finishup-assumption:<obligation id>` decision line. A FinishUP limit (something FinishUP cannot show or prove) is never a blocker: verify the
+assumption with a `finishup-assumption:<obligation id>` decision line. With conflicting inputs,
+pick a reading, write the requested output, and record the assumption. Review agreeing that a
+conflict exists is not permission to withhold. Only a missing authority, a missing credential, or a
+destructive change you have no authority to make excuses withholding a requested output. A FinishUP limit (something FinishUP cannot show or prove) is never a blocker: verify the
 work yourself and respond `self_verified` on the finding. FinishUP cannot verify a blocker, so the
 first one is only claimed: the `publish_work` result challenges it (`blocker_notices`), the
 obligation stays agent work (`obligation_blocker_unconfirmed`), and that challenge (or a Stop

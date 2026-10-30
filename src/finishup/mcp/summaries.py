@@ -84,7 +84,7 @@ from finishup.protocol.recovery import (
     correction_for_invariant,
     directive_for,
 )
-from finishup.protocol.redacted_values import SemanticRedactedValue
+from finishup.protocol.redacted_values import SemanticRedactedValue, review_block_agent_revisable
 
 __all__ = [
     "MAX_SUMMARY_BYTES",
@@ -659,7 +659,11 @@ def _overall_next_parts(source: Mapping[str, JsonValue]) -> list[Part]:
         parts.append(_opt("acknowledged incomplete endpoint: receipt;", priority=_P_ACTION))
     if status == "ready_with_limitations" and endpoint == "receipt":
         parts.append(_opt("disclose limitation at: receipt;", priority=_P_ACTION))
-    fixable = fix_or_decline_rows(source.get("closure_readiness"))
+    # #1244 (D13): a brief check carries the ``closure_state`` subset, these rows included.
+    readiness = source.get("closure_readiness")
+    fixable = fix_or_decline_rows(
+        readiness if isinstance(readiness, Mapping) else source.get("closure_state")
+    )
     if status == "ready_with_limitations" and fixable:
         # Issue #1209: what to fix, or decline with a reason, before that receipt (required, so a
         # tight bound keeps at least the first item rather than a bare receipt step).
@@ -942,23 +946,68 @@ def _semantic_withheld_items_part(source: Mapping[str, JsonValue]) -> Part | Non
     )
 
 
-def _semantic_redacted_value_tokens(source: Mapping[str, JsonValue]) -> tuple[str, ...]:
-    """PL2-1: validated item refs and line numbers only; never a value."""
+def _semantic_redacted_value_items(
+    source: Mapping[str, JsonValue],
+) -> tuple[SemanticRedactedValue, ...]:
+    """The valid PL2-1 entries of a result; an invalid one is skipped."""
 
     raw_items = source.get("semantic_redacted_values")
     if not isinstance(raw_items, (list, tuple)):
         return ()
-    result: list[str] = []
+    items: list[SemanticRedactedValue] = []
     for raw in raw_items:
         try:
-            item = SemanticRedactedValue.from_wire(raw)
+            items.append(SemanticRedactedValue.from_wire(raw))
         except (TypeError, ValueError):
             continue
+    return tuple(items)
+
+
+def _semantic_redacted_value_tokens(source: Mapping[str, JsonValue]) -> tuple[str, ...]:
+    """PL2-1: validated item refs and line numbers only; never a value."""
+
+    result: list[str] = []
+    for item in _semantic_redacted_value_items(source):
         ref = item.item_id if item.source_ref is None else item.source_ref
-        what = "replaced" if item.disposition == "value_replaced" else "item withheld"
+        what = (
+            "replaced"
+            if item.disposition == "value_replaced"
+            else "item withheld"
+            if item.disposition == "item_withheld"
+            # #1138: this item's match stopped the whole review; the refused content was not sent.
+            else f"blocked review ({item.match_class}, {item.stage})"
+        )
         lines = "L" + ",".join(str(line) for line in item.lines) if item.lines else "L?"
         result.append(f"{ref} {what} {lines}")
     return tuple(result)
+
+
+def _redacted_values(source: Mapping[str, JsonValue]) -> tuple[SemanticRedactedValue, ...]:
+    """The valid recorded PL2-1 entries of a result; invalid ones are skipped."""
+
+    raw_items = source.get("semantic_redacted_values")
+    if not isinstance(raw_items, (list, tuple)):
+        return ()
+    values: list[SemanticRedactedValue] = []
+    for raw in raw_items:
+        try:
+            values.append(SemanticRedactedValue.from_wire(raw))
+        except (TypeError, ValueError):
+            continue
+    return tuple(values)
+
+
+def _review_blocked_tokens(source: Mapping[str, JsonValue]) -> tuple[str, ...]:
+    """#1138: the items whose match stopped the review, with class and stage; never a value."""
+
+    result: list[str] = []
+    for item in _semantic_redacted_value_items(source):
+        if item.disposition != "review_blocked":
+            continue
+        # The item id always, with its catalogued ref as context, as the receipt sentence does.
+        ref = "" if item.source_ref is None else f"{item.source_ref}, "
+        result.append(f"{item.item_id} ({ref}{item.match_class} match, {item.stage} scan)")
+    return tuple(result[:4])
 
 
 def _semantic_redacted_values_part(source: Mapping[str, JsonValue]) -> Part | None:
@@ -974,9 +1023,13 @@ def _semantic_redacted_values_line_part(source: Mapping[str, JsonValue]) -> Part
 
     The full line is used when it fits beside the required text, else the shorter fixed form,
     else nothing (the structured result still has it). It outranks every other optional clause.
+    A ``review_blocked`` item had no value replaced, so it alone adds no line: the check lead
+    names that refusal and that sending it again will not help (#1138).
     """
 
-    if not _semantic_redacted_value_tokens(source):
+    if not any(
+        item.disposition != "review_blocked" for item in _semantic_redacted_value_items(source)
+    ):
         return None
     return Part(
         (SEMANTIC_REDACTED_VALUES_AGENT_LINE, SEMANTIC_REDACTED_VALUES_AGENT_LINE_SHORT),
@@ -1067,7 +1120,7 @@ _ADVICE_ID: Final = re.compile(
 CHECK_ADVICE_HEADER: Final = (
     "Tracked reviewer advice (advisory). Non-blocking. For each material concern: run a "
     "proportionate check, cite evidence that already settles it, or decline with a reason. "
-    "Recording a response is optional (respond finding_id=<id>); zero findings does not "
+    "Answer each material one once (respond finding_id=<id>); zero findings does not "
     "establish correctness:"
 )
 
@@ -1615,6 +1668,24 @@ def _check_lead_variants(
             f"{counts}",
             f"AI-powered review skipped; local check verdict: {verdict};",
         )
+    if status == "blocked_forbidden_data":
+        # Issue #1138: name the privacy-boundary refusal as one, with its items, and say that
+        # sending the same content again will not help.
+        blocked = _review_blocked_tokens(source)
+        named = f" by {', '.join(blocked)}" if blocked else ""
+        skipped = "semantic_review_skipped_privacy_block" in _safe_gap_codes(source)
+        resend = (
+            "not sent again: nothing changed since that refusal"
+            if skipped
+            else "sending the same content again will not help"
+        )
+        return (
+            f"AI-powered review blocked at the privacy boundary{named}; the refused content "
+            f"was not sent; {resend}; local check verdict: {verdict}; {counts}",
+            f"AI-powered review blocked at the privacy boundary{named}; {resend}; "
+            f"local check verdict: {verdict};",
+            f"AI-powered review blocked at the privacy boundary; local check verdict: {verdict};",
+        )
     if scoped_local_verdict:
         return (
             "No issue detected within local coverage; AI-powered review was not "
@@ -1687,6 +1758,8 @@ def _continuation_variants(
         status=status,
         reason=reason,
         failure_class=_failure_class_from_mapping(source.get("semantic_provenance")),
+        # #966: a block no agent action can clear says so instead of offering a replacement.
+        agent_revisable=review_block_agent_revisable(_redacted_values(source)),
     )
     recovered = directive_for(recovery)
     if recovered is None:
@@ -2082,6 +2155,37 @@ def _receipt_own_work_clause(source: Mapping[str, JsonValue]) -> str:
     return ""
 
 
+# #1246 (D17): the receipt's proxy sentence, recognised by its fixed wording only; the summary
+# points at it with closed wording and never carries the obligation ids or any prose.
+_RECEIPT_PROXY_NONE_CHOSEN: Final = "proxy: none chosen (no finishup-proxy decision"
+_RECEIPT_PROXY_POINTER: Final = (
+    "proxy: none chosen for a disclosed verification limit (limitations section);"
+)
+
+
+def _receipt_proxy_clause(source: Mapping[str, JsonValue]) -> str:
+    """#1246: a fixed pointer when a disclosed verification limit records no proxy decision."""
+
+    document = source.get("document")
+    if not isinstance(document, Mapping):
+        return ""
+    sections = cast(Mapping[str, JsonValue], document).get("sections")
+    if not isinstance(sections, (list, tuple)):
+        return ""
+    for raw in cast(Sequence[object], sections):
+        if not isinstance(raw, Mapping):
+            continue
+        section = cast(Mapping[str, object], raw)
+        body = section.get("body")
+        if (
+            section.get("key") == "limitations_and_coverage"
+            and type(body) is str
+            and _RECEIPT_PROXY_NONE_CHOSEN in body
+        ):
+            return _RECEIPT_PROXY_POINTER
+    return ""
+
+
 def _manifest_sentence(source: Mapping[str, JsonValue]) -> str:
     manifest = render_review_input_manifest_compact(source.get("review_input_manifest"))
     return manifest
@@ -2150,6 +2254,19 @@ def _brief_without_counts(source: Mapping[str, JsonValue]) -> bool:
         and not isinstance(source.get("closure_readiness"), Mapping)
         and isinstance(source.get("closure_state"), Mapping)
     )
+
+
+def _unanswered_notes_clause(source: Mapping[str, JsonValue]) -> str:
+    """``reviewer notes not answered: N; `` when readiness counts any, else ``""`` (#1240)."""
+
+    readiness = source.get("closure_readiness")
+    if not isinstance(readiness, Mapping):
+        return ""
+    counts = cast(Mapping[str, JsonValue], readiness).get("correctness_advisory_counts")
+    if not isinstance(counts, Mapping):
+        return ""
+    count = _safe_count(cast(Mapping[str, JsonValue], counts).get("no_recorded_response"))
+    return "" if count in {"0", "unavailable"} else f"reviewer notes not answered: {count}; "
 
 
 def _compact_status_fields(source: Mapping[str, JsonValue], view: str) -> tuple[str, str, str, str]:
@@ -2396,10 +2513,12 @@ def summary_for_status(envelope: object) -> str:
         recipe = render.variants("resolve_recipe", lambda: _obligation_resolve_recipe(source))
         if recipe:
             parts.append(_opt(*recipe, priority=_P_STATE))
+    # #1240 D5: never a bare "unanswered findings: 0" while a reviewer note has no answer.
+    notes = _unanswered_notes_clause(source)
     parts.append(
-        _req(f"reported gaps: {gaps}.")
+        _req(f"{notes}reported gaps: {gaps}.")
         if brief
-        else _req(f"unanswered findings: {unanswered}; reported gaps: {gaps}.")
+        else _req(f"unanswered findings: {unanswered}; {notes}reported gaps: {gaps}.")
     )
     deferral = _deferral_sentence(source.get("semantic_reason"), source)
     if deferral:
@@ -3030,6 +3149,12 @@ def summary_for_receipt(envelope: object) -> str:
         _opt(
             render.text("own_work", lambda: _receipt_own_work_clause(source)),
             priority=_P_STATE,
+        )
+    )
+    parts.append(
+        _opt(
+            render.text("proxy", lambda: _receipt_proxy_clause(source)),
+            priority=_P_DISCLOSURE,
         )
     )
     # Issue #1017: the result coverage counts live gaps only; gaps a later check cleared are

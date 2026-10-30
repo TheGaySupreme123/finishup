@@ -45,6 +45,7 @@ from finishup.domain.findings import (
     FindingKind,
     ResponseDisposition,
 )
+from finishup.domain.freshness_question import is_freshness_question
 from finishup.domain.values import (
     ActionId,
     ClaimId,
@@ -1254,7 +1255,9 @@ def unanswered_finding_ids(
     decision is not response work either (tb4n3 RC-1); an undisclosed one still is.
 
     A ``decision_needed`` choice (#1146) is visible advisory context, never mandatory response
-    work. Its answer is carried separately and does not prove a repair.
+    work. Its answer is carried separately and does not prove a repair. The verification rerun
+    question (``is_freshness_question``, #1241 D10) is the same: visible, answerable, never counted
+    as unanswered work, so check and status agree.
 
     A ``duplicate_of`` answer (issue #996) answers the finding only while its link holds
     (``duplicate_link_holds``). Once a later check broke the link, or the earlier finding became
@@ -1267,10 +1270,11 @@ def unanswered_finding_ids(
     waiting = frozenset(
         key
         for key in state.findings
-        # #1146: choices remain visible in findings, but are never mandatory response work.
+        # #1146: choices remain visible in findings, but are never mandatory response work; nor
+        # is the verification rerun question (#1241 D10).
         if not (
             (finding := state.findings[key].payload) is not None
-            and finding.kind is FindingKind.DECISION_NEEDED
+            and (finding.kind is FindingKind.DECISION_NEEDED or is_freshness_question(finding))
         )
         if (key not in state.responses or _duplicate_answer_lapsed(state, key))
         and key not in limitations

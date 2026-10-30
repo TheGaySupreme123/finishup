@@ -30,6 +30,7 @@ from finishup.domain.findings import (
     FindingKind,
     FindingOrigin,
 )
+from finishup.domain.freshness_question import FRESHNESS_QUESTION_SUMMARY
 from finishup.domain.receipts import (
     COMPLETION_SCOPE_DECLARED_NONE_GAP,
     COMPLETION_SCOPE_UNDECLARED_GAP,
@@ -593,6 +594,16 @@ CALLER_DIGEST_PROVENANCE_GAPS: Final[frozenset[str]] = frozenset(
 )
 
 
+# #1241 D11: the gap classes "the ledger is too incomplete" names when no coverage code applies.
+_LEDGER_GAP_CLASS_NAMES: Final = MappingProxyType(
+    {
+        "unknown_event_present": "an event this build cannot read",
+        "redaction_gap_present": "a redacted or unavailable record",
+        "freshness_gap_present": "a record whose currency cannot be established",
+    }
+)
+
+
 def render_deterministic_finding_text(
     kind: FindingKind,
     subject_refs: tuple[PublicSubjectRef, ...],
@@ -613,13 +624,26 @@ def render_deterministic_finding_text(
     template = DETERMINISTIC_FINDING_TEMPLATES[kind]
     if any(fact.fact_code == "verification_freshness_question" for fact in observed_facts):
         return (
-            "Is a verification rerun needed after the recorded changes?",
+            FRESHNESS_QUESTION_SUMMARY,
             f"Subjects: {', '.join(refs)}. Review the verification and later changes. Rerun it"
             " or respond acknowledged with a reasoned explanation that a rerun is not needed."
             " This question does not block closure: an unknown input relationship never demands a"
             " rerun, and on AI review a stale verification is asked about rather than blocked.",
         )
     detail = f"Subjects: {', '.join(refs)}. Main agent: {template.next_action}"
+    if kind is FindingKind.LEDGER_STALE_OR_INCOMPLETE and not gap_codes:
+        # #1241 D11: never raised without named gaps. With no coverage code to cite, name the gap
+        # classes the finding was raised for.
+        named = [
+            _LEDGER_GAP_CLASS_NAMES[fact.fact_code]
+            for fact in observed_facts
+            if fact.fact_code in _LEDGER_GAP_CLASS_NAMES
+        ]
+        if named:
+            detail = (
+                f"Subjects: {', '.join(refs)}. Gaps: {', '.join(named)}."
+                f" Main agent: {template.next_action}"
+            )
     if kind is FindingKind.LEDGER_STALE_OR_INCOMPLETE and gap_codes:
         detail = (
             f"Subjects: {', '.join(refs)}. Gaps: {', '.join(gap_codes)}."
@@ -1197,6 +1221,15 @@ class DeterministicCase:
     # claim rule and the AI-route question agree with the task facts after recovery.
     verification_tracked_runs: tuple[ResultId, ...] = ()
     verification_unjudged_stale: tuple[EventId, ...] = ()
+    # #1241 D9 x #1209: the tracked runs the agent linked to a planned verification, sorted. The
+    # link cites the run, so the rerun question asks about it and an answer clears the standing
+    # marker the task facts raise for it. Absent (empty) on a case frozen before the field.
+    verification_linked_runs: tuple[ResultId, ...] = ()
+    # #1241 D9: the tracked runs whose freshness the task facts' rerun markers read (each planned
+    # item's deciding run and the last verification run), sorted. The rerun question takes the
+    # latest of each requested verification and the latest verification overall from them.
+    # Absent (empty) on a case frozen before the field, which keeps the label rule alone.
+    verification_deciding_runs: tuple[ResultId, ...] = ()
     # #1205: bounded linked facts and paired routine advice, independent of the history window.
     # None is a legacy case with no recorded basis, never an empty/current evidence claim.
     evidence_view: JsonObject | None = None
@@ -1248,6 +1281,14 @@ class DeterministicCase:
             != tuple(sorted(set(self.verification_unjudged_stale), key=str.encode))
             or any(ref not in self.projection.results for ref in self.verification_tracked_runs)
             or any(ref not in self.allowed_ids for ref in self.verification_unjudged_stale)
+            or type(self.verification_linked_runs) is not tuple
+            or self.verification_linked_runs
+            != tuple(sorted(set(self.verification_linked_runs), key=str.encode))
+            or not set(self.verification_linked_runs) <= set(self.verification_tracked_runs)
+            or type(self.verification_deciding_runs) is not tuple
+            or self.verification_deciding_runs
+            != tuple(sorted(set(self.verification_deciding_runs), key=str.encode))
+            or not set(self.verification_deciding_runs) <= set(self.verification_tracked_runs)
         ):
             raise _invalid_case()
         if self.verification_freshness is not None and (
@@ -1697,6 +1738,16 @@ def deterministic_case_to_json(case: DeterministicCase) -> dict[str, JsonValue]:
             else {}
         ),
         **(
+            {"verification_linked_runs": list(case.verification_linked_runs)}
+            if case.verification_linked_runs
+            else {}
+        ),
+        **(
+            {"verification_deciding_runs": list(case.verification_deciding_runs)}
+            if case.verification_deciding_runs
+            else {}
+        ),
+        **(
             {"verification_unchanged_action_ids": list(case.verification_unchanged_action_ids)}
             if case.verification_unchanged_action_ids
             else {}
@@ -1770,7 +1821,20 @@ def deterministic_case_from_json(value: JsonValue) -> DeterministicCase:
             event_id(cast(str, value))
             for value in _case_json_array(source.get("verification_unjudged_stale", ()))
         )
-        source_keys -= {"verification_tracked_runs", "verification_unjudged_stale"}
+        linked_runs = tuple(
+            result_id(cast(str, value))
+            for value in _case_json_array(source.get("verification_linked_runs", ()))
+        )
+        deciding_runs = tuple(
+            result_id(cast(str, value))
+            for value in _case_json_array(source.get("verification_deciding_runs", ()))
+        )
+        source_keys -= {
+            "verification_tracked_runs",
+            "verification_unjudged_stale",
+            "verification_linked_runs",
+            "verification_deciding_runs",
+        }
         unchanged_actions = tuple(
             action_id(cast(str, value))
             for value in _case_json_array(source.get("verification_unchanged_action_ids", ()))
@@ -1945,12 +2009,31 @@ def deterministic_case_from_json(value: JsonValue) -> DeterministicCase:
             offered_test_digests=offered_tests,
             verification_tracked_runs=tracked_runs,
             verification_unjudged_stale=unjudged_stale,
+            verification_linked_runs=linked_runs,
+            verification_deciding_runs=deciding_runs,
             evidence_view=None
             if evidence_view is None
             else JsonObject(_case_json_object(evidence_view)),
         )
     except (KeyError, TypeError, ValueError) as exc:
         raise _invalid_case() from exc
+
+
+def _tracked_runs_of(
+    projection: ProjectionState,
+    tracked_runs: tuple[ResultId, ...],
+    action_events: Iterable[EventId],
+) -> tuple[ResultId, ...]:
+    """The tracked results of the given observed command actions, in tracked (sorted) order."""
+
+    wanted = frozenset(action_events)
+    return tuple(
+        ref
+        for ref in tracked_runs
+        if (result := projection.results[ref].payload) is not None
+        and (action := projection.actions.get(result.action_id)) is not None
+        and action.source_event_id in wanted
+    )
 
 
 def _projection_records(
@@ -2706,6 +2789,12 @@ def build_deterministic_case(
         verification_tracked_runs=tracked_runs,
         verification_unjudged_stale=tuple(
             event for event in signals.unjudged_stale_events if event in source_by_ref
+        ),
+        verification_linked_runs=_tracked_runs_of(
+            projection, tracked_runs, signals.agent_linked_events
+        ),
+        verification_deciding_runs=_tracked_runs_of(
+            projection, tracked_runs, signals.freshness_deciding_events
         ),
         evidence_view=(
             evidence_view_json(evidence_view)

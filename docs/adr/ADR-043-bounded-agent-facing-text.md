@@ -305,6 +305,8 @@ invalidate the original read, brief or full. A brief status body omits `requeste
 writer, which its signature binds. Like existing status cursors, a service restart expires it: recover with current
 status/findings, without starting a new review. Fresh disclosure audit metadata is outside the
 source content digest. There is no plaintext response cache, extra retention capacity, or new network authority.
+(Superseded 2026-10-29, #1244: continuations are short handles over a page set kept in service
+memory, rebuilt from the ledger after a restart; see the amendment at the end.)
 
 Because every read is its own disclosure, `privacy_projection` is never paged as `items`: each page
 carries its own read's whole local disclosure receipt, and reconstruction attaches the final page's
@@ -387,3 +389,82 @@ review summary, `totals` sat in the pages the continuation called optional prove
 
 Limits: the line counts records. A linked success can still come from a weak test; the reviewer and
 the receipt keep their own wording, and the line adds no Stop condition, event or storage.
+
+## Amendment: short handles over a kept page set, and smaller default replies (2026-10-29, issue #1244)
+
+The owner decided this in #1247 (D12, D13), which is the maintainer acknowledgement for this
+amendment and its delivery schema changes. It supersedes the continuation paragraphs of the result
+delivery amendment above where they differ.
+
+**What went wrong.** In the TB4 full run 19 exact copies of issued cursors were refused, and models
+mistyped 124 of the 285–1,549-character cursors. Check pages failed once 16 appends had landed:
+`replayed_check_view` read the result frontier's projection only from the adapter's 16-entry
+trusted history, silently dropped its finding checklist and readiness when that history had moved
+on, and the changed content digest refused the page. Status pages failed after the agent's own
+publish: `check_in_flight` and `leaf_authorship` are read live on a head read and differ on the
+pinned re-read. 42% of default status, check and receipt replies were paged at all.
+
+**Handles.** `next_cursor` is now a short handle, about 40–50 characters, and leads the page (it is
+the page model's first field, which Codex shows first):
+
+```text
+<kind><source request id, 22 base64url chars>.<frontier>.<offset>.<8 hex digest>[.<selector>]
+```
+
+`kind` is `c` (check), `r` (receipt) or `s` (status). The source id is the original request's UUID,
+so a recorded check or receipt is found again by its own operation. The digest prefix names the page
+set's content. The selector segment is what a rebuild needs: `b` for a brief check, a receipt's
+format, include and redaction profile, or a status read's view, detail and limit; `x` marks a status
+read that named a filter, an inventory cursor or a selector id. A handle carries no secret and no
+signature. Every read it names is one its own session and writer may already make, the kept page
+set is bound to that session and writer, and every continuation is disclosed again.
+
+**Kept page sets.** The service keeps each delivered page set (the projected source the pages are
+cut from, its digest, sink and selector) in process memory only: never on disk, never in the
+ledger, bounded by count (256) and size (64 MiB), least recently used first out. This is the
+response copy the earlier paragraph ruled out, kept so a page set stays one set. A continuation
+reads and discloses its source again, then:
+
+- **refuses**, naming which, only when a `redaction_recorded` event follows the set's frontier
+  (`delivery_redaction_recorded`) or the sink or disclosure policy changed
+  (`delivery_disclosure_changed`; policy id, version and digest);
+- serves the page **from the fresh read** when that read still matches the kept copy, with its own
+  disclosure receipt;
+- otherwise serves it **from the kept copy**, with the receipt those items were disclosed under,
+  and `ledger_moved_since` naming the head this read saw when the ledger has moved past the set's
+  frontier. A call-local fact (a check's observation wait) differs on any re-read and is served as
+  first delivered, with no notice.
+
+**Misses and restarts.** A handle whose set is not kept (after a service restart, or eviction)
+rebuilds the set from the ledger at the handle's frontier. When its digest matches the handle's,
+the page is served at the handle's offset. When it does not, the rebuilt set starts again at
+offset 0 with `page_set_restarted: true` (and `ledger_moved_since` when the head moved): discard
+earlier pages. A status handle marked `x` cannot be rebuilt and is refused as
+`delivery_cursor_expired`, naming the read to repeat. A malformed handle is
+`delivery_cursor_invalid`. Item partitions are measured with both notices present, so a notice
+never moves an offset.
+
+**The two causes.** A replayed check view now replays the result frontier's prefix when the
+trusted history misses, so a check rebuilt after 16 or more hook batches reads its own checklist
+and readiness again. The ledger still refuses a pinned case whose prefix has since gained
+agent-authored records (a stale prefix may not absorb newer work). A replay that meets that refusal
+is expected and leaves no diagnostic; its rebuilt set differs and restarts. Within one service run
+the kept copy serves every page as first delivered, so `check_in_flight` and `leaf_authorship` are
+frozen at the page's frontier.
+
+**Smaller defaults (D13).** A `detail: brief` compact status page names each unanswered finding by
+id, kind, priority and summary, without its repair detail. `check` gains `detail` (check-request
+1.1.0): `brief` names each finding by `finding_id`, `kind`, `origin`, `priority`, `summary`,
+`subject_refs`, `policy_id` and `challenge`, and carries the `closure_state` subset a brief status
+carries in place of `closure_readiness`. The MCP check tool asks for `brief` unless the agent
+names a detail; `status view=findings` and `view=compact` carry the rest. `detail` is presentation
+only: it is outside the operation identity, so a same-id replay may set or omit it. On the
+~1,000-event harness ledger, none of 11 default status and check replies is paged; before, the
+compact read and every check were.
+
+**Not changed.** Status inventory cursors (`page.next_cursor`) keep their signed form and still
+expire on restart; only delivery continuations moved to handles. Schemas changed in place, all
+unreleased: status-request 1.3.0 (`delivery_cursor` at most 96 characters), status-result 1.5.0
+(the page notices, an optional compact `detail`), check-request 1.1.0 (`detail`), check-result
+1.7.0 (brief rows, `detail`, `closure_state`, the page notices), receipt-result 1.4.0 (the page
+notices).

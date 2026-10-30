@@ -1469,7 +1469,7 @@ def _describe_presentation_schema(name: str, schema: dict[str, JsonValue]) -> No
                 "resolve it, and a later check that raises the issue again breaks the link. "
                 "Provenance_disputed, rejected, reopened and acknowledged_not_done require reason. "
                 "Only waived takes waiver fields: it requires reason and waiver_scope. Addressed "
-                "(reason, evidence_refs) and declined (reason) answer only a correctness advisory."
+                "(reason, evidence_refs), kept_choice and declined (reason) answer only an advisory."
             )
             # #1162: how to target a correctness advisory is in the respond tool description,
             # which is never trimmed; this field description shares the advertised input-schema
@@ -2080,10 +2080,10 @@ _POLICY_TOOL_DESCRIPTORS: Final = (
         "duplicate_of with duplicate_of_finding_id; linking never resolves the new finding. "
         "A correctness advisory (a routine note, a reviewer row or its strongest remaining check) "
         "is non-blocking: for each material concern, run a proportionate check, cite evidence "
-        "that already settles it, or decline with a reason. Recording a response is optional; to "
-        "record one, put its check-event-id:ordinal in finding_id and respond addressed (reason, "
-        "and evidence_refs with at least one recorded after the note's check) or declined "
-        "(reason). One response closes it unless new material arrives. That appends a "
+        "that already settles it, or decline with a reason. Answer each material one once: put "
+        "its check-event-id:ordinal in finding_id and respond addressed (reason, and "
+        "evidence_refs with at least one recorded after the note's check), kept_choice or "
+        "declined (reason). One answer closes it unless new material arrives. That appends a "
         "non-blocking decision record, not a finding response, and needs no recheck. "
         "This appends one "
         "finding-response record to the local FinishUP ledger; it does not publish to GitHub or run an "
@@ -2154,9 +2154,10 @@ _POLICY_TOOL_DESCRIPTORS: Final = (
         "markdown or text; json is an owner-export format that stricter agent-context policies may "
         "block. Call it once at the end, and again only if material state changed since the "
         "previous receipt, after the last material deliverable covered by the claim. Final prose "
-        "must state the actual actionable unresolved count, checked scope and frontier, AI-powered "
-        "review status and reason and material coverage gaps. Distinguish unanswered findings, "
-        "unresolved blockers and coverage-only gaps. A receipt is not a pass. Guidance: "
+        "states its conclusion, names each open or declined reviewer note, then the actual "
+        "actionable unresolved count, checked scope and frontier, AI-powered review status and "
+        "reason and "
+        "material coverage gaps. A receipt is not a pass. Guidance: "
         "finishup://guidance/coverage-and-receipts.md.",
         read_only=False,
         idempotent=True,
@@ -2255,9 +2256,9 @@ TOOL_DESCRIPTOR_DIGESTS: Final[Mapping[McpRouteProfile, Mapping[str, str]]] = Ma
                 "start": "sha256:4f0882901380efe04aa96f066a0bd56cd7511b091f0b5728d0efa02ef86a4499",
                 "publish_work": "sha256:0818149f507547dbdd4d3d0c37761e09978ad3c46b699df5a3c635093cdd6e2a",
                 "check": "sha256:48dfd8224c245f8af98e833046ae1e56f5c2e44b25b937c8ce1bf399fe230246",
-                "respond": "sha256:86282954f4302443e5b5ab53218d4f9608d21f377a1f6cc55feeb557d580b105",
+                "respond": "sha256:4f49b993015fb22de31573a2f568f7124bf1aaa2a0cdc3534a49d1c59c074594",
                 "status": "sha256:b5b522c70143921055c1260c3e4a9bb35c8efd6208fc65cef55b84605519d5e4",
-                "receipt": "sha256:af7788b3708ecd6ff952a4debd7969547ca2b4396d4046df488567a2a51ba9f2",
+                "receipt": "sha256:018480d643f3eb22c2c73867d9df801cdb90ff88fee5538c01b1963800f0560b",
                 "read_guidance": "sha256:dbcb10d90771cbf18e469e9646127d7966fd54771f360cdff77759d740efeb08",
                 "closure_prepare": "sha256:93373a5db28a0eff648e93b961f8621b4c3527eb210ebf497d070526bfaf3e97",
             }
@@ -2267,9 +2268,9 @@ TOOL_DESCRIPTOR_DIGESTS: Final[Mapping[McpRouteProfile, Mapping[str, str]]] = Ma
                 "start": "sha256:4f0882901380efe04aa96f066a0bd56cd7511b091f0b5728d0efa02ef86a4499",
                 "publish_work": "sha256:0818149f507547dbdd4d3d0c37761e09978ad3c46b699df5a3c635093cdd6e2a",
                 "check": "sha256:50a1fbc793d1b55f8cec40ff8408795ad8523ca3fb0eda9837606c3b6ec4b2df",
-                "respond": "sha256:86282954f4302443e5b5ab53218d4f9608d21f377a1f6cc55feeb557d580b105",
+                "respond": "sha256:4f49b993015fb22de31573a2f568f7124bf1aaa2a0cdc3534a49d1c59c074594",
                 "status": "sha256:b5b522c70143921055c1260c3e4a9bb35c8efd6208fc65cef55b84605519d5e4",
-                "receipt": "sha256:af7788b3708ecd6ff952a4debd7969547ca2b4396d4046df488567a2a51ba9f2",
+                "receipt": "sha256:018480d643f3eb22c2c73867d9df801cdb90ff88fee5538c01b1963800f0560b",
                 "read_guidance": "sha256:dbcb10d90771cbf18e469e9646127d7966fd54771f360cdff77759d740efeb08",
                 "closure_prepare": "sha256:93373a5db28a0eff648e93b961f8621b4c3527eb210ebf497d070526bfaf3e97",
             }
@@ -2278,8 +2279,8 @@ TOOL_DESCRIPTOR_DIGESTS: Final[Mapping[McpRouteProfile, Mapping[str, str]]] = Ma
 )
 TOOL_DESCRIPTOR_SET_DIGEST: Final[Mapping[McpRouteProfile, str]] = MappingProxyType(
     {
-        "policy": "sha256:ac6d5d04b14e6a4a9458f506d05bd6fbda5c9741dbc53ed68a414218cc371383",
-        "strict": "sha256:ab6ed584a9e3b1fb66ddf46457c6d1deb83497c9ef4cc8fa83a326904190efd6",
+        "policy": "sha256:9d602539114cc0b0b689f589ee7b85249742b58b78ed603a309fc83143ab9efc",
+        "strict": "sha256:5a504aa5d9c0665a7ab41a5cded235d547e876241766785c4e483f991e1b360d",
     }
 )
 

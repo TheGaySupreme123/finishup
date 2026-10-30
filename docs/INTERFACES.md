@@ -76,7 +76,7 @@ frozen values may change (`McpRegistrationState.FINISHUP_OWNED = "yoetz_owned"`,
 | Host admission | `finishup` forms | exact `yoetz` forms | `HostAdmissionEntry.legacy_entries`, `HostAdmissionObservation.legacy_entries_present`, status `legacy_grant` (`absent\|in_use\|stale\|unverified`), preview warnings `legacy_entries_removed` and `legacy_entries_retained`, refusals `legacy_registration_active` and `host_admission_preview_stale` (legacy entries changed between the CLI's observation and the preview's). Codex: `adapters.integrations.host_admission.CODEX_LEGACY_PLUGIN_ADMISSION_HEADER`; `cli.host_admission.AdmissionFacts.legacy_plugin_activation` and `AdmissionFacts.legacy_name_for(entries)`; status/preview JSON `route.legacy_plugin_activation` (`true\|false\|null`, always `null` off Codex). |
 | Tool and skill names | `mcp__finishup__*`, `mcp__plugin_finishup_finishup__*`, `finishup:*`, `plugin-finishup-finishup:*` | the same with `yoetz` | `domain/finishup_tools.py`: `FINISHUP_TOOL_SERVER_NAMES`, `FINISHUP_SCOPED_TOOL_PREFIXES`, `FINISHUP_PREFIXED_TOOL_PREFIXES`, `FINISHUP_SKILL_NAMES`, `finishup_scoped_tool_basename`, `finishup_tool_spelling`. Permanent. |
 | Guidance URIs | `finishup://guidance/` | `yoetz://guidance/` | `protocol/guidance_uris.py`: `GUIDANCE_URI_PREFIX`, `LEGACY_GUIDANCE_URI_PREFIX`, `LEGACY_GUIDANCE_ANCHORS`, `LEGACY_ALL_GUIDANCE_URIS`, `canonical_guidance_uri`, `legacy_guidance_uri`, `is_legacy_guidance_uri`, `guidance_uri_in_scheme_of`. `resources/list` advertises `finishup://` only. |
-| Agent text markers | `finishup-blocker:`, `finishup-assumption:`, `finishup-verification-limit:`, `finishup-no-material-work:`, `finishup:test-change:` | `yoetz-` / `yoetz:` spellings | `task_facts.LEGACY_BLOCKER_MARKER`, `LEGACY_DISCLOSURE_MARKERS`; `task_statement.LEGACY_NO_MATERIAL_WORK_MARKER`, `NO_MATERIAL_WORK_MARKERS`. Permanent. The `yoetz_availability` delegation block is honored like `finishup_availability`. |
+| Agent text markers | `finishup-blocker:`, `finishup-assumption:`, `finishup-verification-limit:`, `finishup-proxy:` (#1246, no legacy spelling), `finishup-no-material-work:`, `finishup:test-change:` | `yoetz-` / `yoetz:` spellings | `task_facts.LEGACY_BLOCKER_MARKER`, `LEGACY_DISCLOSURE_MARKERS`; `task_statement.LEGACY_NO_MATERIAL_WORK_MARKER`, `NO_MATERIAL_WORK_MARKERS`. Permanent. The `yoetz_availability` delegation block is honored like `finishup_availability`. |
 | Command heads | `finishup ...` | `yoetz ...` | `consent.ConsentCommandHead`, `consent.CONSENT_COMMAND_HEADS` (`pending-agent/6` → `yoetz`, `/7` → `finishup`, `/7` also admits `yoetz`); `consent prepare\|status\|catalog` emit `/7` with the head of the invoking launcher (`yoetz` through the deprecated alias; `cli/elevated._consent_command_head()`), via `projection_for_status(..., command_head=None)`, `catalog_payload(*, command_head="finishup")`, `status_payload(*, command_head="finishup")`; a `pending/4` file holding an operation's exact pre-rename danger text (`provider_credential_set`, `provider_credential_rotate`, `repository_privacy_grant`) under a matching digest is a valid pending; validation reasons `consent_command_head_mixed`, `consent_command_head_invalid`; `observation_capacity_policy.canonical_safe_command`; unreleased `command[0]` enums `[finishup, yoetz]` in consent 7.0.0, `check-result` 1.3.0/1.4.0 and `status-result` 1.4.0. |
 | Package name | `finishup` | `yoetz` | `receipts.RECEIPT_PACKAGE_NAMES` / `ReceiptPackageName`; unreleased `receipt-document`/`receipt-result` 1.3.0 `package_name` enum `[finishup, yoetz]`. |
 | Launchers | `finishup`, `python -m finishup` | `yoetz`, `python -m yoetz` | `launcher.invoked_through_legacy_alias()`, `launcher.LEGACY_MODULE_NAME`, `codex_launcher.installed_launcher(name)`, `package_update.installed_package_name()`; `entry.LEGACY_ALIAS_NOTICE` (stderr, interactive only); `exits.UPGRADING_FROM_YOETZ_GUIDE`; `application/upgrade.build_upgrade_plan(launcher=..., legacy_extras=...)` step "Move from the yoetz name" (install command `PACKAGE_INSTALL_COMMAND`, shell-quoted, with the extras `legacy_tool_extras(receipt)` proves from a plain `yoetz` uv receipt; `adapters.package_upgrade.PACKAGE_EXTRAS`, `plain_uv_tool_receipt(receipt, name)` and `read_uv_receipt(prefix)` (a bounded regular file, never followed through a symlink) are the one check the in-place `upgrade --accept` also uses, refusing a non-plain receipt as `refused_custom_uv_installation`) and `ValueError("upgrade_launcher_invalid")`/`ValueError("upgrade_extras_invalid")`; `package_update.upgrade_command_for(package=...)` (`yoetz upgrade` for a transitional install, used by status, setup, TUI tips and `recommend accept package-update`); `tui.app.relaunch_command(package)` (the command the TUI's upgrade handoff says to re-run); update checks `PYPI_LEGACY_JSON_URL` and `ValueError("package_invalid")`; one update cache file per identity (`package-update-cache.json` for `yoetz`, `package-update-cache-finishup.json` for `finishup`) with an optional `package` member (`finishup\|yoetz`; absent means a pre-rename `yoetz` poll). One release. |
@@ -569,7 +569,12 @@ catch-all; truncated or overlong output maps to `semantic_response_truncated` fr
 `response_content_invalid`; schema-invalid and rejected-judgment answers map to
 `semantic_response_invalid`; capacity and quota map to `semantic_capacity_exceeded`; and
 `retry_budget_exhausted` and `outcome_unknown`, which name how a job ended rather than why, map to
-`semantic_no_judgment`. Every directive follows the check-mode coverage guidance: it never tells an
+`semantic_no_judgment`. A `never_send_detected` block maps to `semantic_privacy_blocked` (revise text
+you published, then one check under a new `request_id`) only while every recorded `review_blocked`
+item is agent-published text (`claim-`, `obligation-`, `goal-`, `decision-`, `agent-disclosures`,
+`local-finding-answer-`; `review_block_agent_revisable`); a block on anything FinishUP composed or
+captured maps to `semantic_privacy_blocked_unrecoverable` (#966): no agent action clears it, no
+retry, and a required review is reported unmet. Every directive follows the check-mode coverage guidance: it never tells an
 agent to downgrade a required review, and it never offers a second job for a truncated answer.
 Predispatch configuration and policy outcomes (`not_configured`, `credential_unavailable`,
 `blocked_by_policy`, and the rest) carry no directive. These tokens
@@ -752,8 +757,10 @@ actual summary, the field is absent from both the internal projection document a
 success body; an absent summary is never materialized as JSON `null` or reported as policy-omitted.
 Optional `dry_run: true` on `PublishWorkRequest` validates the full batch and returns
 `outcome: "dry_run"` with `evidential: false` and a `would_accept` preview (event ids, schema
-identity, refs) plus coverage/gaps. It appends nothing, records no operation, does not consume
-`request_id`, and does not move the frontier — same non-citable discipline as
+identity, refs) plus coverage/gaps. It runs the publish's own read-only admission checks in the
+publish's order (completion scope, verification quotes, review-mode parents), so it refuses what
+the publish would refuse with the same code and reason. It appends nothing, records no operation,
+does not consume `request_id`, and does not move the frontier — same non-citable discipline as
 `status view=candidate_findings`. A subsequent real publish may reuse the same `request_id`; an
 id-less dry run through the bridge or the CLI gets a fresh unbound id, and its minted event ids are
 never the commit's.
@@ -1665,6 +1672,12 @@ A clean conclusion also needs every policy execution complete: `run/completed`, 
 member of `HOST_OBSERVATION_GUARDED_GAPS` counts only if the applicable check's own coverage
 carried it. A full check's `complete` completeness uses the same list
 (`full_check_gaps_clean`), with those host members only when `commands_complete(totals)`.
+An answered process note (`ledger_stale_or_incomplete` or `decision_needed`) has no closure and
+does not by itself keep the conclusion below clean, including when the answer is `self_verified`
+(#1243, ADR-034 amendment of 2026-10-29). The receipt's terminal finding-id lists are views of
+that same closure set. A predicted clean conclusion beside a self-verified, disputed or
+disclosed-limitation id is lowered to `insufficient_coverage` with a `findings_disclosed` reason
+naming the ids; the builder does not fail the request.
 
 `domain/receipts.py` owns the exact schema-shaped `ReceiptDocument`, `ReceiptVersionSlice`,
 policy/schema version entries, obligation/response/gap/redaction records, and canonical sections. It
@@ -1889,7 +1902,30 @@ Five further codes describe a review that did run but could not deliver everythi
 its `-part-NN` parts, not the source file; renderings say "of the captured item") and `source_ref` only
   when the catalogued ref is an opaque token. Never a value, offset or path. Carried, when present,
   by the check event (1.4.0), check result, `status view=operation` page and receipt document; every
-  rendering adds the fixed agent line once (`SEMANTIC_REDACTED_VALUES_AGENT_LINE`);
+  rendering adds the fixed agent line once (`SEMANTIC_REDACTED_VALUES_AGENT_LINE`) when a value was
+  replaced or an item withheld. Issue #1138
+  adds the disposition `review_blocked` (unreleased shapes, in place): a `blocked_forbidden_data` /
+  `never_send_detected` refusal lists each item its matches sat in with the refusing scan `stage`
+  (`candidate`|`prepared_case`|`reviewer_exchange`) and the match's `match_class`
+  (`high_confidence`|`heuristic`); `review-packet` stands for a match no single item explains. Only
+  that disposition carries `stage` and `match_class`, and only check-recorded 1.6.0 admits it, in
+  the branch of a review that ended without a conclusion (no `semantic_conclusion`; a
+  reviewer record may remain from an earlier exchange). At the 64-entry bound the refusal's own
+  entries are kept first. The receipt's limitations section, the
+  compact receipt sentence, the CLI check rendering and the MCP check lead name the block as one
+  (`privacy_block_sentence`) and say the refused content was not sent, never that nothing was: an
+  earlier exchange of the same conversation may have been. The CLI and receipt renderings add
+  `SEMANTIC_REVIEW_BLOCKED_AGENT_LINE` for those items instead of the replacement line; the MCP
+  check lead already says it. A reviewer exchange whose gateway call failed with its outcome
+  unknown still counts as a model exchange; one refused before dispatch does not;
+- `semantic_review_skipped_privacy_block` — the newest check that asked for AI-powered review was
+  refused at the privacy boundary (`blocked_forbidden_data` / `never_send_detected`) and neither an
+  edit action, agent-published evidence nor agent-published text (a claim, plan, obligation,
+  decision or answer) followed it (`kernel.review_round.
+  privacy_block_standing`), so this check records the same status and `review_blocked` items and
+  composes or sends nothing. A closing review after a routine check's refusal is scanned once more;
+  a closing review's own refusal stands. A review-scoped FinishUP limit, never agent work; it
+  weakens neither proof class;
 - `semantic_review_credential_heuristic_disabled` — the owner's privacy policy had the
   low-confidence credential heuristic turned off (`credential_heuristic: disabled`, issue #982), so
   values that only look like passwords or tokens were sent as written to the external reviewer;
@@ -4648,6 +4684,14 @@ retrievable by its recorded receipt ID and listable by `channel`, `provider_id`,
 (`semantic_check`, `observation_advice` or `credential_probe`; egress-receipt 1.1.0, ADR-009
 tb4n2 amendment), derived from its purpose and reserved structural item ids and omitted when not
 recognized, so a recurring blocked receipt can be traced to the operation that asked for it.
+A refusing scan (#1138) also names, in `secret_scan`, its `stage` (`reviewer_exchange` is the
+scan of the whole reviewer conversation, recorded as `prepared_case` before), its `match_class`
+(`high_confidence`|`heuristic`) and up to 16 opaque `match_item_ids` the matches sat in (none when
+no single item explains them; egress-receipt 1.1.0, ADR-009 #1138 amendment).
+A pre-dispatch size refusal's network receipt also carries `capacity_exceeded`
+(`scope`: `disclosure`|`excerpt`|`excerpt_total`; `unit`: `bytes`|`tokens`|`excerpts`; decimal
+`attempted` and `limit`; egress-receipt 1.1.0, ADR-009 #1129 amendment) beside its unchanged
+`blocked_by_policy` / `policy_denied`; no other receipt carries it.
 
 A receipt's `purpose` has two owners, and they are deliberately not the same grammar. Anything
 crossing the privacy-policy boundary — every network egress receipt, every
@@ -4684,6 +4728,18 @@ exact prepared case. MCP has no access. Initial
 reservation failure is the sole no-receipt exception and occurs before prompt/authorization/
 dispatch; `awaiting_human`, `approved`, and `receipt_pending` are nonterminal
 `PrivacyAuditState.status` values rather than receipt outcomes.
+`PrivacyAuditPort.close_refused_disclosure(proposal_id, receipt) -> bool` (#1066, ADR-009) closes a
+prepared network proposal the coordinator refused before dispatch: only a row still `reserved`,
+`awaiting_human` or `approved`, with no authorization minted and nothing consumed, moves in one
+transaction to `decision_completed` with its blocked receipt (no dispatch, zero `final_bytes`, the
+refusal's outcome and reason, and `capacity_exceeded` for a size refusal). The coordinator closes
+`blocked_by_policy` and `approval_expired` refusals at the final permission check (dispatch fence,
+repository authority, changed policy or limits on resume); a timeout, an audit failure or a
+transport outcome is not closed, so a still-valid approval stays usable. Neither is a
+`SemanticEgressBlocked` with `transient=True`, which only a refusal from an exception carries (the
+repository-authority read or the dispatch fence guard raised): the caller gets the same
+`blocked_by_policy`/`scope_mismatch` refusal and the proposal stays open. `privacy pending` excludes
+a closed proposal at once, and a same-request replay of it reports the refusal its receipt recorded.
 `PrivacyAuditPort.live_object_roots(task_id, route_identity_digest) -> PrivacyAuditObjectRoots`
 returns the monotonic catalog generation, sorted task-bundle `privacy_audit` ObjectRefs, and canonical
 root digest used by GC/backup/restore/recovery. These are live without task-ledger inventory.
@@ -5013,7 +5069,11 @@ audit and does not prove an expired started attempt was never admitted. Deadline
 that attempt `outcome_unknown` without re-entering authorization, retry, or fallback; a new,
 unattempted job still reports `provider_timeout` (issue #625). An uncertain started attempt retains `outcome_unknown`
 in its durable row; without reconstructable provider provenance its public gap is
-`receipt_persistence_unknown`. Each
+`receipt_persistence_unknown`. A blocked egress timeout or transport failure (a deadline that
+passed before dispatch, a gateway call that raised) and an unknown attempt carry no provider attempt
+either, so `_map_egress_to_final` gives them the same provenance-free pair, which is not retried,
+never `failed`/`coordinator_failure`; a reviewer conversation that times out after a sent exchange
+reports `timeout`/`provider_timeout` under that exchange's provenance. Each
 fallback attempt is a fresh physical attempt with its own authorization, dispatch id, credential
 handle or runtime authority, and privacy receipt; under `confirm_every_request` it needs its own
 foreground decision. `SemanticAttemptAccounting.endpoint_attempts` carries one per-endpoint
@@ -5087,7 +5147,8 @@ disclosure capacity: a rendered disclosure over the channel's `max_bytes`, or a 
 over its exchange budget (bytes, or estimated model tokens on a sized route), is refused by `PrivacyCoordinator` before a proposal exists
 and reported `failed/case_capacity_exceeded`, not `blocked_by_policy/network_egress_denied`. There
 a job attempt exists and ends on that terminal code, the privacy receipt records
-`blocked_by_policy` / `policy_denied` with `final_bytes` 0 (the receipt vocabulary is unchanged),
+`blocked_by_policy` / `policy_denied` with `final_bytes` 0 and its typed `capacity_exceeded`
+reason (the stored outcome and reason vocabulary is unchanged, #1129),
 provenance stays null, and nothing was sent. An over-`max_tokens` refusal keeps its policy
 mapping. The shared check/receipt gap is `semantic_case_capacity_exceeded`. A
 narrower claim/obligation scope is a new check, not a replay of the terminal request. Changing a
@@ -5290,7 +5351,8 @@ material edit (`kernel.task_facts.material_edit_recorded`: an observed edit or s
 counts under ADR-042/045, whether or not its result arrived, so a Codex shell `apply_patch <<EOF`
 counts by the files its patch names, or an agent-published `edit` action) while the check-time
 capture observed no workspace change, runs the local checks only: `semantic_status` `not_requested`,
-`semantic_reason` `deferred_before_first_edit` (1.5.0; a 1.4.0 record may still say
+`semantic_reason` `deferred_before_first_edit` (1.5.0, which the writer uses for this pair alone
+and which admits it without `semantic_conclusion`; a 1.4.0 record may still say
 `deterministic_mode` with the same gap), and the standing gap
 `semantic_review_deferred_before_first_edit` (rule G7, a semantic-only gap for absence proofs).
 There is no supported downgrade over a ledger that holds a projected check-recorded 1.5.0 row.
@@ -8542,8 +8604,9 @@ and three groups. `agent_actionable` lists, in order, the
 agent conditions present (`obligations_open`, `findings_unanswered`, `receipt_findings_unresolved`
 only for findings whose closure class is `agent_work` (an acknowledged requirement is
 `settled_unmet`: final, so the state stays `ready_with_limitations`, and counted in
-`receipt_blocking_finding_count`; a `self_verified` finding is `settled_disclosed` and disclosed as
-the standing code `finding_self_verified`; ADR-046), `finding_rejection_awaiting_ruling` for a
+`receipt_blocking_finding_count`; an actionable `self_verified` finding is `settled_disclosed` and
+disclosed as the standing code `finding_self_verified`; a process note has no closure and does not
+raise that code; #1243, ADR-046), `finding_rejection_awaiting_ruling` for a
 rejected finding that waits for a reviewer ruling (a check is the next move),
 `no_plan_published`, `no_obligations_declared`, `projection_stale`), then `check_in_progress`
 while a check holds the session frontier (read at the head through the ledger's
@@ -8610,7 +8673,18 @@ publication of it with `open` or `resolved` takes it back, and the obligations v
 `open`. A `decision_recorded` statement line `finishup-assumption:<obligation id>` or
 `finishup-verification-limit:<obligation id>` (issue #995, ADR-033) adds the standing code
 `assumption_disclosed` or `verification_limit_disclosed`; it never blocks or resolves anything,
-and superseding the decision withdraws it. `finding_premise_disputed` (D7a) discloses
+and superseding the decision withdraws it. A statement line `finishup-proxy:<obligation id>`
+(#1246, D17; `task_facts.proxy_decisions`) records the agent's one proxy decision for a check it
+cannot run against a hidden reference: the stand-in it built and the measured ratio, or why none
+was feasible, in the rationale. It is not a disclosure kind: it adds no readiness code and nothing
+asks for it at check time. The receipt's limitations section names each disclosed verification
+limit without one as `proxy: none chosen` (obligation ids only, never the rationale), the MCP
+receipt summary points at it with fixed wording, and the CLI's human rendering of a JSON receipt
+repeats the sentences (`cli.render._receipt_proxy_lines`). A closing review whose packet carries
+such an obligation gets `PROXY_REVIEW_QUESTION`, except on a channel no larger than the minimal
+policy's (`SMALL_REVIEW_CHANNEL_BYTES`, #1173), and the `agent-disclosures` row carries `proxy`
+beside a limit that has one; the reviewer may ask once for an obtainable proxy, never for the
+hidden reference (#1024). `finding_premise_disputed` (D7a) discloses
 acknowledged findings the review says the task requires; the Stop gate asks about them once. The
 optional `acknowledged_obligation_count` counts acknowledged obligations without truncation;
 `open_obligation_count` never includes them. The Stop gate challenges each acknowledged obligation
@@ -10291,8 +10365,12 @@ follow-up loop is deleted.
 - Controller: `application.reviewer_loop.ReviewerLoop(model, broker, *, instruction, packet,
   deadline, history_admissible, final_reserve_seconds=30.0, clock=time.monotonic,
   resume_reserved=False).run() -> ReviewOutcome(status,
-  judgment, reason, history, model_turns, citable_refs, text_by_ref, capacity)`; the citation fields
-  hold the union for `validate_semantic_judgment`. `ReviewerModel.complete(history, schema, *,
+  judgment, reason, history, model_turns, citable_refs, text_by_ref, capacity, read_not_served)`;
+  the citation fields hold the union for `validate_semantic_judgment`. A read whose action leaves
+  its exchange less than an empty result needs but still fits beside the notices
+  (`ReadExchangeFull.verdict_fits`) is not served: the loop appends `READ_NOT_SERVED`, enters the
+  final phase and sets `read_not_served`; only an action that does not fit even that ends
+  `case_capacity_exceeded` (#1242). `ReviewerModel.complete(history, schema, *,
   deadline) -> JsonValue` is the only model interface; a facade raises `ReviewerModelError(code)`.
   Incomplete reasons: `format_invalid`, `read_limit`, `case_capacity_exceeded`, `deadline`, `turn_limit`,
   `authorization_changed`, `interrupted`, `uncaptured_step`, `step_refused`, or the facade's code.
@@ -10320,11 +10398,15 @@ follow-up loop is deleted.
   `(category, bytes, input_root)` tuples. `history_roots` lists every outside root the conversation
   holds bytes from. With `exchange_room` (#1118), `reads_allowed()` also needs `MIN_ROOM +
   READ_ACTION_ROOM` (2 KiB) of it; `execute` subtracts the `reply` turn's bytes and raises
-  `ReadExchangeFull(required, available)` before reserving when less than `MIN_ROOM` is left.
-  The loop ends `case_capacity_exceeded`, carrying those minimum required and available exchange
-  bytes through `SemanticEgressBlocked.capacity` to the existing capacity outcome. It never
-  becomes `response_schema_invalid`; a read after the count cap takes the one format repair
-  (#1173) and, after that repair, ends `read_limit`.
+  `ReadExchangeFull(required, available, verdict_fits)` before reserving when less than
+  `MIN_ROOM` is left. With `verdict_fits` (the read's action still fits beside the notices every
+  read keeps room for, #1242) the loop does not serve the read: the same exchange carries
+  `READ_NOT_SERVED` and the final phase runs, and the review record ends
+  `read_not_served_no_room` beside its final judgment. Otherwise the loop ends
+  `case_capacity_exceeded`, carrying those minimum required and available exchange bytes
+  through `SemanticEgressBlocked.capacity` to the existing capacity outcome. Neither becomes
+  `response_schema_invalid`; a read after the count cap takes the one format repair (#1173) and,
+  after that repair, ends `read_limit`.
   A result over its room keeps the longest head that fits, measured.
 - Steps: `ports.semantic.ReviewStepStore.reserve(kind, ordinal, selector)`, `capture(kind, ordinal,
   result)`, `usage() -> (steps, uncaptured)`; `ReviewStepRefused` on a repeated step or a lost lease.
@@ -10657,7 +10739,8 @@ Names shared by the kernel, `respond`, `check`, status and the receipt:
   and `answer_bound`. Packet: one `agent-disclosures` row (`AGENT_DISCLOSURES_ITEM_ID`; section
   `decision`, first in it; category `obligation_text`; content `yoetz.agent-disclosures/1` with
   `kind: agent_disclosures`, `standing: agent_assertion`, `disclosures` per obligation id with the
-  `acknowledged_not_done` / `verification_limit` / `assumption` / `already_disclosed` keys, and
+  `acknowledged_not_done` / `verification_limit` / `assumption` / `already_disclosed` keys, plus
+  `proxy` beside a `verification_limit` that has a `finishup-proxy` decision (#1246), and
   `not_listed_count`) listing what the agent disclosed for each obligation the packet carries
   (built after the 32-row obligation cap, within the 16 KiB per-item bound, so all 32 fit; a
   decision row it displaces from the 16 decision slots is a `not_selected` omission) (n7 RC7, issue
@@ -11122,9 +11205,15 @@ plan. Names and contracts:
   `semantic_excerpt_count_cut_for_case_bound` (excerpts dropped to fit
   `MAX_SEMANTIC_CASE_BYTES` before ceiling planning), `semantic_excerpt_count_limit` and `semantic_excerpt_byte_limit` (the effective limits the case
   was built with after ceiling planning) and `semantic_excerpt_ceiling_rounds`. All precede privacy
-  minimization and certify neither consent nor delivery.
-- `build_semantic_case` omits ordinary plan/claim/obligation and history rows before reducing
-  excerpts, as `not_selected` omissions with `content_unselected`, when the case would otherwise
+  minimization and certify neither consent nor delivery. When ceiling planning narrowed the case,
+  a separate `semantic_case_narrowed` record (#1245, same request id) carries
+  `semantic_section_dropped_goal`, `_obligations`, `_claims` and `_timeline` (1 when the approved
+  selection had the section and the planned one does not), `semantic_obligation_rows_selected`,
+  `semantic_claim_rows_selected` and `semantic_excerpt_ceiling_rounds`: integers only, in their own
+  record because a diagnostic line is at most 1,024 bytes.
+- `build_semantic_case` omits ordinary plan and history rows before reducing excerpts, then lets
+  earlier dialogue yield, and omits obligation and claim rows last (#1245, D22), each as
+  `not_selected` omissions with `content_unselected`, when the case would otherwise
   exceed `MAX_SEMANTIC_CASE_BYTES`; a case
   within that bound is unchanged. The count is `SemanticCase.excerpts_cut_for_case_bound`, local
   composition state outside the envelope and digest. When non-excerpt items alone exceed the
@@ -11141,8 +11230,13 @@ plan. Names and contracts:
   `clean_item_data_class`. `plan_under_channel_ceiling` measures only the items that admission
   releases, and rebuilds
   an over-ceiling case without lower-priority narrative before reducing `max_total_excerpt_bytes`
-  (and `max_excerpt_bytes`). `primary_material_selection` narrows goal, obligations, claims and
-  ordinary timeline; permitted finding prose, decisions, pending missing-input context and independent lineage remain.
+  (and `max_excerpt_bytes`). `primary_material_selection(selection, *, keep_timeline=False,
+  keep_agent_account=True)` narrows the goal and ordinary timeline and keeps obligation and claim
+  rows (#1245, D22); permitted finding prose, decisions, pending missing-input context and
+  independent lineage remain. Only when no plan under that selection fits with the diff floor do
+  both planners repeat the search with `keep_agent_account=False`, which also narrows obligations
+  and claims exactly as before #1245; the returned round count is the sum of both searches.
+  Earlier-finding prose is packed (`compact`) whenever the selection lacks the goal.
   A pending request retains one ordinary timeline slot, with history narrowed around it; independent
   lineage does not consume that request slot. The final diff
   floor (`final_diff_floor`) is the lesser of initially carried diff bytes and half the lesser of
@@ -11172,6 +11266,11 @@ plan. Names and contracts:
   receipt remains `blocked_by_policy/policy_denied` with zero final bytes; #1129 owns its new
   schema reason. Check/job status and work-receipt gaps use the existing capacity vocabulary
   across CLI, MCP, hooks and TUI for Codex, Claude Code and Cursor.
+- Unjudged review usage (#1242): `SemanticEgressBlocked.token_usage` carries the provider's
+  `RuntimeTokenUsage` for the exchange a review conversation had already sent when an unsent read
+  continuation ended it over capacity. `_map_egress_to_final` copies it to
+  `FinalSemanticEvaluation.attempt_token_usage`, which only the durable attempt row reads
+  (`semantic_attempts._attempt_token_usage`); the check carries no provenance for it.
 - TUI: `PrivacyPosture.recipe_outdated` is true when the approved selection is an earlier version
   of its recipe. The privacy screen then offers the newer recipe instead of saying "already on the
   recommended privacy policy".
@@ -11516,6 +11615,16 @@ is withheld whole), recorded as a bounded `semantic_composition/check_time_chang
   section, and their statement and rationale, like the obligation text, travel only as
   privacy-gated packet items. Golden question:
   `tests/fixtures/tb4_replay/pretrain_blocker_review_question.json`.
+- **Closing review of acknowledged obligations (#997, #1245).** `review_question_set(phase,
+  blockers, acknowledged, *, acknowledged_not_carried=0, ...)` adds, in the final phase, the
+  acknowledged obligations whose `obligation-<id>` rows the packet carries, followed by
+  `ACKNOWLEDGED_REVIEW_INSTRUCTION` (since #1245 it also says conflicting inputs are not inability,
+  that the reviewer's agreeing a conflict exists is not permission to withhold, and that only a
+  missing authority, a missing credential or a destructive change the task does not permit
+  excuses withholding a requested output). The builder passes only carried ids;
+  `acknowledged_not_carried` counts the rest, which the question never names ("N obligations
+  acknowledged as not done are not in this packet: do not quote or judge them; state that limit in
+  review_summary.").
 - **Requested outputs.** `ChangeCapturePort` implementations may offer
   `probe_requested_paths(workspace, values) -> tuple[RequestedPathProbe, ...]`
   (`ports/change_capture.py`; `location` `inside|outside`, root-relative `relative`, `exists`,
@@ -12440,7 +12549,10 @@ as `outcome_unknown` and is never resent. For it, `operation_max_retries` is `0`
   store's keyed commitment) for a file read, else the case item id; `disclosure` is the privacy
   receipt of the exchange that first carried the result, recorded when that exchange was sent
   (`None` if no sent exchange did); `ended` is the loop's closed stop reason, `None` for a final
-  judgment.
+  judgment. `READ_NOT_SERVED_ENDING` (`read_not_served_no_room`) is a final judgment given without
+  a read the reviewer asked for, whose own action left its exchange no room for a result (#1242);
+  `render_reviewer_lines` says "a requested read was not served (no room left), judged without it"
+  for it instead of "ended early".
 - Receipts: `kernel.receipt_builder` appends `REVIEWER_ADVISORY_LABEL` plus the applicable check's
   recorded `review_summary` (a succeeded semantic review only; at most 8,192 characters, marked
   where cut) as the last item of the `limitations_and_coverage` section under `full_local`, and
@@ -12449,7 +12561,22 @@ as `outcome_unknown` and is never resent. For it, `operation_max_retries` is `0`
 - Wire: optional `reviewer` (`$defs/reviewer_record`, `$defs/reviewer_read`) on the check-result
   1.6.0 success branch and on check-recorded 1.6.0, both new versions; check-recorded 1.6.0 is
   written exactly when the record is present, and the 1.4.0/1.5.0 documents stay unchanged and
-  refuse the field (`unknown_payload_field`). MCP `check` outputs and control-result 2.9.0 name
+  refuse the field (`unknown_payload_field`). The record stays on every terminal result the
+  conversation returns, including one whose first exchange was refused before dispatch, so
+  check-recorded 1.6.0 (unreleased, in place) admits, besides a completed review, each outcome a
+  conversation can end on without a conclusion, in one branch that forbids `semantic_conclusion`:
+  `blocked_by_policy` (`channel_disabled`, `content_category_not_authorized`,
+  `network_egress_denied`, `provider_binding_not_authorized`, `scope_not_authorized`),
+  `blocked_forbidden_data`/`never_send_detected`, `classification_uncertain`, `human_denied`,
+  `approval_expired`, `refused`, `timeout`, `invalid` (`response_content_invalid`,
+  `response_schema_invalid`, and `semantic_judgment_rejected`, which keeps the record and the
+  provider-bound manifest), `late`/`deadline_authority_lost`, `unavailable`
+  (`audit_reservation_unavailable`, `outcome_unknown`, `provider_quota_exhausted`,
+  `provider_rate_limited`, `receipt_persistence_unknown`, `retry_budget_exhausted`,
+  `transport_unavailable`) and `failed` (`case_capacity_exceeded`, `coordinator_failure`).
+  `semantic_binding` still decides each pair's provenance. Check-result 1.7.0 and the status
+  operation's `check_outcome` already admitted every pair; receipt-document 1.3.0 carries none of
+  them. MCP `check` outputs and control-result 2.9.0 name
   check-result 1.6.0; golden vector `fixtures/canonical/check-reviewer-record-1.6.0.case.json`
   (CHK-160). Its leaves are public structural in the result-leaf registry. `CheckCommitResult.reviewer` and
   `FinalSemanticEvaluation.reviewer` carry it in process; `FinalSemanticEvaluation`
@@ -12640,6 +12767,55 @@ standing limit (G0f spec `V`, `GapContext.freshness_advisory`), like the questio
 caller-asserted reliance is disclosed for any retained run (the latest of its command or one the
 account cites); failures and missing checks retain their existing rules.
 
+**Asked less, reviewed, counted (#1241, D9-D11).**
+- *Which runs are asked about.* Only the latest run of each requested verification, the latest
+  verification overall, and runs a claim, obligation resolution or response cites; matching
+  command text alone no longer decides it. Runs that share one change set share one question
+  (`kernel/policies/work_integrity._verification_questions`). The first two are the runs whose
+  freshness the task facts' `verification_rerun_question` markers read: each planned item's
+  deciding run, also when one run matches two requested commands, and the task facts' last
+  verification run, which a later agent-linked script run does not replace
+  (`TaskFactSignals.freshness_deciding_events`, frozen as the tracked results
+  `DeterministicCase.verification_deciding_runs`). Every marker therefore has a question an answer
+  clears. The latest run of each freshness `label` is still asked too, and a case frozen before
+  the field takes the latest verification overall from its tracked runs. A run the agent linked
+  to a planned command (#1209) counts as cited: it decides the planned verification like a direct
+  match, carries no `label`, and the task facts raise the obligation's
+  `verification_rerun_question` for it, so without a question no answer could clear that marker.
+  The links the task facts read (`TaskFactSignals.agent_linked_events`) are frozen as the tracked
+  results `DeterministicCase.verification_linked_runs` (absent on a case frozen before the field).
+- *An answer stands.* `kernel.freshness_answers.covering_freshness_answer` returns the latest
+  reasoned `acknowledged` answer whose question covered every run and change now asked about; it
+  settles the new question, and only a change it did not cover asks again.
+- *Never unanswered work.* `domain.freshness_question.is_freshness_question` (the deterministic
+  question's fixed summary) is exempt from `unanswered_finding_ids` beside `decision_needed`, so
+  status's `findings_unanswered` and readiness agree with the check, which never counted it.
+- *The answer reaches the receipt.* A covered run whose inputs are unknown drops the standing
+  `verification_rerun_question` task fact. A stale verification on the AI route stays a standing
+  limit under its own code (`edited_after_last_verification`, `planned_verification_stale`): it is
+  a recorded fact, not a question. The receipt's findings section carries a fenced, self-reported
+  item "Verification rerun question answered (self-reported, non-blocking) <finding>: rerun not
+  needed: <reason>", the reason bounded to one line of 240 bytes (`bounded_agent_reason`, shared
+  with #1240) in JSON, markdown and text.
+- *The reviewer judges the answers.* Answers to the question travel as their own packet row type
+  (`yoetz.freshness-answer/1`, `question: verification_rerun`, at most four, outside the four
+  other local answers; item ids keep the `local-finding-answer-` prefix). `FRESHNESS_REVIEW_QUESTION`
+  asks for `freshness_verdicts`: optional `{finding_id, agrees}` rows (at most four) on every
+  provider-judgment 1.2.0 and reviewer-reply 1.0.0 conclusion branch, both unreleased and
+  regenerated in place. Malformed, repeated or extra rows cost only themselves. The check fences
+  verdicts to answered questions and records them for instrumentation only.
+- *Counted.* Each check records `check.rerun_question_accounting` with
+  `rerun_questions_asked`, `rerun_questions_answered`, `rerun_answers_reviewer_agreed`,
+  `rerun_answers_reviewer_disagreed`, `reruns_after_answer` and `reruns_after_answer_changed`.
+  The rerun counts derive from the ledger (`kernel.rerun_accounting`): a later run of a covered
+  run's command after the answer, and whether its outcome differs, so an export reconciles with
+  the ledger whatever the diagnostics ring kept.
+- *"The ledger is too incomplete" names its gaps.* At a plan-only check (no action or result yet) an
+  obligation is never its subject, an obligation with resolution evidence retires from it, and
+  when no coverage gap code applies its detail names the gap classes it was raised for.
+- *The input list* (`finishup-verification-inputs/v1`) stays readable with every rule above, but
+  guidance no longer advertises it (0 of 112 TB4 attempts used it).
+
 CLI/MCP check/status and TUI consume shared task-fact sentences. Encrypted finding details name the
 verification (result id and requested command), state how its inputs are known, and list named
 paths and short change summaries; keyed-only changes are counted and never described as declared.
@@ -12760,7 +12936,17 @@ an earlier statement revision in the same atomic batch. The quote must occur ver
 boundaries (`1` inside `1.06` or `atio` inside `ratio` does not count) and name at least three
 word characters beyond punctuation, articles, modals and quantifiers
 (`domain.verification_coverage.criterion_quote_in_text`); otherwise publication fails with
-`verification_criterion_not_in_task`. Omitted frontiers acquire the admission
+`verification_criterion_not_in_task`. Since #1202 (owner decision D18) the comparison strips the
+quote's outer whitespace and lets a whitespace run match any whitespace run and a quote mark
+(`QUOTE_MARKS`: straight and typographic single and double quotes, and guillemets) match any quote
+mark; words, digits and every other character match exactly, and the stored quote is never
+rewritten. The coverage index and the declared-test list compare through the same pattern
+(`criterion_quote_pattern`), so a quote admitted under the normalization maps its criterion
+everywhere; an older ledger's quote that matched verbatim still matches. The rejection names the
+nearest task sentence by position only (`nearest_criterion_sentence`: the sentence, split as the
+coverage index splits criteria, that shares the most content words; "The nearest stated
+criterion is sentence <n> of the recorded task_statement (line <m>): copy its words exactly."),
+never by its text, and omits the pointer when no sentence shares a word. Omitted frontiers acquire the admission
 frontier; explicit null remains forbidden for results. Replay of a committed operation precedes
 new admission validation. A later amended task does not inherit an obsolete quote's coverage.
 
@@ -12912,18 +13098,44 @@ as 1.2.0 did. The MCP `status` tool sends `paged` unless the agent names `delive
 closure inventory and write-recovery probes send none. An agent's MCP check and receipt may page;
 CLI output, the native TUI, owner exports and `view=operation` never do. Send `delivery_cursor`
 only with `view=compact`, the held session and writer and a fresh request ID, without other
-selectors, filter, frontier or inventory cursor. A cursor binds source selection, writer, session
-(by its signature), sink, position and authorized content digest, and freezes the status read's
-live fields (head frontier, projection lag and version, rebuild state, import status, credential
-heuristic, review mode), presence included, so an append between page reads leaves a brief or full
-read continuable.
+selectors, filter, frontier or inventory cursor.
+
+Since #1244 (ADR-043 amendment of 2026-10-29) `next_cursor` is a short handle of at most 96
+characters (about 40–50 in practice) and the page's first field:
+`<kind><source request id>.<frontier>.<offset>.<8 hex digest>[.<selector>]`, where `kind` is `c`
+(check), `r` (receipt) or `s` (status), the source id is the original request's UUID in 22
+base64url characters, and the selector segment is `b` (brief check), a receipt's format, include
+and redaction profile, a status read's view, detail and limit, or `x` (a status read a handle cannot
+rebuild). Handles carry no secret or signature. The service keeps each delivered page set in
+process memory only (never on disk or in the ledger), bound to its session and writer, at most 256
+sets and 64 MiB. A continuation reads and discloses its source again; then it is refused only for a
+`redaction_recorded` after the set's frontier (`delivery_redaction_recorded`) or a changed sink or
+disclosure policy (`delivery_disclosure_changed`), and is otherwise served from the fresh read when
+it still matches the kept copy, else from the kept copy with the receipt those items were disclosed
+under and, when the ledger moved past the set's frontier, `ledger_moved_since` naming the head this
+read saw. After a restart or an eviction the set is rebuilt from the ledger at the handle's
+frontier: at the handle's offset when the digest still matches, else from offset 0 with
+`page_set_restarted: true` (discard earlier pages). A status handle marked `x` is refused as
+`delivery_cursor_expired`; a malformed handle as `delivery_cursor_invalid`. Partitions are measured
+with both notices present, so a notice never moves an offset. A replayed check view replays its
+result frontier's prefix when the adapter's 16-entry trusted history misses; a prefix that has
+since gained agent-authored records is still refused as a pinned case, and that replay rebuilds
+without the checklist and restarts.
 The original complete operation is read without running it again, and disclosure runs again for
-the current reader. Every page therefore carries its own read's `privacy_projection`, never paged
-as `items` and outside the content digest; reconstruction uses the final page's projection. Past
-1,024 canonical bytes a page's `omitted_pointers` coalesce to containing fields, as past the
-512-pointer wire bound. Service restart expires these cursors, as it does existing status cursors;
-recover through current status/findings without creating a new review. Missing source, altered
-binding or changed authorized content is a bounded `INVALID_REQUEST`; it does not authorize a new review or downgrade required review.
+the current reader. A page carries its read's `privacy_projection` (or, when served from the kept
+copy, the one its items were disclosed under), never paged as `items` and outside the content
+digest; reconstruction uses the final page's projection. Past 1,024 canonical bytes a page's
+`omitted_pointers` coalesce to containing fields, as past the 512-pointer wire bound. A refusal is
+a bounded `INVALID_REQUEST` with its `reason_code`; it does not authorize a new review or downgrade
+required review. Status inventory cursors (`/page/next_cursor`) are unchanged and still expire on
+restart.
+
+`check-request` 1.1.0 adds `detail` (`brief` or `full`; #1244, D13). `brief` returns each finding's
+`finding_id`, `kind`, `origin`, `priority`, `summary`, `subject_refs`, `policy_id` and `challenge`,
+marks the result `detail: brief`, and carries the `closure_state` subset of a brief status in place
+of `closure_readiness`. It is presentation only, outside the operation identity. The MCP `check`
+tool sends `brief` unless the agent names a detail. A `detail: brief` compact status page omits each
+unanswered finding's `detail`. `status view=findings` and `detail: full` carry what brief omits.
 
 The service creates these pages before MCP rendering. The budget is 12,000 bytes, Codex's
 structured window and the tightest recorded host limit, for the larger channel a host reads (the
@@ -12948,18 +13160,18 @@ note is retrieved in the session that recorded its check, while the receipt is t
 receipt row names its check's recording session, and the retrieval continuation names those
 `session_id`s.
 
-An optional `respond` targets this identity using the existing `finding_id`/`finding_frontier`
+A `respond` targets this identity using the existing `finding_id`/`finding_frontier`
 keys. `addressed` means agent-reported with linked evidence, at least one ref recorded after the
 note's check (`response_fields_invalid` at `/evidence_refs` otherwise); `declined` records the
 reason; absence is `no_recorded_response`. `respond` is the only way in: `publish_work` refuses a
 decision draft carrying `advisory_response` (`event_family_not_admitted`). A withheld decision is
-never attached to a note: its envelope cannot show whether it is an advisory response or a
-review-mode switch, so it is counted in `correctness_advisory_counts.withheld_may_answer` as one
-that may answer a note, and it stales the check under the unreadable-record rule (follow-up
-#1190). Typed `decision_recorded` 1.1.0 `advisory_response` records carry the target,
+never attached to a note by ordinal: the payload carried the ordinal. Since #1190 (below) its
+envelope proves it is an advisory response, so the only note of its check reads
+`response_unavailable`; on a check with several notes it is counted in
+`correctness_advisory_counts.withheld_may_answer`. Typed `decision_recorded` 1.1.0 `advisory_response` records carry the target,
 disposition and mirrored evidence refs; `rationale` carries the reason. They are independent of
-review-mode switches and never change finding state, check applicability, closure readiness or
-receipt conclusions. Closure readiness carries `correctness_advisory_summary` only while some note
+review-mode switches and never change finding state or check applicability; since #1240 (below) an
+answer to a material note lifts its cap on the predicted and built receipt conclusion. Closure readiness carries `correctness_advisory_summary` only while some note
 has no recorded response, and its text names only those notes, so it changes exactly when that
 set does. The Stop hooks compare its digest with the last one shown for the session and show a
 fixed owner-facing notice only when the set changed, never on a `stop_hook_active` re-entry. A
@@ -13008,11 +13220,38 @@ and MCP text list the rows under a fixed "Tracked reviewer advice" header. Closu
 receipt's `total`/`no_recorded_response`/`withheld_may_answer`) whenever the task has advice, and
 `correctness_advisory_summary` labels each named identity with its origin and first two
 subjects. History rows keep their first shape (no `origin`); receipt rows carry the origin label.
-The texts on this path use the owner-approved wording ("Non-blocking. For each material concern:
-run a proportionate check, cite evidence that already settles it, or decline with a reason.
-Recording a response is optional; ..."). One optional `respond` response (addressed with evidence
-recorded after the note, or declined with a reason) closes an item; nothing blocks, and Stop is
-unchanged.
+The texts on this path ask for one answer per material note ("Non-blocking. For each material
+concern: run a proportionate check, cite evidence that already settles it, or decline with a
+reason. Answer each material one once; ..."). One `respond` answer (addressed with evidence
+recorded after the note, `kept_choice` or declined, each with a reason) closes an item; nothing
+blocks.
+
+**Answered advice (#1240, 2026-10-30).** Material advice is the `strongest_remaining_check` notes
+and the current `decision_needed` findings with no recorded response
+(`ClosureBasis.advice_unanswered`, replay-derived; `MATERIAL_ADVISORY_ORIGINS`). While any is
+open, prediction reason `advice_unanswered` (R11, `"{n} reviewer note(s) not answered"`) makes the
+predicted and built conclusion `insufficient_coverage`; readiness state and `work_closed` are
+unchanged. The receipt Summary appends "Reviewer notes: N; not answered: M (K material); answered:
+…" and, while a decision choice is open, "Decision choices not answered: D." `closure_readiness.rechecks` gains kind `advice` with key
+`advice:<16 hex>` (sha256 of the sorted open set) and rule `material_advice_unanswered`; the Stop
+gate asks it once per key, after the premise ask and trimmed before it, also on an
+already-continued Stop within the per-turn cap (`advice_recheck` item,
+`closure_gate_advice_asked` diagnostic). `respond` advisory dispositions are `addressed`,
+`kept_choice` (reason only; label "checked, kept my choice") and `declined`; history and receipt
+rows add `kept_choice` and `response_unavailable`. The `default_local_export` receipt row carries
+the agent's reason as one bounded line. The MCP status line reads "unanswered findings: N;
+reviewer notes not answered: M; reported gaps: G." The TUI `/notes` command reads
+`status view=history` filtered to `check_recorded`.
+
+**Withheld advisory responses (#1190, option B).** `publish_work` refuses a review-mode
+`decision_recorded` draft whose causal parents are exactly one `check_recorded` event
+(`review_mode_parent_is_check`, `/event_drafts/<n>/causal_parents`); a dry run refuses it the
+same way and appends nothing. A withheld
+`decision_recorded` 1.1.0 whose sole parent is a noted check is then an advisory response: on a
+check with one note the row reads `response_unavailable` (answered, unreadable), on a check with
+several it stays counted in `withheld_may_answer`. It no longer stales the check it answers
+(`invalidates_recorded_check(..., check_event_id=...)`); every other unreadable record keeps the
+conservative rule.
 
 **Declared-test verdicts (#1145, 2026-10-26).** Every provider-judgment 1.2.0 branch (in place;
 reviewer-reply 1.0.0 follows) gains the optional, nullable `declared_test_verdicts`: at most two
@@ -13030,10 +13269,14 @@ present on exactly those rows). Its summary is FinishUP's fixed sentence around 
 and criterion quote (newest manifest naming the path, at most 120 characters), the agent's own tag
 beside the reviewer's observation when tagged, and the reviewer's probe: "Your test <path> for
 '<criterion>' takes its expected value from the implementation | cannot fail as written (you
-tagged expected_from=<tag>; the reviewer observed <observation>). Run: <probe>, or show it fails
-on a deliberately broken scratch copy, or decline with a reason." The probe is kept verbatim
+tagged expected_from=<tag>; the reviewer observed <observation>). Reviewer's counter-example:
+<probe>. Check it, show the test fails on a deliberately broken copy, or decline with a reason."
+(#1145, 2026-10-29; no full stop is added after a probe that already ends a sentence, and a row
+recorded earlier keeps its "Run: <probe>" bytes.) The probe is kept verbatim
 (spacing and line breaks; only control characters other than newline and tab are dropped, and
-blankness is tested on its strip); a multi-line probe follows the sentence in a fenced block
+blankness is tested on its strip); a multi-line probe follows the sentence ("…Check the
+reviewer's counter-example below, show the test fails on a deliberately broken copy, or decline
+with a reason.") in a fenced block
 whose fence outruns any backtick run in it, in both summary and detail, since the check result
 row carries the summary. Subjects: the criterion ref
 when it is an obligation or claim, the declaring result's recording event otherwise. A digest an

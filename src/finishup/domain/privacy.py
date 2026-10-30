@@ -101,9 +101,14 @@ __all__ = [
     "PrivacyReason",
     "ProviderBinding",
     "ProviderDataUseProfile",
+    "RECEIPT_CAPACITY_SCOPE_UNITS",
+    "ReceiptCapacity",
     "ReceiptCounts",
     "ReceiptPolicyBinding",
+    "MAX_SCAN_MATCH_ITEM_IDS",
+    "SCAN_MATCH_CLASSES",
     "ReceiptSecretScan",
+    "ScanMatchClass",
     "ReceiptSecretScanStage",
     "ReceiptTransformations",
     "OBSERVATION_ADVICE_PACKET_ITEM_ID",
@@ -377,6 +382,9 @@ def policy_field_omitted(name: str, value: object) -> bool:
         value is CredentialHeuristic.ENFORCED
         or (name == "conversation_review" and value is None)
         or (name == "admitted_input_roots" and value == ())
+        # #1138: a receipt scan names its match class and items only when a scan refused.
+        or (name == "match_class" and value is None)
+        or (name == "match_item_ids" and value == ())
     )
 
 
@@ -2760,6 +2768,43 @@ class ReceiptTransformations:
         _nonnegative(self.blocked_items)
 
 
+# The approved bound a size refusal exceeded (#1129), with the unit it counts in. The pairs are the
+# ones egress measures: the whole rendered disclosure in bytes or estimated model tokens, one
+# excerpt's bytes, the excerpt count, or all excerpts' bytes.
+RECEIPT_CAPACITY_SCOPE_UNITS: Final = frozenset(
+    {
+        ("disclosure", "bytes"),
+        ("disclosure", "tokens"),
+        ("excerpt", "bytes"),
+        ("excerpt", "excerpts"),
+        ("excerpt_total", "bytes"),
+    }
+)
+
+
+@dataclass(frozen=True, slots=True)
+class ReceiptCapacity:
+    """Why a size refusal was refused: the bound, its unit, and the bounded sizes (#1129).
+
+    A capacity refusal keeps ``blocked_by_policy`` / ``policy_denied`` as its outcome and reason
+    (the durable reason vocabulary is unchanged); this typed object says the refusal was for size,
+    not for a policy rule, and carries only integers, never content.
+    """
+
+    scope: Literal["disclosure", "excerpt", "excerpt_total"]
+    unit: Literal["bytes", "tokens", "excerpts"]
+    attempted: int
+    limit: int
+
+    def __post_init__(self) -> None:
+        if (self.scope, self.unit) not in RECEIPT_CAPACITY_SCOPE_UNITS:
+            raise _invalid()
+        _nonnegative(self.attempted)
+        _nonnegative(self.limit)
+        if not self.limit < self.attempted:
+            raise _invalid()
+
+
 class ReceiptSecretScanStage(str, Enum):  # noqa: UP042 - durable receipt vocabulary
     CANDIDATE = "candidate"
     PREPARED_CASE = "prepared_case"
@@ -2769,6 +2814,18 @@ class ReceiptSecretScanStage(str, Enum):  # noqa: UP042 - durable receipt vocabu
     # result came from a prepared scan or from a pre-dispatch refusal; readers preserve that
     # uncertainty instead of presenting it as a clean scan.
     LEGACY_UNKNOWN = "legacy_unknown"
+    # #1138: the scan of the whole reviewer conversation (#1118) that carries the approved packet
+    # one JSON level deeper. A refusal there was recorded as ``prepared_case`` before.
+    REVIEWER_EXCHANGE = "reviewer_exchange"
+
+
+# #1138: the confidence class of a refusing scan match. ``high_confidence`` is a known credential
+# shape, a private-key marker, a URI password, a canary or scanner saturation; ``heuristic`` is
+# only the low-confidence credential-assignment heuristic.
+type ScanMatchClass = Literal["high_confidence", "heuristic"]
+SCAN_MATCH_CLASSES: Final = ("heuristic", "high_confidence")
+# At most this many item ids name where a refusing match sat; more are not listed.
+MAX_SCAN_MATCH_ITEM_IDS: Final = 16
 
 
 @dataclass(frozen=True, slots=True)
@@ -2783,10 +2840,28 @@ class ReceiptSecretScan:
     # heuristic turned off, so only high-confidence detectors ran (issue #982). Encoded only when
     # disabled; every receipt written before the field existed keeps its exact bytes.
     credential_heuristic: CredentialHeuristic = CredentialHeuristic.ENFORCED
+    # #1138: on a refusing scan, the confidence class of its matches and the opaque case item ids
+    # they sat in (none listed when no single item explains them). Never matched bytes. Absent on
+    # every other receipt, so receipts written before the fields keep their exact bytes.
+    match_class: ScanMatchClass | None = None
+    match_item_ids: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         _text(self.registry_version, _VERSION)
         _enum(self.credential_heuristic, CredentialHeuristic)
+        if self.match_class is not None and (
+            self.match_class not in SCAN_MATCH_CLASSES or self.match_count == 0
+        ):
+            raise _invalid()
+        if (
+            type(self.match_item_ids) is not tuple
+            or len(self.match_item_ids) > MAX_SCAN_MATCH_ITEM_IDS
+            or self.match_item_ids != tuple(sorted(set(self.match_item_ids), key=str.encode))
+            or (self.match_item_ids and self.match_class is None)
+        ):
+            raise _invalid()
+        for item_id in self.match_item_ids:
+            _text(item_id, _OPAQUE)
         validate_sha256_digest(self.scanner_profile_digest)
         _nonnegative(self.match_count)
         if type(self.passed) is not bool:
@@ -2841,6 +2916,10 @@ class EgressReceipt:
     # The closed operation that asked for this disclosure (tb4n2 N-5); 1.1.0 only, optional so
     # every receipt written before it keeps its exact bytes.
     origin_operation: EgressOriginOperation | None = None
+    # #1129: a size refusal's typed capacity reason; 1.1.0 only, and only on a pre-dispatch
+    # ``blocked_by_policy`` / ``policy_denied`` refusal. Absent on every other receipt, so every
+    # receipt written before it keeps its exact bytes.
+    capacity_exceeded: ReceiptCapacity | None = None
 
     def __post_init__(self) -> None:
         if type(self.schema_version) is not str or self.schema_version not in {"1.0.0", "1.1.0"}:
@@ -2849,6 +2928,13 @@ class EgressReceipt:
             _enum(self.origin_operation, EgressOriginOperation)
             if self.schema_version == "1.0.0":
                 raise _invalid()
+        if self.capacity_exceeded is not None and (
+            type(self.capacity_exceeded) is not ReceiptCapacity
+            or self.schema_version == "1.0.0"
+            or self.outcome is not PrivacyOutcome.BLOCKED_BY_POLICY
+            or self.safe_failure_reason is not PrivacyReason.POLICY_DENIED
+        ):
+            raise _invalid()
         validate_id(IdKind.EGRESS_RECEIPT, self.receipt_id)
         validate_id(IdKind.REQUEST, self.request_id)
         validate_id(IdKind.PRIVACY_PROPOSAL, self.privacy_proposal_id)
@@ -2956,7 +3042,11 @@ class EgressReceipt:
             self.withheld_item_ids
             or (
                 type(self.secret_scan) is ReceiptSecretScan
-                and self.secret_scan.credential_heuristic is not CredentialHeuristic.ENFORCED
+                and (
+                    self.secret_scan.credential_heuristic is not CredentialHeuristic.ENFORCED
+                    # #1138: the released 1.0 shape has no match class or item fields.
+                    or self.secret_scan.match_class is not None
+                )
             )
             # The released 1.0 vocabulary stops at 262,144 final bytes (#1118 widened only 1.1).
             or (
@@ -3026,7 +3116,11 @@ class LocalDisclosureReceipt:
             self.withheld_item_ids
             or (
                 type(self.secret_scan) is ReceiptSecretScan
-                and self.secret_scan.credential_heuristic is not CredentialHeuristic.ENFORCED
+                and (
+                    self.secret_scan.credential_heuristic is not CredentialHeuristic.ENFORCED
+                    # #1138: the released 1.0 shape has no match class or item fields.
+                    or self.secret_scan.match_class is not None
+                )
             )
             # The released 1.0 vocabulary stops at 262,144 final bytes (#1118 widened only 1.1).
             or (

@@ -93,6 +93,7 @@ if TYPE_CHECKING:
 
 __all__ = [
     "DeclaredTestVerdict",
+    "FreshnessVerdict",
     "RemainingCheck",
     "MAX_PRIOR_FINDING_ITEMS",
     "MAX_PRIOR_FINDING_REFS",
@@ -1901,6 +1902,24 @@ class RemainingCheck:
 
 
 @dataclass(frozen=True, slots=True)
+class FreshnessVerdict:
+    """Whether the reviewer agrees with one rerun-question answer (#1241 D9; advisory).
+
+    ``finding_id`` names a freshness-answer row the packet carried; FinishUP fences it to those
+    rows before anything is recorded, and records it for instrumentation only.
+    """
+
+    finding_id: str
+    agrees: bool
+
+    def __post_init__(self) -> None:
+        if type(self.finding_id) is not str or not self.finding_id.startswith("fnd_"):
+            raise _invalid_judgment()
+        if type(self.agrees) is not bool:
+            raise _invalid_judgment()
+
+
+@dataclass(frozen=True, slots=True)
 class DeclaredTestVerdict:
     """The reviewer's reading of one listed declared test (#1145; advisory, never a finding).
 
@@ -2025,6 +2044,7 @@ class SemanticJudgment:
     # Optional (#1145): the reviewer's verdicts on listed declared tests, at most two; absent on
     # older responses and on every review that listed none.
     declared_test_verdicts: tuple[DeclaredTestVerdict, ...] = ()
+    freshness_verdicts: tuple[FreshnessVerdict, ...] = ()
 
     def __post_init__(self) -> None:
         if type(self.conclusion) is not str or self.conclusion not in _CONCLUSIONS:
@@ -2033,6 +2053,9 @@ class SemanticJudgment:
             type(self.declared_test_verdicts) is not tuple
             or len(self.declared_test_verdicts) > MAX_DECLARED_TEST_VERDICTS
             or any(type(item) is not DeclaredTestVerdict for item in self.declared_test_verdicts)
+            or type(self.freshness_verdicts) is not tuple
+            or len(self.freshness_verdicts) > 4
+            or any(type(item) is not FreshnessVerdict for item in self.freshness_verdicts)
         ):
             raise _invalid_judgment()
         if (

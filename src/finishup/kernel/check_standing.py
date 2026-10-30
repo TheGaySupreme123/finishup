@@ -161,6 +161,7 @@ def check_standing(projection: ProjectionState, records: tuple[LedgerRecord, ...
             latest.returned_finding_ids,
             limitation_finding_ids=limitations,
             projection=projection,
+            check_event_id=check_record.event_id,
         ):
             superseded = _later(
                 record,

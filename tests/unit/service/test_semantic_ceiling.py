@@ -191,7 +191,9 @@ def test_a_ceiling_nothing_fits_under_is_left_for_egress_to_deny() -> None:
 
     planned, selection, rounds = _plan(case, 1_024)
 
-    assert rounds == 1
+    # #1245 (D22): one round keeps the obligation and claim rows, the last-resort one drops them.
+    assert rounds == 2
+    assert not {"goal", "obligations", "claims"} & set(selection.sections)
     assert selection.max_excerpts == 0
     assert planned.packet.targeted_excerpts == ()
     assert len(_prepared(planned)) > 1_024

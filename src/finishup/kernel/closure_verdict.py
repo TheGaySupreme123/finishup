@@ -14,6 +14,7 @@ to the same verdict after a restart, a reattach or an upgrade.
 
 from __future__ import annotations
 
+import hashlib
 from collections.abc import Iterable
 from dataclasses import dataclass
 from typing import Final
@@ -37,6 +38,7 @@ from finishup.kernel.receipt_prediction import (
 __all__ = [
     "MAX_RECHECK_SUBJECTS",
     "ClosureVerdict",
+    "advice_recheck",
     "Recheck",
     "closure_verdict",
     "rechecks_from_closures",
@@ -57,11 +59,34 @@ class ClosureVerdict:
     rechecks: tuple[Recheck, ...]
 
 
+def advice_recheck(advice: tuple[str, ...]) -> Recheck | None:
+    """#1240 D2: one re-check for the open material advice, keyed by that exact set.
+
+    The key changes exactly when the set does, so the Stop gate asks once per set (the #1162
+    identity with the #985 ask-once memory). Subjects are the noted checks' event ids and the
+    decision findings' ids, at most ``MAX_RECHECK_SUBJECTS``.
+    """
+
+    if not advice:
+        return None
+    ordered = sorted(advice, key=str.encode)
+    digest = hashlib.sha256("\n".join(ordered).encode("utf-8")).hexdigest()[:16]
+    subjects = tuple(dict.fromkeys(ref.split(":", 1)[0] for ref in ordered))
+    return Recheck(
+        "advice",
+        f"advice:{digest}",
+        subjects[:MAX_RECHECK_SUBJECTS],
+        "material_advice_unanswered",
+        0,
+    )
+
+
 def rechecks_from_closures(
     obligations: Iterable[ObligationClosure],
     facts: ClosureReadinessFacts | None,
     *,
     acknowledged_count: int,
+    advice: tuple[str, ...] = (),
 ) -> tuple[Recheck, ...]:
     """The stateless once-per-frontier re-check candidates (RC-8); delivery memory stays in the gate.
 
@@ -72,6 +97,7 @@ def rechecks_from_closures(
       that downgrade for an output that does not meet its criteria.
     * ``blocker``: a recorded blocker the agent claimed and has not confirmed.
     * ``premise``: an acknowledged finding the reviewer still disputes (D7a).
+    * ``advice``: material reviewer advice with no recorded answer (#1240 D2), one per open set.
 
     No ``acceptance`` re-check is emitted (ADR-033, owner decision D1). The wire kind stays
     defined so a status from an earlier 0.3 build still validates; the gate drops it.
@@ -118,6 +144,8 @@ def rechecks_from_closures(
                     0,
                 )
             )
+    if (advised := advice_recheck(advice)) is not None:
+        out.append(advised)
     return tuple(out)
 
 
@@ -162,6 +190,9 @@ def closure_verdict(
         predict_receipt_conclusion(basis),
         closure_counts(finding_rows, obligation_rows),
         rechecks_from_closures(
-            obligation_rows, facts, acknowledged_count=readiness.acknowledged_not_done_count
+            obligation_rows,
+            facts,
+            acknowledged_count=readiness.acknowledged_not_done_count,
+            advice=basis.advice_unanswered,
         ),
     )

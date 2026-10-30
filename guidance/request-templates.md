@@ -135,7 +135,7 @@ names them. An omitted empty `limitation_refs` or `supersedes_claim_refs` on a 1
 empty set.
 
 ```json
-{"protocol_version":"0.1","schema_version":"1.0.0","session_id":"ses_00000000-0000-4000-8000-000000000001","writer_id":"wri_00000000-0000-4000-8000-000000000001","event_drafts":[{"schema":{"name":"plan_published","version":"1.0.0"},"payload":{"plan_version":1,"summary":"plan","obligation_refs":["obl_00000000-0000-4000-8000-000000000001"]}},{"schema":{"name":"obligation_published","version":"1.0.0"},"payload":{"obligation_id":"obl_00000000-0000-4000-8000-000000000001","description":"outcome","acceptance_criteria":"criterion","evidence_expectation":"test","status":"open","requested_items":[{"item_kind":"command","value":"pytest -q"}],"source_refs":["evt_00000000-0000-4000-8000-000000000000"]}},{"schema":{"name":"action_recorded","version":"1.0.0"},"payload":{"action_id":"act_00000000-0000-4000-8000-000000000001","action_kind":"command","command":"pytest -q","description":"action","attempted_items":["pytest -q"]}},{"schema":{"name":"result_recorded","version":"1.0.0"},"payload":{"result_id":"res_00000000-0000-4000-8000-000000000001","action_id":"act_00000000-0000-4000-8000-000000000001","outcome":"success","summary":"result","evidence_refs":["evd_00000000-0000-4000-8000-000000000001"]}},{"schema":{"name":"evidence_recorded","version":"1.1.0"},"payload":{"evidence_id":"evd_00000000-0000-4000-8000-000000000001","evidence_kind":"test_result","strength":"content_digest","content_digest":"sha256:0000000000000000000000000000000000000000000000000000000000000000","digest_binding":{"subject":"test_stdout","content_availability":"digest_only","byte_count":1,"provenance":"caller_asserted"},"observed_at":"2026-01-01T00:00:00.000Z"}},{"schema":{"name":"claim_recorded","version":"1.1.0"},"payload":{"claim_id":"clm_00000000-0000-4000-8000-000000000001","claim_kind":"completion","statement":"claim","supporting_refs":["evd_00000000-0000-4000-8000-000000000001"],"obligation_refs":["obl_00000000-0000-4000-8000-000000000001"],"limitation_refs":["res_00000000-0000-4000-8000-000000000004"],"supersedes_claim_refs":[]}},{"schema":{"name":"plan_revised","version":"1.0.0"},"payload":{"plan_version":2,"supersedes_plan_version":1,"reason":"changed","summary":"revised","obligation_changes":[{"obligation_id":"obl_00000000-0000-4000-8000-000000000001","change":"carried"}]}},{"schema":{"name":"decision_recorded","version":"1.0.0"},"payload":{"statement":"decision","rationale":"why","authority":"harness:cli"}}],"actor":{"actor_id":"harness:cli","actor_type":"harness"},"client":{"kind":"cooperative_agent","version":"0.1.0","integration":"cooperative_mcp"}}
+{"protocol_version":"0.1","schema_version":"1.0.0","session_id":"ses_00000000-0000-4000-8000-000000000001","writer_id":"wri_00000000-0000-4000-8000-000000000001","event_drafts":[{"schema":{"name":"plan_published","version":"1.0.0"},"payload":{"plan_version":1,"summary":"plan","obligation_refs":["obl_00000000-0000-4000-8000-000000000001"]}},{"schema":{"name":"obligation_published","version":"1.0.0"},"payload":{"obligation_id":"obl_00000000-0000-4000-8000-000000000001","description":"outcome","acceptance_criteria":"criterion","evidence_expectation":"test","status":"open","requested_items":[{"item_kind":"command","value":"pytest -q"}],"source_refs":["evt_00000000-0000-4000-8000-000000000000"]}},{"schema":{"name":"action_recorded","version":"1.0.0"},"payload":{"action_id":"act_00000000-0000-4000-8000-000000000001","action_kind":"command","command":"pytest -q","description":"action","attempted_items":["pytest -q"]}},{"schema":{"name":"result_recorded","version":"1.1.0"},"payload":{"result_id":"res_00000000-0000-4000-8000-000000000001","action_id":"act_00000000-0000-4000-8000-000000000001","outcome":"success","summary":"result","evidence_refs":["evd_00000000-0000-4000-8000-000000000001"]}},{"schema":{"name":"evidence_recorded","version":"1.1.0"},"payload":{"evidence_id":"evd_00000000-0000-4000-8000-000000000001","evidence_kind":"test_result","strength":"content_digest","content_digest":"sha256:0000000000000000000000000000000000000000000000000000000000000000","digest_binding":{"subject":"test_stdout","content_availability":"digest_only","byte_count":1,"provenance":"caller_asserted"},"observed_at":"2026-01-01T00:00:00.000Z"}},{"schema":{"name":"claim_recorded","version":"1.1.0"},"payload":{"claim_id":"clm_00000000-0000-4000-8000-000000000001","claim_kind":"completion","statement":"claim","supporting_refs":["evd_00000000-0000-4000-8000-000000000001"],"obligation_refs":["obl_00000000-0000-4000-8000-000000000001"],"limitation_refs":["res_00000000-0000-4000-8000-000000000004"],"supersedes_claim_refs":[]}},{"schema":{"name":"plan_revised","version":"1.0.0"},"payload":{"plan_version":2,"supersedes_plan_version":1,"reason":"changed","summary":"revised","obligation_changes":[{"obligation_id":"obl_00000000-0000-4000-8000-000000000001","change":"carried"}]}},{"schema":{"name":"decision_recorded","version":"1.0.0"},"payload":{"statement":"decision","rationale":"why","authority":"harness:cli"}}],"actor":{"actor_id":"harness:cli","actor_type":"harness"},"client":{"kind":"cooperative_agent","version":"0.1.0","integration":"cooperative_mcp"}}
 ```
 
 ## `start`
@@ -268,6 +268,10 @@ resolve that obligation with the evidence you can produce, and disclose the limi
 and why. Never empty or withdraw the deliverable because of it. For example: "Resolved
 implementation obligation; hidden accuracy unverified." Preserve that original criterion and
 verification limit in final prose; resolving implementation work does not prove hidden acceptance.
+For a budget or score stated against a reference you cannot see, add the line
+`finishup-proxy:<obligation id>` to that statement (or a later decision) and put the stand-in you
+built and its measured ratio, or why none was feasible, in the `rationale`; without it the receipt
+says `proxy: none chosen`.
 
 ```json
 {
@@ -548,7 +552,7 @@ ends; if it was abandoned, record outcome `unknown` and say so in the summary.
       "obligation_refs": ["obl_00000000-0000-4000-8000-000000000001"]
     }
   }, {
-    "schema": {"name": "result_recorded", "version": "1.0.0"},
+    "schema": {"name": "result_recorded", "version": "1.1.0"},
     "payload": {
       "result_id": "res_00000000-0000-4000-8000-000000000060",
       "action_id": "act_00000000-0000-4000-8000-000000000060",
@@ -596,7 +600,7 @@ equivalence.
   "session_id": "ses_00000000-0000-4000-8000-000000000001",
   "writer_id": "wri_00000000-0000-4000-8000-000000000001",
   "event_drafts": [{
-    "schema": {"name": "result_recorded", "version": "1.0.0"},
+    "schema": {"name": "result_recorded", "version": "1.1.0"},
     "payload": {
       "result_id": "res_00000000-0000-4000-8000-000000000001",
       "action_id": "act_00000000-0000-4000-8000-000000000001",
@@ -610,7 +614,7 @@ equivalence.
 
 ### Optional verification manifest
 
-Use `result_recorded/1.1.0` to add `verification` to the result payload above:
+Add `verification` to the `result_recorded/1.1.0` payload above:
 
 ```jsonc
 {
@@ -627,6 +631,8 @@ Use `result_recorded/1.1.0` to add `verification` to the result payload above:
 ```
 
 Replace the criterion with an exact whole-word quote of one criterion from this task's recorded statement.
+Spacing and quote-mark style may differ from the statement; the words may not. A refusal names the
+nearest task sentence by its number and line.
 For this failing example, set the result's `outcome` to `failure` and describe the six
 failing cases. Declare the actual data source: `task_public`, `own_generated`, `independent`,
 `held_out`, `stated_environment` or `unknown`. `worst` and `tuned_on_these_cases` are optional.
@@ -953,7 +959,7 @@ If `scope` is present, send both arrays. Either may be empty; two empty arrays m
 
 ## `respond`
 
-For `decision_needed`, a response optionally records a choice and reason, never a verified repair.
+For `decision_needed`, one response records your choice and reason, never a verified repair.
 Do not seek resolution or a repair ruling; use [review.md](review.md) for the finding procedure.
 
 Use `finding_frontier` = any frontier at or after the finding's own record: the item's

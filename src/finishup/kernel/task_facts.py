@@ -279,6 +279,11 @@ __all__ = [
     "DisclosureDeclaration",
     "disclosure_declarations",
     "disclosure_line_obligations",
+    "PROXY_MARKER",
+    "ProxyDecision",
+    "proxy_decisions",
+    "proxy_line_obligations",
+    "verification_limits_without_proxy",
     "blocked_obligations",
     "blocker_declarations",
     "blocker_publication_notices",
@@ -797,6 +802,94 @@ def disclosure_declarations(projection: ProjectionState) -> tuple[DisclosureDecl
         for (obligation, kind), event in sorted(
             declared.items(), key=lambda item: (item[0][0].encode(), item[0][1].encode())
         )
+    )
+
+
+# #1246 (D17): ``finishup-proxy:<obligation id>`` records the agent's one proxy decision for a
+# check it cannot run against a hidden reference (a budget or score stated relative to a reference
+# run or unseen data): the proxy it built and the ratio it measured, or why no proxy was feasible,
+# in the decision's rationale. It is not a disclosure kind: it adds no readiness code and is never
+# asked for at check time. A receipt names a disclosed verification limit without one as "proxy:
+# none chosen". An id that names no recorded obligation records nothing.
+PROXY_MARKER: Final = "finishup-proxy"
+
+
+@dataclass(frozen=True, slots=True)
+class ProxyDecision:
+    """One obligation's recorded proxy decision and the decision event that records it."""
+
+    obligation_id: ObligationId
+    decision_event_id: EventId
+
+
+def proxy_line_obligations(statement: str) -> tuple[ObligationId, ...]:
+    """The obligation ids a decision statement's ``finishup-proxy:<obligation id>`` lines name.
+
+    The same exact-line rule as ``disclosure_line_obligations``: whitespace around the line and
+    the colon is ignored, an id that is not well formed or anything else on the line makes it
+    ordinary prose. Unique, in first-seen order.
+    """
+
+    found: dict[ObligationId, None] = {}
+    for line in statement.splitlines():
+        marker, separator, value = line.strip().partition(":")
+        if marker.strip() != PROXY_MARKER or not separator:
+            continue
+        try:
+            obligation = obligation_id(value.strip())
+        except ValueError:
+            continue
+        found.setdefault(obligation, None)
+    return tuple(found)
+
+
+def proxy_decisions(projection: ProjectionState) -> tuple[ProxyDecision, ...]:
+    """Proxy decisions readable, unsuperseded decisions record for recorded obligations (#1246).
+
+    One row per obligation: the earliest such decision in ledger order records it, and a
+    superseding decision withdraws it, exactly as for disclosures. Sorted by obligation.
+    """
+
+    rows = sorted(
+        (
+            (row.source_frontier, event_id, row.payload)
+            for event_id, row in projection.decisions.items()
+            if type(row.payload) is DecisionRecordedPayload and row.superseded_by_event_id is None
+        ),
+        key=lambda item: (item[0], str(item[1]).encode()),
+    )
+    recorded: dict[ObligationId, EventId] = {}
+    for _position, event_id, payload in rows:
+        assert payload is not None
+        for obligation in proxy_line_obligations(payload.statement):
+            record = projection.obligations.get(obligation)
+            if record is None or record.payload is None:
+                continue
+            recorded.setdefault(obligation, event_id)
+    return tuple(
+        ProxyDecision(obligation, event)
+        for obligation, event in sorted(recorded.items(), key=lambda item: item[0].encode())
+    )
+
+
+def verification_limits_without_proxy(
+    projection: ProjectionState,
+) -> tuple[tuple[ObligationId, ...], tuple[ObligationId, ...]]:
+    """``(none_chosen, recorded)``: disclosed verification limits without and with a proxy decision.
+
+    Both are obligation ids in obligation order, from ``disclosure_declarations`` and
+    ``proxy_decisions`` (#1246, D17). A pure function of the projection.
+    """
+
+    limits = tuple(
+        item.obligation_id
+        for item in disclosure_declarations(projection)
+        if item.kind == "verification_limit"
+    )
+    proxied = {item.obligation_id for item in proxy_decisions(projection)}
+    return (
+        tuple(item for item in limits if item not in proxied),
+        tuple(item for item in limits if item in proxied),
     )
 
 
@@ -1912,6 +2005,15 @@ class TaskFactSignals:
     # the planned command alone settles it). Where the host stated no outcome it is not listed and
     # stays a plain disclosure: no agent action supplies a host's missing outcome.
     fix_or_decline: tuple[tuple[str, ObligationId], ...] = ()
+    # #1241 D9 x #1209: the observed command actions the agent linked to a planned verification
+    # these facts read, sorted. The link is the agent's account citing the run, so the rerun
+    # question asks about it like a cited run, and an answer can clear its standing marker.
+    agent_linked_events: tuple[EventId, ...] = ()
+    # #1241 D9: the observed command actions whose freshness the ``verification_rerun_question``
+    # markers read, sorted: each planned item's deciding run (the latest of each requested
+    # verification) and the last verification run (the latest verification overall). The rerun
+    # question asks about exactly these, so every marker has a question an answer can clear.
+    freshness_deciding_events: tuple[EventId, ...] = ()
 
     def __post_init__(self) -> None:
         if not set(self.codes) <= TASK_FACT_GAPS:
@@ -1948,6 +2050,22 @@ def _changed_after(
         state.latest_edit,
         () if state.latest_edit_event is None else (state.latest_edit_event,),
     )
+
+
+def _rerun_answered(state: ProjectionState, delta: VerificationFreshness) -> bool:
+    """A reasoned answer already covers this run and its later changes (#1241 D10).
+
+    The receipt then shows the agent's bounded reason instead of the standing rerun question;
+    a change the answer did not cover asks again.
+    """
+
+    from finishup.kernel.freshness_answers import covering_freshness_answer
+
+    result = state.results.get(delta.run_ref)
+    if result is None:
+        return False
+    refs = (str(result.source_event_id), *delta.change_refs)
+    return covering_freshness_answer(state, refs) is not None
 
 
 def task_fact_signals(
@@ -2005,6 +2123,8 @@ def task_fact_signals(
     keyed_runs = [run for run in state.runs if run.identity is not None]
     linked_runs = _agent_linked_runs(projection, prefix, state, observed)
     planned_runs: list[_ObservedRun] = []
+    linked_events: set[EventId] = set()
+    deciding_events: set[EventId] = set()
     if command_identity_key_registered():
         for obligation in effective_obligations(projection):
             if obligation in blocked or obligation in acknowledged:
@@ -2030,6 +2150,11 @@ def task_fact_signals(
                     ]
                 )
                 planned_runs.extend(run for run, _outcome, _kind in matching)
+                linked_events.update(
+                    run.action_event
+                    for run in linked_runs.get((obligation, item.value), ())
+                    if run.action_event is not None
+                )
                 linked = [
                     (run, run.outcome, "agent_link")
                     for run in linked_runs.get((obligation, item.value), ())
@@ -2054,6 +2179,8 @@ def task_fact_signals(
                     )
                     continue
                 latest, outcome, kind = max(matching + linked, key=lambda row: row[0].position)
+                if latest.action_event is not None:
+                    deciding_events.add(latest.action_event)
                 if kind == "agent_link":
                     # The run that decides the outcome is the agent's own link, whether or not a
                     # direct run matched earlier (#1209, #1003): a later linked run can turn a red
@@ -2104,7 +2231,11 @@ def task_fact_signals(
                         # established (#1209): running the planned command alone settles it.
                         fixable.add((PLANNED_VERIFICATION_OUTCOME_UNKNOWN_GAP, obligation))
                 delta = by_event.get(latest.action_event)
-                if delta is not None and delta.state == "unknown":
+                if (
+                    delta is not None
+                    and delta.state == "unknown"
+                    and not _rerun_answered(projection, delta)
+                ):
                     markers.add((RERUN_QUESTION, obligation))
                 if delta is not None and delta.caller_asserted:
                     markers.add((CALLER_ASSERTED_INPUTS, obligation))
@@ -2186,8 +2317,14 @@ def task_fact_signals(
         )
 
     if verification_runs:
+        if verification_runs[-1].action_event is not None:
+            deciding_events.add(verification_runs[-1].action_event)
         delta = by_event.get(verification_runs[-1].action_event)
-        if delta is not None and delta.state == "unknown":
+        if (
+            delta is not None
+            and delta.state == "unknown"
+            and not _rerun_answered(projection, delta)
+        ):
             markers.add((RERUN_QUESTION, None))
     if any(fact.caller_asserted for fact in freshness):
         # Freshness of a retained run (the latest of its command, or one the account cites) held
@@ -2248,6 +2385,8 @@ def task_fact_signals(
         fix_or_decline=tuple(
             sorted(fixable, key=lambda item: (item[0].encode(), item[1].encode()))
         ),
+        agent_linked_events=tuple(sorted(linked_events, key=str.encode)),
+        freshness_deciding_events=tuple(sorted(deciding_events, key=str.encode)),
     )
 
 
