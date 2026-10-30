@@ -49,7 +49,11 @@ from finishup.config.paths import PathSafetyError, isolated_root_variable
 from finishup.domain.check_totals import render_check_totals
 from finishup.domain.closure import PREPARATION_REMEDIATIONS, prepare_closure
 from finishup.domain.decision_status import safe_status_line
-from finishup.domain.result_delivery import HOST_RESULT_BUDGET_BYTES, mcp_delivery_bytes
+from finishup.domain.result_delivery import (
+    HOST_RESULT_BUDGET_BYTES,
+    delivery_page_text,
+    mcp_delivery_bytes,
+)
 from finishup.domain.review_input_render import render_review_input_manifest_compact
 from finishup.mcp.descriptors import (
     TOOL_DESCRIPTORS,
@@ -1229,7 +1233,8 @@ def _result_text(
     Cursor 3.17.x does not reliably deliver MCP ``structuredContent`` to the model. Its native
     plugin therefore opts into an exact canonical-JSON copy in ``content`` while retaining the
     structured result. Delivery pages, receipts and findings reads use the same complete text
-    channel for every host. Small checks retain their coverage-bounded summary alongside the
+    channel for every host; a delivery page's copy moves ``next_cursor`` to the front, the one
+    member out of canonical order, so the handle an agent copies leads it. Small checks retain their coverage-bounded summary alongside the
     complete JSON; other small results retain their existing summary. The copy
     adds no fields: it is byte-for-byte a second encoding of the already-authorized wire body.
 
@@ -1241,6 +1246,13 @@ def _result_text(
     if host_profile not in {"generic", "codex", "claude", "cursor"}:
         raise ValueError("mcp_host_profile_invalid")
     failures: list[tuple[str, BaseException]] = []
+    if wire.get("state") == "delivery_page":
+        # The continuation handle leads the text an agent copies it from, as it leads the
+        # structured result (#1244); the members are otherwise the canonical copy's.
+        try:
+            return delivery_page_text(cast(Mapping[str, JsonValue], wire))
+        except Exception as exc:  # noqa: BLE001 - fall back to the canonical copy below
+            failures.append(("delivery_page.text", exc))
     if (
         wire.get("state") == "delivery_page"
         or "receipt_id" in wire
