@@ -268,6 +268,10 @@ resolve that obligation with the evidence you can produce, and disclose the limi
 and why. Never empty or withdraw the deliverable because of it. For example: "Resolved
 implementation obligation; hidden accuracy unverified." Preserve that original criterion and
 verification limit in final prose; resolving implementation work does not prove hidden acceptance.
+For a budget or score stated against a reference you cannot see, add the line
+`finishup-proxy:<obligation id>` to that statement (or a later decision) and put the stand-in you
+built and its measured ratio, or why none was feasible, in the `rationale`; without it the receipt
+says `proxy: none chosen`.
 
 ```json
 {

@@ -389,6 +389,8 @@ a blocker: finish the work and disclose it in a `decision_recorded` whose statem
 exact line `finishup-verification-limit:<obligation id>` or `finishup-assumption:<obligation id>`, with
 the limit or assumption as the rationale. A disclosure never blocks, resolves or reopens anything;
 readiness lists `verification_limit_disclosed` or `assumption_disclosed`, and the receipt names it.
+A budget against a reference you cannot see also takes a line `finishup-proxy:<obligation id>`
+(rationale: your stand-in's measured ratio, or why none was feasible).
 Supersede the decision (`supersedes_event_id`) to withdraw it. For an open obligation you truly
 will not do, after repair, republish it on `obligation_published` 1.1.0 with the same meaning
 fields, `status: "acknowledged_not_done"` and an `acknowledged_not_done_reason`: the honest last
