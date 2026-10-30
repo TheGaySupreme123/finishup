@@ -1693,9 +1693,10 @@ the privacy workstream's (#1248, P-D1/P-D2); this amendment fixes only the recor
   block and say that sending the same content again will not help.
 - A conversation that sent nothing counts no model exchange, and its reviewer line is dropped.
 - No unchanged re-dispatch: when the newest check that asked for AI-powered review recorded that
-  refusal and no edit action or agent-published evidence followed, the next check records the same
-  status and items with `semantic_review_skipped_privacy_block` and composes, reserves and sends
-  nothing. Hook-captured output does not end it, since the refused item stays in the case. A closing
+  refusal and no edit action, agent-published evidence or agent-published text (a claim, plan,
+  obligation, decision or answer, so a revised text is composed and scanned again) followed, the
+  next check records the same status and items with `semantic_review_skipped_privacy_block` and
+  composes, reserves and sends nothing. Hook-captured output does not end it, since the refused item stays in the case. A closing
   review after a routine check's refusal is scanned once more, so the final state is checked before
   the receipt; a closing review's own refusal stands. A privacy-policy change does not end it by
   itself (the policy is not in the task ledger); the next edit does. Known limit: a write made only

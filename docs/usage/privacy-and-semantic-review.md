@@ -166,7 +166,7 @@ stage (`candidate`, `prepared_case` or `reviewer_exchange`), the item (its `item
 item explains it) and whether the match was a concrete credential (`high_confidence`) or a value
 that only looks like one (`heuristic`); the privacy receipt names the same. FinishUP does not send
 the same content to be refused again: later checks carry the refusal forward
-(`semantic_review_skipped_privacy_block`) until an edit or newly published evidence, and a closing
+(`semantic_review_skipped_privacy_block`) until an edit or newly published evidence or text, and a closing
 review after a routine check's refusal checks once more. You never need to hide or git-ignore a
 requested output to keep it out of review.
 

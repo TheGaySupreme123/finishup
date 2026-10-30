@@ -192,14 +192,30 @@ def _agent_published_evidence(payload: object) -> bool:
     )
 
 
+# Agent-published text a review item is composed from (#966): a claim, plan goal, obligation,
+# decision or local-finding answer. Publishing one may replace the refused text, so it ends the
+# standing and the next check composes and scans the case again; nothing is sent unless it passes.
+_AGENT_PUBLISHED_TEXT: Final = frozenset(
+    {
+        "claim_recorded",
+        "decision_recorded",
+        "obligation_published",
+        "plan_published",
+        "plan_revised",
+        "response_recorded",
+    }
+)
+
+
 def privacy_block_standing(records: Iterable[LedgerRecord]) -> PrivacyBlockStanding | None:
     """Whether the newest AI-powered review was refused at the privacy boundary, unchanged since.
 
     Issue #1138: a ``blocked_forbidden_data`` / ``never_send_detected`` refusal is deterministic:
     the same content is refused the same way. True when the newest check that asked for a review
     recorded that refusal (or carried it forward under ``semantic_review_skipped_privacy_block``)
-    and neither an edit action nor agent-published evidence was recorded after it: the content
-    the refusal named cannot have changed through the ledger. Hook-captured tool output does not
+    and neither an edit action, agent-published evidence nor agent-published text (a claim, plan,
+    obligation, decision or answer, #966) was recorded after it: the content the refusal named
+    cannot have changed through the ledger. Hook-captured tool output does not
     count, since capturing more output leaves the refused item in place. A local-only check asked
     for no review and neither counts nor resets; any other review outcome ends the standing.
     Reads recorded payloads only; pure.
@@ -215,6 +231,8 @@ def privacy_block_standing(records: Iterable[LedgerRecord]) -> PrivacyBlockStand
         ):
             return None
         if name == "evidence_recorded" and _agent_published_evidence(payload):
+            return None
+        if name in _AGENT_PUBLISHED_TEXT:
             return None
         if name != "check_recorded" or type(payload) is not CheckRecordedPayload:
             continue
