@@ -1913,6 +1913,38 @@ async def test_only_a_redaction_or_a_disclosure_change_refuses_a_continuation() 
         await agent.daemon.close()
 
 
+@pytest.mark.anyio
+async def test_a_mistyped_status_handle_is_invalid_not_a_retryable_read_failure() -> None:
+    """A status handle that names no valid request id or limit is ``delivery_cursor_invalid``.
+
+    A miss rebuilds the status read from the handle alone. A typo that decodes to a non-v4 id,
+    or a limit outside 1..100, used to fail that rebuild's request validation and come back as a
+    retryable ``read_projection_failed``, so the agent retried the same handle.
+    """
+    import base64
+    import uuid
+
+    from builders.status_render_cost import build_codex_status_ledger
+
+    agent = _Agent(await build_codex_status_ledger())
+    await agent.daemon.start()
+    try:
+        complete = await agent.status(view="compact", detail="full", delivery="complete")
+        frontier = complete["result_frontier"]["sequence"]
+        raw = bytearray(uuid.UUID(complete["request_id"][4:]).bytes)
+        valid = base64.urlsafe_b64encode(bytes(raw)).decode("ascii").rstrip("=")
+        raw[6] = (raw[6] & 0x0F) | 0x10  # a version 1 UUID: no request id has one
+        non_v4 = base64.urlsafe_b64encode(bytes(raw)).decode("ascii").rstrip("=")
+        assert await agent.refusal(f"s{non_v4}.{frontier}.1.0123abcd.cf20") == (
+            "delivery_cursor_invalid"
+        )
+        assert await agent.refusal(f"s{valid}.{frontier}.1.0123abcd.cf200") == (
+            "delivery_cursor_invalid"
+        )
+    finally:
+        await agent.daemon.close()
+
+
 async def _record_redaction(agent: _Agent, target: str) -> None:
     """Append one locally authenticated ``redaction_recorded`` after the page set's frontier."""
     from builders.start_application import protocol_id

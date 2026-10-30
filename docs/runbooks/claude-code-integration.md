@@ -3025,8 +3025,10 @@ keep the full local view. Since #1244 `next_cursor` is a short handle (about 45 
 leads each page; copy it exactly. The service keeps each delivered page set in memory only, so an
 append or the agent's own publish no longer refuses a page: it is served as first delivered, with
 `ledger_moved_since` when the ledger moved on. After a service restart the set is rebuilt from the
-ledger, in place or from offset 0 with `page_set_restarted` (discard earlier pages). Only a
-recorded redaction (`delivery_redaction_recorded`) or a changed sink or disclosure policy
+ledger, in place or from offset 0 with `page_set_restarted` (discard earlier pages); a status
+read that named a filter, an inventory cursor or a selector id cannot be rebuilt and is refused
+as `delivery_cursor_expired` (repeat that read). Otherwise only a recorded redaction
+(`delivery_redaction_recorded`) or a changed sink or disclosure policy
 (`delivery_disclosure_changed`) refuses a page; then read current status without starting a new
 review. Host decision: supported, same code path on Claude Code, Codex and Cursor. The MCP `check`
 tool now asks for `detail: brief` (each finding's identity and action fields); read

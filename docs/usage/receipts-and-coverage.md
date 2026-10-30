@@ -51,8 +51,10 @@ numbered `state=delivery_page` parts. Keep reading with `status`, `view=compact`
 result before relying on it; reading the parts never repeats the review or creates another
 receipt. New work recorded while you read does not interrupt the parts: a part says
 `ledger_moved_since` when newer records exist. After a service restart the parts are rebuilt; one
-marked `page_set_restarted` starts the result again, so discard the parts you read before it. Only
-a recorded redaction or a changed privacy setting stops the parts, and the error says which.
+marked `page_set_restarted` starts the result again, so discard the parts you read before it. A
+`status` read that named a filter, an inventory cursor or a selector id is not rebuilt: after a
+restart, repeat that read. Otherwise only a recorded redaction or a changed privacy setting stops
+the parts, and the error says which.
 
 Through an agent's MCP tools a check reply is brief by default: each finding is named by its id,
 kind, priority, summary and subjects, without its detail. `status` with `view=findings` shows the

@@ -2789,7 +2789,12 @@ class Application:
                     "writer_id",
                 },
             )
-            source_request = StatusRequest.model_validate({**source_body, **selector})
+            try:
+                source_request = StatusRequest.model_validate({**source_body, **selector})
+            except ValueError as exc:
+                # After a miss the selector is the handle's own: a mistyped id or limit is a
+                # malformed handle, not a retryable read failure.
+                raise invalid_cursor() from exc
             internal = await self.status(
                 source_request,
                 route_profile=route_profile,
