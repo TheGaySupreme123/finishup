@@ -2888,6 +2888,10 @@ class LineageCoordinator:
                 )
             if snapshot.session_health is SessionHealth.ENDED:
                 return snapshot
+            if snapshot.active_session_id not in {None, session}:
+                # Re-checked under the lock: a route rotated to a successor after the caller
+                # looked, so a predecessor's late end must not end the successor (#1239).
+                return snapshot
             # D6 (#1239): a delivered ``SessionEnd`` ends the session, and its open work is
             # abandoned (``session_ended``) after the short grace, so a host that clears and
             # resumes the same task reattaches instead of losing it.

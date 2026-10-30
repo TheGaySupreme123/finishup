@@ -1623,9 +1623,19 @@ class Application:
                                 target=WorkState.CANCELLED,
                             )
                         elif isinstance(payload, WorkClosedPayload):
-                            await lineage.reconcile_owned_work(
+                            before = await lineage.store.get_task(task_id)
+                            closed = await lineage.reconcile_owned_work(
                                 task_id=task_id, target=WorkState.CLOSED
                             )
+                            if (
+                                before is not None
+                                and before.work_state is not WorkState.CLOSED
+                                and closed.parent_task_id is not None
+                                and closed.abandonment_reason == REVERSIBLE_ABANDONMENT_REASON
+                            ):
+                                # A close replayed after a crash reverses the abandonment too;
+                                # an already-closed row (every later sweep) refreshes nothing.
+                                await self._refresh_parent_after_reversal(closed.task_id)
                         elif isinstance(payload, WorkCancelledPayload):
                             await lineage.reconcile_owned_work(
                                 task_id=task_id, target=WorkState.CANCELLED

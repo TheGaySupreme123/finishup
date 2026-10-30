@@ -392,3 +392,18 @@ async def test_a_day_of_quiet_top_level_tasks_sweeps_well_inside_the_recovery_de
     elapsed = time.monotonic() - started
     assert _CountingStore.reads == 0
     assert elapsed < 30, elapsed
+
+
+async def test_a_late_end_for_a_rotated_session_ends_nothing() -> None:
+    """The coordinator re-checks the active session under its lock before ending it."""
+
+    clock, store, ids = ScenarioClock(), MemoryLineageStore(), FixedIds()
+    coordinator = _coordinator(clock, store, ids)
+    task, session = await _root(coordinator, ids)
+    snapshot = await store.get_task(task)
+    assert snapshot is not None
+    rotated = replace(snapshot, active_session_id=ids.new(IdKind.SESSION))
+    await store.save_task(rotated)
+    # The predecessor's mapping still resolves to the task, but it is no longer the active one.
+    assert await coordinator.end_session(session_id=session) == rotated
+    assert await store.get_task(task) == rotated

@@ -57,9 +57,10 @@ def status_task_lifecycle_line(value: object) -> str:
             )
         return "" if health == "active" else f"Work: open; session {health}."
     if work == "abandoned":
+        # An ended session cannot publish the close, so only a live one is offered it.
         remedy = (
             "this session can still close it"
-            if reason == "contact_lost"
+            if reason == "contact_lost" and health != "ended"
             else "start a successor task for new work"
         )
         return (

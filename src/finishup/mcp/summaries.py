@@ -2312,6 +2312,7 @@ def summary_for_status(envelope: object) -> str:
                     priority=_P_ACTION,
                 ),
                 _advice_preview_skip_part(source),
+                _task_lifecycle_part(render, source),
                 *_closure_section(render, source),
                 render.failure_part(),
             ]
@@ -2351,13 +2352,7 @@ def summary_for_status(envelope: object) -> str:
             render.text("review_mode_next", lambda: _review_mode_next_clause(source)),
             priority=_P_ACTION,
         ),
-        # #1239: the task's own lifecycle when it is not open and in contact.
-        _opt(
-            render.text(
-                "task_lifecycle", lambda: status_task_lifecycle_line(source.get("task_lifecycle"))
-            ),
-            priority=_P_STATE,
-        ),
+        _task_lifecycle_part(render, source),
     ]
     if view == "evidence":
         parts.append(
@@ -2816,6 +2811,17 @@ def _operation_check_outcome_variants(source: Mapping[str, JsonValue]) -> tuple[
     return (head,)
 
 
+def _task_lifecycle_part(render: _Render, source: Mapping[str, JsonValue]) -> Part | None:
+    """#1239: the task's own lifecycle when it is not open and in contact, on every status view."""
+
+    return _opt(
+        render.text(
+            "task_lifecycle", lambda: status_task_lifecycle_line(source.get("task_lifecycle"))
+        ),
+        priority=_P_STATE,
+    )
+
+
 def _summary_for_multi_agent_status(source: Mapping[str, JsonValue], view: str) -> str:
     render = _Render("status")
     page = source.get("page")
@@ -2825,6 +2831,7 @@ def _summary_for_multi_agent_status(source: Mapping[str, JsonValue], view: str) 
             [
                 head,
                 _req("page unavailable."),
+                _task_lifecycle_part(render, source),
                 *_closure_section(render, source),
                 render.failure_part(),
             ]
@@ -2884,6 +2891,7 @@ def _summary_for_multi_agent_status(source: Mapping[str, JsonValue], view: str) 
     parts.append(
         _opt("Read the structured page for child states and row identities.", priority=_P_STATE)
     )
+    parts.append(_task_lifecycle_part(render, source))
     parts.extend(_closure_section(render, source))
     parts.append(render.failure_part())
     return _compose(parts)

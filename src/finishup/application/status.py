@@ -484,6 +484,12 @@ async def task_lifecycle_body(app: object, task_id: str) -> dict[str, JsonValue]
         snapshot = await cast(Callable[[str], Awaitable[object]], own)(task_id)
     except PublicOperationError:
         return None
+    except Exception as exc:
+        # A busy or failed catalog read omits the optional block; status itself still answers.
+        record_unexpected_exception_without_raising(
+            exc, component="status", operation="task_lifecycle_read_failed"
+        )
+        return None
     if snapshot is None:
         return None
     from finishup.application.lineage import REVERSIBLE_ABANDONMENT_REASON, LineageSnapshot

@@ -129,6 +129,41 @@ def test_abandoned_work_names_its_reason_and_what_still_works(reason: str, remed
     assert line.endswith(f"; {remedy}.")
 
 
+def test_an_ended_session_is_not_offered_the_close() -> None:
+    body = _body(
+        _snapshot(
+            work_state=WorkState.ABANDONED,
+            session_health=SessionHealth.ENDED,
+            active_session_id=None,
+            abandonment_deadline=_LOST,
+            abandonment_reason="contact_lost",
+        )
+    )
+    assert body is not None
+    assert status_task_lifecycle_line(body).endswith("; start a successor task for new work.")
+
+
+def test_every_status_view_summary_carries_the_lifecycle_line() -> None:
+    from finishup.mcp.summaries import summary_for_status
+
+    lifecycle = {
+        "work_state": "abandoned",
+        "session_health": "contact_lost",
+        "abandonment_at": "2026-10-29T12:00:00.000Z",
+        "abandonment_reason": "contact_lost",
+    }
+    for view in ("lineage", "project", "advice"):
+        text = summary_for_status(
+            {
+                "ok": True,
+                "view": view,
+                "result_frontier": {"sequence": "3", "head_digest": "sha256:" + "0" * 64},
+                "task_lifecycle": cast(Any, lifecycle),
+            }
+        )
+        assert "Work: abandoned by the service (contact_lost)" in text, view
+
+
 def test_a_pending_session_end_says_when_open_work_is_abandoned() -> None:
     body = _body(
         _snapshot(
@@ -149,6 +184,8 @@ def test_no_lineage_or_a_failed_read_omits_the_block() -> None:
     assert _body(None) is None
     refused = PublicOperationError(PublicErrorCode.SERVICE_UNAVAILABLE, "Retry.", True)
     assert _body(refused) is None
+    # A raw catalog failure (a busy SQLite read) omits the block instead of failing status.
+    assert _body(RuntimeError("database is locked")) is None
     assert asyncio.run(task_lifecycle_body(SimpleNamespace(), _TASK)) is None
 
 

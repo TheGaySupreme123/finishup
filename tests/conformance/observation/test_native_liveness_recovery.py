@@ -17,6 +17,8 @@ from typing import cast
 import pytest
 
 from builders.multi_agent import MultiAgentService, multi_agent_service
+from finishup.adapters.sqlite.lineage_catalog import SqliteLineageStore
+from finishup.application.lineage import LineageSnapshot
 from finishup.application.lineage_recovery import (
     lineage_recovery_runtime,
     observed_activity_renewal,
@@ -647,3 +649,51 @@ async def test_a_quiet_child_whose_parent_waits_is_abandoned_and_its_close_rever
         await app.recover_lineage()
         assert await _work(app, parent) is WorkState.OPEN
         assert await _health(app, parent) is SessionHealth.CONTACT_LOST
+
+
+async def test_a_child_close_replayed_after_a_crash_refreshes_its_parent_once(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """#1239: the reversal refresh also runs when replay repairs a close the catalog missed."""
+
+    workspace = _workspace(tmp_path / "workspace")
+    async with multi_agent_service(tmp_path / "state") as service:
+        app = service.app
+        refreshed: list[str] = []
+
+        async def refresh(child_task_id: str) -> None:
+            refreshed.append(child_task_id)
+
+        object.__setattr__(app, "lineage_parent_refresh", refresh)
+        parent = await _create(service, workspace, "replay-reversal-parent")
+        child = await _attach_child(
+            service, await _delegate(service, parent, "Replayed child"), "Replayed child"
+        )
+        service.clock.advance(seconds=SESSION_LEASE_SECONDS + 1)
+        await _publish_action(service, parent, "The parent keeps working.")
+        await app.recover_lineage()
+        service.clock.advance(seconds=_WINDOW + 1)
+        await _publish_action(service, parent, "The parent is still working.")
+        await app.recover_lineage()
+        assert await _work(app, child) is WorkState.ABANDONED
+
+        save = SqliteLineageStore.save_task
+
+        async def fail_close(store: SqliteLineageStore, snapshot: LineageSnapshot) -> None:
+            if snapshot.work_state is WorkState.CLOSED:
+                raise RuntimeError("catalog_after_append")
+            await save(store, snapshot)
+
+        monkeypatch.setattr(SqliteLineageStore, "save_task", fail_close)
+        with pytest.raises(Exception):  # noqa: B017 - the append landed; the catalog sync failed
+            await _close(service, child)
+        monkeypatch.setattr(SqliteLineageStore, "save_task", save)
+        assert await _work(app, child) is WorkState.ABANDONED
+        assert refreshed == []
+
+        await app.recover_lineage()
+        assert await _work(app, child) is WorkState.CLOSED
+        assert refreshed == [child.task_id]
+        # Later sweeps replay the same close onto a closed row and refresh nothing.
+        await app.recover_lineage()
+        assert refreshed == [child.task_id]
