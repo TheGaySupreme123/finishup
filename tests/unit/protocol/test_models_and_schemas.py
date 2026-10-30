@@ -3504,7 +3504,8 @@ def test_schema_catalog_record_shape_and_indexes_are_exact() -> None:
     # admissions add 96.
     assert (
         sum(_count_refs(document.json_schema) for document in catalog.documents) == 9_313
-    )  # #1219 +3 omitted checks text (status-result 1.4.0/1.5.0, receipt-document 1.3.0);
+    )  # #1129 +3 egress-receipt 1.1.0 capacity_exceeded (the property and its two integers);
+    # #1219 +3 omitted checks text (status-result 1.4.0/1.5.0, receipt-document 1.3.0);
     # #1145 +6 (provider-judgment and reviewer-reply declared-test verdict refs);
     # #1220 +1 outbound-case declared_tests digest;
     # #975 +22 draft_receipt (status-result 1.4.0 +11, inherited +11 by 1.5.0);
