@@ -2721,7 +2721,7 @@ def _check_recorded_v1_6_schema(entry: _RegistryEntry) -> dict[str, JsonValue]:
 
     document = _check_recorded_v1_5_schema(entry)
     _admit_stopped_review(document)
-    _admit_privacy_blocked_review(document)
+    _admit_unconcluded_review(document)
     _add_test_check_to_review_input_manifest(document)
     definitions = cast(dict[str, JsonValue], document["$defs"])
     _add_reviewer_definitions(definitions)
@@ -4461,20 +4461,64 @@ def _check_result_v1_6_schema(entry: _RegistryEntry) -> dict[str, JsonValue]:
     return document
 
 
-def _admit_privacy_blocked_review(document: dict[str, JsonValue]) -> None:
-    """A review refused at the privacy boundary records on check-recorded 1.6.0 (#1138).
+# The outcomes a reviewer conversation (#1118) can end on without a conclusion, which the check
+# path records beside the conversation's reviewer record. ``run_reviewer`` attaches the record to
+# every terminal result it returns, including one whose first exchange was refused before
+# dispatch; ``_map_egress_to_final`` maps that result (a privacy or policy refusal, a capacity
+# refusal, a provider outcome, or ``failed/coordinator_failure`` for an unmappable one); the
+# attempt runner adds ``retry_budget_exhausted`` and, where the attempt's provenance cannot be
+# kept, ``receipt_persistence_unknown``. ``awaiting_human`` is never recorded (the check waits),
+# ``semantic_judgment_rejected`` drops the record, and the remaining pairs (not requested, not
+# configured, route ceiling, revoked policy generation, credential or endpoint unavailable, lease
+# lost, stale, secret_detected, the round-limit stop) are decided before any conversation runs.
+_UNCONCLUDED_REVIEW_OUTCOMES: Final[Mapping[str, tuple[str, ...]]] = MappingProxyType(
+    {
+        "approval_expired": ("human_approval_expired",),
+        "blocked_by_policy": (
+            "channel_disabled",
+            "content_category_not_authorized",
+            "network_egress_denied",
+            "provider_binding_not_authorized",
+            "scope_not_authorized",
+        ),
+        "blocked_forbidden_data": ("never_send_detected",),
+        "classification_uncertain": ("classification_uncertain",),
+        "failed": ("case_capacity_exceeded", "coordinator_failure"),
+        "human_denied": ("human_denied",),
+        "invalid": ("response_content_invalid", "response_schema_invalid"),
+        "late": ("deadline_authority_lost",),
+        "refused": ("provider_refused",),
+        "timeout": ("provider_timeout",),
+        "unavailable": (
+            "audit_reservation_unavailable",
+            "outcome_unknown",
+            "provider_quota_exhausted",
+            "provider_rate_limited",
+            "receipt_persistence_unknown",
+            "retry_budget_exhausted",
+            "transport_unavailable",
+        ),
+    }
+)
 
-    Its ``review_blocked`` items exist only on 1.6.0, whose recorded-review shape otherwise admits
-    a completed review or the stopped pair. The refusal has its own branch: it composes no
-    conclusion, and an earlier exchange of the same conversation may still leave a reviewer
-    record.
+
+def _admit_unconcluded_review(document: dict[str, JsonValue]) -> None:
+    """A review that ended without a conclusion records on check-recorded 1.6.0 (#1118, #1138).
+
+    1.6.0 is written whenever the reviewer record is present, and its recorded-review shape
+    otherwise admits only a completed review or the stopped pair. A conversation can end on any of
+    ``_UNCONCLUDED_REVIEW_OUTCOMES`` instead: a privacy refusal (whose ``review_blocked`` items
+    exist only on 1.6.0), a policy refusal, the owner's denial, a provider failure or timeout, a
+    capacity refusal or a coordinator failure. Those pairs share one branch of their own: no
+    ``semantic_conclusion``, and a reviewer record may remain. The provenance each pair needs is
+    still decided by ``semantic_binding``.
     """
 
     status = cast(
         dict[str, JsonValue], cast(dict[str, JsonValue], document["properties"])["semantic_status"]
     )
     statuses = cast(list[JsonValue], status["enum"])
-    statuses.append("blocked_forbidden_data")
+    statuses.extend(sorted(set(_UNCONCLUDED_REVIEW_OUTCOMES) - {str(item) for item in statuses}))
     statuses.sort(key=lambda item: str(item).encode("ascii"))
     pairs = next(
         cast(list[JsonValue], item["oneOf"])
@@ -4487,15 +4531,20 @@ def _admit_privacy_blocked_review(document: dict[str, JsonValue]) -> None:
         }
         in cast(list[JsonValue], item["oneOf"])
     )
-    pairs.append(
-        {
-            "not": {"required": ["semantic_conclusion"]},
-            "properties": {
-                "semantic_reason": {"const": "never_send_detected"},
-                "semantic_status": {"const": "blocked_forbidden_data"},
-            },
-        }
-    )
+    outcomes: list[JsonValue] = []
+    for status_name in sorted(_UNCONCLUDED_REVIEW_OUTCOMES, key=lambda name: name.encode("ascii")):
+        reasons = sorted(
+            _UNCONCLUDED_REVIEW_OUTCOMES[status_name], key=lambda name: name.encode("ascii")
+        )
+        outcomes.append(
+            {
+                "properties": {
+                    "semantic_reason": {"enum": cast(list[JsonValue], reasons)},
+                    "semantic_status": {"const": status_name},
+                }
+            }
+        )
+    pairs.append({"anyOf": outcomes, "not": {"required": ["semantic_conclusion"]}})
 
 
 def _admit_stopped_review(document: dict[str, JsonValue]) -> None:

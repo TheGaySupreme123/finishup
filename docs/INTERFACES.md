@@ -1895,8 +1895,8 @@ its `-part-NN` parts, not the source file; renderings say "of the captured item"
   `never_send_detected` refusal lists each item its matches sat in with the refusing scan `stage`
   (`candidate`|`prepared_case`|`reviewer_exchange`) and the match's `match_class`
   (`high_confidence`|`heuristic`); `review-packet` stands for a match no single item explains. Only
-  that disposition carries `stage` and `match_class`, and only check-recorded 1.6.0 admits it, with
-  its own `blocked_forbidden_data` / `never_send_detected` branch (no `semantic_conclusion`; a
+  that disposition carries `stage` and `match_class`, and only check-recorded 1.6.0 admits it, in
+  the branch of a review that ended without a conclusion (no `semantic_conclusion`; a
   reviewer record may remain from an earlier exchange). At the 64-entry bound the refusal's own
   entries are kept first. The receipt's limitations section, the
   compact receipt sentence, the CLI check rendering and the MCP check lead name the block as one
@@ -12459,7 +12459,21 @@ as `outcome_unknown` and is never resent. For it, `operation_max_retries` is `0`
 - Wire: optional `reviewer` (`$defs/reviewer_record`, `$defs/reviewer_read`) on the check-result
   1.6.0 success branch and on check-recorded 1.6.0, both new versions; check-recorded 1.6.0 is
   written exactly when the record is present, and the 1.4.0/1.5.0 documents stay unchanged and
-  refuse the field (`unknown_payload_field`). MCP `check` outputs and control-result 2.9.0 name
+  refuse the field (`unknown_payload_field`). The record stays on every terminal result the
+  conversation returns, including one whose first exchange was refused before dispatch, so
+  check-recorded 1.6.0 (unreleased, in place) admits, besides a completed review, each outcome a
+  conversation can end on without a conclusion, in one branch that forbids `semantic_conclusion`:
+  `blocked_by_policy` (`channel_disabled`, `content_category_not_authorized`,
+  `network_egress_denied`, `provider_binding_not_authorized`, `scope_not_authorized`),
+  `blocked_forbidden_data`/`never_send_detected`, `classification_uncertain`, `human_denied`,
+  `approval_expired`, `refused`, `timeout`, `invalid` (`response_content_invalid`,
+  `response_schema_invalid`), `late`/`deadline_authority_lost`, `unavailable`
+  (`audit_reservation_unavailable`, `outcome_unknown`, `provider_quota_exhausted`,
+  `provider_rate_limited`, `receipt_persistence_unknown`, `retry_budget_exhausted`,
+  `transport_unavailable`) and `failed` (`case_capacity_exceeded`, `coordinator_failure`).
+  `semantic_binding` still decides each pair's provenance. Check-result 1.7.0 and the status
+  operation's `check_outcome` already admitted every pair; receipt-document 1.3.0 carries none of
+  them. MCP `check` outputs and control-result 2.9.0 name
   check-result 1.6.0; golden vector `fixtures/canonical/check-reviewer-record-1.6.0.case.json`
   (CHK-160). Its leaves are public structural in the result-leaf registry. `CheckCommitResult.reviewer` and
   `FinalSemanticEvaluation.reviewer` carry it in process; `FinalSemanticEvaluation`
