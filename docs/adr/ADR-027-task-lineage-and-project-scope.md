@@ -291,9 +291,11 @@ than implementation notes.
      evidence the agent stopped. A later `work_closed` from the same active session supersedes the
      service's `work_abandoned`. Both events stay in the ledger. Cancel and write-off stay refused.
      Abandonment for `session_ended` or `attach_handle_expired` stays final. The catalog keeps the
-     abandonment reason as history (`abandonment_reason`, catalog migration 6). Replay of
-     `[work_abandoned, work_closed]` reaches `closed`. When the reversed task is a child, its
-     parent's dependency manifest is swept again, so the parent sees the close.
+     abandonment reason as history (`abandonment_reason`, catalog migration 6). A row abandoned
+     before that migration learns its reason from its own `work_abandoned` event on the next
+     reconcile sweep, so a `contact_lost` abandonment from before the upgrade is reversible
+     too. Replay of `[work_abandoned, work_closed]` reaches `closed`. When the reversed task is a
+     child, its parent's dependency manifest is swept again, so the parent sees the close.
    - **Refusals and readers say what happened.** A refused transition on terminal work keeps
      `lineage_work_transition`. Its message names the terminal state, the abandonment reason and
      time, and what still works. Status reports the task's own `task_lifecycle` (work state,

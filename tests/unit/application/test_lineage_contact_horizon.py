@@ -235,6 +235,33 @@ async def test_an_abandonment_for_another_reason_stays_final() -> None:
     assert "(attach_handle_expired)" in refused.value.message
 
 
+async def test_an_abandonment_from_before_the_upgrade_learns_its_reason_from_replay() -> None:
+    """A row abandoned under catalog 5 has no reason; its ledger event names it on replay."""
+
+    clock, store, ids = ScenarioClock(), MemoryLineageStore(), FixedIds()
+    coordinator = _coordinator(clock, store, ids)
+    task, session = await _root(coordinator, ids)
+    snapshot = await store.get_task(task)
+    assert snapshot is not None
+    await store.save_task(replace(snapshot, work_state=WorkState.ABANDONED))
+    with pytest.raises(PublicOperationError):
+        await coordinator.close_work(session_id=session)
+    named = await coordinator.reconcile_owned_work(
+        task_id=task, target=WorkState.ABANDONED, reason="contact_lost"
+    )
+    assert named.abandonment_reason == "contact_lost"
+    # A later sweep replays the same event and writes nothing.
+    assert (
+        await coordinator.reconcile_owned_work(
+            task_id=task, target=WorkState.ABANDONED, reason="contact_lost"
+        )
+        == named
+    )
+    closed = await coordinator.close_work(session_id=session)
+    assert closed.work_state is WorkState.CLOSED
+    assert closed.abandonment_reason == "contact_lost"
+
+
 async def test_a_delivered_session_end_abandons_open_work_after_the_grace() -> None:
     clock, store, ids = ScenarioClock(), MemoryLineageStore(), FixedIds()
     coordinator = _coordinator(clock, store, ids)
