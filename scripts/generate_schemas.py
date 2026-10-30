@@ -2721,6 +2721,7 @@ def _check_recorded_v1_6_schema(entry: _RegistryEntry) -> dict[str, JsonValue]:
 
     document = _check_recorded_v1_5_schema(entry)
     _admit_stopped_review(document)
+    _admit_privacy_blocked_review(document)
     _add_test_check_to_review_input_manifest(document)
     definitions = cast(dict[str, JsonValue], document["$defs"])
     _add_reviewer_definitions(definitions)
@@ -4458,6 +4459,43 @@ def _check_result_v1_6_schema(entry: _RegistryEntry) -> dict[str, JsonValue]:
     document["$id"] = SCHEMA_NAMESPACE + entry.relative_path
     document["title"] = f"FinishUP check result {entry.schema_version}"
     return document
+
+
+def _admit_privacy_blocked_review(document: dict[str, JsonValue]) -> None:
+    """A review refused at the privacy boundary records on check-recorded 1.6.0 (#1138).
+
+    Its ``review_blocked`` items exist only on 1.6.0, whose recorded-review shape otherwise admits
+    a completed review or the stopped pair. The refusal has its own branch: it composes no
+    conclusion, and an earlier exchange of the same conversation may still leave a reviewer
+    record.
+    """
+
+    status = cast(
+        dict[str, JsonValue], cast(dict[str, JsonValue], document["properties"])["semantic_status"]
+    )
+    statuses = cast(list[JsonValue], status["enum"])
+    statuses.append("blocked_forbidden_data")
+    statuses.sort(key=lambda item: str(item).encode("ascii"))
+    pairs = next(
+        cast(list[JsonValue], item["oneOf"])
+        for item in cast(list[JsonValue], document["allOf"])
+        if isinstance(item, dict)
+        and isinstance(item.get("oneOf"), list)
+        and {
+            "properties": {"semantic_status": {"const": "succeeded"}},
+            "required": ["semantic_conclusion"],
+        }
+        in cast(list[JsonValue], item["oneOf"])
+    )
+    pairs.append(
+        {
+            "not": {"required": ["semantic_conclusion"]},
+            "properties": {
+                "semantic_reason": {"const": "never_send_detected"},
+                "semantic_status": {"const": "blocked_forbidden_data"},
+            },
+        }
+    )
 
 
 def _admit_stopped_review(document: dict[str, JsonValue]) -> None:

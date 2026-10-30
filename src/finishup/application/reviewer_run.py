@@ -431,9 +431,12 @@ def _record(
             )
         )
     ended = None if outcome.status == "final" else outcome.reason
-    # #1138: an exchange refused before dispatch was never sent; count only those that were.
+    # #1138: an exchange refused before dispatch was never sent; count only those that reached
+    # the gateway, including one whose call failed with its outcome unknown.
     sent = sum(
-        type(result) is SemanticEgressReply or type(result) is SemanticEgressProviderOutcome
+        type(result) is SemanticEgressReply
+        or type(result) is SemanticEgressProviderOutcome
+        or (type(result) is SemanticEgressBlocked and result.dispatch_attempted)
         for result in results
     )
     return ReviewerRecord(sent, tuple(reads), ended, cleanup), paths
