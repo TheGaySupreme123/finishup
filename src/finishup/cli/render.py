@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from collections.abc import Iterable, Mapping, Sequence
 from enum import Enum
 from typing import Final, cast
@@ -1223,7 +1224,14 @@ def render_human_receipt(result: ReceiptSuccessModel) -> str:
     if isinstance(document, Mapping) and result.human_text is None:
         # ADR-049: a JSON receipt names the task's review-mode switches in its limitations
         # section; markdown and text already carry that section in ``human_text``.
-        lines.extend(_receipt_review_mode_lines(document))
+        review_mode = _receipt_review_mode_lines(document)
+        lines.extend(review_mode)
+        # #1246 (D17): and its proxy sentences, unless the review-mode tail already holds them.
+        lines.extend(
+            line
+            for line in _receipt_proxy_lines(document)
+            if not any(line in shown for shown in review_mode)
+        )
     if isinstance(document, Mapping):
         declared = document.get("verification_coverage")
         if isinstance(declared, Mapping):
@@ -1282,6 +1290,32 @@ def _receipt_review_mode_lines(document: Mapping[str, JsonValue]) -> list[str]:
         ]
         if starts:
             return [body[min(starts) :]]
+    return []
+
+
+# #1246 (D17): the receipt builder's two fixed proxy sentences. Obligation ids (and "and N more")
+# hold neither "." nor ":", so a match is exactly one sentence and never the agent's prose.
+_RECEIPT_PROXY_SENTENCE: Final = re.compile(
+    r"Disclosed verification limit [^.:]+: proxy: none chosen \(no finishup-proxy decision "
+    r"records a proxy measurement or why none was feasible\)\."
+    r"|A finishup-proxy decision records the proxy measurement, or why none was feasible, for "
+    r"disclosed verification limit [^.:]+\."
+)
+
+
+def _receipt_proxy_lines(document: Mapping[str, JsonValue]) -> list[str]:
+    """The receipt's proxy sentences from its limitations section, when it has them (#1246)."""
+
+    sections = document.get("sections")
+    if not isinstance(sections, (list, tuple)):
+        return []
+    for raw in cast(Sequence[object], sections):
+        if not isinstance(raw, Mapping):
+            continue
+        section = cast(Mapping[str, object], raw)
+        body = section.get("body")
+        if section.get("key") == "limitations_and_coverage" and type(body) is str:
+            return [match.group(0) for match in _RECEIPT_PROXY_SENTENCE.finditer(body)]
     return []
 
 

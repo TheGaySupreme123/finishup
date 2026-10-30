@@ -658,7 +658,11 @@ def _overall_next_parts(source: Mapping[str, JsonValue]) -> list[Part]:
         parts.append(_opt("acknowledged incomplete endpoint: receipt;", priority=_P_ACTION))
     if status == "ready_with_limitations" and endpoint == "receipt":
         parts.append(_opt("disclose limitation at: receipt;", priority=_P_ACTION))
-    fixable = fix_or_decline_rows(source.get("closure_readiness"))
+    # #1244 (D13): a brief check carries the ``closure_state`` subset, these rows included.
+    readiness = source.get("closure_readiness")
+    fixable = fix_or_decline_rows(
+        readiness if isinstance(readiness, Mapping) else source.get("closure_state")
+    )
     if status == "ready_with_limitations" and fixable:
         # Issue #1209: what to fix, or decline with a reason, before that receipt (required, so a
         # tight bound keeps at least the first item rather than a bare receipt step).
@@ -2112,6 +2116,37 @@ def _receipt_review_mode_clause(source: Mapping[str, JsonValue]) -> str:
     return ""
 
 
+# #1246 (D17): the receipt's proxy sentence, recognised by its fixed wording only; the summary
+# points at it with closed wording and never carries the obligation ids or any prose.
+_RECEIPT_PROXY_NONE_CHOSEN: Final = "proxy: none chosen (no finishup-proxy decision"
+_RECEIPT_PROXY_POINTER: Final = (
+    "proxy: none chosen for a disclosed verification limit (limitations section);"
+)
+
+
+def _receipt_proxy_clause(source: Mapping[str, JsonValue]) -> str:
+    """#1246: a fixed pointer when a disclosed verification limit records no proxy decision."""
+
+    document = source.get("document")
+    if not isinstance(document, Mapping):
+        return ""
+    sections = cast(Mapping[str, JsonValue], document).get("sections")
+    if not isinstance(sections, (list, tuple)):
+        return ""
+    for raw in cast(Sequence[object], sections):
+        if not isinstance(raw, Mapping):
+            continue
+        section = cast(Mapping[str, object], raw)
+        body = section.get("body")
+        if (
+            section.get("key") == "limitations_and_coverage"
+            and type(body) is str
+            and _RECEIPT_PROXY_NONE_CHOSEN in body
+        ):
+            return _RECEIPT_PROXY_POINTER
+    return ""
+
+
 def _manifest_sentence(source: Mapping[str, JsonValue]) -> str:
     manifest = render_review_input_manifest_compact(source.get("review_input_manifest"))
     return manifest
@@ -3038,6 +3073,12 @@ def summary_for_receipt(envelope: object) -> str:
     parts.append(
         _opt(
             render.text("review_mode", lambda: _receipt_review_mode_clause(source)),
+            priority=_P_DISCLOSURE,
+        )
+    )
+    parts.append(
+        _opt(
+            render.text("proxy", lambda: _receipt_proxy_clause(source)),
             priority=_P_DISCLOSURE,
         )
     )

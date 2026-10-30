@@ -368,8 +368,10 @@ to reconsider it, even right after an earlier continuation: if the task says the
 dependency is recoverable, continue the work; if it is genuinely outside your control, follow the
 confirmation step that re-check gives you, then stop. A Stop also asks you once about findings you
 marked `acknowledged_not_done` that the review says the task itself requires
-(`finding_premise_disputed`): do that work unless it is genuinely impossible. If you cannot
-finish it, keep the working deliverable: acknowledgement never requires withdrawing or emptying it.
+(`finding_premise_disputed`): do that work unless it is genuinely impossible. If the requested
+output does not exist yet, write it on your best reading and record the assumption
+(`finishup-assumption:<obligation id>`). If you cannot finish it, keep the working deliverable:
+acknowledgement never requires withdrawing or emptying it.
 FinishUP never asks at Stop whether a resolved obligation meets its acceptance criteria: an
 obligation it flags (a requested item never attempted, or evidence that is unlinked or only your
 own assertion) is named once in status and recorded on the receipt as a coverage limit. If the
@@ -387,6 +389,8 @@ a blocker: finish the work and disclose it in a `decision_recorded` whose statem
 exact line `finishup-verification-limit:<obligation id>` or `finishup-assumption:<obligation id>`, with
 the limit or assumption as the rationale. A disclosure never blocks, resolves or reopens anything;
 readiness lists `verification_limit_disclosed` or `assumption_disclosed`, and the receipt names it.
+A budget against a reference you cannot see also takes a line `finishup-proxy:<obligation id>`
+(rationale: your stand-in's measured ratio, or why none was feasible).
 Supersede the decision (`supersedes_event_id`) to withdraw it. For an open obligation you truly
 will not do, after repair, republish it on `obligation_published` 1.1.0 with the same meaning
 fields, `status: "acknowledged_not_done"` and an `acknowledged_not_done_reason`: the honest last
@@ -863,7 +867,10 @@ blocker instead of widening disclosure, credentials or runtime authority: publis
 line `finishup-blocker:<authority|consent|credential|dependency_unavailable>` and a rationale. Missing
 or inconsistent data the task says is recoverable, a failing test, or a result that looks
 infeasible is not a blocker: deliver a best-effort result in the requested form and disclose the
-assumption with a `finishup-assumption:<obligation id>` decision line. A FinishUP limit (something FinishUP cannot show or prove) is never a blocker: verify the
+assumption with a `finishup-assumption:<obligation id>` decision line. With conflicting inputs,
+pick a reading, write the requested output, and record the assumption. Review agreeing that a
+conflict exists is not permission to withhold. Only a missing authority, a missing credential, or a
+destructive change you have no authority to make excuses withholding a requested output. A FinishUP limit (something FinishUP cannot show or prove) is never a blocker: verify the
 work yourself and respond `self_verified` on the finding. FinishUP cannot verify a blocker, so the
 first one is only claimed: the `publish_work` result challenges it (`blocker_notices`), the
 obligation stays agent work (`obligation_blocker_unconfirmed`), and that challenge (or a Stop

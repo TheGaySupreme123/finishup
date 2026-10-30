@@ -822,3 +822,37 @@ def test_declared_checks_and_expected_from_reach_the_witness_without_changing_fl
     first[0]["expected_from"] = "from_memory"
     with pytest.raises(ValueError):
         StatusVerificationCoverageModel.model_validate(wire)
+
+
+def test_spacing_and_quote_marks_are_normalized_where_the_quote_is_compared() -> None:
+    """#1202 (owner decision D18): the quote stays verbatim, but a line-wrapped criterion or a
+    curly quote mark in the task still maps the agent's single-spaced, straight-quoted copy."""
+
+    statement = "Print “done” when the\nexport  finishes. The labels must be saved."
+    quote = 'Print "done" when the export finishes'
+    view = build_verification_coverage(
+        _projection(_run(1, source="task_public", quote=quote), statement=statement)
+    )
+    witnessed = [row for row in view.criteria if row.witnesses]
+    assert [row.criterion_quote for row in witnessed] == [quote]
+    assert ("The labels must be saved.", ("no_test",)) in [
+        (row.criterion_quote, row.flags) for row in view.criteria
+    ]
+    # Within one stated sentence, the straight-quoted copy maps the task's own criterion.
+    single = "The report must say \u201cdone\u201d. The labels must be saved."
+    rows = build_verification_coverage(
+        _projection(_run(1, source="task_public", quote='report must say "done"'), statement=single)
+    ).criteria
+    assert [(row.criterion_quote, row.flags) for row in rows] == [
+        ("The labels must be saved.", ("no_test",)),
+        ('report must say "done"', ("public_only",)),
+    ]
+    # Words, digits and other punctuation still match exactly.
+    for changed in ('Print "done" when an export finishes', "Print 'done' when the export ends"):
+        rows = build_verification_coverage(
+            _projection(_run(1, quote=changed), statement=statement)
+        ).criteria
+        assert not any(row.witnesses and row.criterion_quote != changed for row in rows)
+        assert ("The labels must be saved.", ("no_test",)) in [
+            (row.criterion_quote, row.flags) for row in rows
+        ]

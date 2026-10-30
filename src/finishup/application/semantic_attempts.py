@@ -779,7 +779,9 @@ def _attempt_token_usage(evaluation: _AttemptEvaluation) -> RuntimeTokenUsage | 
 
     provenance = evaluation.provenance
     if provenance is None:
-        return None
+        # #1242: a review that sent an exchange and then ended unjudged keeps that turn's usage.
+        sent = getattr(evaluation, "attempt_token_usage", None)
+        return sent if type(sent) is RuntimeTokenUsage else None
     runtime = getattr(provenance, "runtime_evidence", None)
     runtime_usage = getattr(runtime, "token_usage", None)
     if type(runtime_usage) is RuntimeTokenUsage:

@@ -146,10 +146,16 @@ PREMISE_RECHECK_ITEM: Final = "premise_recheck"
 # tb4n3 RC-8 (formal-crypto S): the re-check that sent pretrain S back to work ("do that work
 # unless it is genuinely impossible") also sent formal-crypto S into 35 minutes of impossibility
 # research and then to an emptied solver. It keeps its push to work and now says what to do when
-# the work cannot be finished: keep what works.
+# the work cannot be finished: keep what works. TB4 atrx-vep-crispr (#1245): "keep" read as
+# advice to an agent that had written nothing, so a missing output is written first, under the
+# agent's best reading with the assumption recorded, as the open-obligation text says.
+# The host bound (``_MAX_TEXT_CHARS``) leaves the pretrain S gate, which carries this text twice,
+# about 75 characters, so the old "acknowledgement never requires withdrawing or emptying it" is
+# now the shorter "never empty a working deliverable". The write is conditioned on authority and
+# credentials (the D16 exceptions), at the same 148 characters.
 _KEEP_DELIVERABLE_TEXT: Final = (
-    "If you cannot finish it, keep the working deliverable; acknowledgement never requires"
-    " withdrawing or emptying it."
+    "If no output exists and you have authority and credentials, write it on your best reading,"
+    " noting the assumption; never empty a working deliverable."
 )
 _PREMISE_TEXT: Final = (
     "You marked finding(s) as not done that the reviewer says the task itself requires. Do that"

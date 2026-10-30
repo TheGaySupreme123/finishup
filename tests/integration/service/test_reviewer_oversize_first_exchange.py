@@ -125,6 +125,74 @@ async def test_read_action_capacity_maps_through_the_service_without_schema_fail
     assert await cast(Any, runtime.ledger).review_step_usage(job.job_id) == (1, 0)
 
 
+@pytest.mark.anyio
+async def test_a_read_with_no_room_for_its_result_is_judged_without_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """#1242 (TB4 atrx-vep-crispr a4): a closing review fitted to the limit kept its verdict.
+
+    The reviewer's first reply asks for a read whose action fits the exchange but leaves less
+    than an empty result needs. The read is not served, the same exchange asks for the final
+    judgment, and the service records a concluded review labelled with the unserved read
+    instead of ``case_capacity_exceeded`` with no verdict.
+    """
+
+    from finishup.application.reviewer_broker import ReviewerBroker
+    from finishup.domain.reviewer_reads import READ_NOT_SERVED_ENDING, render_reviewer_lines
+    from finishup.ports.semantic import reviewer_message_bytes
+
+    path = "\\" * 509
+    action = reviewer_message_bytes("assistant", canonical_encode(_read_file(path)).decode())
+    execute = ReviewerBroker.execute
+
+    async def nearly_full(self: Any, *args: Any, **kwargs: Any) -> str:
+        self._exchange_room = lambda: action + 64  # pyright: ignore[reportPrivateUsage]
+        return await execute(self, *args, **kwargs)
+
+    monkeypatch.setattr(ReviewerBroker, "execute", nearly_full)
+    result, gateway, _runtime = await _run(
+        tmp_path, monkeypatch, _read_file(path), _FINAL, policy=_expanded_policy()
+    )
+    assert result.status is SemanticStatus.SUCCEEDED and result.judgment is not None
+    assert len(gateway.exchanges) == 2
+    assert result.reviewer is not None and result.reviewer.reads == ()
+    assert result.reviewer.ended == READ_NOT_SERVED_ENDING
+    (head,) = render_reviewer_lines(result.reviewer)
+    assert "a requested read was not served (no room left)" in head
+    assert "ended early" not in head
+
+
+@pytest.mark.anyio
+async def test_a_first_exchange_planning_could_not_frame_is_recorded_and_still_reads(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """#1242: the planner's "does not fit" verdict is recorded, not discarded.
+
+    Reads stay offered (the measured room after the first exchange decides each later offer, and a
+    read with no room gets the verdict asked for), so the review still reads and concludes.
+    """
+
+    events: list[dict[str, object]] = []
+
+    def record(**kwargs: object) -> str:
+        events.append(kwargs)
+        return ""
+
+    def unframed(*_args: object) -> int:
+        return 10**9  # never within the planned limit
+
+    monkeypatch.setattr(ready_composition_module, "planned_exchange_size", unframed)
+    monkeypatch.setattr(ready_composition_module, "record_bounded_counts_without_raising", record)
+    result, gateway, _runtime = await _run(
+        tmp_path, monkeypatch, _read_file("calc.py"), _FINAL, policy=_expanded_policy()
+    )
+    assert result.status is SemanticStatus.SUCCEEDED and result.judgment is not None
+    assert len(gateway.exchanges) == 2
+    assert result.reviewer is not None and len(result.reviewer.reads) == 1
+    (built,) = [e for e in events if e.get("operation") == "semantic_case_built"]
+    assert cast(dict[str, int], built["counts"])["semantic_first_exchange_frame_unplanned"] == 1
+
+
 def _decision_first_diff(files: int, lines: int, pad: int) -> bytes:
     """Quoted Python edits with a decision past each file's opening rows.
 
@@ -537,9 +605,12 @@ async def test_a_notice_without_room_is_left_out_and_the_review_concludes(
     answer the loop leaves the notice out, so the repair exchange fits the cap and the review
     concludes; with the notice it would outgrow the cap and end ``case_capacity_exceeded``."""
 
+    import finishup.application.egress as egress_module
     import finishup.service.semantic_ceiling as semantic_ceiling_module
 
-    monkeypatch.setattr(semantic_ceiling_module, "REVIEWER_FRAME_BYTES", 0)  # no frame kept
+    # No frame kept by planning or by the disclosure fit (#1242).
+    monkeypatch.setattr(semantic_ceiling_module, "REVIEWER_FRAME_BYTES", 0)
+    monkeypatch.setattr(egress_module, "REVIEWER_FRAME_BYTES", 0)
     _composed(monkeypatch, diff=_code_diff(8, 203), outputs=0)
     (tmp_path / "probe").mkdir(mode=0o700)
     _probe, measured, _runtime = await _run(

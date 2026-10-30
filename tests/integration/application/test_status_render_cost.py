@@ -39,7 +39,7 @@ import time
 from collections import Counter
 from collections.abc import Awaitable, Callable
 from pathlib import Path
-from typing import Final, Protocol, cast
+from typing import Any, Final, Protocol, cast
 
 import pytest
 from mcp import types
@@ -594,3 +594,110 @@ async def test_concurrent_compact_burst_is_no_worse_than_serial() -> None:
     _report("16-call concurrent compact burst, min CPU", {"solo": solo, "burst": burst})
     # The acceptance bound (3x solo p50 x 16 / 2) is 1.5x sixteen serial reads.
     assert burst < 1.5 * 16 * solo, f"burst costs {burst / solo:.1f} solo reads"
+
+
+# ------------------------------------------------------------------------------------------------
+# #1244 / #1132 (D13): default replies fit one host result.
+# ------------------------------------------------------------------------------------------------
+
+# The default reads an agent makes, each as the MCP tools send it: status names a view and is
+# ``detail: brief`` with ``delivery: paged``; check is ``detail: brief`` at the configured finding
+# cap and at the maximum an ``agent_next`` asks for.
+_DEFAULT_STATUS_VIEWS: Final = (
+    "compact",
+    "obligations",
+    "findings",
+    "history",
+    "results",
+    "evidence",
+    "coverage",
+    "advice",
+    "versions",
+)
+
+
+async def _project_check(ledger: CodexStatusLedger, body: dict[str, JsonValue], seed: int) -> Any:
+    from finishup.application.service import (
+        ClientProjectionContext,
+        ControlProjectionBinding,
+        ProjectionRenderMode,
+    )
+    from finishup.ports.control import ControlClientKind
+    from finishup.protocol.models import CheckRequest
+
+    internal = await ledger.app.check(CheckRequest.model_validate(body))
+    facts = await ledger.app.projection_binding_facts(ControlMethod.CHECK, body, internal)
+    rpc_id = protocol_id("rpc_", seed)
+    service_instance_id = protocol_id("svc_", seed + 1)
+    binding = ControlProjectionBinding(
+        rpc_id,
+        ControlMethod.CHECK,
+        service_instance_id,
+        1,
+        facts.original_request_id,
+        facts.route_identity_digest,
+        canonical_encode(
+            {
+                "rpc_id": rpc_id,
+                "method": ControlMethod.CHECK.value,
+                "service_instance_id": service_instance_id,
+                "service_generation": "1",
+                "body": dict(body),
+            }
+        ),
+    )
+    return await ledger.app.project_result_for_client(
+        ClientProjectionContext(
+            ControlClientKind.MCP_BRIDGE, ProjectionRenderMode.MACHINE_READABLE, False
+        ),
+        binding,
+        internal,
+    )
+
+
+async def test_fewer_than_one_in_ten_default_status_and_check_replies_need_paging() -> None:
+    """D13: the TB4 run paged 42% of status, check and receipt replies (#1132).
+
+    Measured on the ~1,000-event Codex-shaped ledger, the heaviest shape the harness has. A
+    brief compact page names each unanswered finding without its repair detail, and a brief
+    check names each finding by its identity and action fields with the readiness subset a
+    brief status carries; ``status view=findings`` keeps the detail. Before this change the
+    compact read and every check here were paged.
+    """
+
+    from builders.projection_workflow import frontier_json, request_base
+    from finishup.domain.values import Frontier
+
+    ledger = await build_codex_status_ledger()
+    replies: dict[str, bool] = {}
+    for index, view in enumerate(_DEFAULT_STATUS_VIEWS):
+        body = {
+            **ledger.status_body(view, 960_000 + index * 10),
+            "detail": "brief",
+            "delivery": "paged",
+        }
+        for key in ("limit", "filter", "at_frontier"):
+            body.pop(key, None)
+        wire = public_model_to_wire(await ledger.project_status(body, 960_005 + index * 10))
+        replies[f"status {view}"] = wire.get("state") == "delivery_page"
+    head = ledger.head
+    for index, cap in enumerate((None, "10")):
+        body = {
+            **request_base(protocol_id("req_", 961_000 + index * 10)),
+            "session_id": ledger.started.session_id,
+            "writer_id": ledger.started.writer_id,
+            "expected_frontier": frontier_json(head),
+            "mode": "deterministic_only",
+            "detail": "brief",
+            **({} if cap is None else {"max_findings": cap}),
+        }
+        wire = public_model_to_wire(await _project_check(ledger, body, 961_005 + index * 10))
+        replies[f"check max_findings={cap}"] = wire.get("state") == "delivery_page"
+        frontier = cast(dict[str, str], wire["result_frontier"])
+        head = Frontier(int(frontier["sequence"]), frontier["head_digest"])
+        if wire.get("state") != "delivery_page":
+            assert wire["detail"] == "brief" and "closure_readiness" not in wire
+            assert all("detail" not in row for row in cast(list[Any], wire["findings"]))
+    paged = sorted(label for label, was_paged in replies.items() if was_paged)
+    print(f"\n#1244 default replies paged: {len(paged)} of {len(replies)} {paged}")
+    assert len(paged) < 0.1 * len(replies), paged

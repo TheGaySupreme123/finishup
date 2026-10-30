@@ -2487,8 +2487,10 @@ E. Jimenez, `src/minisweagent/agents/default.py` at `40fa36522015a6bc6cf14411382
 Its copyright and permission notice is kept in `application/reviewer_loop.py`. Its shell
 environment, model framework, templating and trajectory logging are removed. The loop has one
 instruction of about 1,000 tokens in pstack's shape (goal, done condition, evidence, clues,
-constraints); it states the substantive honesty rules of the packet-only instruction once, including
-the citation union, and does not reuse that instruction's text. Among them: an unbounded
+constraints); it states a compact set of the packet-only instruction's honesty rules once, including
+the citation union, and does not reuse that instruction's text. It is not every substantive rule:
+until the 2026-10-29 amendment below (#1245) it lacked the #976 infeasibility lens and the #1079
+reachability rule. Among the rules it states: an unbounded
 requirement is judged on the tested portion with the rest stated as a limitation; an observed check
 whose source is unavailable is judged on its captured output, and an agent-supplied command is never
 the hook-observed one; an image or binary is not assessable and is not a `missing_for_assessment`
@@ -2650,7 +2652,9 @@ credential probe keep their one-shot dispatch; no check uses it.
   needs, measured as the exchange encodes the result, escaping included. A result over that room
   keeps the longest head that fits, measured. A read is offered only while 2 KiB of that room is
   left (an ordinary read action and a result without data); an action whose own bytes leave less
-  than 1 KiB ends the review `read_limit`, unread and unsent. The ceiling here is the exchange
+  than 1 KiB is not served, and the same exchange asks for the final judgment instead (*corrected
+  2026-10-29, #1242*: this ending was `case_capacity_exceeded` with no verdict, never `read_limit`;
+  see the amendment of that date). The ceiling here is the exchange
   budget below, never above what one prepared disclosure carries. Planning measures the packet in
   its largest disclosed shape, credential-like values replaced (#1230). A first exchange that still
   outgrows it has its lowest-ranked excerpts left out whole at disclosure (#1230, ADR-009
@@ -2795,7 +2799,9 @@ credential probe keep their one-shot dispatch; no check uses it.
   outcome. Otherwise the loop's reason maps to closed results: `format_invalid`, `read_limit` and
   `turn_limit` to `invalid`, `deadline` to `timeout`, `authorization_changed` to blocked by policy,
   and an earlier run of the job, an uncaptured step or a lost lease to `outcome_unknown`. A valid
-  action that leaves less than the minimum read-envelope room ends `case_capacity_exceeded`,
+  action that leaves less than the minimum read-envelope room is not served and the same exchange
+  asks for the final judgment (#1242); only an action that outgrows even the room kept for the
+  notices ends `case_capacity_exceeded`,
   mapped through the existing case-capacity result before reserving or reading anything; genuine
   read-count violations still map to `invalid`. The capacity counters in this path describe the
   minimum action-plus-envelope requirement and the exchange allowance remaining. The
@@ -3038,7 +3044,7 @@ At the minimal policy (4,096 tokens, a 16 KiB exchange) a review therefore fits 
 where it fitted three, and a refusal plus one content read where it fitted a refusal plus two; the
 read it can no longer afford takes the final-phase repair and the review still concludes. The
 existing #1118 rule that a read action leaving its exchange no room for even an empty result ends
-the review `case_capacity_exceeded` is also reached sooner there: a long absolute-path action
+the review (since #1242: asks for the verdict without that read) is also reached sooner there: a long absolute-path action
 after a corrected refusal can now hit it (the read offer is still measured from the last sent
 exchange, not the one the action will travel in). The shipped default ceilings are unaffected.
 Refusals keep their bytes counted. This is accepted for the clearer selectors;
@@ -3640,7 +3646,8 @@ structured verdict rows, with a shared or vacuous expected value becoming tracke
   tag beside the reviewer's observation, so a contradiction is visible: "Your test <path> for
   '<criterion>' takes its expected value from the implementation (you tagged
   expected_from=task_text; the reviewer observed shared_with_implementation). Run: <probe>, or show
-  it fails on a deliberately broken scratch copy, or decline with a reason." The probe is runnable,
+  it fails on a deliberately broken scratch copy, or decline with a reason." (Reworded on
+  2026-10-29; see the amendment below.) The probe is runnable,
   so it is kept verbatim (only control characters other than newline and tab are dropped); a
   multi-line probe follows the sentence in a fenced block (PR #1224 review). Every other verdict
   stays in the encrypted review response only. The row is non-blocking and answered once through
@@ -3669,3 +3676,153 @@ Wire changes are in place on unreleased versions: provider-judgment 1.2.0 and re
 (`declared_test_verdicts`), check-recorded 1.6.0 (`origin` enum, `test_digest`), check-result
 1.6.0/1.7.0 and status-result 1.4.0/1.5.0 (`origin` enum), outbound-case 1.2.0 (`expected_from` on
 a listed entry). The behaviour is service-side and identical for Codex, Claude Code and Cursor.
+
+### 2026-10-29 amendment — what review cannot settle, the loop's two missing rules, obligations survive narrowing (#1245, #1145, #1202)
+
+Maintainer acknowledgement: the owner decisions of 2026-10-29 recorded on #1247 (step G6) and on
+#1245, #1145 and #1202 (D16, D18, D22). They grant no network, credential, runtime or disclosure
+authority. FinishUP is not a code reviewer: it checks that the agent does what it planned and
+claimed, and its advice stays non-blocking.
+
+In TB4 full-sol (build `5372c00d9`) every atrx-vep-crispr attempt asked AI review to rule on a
+"no qualifying variant" conclusion. Two supplied inputs conflicted, every review agreed that
+withholding the required report was right, and the task was solvable from the supplied inputs. In
+batched-eval-parity the reviewer asked for a zero-budget case the input schema forbids. Every
+review used the loop instruction, which lacked two rules the packet-only instruction states, and in
+a5 the closing packet carried no obligation text at all.
+
+1. **The loop instruction carries the two rules it had dropped**, one sentence each, in its
+   existing sections, each with the failure it catches. `## Goal`: "When the task requires an
+   outcome the agent calls infeasible, contradictory or blocked, challenge it and name the
+   strongest interpretation under which it is achievable (a full reserve assumed at every stop
+   when the inputs allow less)." `## Clues`, after the boundary-value rule that produced the
+   zero-budget advice: "Suggest only inputs and states the visible interface can reach (no zero
+   budget where the schema requires a positive one)." The instruction does not grow, so the
+   minimal policy keeps its #1173/#1203 read room: four sentences that repeated another rule were
+   shortened or removed (the `decision_needed` probe's field mapping, which the calibration
+   paragraph already states; "at most 2 extra attempts", which 3 reads in 5 attempts imply; "after
+   the last read only final_judgment is accepted", which the procedure states; "read only what
+   bears on a requirement", which "read a material gap" states), and the image and read-result
+   bullets lost one redundant clause each. It is 7,626 UTF-8 bytes (7,634 before), under the
+   unchanged 7,639-byte cap. Its text changes once, which resets a provider prompt cache once
+   (#1172).
+2. **Conflicting inputs are not inability.** The closing review's acknowledged-obligation question
+   (`ACKNOWLEDGED_REVIEW_INSTRUCTION`) adds: "Conflicting inputs are not inability: challenge a
+   withheld output and ask for a best-effort output under the strongest reading the task permits,
+   with the assumption recorded (a report withheld because two supplied references disagree). Your
+   agreeing that a conflict exists is not permission to withhold. Only a missing authority, a
+   missing credential or a destructive change the task does not permit excuses withholding a
+   requested output." It is about 440 bytes on a final-phase review that carries an
+   acknowledgement, and none on any other review, so the pinned minimal-policy budgets are
+   unchanged.
+3. **The question cites only what the packet carries.** It names an acknowledged obligation only
+   when the packet carries its `obligation-<id>` row; the rest are counted, never named ("N
+   obligations acknowledged as not done are not in this packet: do not quote or judge them; state
+   that limit in review_summary.").
+4. **Obligation and claim rows survive narrowing (D22).** The first capacity narrowing
+   (`primary_material_selection`) now drops the agent's goal and the history only. Ceiling planning
+   then shrinks excerpt bytes down to the existing diff floor, as before. Only when no plan that
+   keeps the obligation and claim rows fits is the whole search repeated without them
+   (`keep_agent_account=False`), exactly as every review was planned before, so no review that
+   fitted then is refused now and the existing ceilings bind unchanged. At the aggregate case bound
+   the order is the same: goal and history, then bulk excerpts, then earlier dialogue, and
+   obligation and claim rows last. Earlier-finding prose is packed under any narrowing (the goal's
+   absence), as it was under the old one. Diagnostics: a `semantic_case_narrowed` record (only when
+   planning narrowed the case) carries `semantic_section_dropped_goal|obligations|claims|timeline`
+   (0 or 1), `semantic_obligation_rows_selected`, `semantic_claim_rows_selected` and
+   `semantic_excerpt_ceiling_rounds`, integers only. Trade-off: a narrowed packet can carry fewer
+   excerpt bytes than before, in exchange for the rows its questions and verified rows cite.
+5. **Declared-test verdict wording (#1145).** The advisory sentence labels the reviewer's probe
+   instead of wrapping prose in "Run:": "…the reviewer observed shared_with_implementation).
+   Reviewer's counter-example: <probe>. Check it, show the test fails on a deliberately broken
+   copy, or decline with a reason." A multi-line probe keeps its fenced block after "Check the
+   reviewer's counter-example below, …". Rows recorded earlier keep their bytes.
+6. **Guidance.** `review.md` gains "What it can and cannot help with" in the section on turning
+   review on: review names gaps between the plan or claims and the record, and suggests a cheap
+   check that tells two readings apart; it cannot see a hidden grader, pick the reading a grader
+   uses, or excuse a requested output. `review.md` and `workflow.md` state owner decision D16
+   verbatim: "With conflicting inputs, pick a reading, write the requested output, and record the
+   assumption. Review agreeing that a conflict exists is not permission to withhold." The Stop
+   re-checks say to write a missing output (ADR-033's 2026-10-29 note). Interpretation misses that
+   never contradict the agent's own plan or claims stay out of scope. `review.md` is one guidance
+   page of at most 16 KiB, so the paragraph is compact, carries one failure example (the D16
+   rule's), and the rest of its section was tightened to fit; no rule left the page.
+7. **Manifest quotes (D18, #1202).** A `criterion_quote` stays verbatim, but whitespace runs and
+   quote-mark styles are normalized before it is compared, everywhere it is compared (admission,
+   the coverage index, the declared-test list). A rejection names the nearest task sentence by its
+   position only ([interfaces](../INTERFACES.md#test-records-and-declared-coverage-issue-1170)).
+
+The two TB4 patterns are offline accuracy cases
+(`tests/fixtures/reviewer_accuracy/tb4_full_cases.json`, synthetic paraphrases), each bound to its
+packet-only directive, its loop directive and, for the withheld output, the acknowledged-question
+sentences. They prove the directives are present, not that a model follows them.
+
+Changing the question set, the instruction or the narrowing changes the case digest of the reviews
+affected; a pending disclosure approval prepared by an older build for such a case fails closed
+(`audit_failed`) rather than sending a different case. The behaviour is service-side and
+identical for Codex, Claude Code and Cursor. No schema changes.
+
+## Amendment — 2026-10-30: the reviewer may ask for a proxy, never for the hidden reference (#1246)
+
+Owner decision D17 (#1247). A closing review whose packet carries an obligation that discloses a
+verification limit with no recorded proxy decision (`finishup-proxy:<obligation id>`, ADR-033
+amendment of the same date) adds one packet question, `PROXY_REVIEW_QUESTION` (359 bytes): when
+the limit is a budget or score against a reference the agent cannot see and the workspace allows a
+stand-in (a baseline run, held-out data), the reviewer may ask once for that proxy and its measured
+ratio (`provide_evidence`). It never asks for the hidden reference itself (#1024 stands), and a
+missing proxy is never an unmet requirement. The `agent-disclosures` row carries `proxy` beside a
+limit that already has one, so nothing is asked twice. The question rides the review packet, not
+the loop instruction (unchanged, 7,627 of 7,639 bytes), and it never rides a channel no larger
+than the minimal policy's (#1173): there its bytes came out of the room the first read needs, so a
+closing review whose reviewer read once ended `case_capacity_exceeded`. There the receipt's
+`proxy: none chosen` line still stands. It changes no finding state and no verdict.
+
+## Amendment — 2026-10-29: a read with no room asks for the verdict instead of ending with none (#1242, #1135)
+
+Tracked as step G7 in #1247. In the TB4 full run, three closing reviews of long tasks were sent,
+answered, and then discarded with `case_capacity_exceeded` and no verdict. The reviewer's first
+reply asked for a read, as 296 of 300 completed reviews do, and the read's own action left its
+exchange less than an empty result needs. The first exchange had been fitted at disclosure to
+within about 300 estimated tokens of the exchange limit, spending the growth reserve later
+exchanges need. Each loss cost about 127K provider tokens, and the attempt row recorded none of
+them.
+
+- **Ask for the verdict.** When a read's action still fits beside the notices every read keeps
+  room for, but leaves less than an empty result needs, the read is not served. The same exchange
+  carries the notice `FinishUP: read not served, no room left. Return final_judgment now.`, which is
+  no longer than the final-phase notice, so it uses that notice's room. The final phase then runs
+  as before; a read returned there takes the one format repair. The review record's `ended` is
+  `read_not_served_no_room` beside a final judgment, and every text rendering says "a requested
+  read was not served (no room left), judged without it". A judgment given without that read is
+  final, labelled with the missing read. Only an action that outgrows even that room still ends
+  `case_capacity_exceeded`, unread and unsent, as before.
+- **Keep the growth reserve.** The disclosure-time fit (#1230) now first fits a reviewer
+  conversation's first exchange below its route budget's first-exchange bounds: the byte limit
+  less the 8 KiB `REVIEWER_FRAME_BYTES` frame, and `first_token_limit`, which keeps
+  `GROWTH_RESERVE_TOKENS`. That is the bound ceiling planning already plans against. When those
+  bounds cannot be met (the excess is fixed material or the change), it fits to the exchange limit
+  itself, as before, and the diagnostic counts `semantic_first_exchange_frame_unkept`. It never
+  refuses a packet the limit admits.
+- **The planner's verdict is recorded.** Whether ceiling planning kept the frame is no longer
+  discarded: `semantic_case_built` counts `semantic_first_exchange_frame_unplanned`. Reads stay
+  offered on such a review. At small channel limits (the minimal policy's 16 KiB exchange) planning
+  can never keep 8 KiB, yet the measured room after the first exchange still serves a read or two.
+  Each later offer already needs 2 KiB of measured room. The first turn, whose room is unknown
+  until its exchange is sent, offers a read, and a read with no room is now asked for the verdict
+  instead. A read-free first turn on the planner's verdict alone was tried and rejected: it cost
+  every small-channel review its reads.
+- **Records.** An unsent read continuation that ends the review after an exchange was sent keeps
+  that exchange's provider usage on the durable attempt row, where it was null. The
+  `semantic_capacity_exceeded` recovery directive no longer says "no provider attempt was made",
+  which was false on this path. It now tells the agent that an unchanged re-check meets the same
+  limit, and to narrow the scope instead.
+
+No wire schema changes: `ended` was already a closed token. The behaviour is service-side and the
+same for Codex, Claude Code and Cursor.
+
+Verification: `tests/unit/application/test_reviewer_loop.py` (served-without-read, the notice size
+and the capacity ending), `tests/integration/service/test_reviewer_oversize_first_exchange.py`
+(the service records a concluded, labelled review),
+`tests/unit/privacy/test_disclosure_capacity_fit.py` (bytes and tokens keep the frame; the
+existing fits still fall back to the limit) and `tests/unit/application/test_semantic_attempts.py`
+(usage on the attempt row).

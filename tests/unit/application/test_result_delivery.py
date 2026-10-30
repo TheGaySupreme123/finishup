@@ -10,7 +10,9 @@ import pytest
 
 from finishup.application.result_delivery import (
     HOST_RESULT_BUDGET_BYTES,
-    decode_cursor,
+    DeliveryPageSet,
+    DeliveryPageStore,
+    decode_handle,
     delivery_items,
     mcp_delivery_bytes,
     page_result,
@@ -28,7 +30,6 @@ from finishup.protocol.canonical import canonical_digest, canonical_encode
 from finishup.protocol.errors import PublicOperationError
 from finishup.protocol.models import CheckResultModel, StatusRequest
 
-_KEY = b"delivery-test-key" * 2
 _SESSION = "ses_00000000-0000-4000-8000-000000000001"
 _WRITER = "wri_00000000-0000-4000-8000-000000000002"
 # What Codex 0.159 prefixes to the structured JSON it shows a model (test_codex_structured_head).
@@ -177,25 +178,23 @@ def _source() -> dict[str, Any]:
 def _pages(source: dict[str, Any]) -> list[dict[str, Any]]:
     pages: list[dict[str, Any]] = []
     position = 0
-    digest = None
     while True:
         page: dict[str, Any] = page_result(
             source,
-            key=_KEY,
             method="check",
             selector={"request_id": source["request_id"]},
             writer_id=_WRITER,
             sink="agent_context",
             position=position,
-            expected_digest=digest,
         )
         pages.append(page)
         if page["complete"]:
             assert page["next_cursor"] is None
             return pages
-        cursor = decode_cursor(_KEY, page["next_cursor"], _SESSION, _WRITER)
-        assert cursor["position"] > position
-        position, digest = cursor["position"], cursor["digest"]
+        handle = decode_handle(page["next_cursor"])
+        assert handle.position > position
+        assert handle.digest_prefix == page["source_digest"].removeprefix("sha256:")[:8]
+        position = handle.position
 
 
 @pytest.fixture(scope="module")
@@ -298,36 +297,44 @@ def test_page_partition_is_independent_of_mapping_insertion_order() -> None:
     assert _pages(source) == _pages(reverse(source))
 
 
-def test_cursor_rejects_tamper_other_writer_and_changed_authorized_content(
+def test_handle_is_short_canonical_and_its_page_set_bound_to_session_and_writer(
     many_pages: list[dict[str, Any]],
 ) -> None:
+    """#1244 (D12): a handle names its source; the kept page set binds session and writer."""
     source = _source()
     first = many_pages[0]
-    cursor = first["next_cursor"]
-    with pytest.raises(PublicOperationError):
-        decode_cursor(_KEY, cursor, _SESSION, _WRITER[:-1] + "3")
-    # The session is bound by the signature only, not carried in the cursor body.
-    with pytest.raises(PublicOperationError):
-        decode_cursor(_KEY, cursor, _SESSION[:-1] + "9", _WRITER)
-    assert decode_cursor(_KEY, cursor, _SESSION, _WRITER)["session_id"] == _SESSION
-    with pytest.raises(PublicOperationError):
-        decode_cursor(_KEY, cursor[:-2] + "AB", _SESSION, _WRITER)
-    changed = copy.deepcopy(source)
-    changed["review_summary"] = {"omitted": True, "reason": "withheld_by_policy"}
-    with pytest.raises(PublicOperationError):
-        page_result(
-            changed,
-            key=_KEY,
-            method="check",
-            selector={},
-            writer_id=_WRITER,
-            sink="agent_context",
-            position=1,
-            expected_digest=first["source_digest"],
-        )
+    cursor = cast(str, first["next_cursor"])
+    assert len(cursor) <= 64 and next(iter(first)) == "next_cursor"
+    handle = decode_handle(cursor)
+    assert handle.method == "check"
+    assert handle.source_request_id == source["request_id"]
+    assert handle.frontier == 42 and handle.position == len(first["items"])
+    for bad in (
+        cursor + "0",
+        cursor[:-1] + "G",
+        cursor.replace(".", "..", 1),
+        cursor.replace(f".{handle.position}.", ".0.", 1),
+        cursor.replace(f".{handle.position}.", f".0{handle.position}.", 1),
+        "x" + cursor[1:],
+        "nonsense",
+    ):
+        with pytest.raises(PublicOperationError) as refused:
+            decode_handle(bad)
+        assert refused.value.safe_details["reason_code"] == "delivery_cursor_invalid"
+    store = DeliveryPageStore(max_sets=2)
+    entry = DeliveryPageSet(
+        _SESSION, _WRITER, "agent_context", "check", {}, source, "sha256:" + "0" * 64, None, 10
+    )
+    store.put(handle.set_key, entry)
+    assert store.get(handle.set_key, _SESSION, _WRITER) is entry
+    assert store.get(handle.set_key, _SESSION, _WRITER[:-1] + "3") is None
+    assert store.get(handle.set_key, _SESSION[:-1] + "9", _WRITER) is None
+    store.put("a", entry)
+    store.put("b", entry)
+    assert len(store) == 2 and store.get(handle.set_key, _SESSION, _WRITER) is None
 
 
-def test_status_continuation_freezes_watermarks_and_preserves_inventory_cursor() -> None:
+def test_status_handle_carries_a_rebuildable_selector_and_preserves_inventory_cursor() -> None:
     source = _source()
     source.update(
         view="findings",
@@ -337,43 +344,66 @@ def test_status_continuation_freezes_watermarks_and_preserves_inventory_cursor()
         page={"items": source.pop("findings"), "next_cursor": "original-inventory-cursor"},
     )
     selector: dict[str, Any] = {
+        "request_id": source["request_id"],
         "view": "findings",
         "limit": "20",
         "detail": "full",
         "at_frontier": "42",
     }
+    from finishup.application.result_delivery import (
+        status_selector_code,
+        status_selector_from_code,
+    )
+
+    code = status_selector_code(selector)
+    assert code == "ff20"
     first = page_result(
         source,
-        key=_KEY,
         method="status",
         selector=selector,
         writer_id=_WRITER,
         sink="agent_context",
+        selector_code=code,
     )
     inventory = first["inventory_read"]
     assert isinstance(inventory, dict)
-    assert inventory == {**selector, "cursor": "original-inventory-cursor"}
-    cursor = decode_cursor(_KEY, cast(str, first["next_cursor"]), _SESSION, _WRITER)
-    source["head_frontier"] = {"sequence": "99", "head_digest": "sha256:" + "b" * 64}
-    source["projection_lag"] = "57"
-    # Live fields a later read sees change: an import job finishing must not refuse the cursor.
-    source["import_status"] = {"active_count": "0", "terminal_count": "1"}
+    assert inventory == {
+        **{k: v for k, v in selector.items() if k != "request_id"},
+        "cursor": "original-inventory-cursor",
+    }
+    handle = decode_handle(cast(str, first["next_cursor"]))
+    assert handle.method == "status" and handle.selector_code == code
+    rebuilt = status_selector_from_code(handle.selector_code, handle)
+    assert rebuilt == {**selector, "delivery": "paged"}
+    # A selector the handle cannot carry (an inventory cursor) is marked, so a miss can say so.
+    assert status_selector_code({**selector, "cursor": "abc"}) == "x"
+    with pytest.raises(PublicOperationError) as expired:
+        status_selector_from_code("x", handle)
+    assert expired.value.safe_details["reason_code"] == "delivery_cursor_expired"
     continued = page_result(
         source,
-        key=_KEY,
         method="status",
-        selector=cursor["selector"],
+        selector=selector,
         writer_id=_WRITER,
         sink="agent_context",
-        position=cursor["position"],
-        expected_digest=cursor["digest"],
+        position=handle.position,
+        selector_code=code,
+        ledger_moved_since={"sequence": "99", "head_digest": "sha256:" + "b" * 64},
     )
     assert continued["source_digest"] == first["source_digest"]
     assert continued["inventory_read"] == inventory
-    with pytest.raises(PublicOperationError):
-        decode_cursor(
-            b"another-service-generation-key-32", cast(str, first["next_cursor"]), _SESSION, _WRITER
-        )
+    assert cast(dict[str, Any], continued["ledger_moved_since"])["sequence"] == "99"
+    # A notice never moves the partition: the same offsets hold with or without it.
+    plain = page_result(
+        source,
+        method="status",
+        selector=selector,
+        writer_id=_WRITER,
+        sink="agent_context",
+        position=handle.position,
+        selector_code=code,
+    )
+    assert plain["items"] == continued["items"] and plain["next_cursor"] == continued["next_cursor"]
 
 
 def test_inventory_and_delivery_cursors_share_the_actual_envelope_budget() -> None:
@@ -404,20 +434,19 @@ def test_inventory_and_delivery_cursors_share_the_actual_envelope_budget() -> No
             dict[str, Any],
             page_result(
                 source,
-                key=_KEY,
                 method="status",
                 selector=selector,
                 writer_id=_WRITER,
                 sink="agent_context",
                 position=position,
+                selector_code="x",
             ),
         )
         assert mcp_delivery_bytes(page) <= HOST_RESULT_BUDGET_BYTES
         pages.append(page)
         if page["complete"]:
             break
-        cursor = decode_cursor(_KEY, page["next_cursor"], _SESSION, _WRITER)
-        selector, position = cursor["selector"], cursor["position"]
+        position = decode_handle(page["next_cursor"]).position
     assert reassemble_delivery(pages) == source
 
 
@@ -426,19 +455,17 @@ def test_each_page_carries_its_own_read_disclosure_and_never_pages_it() -> None:
     source = _source()
     omitted = tuple(f"/findings/{i}/provenance/refs/{j}" for i in range(20) for j in range(20))
     pages: list[dict[str, Any]] = []
-    position, digest = 0, None
+    position = 0
     while True:
         # Every continuation reapplies disclosure: a fresh receipt and commitment per read.
         source["privacy_projection"] = _projection(len(pages) + 1, omitted)
         page: dict[str, Any] = page_result(
             source,
-            key=_KEY,
             method="check",
             selector={"request_id": source["request_id"]},
             writer_id=_WRITER,
             sink="agent_context",
             position=position,
-            expected_digest=digest,
         )
         CheckResultModel.model_validate(page)
         assert mcp_delivery_bytes(page) <= HOST_RESULT_BUDGET_BYTES
@@ -458,8 +485,7 @@ def test_each_page_carries_its_own_read_disclosure_and_never_pages_it() -> None:
         pages.append(page)
         if page["complete"]:
             break
-        cursor = decode_cursor(_KEY, page["next_cursor"], _SESSION, _WRITER)
-        position, digest = cursor["position"], cursor["digest"]
+        position = decode_handle(page["next_cursor"]).position
     assert len({page["privacy_projection"]["local_disclosure_receipt_id"] for page in pages}) > 1
     rebuilt = reassemble_delivery(pages)
     assert rebuilt["privacy_projection"] == pages[-1]["privacy_projection"]
@@ -660,9 +686,12 @@ async def test_real_disclosure_and_recorded_source_continuation_do_not_repeat_wo
         pages.append(page)
         seed += 2
     assert len(seen) == first["total_items"]
-    # Each read is its own disclosure; the reconstruction carries the final read's receipt.
+    # Each read is its own disclosure (counted below). A re-read that no longer matches the first
+    # (the check's call-local observation wait, a status read's moved head) is served from the
+    # kept copy (#1244, D12) with the receipt those items were disclosed under; an unchanged
+    # re-read carries its own. The reconstruction carries the final page's receipt.
     receipts = {page["privacy_projection"]["local_disclosure_receipt_id"] for page in pages}
-    assert len(receipts) == len(pages)
+    assert 1 <= len(receipts) <= len(pages)
     reconstructed = reassemble_delivery(pages)
     assert reconstructed["privacy_projection"] == pages[-1]["privacy_projection"]
     expected = dict(await project_case(workflow.app, case, seed + 10))
@@ -1006,13 +1035,12 @@ def test_result_delivery_matches_owned_canonical_vector() -> None:
     vector = json.loads(fixture.read_bytes())["input"]["result_delivery"]
     page = page_result(
         vector["source"],
-        key=b"fixture-delivery-key-not-a-secret",
         method="check",
         selector={"request_id": vector["source"]["request_id"]},
         writer_id="wri_00000000-0000-4000-8000-000000000004",
         sink="agent_context",
     )
-    page["next_cursor"] = vector["cursor_normalization"]
+    assert "cursor_normalization" not in vector
     assert page == vector["payload"]
     assert canonical_encode(page).hex() == vector["canonical_hex"]
     assert canonical_digest(page) == vector["digest"]
@@ -1595,3 +1623,510 @@ def test_codex_and_cursor_check_results_carry_the_hint_in_canonical_order(
     assert list(json.loads(text)) == sorted(json.loads(text), key=str.encode)
     escaped = json.dumps(FINDINGS_SUPPRESSED_NEXT_STEP)[1:-1]  # the hint quotes "10"
     assert text.count(escaped) == (1 if suppressed else 0)
+
+
+# ------------------------------------------------------------------------------------------------
+# #1244 (D12): short handles over a kept page set; continuations survive appends and restarts.
+# ------------------------------------------------------------------------------------------------
+
+
+class _Agent:
+    """An agent's MCP calls through the daemon over the ~1,000-event #916 ledger."""
+
+    def __init__(self, ledger: Any) -> None:
+        from builders.projection_workflow import request_base
+
+        self.ledger = ledger
+        self.daemon = _workflow_daemon(ledger.app)
+        self.head = ledger.head
+        self._seed = iter(range(0x9900, 0xA000))
+        self._base = request_base
+        self.held = {"session_id": ledger.started.session_id, "writer_id": ledger.started.writer_id}
+
+    def body(self, **fields: Any) -> dict[str, Any]:
+        rid = f"req_00000000-0000-4000-8000-{next(self._seed):012x}"
+        return {**self._base(rid), **self.held, **fields}
+
+    async def call(self, method: Any, model: Any, body: Any) -> dict[str, Any]:
+        from finishup.ports.control import ControlClientKind
+        from finishup.protocol.models import public_model_to_wire
+        from integration.service.test_daemon_clients import (
+            _request,  # pyright: ignore[reportPrivateUsage]
+        )
+
+        result = await self.daemon.dispatch(
+            ControlClientKind.MCP_BRIDGE, _request(self.daemon, method, model.model_validate(body))
+        )
+        assert result.outcome == "ok", result.body
+        return cast(dict[str, Any], public_model_to_wire(result.body))
+
+    async def refusal(self, cursor: str) -> str:
+        """The reason code a refused continuation names."""
+        from finishup.ports.control import ControlClientKind, ControlMethod
+        from integration.service.test_daemon_clients import (
+            _request,  # pyright: ignore[reportPrivateUsage]
+        )
+
+        body = self.body(view="compact", delivery_cursor=cursor)
+        result = await self.daemon.dispatch(
+            ControlClientKind.MCP_BRIDGE,
+            _request(self.daemon, ControlMethod.STATUS, StatusRequest.model_validate(body)),
+        )
+        if result.outcome == "error":
+            return cast(str, getattr(result.body, "reason", ""))
+        error = cast(
+            dict[str, Any], getattr(result.body, "root", result.body).model_dump(mode="json")
+        )
+        assert error["ok"] is False
+        return cast(str, error["error"]["safe_details"]["reason_code"])
+
+    async def check(self) -> dict[str, Any]:
+        from builders.projection_workflow import frontier_json
+        from finishup.domain.values import Frontier
+        from finishup.ports.control import ControlMethod
+        from finishup.protocol.models import CheckRequest
+
+        wire = await self.call(
+            ControlMethod.CHECK,
+            CheckRequest,
+            self.body(
+                expected_frontier=frontier_json(self.head),
+                mode="deterministic_only",
+                max_findings="10",
+            ),
+        )
+        frontier = wire["result_frontier"]
+        self.head = Frontier(int(frontier["sequence"]), frontier["head_digest"])
+        return wire
+
+    async def publish_action(self, number: int) -> None:
+        from builders.projection_workflow import frontier_json
+        from builders.start_application import protocol_id
+        from finishup.domain.values import Frontier
+        from finishup.ports.control import ControlMethod
+        from finishup.protocol.models import PublishWorkRequest
+
+        wire = await self.call(
+            ControlMethod.PUBLISH_WORK,
+            PublishWorkRequest,
+            self.body(
+                expected_frontier=frontier_json(self.head),
+                event_drafts=[
+                    {
+                        "event_id": protocol_id("evt_", 0x99000 + number),
+                        "schema": {"name": "action_recorded", "version": "1.0.0"},
+                        "occurred_at": "2026-07-28T12:00:00.000Z",
+                        "causal_parents": [],
+                        "payload": {
+                            "action_id": protocol_id("act_", 0x99800 + number),
+                            "action_kind": "review",
+                            "description": f"Paging between appends {number}.",
+                        },
+                        "artifact_refs": [],
+                        "evidence_refs": [],
+                    }
+                ],
+            ),
+        )
+        frontier = wire["result_frontier"]
+        self.head = Frontier(int(frontier["sequence"]), frontier["head_digest"])
+
+    async def status(self, **fields: Any) -> dict[str, Any]:
+        from finishup.ports.control import ControlMethod
+
+        return await self.call(ControlMethod.STATUS, StatusRequest, self.body(**fields))
+
+    async def follow(self, pages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        while pages[-1]["next_cursor"] is not None:
+            page = await self.status(view="compact", delivery_cursor=pages[-1]["next_cursor"])
+            assert page.get("ok") is True, page.get("error")
+            if page.get("page_set_restarted") is True:
+                pages = []
+            pages.append(page)
+        return pages
+
+
+@pytest.mark.anyio
+async def test_check_pages_continue_after_forty_appends_and_lead_with_a_short_handle() -> None:
+    """TB4 biped a4: a check's fourth page was refused once 16 appends had landed (#1244).
+
+    The replayed check view read only the adapter's 16-entry trusted history, dropped its
+    checklist, and its digest changed. It now replays that prefix, and the kept page set serves
+    the same copy; every handle is short and leads its page.
+    """
+    from builders.status_render_cost import build_codex_status_ledger
+
+    agent = _Agent(await build_codex_status_ledger())
+    await agent.daemon.start()
+    try:
+        first = await agent.check()
+        assert first["state"] == "delivery_page"
+        assert next(iter(first)) == "next_cursor"
+        assert len(first["next_cursor"]) <= 64
+        pages = [first]
+        page = await agent.status(view="compact", delivery_cursor=first["next_cursor"])
+        pages.append(page)
+        for number in range(40):
+            await agent.publish_action(number)
+        pages = await agent.follow(pages)
+        assert all(len(p["next_cursor"] or "") <= 64 for p in pages)
+        assert {p["source_digest"] for p in pages} == {first["source_digest"]}
+        rebuilt = reassemble_delivery(pages)
+        assert rebuilt["finding_checklist"] and rebuilt["closure_readiness"]
+        # A miss (as after a service restart) rebuilds the recorded check from the ledger. Its
+        # prefix has since gained the agent's own records, which a pinned case may not absorb,
+        # so the rebuilt set differs: it says so and starts again at offset 0, never a refusal.
+        agent.ledger.app.delivery_pages.clear()
+        again = await agent.status(view="compact", delivery_cursor=first["next_cursor"])
+        assert again["page_set_restarted"] is True and again["offset"] == 0
+        assert int(again["ledger_moved_since"]["sequence"]) == agent.head.sequence
+        assert reassemble_delivery(await agent.follow([again]))["verdict"] == rebuilt["verdict"]
+    finally:
+        await agent.daemon.close()
+
+
+@pytest.mark.anyio
+async def test_a_restarted_service_rebuilds_a_check_page_set_past_sixteen_hook_batches() -> None:
+    """A miss past the 16-entry trusted history replays the prefix and continues in place."""
+    from builders.status_render_cost import (
+        _append_hook_calls,  # pyright: ignore[reportPrivateUsage]
+        build_codex_status_ledger,
+    )
+    from finishup.domain.values import Frontier
+
+    agent = _Agent(await build_codex_status_ledger())
+    await agent.daemon.start()
+    try:
+        first = await agent.check()
+        ledger, objects = next(iter(agent.ledger.app.runtime.resources.values()))
+        for call in range(20):
+            frontier = await _append_hook_calls(
+                ledger,
+                objects,
+                agent.ledger.started,
+                agent.head,
+                range(2_000 + call, 2_001 + call),
+                now=agent.ledger.app.clock.now_utc(),
+                request_seed=0x9A000 + call,
+            )
+            agent.head = Frontier(frontier.sequence, frontier.head_digest)
+        agent.ledger.app.delivery_pages.clear()
+        again = await agent.status(view="compact", delivery_cursor=first["next_cursor"])
+        assert "page_set_restarted" not in again
+        assert again["offset"] == len(first["items"])
+        assert again["source_digest"] == first["source_digest"]
+        rebuilt = reassemble_delivery(await agent.follow([first, again]))
+        assert rebuilt["finding_checklist"] and rebuilt["closure_readiness"]
+    finally:
+        await agent.daemon.close()
+
+
+@pytest.mark.anyio
+async def test_status_pages_continue_after_the_agents_publish_with_frozen_live_facts(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """TB4 freecad a3: a status page was refused after the agent's own publish (#1244).
+
+    ``check_in_flight`` (and ``leaf_authorship``) were read live on the first page and differ
+    on the pinned re-read. The kept copy freezes them; the moved ledger is named, not refused.
+    """
+    import finishup.application.status as status_module
+    from builders.status_render_cost import build_codex_status_ledger
+
+    agent = _Agent(await build_codex_status_ledger())
+    in_flight = {"value": True}
+
+    async def check_in_flight(runtime: Any) -> bool:
+        del runtime
+        return in_flight["value"]
+
+    monkeypatch.setattr(status_module, "_check_in_flight", check_in_flight)
+    await agent.daemon.start()
+    try:
+        # The brief compact page now fits one reply (D13); the full one still pages.
+        complete = await agent.status(view="compact", detail="full", delivery="complete")
+        first = await agent.status(view="compact", detail="full", delivery="paged")
+        assert first["state"] == "delivery_page"
+        in_flight["value"] = False
+        await agent.publish_action(1)
+        pages = await agent.follow([first])
+        assert len(pages) > 1 and pages[0] is first
+        assert all(p["source_digest"] == first["source_digest"] for p in pages)
+        moved = [p for p in pages[1:] if "ledger_moved_since" in p]
+        assert moved and all(
+            int(p["ledger_moved_since"]["sequence"]) == agent.head.sequence for p in moved
+        )
+        rebuilt = reassemble_delivery(pages)
+        assert {
+            k: v for k, v in rebuilt.items() if k not in {"privacy_projection", "request_id"}
+        } == {k: v for k, v in complete.items() if k not in {"privacy_projection", "request_id"}}
+        # After a restart the pinned read is rebuilt from the ledger; its content differs from
+        # the first read (the check is no longer in flight), so the set starts again at 0.
+        agent.ledger.app.delivery_pages.clear()
+        restarted = await agent.status(view="compact", delivery_cursor=first["next_cursor"])
+        assert restarted["page_set_restarted"] is True and restarted["offset"] == 0
+        assert restarted["source_digest"] != first["source_digest"]
+        assert reassemble_delivery(await agent.follow([restarted]))
+    finally:
+        await agent.daemon.close()
+
+
+@pytest.mark.anyio
+async def test_only_a_redaction_or_a_disclosure_change_refuses_a_continuation() -> None:
+    """D12: the content refusal is kept for real redaction or disclosure changes and named."""
+    from builders.start_application import protocol_id
+    from builders.status_render_cost import build_codex_status_ledger
+    from finishup.application.result_delivery import DeliveryPageSet
+
+    agent = _Agent(await build_codex_status_ledger())
+    await agent.daemon.start()
+    try:
+        first = await agent.check()
+        handle = cast(str, first["next_cursor"])
+        store = agent.ledger.app.delivery_pages
+        key = handle.split(".")[0] + "." + handle.split(".")[1]
+        kept = store.get(key, agent.held["session_id"], agent.held["writer_id"])
+        assert kept is not None
+        projection = dict(kept.source["privacy_projection"])
+        projection["policy_version"] = str(int(projection["policy_version"]) + 1)
+        changed = DeliveryPageSet(
+            kept.session_id,
+            kept.writer_id,
+            kept.sink,
+            kept.method,
+            kept.selector,
+            {**kept.source, "privacy_projection": projection},
+            kept.digest,
+            kept.selector_code,
+            kept.size,
+        )
+        store.put(key, changed)
+        assert await agent.refusal(handle) == "delivery_disclosure_changed"
+        store.put(key, kept)
+        assert (await agent.status(view="compact", delivery_cursor=handle))["ok"] is True
+        await agent.publish_action(7)
+        await _record_redaction(agent, protocol_id("evt_", 0x99000 + 7))
+        assert await agent.refusal(handle) == "delivery_redaction_recorded"
+        for bad in (handle + "x", "c" + handle[1:].replace(".", "_", 1), "nonsense"):
+            assert await agent.refusal(bad) == "delivery_cursor_invalid"
+    finally:
+        await agent.daemon.close()
+
+
+@pytest.mark.anyio
+async def test_a_mistyped_status_handle_is_invalid_not_a_retryable_read_failure() -> None:
+    """A status handle that names no valid request id or limit is ``delivery_cursor_invalid``.
+
+    A miss rebuilds the status read from the handle alone. A typo that decodes to a non-v4 id,
+    or a limit outside 1..100, used to fail that rebuild's request validation and come back as a
+    retryable ``read_projection_failed``, so the agent retried the same handle.
+    """
+    import base64
+    import uuid
+
+    from builders.status_render_cost import build_codex_status_ledger
+
+    agent = _Agent(await build_codex_status_ledger())
+    await agent.daemon.start()
+    try:
+        complete = await agent.status(view="compact", detail="full", delivery="complete")
+        frontier = complete["result_frontier"]["sequence"]
+        raw = bytearray(uuid.UUID(complete["request_id"][4:]).bytes)
+        valid = base64.urlsafe_b64encode(bytes(raw)).decode("ascii").rstrip("=")
+        raw[6] = (raw[6] & 0x0F) | 0x10  # a version 1 UUID: no request id has one
+        non_v4 = base64.urlsafe_b64encode(bytes(raw)).decode("ascii").rstrip("=")
+        assert await agent.refusal(f"s{non_v4}.{frontier}.1.0123abcd.cf20") == (
+            "delivery_cursor_invalid"
+        )
+        assert await agent.refusal(f"s{valid}.{frontier}.1.0123abcd.cf200") == (
+            "delivery_cursor_invalid"
+        )
+    finally:
+        await agent.daemon.close()
+
+
+async def _record_redaction(agent: _Agent, target: str) -> None:
+    """Append one locally authenticated ``redaction_recorded`` after the page set's frontier."""
+    from builders.start_application import protocol_id
+    from finishup.domain.events import (
+        EventDraft,
+        EventSchema,
+        RedactionMethod,
+        RedactionReasonCategory,
+        RedactionRecordedPayload,
+        encode_payload,
+        media_type_for,
+    )
+    from finishup.domain.values import (
+        Actor,
+        ActorType,
+        Frontier,
+        actor_id,
+        event_id,
+        timestamp_from_datetime,
+    )
+    from finishup.ports.ledger import AppendCommand, AppendEntry, OperationKind
+    from finishup.ports.objects import ObjectKind, ObjectMetadata, ObjectSource
+    from finishup.protocol.coverage import (
+        AuthorshipAssurance,
+        PublicationChannel,
+        coverage_for_channel,
+    )
+
+    app = agent.ledger.app
+    started = agent.ledger.started
+    ledger, objects = next(iter(app.runtime.resources.values()))
+    now = app.clock.now_utc()
+    payload = RedactionRecordedPayload(
+        (event_id(target),),
+        (),
+        RedactionMethod.LOGICAL_REDACTION,
+        RedactionReasonCategory.OTHER,
+        actor_id("human.test.local"),
+        "A test redaction after the delivered page set.",
+    )
+    encoded = canonical_encode(encode_payload(payload))
+    metadata = ObjectMetadata(
+        ObjectKind.EVENT_PAYLOAD, media_type_for("redaction_recorded"), started.task_id, now
+    )
+    staged = await objects.stage(ObjectSource(data=encoded, declared_size=len(encoded)), metadata)
+    ref = await objects.finalize(staged)
+    channel = PublicationChannel.LOCAL_CLI
+    result = await ledger.append_batch(
+        AppendCommand(
+            started.task_id,
+            started.session_id,
+            started.writer_id,
+            protocol_id("req_", 0x99FF1),
+            OperationKind.PUBLISH_WORK,
+            "sha256:" + "7" * 64,
+            agent.head.sequence,
+            (
+                AppendEntry(
+                    EventDraft(
+                        event_id(protocol_id("evt_", 0x99FF2)),
+                        EventSchema("redaction_recorded", "1.0.0"),
+                        timestamp_from_datetime(now),
+                        (),
+                        payload,
+                        (),
+                        (),
+                    ),
+                    Actor(
+                        actor_id("human.test.local"),
+                        ActorType.HUMAN,
+                        AuthorshipAssurance.LOCALLY_AUTHENTICATED,
+                    ),
+                    ref,
+                    ref.commitment,
+                    metadata.media_type,
+                    ref.plaintext_size,
+                    channel,
+                    coverage_for_channel(channel),
+                    "projected",
+                ),
+            ),
+            None,
+        )
+    )
+    agent.head = Frontier(result.result_frontier.sequence, result.result_frontier.head_digest)
+
+
+@pytest.mark.anyio
+async def test_the_mcp_check_tool_asks_for_a_brief_reply_unless_the_agent_names_one(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """#1244 (D13): like status (#1084), the agent's check reply is brief by default."""
+    import finishup.mcp.server as server
+
+    sent: list[dict[str, Any]] = []
+
+    async def capture(arguments: Any, *_args: Any, **_kwargs: Any) -> Any:
+        sent.append(dict(arguments))
+        return None
+
+    monkeypatch.setattr(server, "_dispatch", capture)
+    await server.dispatch_check({"mode": "deterministic_only"})
+    await server.dispatch_check({"mode": "deterministic_only", "detail": "full"})
+    await server.dispatch_check({"mode": "inspect"})
+    assert [arguments.get("detail") for arguments in sent] == ["brief", "full", None]
+
+
+def test_a_brief_check_names_each_finding_and_carries_the_brief_readiness_subset() -> None:
+    from finishup.application.result_delivery import brief_check_body
+    from finishup.protocol.models import CHECK_BRIEF_FINDING_KEYS
+
+    findings: list[dict[str, Any]] = [
+        {
+            "finding_id": f"fnd_00000000-0000-4000-8000-{i:012x}",
+            "kind": "completion_with_open_obligations",
+            "origin": "deterministic",
+            "priority": 1,
+            "summary": "A completion claim names an open obligation.",
+            "detail": "Repair it. " * 200,
+            "subject_refs": ["obl_00000000-0000-4000-8000-000000000009"],
+            "policy_id": "work-integrity",
+            "policy_version": "0.3.0",
+            "subject_frontier": {"sequence": "42", "head_digest": "sha256:" + "a" * 64},
+            "coverage": {"known_gaps": []},
+            "provenance": None,
+        }
+        for i in range(1, 11)
+    ]
+    readiness = {
+        "state": "action_required",
+        "blocking_conditions": ["findings_unanswered"],
+        "agent_actionable": ["findings_unanswered"],
+        "limitation_refs_required": [f"res_{i}" for i in range(40)],
+    }
+    source: dict[str, Any] = {
+        "state": "complete",
+        "findings": findings,
+        "closure_readiness": readiness,
+    }
+    brief = brief_check_body(source)
+    assert brief["detail"] == "brief" and "closure_readiness" not in brief
+    assert brief["closure_state"] == {
+        "state": "action_required",
+        "blocking_conditions": ["findings_unanswered"],
+        "agent_actionable": ["findings_unanswered"],
+    }
+    rows = cast(list[dict[str, Any]], brief["findings"])
+    assert all(set(row) <= set(CHECK_BRIEF_FINDING_KEYS) for row in rows)
+    assert [row["finding_id"] for row in rows] == [row["finding_id"] for row in findings]
+    assert len(canonical_encode(brief)) < len(canonical_encode(source)) // 4
+    # Only omission: the source is unchanged and full rows stay full.
+    assert cast(str, findings[0]["detail"]).startswith("Repair it.")
+
+
+def test_a_brief_compact_page_names_unanswered_findings_without_their_detail() -> None:
+    from finishup.application.status import (
+        _brief_compact_page,  # pyright: ignore[reportPrivateUsage]
+    )
+
+    page: dict[str, Any] = {
+        "items": [
+            {
+                "task_id": "tsk_00000000-0000-4000-8000-000000000004",
+                "unanswered_findings": [
+                    {
+                        "finding_id": "fnd_00000000-0000-4000-8000-000000000001",
+                        "kind": "failed_work_omitted",
+                        "priority": 1,
+                        "summary": "Recorded failed work is omitted.",
+                        "detail": "Disclose it. " * 100,
+                    }
+                ],
+            }
+        ],
+        "next_cursor": None,
+    }
+    brief = _brief_compact_page(page)
+    (row,) = cast(list[Any], cast(list[Any], brief["items"])[0]["unanswered_findings"])
+    assert row == {
+        "finding_id": "fnd_00000000-0000-4000-8000-000000000001",
+        "kind": "failed_work_omitted",
+        "priority": 1,
+        "summary": "Recorded failed work is omitted.",
+    }
+    assert "detail" in page["items"][0]["unanswered_findings"][0]

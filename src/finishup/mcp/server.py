@@ -3623,6 +3623,11 @@ async def _dispatch_publish_work_within_budget(
 async def dispatch_check(
     arguments: Mapping[str, object], runtime: BridgeRuntime = BRIDGE_RUNTIME
 ) -> types.CallToolResult:
+    # #1244 (D13): an agent's check reply names each finding briefly unless it names a detail;
+    # ``status view=findings`` carries the rest. An inspection has no findings to shorten.
+    mode = arguments.get("mode")
+    if "detail" not in arguments and not (type(mode) is str and mode in READ_ONLY_CHECK_MODES):
+        arguments = {**arguments, "detail": "brief"}
     return await _dispatch(
         arguments,
         CheckRequest,
