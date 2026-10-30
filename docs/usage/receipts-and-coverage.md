@@ -352,6 +352,9 @@ being your work and never counts as receipt-blocking, but it is never resolved: 
 lists `finding_self_verified` as a standing limitation, the receipt names it in its own
 "Self-verified by the agent; FinishUP could not prove the repair" section, and the receipt's
 conclusion is at best `insufficient_coverage`. A FinishUP limit is never a `finishup-blocker`.
+The exception is a process note about the record itself (`ledger_stale_or_incomplete`,
+`decision_needed`): any answer to one, `self_verified` included, stays on the receipt with your
+reason but never lowers its conclusion, so a clean receipt is still possible.
 
 Findings are advisory. When you disagree, respond `rejected` with your reasoning. If the review
 then repeats the finding without citing anything recorded after your answer, FinishUP records the

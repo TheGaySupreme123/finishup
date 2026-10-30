@@ -63,6 +63,7 @@ from finishup.kernel.closing_review_delta import (
     closing_review_delta,
 )
 from finishup.kernel.closure_class import (
+    ACKNOWLEDGED_NOT_DONE_BASES,
     FINDING_REJECTION_AWAITING_RULING_GAP,
     UNDELIVERABLE_SEMANTIC_STATUSES,
     FindingClosure,
@@ -81,9 +82,7 @@ from finishup.kernel.delivered_set import (
 from finishup.kernel.fact_lineage import MAX_FACT_LINEAGE_ITEMS, FactLineage
 from finishup.kernel.finding_resolution import finding_is_resolved
 from finishup.kernel.finding_todo import (
-    FindingTodoState,
     duplicate_counting_id,
-    finding_todo_state,
 )
 from finishup.kernel.gap_effect import (
     GAP_EFFECT_TABLE,
@@ -1048,23 +1047,25 @@ def closure_readiness_facts(
         for key, closure in counted_findings(finding_classes.values()).items()
         if closure.receipt_effect is ReceiptEffect.UNRESOLVED_FINDINGS_REMAIN
     }
+    # D8 (#1243): a kind the classifier leaves out (a process note) is never listed as settled
+    # here either, so readiness, the prediction and the receipt's terminal lists read one set.
+    # A limitation request answered ``acknowledged_not_done`` is listed here too: the agent said
+    # the requirement is NOT met (owner decision 2026-10-12). A disclosed one is not.
     acknowledged = {
         duplicate_counting_id(state, finding.finding_id)
         for finding in current
-        # A limitation request answered ``acknowledged_not_done`` is listed here too: the agent
-        # said the requirement is NOT met (owner decision 2026-10-12). A disclosed one is not.
-        if finding_acknowledged_not_done(state, finding.finding_id)
-        or finding_todo_state(state, finding.finding_id) is FindingTodoState.ACKNOWLEDGED_NOT_DONE
+        if finding.finding_id in finding_classes
+        and finding_classes[finding.finding_id].basis in ACKNOWLEDGED_NOT_DONE_BASES
     }
     self_verified = {
-        duplicate_counting_id(state, finding.finding_id)
-        for finding in current
-        if finding_todo_state(state, finding.finding_id) is FindingTodoState.SELF_VERIFIED
+        closure.counts_as
+        for closure in finding_classes.values()
+        if closure.basis == "self_verified"
     }
     disputed = {
-        finding.finding_id
-        for finding in current
-        if finding_todo_state(state, finding.finding_id) is FindingTodoState.DISPUTED_AFTER_REBUTTAL
+        closure.finding_id
+        for closure in finding_classes.values()
+        if closure.basis == "disputed_after_rebuttal"
     }
     # The receipt's applicability rule reads the same observation-limitation set (issue #911).
     limitations = observation_limitation_finding_ids(state, records)

@@ -1150,3 +1150,104 @@ def test_a_capacity_refused_closing_review_is_asked_again_after_a_material_chang
     assert facts.closing_review_current is False
     asked = derive_closure_readiness((), (), facts, semantic_review_required=True)
     assert "closing_review_required" in asked.agent_actionable
+
+
+def _answered_state(kind: object, disposition: object) -> ProjectionState:
+    """One current finding of ``kind`` with the agent's reasoned ``disposition`` and nothing else."""
+
+    from builders.policy_cases import evd, finding_record, fnd, obl, record
+    from finishup.domain.events import ResponseRecordedPayload
+    from finishup.domain.findings import (
+        FINDING_KIND_TRAITS,
+        Finding,
+        FindingKind,
+        FindingOrigin,
+        ResponseDisposition,
+        finding_policy_identity,
+    )
+    from finishup.domain.values import Frontier
+    from finishup.kernel.projections import empty_projection_state
+    from finishup.protocol.coverage import (
+        ArtifactObservation,
+        AuthorshipAssurance,
+        Coverage,
+        EvidenceImmutability,
+        LedgerFreshness,
+        PublicationChannel,
+    )
+
+    assert type(kind) is FindingKind and type(disposition) is ResponseDisposition
+    policy_id, policy_version = finding_policy_identity(kind)
+    finding = Finding(
+        finding_id=fnd(1),
+        kind=kind,
+        origin=FindingOrigin.DETERMINISTIC,
+        priority=FINDING_KIND_TRAITS[kind][0],
+        summary="A recorded note.",
+        detail="Answer it.",
+        subject_refs=(obl(1),),
+        policy_id=policy_id,
+        policy_version=policy_version,
+        subject_frontier=Frontier(3, _DIGEST),
+        coverage=Coverage(
+            publication_channels=(PublicationChannel.ENGINE_DERIVED,),
+            authorship_assurance=AuthorshipAssurance.SERVICE_AUTHENTICATED,
+            artifact_observation=ArtifactObservation.PUBLISHED_ONLY,
+            evidence_immutability=EvidenceImmutability.METADATA_ONLY,
+            ledger_freshness=LedgerFreshness.CURRENT,
+            check_types=(CheckType.DETERMINISTIC,),
+            known_gaps=(),
+        ),
+    )
+    response = ResponseRecordedPayload(
+        fnd(1),
+        Frontier(3, _DIGEST),
+        disposition,
+        "A recorded reason.",
+        evidence_refs=(evd(1),) if disposition is ResponseDisposition.SELF_VERIFIED else (),
+    )
+    return replace(
+        empty_projection_state(),
+        frontier=8,
+        head_digest=_DIGEST,
+        findings={fnd(1): finding_record(finding, 4)},
+        responses={fnd(1): record(response, 6)},
+        freshness=LedgerFreshness.CURRENT,
+    )
+
+
+@pytest.mark.parametrize("kind", ("ledger_stale_or_incomplete", "decision_needed"))
+@pytest.mark.parametrize("disposition", ("self_verified", "acknowledged_not_done"))
+def test_an_answered_process_note_is_no_readiness_limitation(kind: str, disposition: str) -> None:
+    """D8 (#1243): ``closure_prepare`` printed clean and, in the same body, ``finding_self_verified``.
+
+    A process note the classifier leaves out is never listed as settled, so readiness reads
+    ``ready`` exactly where the prediction reads clean.
+    """
+
+    from finishup.domain.findings import FindingKind, ResponseDisposition
+    from finishup.kernel.closure_readiness import FINDING_SELF_VERIFIED_GAP, closure_readiness_facts
+
+    state = _answered_state(FindingKind(kind), ResponseDisposition(disposition))
+    # The state holds no check record; read it as covered so only the answered note is judged.
+    facts = replace(closure_readiness_facts(state, ()), check_applicability="applicable")
+    assert facts.self_verified_finding_ids == ()
+    assert facts.acknowledged_finding_ids == ()
+    split = derive_closure_readiness((), (), facts, semantic_review_required=False)
+    assert FINDING_SELF_VERIFIED_GAP not in split.standing_limitations
+    assert (split.state, split.acknowledged_not_done) == ("ready", ())
+
+
+def test_a_self_verified_agent_work_finding_stays_a_readiness_limitation() -> None:
+    from builders.policy_cases import fnd
+    from finishup.domain.findings import FindingKind, ResponseDisposition
+    from finishup.kernel.closure_readiness import FINDING_SELF_VERIFIED_GAP, closure_readiness_facts
+
+    state = _answered_state(
+        FindingKind.COMPLETION_WITH_OPEN_OBLIGATIONS, ResponseDisposition.SELF_VERIFIED
+    )
+    facts = replace(closure_readiness_facts(state, ()), check_applicability="applicable")
+    assert facts.self_verified_finding_ids == (fnd(1),)
+    split = derive_closure_readiness((), (), facts, semantic_review_required=False)
+    assert FINDING_SELF_VERIFIED_GAP in split.standing_limitations
+    assert split.state == "ready_with_limitations"
