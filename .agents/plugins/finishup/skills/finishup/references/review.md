@@ -39,7 +39,7 @@ grant. Keep the same request id and never create a fresh request to escape the d
 
 `full_restart_required` is an activation mismatch. Fully restart the exact host process and verify
 the live route before a new check; it never authorizes egress. Read the check result's coverage and
-review status as reported, not as proof that the underlying code is correct. Details and recovery
+review status as reported, not as proof the code is correct. Details and recovery
 limits remain in [`coverage-and-receipts.md`](coverage-and-receipts.md#check-mode-and-ai-powered-review-coverage).
 
 When AI-powered review is selected, a check before your first material edit runs local plan checks
