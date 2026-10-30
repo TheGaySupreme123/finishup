@@ -1738,8 +1738,14 @@ although nothing could or would be sent, and it had no receipt.
   prepared under (of the current policy when a resume refuses before reaching dispatch), and
   carries `capacity_exceeded` for a size refusal (#1129). A timeout, an audit failure or a transport
   outcome is not closed: an owner's still-valid approval stays usable, and a proposal whose state
-  cannot be read is left alone. Closing is best effort: if it fails, the proposal expires as before
-  and the refusal is returned either way.
+  cannot be read is left alone. Nor is a refusal that came from an exception rather than a
+  decision: reading the repository authority raised, or the dispatch fence guard raised. Those
+  sites mark the refusal `transient`; it is returned to the caller unchanged
+  (`blocked_by_policy`/`scope_mismatch`, no receipt) and the proposal stays `approved` or
+  `awaiting_human`, so a one-off catalog failure never costs the owner an approval. A fence that
+  answers false, an authority no longer held, and a changed policy or limit still close it.
+  Closing is best effort: if it fails, the proposal expires as before and the refusal is returned
+  either way.
 - `privacy pending` therefore excludes the proposal at once, `privacy receipts` lists its receipt,
   and a same-request replay of the closed proposal reports the refusal its receipt recorded instead
   of a generic policy denial.

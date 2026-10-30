@@ -10,6 +10,7 @@ blocked receipt naming the refusal, on both audit stores, and replays as that re
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Awaitable, Callable
 from dataclasses import replace
 from datetime import timedelta
 from typing import cast
@@ -23,6 +24,7 @@ from finishup.application.egress import (
     _refused_proposal_receipt,  # pyright: ignore[reportPrivateUsage]
 )
 from finishup.domain.privacy import (
+    AuthorizationScope,
     CredentialHeuristic,
     DisclosureProposal,
     EgressReceipt,
@@ -37,6 +39,7 @@ from finishup.ports.privacy import (
     PrivacyAuditPort,
     PrivacyReceiptAudience,
     PrivacyReceiptView,
+    RepositoryPrivacyAuthority,
 )
 from finishup.protocol.ids import IdKind
 from unit.application import test_semantic_authorization_resume as resume
@@ -350,3 +353,132 @@ async def test_a_refused_receipt_keeps_the_heuristic_the_case_was_scanned_under(
     assert result.receipt_id == receipt.receipt_id
     assert receipt.secret_scan.credential_heuristic is CredentialHeuristic.DISABLED
     assert receipt.policy.policy_digest == base.effective_digest
+
+
+async def _resume_with_authority(read: int, failure: str) -> tuple[object, _ClosingAudit, int]:
+    """Resume an approved proposal whose ``read``-th repository-authority read fails.
+
+    The first read activates the authority on resume; the second rechecks it at dispatch.
+    ``failure`` is ``raises`` (a catalog hiccup) or ``lost`` (the authority no longer holds).
+    """
+
+    proposal = resume._proposal(expires_at=resume._NOW + timedelta(minutes=5))  # pyright: ignore[reportPrivateUsage]
+    coordinator, audit = _coordinator("approved", proposal)
+    policies = cast(
+        resume._Policies,  # pyright: ignore[reportPrivateUsage]
+        coordinator._policies,  # type: ignore[attr-defined]
+    )
+    held = policies.repository_authority
+    reads = 0
+
+    async def authority(scope: AuthorizationScope) -> RepositoryPrivacyAuthority:
+        nonlocal reads
+        reads += 1
+        failing = reads == read
+        if failing and failure == "raises":
+            raise OSError("catalog busy")
+        # Lost on resume: the grant was withdrawn. Lost at dispatch: the authority changed.
+        policies.granted = not (failing and read == 1)
+        current = await held(scope)
+        if failing and read == 2:
+            return replace(current, authority_digest="sha256:" + "9" * 64)
+        return current
+
+    object.__setattr__(policies, "repository_authority", authority)
+    result = cast(
+        object,
+        await coordinator.resume(  # type: ignore[attr-defined]
+            _REQUEST,
+            _CASE_DIGEST,
+            resume._deadline(),  # pyright: ignore[reportPrivateUsage]
+        ),
+    )
+    return result, audit, reads
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("read", (1, 2), ids=("on_resume", "at_dispatch"))
+async def test_an_authority_read_that_raises_leaves_an_approved_proposal_open(read: int) -> None:
+    """A one-off catalog failure decides nothing: the owner's approval is not closed."""
+
+    result, audit, reads = await _resume_with_authority(read, "raises")
+    assert reads == read
+    assert isinstance(result, SemanticEgressBlocked)
+    # The caller still gets the same refusal; only the proposal is left as it was.
+    assert (result.outcome, result.reason, result.receipt_id) == (
+        PrivacyOutcome.BLOCKED_BY_POLICY,
+        PrivacyReason.SCOPE_MISMATCH,
+        None,
+    )
+    assert result.transient
+    assert audit.closed == []
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("read", (1, 2), ids=("on_resume", "at_dispatch"))
+async def test_an_authority_no_longer_held_still_closes_the_proposal(read: int) -> None:
+    result, audit, reads = await _resume_with_authority(read, "lost")
+    assert reads == read
+    assert isinstance(result, SemanticEgressBlocked)
+    assert (result.outcome, result.reason) == (
+        PrivacyOutcome.BLOCKED_BY_POLICY,
+        PrivacyReason.SCOPE_MISMATCH,
+    )
+    assert not result.transient
+    (receipt,) = audit.closed
+    assert result.receipt_id == receipt.receipt_id
+
+
+async def _raising_guard() -> bool:
+    raise OSError("observation store busy")
+
+
+def _raising_sync_guard() -> bool:
+    raise OSError("observation store busy")
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("guard", (_raising_sync_guard, _raising_guard), ids=("sync", "async"))
+async def test_a_fence_guard_that_raises_leaves_an_approved_proposal_open(
+    guard: Callable[[], Awaitable[bool] | bool],
+) -> None:
+    proposal = resume._proposal(expires_at=resume._NOW + timedelta(minutes=5))  # pyright: ignore[reportPrivateUsage]
+    coordinator, audit = _coordinator("approved", proposal)
+    result = await coordinator.resume(  # type: ignore[attr-defined]
+        _REQUEST,
+        _CASE_DIGEST,
+        resume._deadline(),  # pyright: ignore[reportPrivateUsage]
+        dispatch_guard=guard,
+    )
+    assert isinstance(result, SemanticEgressBlocked)
+    assert (result.outcome, result.reason, result.receipt_id) == (
+        PrivacyOutcome.BLOCKED_BY_POLICY,
+        PrivacyReason.SCOPE_MISMATCH,
+        None,
+    )
+    assert result.transient
+    assert audit.closed == []
+    # A definitive refusal at the same fence still closes it at once.
+    coordinator, audit = _coordinator("approved", proposal)
+    refused = await coordinator.resume(  # type: ignore[attr-defined]
+        _REQUEST,
+        _CASE_DIGEST,
+        resume._deadline(),  # pyright: ignore[reportPrivateUsage]
+        dispatch_guard=lambda: False,
+    )
+    assert isinstance(refused, SemanticEgressBlocked) and not refused.transient
+    (receipt,) = audit.closed
+    assert refused.receipt_id == receipt.receipt_id
+
+
+def test_only_a_scope_refusal_can_be_transient() -> None:
+    with pytest.raises(ValueError, match="semantic_transient_refusal_invalid"):
+        _blocked(_REQUEST, _REQUEST, reason=PrivacyReason.POLICY_DENIED, transient=True)
+    with pytest.raises(ValueError, match="semantic_transient_refusal_invalid"):
+        _blocked(
+            _REQUEST,
+            _REQUEST,
+            PrivacyOutcome.APPROVAL_EXPIRED,
+            PrivacyReason.AUTHORIZATION_EXPIRED,
+            transient=True,
+        )

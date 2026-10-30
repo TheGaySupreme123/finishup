@@ -740,12 +740,22 @@ class SemanticEgressBlocked:
     # only where the gateway call raised or returned an unmappable result; every other blocked
     # result stopped before dispatch.
     dispatch_attempted: bool = False
+    # The refusal came from an exception, not a decision (#1066): reading the repository
+    # authority raised, or the caller's dispatch fence guard raised. It is refused exactly as a
+    # definitive one, but it closes no proposal, so an approval the owner gave stays usable. Set
+    # only at those mapping sites.
+    transient: bool = False
 
     def __post_init__(self) -> None:
         _validate_withheld_item_ids(self.withheld_item_ids)
         validate_semantic_redacted_values(self.redacted_values)
         if self.dispatch_attempted and self.outcome is not PrivacyOutcome.TRANSPORT_FAILED:
             raise ValueError("semantic_dispatch_attempt_invalid")
+        if self.transient and (
+            self.outcome is not PrivacyOutcome.BLOCKED_BY_POLICY
+            or self.reason is not PrivacyReason.SCOPE_MISMATCH
+        ):
+            raise ValueError("semantic_transient_refusal_invalid")
         if type(self.redacted_span_count) is not int or self.redacted_span_count < 0:
             raise ValueError("semantic_redacted_span_count_invalid")
         if self.capacity is not None:
@@ -1367,8 +1377,12 @@ class PrivacyCoordinator:
             raise RuntimeError("privacy_audit_proposal_unavailable")
         return proposal.redacted_values
 
-    async def _semantic_dispatch_is_current(self) -> bool:
-        """Recheck a caller-owned content fence at the gateway boundary."""
+    async def _semantic_dispatch_is_current(self) -> bool | None:
+        """Recheck a caller-owned content fence at the gateway boundary.
+
+        ``None`` when the guard raised: the fence's state is unknown, so the dispatch is refused
+        all the same, but as a transient refusal that closes no proposal (#1066).
+        """
 
         guard = self._semantic_dispatch_guard
         if guard is None:
@@ -1379,7 +1393,7 @@ class PrivacyCoordinator:
                 result = await result
             return result is True
         except Exception:
-            return False
+            return None
 
     async def prepare_local_disclosure(self, candidate: CandidateContext) -> LocalDisclosureResult:
         if type(candidate) is not CandidateContext or candidate.local_sink is None:
@@ -1693,12 +1707,24 @@ class PrivacyCoordinator:
     async def _activate_repository_admitted(
         self, scope: AuthorizationScope
     ) -> tuple[EffectivePrivacyPolicy, str] | None:
+        activated = await self._activate_repository_or_unread(scope)
+        return activated if isinstance(activated, tuple) else None
+
+    async def _activate_repository_or_unread(
+        self, scope: AuthorizationScope
+    ) -> tuple[EffectivePrivacyPolicy, str] | Literal["unread"] | None:
+        """Activate the exact repository authority; ``None`` when it is not held.
+
+        ``"unread"`` when reading the authority raised: nothing about it is known, so a caller
+        refuses as for an authority not held, but as a transient refusal (#1066).
+        """
+
         if scope.kind not in {AuthorizationScopeKind.TASK, AuthorizationScopeKind.REQUEST}:
             return None
         try:
             authority = await self._policies.repository_authority(scope)
         except Exception:
-            return None
+            return "unread"
         return await self._activate_repository_from_authority_admitted(authority, scope)
 
     async def _repository_authority_admitted(
@@ -1747,11 +1773,17 @@ class PrivacyCoordinator:
 
     async def _repository_authority_is_current(
         self, scope: AuthorizationScope, expected_authority_digest: str
-    ) -> bool:
+    ) -> bool | None:
+        """Whether the authority a dispatch was prepared under still holds; ``None`` if unread.
+
+        A read that raised says nothing about the authority, so the dispatch is refused all the
+        same, but as a transient refusal that closes no proposal (#1066).
+        """
+
         try:
             authority = await self._policies.repository_authority(scope)
         except Exception:
-            return False
+            return None
         return (
             authority.grant_state == "granted"
             and authority.repository_privacy_commitment == scope.workspace_ref_commitment
@@ -2090,8 +2122,8 @@ class PrivacyCoordinator:
         )
         authority_digest: str | None = None
         if binding.transport == "external":
-            activated = await self._activate_repository_admitted(candidate.scope)
-            if activated is None:
+            activated = await self._activate_repository_or_unread(candidate.scope)
+            if not isinstance(activated, tuple):
                 return SemanticEgressBlocked(
                     request_id,
                     PrivacyOutcome.BLOCKED_BY_POLICY,
@@ -2100,6 +2132,7 @@ class PrivacyCoordinator:
                     withheld_item_ids=proposal.withheld_item_ids,
                     redacted_span_count=minimized.redacted_span_count,
                     redacted_values=minimized.redacted_values,
+                    transient=activated == "unread",
                 )
             effective, authority_digest = activated
             if (
@@ -2837,8 +2870,11 @@ class PrivacyCoordinator:
         listed a decision nothing could act on. A policy refusal (``blocked_by_policy``) or an
         expired approval closes it now with a blocked receipt naming the refusal; the audit store
         moves only a proposal nothing was authorized or sent for. A timeout, an audit failure or a
-        transport outcome is not closed: a still-valid approval stays usable. Closing is best
-        effort: the refusal is returned either way, and nothing was or will be sent.
+        transport outcome is not closed: a still-valid approval stays usable. Nor is a
+        ``transient`` refusal, one that came from an exception (the repository authority could not
+        be read, or the dispatch fence guard raised): nothing was decided, so a one-off failure
+        never costs the owner an approval. Closing is best effort: the refusal is returned either
+        way, and nothing was or will be sent.
 
         *prepared_under* is the policy the dispatch path holds for this exact proposal. The
         receipt describes the case as it was prepared and scanned, so a policy that changed after
@@ -2850,6 +2886,7 @@ class PrivacyCoordinator:
             type(result) is not SemanticEgressBlocked
             or result.privacy_proposal_id is None
             or result.receipt_id is not None
+            or result.transient
             or result.outcome
             not in {PrivacyOutcome.BLOCKED_BY_POLICY, PrivacyOutcome.APPROVAL_EXPIRED}
         ):
@@ -2928,7 +2965,7 @@ class PrivacyCoordinator:
         # A caller-owned retained-content fence may have changed while policy, audit, or
         # human-approval work awaited. Check before minting any provider authorization, then
         # check again immediately before the gateway call below to cover the remaining race.
-        if not await self._semantic_dispatch_is_current():
+        if (fence := await self._semantic_dispatch_is_current()) is not True:
             return SemanticEgressBlocked(
                 candidate.request_id,
                 PrivacyOutcome.BLOCKED_BY_POLICY,
@@ -2937,6 +2974,7 @@ class PrivacyCoordinator:
                 withheld_item_ids=minimized.withheld_item_ids,
                 redacted_span_count=minimized.redacted_span_count,
                 redacted_values=minimized.redacted_values,
+                transient=fence is None,
             )
 
         if binding.transport == "local_af_unix":
@@ -2964,7 +3002,7 @@ class PrivacyCoordinator:
                     )
                 ),
             )
-            if not await self._semantic_dispatch_is_current():
+            if (fence := await self._semantic_dispatch_is_current()) is not True:
                 return SemanticEgressBlocked(
                     candidate.request_id,
                     PrivacyOutcome.BLOCKED_BY_POLICY,
@@ -2973,6 +3011,7 @@ class PrivacyCoordinator:
                     withheld_item_ids=minimized.withheld_item_ids,
                     redacted_span_count=minimized.redacted_span_count,
                     redacted_values=minimized.redacted_values,
+                    transient=fence is None,
                 )
             try:
                 result = await self._gateway.dispatch_local_semantic(local_case, deadline)
@@ -3023,9 +3062,12 @@ class PrivacyCoordinator:
                 redacted_values=minimized.redacted_values,
             )
 
-        if authority_digest is None or not await self._repository_authority_is_current(
-            candidate.scope, authority_digest
-        ):
+        held = (
+            None
+            if authority_digest is None
+            else await self._repository_authority_is_current(candidate.scope, authority_digest)
+        )
+        if held is not True:
             return SemanticEgressBlocked(
                 candidate.request_id,
                 PrivacyOutcome.BLOCKED_BY_POLICY,
@@ -3034,6 +3076,9 @@ class PrivacyCoordinator:
                 withheld_item_ids=minimized.withheld_item_ids,
                 redacted_span_count=minimized.redacted_span_count,
                 redacted_values=minimized.redacted_values,
+                # No authority recorded for this external dispatch is definitive; only a read
+                # that raised is transient.
+                transient=authority_digest is not None and held is None,
             )
 
         minted: EgressAuthorization
@@ -3084,7 +3129,7 @@ class PrivacyCoordinator:
                 _included_input_roots(candidate, minimized.included_item_ids)
             ),
         )
-        if not await self._semantic_dispatch_is_current():
+        if (fence := await self._semantic_dispatch_is_current()) is not True:
             return SemanticEgressBlocked(
                 candidate.request_id,
                 PrivacyOutcome.BLOCKED_BY_POLICY,
@@ -3093,6 +3138,7 @@ class PrivacyCoordinator:
                 withheld_item_ids=minimized.withheld_item_ids,
                 redacted_span_count=minimized.redacted_span_count,
                 redacted_values=minimized.redacted_values,
+                transient=fence is None,
             )
         try:
             result = await self._gateway.dispatch_external_semantic(case, authorization, deadline)
