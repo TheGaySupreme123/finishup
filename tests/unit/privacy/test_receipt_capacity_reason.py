@@ -154,6 +154,11 @@ def test_the_schema_refuses_a_capacity_reason_on_any_other_refusal() -> None:
     with pytest.raises(Exception):  # noqa: B017 - the protocol validation error type
         validate_schema_instance("egress-receipt", "1.1.0", cast(JsonValue, body))
     body["safe_failure_reason"] = "policy_denied"
+    # The 1.1.0 document also admits 1.0.0 receipts; a 1.0.0 receipt never carries the reason.
+    body["schema_version"] = "1.0.0"
+    with pytest.raises(Exception):  # noqa: B017 - the protocol validation error type
+        validate_schema_instance("egress-receipt", "1.1.0", cast(JsonValue, body))
+    body["schema_version"] = "1.1.0"
     body["capacity_exceeded"] = {
         "scope": "excerpt_total",
         "unit": "tokens",

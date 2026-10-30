@@ -37,7 +37,13 @@ from finishup.cli.app import (
     _privacy_receipts_get,  # pyright: ignore[reportPrivateUsage]
     _privacy_receipts_list,  # pyright: ignore[reportPrivateUsage]
 )
-from finishup.domain.privacy import ConsentSource, PrivacyOutcome, PrivacyReason, ReceiptCounts
+from finishup.domain.privacy import (
+    ConsentSource,
+    PrivacyOutcome,
+    PrivacyReason,
+    ReceiptCapacity,
+    ReceiptCounts,
+)
 from finishup.domain.values import JsonObject, freeze_json
 from finishup.ports.control import ControlError
 from finishup.ports.privacy import NetworkEgressReceiptView, PrivacyReceiptPage, PrivacyReceiptView
@@ -427,6 +433,36 @@ async def test_refused_receipt_labels_classification_approvals_as_not_sent(
         "provider; its approved_categories and counts.approved_items are classification "
         "results, not data sent"
     ]
+
+
+@pytest.mark.parametrize("command", ["get", "list"])
+async def test_a_size_refusal_names_its_capacity_in_both_commands(
+    monkeypatch: pytest.MonkeyPatch,
+    command: str,
+) -> None:
+    """#1129: the human ``get`` and ``list`` both say a size refusal was size, not policy."""
+
+    refused = _refused_network_view()
+    assert isinstance(refused, NetworkEgressReceiptView)
+    view = NetworkEgressReceiptView(
+        "network_egress",
+        replace(
+            refused.receipt,
+            safe_failure_reason=PrivacyReason.POLICY_DENIED,
+            capacity_exceeded=ReceiptCapacity("excerpt_total", "bytes", 131_074, 131_072),
+        ),
+    )
+    _out, err = _terminal_streams(monkeypatch)
+    if command == "get":
+        _install(monkeypatch, _Client(_decoded_get(view)))
+        assert await _privacy_receipts_get(NETWORK_RECEIPT_ID, False) == 0
+    else:
+        _install(monkeypatch, _Client(_decoded_page(view, local_receipt_view())))
+        assert await _privacy_receipts_list(50, None, False) == 0
+    assert err[-1] == (
+        f"capacity_exceeded: privacy receipt {NETWORK_RECEIPT_ID} was refused for size, not by "
+        "a policy rule: 131074 bytes against the excerpt_total limit of 131072; nothing was sent"
+    )
 
 
 async def test_dispatched_and_json_receipts_carry_no_not_sent_label(
