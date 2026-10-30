@@ -3757,5 +3757,7 @@ stand-in (a baseline run, held-out data), the reviewer may ask once for that pro
 ratio (`provide_evidence`). It never asks for the hidden reference itself (#1024 stands), and a
 missing proxy is never an unmet requirement. The `agent-disclosures` row carries `proxy` beside a
 limit that already has one, so nothing is asked twice. The question rides the review packet, not
-the loop instruction (unchanged, 7,627 of 7,639 bytes), and a small channel that already carries
-the test-quality question skips it (#1173). It changes no finding state and no verdict.
+the loop instruction (unchanged, 7,627 of 7,639 bytes), and it never rides a channel no larger
+than the minimal policy's (#1173): there its bytes came out of the room the first read needs, so a
+closing review whose reviewer read once ended `case_capacity_exceeded`. There the receipt's
+`proxy: none chosen` line still stands. It changes no finding state and no verdict.

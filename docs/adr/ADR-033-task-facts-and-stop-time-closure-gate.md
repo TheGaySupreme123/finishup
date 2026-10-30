@@ -1656,4 +1656,6 @@ what was missing is one recorded decision.
 - **The receipt line.** The limitations section names each disclosed verification limit without
   a proxy decision as `proxy: none chosen`, and each with one as recorded: obligation ids only,
   never the rationale. A receipt with no disclosed verification limit keeps its exact bytes. The
-  MCP receipt summary points at the line with fixed wording. Same on Codex, Claude Code and Cursor.
+  MCP receipt summary points at the line with fixed wording, and the CLI's human rendering of a
+  JSON receipt repeats the sentences, as it does the review-mode ones (markdown and text carry the
+  whole section). Same on Codex, Claude Code and Cursor.

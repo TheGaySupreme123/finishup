@@ -9626,13 +9626,14 @@ def _build_semantic_case_once(
         and not (small_channel and (test_manifests or linked_verification)),
         test_manifests=test_manifests,
         linked_verification=linked_verification,
-        # #1246: only for a limit whose obligation row this packet carries; a small channel that
-        # already carries the test-quality question has no room for it either (#1173).
-        proxy=any(
+        # #1246: only for a limit whose obligation row this packet carries, and never on a channel
+        # no larger than the minimal policy's: there its 359 bytes came out of the room the first
+        # read needs, so a closing review that read once ended case_capacity_exceeded (#1173).
+        proxy=not small_channel
+        and any(
             f"obligation-{ref}" in carried_item_ids
             for ref in verification_limits_without_proxy(frozen_case.projection)[0]
-        )
-        and not (small_channel and (test_manifests or linked_verification)),
+        ),
     ) + ((DECLARED_TEST_QUESTION,) if offered_tests else ())
     # tb4n5: which excerpts supply the follow-up beyond the first packet, so the provider-bound
     # manifest recomputes ``supplied`` from the ones admission kept. Bound into the digest only for

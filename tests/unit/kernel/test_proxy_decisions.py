@@ -8,12 +8,18 @@ ratio, or why none was feasible), and the receipt says `proxy: none chosen` when
 
 from __future__ import annotations
 
+from dataclasses import replace
+from types import MappingProxyType, SimpleNamespace
 from typing import Any, cast
 
+from builders.dialogue import limit_decision
 from builders.observed_runs import ObservedLedger
+from builders.policy_cases import evt, make_case, obl, obligation_record
 from finishup.application.semantic_case import (
     PROXY_REVIEW_QUESTION,
+    SMALL_REVIEW_CHANNEL_BYTES,
     _obligation_disclosures,  # pyright: ignore[reportPrivateUsage]
+    build_semantic_case,
     review_question_set,
 )
 from finishup.domain.events import (
@@ -23,8 +29,10 @@ from finishup.domain.events import (
     ObligationStatus,
     PlanPublishedPayload,
 )
+from finishup.domain.privacy import ReviewContextProfile, ReviewSelectionPolicy
 from finishup.domain.receipts import (
     PolicyVersionEntry,
+    ReceiptDocument,
     ReceiptRedactionProfile,
     ReceiptSectionKey,
     ReceiptVersionSlice,
@@ -43,7 +51,11 @@ from finishup.domain.values import (
     timestamp_from_string,
 )
 from finishup.kernel.closure_readiness import closure_readiness_facts, derive_closure_readiness
-from finishup.kernel.deterministic_checks import CaseAvailabilityFacts, CaseGap
+from finishup.kernel.deterministic_checks import (
+    CaseAvailabilityFacts,
+    CaseGap,
+    DeterministicCase,
+)
 from finishup.kernel.receipt_builder import (
     ReceiptBuildContext,
     ReceiptInclude,
@@ -222,11 +234,9 @@ def _versions() -> ReceiptVersionSlice:
     )
 
 
-def test_every_receipt_format_names_the_limit_without_a_proxy() -> None:
-    ledger = _ledger()
-    _decide(ledger, f"finishup-verification-limit:{_LIMIT}")
+def _receipt(ledger: ObservedLedger) -> ReceiptDocument:
     projection = replay(ledger.prefix)
-    receipt = build_receipt(
+    return build_receipt(
         ReceiptBuildContext(
             projection=projection,
             subject_frontier=Frontier(projection.frontier, projection.head_digest),
@@ -245,6 +255,12 @@ def test_every_receipt_format_names_the_limit_without_a_proxy() -> None:
         ReceiptRedactionProfile.FULL_LOCAL,
         ReceiptInclude.FULL,
     )
+
+
+def test_every_receipt_format_names_the_limit_without_a_proxy() -> None:
+    ledger = _ledger()
+    _decide(ledger, f"finishup-verification-limit:{_LIMIT}")
+    receipt = _receipt(ledger)
     limitations = next(
         section.body
         for section in receipt.sections
@@ -257,6 +273,81 @@ def test_every_receipt_format_names_the_limit_without_a_proxy() -> None:
     assert line in render_receipt_human(receipt, markdown=True)
     assert line in render_receipt_human(receipt, markdown=False)
     assert _receipt_proxy_clause({"document": wire}).startswith("proxy: none chosen")
+
+
+def test_the_cli_and_the_mcp_summary_name_the_proxy_line_of_every_receipt_result() -> None:
+    """The CLI's human rendering of a JSON receipt names the proxy sentences once, as it names
+    the review-mode and coordinator-failure sentences; markdown and text carry them in
+    ``human_text``. The MCP summary points at a limit without one (#1246)."""
+
+    from finishup.application.receipt import (
+        _internal_result,  # pyright: ignore[reportPrivateUsage]
+    )
+    from finishup.cli.render import render_human_receipt
+    from finishup.mcp.summaries import summary_for_receipt
+    from finishup.protocol.models import CoverageModel, ReceiptFormat, ReceiptSuccessModel
+
+    ledger = _ledger()
+    _decide(ledger, f"finishup-verification-limit:{_LIMIT}\nfinishup-verification-limit:{_OTHER}")
+    _decide(ledger, f"finishup-proxy:{_OTHER}", rationale="Baseline 6.3 s; ours 9.1 s (1.44x).")
+    receipt = _receipt(ledger)
+    none_chosen = (
+        f"Disclosed verification limit {_LIMIT}: proxy: none chosen (no finishup-proxy decision "
+        "records a proxy measurement or why none was feasible)."
+    )
+    recorded = (
+        "A finishup-proxy decision records the proxy measurement, or why none was feasible, for "
+        f"disclosed verification limit {_OTHER}."
+    )
+    for output_format in (ReceiptFormat.JSON, ReceiptFormat.MARKDOWN, ReceiptFormat.TEXT):
+        request = SimpleNamespace(
+            format=output_format,
+            request_id="req_00000000-0000-4000-8000-000000000001",
+            redaction_profile=ReceiptRedactionProfile.FULL_LOCAL,
+            include=ReceiptInclude.FULL,
+            writer_id=None,
+        )
+        result = _internal_result(
+            cast(Any, request),
+            receipt,
+            cast(Any, SimpleNamespace(object_id="obj_00000000-0000-4000-8000-000000000001")),
+            "sha256:" + "3" * 64,
+            Frontier(receipt.subject_frontier.sequence, receipt.subject_frontier.head_digest),
+        )
+        envelope = result.as_json()
+        fields: dict[str, Any] = {
+            **envelope,
+            "coverage": CoverageModel.model_validate(envelope["coverage"]),
+        }
+        cli = render_human_receipt(ReceiptSuccessModel.model_construct(**fields))
+        assert cli.count(none_chosen) == 1, output_format
+        assert cli.count(recorded) == 1, output_format
+        assert "6.3" not in cli and "Baseline" not in cli
+        summary = summary_for_receipt(envelope)
+        if output_format is ReceiptFormat.JSON:
+            # Fixed wording only: the summary never carries the ids or the rationale.
+            assert (
+                "proxy: none chosen for a disclosed verification limit (limitations section);"
+                in summary
+            )
+            # A review-mode tail (ADR-049) that already holds the sentences shows them once.
+            document = cast(dict[str, Any], envelope["document"])
+            sections = [
+                {
+                    **row,
+                    "body": "The applicable check ran with AI-powered review requested. "
+                    + row["body"],
+                }
+                if row["key"] == "limitations_and_coverage"
+                else row
+                for row in document["sections"]
+            ]
+            switched_fields: dict[str, Any] = {
+                **fields,
+                "document": {**document, "sections": sections},
+            }
+            switched = ReceiptSuccessModel.model_construct(**switched_fields)
+            assert render_human_receipt(switched).count(none_chosen) == 1
 
 
 def test_the_reviewer_question_rides_only_a_closing_review_with_an_unproxied_limit() -> None:
@@ -280,3 +371,68 @@ def test_the_disclosures_row_carries_the_proxy_beside_its_limit() -> None:
     assert str(_OTHER) not in rows
     hidden = _obligation_disclosures(projection, frozenset())
     assert hidden[str(_LIMIT)]["proxy"] is True
+
+
+def _closing_case(case: DeterministicCase, *, final: bool = True, ceiling: int | None = None):
+    return build_semantic_case(
+        case_id="cas_10000000-0000-4000-8000-000000000001",
+        frozen_case=case,
+        dependency_digest="sha256:" + "b" * 64,
+        findings=(),
+        review_context_profile=ReviewContextProfile.GOAL_AWARE,
+        review_selection=ReviewSelectionPolicy.for_profile(ReviewContextProfile.GOAL_AWARE),
+        policy_id="pvy_10000000-0000-4000-8000-000000000001",
+        policy_version="1",
+        final_review=final,
+        prepared_byte_ceiling=ceiling,
+    )
+
+
+def test_the_built_case_asks_only_off_the_small_channel_for_a_carried_unproxied_limit() -> None:
+    """The real packet gating, not only the question-set flag.
+
+    A closing review whose packet carries an obligation row with a disclosed verification limit
+    and no proxy decision asks the proxy question; a routine review or a recorded proxy does not.
+    On a channel no larger than the minimal policy's the packet is planned without room for it:
+    there the 359 bytes left a read no room, so a closing review whose reviewer read once ended
+    ``case_capacity_exceeded`` (#1173). It never rides there, even with the obligation carried.
+    """
+
+    obligation = obligation_record(
+        ObligationPublishedPayload(
+            obl(1),
+            "Deduplicate the corpus within twice the reference warmup",
+            "Observed run",
+            ObligationStatus.OPEN,
+        ),
+        2,
+    )
+    base = make_case(obligations={obl(1): obligation}, extra_refs=(obl(1),))
+    limited = replace(
+        base,
+        projection=replace(
+            base.projection, decisions=MappingProxyType({evt(20): limit_decision(20, obl(1))})
+        ),
+    )
+    row = f"obligation-{obl(1)}"
+    closing = _closing_case(limited)
+    assert row in {item.item_id for item in closing.items}
+    assert PROXY_REVIEW_QUESTION in closing.question_set
+    assert PROXY_REVIEW_QUESTION not in _closing_case(limited, final=False).question_set
+    small = _closing_case(limited, ceiling=SMALL_REVIEW_CHANNEL_BYTES)
+    assert small.question_set[0].startswith("Review phase: final.")
+    assert row in {item.item_id for item in small.items}
+    assert PROXY_REVIEW_QUESTION not in small.question_set
+    proxied = replace(
+        limited,
+        projection=replace(
+            limited.projection,
+            decisions=MappingProxyType(
+                {
+                    **limited.projection.decisions,
+                    evt(21): limit_decision(21, obl(1), kind="finishup-proxy"),
+                }
+            ),
+        ),
+    )
+    assert PROXY_REVIEW_QUESTION not in _closing_case(proxied).question_set

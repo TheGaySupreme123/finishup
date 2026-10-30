@@ -8595,11 +8595,13 @@ and superseding the decision withdraws it. A statement line `finishup-proxy:<obl
 cannot run against a hidden reference: the stand-in it built and the measured ratio, or why none
 was feasible, in the rationale. It is not a disclosure kind: it adds no readiness code and nothing
 asks for it at check time. The receipt's limitations section names each disclosed verification
-limit without one as `proxy: none chosen` (obligation ids only, never the rationale), and the MCP
-receipt summary points at it with fixed wording. A closing review whose packet carries such an
-obligation gets `PROXY_REVIEW_QUESTION`, and the `agent-disclosures` row carries `proxy` beside a
-limit that has one; the reviewer may ask once for an obtainable proxy, never for the hidden
-reference (#1024). `finding_premise_disputed` (D7a) discloses
+limit without one as `proxy: none chosen` (obligation ids only, never the rationale), the MCP
+receipt summary points at it with fixed wording, and the CLI's human rendering of a JSON receipt
+repeats the sentences (`cli.render._receipt_proxy_lines`). A closing review whose packet carries
+such an obligation gets `PROXY_REVIEW_QUESTION`, except on a channel no larger than the minimal
+policy's (`SMALL_REVIEW_CHANNEL_BYTES`, #1173), and the `agent-disclosures` row carries `proxy`
+beside a limit that has one; the reviewer may ask once for an obtainable proxy, never for the
+hidden reference (#1024). `finding_premise_disputed` (D7a) discloses
 acknowledged findings the review says the task requires; the Stop gate asks about them once. The
 optional `acknowledged_obligation_count` counts acknowledged obligations without truncation;
 `open_obligation_count` never includes them. The Stop gate challenges each acknowledged obligation
@@ -10645,7 +10647,8 @@ Names shared by the kernel, `respond`, `check`, status and the receipt:
   and `answer_bound`. Packet: one `agent-disclosures` row (`AGENT_DISCLOSURES_ITEM_ID`; section
   `decision`, first in it; category `obligation_text`; content `yoetz.agent-disclosures/1` with
   `kind: agent_disclosures`, `standing: agent_assertion`, `disclosures` per obligation id with the
-  `acknowledged_not_done` / `verification_limit` / `assumption` / `already_disclosed` keys, and
+  `acknowledged_not_done` / `verification_limit` / `assumption` / `already_disclosed` keys, plus
+  `proxy` beside a `verification_limit` that has a `finishup-proxy` decision (#1246), and
   `not_listed_count`) listing what the agent disclosed for each obligation the packet carries
   (built after the 32-row obligation cap, within the 16 KiB per-item bound, so all 32 fit; a
   decision row it displaces from the 16 decision slots is a `not_selected` omission) (n7 RC7, issue
