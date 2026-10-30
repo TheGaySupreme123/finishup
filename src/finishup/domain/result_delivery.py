@@ -29,6 +29,22 @@ def mcp_delivery_bytes(wire: Mapping[str, JsonValue], *, text: str | None = None
     return channel + HOST_FRAMING_BYTES
 
 
+def delivery_page_text(wire: Mapping[str, JsonValue]) -> str:
+    """A delivery page's text channel: its canonical JSON with ``next_cursor`` moved to the front.
+
+    The handle is what an agent copies, so it leads the text as it leads ``structuredContent``
+    (#1244); canonical key order alone put it after the items, thousands of bytes in. Only that
+    one member moves: the text parses to exactly the structured result and has the same length
+    as the canonical copy, so every byte budget measured on the canonical copy still holds.
+    """
+
+    rest = {key: value for key, value in wire.items() if key != "next_cursor"}
+    head = b'{"next_cursor":' + canonical_encode(wire.get("next_cursor"))
+    tail = canonical_encode(rest)
+    encoded = head + (b"}" if tail == b"{}" else b"," + tail[1:])
+    return encoded.decode("utf-8")
+
+
 def reassemble_delivery(pages: Sequence[Mapping[str, Any]]) -> dict[str, JsonValue]:
     """Reconstruct typed containers and verify all scalar fragments and the source digest.
 

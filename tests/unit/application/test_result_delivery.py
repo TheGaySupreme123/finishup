@@ -14,6 +14,8 @@ from finishup.application.result_delivery import (
     DeliveryPageStore,
     decode_handle,
     delivery_items,
+    handle_check,
+    invalid_cursor,
     mcp_delivery_bytes,
     page_result,
 )
@@ -321,6 +323,8 @@ def test_handle_is_short_canonical_and_its_page_set_bound_to_session_and_writer(
         with pytest.raises(PublicOperationError) as refused:
             decode_handle(bad)
         assert refused.value.safe_details["reason_code"] == "delivery_cursor_invalid"
+    refusal = invalid_cursor()
+    assert "copy next_cursor exactly" in refusal.message
     store = DeliveryPageStore(max_sets=2)
     entry = DeliveryPageSet(
         _SESSION, _WRITER, "agent_context", "check", {}, source, "sha256:" + "0" * 64, None, 10
@@ -332,6 +336,86 @@ def test_handle_is_short_canonical_and_its_page_set_bound_to_session_and_writer(
     store.put("a", entry)
     store.put("b", entry)
     assert len(store) == 2 and store.get(handle.set_key, _SESSION, _WRITER) is None
+
+
+def _edits(cursor: str) -> dict[str, str]:
+    """One plausible typo or deliberate edit per handle field, each still well formed."""
+
+    body, check = cursor.rsplit(".", 1)
+    kind_id, frontier, position, digest, *selector = body.split(".")
+
+    def bump(number: str) -> str:
+        return str(int(number) + 1)
+
+    def flip(text: str, index: int) -> str:
+        swapped = "0" if text[index] != "0" else "1"
+        return text[:index] + swapped + text[index + 1 :]
+
+    def join(*parts: str) -> str:
+        return ".".join([*parts, *selector, check])
+
+    edits = {
+        "offset": join(kind_id, frontier, bump(position), digest),
+        "offset_back": join(kind_id, frontier, str(max(1, int(position) - 1)), digest),
+        "frontier": join(kind_id, bump(frontier), position, digest),
+        "digest": join(kind_id, frontier, position, flip(digest, 3)),
+        "source_id": join(flip(kind_id, 5), frontier, position, digest),
+        "check": body + "." + flip(check, 0),
+    }
+    if selector:
+        edits["selector"] = ".".join([kind_id, frontier, position, digest, "x", check])
+    else:
+        edits["selector"] = ".".join([kind_id, frontier, position, digest, "b", check])
+    return {name: edited for name, edited in edits.items() if edited != cursor}
+
+
+def test_an_edited_handle_field_is_refused_never_served_from_another_offset(
+    many_pages: list[dict[str, Any]],
+) -> None:
+    """#1244: every handle field is under its check; ``.55.`` edited to ``.56.`` is refused.
+
+    Before the check segment an edited offset was served from the edited item (skipping one),
+    and an edited frontier or digest prefix silently rebuilt or restarted the set.
+    """
+    for page in many_pages[:-1]:
+        cursor = cast(str, page["next_cursor"])
+        assert len(cursor) <= 64
+        handle = decode_handle(cursor)
+        assert handle.position == page["offset"] + len(page["items"])
+        edits = _edits(cursor)
+        assert {"offset", "frontier", "digest", "source_id", "selector", "check"} <= set(edits)
+        for name, edited in edits.items():
+            with pytest.raises(PublicOperationError) as refused:
+                decode_handle(edited)
+            assert refused.value.safe_details["reason_code"] == "delivery_cursor_invalid", name
+    # A deliberately recomputed check is accepted: it is typo detection, not authentication,
+    # and only names a read the caller's own session and writer may already make.
+    cursor = cast(str, many_pages[0]["next_cursor"])
+    body = _edits(cursor)["offset"].rsplit(".", 1)[0]
+    assert decode_handle(f"{body}.{handle_check(body)}").position == (
+        decode_handle(cursor).position + 1
+    )
+
+
+@pytest.mark.parametrize("host", ["codex", "claude", "cursor", "generic"])
+def test_the_text_channel_leads_with_the_continuation_handle(
+    host: McpHostProfile, many_pages: list[dict[str, Any]]
+) -> None:
+    """#1244: the handle an agent copies leads the text, not ~7,700 bytes in after the items."""
+
+    for page in (many_pages[0], many_pages[-1]):
+        result = result_from_public_model(CheckResultModel.model_validate(page), host_profile=host)
+        structured = cast(dict[str, Any], result.structuredContent)
+        assert next(iter(structured)) == "next_cursor"
+        (block,) = result.content
+        text = cast(Any, block).text
+        assert text.startswith('{"next_cursor":' + json.dumps(page["next_cursor"]))
+        # Only that member moves: the text is the structured result, at the canonical length.
+        assert json.loads(text) == structured
+        assert len(text.encode()) == len(canonical_encode(cast(Any, structured)))
+        assert mcp_delivery_bytes(structured, text=text) <= HOST_RESULT_BUDGET_BYTES
+        if page["next_cursor"] is not None:
+            assert text.index(page["next_cursor"]) < 64
 
 
 def test_status_handle_carries_a_rebuildable_selector_and_preserves_inventory_cursor() -> None:
@@ -1935,12 +2019,37 @@ async def test_a_mistyped_status_handle_is_invalid_not_a_retryable_read_failure(
         valid = base64.urlsafe_b64encode(bytes(raw)).decode("ascii").rstrip("=")
         raw[6] = (raw[6] & 0x0F) | 0x10  # a version 1 UUID: no request id has one
         non_v4 = base64.urlsafe_b64encode(bytes(raw)).decode("ascii").rstrip("=")
-        assert await agent.refusal(f"s{non_v4}.{frontier}.1.0123abcd.cf20") == (
-            "delivery_cursor_invalid"
-        )
-        assert await agent.refusal(f"s{valid}.{frontier}.1.0123abcd.cf200") == (
-            "delivery_cursor_invalid"
-        )
+        # Sealed with a valid check, so the rebuild itself (not the check) refuses them.
+        for body in (
+            f"s{non_v4}.{frontier}.1.0123abcd.cf20",
+            f"s{valid}.{frontier}.1.0123abcd.cf200",
+        ):
+            assert await agent.refusal(f"{body}.{handle_check(body)}") == (
+                "delivery_cursor_invalid"
+            )
+    finally:
+        await agent.daemon.close()
+
+
+@pytest.mark.anyio
+async def test_an_edited_handle_is_refused_by_the_service_and_the_exact_one_still_serves() -> None:
+    """#1244: offset, frontier and digest edits are refused whether the set is kept or rebuilt."""
+    from builders.status_render_cost import build_codex_status_ledger
+
+    agent = _Agent(await build_codex_status_ledger())
+    await agent.daemon.start()
+    try:
+        first = await agent.check()
+        handle = cast(str, first["next_cursor"])
+        edits = _edits(handle)
+        for kept in (True, False):
+            if not kept:
+                agent.ledger.app.delivery_pages.clear()  # as after a service restart
+            for name in ("offset", "frontier", "digest"):
+                assert await agent.refusal(edits[name]) == "delivery_cursor_invalid", name
+        page = await agent.status(view="compact", delivery_cursor=handle)
+        assert page["ok"] is True and "page_set_restarted" not in page
+        assert page["offset"] == len(first["items"])
     finally:
         await agent.daemon.close()
 

@@ -404,11 +404,11 @@ on, and the changed content digest refused the page. Status pages failed after t
 publish: `check_in_flight` and `leaf_authorship` are read live on a head read and differ on the
 pinned re-read. 42% of default status, check and receipt replies were paged at all.
 
-**Handles.** `next_cursor` is now a short handle, about 40–50 characters, and leads the page (it is
+**Handles.** `next_cursor` is now a short handle, about 45–60 characters, and leads the page (it is
 the page model's first field, which Codex shows first):
 
 ```text
-<kind><source request id, 22 base64url chars>.<frontier>.<offset>.<8 hex digest>[.<selector>]
+<kind><source request id, 22 base64url chars>.<frontier>.<offset>.<8 hex digest>[.<selector>].<check>
 ```
 
 `kind` is `c` (check), `r` (receipt) or `s` (status). The source id is the original request's UUID,
@@ -418,6 +418,25 @@ format, include and redaction profile, or a status read's view, detail and limit
 read that named a filter, an inventory cursor or a selector id. A handle carries no secret and no
 signature. Every read it names is one its own session and writer may already make, the kept page
 set is bound to that session and writer, and every continuation is disclosed again.
+
+**Handle check (2026-10-30, #1244 follow-up).** As first shipped, an edited offset (`.55.` to
+`.56.`) was served silently from the edited item and skipped one, and an edited frontier or digest
+prefix silently rebuilt or restarted the set; the signed cursor it replaced refused any edit. A
+handle now ends in a check segment, `.<6 base64url>`: the first 36 bits of SHA-256 over a domain
+tag (`finishup.delivery-handle.check.v1` and a NUL byte) and every character before it. A handle
+whose check does not match is `delivery_cursor_invalid`, whose message tells the agent to copy
+`next_cursor` exactly; it is never served or rebuilt. The check is unkeyed on purpose. It detects
+typos and edits; it does not authenticate. A key minted per service run would expire every handle
+on restart, which D12 rules out (a restart rebuilds the set), and a key kept across restarts would
+be a new persisted secret guarding nothing: every read a handle names is one its session and writer
+may already make, and each continuation is disclosed again. A caller that recomputes the check
+gains only such a read. The handle grows by 7 characters, to about 45–60 (at most 80 for a 20-digit
+frontier, a 10-digit offset and an 8-character selector, under the 96-character cap).
+
+Delivery pages now lead with the handle in the MCP text copy too. Canonical key order put
+`next_cursor` after the items, about 7,700 bytes into a 9,200-byte page, while agents copy it from
+the text. The text is the canonical JSON with that one member moved to the front, so it parses to
+the structured result and keeps the canonical copy's length and budget.
 
 **Kept page sets.** The service keeps each delivered page set (the projected source the pages are
 cut from, its digest, sink and selector) in process memory only: never on disk, never in the
