@@ -13127,12 +13127,19 @@ only with `view=compact`, the held session and writer and a fresh request ID, wi
 selectors, filter, frontier or inventory cursor.
 
 Since #1244 (ADR-043 amendment of 2026-10-29) `next_cursor` is a short handle of at most 96
-characters (about 40–50 in practice) and the page's first field:
-`<kind><source request id>.<frontier>.<offset>.<8 hex digest>[.<selector>]`, where `kind` is `c`
-(check), `r` (receipt) or `s` (status), the source id is the original request's UUID in 22
-base64url characters, and the selector segment is `b` (brief check), a receipt's format, include
-and redaction profile, a status read's view, detail and limit, or `x` (a status read a handle cannot
-rebuild). Handles carry no secret or signature. The service keeps each delivered page set in
+characters (about 45–60 in practice) and the page's first field, in `structuredContent` and in the
+MCP text copy alike:
+`<kind><source request id>.<frontier>.<offset>.<8 hex digest>[.<selector>].<check>`, where `kind`
+is `c` (check), `r` (receipt) or `s` (status), the source id is the original request's UUID in 22
+base64url characters, the selector segment is `b` (brief check), a receipt's format, include and
+redaction profile, a status read's view, detail and limit, or `x` (a status read a handle cannot
+rebuild), and `check` is 6 base64url characters: the first 36 bits of
+SHA-256(`finishup.delivery-handle.check.v1` NUL ‖ every character before the last `.`). A handle
+whose check does not match (an edited offset, frontier, digest prefix, id or selector, or any typo)
+is `delivery_cursor_invalid` and is never served or rebuilt. The check is unkeyed typo and edit
+detection, not authentication, so a restarted service still rebuilds a handle. Handles carry no
+secret or signature. A delivery page's MCP text is its canonical JSON with only `next_cursor` moved
+to the front: it parses to the structured result and has the canonical copy's length. The service keeps each delivered page set in
 process memory only (never on disk or in the ledger), bound to its session and writer, at most 256
 sets and 64 MiB. A continuation reads and discloses its source again; then it is refused only for a
 `redaction_recorded` after the set's frontier (`delivery_redaction_recorded`) or a changed sink or
