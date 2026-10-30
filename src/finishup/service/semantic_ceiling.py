@@ -49,6 +49,7 @@ from finishup.domain.privacy import (
 )
 from finishup.domain.reviewer_context import (
     MAX_SIZED_EXCHANGE_BYTES,
+    REVIEWER_FRAME_BYTES,
     UNSIZED_EXCHANGE_BYTES,
     ReviewerContextWindow,
     ReviewerExchangeBudget,
@@ -79,16 +80,6 @@ MAX_CEILING_PLANNING_ROUNDS: Final = 4
 # does not repeat the same budget.
 _ROUND_MARGIN_BYTES: Final = 2_048
 CEILING_PLANNING_GAP: Final = "content_unselected"
-
-
-# #1118: every byte of the reviewer conversation counts against the exchange's byte limit: the loop
-# instruction, the packet (sent as a JSON string, so escaping grows it, up to twice for quoted code),
-# the read catalog, the reviewer's replies and the read results. The first exchange is measured
-# exactly, as ``reviewer_first_exchange`` renders it, and planned below the limit less this frame,
-# which keeps room for the reviewer's read actions, their results and a format-repair notice. Each
-# result is then fitted to what the exact next exchange leaves (``run_reviewer``'s
-# ``exchange_budget``), so no later exchange outgrows the limit either.
-REVIEWER_FRAME_BYTES: Final = 8192
 
 
 def reviewer_route_window(binding: ProviderBinding | None) -> ReviewerContextWindow | None:

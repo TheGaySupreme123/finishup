@@ -351,6 +351,9 @@ _LOG_FIELDS: Final = frozenset(
         "semantic_excerpt_total_limit_bytes",
         # #1230: excerpts a disclosure-time fit left out (integers only).
         "semantic_excerpts_unselected_at_disclosure",
+        # #1242: the first exchange could not keep the frame later exchanges grow into.
+        "semantic_first_exchange_frame_unkept",
+        "semantic_first_exchange_frame_unplanned",
         "semantic_check_change_parts_selected",
         "semantic_edit_evidence_in_case",
         # Issue #1102: task-input pilot counters (integers only, never a path).
@@ -532,6 +535,9 @@ _INTEGER_FIELDS: Final = frozenset(
         "semantic_excerpt_total_limit_bytes",
         # #1230: excerpts a disclosure-time fit left out (integers only).
         "semantic_excerpts_unselected_at_disclosure",
+        # #1242: the first exchange could not keep the frame later exchanges grow into.
+        "semantic_first_exchange_frame_unkept",
+        "semantic_first_exchange_frame_unplanned",
         "semantic_check_change_parts_selected",
         "semantic_edit_evidence_in_case",
         # Issue #1102: task-input pilot counters (integers only, never a path).

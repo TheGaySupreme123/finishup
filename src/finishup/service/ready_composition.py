@@ -3600,7 +3600,9 @@ def _map_egress_to_final(
                 request_id=result.request_id,
             )
             mapped = FinalSemanticEvaluation(
-                SemanticStatus.FAILED, SemanticReason.CASE_CAPACITY_EXCEEDED
+                SemanticStatus.FAILED,
+                SemanticReason.CASE_CAPACITY_EXCEEDED,
+                attempt_token_usage=result.token_usage,
             )
         return replace(
             mapped,
@@ -5886,7 +5888,10 @@ def _privacy_gated_semantic_evaluator(
                 if planned is None or not planned[4]:
                     declared_tests = ()
                     planned = await plan(())
-                semantic_case, approved_case, planned_selection, ceiling_rounds, _fits = planned
+                # #1242: whether planning kept the frame is recorded, never discarded. Reads stay
+                # offered: at small channel limits the measured room after the first exchange
+                # still serves one, and a read with no room is asked for the verdict instead.
+                semantic_case, approved_case, planned_selection, ceiling_rounds, fits = planned
             except SemanticCaseCapacityExceeded as exc:
                 # Same pre-dispatch contract as an envelope that cannot be reduced: local
                 # findings stay recorded, no job is created, and the caller sees a capacity
@@ -5945,6 +5950,7 @@ def _privacy_gated_semantic_evaluator(
                     ),
                     "semantic_excerpt_byte_limit": planned_selection.max_total_excerpt_bytes,
                     "semantic_excerpt_ceiling_rounds": ceiling_rounds,
+                    "semantic_first_exchange_frame_unplanned": int(not fits),
                     "semantic_check_change_parts_selected": sum(
                         item.excerpt_item_id.startswith(CHECK_TIME_CHANGE_ITEM_PREFIX)
                         for item in semantic_case.packet.targeted_excerpts

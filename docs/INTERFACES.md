@@ -10288,8 +10288,12 @@ follow-up loop is deleted.
 - Controller: `application.reviewer_loop.ReviewerLoop(model, broker, *, instruction, packet,
   deadline, history_admissible, final_reserve_seconds=30.0, clock=time.monotonic,
   resume_reserved=False).run() -> ReviewOutcome(status,
-  judgment, reason, history, model_turns, citable_refs, text_by_ref, capacity)`; the citation fields
-  hold the union for `validate_semantic_judgment`. `ReviewerModel.complete(history, schema, *,
+  judgment, reason, history, model_turns, citable_refs, text_by_ref, capacity, read_not_served)`;
+  the citation fields hold the union for `validate_semantic_judgment`. A read whose action leaves
+  its exchange less than an empty result needs but still fits beside the notices
+  (`ReadExchangeFull.verdict_fits`) is not served: the loop appends `READ_NOT_SERVED`, enters the
+  final phase and sets `read_not_served`; only an action that does not fit even that ends
+  `case_capacity_exceeded` (#1242). `ReviewerModel.complete(history, schema, *,
   deadline) -> JsonValue` is the only model interface; a facade raises `ReviewerModelError(code)`.
   Incomplete reasons: `format_invalid`, `read_limit`, `case_capacity_exceeded`, `deadline`, `turn_limit`,
   `authorization_changed`, `interrupted`, `uncaptured_step`, `step_refused`, or the facade's code.
@@ -10317,11 +10321,15 @@ follow-up loop is deleted.
   `(category, bytes, input_root)` tuples. `history_roots` lists every outside root the conversation
   holds bytes from. With `exchange_room` (#1118), `reads_allowed()` also needs `MIN_ROOM +
   READ_ACTION_ROOM` (2 KiB) of it; `execute` subtracts the `reply` turn's bytes and raises
-  `ReadExchangeFull(required, available)` before reserving when less than `MIN_ROOM` is left.
-  The loop ends `case_capacity_exceeded`, carrying those minimum required and available exchange
-  bytes through `SemanticEgressBlocked.capacity` to the existing capacity outcome. It never
-  becomes `response_schema_invalid`; a read after the count cap takes the one format repair
-  (#1173) and, after that repair, ends `read_limit`.
+  `ReadExchangeFull(required, available, verdict_fits)` before reserving when less than
+  `MIN_ROOM` is left. With `verdict_fits` (the read's action still fits beside the notices every
+  read keeps room for, #1242) the loop does not serve the read: the same exchange carries
+  `READ_NOT_SERVED` and the final phase runs, and the review record ends
+  `read_not_served_no_room` beside its final judgment. Otherwise the loop ends
+  `case_capacity_exceeded`, carrying those minimum required and available exchange bytes
+  through `SemanticEgressBlocked.capacity` to the existing capacity outcome. Neither becomes
+  `response_schema_invalid`; a read after the count cap takes the one format repair (#1173) and,
+  after that repair, ends `read_limit`.
   A result over its room keeps the longest head that fits, measured.
 - Steps: `ports.semantic.ReviewStepStore.reserve(kind, ordinal, selector)`, `capture(kind, ordinal,
   result)`, `usage() -> (steps, uncaptured)`; `ReviewStepRefused` on a repeated step or a lost lease.
@@ -11181,6 +11189,11 @@ plan. Names and contracts:
   receipt remains `blocked_by_policy/policy_denied` with zero final bytes; #1129 owns its new
   schema reason. Check/job status and work-receipt gaps use the existing capacity vocabulary
   across CLI, MCP, hooks and TUI for Codex, Claude Code and Cursor.
+- Unjudged review usage (#1242): `SemanticEgressBlocked.token_usage` carries the provider's
+  `RuntimeTokenUsage` for the exchange a review conversation had already sent when an unsent read
+  continuation ended it over capacity. `_map_egress_to_final` copies it to
+  `FinalSemanticEvaluation.attempt_token_usage`, which only the durable attempt row reads
+  (`semantic_attempts._attempt_token_usage`); the check carries no provenance for it.
 - TUI: `PrivacyPosture.recipe_outdated` is true when the approved selection is an earlier version
   of its recipe. The privacy screen then offers the newer recipe instead of saying "already on the
   recommended privacy policy".
@@ -12459,7 +12472,10 @@ as `outcome_unknown` and is never resent. For it, `operation_max_retries` is `0`
   store's keyed commitment) for a file read, else the case item id; `disclosure` is the privacy
   receipt of the exchange that first carried the result, recorded when that exchange was sent
   (`None` if no sent exchange did); `ended` is the loop's closed stop reason, `None` for a final
-  judgment.
+  judgment. `READ_NOT_SERVED_ENDING` (`read_not_served_no_room`) is a final judgment given without
+  a read the reviewer asked for, whose own action left its exchange no room for a result (#1242);
+  `render_reviewer_lines` says "a requested read was not served (no room left), judged without it"
+  for it instead of "ended early".
 - Receipts: `kernel.receipt_builder` appends `REVIEWER_ADVISORY_LABEL` plus the applicable check's
   recorded `review_summary` (a succeeded semantic review only; at most 8,192 characters, marked
   where cut) as the last item of the `limitations_and_coverage` section under `full_local`, and
