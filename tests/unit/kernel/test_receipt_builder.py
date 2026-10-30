@@ -3098,3 +3098,136 @@ def test_unanswered_correctness_advice_is_visible_and_never_blocks(
         else:
             assert "World AABBs" not in text
             assert "withheld" in text
+
+
+def _current_versions() -> ReceiptVersionSlice:
+    return replace(
+        _versions(), schema_versions=(SchemaVersionEntry("receipts/receipt-document", "1.3.0"),)
+    )
+
+
+def _build_current(context: ReceiptBuildContext) -> ReceiptDocument:
+    return build_receipt(
+        context,
+        receipt_id("rcp_00000000-0000-4000-8000-000000000001"),
+        task_id("tsk_00000000-0000-4000-8000-000000000001"),
+        session_id("ses_00000000-0000-4000-8000-000000000001"),
+        timestamp_from_string("2026-07-19T00:00:00.000Z"),
+        _current_versions(),
+        ReceiptRedactionProfile.FULL_LOCAL,
+        ReceiptInclude.FULL,
+    )
+
+
+def _self_verified_context(kind: FindingKind, *, application_states: bool) -> ReceiptBuildContext:
+    """A clean run whose only finding of ``kind`` the agent answered ``self_verified``."""
+
+    from finishup.application.closure_basis import finding_states
+    from finishup.domain.findings import finding_policy_identity
+
+    policy_id, policy_version = finding_policy_identity(kind)
+    finding = replace(
+        _finding(),
+        kind=kind,
+        priority=FINDING_KIND_TRAITS[kind][0],
+        policy_id=policy_id,
+        policy_version=policy_version,
+    )
+    response = ResponseRecordedPayload(
+        finding_id=finding.finding_id,
+        finding_frontier=finding.subject_frontier,
+        disposition=ResponseDisposition.SELF_VERIFIED,
+        reason="I re-read the ledger after the last check; nothing is missing.",
+        evidence_refs=(result_id("res_00000000-0000-4000-8000-000000000001"),),
+    )
+    coverage = _coverage(gaps=("host_outcome_unavailable",))
+    base = _context(
+        finding=finding,
+        response=response,
+        coverage=coverage,
+        gaps=(CaseGap("host_outcome_unavailable", "host_outcome_unavailable", ()),),
+        check=_single_agent_check(coverage),
+    )
+    states = (
+        finding_states(base.projection)
+        if application_states
+        # The kernel-only variant: a hand-built context states the flag and no closure.
+        else (ReceiptFindingState(finding.finding_id, resolved=False, self_verified=True),)
+    )
+    return replace(base, finding_states=states)
+
+
+@pytest.mark.parametrize("application_states", (True, False))
+@pytest.mark.parametrize(
+    "kind", (FindingKind.LEDGER_STALE_OR_INCOMPLETE, FindingKind.DECISION_NEEDED)
+)
+def test_a_self_verified_process_note_issues_the_clean_receipt_it_predicts(
+    kind: FindingKind, application_states: bool
+) -> None:
+    """D8 (#1243): status predicted clean and every receipt call failed ``invalid_receipt_conclusion``.
+
+    The predictor read the closures, which leave a process note out; the terminal lists read
+    kind-blind flags and listed it as self-verified. Both now read the closures, so the answered
+    note neither caps nor refuses the receipt.
+    """
+
+    from finishup.kernel.receipt_builder import predict_context_conclusion
+
+    context = _self_verified_context(kind, application_states=application_states)
+    predicted = predict_context_conclusion(context)
+    receipt = _build_current(context)
+    assert receipt.conclusion.value == predicted.conclusion.value
+    assert receipt.conclusion is ReceiptConclusion.NO_UNRESOLVED_DETERMINISTIC_FINDINGS
+    assert receipt.self_verified_finding_ids == ()
+    # The note and the agent's answer stay on the record.
+    assert [item.finding_id for item in receipt.findings] == [_FINDING_ID]
+    assert [item.disposition for item in receipt.responses] == [ResponseDisposition.SELF_VERIFIED]
+
+
+def test_a_self_verified_agent_work_finding_still_caps_the_receipt() -> None:
+    """The control for D8: an actionable kind answered ``self_verified`` stays disclosed by id."""
+
+    from finishup.kernel.receipt_builder import predict_context_conclusion
+
+    context = _self_verified_context(
+        FindingKind.COMPLETION_WITH_OPEN_OBLIGATIONS, application_states=True
+    )
+    receipt = _build_current(context)
+    assert receipt.conclusion is ReceiptConclusion.INSUFFICIENT_COVERAGE
+    assert receipt.conclusion.value == predict_context_conclusion(context).conclusion.value
+    assert receipt.self_verified_finding_ids == (_FINDING_ID,)
+
+
+def test_a_clean_label_beside_a_disclosed_finding_falls_back_and_names_it(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """D8 (#1243): a mismatch never hard-fails; the lower conclusion names the conflicting ids."""
+
+    import finishup.kernel.receipt_builder as builder
+    from finishup.kernel.receipt_prediction import PredictionConclusion, ReceiptPrediction
+
+    context = _self_verified_context(
+        FindingKind.COMPLETION_WITH_OPEN_OBLIGATIONS, application_states=True
+    )
+
+    def clean(basis: object) -> ReceiptPrediction:
+        return ReceiptPrediction(
+            PredictionConclusion.NO_UNRESOLVED_DETERMINISTIC_FINDINGS,
+            (),
+            0,
+            context.subject_frontier,
+            provisional=False,
+        )
+
+    monkeypatch.setattr(builder, "predict_receipt_conclusion", clean)
+    receipt = _build_current(context)
+    assert receipt.conclusion is ReceiptConclusion.INSUFFICIENT_COVERAGE
+    assert receipt.self_verified_finding_ids == (_FINDING_ID,)
+    assert receipt.conclusion_basis is not None
+    reason = receipt.conclusion_basis.reasons[0]
+    assert (reason.code, reason.count, reason.refs) == (
+        "findings_disclosed",
+        1,
+        (str(_FINDING_ID),),
+    )
+    assert receipt.conclusion_basis.reason_total == 1

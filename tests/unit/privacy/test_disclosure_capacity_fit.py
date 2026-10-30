@@ -326,6 +326,51 @@ async def test_an_exchange_over_its_budget_leaves_out_excerpts_to_fit_it(
 
 
 @pytest.mark.anyio
+async def test_a_first_exchange_is_fitted_below_the_frame_later_exchanges_need(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """#1242: a first exchange inside the hard limit but not its frame leaves out excerpts.
+
+    Fitting only to the hard limit spent the frame the reviewer's replies and reads grow into, so
+    the first read of a long closing review found no room and the review ended with no verdict.
+    """
+
+    from finishup.domain.reviewer_context import REVIEWER_FRAME_BYTES
+
+    case = _spec_case()
+    roomy, _, _ = await _evaluate(case, _policy(), monkeypatch)
+    limit = roomy.minimized.byte_count + REVIEWER_FRAME_BYTES // 2
+    proposal, packet, events = await _evaluate(
+        case, _policy(), monkeypatch, budget=ReviewerExchangeBudget(limit)
+    )
+    assert proposal.minimized.byte_count <= limit - REVIEWER_FRAME_BYTES
+    assert _TASK_INPUT not in _excerpt_rows(packet)
+    assert _fitted(events)["outcome"] == "fitted"
+
+
+@pytest.mark.anyio
+async def test_a_sized_first_exchange_keeps_the_growth_reserve_in_tokens(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """#1242: on a sized route the first exchange is held to ``first_token_limit``.
+
+    The exchange limit itself still has room; only the first-exchange limit, which keeps the
+    growth reserve, makes the fit leave an excerpt out.
+    """
+
+    from finishup.ports.semantic import reviewer_exchange_tokens
+
+    case = _spec_case()
+    roomy, _, _ = await _evaluate(case, _policy(), monkeypatch)
+    tokens = reviewer_exchange_tokens(roomy.minimized.prepared_bytes)
+    budget = ReviewerExchangeBudget(roomy.minimized.byte_count * 4, tokens + 50_000, tokens - 1_000)
+    proposal, packet, events = await _evaluate(case, _policy(), monkeypatch, budget=budget)
+    assert reviewer_exchange_tokens(proposal.minimized.prepared_bytes) <= tokens - 1_000
+    assert _TASK_INPUT not in _excerpt_rows(packet)
+    assert _fitted(events)["outcome"] == "fitted"
+
+
+@pytest.mark.anyio
 async def test_a_change_over_a_narrowed_bound_is_refused_never_cut(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

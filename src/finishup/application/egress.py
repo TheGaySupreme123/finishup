@@ -18,7 +18,7 @@ from finishup.adapters.privacy.local_enforcer import (
     estimated_token_count,
 )
 from finishup.adapters.reviewer_artifacts import IMAGE_REVIEW_PURPOSE, read_image
-from finishup.domain.findings import SemanticDispatchKind
+from finishup.domain.findings import RuntimeTokenUsage, SemanticDispatchKind
 from finishup.domain.privacy import (
     MAX_SCAN_MATCH_ITEM_IDS,
     REVIEW_PACKET_ITEM_ID,
@@ -72,7 +72,11 @@ from finishup.domain.receipts import (
     SEMANTIC_PROVIDER_INPUT_MANIFEST_FAILURES,
     SEMANTIC_PROVIDER_INPUT_MANIFEST_MISSING_GAP,
 )
-from finishup.domain.reviewer_context import UNSIZED_EXCHANGE_BYTES, ReviewerExchangeBudget
+from finishup.domain.reviewer_context import (
+    REVIEWER_FRAME_BYTES,
+    UNSIZED_EXCHANGE_BYTES,
+    ReviewerExchangeBudget,
+)
 from finishup.observability.logging import (
     record_bounded_counts_without_raising,
     record_unexpected_exception_without_raising,
@@ -745,6 +749,9 @@ class SemanticEgressBlocked:
     # definitive one, but it closes no proposal, so an approval the owner gave stays usable. Set
     # only at those mapping sites.
     transient: bool = False
+    # #1242: the provider's numeric usage for the exchange a review conversation had already sent
+    # when an unsent read continuation ended it, so the attempt row records the paid turn.
+    token_usage: RuntimeTokenUsage | None = None
 
     def __post_init__(self) -> None:
         _validate_withheld_item_ids(self.withheld_item_ids)
@@ -758,6 +765,8 @@ class SemanticEgressBlocked:
             raise ValueError("semantic_transient_refusal_invalid")
         if type(self.redacted_span_count) is not int or self.redacted_span_count < 0:
             raise ValueError("semantic_redacted_span_count_invalid")
+        if self.token_usage is not None and type(self.token_usage) is not RuntimeTokenUsage:
+            raise ValueError("semantic_token_usage_invalid")
         if self.capacity is not None:
             attempted, limit = self.capacity
             if (
@@ -3306,15 +3315,19 @@ class PrivacyCoordinator:
         return profile.recommendation_eligible(self._clock.now_utc())
 
     def _semantic_capacity_overage(
-        self, packet: bytes, effective: EffectivePrivacyPolicy
+        self, packet: bytes, effective: EffectivePrivacyPolicy, *, keep_frame: bool = False
     ) -> _CapacityOverage | None:
         """What ``packet`` exceeds of the bounds the dispatch checks below enforce (#1230).
 
         The same bounds, measured the same way: the approved excerpt count, per-excerpt and total
         bytes on the packet's excerpt rows, and the exchange's bytes and estimated tokens (the
         reviewer conversation when one frames the packet, else the packet) against the route's
-        budget and the channel's ``max_bytes`` and ``max_tokens``. Token excess is converted to
-        bytes at the payload's own ratio. ``None`` when it fits or the packet is unreadable.
+        budget and the channel's ``max_bytes`` and ``max_tokens``. With ``keep_frame`` a reviewer
+        conversation's first exchange, the only one fitted, is held to its route budget's
+        first-exchange bounds instead: the byte limit less ``REVIEWER_FRAME_BYTES`` and the
+        first-exchange token limit, stricter than dispatch, so later exchanges keep room to grow
+        (#1242). Token excess is converted to bytes at the payload's own ratio. ``None`` when it
+        fits or the packet is unreadable.
         """
 
         rows = _packet_excerpt_rows(packet)
@@ -3331,17 +3344,30 @@ class PrivacyCoordinator:
         size = len(payload)
         if frame is not None:
             budget = frame.budget
+            # #1242: the first exchange keeps, where it can, the frame later exchanges grow into
+            # (the reviewer's replies, read results and notices), as ceiling planning plans it;
+            # spending that reserve left the first read of a long closing review no room.
+            frame_bytes = REVIEWER_FRAME_BYTES if keep_frame and budget is not None else 0
             byte_limit = min(
-                UNSIZED_EXCHANGE_BYTES if budget is None else budget.byte_limit,
+                UNSIZED_EXCHANGE_BYTES
+                if budget is None
+                else max(0, budget.byte_limit - frame_bytes),
                 MAX_MINIMIZED_DISCLOSURE_BYTES,
             )
             exchange_excess = max(exchange_excess, size - byte_limit)
-            if budget is not None and budget.token_limit is not None:
+            token_limit = (
+                None
+                if budget is None
+                else budget.first_token_limit
+                if keep_frame
+                else budget.token_limit
+            )
+            if token_limit is not None:
                 tokens = reviewer_exchange_tokens(payload)
-                if tokens > budget.token_limit:
+                if tokens > token_limit:
                     exchange_excess = max(
                         exchange_excess,
-                        -(-(tokens - budget.token_limit) * size // max(1, tokens)),
+                        -(-(tokens - token_limit) * size // max(1, tokens)),
                     )
         llm = next(
             (
@@ -3399,10 +3425,54 @@ class PrivacyCoordinator:
                 classified, decision, minimized, history.capacity_left_out
             )
             return (decision, minimized) if replayed is None else replayed
+        left_out, fitted = self._capacity_fit_rounds(
+            classified, decision, minimized, effective, keep_frame=True
+        )
+        frame_kept = (
+            self._semantic_capacity_overage(fitted[1].prepared_bytes, effective, keep_frame=True)
+            is None
+        )
+        if not frame_kept:
+            # #1242: the frame cannot be kept (the excess is fixed material or the change): fit
+            # to the limit itself, as before, rather than refuse what the limit admits.
+            left_out, fitted = self._capacity_fit_rounds(
+                classified, decision, minimized, effective, keep_frame=False
+            )
+        if not left_out:
+            return fitted
+        if history is not None:
+            history.capacity_left_out = left_out
+        counts = {"semantic_excerpts_unselected_at_disclosure": len(left_out)}
+        if not frame_kept:
+            counts["semantic_first_exchange_frame_unkept"] = 1
+        record_bounded_counts_without_raising(
+            component="semantic_composition",
+            operation="semantic_disclosure_capacity_fitted",
+            outcome="fitted"
+            if self._semantic_capacity_overage(fitted[1].prepared_bytes, effective) is None
+            else "still_over",
+            counts=counts,
+            request_id=classified.candidate.request_id,
+        )
+        return fitted
+
+    def _capacity_fit_rounds(
+        self,
+        classified: ClassifiedContext,
+        decision: PrivacyDecision,
+        minimized: MinimizedDisclosure,
+        effective: EffectivePrivacyPolicy,
+        *,
+        keep_frame: bool,
+    ) -> tuple[frozenset[str], tuple[PrivacyDecision, MinimizedDisclosure]]:
+        """Leave out excerpts, whole, round by round, until the packet fits its bounds."""
+
         left_out: frozenset[str] = frozenset()
         fitted = (decision, minimized)
         for _round in range(_MAX_CAPACITY_FIT_ROUNDS):
-            overage = self._semantic_capacity_overage(fitted[1].prepared_bytes, effective)
+            overage = self._semantic_capacity_overage(
+                fitted[1].prepared_bytes, effective, keep_frame=keep_frame
+            )
             if overage is None:
                 break
             drops = _capacity_fit_plan(fitted[1].prepared_bytes, overage, left_out)
@@ -3412,20 +3482,7 @@ class PrivacyCoordinator:
             if trial is None:
                 break
             left_out, fitted = left_out | drops, trial
-        if not left_out:
-            return fitted
-        if history is not None:
-            history.capacity_left_out = left_out
-        record_bounded_counts_without_raising(
-            component="semantic_composition",
-            operation="semantic_disclosure_capacity_fitted",
-            outcome="fitted"
-            if self._semantic_capacity_overage(fitted[1].prepared_bytes, effective) is None
-            else "still_over",
-            counts={"semantic_excerpts_unselected_at_disclosure": len(left_out)},
-            request_id=classified.candidate.request_id,
-        )
-        return fitted
+        return left_out, fitted
 
     def _capacity_fit_trial(
         self,

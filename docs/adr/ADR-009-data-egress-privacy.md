@@ -1635,6 +1635,15 @@ measured the minimized row: 16,402 bytes. Egress refused the whole packet and no
   refs and parts) comes from that provider-bound manifest, so a left-out excerpt is never counted
   shown. The privacy receipt counts the items actually included. A bounded diagnostic
   `semantic_disclosure_capacity_fitted` records how many excerpts were left out, never content.
+- **A first exchange keeps its frame (*Amended 2026-10-29, #1242*).** The fit first holds a
+  reviewer conversation's first exchange to its route budget's first-exchange bounds: the byte
+  limit less the 8 KiB `REVIEWER_FRAME_BYTES` frame and, on a sized route, `first_token_limit`.
+  Later exchanges grow into that room. When those bounds cannot be met (the excess is fixed
+  material or the change), the fit falls back to the exchange limit itself, and
+  `semantic_first_exchange_frame_unkept` counts it. The dispatch check is unchanged: it refuses
+  only an exchange over the exchange limit, so keeping the frame never refuses a packet that
+  limit admits, and it never raises an approved limit or changes consent or privacy rules (see
+  ADR-006, amendment of 2026-10-29).
 
 ## Typed capacity reason on the privacy receipt (*Amended 2026-10-29, #1129, #1142*)
 

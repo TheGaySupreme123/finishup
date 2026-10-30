@@ -10470,3 +10470,124 @@ async def test_tracked_reviewer_advice_is_answered_once_and_not_raised_again(
     assert isinstance(reopened, CheckCommitResult)
     assert [row["origin"] for row in reopened.correctness_advisories] == ["verified_not_supported"]
     assert reopened.correctness_advisories[0]["advisory_id"] != advisory_id
+
+
+async def test_a_self_verified_rerun_question_gets_the_receipt_status_predicted(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """D8 (#1243), the TB4 session-window-debug reproducer, end to end.
+
+    A test run, an edit, and a check that asks the rerun question (``ledger_stale_or_incomplete``),
+    which the agent answers ``self_verified`` with a reason and evidence. Status predicted clean
+    and both receipt calls failed ``invalid_receipt_conclusion``. The answered process note now
+    neither caps nor refuses the receipt, and status and the receipt in every format read one
+    conclusion.
+
+    In the run a later check could not prove the question gone, which admitted the answer. These
+    synthetic hook runs carry no command identity, so a rerun here never retires the question;
+    the test admits the answer at the eligibility predicate alone (its rules are locked in
+    ``tests/unit/kernel/test_self_verification.py``) and drives everything after it for real.
+    """
+
+    from finishup.application import respond as respond_module
+    from integration.application import test_tb4n3_own_calls_cross_surface as observed
+
+    original = _versions
+    monkeypatch.setattr(
+        __import__(__name__, fromlist=["_versions"]),
+        "_versions",
+        lambda: replace(
+            original(),
+            schema_versions=(SchemaVersionEntry("receipts/receipt-document", "1.3.0"),),
+        ),
+    )
+    app, runtime, _ = _build_app(seed_offset=83, semantic="required")
+    started = await app.start(start_request(5900, title="self-verified rerun question"))
+    appended = await observed._append_observed(  # pyright: ignore[reportPrivateUsage]
+        app,
+        runtime,
+        started,
+        (
+            observed._action(5920, ActionKind.COMMAND, "Bash", "test"),  # pyright: ignore[reportPrivateUsage]
+            observed._result(5921, 5920),  # pyright: ignore[reportPrivateUsage]
+            observed._action(5922, ActionKind.EDIT, "apply_patch", "compound"),  # pyright: ignore[reportPrivateUsage]
+            observed._result(5923, 5922),  # pyright: ignore[reportPrivateUsage]
+        ),
+        seed=5930,
+        expected_frontier=int(started.frontier.sequence),
+    )
+    checked = await app.check(
+        CheckRequest.model_validate(
+            {
+                **_request_base(protocol_id("req_", 5940)),
+                "session_id": started.session_id,
+                "writer_id": started.writer_id,
+                "expected_frontier": _frontier(appended.result_frontier),
+                "mode": "semantic_if_configured",
+                "max_findings": "5",
+            }
+        )
+    )
+    assert type(checked) is CheckCommitResult
+    question = next(
+        item
+        for item in checked.findings
+        if item.kind is FindingKind.LEDGER_STALE_OR_INCOMPLETE
+        and item.summary == "Is a verification rerun needed after the recorded changes?"
+    )
+    eligible = respond_module.self_verification_refusal
+
+    def admitted(projection: Any, finding: Any, records: Any) -> str | None:
+        return None if finding == question.finding_id else eligible(projection, finding, records)
+
+    monkeypatch.setattr(respond_module, "self_verification_refusal", admitted)
+    # The agent's own verification, recorded after the question.
+    rerun = await observed._append_observed(  # pyright: ignore[reportPrivateUsage]
+        app,
+        runtime,
+        started,
+        (
+            observed._action(5924, ActionKind.COMMAND, "Bash", "test"),  # pyright: ignore[reportPrivateUsage]
+            observed._result(5925, 5924),  # pyright: ignore[reportPrivateUsage]
+        ),
+        seed=5935,
+        expected_frontier=int(checked.result_frontier.sequence),
+    )
+    answered = await app.respond(
+        RespondRequest.model_validate(
+            {
+                **_request_base(protocol_id("req_", 5950)),
+                "session_id": started.session_id,
+                "writer_id": started.writer_id,
+                "expected_frontier": _frontier(rerun.result_frontier),
+                "finding_id": question.finding_id,
+                "finding_frontier": _frontier(checked.result_frontier),
+                "disposition": "self_verified",
+                "reason": "I reran the tests after the edit by hand; they still pass.",
+                "evidence_refs": (protocol_id("res_", 5925),),
+            }
+        )
+    )
+    assert answered.response.disposition == "self_verified"
+    readiness = await _compact_readiness(app, started, 5960)
+    assert readiness.predicted_receipt is not None
+    assert "finding_self_verified" not in (readiness.standing_limitations or ())
+    for offset, fmt in enumerate(("json", "markdown", "text")):
+        receipt = await app.receipt(
+            ReceiptRequest.model_validate(
+                {
+                    **_receipt_wire(
+                        5970 + offset,
+                        task_id=started.task_id,
+                        session=started.session_id,
+                        writer=started.writer_id,
+                        frontier=answered.result_frontier,
+                    ),
+                    "format": fmt,
+                }
+            )
+        )
+        assert receipt.conclusion == readiness.predicted_receipt.conclusion, fmt
+        if receipt.document is not None:
+            listed = cast(dict[str, Any], receipt.document).get("self_verified_finding_ids", [])
+            assert question.finding_id not in listed

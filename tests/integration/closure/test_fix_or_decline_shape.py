@@ -22,6 +22,7 @@ import integration.application.test_respond_status_receipt as h
 from builders.start_application import protocol_id
 from finishup.application import check_change
 from finishup.application.check import check_internal_json
+from finishup.application.result_delivery import brief_check_body
 from finishup.application.status import brief_status_body
 from finishup.cli.closure_gate import closure_gate_from_readiness
 from finishup.cli.render import render_closure_readiness_lines, render_human_status
@@ -200,6 +201,9 @@ async def test_an_unchanged_output_is_fix_or_decline_on_every_surface_and_never_
     assert _DIRECTIVE in cast(str, wire["agent_next"])
     assert _DIRECTIVE in summary_for_check(wire)
     assert _FROZEN not in summary_for_check(wire)
+    # #1244 (D13): the MCP check reply is brief by default; its closure_state carries the items,
+    # so the text an agent reads still names them before the receipt step.
+    assert _DIRECTIVE in summary_for_check(brief_check_body(wire))
 
 
 async def test_a_declined_item_returns_the_frozen_sentence_and_is_disclosed_with_its_reason(

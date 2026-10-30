@@ -38,6 +38,7 @@ from finishup.application.reviewer_broker import ReadElement, ReadRoot, Reviewer
 from finishup.application.reviewer_loop import (
     FINAL_FORMAT_ERROR,
     FINAL_PHASE,
+    READ_NOT_SERVED,
     ReviewerLoop,
     ReviewerModelError,
     Turn,
@@ -315,15 +316,118 @@ async def test_native_directory_inspection_exhaustion_is_explicit(
 
 
 @pytest.mark.anyio
-async def test_a_large_valid_action_ends_as_capacity_before_reserving_a_read() -> None:
-    # Escaping can make a valid action exceed the ordinary action allowance.
+async def test_a_large_valid_action_that_still_fits_asks_for_the_verdict_unread() -> None:
+    """#1242: a read whose own action leaves no room for its result is not served.
+
+    Escaping can make a valid action exceed the ordinary action allowance. The action still fits
+    beside the notices every read keeps room for, so the same exchange asks for the final
+    judgment: the review concludes, labelled, instead of ending with no verdict.
+    """
+
+    loop, broker, model, _ = _setup(_text("w1", "\\" * 509), _FINAL)
+    # The 2,206-byte action fits; what it leaves is less than an empty result needs.
+    broker._exchange_room = lambda: 2300  # pyright: ignore[reportPrivateUsage]
+    outcome = await loop.run()
+    assert outcome.status == "final" and outcome.judgment is not None
+    assert outcome.reason is None and outcome.read_not_served
+    assert broker.calls == 0 and len(model.calls) == 2
+    # Nothing was read; the unserved action and the notice travel in the final exchange.
+    assert outcome.history[-2] == Turn("user", READ_NOT_SERVED)
+    assert outcome.history[-3].role == "assistant"
+    assert await broker.store.usage() == (2, 0)
+    # The final turn offers no read: a read there is that phase's format error.
+    assert "final_judgment" in json.dumps(model.calls[1][1])
+
+
+def test_the_read_not_served_notice_fits_the_room_kept_for_the_final_notice() -> None:
+    from finishup.ports.semantic import reviewer_message_bytes, reviewer_message_tokens
+
+    assert reviewer_message_bytes("user", READ_NOT_SERVED) <= reviewer_message_bytes(
+        "user", FINAL_PHASE
+    )
+    assert reviewer_message_tokens(READ_NOT_SERVED) <= reviewer_message_tokens(FINAL_PHASE)
+
+
+@pytest.mark.anyio
+async def test_a_valid_action_that_outgrows_even_the_notice_room_ends_as_capacity() -> None:
     loop, broker, model, _ = _setup(_text("w1", "\\" * 509))
     broker._exchange_room = lambda: 2048  # pyright: ignore[reportPrivateUsage]
     outcome = await loop.run()
     assert outcome.reason == "case_capacity_exceeded" and outcome.judgment is None
+    assert not outcome.read_not_served
     assert outcome.capacity is not None and outcome.capacity[0] > outcome.capacity[1]
     assert broker.calls == 0 and len(model.calls) == 1
     assert await broker.store.usage() == (1, 0)
+
+
+def test_an_unjudged_capacity_ending_keeps_the_paid_turn_usage() -> None:
+    """#1242: ``case_capacity_exceeded`` after a sent turn carries that turn's provider usage."""
+
+    from finishup.application.egress import SemanticEgressBlocked, SemanticEgressReply
+    from finishup.application.reviewer_loop import ReviewOutcome
+    from finishup.application.reviewer_run import _terminal  # pyright: ignore[reportPrivateUsage]
+    from finishup.domain.findings import RuntimeAttemptEvidence, RuntimeTokenUsage, SamplingParams
+    from finishup.domain.privacy import PrivacyOutcome, PrivacyReason
+    from finishup.ports.semantic import ProviderAttemptProvenance, SemanticResultReply
+    from finishup.protocol.models import SemanticStatus
+
+    digest = "sha256:" + "ab" * 32
+    usage = RuntimeTokenUsage(127_302, 40, 0, 20, 0, 127_322)
+    evidence = RuntimeAttemptEvidence(
+        credential_authority="external_runtime_oauth",
+        runtime_version="0.164.0",
+        runtime_source_identity="openai-codex-npm-linux-x64-0.164.0",
+        executable_sha256=digest,
+        app_server_schema_sha256=digest,
+        capability_cell_sha256=digest,
+        capability_profile="codex-evaluator/0.164.0/v1",
+        capability_evidence_expires_at="2026-11-30T00:00:00Z",
+        launcher_sha256=digest,
+        isolated_config_sha256=digest,
+        disclosed_case_sha256=digest,
+        instruction_sha256=digest,
+        output_schema_sha256=digest,
+        selection_sha256=digest,
+        upstream_body_observability="unavailable",
+        auth_mode="chatgpt",
+        plan_type="plus",
+        reasoning_effort="medium",
+        thread_id="thread-1",
+        turn_id="turn-1",
+        final_output_sha256=digest,
+        case_disclosed=True,
+        turn_acknowledged=True,
+        process_cleanup="retained",
+        token_usage=usage,
+    )
+    provenance = ProviderAttemptProvenance(
+        provider="openai-codex",
+        endpoint_profile_id="codex-chatgpt-subscription",
+        endpoint_profile_version="1.0.0",
+        model="gpt-6.1-sol",
+        sdk_version="codex-app-server-0.164.0",
+        prompt_digest=digest,
+        schema_digest=digest,
+        policy_digest=digest,
+        privacy_policy_digest=digest,
+        sampling_params=SamplingParams(128),
+        latency_ms=1,
+        status=SemanticStatus.SUCCEEDED,
+        runtime_evidence=evidence,
+    )
+    reply = SemanticEgressReply(SemanticResultReply({"reply": {}}, provenance), {}, None, None)
+    outcome = ReviewOutcome(
+        "incomplete", None, "case_capacity_exceeded", (), 1, frozenset(), {}, (1360, 170)
+    )
+    blocked = _terminal(  # pyright: ignore[reportPrivateUsage]
+        outcome, [reply], "req_40000000-0000-4000-8000-000000000101", None
+    )
+    assert isinstance(blocked, SemanticEgressBlocked)
+    assert (blocked.outcome, blocked.reason) == (
+        PrivacyOutcome.BLOCKED_BY_POLICY,
+        PrivacyReason.POLICY_DENIED,
+    )
+    assert blocked.capacity == (1360, 170) and blocked.token_usage == usage
 
 
 def _late(model: _Script, loop: ReviewerLoop) -> None:
@@ -426,6 +530,13 @@ def test_instruction_is_one_short_pstack_prompt_with_the_honesty_rules() -> None
         "not the hook-observed command",
         "Only attachments supply pixels",
         "Unattached binaries are not missing_for_assessment",
+        # #1245: the #976 infeasibility lens and the #1079 reachability rule, each with the
+        # failure it catches (a reserve the inputs do not impose; a zero budget a schema forbids).
+        "When the task requires an outcome the agent calls infeasible, contradictory or blocked, "
+        "challenge it by naming the strongest interpretation under which it is achievable (a full "
+        "reserve assumed at every stop when the inputs allow less).",
+        "Suggest only inputs and states the visible interface can reach (no zero budget where the "
+        "schema requires a positive one).",
     ):
         assert rule in " ".join(text.split()), rule
 
@@ -446,10 +557,13 @@ _LOOP_DIRECTIVES = {
     "relisted_supplied_material": "never list what the packet or a read holds",
     "deferred_to_disclosure": "never stops you judging what the material shows",
     "delivery_risk_on_correct_work": "An input or service the task supplies is no risk",
+    # #1245 (TB4 full-sol): the two rules the loop had dropped from the packet-only instruction.
+    "endorsed_withheld_output": "naming the strongest interpretation under which it is achievable",
+    "unreachable_recommendation": "Suggest only inputs and states the visible interface can reach",
 }
 _ACCURACY_CASES = [
     case
-    for name in ("n6_cases.json", "n7_cases.json")
+    for name in ("n6_cases.json", "n7_cases.json", "tb4_full_cases.json")
     for case in json.loads((_REPO / "tests/fixtures/reviewer_accuracy" / name).read_text("utf-8"))[
         "cases"
     ]

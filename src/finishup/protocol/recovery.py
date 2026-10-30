@@ -531,9 +531,9 @@ _DIRECTIVES: Final = (
     RecoveryDirective(
         token="semantic_capacity_exceeded",
         directive=(
-            "No usable review ran. For case_capacity_exceeded no provider attempt was made: narrow "
-            "the claim or obligation scope. For provider_quota_exhausted, wait for quota. Then run "
-            "one new check under a NEW request_id."
+            "No usable review ran. case_capacity_exceeded: it outgrew an approved bound, as an "
+            "unchanged re-check would; narrow the claim or obligation scope. "
+            "provider_quota_exhausted: wait for quota. Then check once under a NEW request_id."
         ),
         guidance_uri=_SEMANTIC_COVERAGE,
         nudge="Do not resend the same case expecting a larger admitted bound.",
@@ -874,6 +874,12 @@ LOCAL_REASON_CONTINUATION_PREFIXES: Final[tuple[tuple[str, str], ...]] = (
 # reason code cannot land with nothing to say.
 REASON_CODE_DIRECTIVE_EXEMPTIONS: Final[frozenset[str]] = frozenset(
     {
+        # #1244 (D12): a refused delivery continuation. The message names the one read to make
+        # instead (the original status read, or current status); a directive adds nothing.
+        "delivery_cursor_expired",
+        "delivery_cursor_invalid",
+        "delivery_disclosure_changed",
+        "delivery_redaction_recorded",
         # Internal contention labels do not prove that a first-start lease was released.
         # The start application emits the stronger start_* tokens only after that proof.
         "catalog_busy",

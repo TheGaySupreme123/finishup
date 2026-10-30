@@ -279,6 +279,11 @@ __all__ = [
     "DisclosureDeclaration",
     "disclosure_declarations",
     "disclosure_line_obligations",
+    "PROXY_MARKER",
+    "ProxyDecision",
+    "proxy_decisions",
+    "proxy_line_obligations",
+    "verification_limits_without_proxy",
     "blocked_obligations",
     "blocker_declarations",
     "blocker_publication_notices",
@@ -797,6 +802,94 @@ def disclosure_declarations(projection: ProjectionState) -> tuple[DisclosureDecl
         for (obligation, kind), event in sorted(
             declared.items(), key=lambda item: (item[0][0].encode(), item[0][1].encode())
         )
+    )
+
+
+# #1246 (D17): ``finishup-proxy:<obligation id>`` records the agent's one proxy decision for a
+# check it cannot run against a hidden reference (a budget or score stated relative to a reference
+# run or unseen data): the proxy it built and the ratio it measured, or why no proxy was feasible,
+# in the decision's rationale. It is not a disclosure kind: it adds no readiness code and is never
+# asked for at check time. A receipt names a disclosed verification limit without one as "proxy:
+# none chosen". An id that names no recorded obligation records nothing.
+PROXY_MARKER: Final = "finishup-proxy"
+
+
+@dataclass(frozen=True, slots=True)
+class ProxyDecision:
+    """One obligation's recorded proxy decision and the decision event that records it."""
+
+    obligation_id: ObligationId
+    decision_event_id: EventId
+
+
+def proxy_line_obligations(statement: str) -> tuple[ObligationId, ...]:
+    """The obligation ids a decision statement's ``finishup-proxy:<obligation id>`` lines name.
+
+    The same exact-line rule as ``disclosure_line_obligations``: whitespace around the line and
+    the colon is ignored, an id that is not well formed or anything else on the line makes it
+    ordinary prose. Unique, in first-seen order.
+    """
+
+    found: dict[ObligationId, None] = {}
+    for line in statement.splitlines():
+        marker, separator, value = line.strip().partition(":")
+        if marker.strip() != PROXY_MARKER or not separator:
+            continue
+        try:
+            obligation = obligation_id(value.strip())
+        except ValueError:
+            continue
+        found.setdefault(obligation, None)
+    return tuple(found)
+
+
+def proxy_decisions(projection: ProjectionState) -> tuple[ProxyDecision, ...]:
+    """Proxy decisions readable, unsuperseded decisions record for recorded obligations (#1246).
+
+    One row per obligation: the earliest such decision in ledger order records it, and a
+    superseding decision withdraws it, exactly as for disclosures. Sorted by obligation.
+    """
+
+    rows = sorted(
+        (
+            (row.source_frontier, event_id, row.payload)
+            for event_id, row in projection.decisions.items()
+            if type(row.payload) is DecisionRecordedPayload and row.superseded_by_event_id is None
+        ),
+        key=lambda item: (item[0], str(item[1]).encode()),
+    )
+    recorded: dict[ObligationId, EventId] = {}
+    for _position, event_id, payload in rows:
+        assert payload is not None
+        for obligation in proxy_line_obligations(payload.statement):
+            record = projection.obligations.get(obligation)
+            if record is None or record.payload is None:
+                continue
+            recorded.setdefault(obligation, event_id)
+    return tuple(
+        ProxyDecision(obligation, event)
+        for obligation, event in sorted(recorded.items(), key=lambda item: item[0].encode())
+    )
+
+
+def verification_limits_without_proxy(
+    projection: ProjectionState,
+) -> tuple[tuple[ObligationId, ...], tuple[ObligationId, ...]]:
+    """``(none_chosen, recorded)``: disclosed verification limits without and with a proxy decision.
+
+    Both are obligation ids in obligation order, from ``disclosure_declarations`` and
+    ``proxy_decisions`` (#1246, D17). A pure function of the projection.
+    """
+
+    limits = tuple(
+        item.obligation_id
+        for item in disclosure_declarations(projection)
+        if item.kind == "verification_limit"
+    )
+    proxied = {item.obligation_id for item in proxy_decisions(projection)}
+    return (
+        tuple(item for item in limits if item not in proxied),
+        tuple(item for item in limits if item in proxied),
     )
 
 

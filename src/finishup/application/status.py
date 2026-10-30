@@ -402,6 +402,35 @@ _BRIEF_ALWAYS: Final = (
 )
 
 
+def _brief_compact_page(page: Mapping[str, JsonValue]) -> dict[str, JsonValue]:
+    """The compact page without each unanswered finding's ``detail`` (#1244, D13).
+
+    Only omission: the id, kind, priority and summary stay, so the next step can name and
+    answer each one; ``view=findings`` (and ``detail: full``) carry the detail. Default compact
+    reads paged mostly on these details: three findings' repair text filled two thirds of a page.
+    """
+
+    items = page.get("items")
+    if not isinstance(items, (list, tuple)):
+        return dict(page)
+    trimmed: list[JsonValue] = []
+    for raw in cast(Sequence[JsonValue], items):
+        if not isinstance(raw, Mapping):
+            trimmed.append(raw)
+            continue
+        item = dict(cast(Mapping[str, JsonValue], raw))
+        findings = item.get("unanswered_findings")
+        if isinstance(findings, (list, tuple)):
+            item["unanswered_findings"] = [
+                {k: v for k, v in cast(Mapping[str, JsonValue], row).items() if k != "detail"}
+                if isinstance(row, Mapping)
+                else row
+                for row in cast(Sequence[JsonValue], findings)
+            ]
+        trimmed.append(item)
+    return {**dict(page), "items": trimmed}
+
+
 def brief_status_body(full: Mapping[str, JsonValue]) -> dict[str, JsonValue]:
     """Return the ``detail: brief`` subset of one full status success body (issue #1084).
 
@@ -426,7 +455,11 @@ def brief_status_body(full: Mapping[str, JsonValue]) -> dict[str, JsonValue]:
     if full.get("projection_lag") != "0" or full.get("rebuild_state") != "current":
         for key in ("projection_lag", "projection_version", "rebuild_state"):
             body[key] = full[key]
-    body["page"] = full["page"]
+    body["page"] = (
+        _brief_compact_page(cast(Mapping[str, JsonValue], full["page"]))
+        if full["view"] == "compact"
+        else full["page"]
+    )
     body["gaps"] = full["gaps"]
     readiness = cast(Mapping[str, JsonValue], full["closure_readiness"])
     if full["view"] == "compact":

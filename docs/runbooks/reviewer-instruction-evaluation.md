@@ -1,8 +1,9 @@
 # Reviewer instruction evaluation runbook
 
-Use this runbook when you change `SEMANTIC_REVIEW_INSTRUCTION`, a lens, the grounding rules or the
-review-phase questions. It checks the instruction against the reviewer misses the N6 D-lane audit
-investigated (issue #1082) and the n7 misses (issue #1108). The design and the reasons are in
+Use this runbook when you change `SEMANTIC_REVIEW_INSTRUCTION`, `REVIEWER_LOOP_INSTRUCTION`, a lens,
+the grounding rules, the review-phase questions or the acknowledged-obligation question. It checks
+the instructions against the reviewer misses the N6 D-lane audit investigated (issue #1082), the n7
+misses (issue #1108) and the TB4 full-sol misses (issue #1245). The design and the reasons are in
 [ADR-006](../adr/ADR-006-semantic-provider-profile.md), "The reviewer instruction as a procedure
 with named lenses" and "Observed witnesses, one reading of disclosure, primary material first".
 
@@ -13,6 +14,8 @@ The offline check makes no provider call and needs no service:
 ```text
 uv run pytest tests/unit/adapters/providers/test_reviewer_accuracy_directives.py \
   tests/unit/adapters/providers/test_reviewer_accuracy_directives_n7.py \
+  tests/unit/adapters/providers/test_reviewer_accuracy_directives_tb4_full.py \
+  tests/unit/application/test_reviewer_loop.py \
   tests/unit/adapters/providers/test_reviewer_instruction.py \
   tests/unit/adapters/providers/test_task_statement_instruction.py -q
 ```
@@ -38,7 +41,8 @@ It fails when:
   the evaluation set.
 
 A failure here is a decision, not a chore. When you reword a directive on purpose, update the
-case in `tests/fixtures/reviewer_accuracy/n6_cases.json` or `n7_cases.json` and say in the pull
+case in `tests/fixtures/reviewer_accuracy/n6_cases.json`, `n7_cases.json` or
+`tb4_full_cases.json` and say in the pull
 request why the new wording still targets that miss. The n7 test also checks that every N6
 directive still holds.
 
@@ -70,6 +74,18 @@ packet each time; the reviewer abstained on it or deferred to the agent's accoun
 | supplied-after-request | yes | re-listed supplied material | reading the packet | Supplied material includes the observed re-runs of a requested command; observed output, the change or a file answering the request is the witness, never withheld because the agent's answer was a summary. |
 | disclosed-limit-with-decisive-fact | yes | deferred to a disclosure | review phase, blockers | `not_assessable` only when the packet holds no material that settles it; a disclosure is not support and never stops the reviewer judging the packet. |
 | task-supplied-input-and-service | yes | delivery risk on correct work | environment | A run-time file the task supplies, and network access the task provides, are not delivery risks (issue #1094 R2-N1). |
+
+The TB4 full-sol cases (`tests/fixtures/reviewer_accuracy/tb4_full_cases.json`) are bound to three
+texts: the packet-only instruction, the loop instruction every review uses (which had dropped both
+rules), and, for the withheld output, the closing review's acknowledged-obligation question:
+
+| Case | Detectable | Miss | Lens or section | Directive (short form) |
+| --- | --- | --- | --- | --- |
+| conflicting-references-withheld-output | yes | endorsed a withheld output | blockers; loop Goal; acknowledged question | Name the strongest interpretation under which a required outcome is achievable; conflicting inputs are not inability, and agreeing a conflict exists is not permission to withhold. |
+| unreachable-zero-budget | yes | unreachable recommendation | procedure; loop Clues | Suggest only inputs and states the visible interface can reach. |
+
+The loop instruction keeps its byte budget (`test_instruction_is_one_short_pstack_prompt_with_the_honesty_rules`):
+a new loop rule replaces a redundant sentence, so the minimal policy keeps its read room.
 
 The spec and claim texts in the fixtures are synthetic paraphrases of each failure pattern, not task
 text, and the investigations themselves are not part of the repository.

@@ -1733,6 +1733,8 @@ async def test_expanded_1_2_0_counters_show_the_protocol_maximum_not_16(
     assert built["semantic_excerpt_byte_limit"] == 131_072
     assert built["semantic_excerpt_ceiling_rounds"] == 0
     assert built["semantic_excerpt_count_cut_for_case_bound"] == 0
+    # #1245 (D22): nothing was narrowed, so no narrowing record is written.
+    assert not [row for row in _records(tmp_path) if row["operation"] == "semantic_case_narrowed"]
 
 
 @pytest.mark.anyio
@@ -1768,6 +1770,16 @@ async def test_a_case_over_the_channel_ceiling_is_planned_below_it_and_disclosed
     built = [row for row in _records(tmp_path) if row["operation"] == "semantic_case_built"]
     assert len(built) == 2
     assert all(1 <= cast(int, row["semantic_excerpt_ceiling_rounds"]) <= 4 for row in built)
+    # #1245 (D22): a narrowing record says which sections went; the goal did, the claim row the
+    # case carries did not.
+    narrowed = [row for row in _records(tmp_path) if row["operation"] == "semantic_case_narrowed"]
+    assert len(narrowed) == 2
+    for row in narrowed:
+        assert row["semantic_section_dropped_goal"] == 1
+        assert row["semantic_section_dropped_claims"] == 0
+        assert row["semantic_section_dropped_obligations"] == 0
+        assert row["semantic_claim_rows_selected"] == 1
+        assert row["semantic_excerpt_ceiling_rounds"] == built[0]["semantic_excerpt_ceiling_rounds"]
     # #1118: a quote costs four bytes once the packet is a JSON string in the reviewer exchange,
     # so the planner measures that exchange and keeps fewer of these 4 KB quote runs (13 today)
     # than the 17+ the packet-only estimate kept, which the real coordinator could not disclose.

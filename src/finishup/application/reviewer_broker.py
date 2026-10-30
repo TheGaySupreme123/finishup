@@ -148,11 +148,15 @@ class _WithheldRead:
 class ReadExchangeFull(Exception):
     """The read action alone left its exchange no room for even a result without data (#1118).
 
-    Raised before the read is reserved; nothing is read and that exchange is never sent."""
+    Raised before the read is reserved; nothing is read. ``verdict_fits`` says the action still
+    fits beside the notices every exchange keeps room for, so the loop can leave the read unserved
+    and ask for the final judgment in that exchange instead of ending the review (#1242).
+    """
 
-    def __init__(self, required: int, available: int) -> None:
+    def __init__(self, required: int, available: int, *, verdict_fits: bool = False) -> None:
         super().__init__("reviewer_read_exchange_full")
         self.capacity = (required, available)
+        self.verdict_fits = verdict_fits
 
 
 @dataclass(frozen=True, slots=True)
@@ -287,7 +291,7 @@ class ReviewerBroker:
             available = left
             left -= reviewer_message_bytes("assistant", reply)
             if left < MIN_ROOM:
-                raise ReadExchangeFull(required, available)
+                raise ReadExchangeFull(required, available, verdict_fits=left >= 0)
         ordinal = self.calls + 1
         await self.store.reserve("read", ordinal, canonical_encode(action.model_dump(mode="json")))
         self.calls, tool_ref, args = ordinal, f"{self._job}:read:{ordinal}", action.args

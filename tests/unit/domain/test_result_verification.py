@@ -200,3 +200,41 @@ def test_a_test_file_alone_declares_the_test() -> None:
     validate_schema_instance("result-recorded", "1.1.0", wire)
     payload = decode_payload(EventSchema("result_recorded", "1.1.0"), cast(JsonValue, wire))
     assert canonical_encode(encode_payload(payload)) == canonical_encode(wire)
+
+
+@pytest.mark.parametrize(
+    ("quote", "occurs"),
+    [
+        # #1202 (owner decision D18): whitespace runs and quote-mark styles are normalized.
+        ("differs by at most 0.01", True),
+        ("differs  by\tat most 0.01", True),
+        ("  differs by at most 0.01  ", True),
+        ("don't round the 'mean' value", True),
+        ('don’t round the "mean" value', True),
+        # Words, digits and other punctuation are compared exactly, at whole-word boundaries.
+        ("differs by at most 0.1", False),
+        ("differs by at most 0.010", False),
+        ("dont round the mean value", False),
+        ("differs by at most", True),
+        ("iffers by at most", False),
+    ],
+)
+def test_criterion_quotes_compare_after_spacing_and_quote_marks_are_normalized(
+    quote: str, occurs: bool
+) -> None:
+    from finishup.domain.verification_coverage import criterion_quote_in_text
+
+    text = "Every value differs by\nat most 0.01. Don’t round the ‘mean’ value."
+    assert criterion_quote_in_text(quote, text.replace("Don", "don")) is occurs
+
+
+def test_the_nearest_task_sentence_is_named_by_position_only() -> None:
+    from finishup.domain.verification_coverage import nearest_criterion_sentence
+
+    text = "Write the report.\nEvery value differs by at most 0.01; keep the labels. Save it."
+    assert nearest_criterion_sentence("every value differs by at most 0.1", text) == (2, 2)
+    assert nearest_criterion_sentence("keep the label", text) == (3, 2)
+    assert nearest_criterion_sentence("save", text) == (4, 2)
+    # No shared content word: nothing to point at.
+    assert nearest_criterion_sentence("the a of", text) is None
+    assert nearest_criterion_sentence("unrelated wording", text) is None

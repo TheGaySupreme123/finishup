@@ -22,6 +22,7 @@ and pin a complete response carrying the finding, in all three check modes.
 
 from __future__ import annotations
 
+import re
 from collections.abc import Callable, Mapping
 from dataclasses import replace
 from typing import Literal, cast
@@ -529,7 +530,10 @@ async def test_a_malformed_nested_finding_is_still_rejected() -> None:
     with pytest.raises(Exception) as raised:  # noqa: PT011 - the pointer is the assertion
         _public_model(ControlMethod.CHECK, body)
     message = str(raised.value)
-    assert "findings.0.priority" in message, message
+    # #1244 (D13): a row is a full or a brief finding, so the leaf is named under the full branch.
+    assert re.search(r"findings\.0\.[^\n]*CheckProjectedFindingModel\]\.priority\n", message), (
+        message
+    )
     assert "findings.0\n" not in message, message
 
 

@@ -7,13 +7,16 @@
   MCP text, the CLI and terminal lines, closure_prepare and the receipt in three formats) prints
   the same predicted conclusion and the same counters, and the receipt carries the conclusion the
   status predicted.
+* That conclusion equals an independent oracle over what the issued receipt discloses (#1243): the
+  receipt builder reuses the predictor's label, so agreement alone could never catch a predictor
+  that is wrong.
 """
 
 from __future__ import annotations
 
 import asyncio
 from dataclasses import replace
-from typing import Any
+from typing import Any, cast
 
 import pytest
 from hypothesis import HealthCheck, given, settings
@@ -21,18 +24,27 @@ from hypothesis import strategies as st
 
 import integration.application.test_respond_status_receipt as h
 from builders.policy_cases import evd, finding_record, fnd, obl, record
-from finishup.domain.events import ResponseRecordedPayload
+from finishup.domain.events import CheckRecordedPayload, ResponseRecordedPayload
 from finishup.domain.findings import (
     FINDING_KIND_TRAITS,
+    CheckVerdict,
     Finding,
     FindingKind,
     FindingOrigin,
     ResponseDisposition,
     finding_policy_identity,
 )
-from finishup.domain.receipts import SchemaVersionEntry
+from finishup.domain.receipts import (
+    ReceiptDocument,
+    ReceiptGapEffect,
+    ReceiptObligationStatus,
+    SchemaVersionEntry,
+    live_receipt_gap_codes,
+    receipt_document_from_json,
+    resolved_finding_ids_for_render,
+)
 from finishup.domain.values import FindingId, Frontier
-from finishup.kernel.closure_class import closure_counts, finding_closures
+from finishup.kernel.closure_class import BOOKKEEPING_KINDS, closure_counts, finding_closures
 from finishup.kernel.closure_readiness import GAP_CLASSIFICATION
 from finishup.kernel.gap_effect import GapContext, GapEffectKind, gap_effect
 from finishup.kernel.projections import (
@@ -273,6 +285,80 @@ async def _run_script(script: list[str]) -> None:
         conclusion=readiness.predicted_receipt.conclusion,
         counts=shapes._wire_counts(readiness),  # pyright: ignore[reportPrivateUsage]
     )
+    document = gathered.receipts["json"].document
+    assert document is not None
+    ledger, _objects = next(iter(cast(Any, run.runtime).resources.values()))
+    checks: list[CheckRecordedPayload] = [
+        record.payload
+        async for record in ledger.load_events(run.started.session_id)
+        if type(record.payload) is CheckRecordedPayload
+    ]
+    oracle = _oracle_conclusion(
+        receipt_document_from_json(document), checks[-1] if checks else None
+    )
+    assert gathered.receipts["json"].conclusion == oracle, (script, document)
+
+
+_UNSETTLED_VERDICTS = frozenset(
+    {
+        CheckVerdict.INSUFFICIENT_COVERAGE,
+        CheckVerdict.INCOMPLETE_CHECK,
+        CheckVerdict.ACTION_REQUIRED,
+    }
+)
+
+
+def _oracle_conclusion(document: ReceiptDocument, check: CheckRecordedPayload | None) -> str:
+    """The conclusion re-derived from the issued receipt's own rows, never from the predictor.
+
+    ADR-046's order, read off what the document discloses and the latest recorded check, for the
+    deterministic-only scripts above: a missing completion scope reads ``insufficient_coverage``;
+    an actionable finding the document neither resolves nor settles (an acknowledged requirement
+    included) reads ``unresolved_findings_remain``; anything else the document discloses as a
+    bound (a self-verified, disputed or disclosed-limitation finding, an acknowledged bookkeeping
+    finding, an obligation not resolved, a bounding gap, suppressed findings, an unsettled or
+    incomplete check) reads ``insufficient_coverage``; otherwise the receipt is clean.
+    """
+
+    live = set(live_receipt_gap_codes(document))
+    if live & {"completion_scope_declared_none", "completion_scope_undeclared"}:
+        return "insufficient_coverage"
+    resolved = resolved_finding_ids_for_render(document)
+    disclosed = {
+        *document.self_verified_finding_ids,
+        *document.disputed_after_rebuttal_finding_ids,
+        *document.limitation_disclosed_finding_ids,
+        *(
+            finding.finding_id
+            for finding in document.findings
+            if finding.finding_id in document.acknowledged_not_done_finding_ids
+            and finding.kind in BOOKKEEPING_KINDS
+        ),
+    }
+    settled = {*disclosed, *document.rejection_accepted_finding_ids}
+    if any(
+        FINDING_KIND_TRAITS[finding.kind][1]
+        and finding.finding_id not in resolved
+        and finding.finding_id not in settled
+        for finding in document.findings
+    ):
+        return "unresolved_findings_remain"
+    complete = check is not None and all(
+        (execution.outcome, execution.reason)
+        in {("run", "completed"), ("skipped", "not_applicable")}
+        for execution in check.policy_executions
+    )
+    bounded = (
+        bool(disclosed)
+        or any(item.status is not ReceiptObligationStatus.RESOLVED for item in document.obligations)
+        or bool(document.acknowledged_not_done_obligation_ids)
+        or any(gap.effect is ReceiptGapEffect.BOUNDS for gap in document.gaps if gap.live)
+        or document.suppressed_finding_count > 0
+        or check is None
+        or check.verdict in _UNSETTLED_VERDICTS
+        or not complete
+    )
+    return "insufficient_coverage" if bounded else "no_unresolved_deterministic_findings"
 
 
 @settings(

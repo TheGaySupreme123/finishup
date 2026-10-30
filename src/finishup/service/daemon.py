@@ -1299,7 +1299,7 @@ class ServiceDaemon:
                     )
 
                 # The pre-check wait is outside the operation identity, as in the ledger digest.
-                identity = body.model_dump(mode="json", exclude={"await_observations"})
+                identity = body.model_dump(mode="json", exclude={"await_observations", "detail"})
                 return await self._check_waits.run(
                     (body.writer_id, body.request_id),
                     hashlib.sha256(canonical_encode(identity)).hexdigest(),
