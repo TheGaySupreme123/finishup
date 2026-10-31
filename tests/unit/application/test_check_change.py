@@ -85,10 +85,11 @@ def test_clean_change_is_returned_unchanged() -> None:
 
 
 def test_change_that_cannot_be_fully_redacted_is_withheld(monkeypatch: pytest.MonkeyPatch) -> None:
-    def never_clean(data: bytes, **_: object) -> tuple[bytes, bool]:
-        return data + b".", True
+    def never_clean(data: bytes, **_: object) -> bytes | None:
+        # The pass bound is reached while a pass still finds a value.
+        return None
 
-    monkeypatch.setattr(check_change_module, "redact_sensitive_content", never_clean)
+    monkeypatch.setattr(check_change_module, "redact_fully", never_clean)
 
     with pytest.raises(ChangeCaptureUnavailable) as caught:
         _redacted(_capture(b"+token = forever-matching\n"))
@@ -1272,14 +1273,14 @@ def test_a_task_input_withheld_whole_is_disclosed_as_redacted(
 
     from finishup.ports.change_capture import TaskInputFile
 
-    original = check_change_module.redact_sensitive_content
+    original = check_change_module.redact_fully
 
-    def never_clean_for_the_input(data: bytes, **options: bytes | None) -> tuple[bytes, bool]:
+    def never_clean_for_the_input(data: bytes, **options: int) -> bytes | None:
         if b"WITHHELD_INPUT_MARKER" in data:
-            return data + b".", True
+            return None
         return original(data, **options)
 
-    monkeypatch.setattr(check_change_module, "redact_sensitive_content", never_clean_for_the_input)
+    monkeypatch.setattr(check_change_module, "redact_fully", never_clean_for_the_input)
     capture = CheckChangeCapture(
         base="task_start",
         text=b"diff --git a/a.py b/a.py\n+print('kept')\n",

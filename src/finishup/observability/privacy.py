@@ -38,6 +38,7 @@ __all__ = [
     "redact_diagnostic_record",
     "redact_diagnostic_value",
     "redact_encoded_heuristic_spans",
+    "redact_fully",
     "redact_heuristic_spans",
     "redact_high_confidence_content",
     "redact_sensitive_content",
@@ -85,18 +86,20 @@ _VERSION = re.compile(r"^[0-9A-Za-z][0-9A-Za-z._/+:-]{0,127}$", re.ASCII)
 _HASH = re.compile(r"^(?:hmac-)?sha256:[0-9a-f]{64}$", re.ASCII)
 
 
-def _pem_begin_marker(label: bytes) -> bytes:
-    # Built from parts so the publication-boundary scanner does not treat detector
-    # constants as embedded private-key material (PRIV-CRED-001).
-    return b"-" * 5 + b"BEGIN " + label + b"-" * 5
-
-
-_PRIVATE_KEY_MARKERS: Final = (
-    _pem_begin_marker(b"PRIVATE KEY"),
-    _pem_begin_marker(b"RSA PRIVATE KEY"),
-    _pem_begin_marker(b"EC PRIVATE KEY"),
-    _pem_begin_marker(b"OPENSSH PRIVATE KEY"),
+# A private key is matched from its BEGIN line through the END line of the same label (#1248,
+# owner decision P-D4): PEM (``RSA``, ``EC``, ``DSA``), PKCS#8 (plain and ``ENCRYPTED``), OpenSSH
+# and PGP key blocks. Both lines are literal at every JSON escaping depth, so the block is found
+# whole in a diff, an indented string or an encoded packet alike. The patterns are written with
+# ``-{5}`` so the publication-boundary scanner does not read detector constants as key material
+# (PRIV-CRED-001).
+_PRIVATE_KEY_BEGIN: Final = re.compile(
+    rb"-{5}BEGIN (?P<label>(?:[A-Z0-9]{1,16} ){0,2}PRIVATE KEY(?: BLOCK)?)-{5}"
 )
+# How far past its BEGIN line a key block may end. The largest real keys (16384-bit RSA, PGP
+# blocks with subkeys) stay well inside it, escaped at depth three included. A BEGIN line with no
+# matching END inside it is an unterminated key: its finding runs to the end of the data, and the
+# passes that hold whole items withhold the item.
+_MAX_PRIVATE_KEY_BLOCK_BYTES: Final = 65_536
 _CREDENTIAL_PATTERNS: Final = (
     re.compile(rb"(?<![A-Za-z0-9])sk-(?:proj-)?[A-Za-z0-9_-]{20,256}(?![A-Za-z0-9_-])"),
     re.compile(rb"(?<![A-Za-z0-9])(?:ghp_|gho_|ghu_|ghs_)[A-Za-z0-9]{20,256}"),
@@ -155,9 +158,31 @@ _UNQUOTED_VALUE_CHAR = (
 # A quoted value inside an encoded JSON string: ``\"...\"``. Inside it an encoded escaped quote
 # (three backslashes and a quote) and an encoded backslash (two) are part of the value. Like the
 # raw quoted value, it never spans a line break of the text it encodes (an encoded ``\n``/``\r``).
+# A JSON document nested as a string inside another one (#1015) quotes its values with three
+# backslashes, and one level deeper with seven: the quote of escaping depth ``d`` is ``2**d - 1``
+# backslashes and ``"``. Inside such a value an escaped quote is ``2w + 1`` backslashes, a literal
+# backslash ``w + 1``, and any other escape (``\n``, ``\t``, ``\u``) ``(w + 1) / 2`` before its
+# letter; an encoded line break ends the value as it does at depth one.
+_QUOTE_WIDTHS: Final = (1, 3, 7)
+
+
+def _deep_escaped_quoted_value(width: int) -> bytes:
+    half = (width + 1) // 2
+    return (
+        b'\\\\{%d}"(?:\\\\{%d}"|\\\\{%d}|\\\\{%d}(?![\\\\"]|%s)|[^\\\\"\\r\\n]){1,512}\\\\{%d}"'
+        % (width, 2 * width + 1, width + 1, half, _LINE_BREAK_ESCAPE_LETTER, width)
+    )
+
+
 _ESCAPED_QUOTED_VALUE = (
-    rb'\\"(?:\\\\\\"|\\\\\\\\|(?!\\"|\\' + _LINE_BREAK_ESCAPE_LETTER + rb')[^\r\n]){1,512}\\"'
+    rb"(?:"
+    + b"|".join(_deep_escaped_quoted_value(width) for width in reversed(_QUOTE_WIDTHS[1:]))
+    + rb'|\\"(?:\\\\\\"|\\\\\\\\|(?!\\"|\\'
+    + _LINE_BREAK_ESCAPE_LETTER
+    + rb')[^\r\n]){1,512}\\")'
 )
+# The opening quote of a quoted assignment value: ``'``, ``"`` or an escaped ``"`` of depth 1-3.
+_VALUE_QUOTE: Final = re.compile(rb"['\"]|\\{7}\"|\\{3}\"|\\\"")
 _JSON_STRING_TOKEN: Final = re.compile(rb'"(?:[^"\\]|\\.)*"')
 _JSON_STRING_ESCAPE: Final = re.compile(
     rb"\\(?:u[dD][89aAbB][0-9a-fA-F]{2}\\u[dD][c-fC-F][0-9a-fA-F]{2}|u[0-9a-fA-F]{4}|.)"
@@ -170,22 +195,29 @@ _ASSIGNMENT_VALUE = (
     rb"|" + _STRING_PREFIX_RE + rb"'(?:\\.|[^'\\\r\n]){1,512}'"
     rb"|" + _ESCAPED_QUOTED_VALUE + rb"|" + _UNQUOTED_VALUE_CHAR + rb"{1,512})"
 )
+# Where an assignment name may start: not inside a longer identifier, checked without consuming
+# the byte before it, so an assignment right after a closing quote (``password: "a"password:
+# "b"``) is found after the one before it; and after a JSON-encoded line break or tab at any
+# escaping depth, which is whitespace in the text it encodes, though its letter is not (#1248 P3).
+_NAME_BOUNDARY: Final = rb"(?:(?<![A-Za-z0-9_])|(?<=\\(?-i:[nrt])))"
 # Compound names such as AWS_SECRET_ACCESS_KEY and AZURE_CLIENT_SECRET keep the
 # secret token as one underscore/hyphen component, not the entire identifier.
+# The key's closing quote may be escaped to depth three (``\\\"`` closes a key of a JSON
+# document nested in a JSON string, #1015), like the quoted value after it.
 _SECRET_ASSIGNMENT = re.compile(
-    rb"(?i)(?:^|[^A-Za-z0-9_])['\"]?"
+    rb"(?i)" + _NAME_BOUNDARY + rb"['\"]?"
     rb"(?:[A-Za-z][A-Za-z0-9]{0,63}[_-])*"
     rb"(?:api[_-]?key|access[_-]?token|auth[_-]?token|password|passwd|private[_-]?key|secret)"
     rb"(?:[_-][A-Za-z][A-Za-z0-9]{0,63})*"
-    rb"(?:\\?['\"])?\s*" + _SEPARATOR + _ASSIGNMENT_VALUE
+    rb"(?:\\{0,7}['\"])?\s*" + _SEPARATOR + _ASSIGNMENT_VALUE
 )
 # `*_TOKEN` only as the final identifier component. The value must contain a
 # non-digit and be at least eight bytes so MAX_TOKEN=4096 and TOKEN_COUNT=12
 # are not treated as secrets.
 _TOKEN_ASSIGNMENT = re.compile(
-    rb"(?i)(?:^|[^A-Za-z0-9_])['\"]?"
+    rb"(?i)" + _NAME_BOUNDARY + rb"['\"]?"
     rb"(?:[A-Za-z][A-Za-z0-9]{0,63}[_-])*token"
-    rb"(?:\\?['\"])?\s*" + _SEPARATOR + rb"(?="
+    rb"(?:\\{0,7}['\"])?\s*" + _SEPARATOR + rb"(?="
     rb"(?:" + _STRING_PREFIX_RE + rb"\"(?:\\.|[^\"\\\r\n]){1,512}\""
     rb"|" + _STRING_PREFIX_RE + rb"'(?:\\.|[^'\\\r\n]){1,512}'"
     rb"|"
@@ -200,8 +232,7 @@ _TOKEN_ASSIGNMENT = re.compile(
 # Only a quoted value is considered, and the finding span is the quoted value alone, so redaction
 # keeps the name, the annotation and the ``=``.
 _ANNOTATED_ASSIGNMENT = re.compile(
-    rb"(?i)(?:^|[^A-Za-z0-9_])"
-    rb"(?P<name>(?:[A-Za-z][A-Za-z0-9]{0,63}[_-])*"
+    rb"(?i)" + _NAME_BOUNDARY + rb"(?P<name>(?:[A-Za-z][A-Za-z0-9]{0,63}[_-])*"
     rb"(?:api[_-]?key|access[_-]?token|auth[_-]?token|password|passwd|private[_-]?key|secret|token)"
     rb"(?:[_-][A-Za-z][A-Za-z0-9]{0,63})*)"
     rb"[ \t]*:[ \t]*[A-Za-z_][A-Za-z0-9_.\[\], |]{0,64}?[ \t]*"
@@ -787,6 +818,21 @@ def _without_string_prefix(value: bytes) -> bytes:
     return value if prefix is None else value[prefix.end() :]
 
 
+def _value_quote(value: bytes) -> bytes:
+    """The quote that opens ``value``: ``'``, ``"``, an escaped ``"`` of depth 1-3, or nothing."""
+
+    quote = _VALUE_QUOTE.match(value)
+    return b"" if quote is None else quote.group(0)
+
+
+def _quoted_inner(value: bytes, quote: bytes) -> bytes:
+    """``value`` without its opening ``quote`` and, when it closes with it, its closing one."""
+
+    if value.endswith(quote) and len(value) >= 2 * len(quote):
+        return value[len(quote) : -len(quote)]
+    return value[len(quote) :]
+
+
 def _assignment_separator(raw: bytes) -> re.Match[bytes] | None:
     """The ``:``/``=`` that separates an assignment match's name from its value.
 
@@ -881,12 +927,8 @@ def _assignment_value_is_code(
     # These are FinishUP's own bounded replacement markers. They carry no secret bytes, so allowing
     # the scanner to classify a marker as a fresh assignment would make every structured redaction
     # fail its final scan. Only the exact markers are exempt; any suffix remains heuristic.
-    if value.startswith(b'\\"'):
-        marker_value = value[2:-2] if value.endswith(b'\\"') else value[2:]
-    elif value.startswith((b"'", b'"')):
-        marker_value = value[1:-1] if value.endswith(value[:1]) else value[1:]
-    else:
-        marker_value = value
+    quote = _value_quote(value)
+    marker_value = _quoted_inner(value, quote) if quote else value
     encoded_context = (
         None
         if json_strings is None or absolute_start is None
@@ -927,7 +969,10 @@ def _assignment_value_is_code(
         # Token.ConstKeyword``) carry their own source evidence. A bare equals assignment does
         # not, even if the RHS happens to look like an enum.
         return (
+            # The match no longer takes the byte before the name (#1248 P3), so a member's
+            # ``.`` may sit just before it.
             lhs.startswith(b".")
+            or preceding.endswith(b".")
             or declared
             or (separator.group(0).startswith(b":") and lhs_name == b"token")
         )
@@ -994,12 +1039,10 @@ def _assignment_value_cannot_be_credential(match: re.Match[bytes], *, token_fami
     if not value or value.startswith(b"="):
         # ``token == other``, ``token := next(it)``: a comparison or walrus, not an assignment.
         return True
-    if value.startswith(b'\\"'):
+    quote = _value_quote(value)
+    if quote:
         quoted = True
-        inner = value[2:-2] if value.endswith(b'\\"') and len(value) >= 4 else value[2:]
-    elif value.startswith((b"'", b'"')):
-        quoted = True
-        inner = value[1:-1] if value.endswith(value[:1]) and len(value) >= 2 else value[1:]
+        inner = _quoted_inner(value, quote)
     else:
         quoted = False
         # An unquoted value read from encoded text runs through escapes such as ``\n``; classify
@@ -1041,6 +1084,190 @@ def _assignment_value_cannot_be_credential(match: re.Match[bytes], *, token_fami
     if len(inner) < _MIN_TOKEN_VALUE_BYTES or _TOKEN_VALUE_CHARS.fullmatch(inner) is None:
         return True
     return not quoted and _DIGITLESS_IDENTIFIER_VALUE.fullmatch(inner) is not None
+
+
+# A line break of the text, raw or JSON-encoded at any escaping depth (#1248, P-D3): ``\r\n``,
+# ``\r``, ``\n``, or a backslash run before ``r`` or ``n`` (with ``\r\n`` as one break). Literal
+# backslashes the run may start with stay part of the break: no value byte follows them.
+_LINE_BREAK: Final = re.compile(rb"\r\n|\r|\n|\\{1,64}(?-i:r)(?:\\{1,64}(?-i:n))?|\\{1,64}(?-i:n)")
+# The private key END line that closes a BEGIN line of ``label``.
+_PRIVATE_KEY_END_PREFIX: Final = b"-" * 5 + b"END "
+
+
+def _private_key_blocks(data: bytes) -> Iterator[tuple[int, int, bool]]:
+    """Each private key block in ``data``: its BEGIN line's start, its END line's end, and whether
+    it has one (#1248, P-D4).
+
+    The block is searched in the whole of ``data``, never per scan chunk, so a key the 64 KiB scan
+    window would split is still found whole. Without an END line of the same label within
+    ``_MAX_PRIVATE_KEY_BLOCK_BYTES`` the block runs to the end of ``data`` and is unterminated.
+    """
+
+    offset = 0
+    while (begin := _PRIVATE_KEY_BEGIN.search(data, offset)) is not None:
+        end_line = _PRIVATE_KEY_END_PREFIX + begin.group("label") + b"-" * 5
+        found = data.find(
+            end_line, begin.end(), begin.start() + _MAX_PRIVATE_KEY_BLOCK_BYTES + len(end_line)
+        )
+        if found < 0:
+            yield begin.start(), len(data), False
+            return
+        yield begin.start(), found + len(end_line), True
+        offset = found + len(end_line)
+
+
+def _unterminated_private_key(data: bytes, findings: tuple[ScanFinding, ...]) -> bool:
+    """Whether a private key finding in ``data`` has no END line (P-D4: the item is withheld)."""
+
+    for finding in findings:
+        if finding.kind != "private_key_marker":
+            continue
+        begin = _PRIVATE_KEY_BEGIN.match(data, finding.start_offset)
+        end_line = _PRIVATE_KEY_END_PREFIX + (b"" if begin is None else begin.group("label"))
+        if not data[: finding.end_offset].endswith(end_line + b"-" * 5):
+            return True
+    return False
+
+
+# YAML block values (#1248, P-D4): a credential-named key whose value is a block scalar
+# (``password: |`` or ``>``, with optional chomping/indentation indicators) or is left empty for
+# the lines below (``password:``), with the value on the following lines indented deeper than the
+# key. Without this only the indicator was matched and the value lines went out as written. The
+# key must open its line (after an optional diff ``+``/``-``/`` `` and indentation, a ``- ``
+# sequence entry, or a quote), so ``if password:`` in source is not a key. Lines are found at raw
+# and JSON-encoded line breaks alike.
+_YAML_BLOCK_KEY: Final = re.compile(
+    rb"(?i)(?:(?<![A-Za-z0-9_])|(?<=\\(?-i:[nrt])))"
+    rb"(?P<name>(?:[A-Za-z][A-Za-z0-9]{0,63}[_-])*"
+    rb"(?:api[_-]?key|access[_-]?token|auth[_-]?token|password|passwd|private[_-]?key|secret"
+    rb"|token)"
+    rb"(?:[_-][A-Za-z][A-Za-z0-9]{0,63})*)"
+    rb"(?:\\{0,7}['\"])?[ \t]*:"
+    rb"(?P<indicator>[ \t]*[|>](?:[1-9][+-]?|[+-][1-9]?)?)?"
+    rb"(?:[ \t]+#[^\r\n\\]*)?[ \t]*"
+    rb"(?=\r|\n|\\{1,64}(?-i:[nr]))"
+)
+# What may precede a YAML key on its line: a diff marker, indentation (raw or an encoded tab), a
+# sequence entry dash, and the key's opening quote. A line starts after a raw or encoded line
+# break, or after the quote that opens an encoded string.
+_YAML_KEY_LINE_LEAD: Final = re.compile(
+    rb"[+\- ]?(?:[ \t]|\\{1,64}(?-i:t))*(?:-[ \t]+)?(?:\\{0,7}['\"])?"
+)
+_YAML_INDENT: Final = re.compile(rb"(?:[ \t]|\\{1,64}(?-i:t))*")
+# A first value line that opens a nested mapping (``nested:`` or ``nested: value``) or is a
+# comment: then the key holds a mapping or nothing, not a value.
+_YAML_NESTED_KEY: Final = re.compile(
+    rb"(?:#|(?:\\{0,7}['\"])?[A-Za-z0-9_.-]+(?:\\{0,7}['\"])?[ \t]*:(?:[ \t]|\\|$))"
+)
+_YAML_KEY_LEAD_BYTES: Final = 256
+
+
+def _yaml_indent(line: bytes) -> tuple[int, bytes]:
+    """A line's indentation width, after one diff marker, and the text after it."""
+
+    body = line[1:] if line[:1] in (b"+", b"-", b" ") else line
+    indent = _YAML_INDENT.match(body)
+    width = 0 if indent is None else indent.end()
+    rest = body[width:]
+    # An encoded tab counts as one column, like a raw one.
+    columns = width - sum(len(run) for run in re.findall(rb"\\+(?=t)", body[:width]))
+    return columns, rest
+
+
+def _yaml_key_line_lead(data: bytes, name_start: int) -> bytes | None:
+    """What precedes the key starting at ``name_start`` on its line, or ``None`` when that is more
+    than a key's lead (the name does not open its line)."""
+
+    window_start = max(0, name_start - _YAML_KEY_LEAD_BYTES)
+    window = data[window_start:name_start]
+    line_start = max(
+        window.rfind(b"\n") + 1,
+        window.rfind(b"\r") + 1,
+        *(found + 2 for found in (window.rfind(b"\\n"), window.rfind(b"\\r")) if found >= 0),
+    )
+    if line_start == 0 and window_start > 0:
+        return None
+    lead = window[line_start:]
+    if _YAML_KEY_LINE_LEAD.fullmatch(lead) is not None:
+        return lead
+    quote = window.rfind(b'"', line_start)
+    if (
+        quote >= 0
+        and window[quote - 1 : quote] != b"\\"
+        and not window[line_start:quote].strip(b'\\"')
+    ):
+        # The first line of an encoded string starts after its opening quote(s); a quote after
+        # other text on the line (``if kind == "api_key":``) opens no line.
+        lead = window[quote + 1 :]
+        if _YAML_KEY_LINE_LEAD.fullmatch(lead) is not None:
+            return lead
+    return None
+
+
+def _yaml_block_values(data: bytes) -> Iterator[tuple[int, int]]:
+    """Each YAML block value under a credential-named key: from the key to the value's end.
+
+    The span starts at the key's name, so a replacement keeps the name and separator and replaces
+    the value lines whole (``_replace_sensitive_spans``). A block of FinishUP's own markers only
+    (an already redacted value) is not a value.
+    """
+
+    offset = 0
+    while (key := _YAML_BLOCK_KEY.search(data, offset)) is not None:
+        offset = key.end()
+        lead = _yaml_key_line_lead(data, key.start("name"))
+        if lead is None:
+            # Not a key opening its line; a shorter name may start later in this one
+            # (``\\ndb_password:`` read from its ``n``).
+            offset = key.start("name") + 1
+            continue
+        key_columns, _rest = _yaml_indent(lead)
+        indicator = key.group("indicator") is not None
+        cursor = key.end()
+        value_end: int | None = None
+        contents: list[bytes] = []
+        while cursor < len(data):
+            line_break = _LINE_BREAK.match(data, cursor)
+            if line_break is None:
+                break
+            line_start = line_break.end()
+            following = _LINE_BREAK.search(data, line_start)
+            line_end = len(data) if following is None else following.start()
+            columns, content = _yaml_indent(data[line_start:line_end])
+            if content.strip(b" \t"):
+                if columns > key_columns:
+                    if not contents and not indicator and _YAML_NESTED_KEY.match(content):
+                        break
+                elif not (indicator and not contents and not _YAML_NESTED_KEY.match(content)):
+                    break
+                contents.append(content.strip(b" \t"))
+                value_end = line_end
+                if columns <= key_columns:
+                    # A block indicator over a line that is not indented: that line was meant
+                    # as the value. Only it is taken; the next line is not the block's.
+                    break
+            cursor = line_end
+        if (
+            value_end is None
+            # One plain line under an empty key is the ordinary assignment heuristic's value
+            # (``password:`` then ``  value``), judged by its value rules.
+            or (not indicator and len(contents) == 1)
+            or all(content in _EXEMPT_REPLACEMENT_MARKERS for content in contents)
+        ):
+            continue
+        yield key.start("name"), value_end
+        offset = value_end
+
+
+def _line_breaks_of(region: bytes, *, encoded: bool = True) -> bytes:
+    """The line breaks ``region`` holds, in order and nothing else; raw ones only unless
+    ``encoded`` (inside a quoted literal a backslash-n is the value's own escape, not a line)."""
+
+    return b"".join(
+        match.group(0)
+        for match in _LINE_BREAK.finditer(region)
+        if encoded or match.group(0)[:1] != b"\\"
+    )
 
 
 def _scan_chunks(data: bytes) -> Iterator[tuple[int, bytes]]:
@@ -1096,23 +1323,18 @@ def scan_for_sensitive_content(
                 )
                 offset = found + max(1, len(canary))
 
-    for marker in _PRIVATE_KEY_MARKERS:
-        for chunk_start, chunk in _scan_chunks(data):
-            offset = 0
-            while len(findings) < _MAX_SCAN_FINDINGS:
-                found = chunk.find(marker, offset)
-                if found < 0:
-                    break
-                absolute = chunk_start + found
-                _append_finding(
-                    findings,
-                    seen,
-                    "private_key_marker",
-                    absolute,
-                    absolute + len(marker),
-                    Sensitivity.KEY_MATERIAL,
-                )
-                offset = found + len(marker)
+    # The whole key block, BEGIN through END, searched across scan chunks (#1248, P-D4).
+    for block_start, block_end, _terminated in _private_key_blocks(data):
+        if len(findings) >= _MAX_SCAN_FINDINGS:
+            break
+        _append_finding(
+            findings,
+            seen,
+            "private_key_marker",
+            block_start,
+            block_end,
+            Sensitivity.KEY_MATERIAL,
+        )
 
     for pattern in (*_CREDENTIAL_PATTERNS, _URI_PASSWORD):
         for chunk_start, chunk in _scan_chunks(data):
@@ -1166,7 +1388,7 @@ def scan_for_sensitive_content(
             name = match.group("name")
             assign = match.group("assign")
             # Judge the value exactly as the plain heuristic would judge ``name = value``.
-            synthetic = b" " + name + b" " + assign
+            synthetic = name + b" " + assign
             token_family = _TOKEN_LIKE_ASSIGNMENT_NAME.fullmatch(name) is not None or (
                 _SECRET_ASSIGNMENT.match(synthetic) is None
             )
@@ -1184,6 +1406,20 @@ def scan_for_sensitive_content(
                 Sensitivity.SECRET,
                 ScanConfidence.HEURISTIC,
             )
+
+    # YAML block values span lines, so they are found in the whole of ``data`` (#1248, P-D4).
+    for value_start, value_end in _yaml_block_values(data):
+        if len(findings) >= _MAX_SCAN_FINDINGS:
+            break
+        _append_finding(
+            findings,
+            seen,
+            "credential_pattern",
+            value_start,
+            value_end,
+            Sensitivity.SECRET,
+            ScanConfidence.HEURISTIC,
+        )
 
     findings.sort(key=lambda finding: (finding.start_offset, finding.end_offset, finding.kind))
     return tuple(findings)
@@ -1247,7 +1483,10 @@ def _replace_sensitive_spans(
     Only bytes inside a match are replaced: an assignment keeps its name, separator and quotes,
     and overlapping matches are replaced once, as their union. A heuristic span that overlaps a
     high-confidence finding (``TOKEN = 'ghp_...'``: the assignment and the token shape) holds a
-    detected credential, so it keeps ``marker``.
+    detected credential, so it keeps ``marker``. A replaced span that crosses lines (a private key
+    block, a YAML block value) keeps every line break it held, raw or encoded, after its marker
+    and nothing else of those lines (#1248, P-D4): the text keeps its line count, so a line read
+    or a line number taken from the redacted text still names the same line.
     """
 
     if heuristic_marker is not None and heuristic_marker not in _EXEMPT_REPLACEMENT_MARKERS:
@@ -1261,31 +1500,36 @@ def _replace_sensitive_spans(
         )
         pieces.append(data[cursor : lead.start_offset])
         raw = data[lead.start_offset : lead.end_offset]
-        separator = _assignment_separator(raw)
+        # A key block holds base64 ``=`` and PEM ``Proc-Type:`` headers, never a label to keep.
+        separator = None if lead.kind == "private_key_marker" else _assignment_separator(raw)
         prefix = b"" if separator is None else raw[: separator.start()].lower()
         if separator is not None and (
             lead.confidence is ScanConfidence.HEURISTIC
             or re.search(rb"(?:token|secret|password|passwd|api|key|auth)", prefix)
         ):
-            value = raw[separator.end() :]
+            value = data[lead.start_offset + separator.end() : group_end]
             literal_prefix = _STRING_PREFIX.match(value)
             string_prefix = b"" if literal_prefix is None else literal_prefix.group(0)
             value = value[len(string_prefix) :]
-            opening_quote = (
-                value[:2]
-                if value.startswith(b'\\"')
-                else value[:1]
-                if value.startswith((b"'", b'"'))
+            opening_quote = _value_quote(value)
+            closing_quote = (
+                opening_quote
+                if opening_quote
+                and value.endswith(opening_quote)
+                and len(value) >= 2 * len(opening_quote)
                 else b""
             )
-            closing_quote = (
-                opening_quote if opening_quote and value.endswith(opening_quote) else b""
-            )
+            inner = value[len(opening_quote) : len(value) - len(closing_quote)]
             pieces.append(
-                raw[: separator.end()] + string_prefix + opening_quote + span_marker + closing_quote
+                raw[: separator.end()]
+                + string_prefix
+                + opening_quote
+                + span_marker
+                + _line_breaks_of(inner, encoded=not opening_quote)
+                + closing_quote
             )
         else:
-            pieces.append(span_marker)
+            pieces.append(span_marker + _line_breaks_of(data[lead.start_offset : group_end]))
         cursor = group_end
     pieces.append(data[cursor:])
     return b"".join(pieces)
@@ -1357,6 +1601,10 @@ def prepare_persisted_plaintext(
     # is no later match, so encrypted persistence withholds instead of redacting a prefix.
     if len(high) >= _MAX_SCAN_FINDINGS:
         return PersistenceScanResult(False, b"", True, kinds)
+    # A private key BEGIN line without its END: no bound on the key body, so the item is withheld
+    # (#1248, P-D4).
+    if _unterminated_private_key(data, high):
+        return PersistenceScanResult(False, b"", True, kinds)
     if not high:
         return PersistenceScanResult(True, data, False, ())
     redacted = _replace_sensitive_spans(data, high)
@@ -1374,12 +1622,15 @@ def redact_sensitive_content(
     marker instead, which must be one of FinishUP's exact replacement markers
     (``EGRESS_CREDENTIAL_PLACEHOLDER``) so a further pass never re-matches it. The check-time
     change uses it so a reviewer is told the value may be a credential FinishUP withheld (tb4n5),
-    never left to read ``password=[REDACTED]`` as source code.
+    never left to read ``password=[REDACTED]`` as source code. A private key BEGIN line without
+    its END withholds the whole text: the result is empty (#1248, P-D4).
     """
 
     findings = scan_for_sensitive_content(data)
     if not findings:
         return data, False
+    if _unterminated_private_key(data, findings):
+        return b"", True
     return _replace_sensitive_spans(data, findings, heuristic_marker=heuristic_marker), True
 
 
@@ -1389,7 +1640,9 @@ def redact_high_confidence_content(data: bytes) -> tuple[bytes, bool]:
     Heuristic-only assignment matches stay as captured (issue #982); they are redacted at egress
     by ``redact_heuristic_spans`` and the final-body scan. The flag is true only when bytes were
     actually replaced. Callers that persist the result still pass it through
-    ``prepare_persisted_plaintext``, which re-scans and withholds on canary or saturation.
+    ``prepare_persisted_plaintext``, which re-scans and withholds on canary or saturation. A
+    private key is replaced from its BEGIN line through its END line; without an END line the
+    whole text is withheld and the result is empty, flagged as redacted (#1248, P-D4).
     """
 
     if type(data) is not bytes:
@@ -1397,6 +1650,8 @@ def redact_high_confidence_content(data: bytes) -> tuple[bytes, bool]:
     high = _high_confidence_findings(scan_for_sensitive_content(data))
     if not high:
         return data, False
+    if _unterminated_private_key(data, high):
+        return b"", True
     redacted = _replace_sensitive_spans(data, high)
     return redacted, redacted != data
 
@@ -1506,13 +1761,31 @@ def redact_before_cut(content: bytes) -> bytes | None:
 
     if type(content) is not bytes:
         raise TypeError("redaction_data_not_bytes")
+    return redact_fully(content, max_passes=_MAX_CUT_REDACTION_PASSES)
+
+
+def redact_fully(content: bytes, *, max_passes: int = _MAX_CUT_REDACTION_PASSES) -> bytes | None:
+    """``content`` redacted raw and in its JSON-string encoding until a pass finds nothing.
+
+    The one redaction every slice is cut from (#1248, P-D4): case composition's cuts, the
+    reviewer's line and offset reads, and the check-time change before its #983 parts. Concrete
+    shapes read ``[REDACTED]``, values that only look like credentials read the egress
+    placeholder, and every line break is kept, so line numbers still hold. ``None`` when the
+    text cannot be redacted in full: the pass bound is reached, or a private key has no END line.
+    Nothing is retained.
+    """
+
+    if type(content) is not bytes:
+        raise TypeError("redaction_data_not_bytes")
     text = content
-    for _pass in range(_MAX_CUT_REDACTION_PASSES):
-        replaced, detected = redact_sensitive_content(
-            text, heuristic_marker=EGRESS_CREDENTIAL_PLACEHOLDER
-        )
-        if detected:
-            text = replaced
+    for _pass in range(max_passes):
+        findings = scan_for_sensitive_content(text)
+        if findings:
+            if _unterminated_private_key(text, findings):
+                return None
+            text = _replace_sensitive_spans(
+                text, findings, heuristic_marker=EGRESS_CREDENTIAL_PLACEHOLDER
+            )
             continue
         encoded = redact_encoded_heuristic_spans(text)
         if encoded is None:
@@ -1589,8 +1862,9 @@ def heuristic_value_lines(
     """1-based lines of the values ``redact_heuristic_spans`` replaces in ``data`` (PL2-1).
 
     ``json_string=True`` reads ``data`` as the canonical JSON string encoding of a text and
-    reports lines of that decoded text. Replacement never removes a line break (values never
-    span one), so the lines also hold for the original item text. Only sorted unique line
+    reports lines of that decoded text. Replacement never removes a line break (a value that
+    spans lines, a YAML block value, keeps its breaks), so the lines also hold for the original
+    item text. Only sorted unique line
     numbers are returned, at most ``limit``; no matched bytes or offsets are retained.
     """
 
@@ -1604,18 +1878,19 @@ def heuristic_value_lines(
     if not heuristic:
         return ()
     newline_offsets = _json_string_newline_offsets(data) if json_string else None
-    lines: set[int] = set()
-    cursor = 0
-    for finding in heuristic:
-        if finding.start_offset < cursor:
-            continue
-        separator = _assignment_separator(data[finding.start_offset : finding.end_offset])
-        value_start = finding.start_offset + (0 if separator is None else separator.end())
+
+    def line_of(offset: int) -> int:
         if newline_offsets is None:
-            lines.add(data.count(b"\n", 0, value_start) + 1)
-        else:
-            lines.add(bisect.bisect_left(newline_offsets, value_start) + 1)
-        cursor = finding.end_offset
+            return data.count(b"\n", 0, offset) + 1
+        return bisect.bisect_left(newline_offsets, offset) + 1
+
+    lines: set[int] = set()
+    # Grouped as ``_replace_sensitive_spans`` groups them: a YAML block value overlaps the plain
+    # match of its first line, and the replacement covers every line the group runs over.
+    for lead, group_end, _high in _overlapping_finding_groups(heuristic):
+        separator = _assignment_separator(data[lead.start_offset : lead.end_offset])
+        value_start = lead.start_offset + (0 if separator is None else separator.end())
+        lines.update(range(line_of(value_start), line_of(max(value_start, group_end - 1)) + 1))
     return tuple(sorted(lines))[: max(0, limit)]
 
 

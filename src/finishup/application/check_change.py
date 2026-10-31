@@ -46,7 +46,7 @@ from finishup.observability.logging import (
     record_bounded_event_without_raising,
     record_unexpected_exception_without_raising,
 )
-from finishup.observability.privacy import EGRESS_CREDENTIAL_PLACEHOLDER, redact_sensitive_content
+from finishup.observability.privacy import redact_fully
 from finishup.ports.change_capture import (
     CHECK_CHANGE_MEDIA_TYPE,
     MAX_CHECK_CHANGE_TEXT_BYTES,
@@ -353,21 +353,20 @@ def _redacted_text(text: bytes) -> tuple[bytes, bool]:
     source read as an undefined name to the reviewer. The same spans are withheld either way;
     only the marker differs, and redaction still runs at capture whatever the owner's
     possible-credential opt-out says.
+
+    The passes run on the text and on its JSON-string encoding (``redact_fully``), as case
+    composition and egress do, so a value only the encoded form shows is replaced here too, before
+    the #983 split could cut a part between its label and its value (#1248, P-D4). A private key
+    is replaced from BEGIN through END; one without its END cannot be redacted in full, so the
+    text is withheld (``redaction_incomplete``) and never offered partly redacted.
     """
 
-    redacted = False
-    for _ in range(_MAX_REDACTION_PASSES):
-        replaced, detected = redact_sensitive_content(
-            text, heuristic_marker=EGRESS_CREDENTIAL_PLACEHOLDER
-        )
-        if not detected:
-            break
-        text, redacted = replaced, True
-    else:
+    redacted = redact_fully(text, max_passes=_MAX_REDACTION_PASSES)
+    if redacted is None:
         raise ChangeCaptureUnavailable("redaction_incomplete")
-    if redacted:
-        text = text.decode("utf-8", errors="replace").encode("utf-8")
-    return text, redacted
+    if redacted == text:
+        return text, False
+    return redacted.decode("utf-8", errors="replace").encode("utf-8"), True
 
 
 def _redacted_inputs(inputs: tuple[TaskInputFile, ...]) -> tuple[TaskInputFile, ...]:

@@ -1120,9 +1120,9 @@ def test_heuristic_value_lines_reads_raw_and_json_string_forms() -> None:
 
     text = 'first\nAPI_KEY=abcdefgh1234zz\nok\n  password: "hunter2-long-value"\n'
     assert heuristic_value_lines(text.encode()) == (2, 4)
-    # In the encoded form the escaped newline hides the first assignment's boundary, so only
-    # the later value is found; its line is still counted in the decoded text.
-    assert heuristic_value_lines(canonical_encode(text), json_string=True) == (4,)
+    # In the encoded form a name right after an escaped newline still starts an assignment
+    # (#1248 P3), and each line is counted in the decoded text.
+    assert heuristic_value_lines(canonical_encode(text), json_string=True) == (2, 4)
     assert heuristic_value_lines(b"plain words") == ()
     many = b"".join(b"API_TOKEN=abcdefgh%08d\n" % index for index in range(40))
     assert heuristic_value_lines(many) == tuple(range(1, 33))

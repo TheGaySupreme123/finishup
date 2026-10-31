@@ -45,6 +45,8 @@ from finishup.domain.events import (
     LedgerRecord,
 )
 from finishup.domain.privacy import (
+    CredentialHeuristic,
+    ForbiddenDataKind,
     PrivacyOutcome,
     PrivacyReason,
     ReceiptSecretScanStage,
@@ -98,12 +100,34 @@ from unit.privacy.test_review_privacy_labels import (
     _render,  # pyright: ignore[reportPrivateUsage]
 )
 
-# A nested YAML password whose quoted value runs straight into another assignment. The value is
-# replaced in place in the packet; the conversation's second encoding re-detects the quoted
-# placeholder (marker exemption, #1248 P1). The TB4 production-planning shape, the placeholder
-# followed by an encoded line break or tab, no longer re-matches since values end there (P2).
-_NESTED_YAML = b'db:\n  password: "hunter2"secret=x9\n  role: admin\n'
+# A nested YAML password, replaced in place in the packet, beside a synthetic match only the
+# reviewer-conversation scan reports. The shapes that used to re-match only in the conversation's
+# second encoding no longer do: values end at line breaks (#1248 P2), and a value quoted at the
+# conversation's depth is read as the packet's is (#1015, P3), so the hit is planted.
+_PLANTED = b"conversation-only-match-4821"
+_NESTED_YAML = b"db:\n  password: hunter2\n  note: " + _PLANTED + b"\n"
 _EXCERPT = "excerpt-evd_10000000-0000-4000-8000-000000000001"
+
+
+class _ConversationScanEnforcer(LocalPrivacyEnforcer):
+    """The shipped enforcer, whose exact-byte scan also reports ``_PLANTED`` as a heuristic.
+
+    Classification and minimization use the module scanner, which never sees ``_PLANTED`` as a
+    match, so the planted bytes reach the conversation like any unflagged content.
+    """
+
+    def scan_exact_bytes(
+        self,
+        data: bytes,
+        *,
+        credential_heuristic: CredentialHeuristic = CredentialHeuristic.ENFORCED,
+    ) -> tuple[ForbiddenDataKind, ...]:
+        found = super().scan_exact_bytes(data, credential_heuristic=credential_heuristic)
+        if credential_heuristic is CredentialHeuristic.ENFORCED and _PLANTED in data:
+            return tuple(
+                sorted({*found, ForbiddenDataKind.API_CREDENTIAL}, key=lambda k: k.value.encode())
+            )
+        return found
 
 
 async def _evaluate_conversation(content: bytes) -> tuple[object, _Audit]:
@@ -124,7 +148,7 @@ async def _evaluate_conversation(content: bytes) -> tuple[object, _Audit]:
     audit = _Audit()
     coordinator = PrivacyCoordinator(
         cast(PrivacyPolicyStorePort, _Store()),
-        LocalPrivacyEnforcer(),
+        _ConversationScanEnforcer(),
         cast(PrivacyAuditPort, audit),
         cast(OutboundGatewayPort, _Gateway()),
         cast(ClockPort, _Clock()),

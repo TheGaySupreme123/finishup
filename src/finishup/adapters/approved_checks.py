@@ -490,7 +490,7 @@ class ApprovedCheckRunner:
         approvals: Mapping[str, ApprovedCheckApproval] | None = None,
         *,
         sandbox: CheckSandboxPort | None = None,
-        output_sink: Callable[[bytes], None] | None = None,
+        output_sink: Callable[[bytes, bool], None] | None = None,
     ) -> None:
         self._approvals = dict(approvals or {})
         self._sandbox = sandbox if sandbox is not None else default_check_sandbox()
@@ -620,13 +620,15 @@ class ApprovedCheckRunner:
             duration_ms = int((time.monotonic() - started) * 1000)
             exit_status = int(process.returncode or 0)
             # Output goes to the encrypted store; heuristic-only matches are redacted at egress.
-            safe_output, _redacted = redact_high_confidence_content(bytes(stdout))
+            # A private key without its END line withholds the whole output (#1248, P-D4).
+            safe_output, redacted = redact_high_confidence_content(bytes(stdout))
             captured_len = len(safe_output)
             output_digest = "sha256:" + hashlib.sha256(safe_output).hexdigest()
             if self._output_sink is not None:
-                # Ephemeral handoff to the ready-service encrypted object writer.
-                # The sink receives only the redacted bounded buffer.
-                self._output_sink(safe_output)
+                # Ephemeral handoff to the ready-service encrypted object writer. The sink
+                # receives only the redacted bounded buffer, and whether this redaction replaced
+                # bytes, so the stored output and its receipt say so (#1015).
+                self._output_sink(safe_output, redacted)
             stdout[:] = b"\x00" * len(stdout)
             del stdout
             if truncated:

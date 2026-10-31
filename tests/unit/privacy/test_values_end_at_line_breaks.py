@@ -156,7 +156,19 @@ def test_capture_redaction_keeps_the_following_line(
 
 
 def _high_confidence_shapes() -> tuple[str, ...]:
-    pem_label = "-" * 5 + "BEGIN " + "RSA PRIVATE KEY" + "-" * 5
+    # A whole key block on one line: a BEGIN line without its END withholds the item (P3).
+    pem_label = (
+        "-" * 5
+        + "BEGIN "
+        + "RSA PRIVATE KEY"
+        + "-" * 5
+        + "MII"
+        + "Ab3x" * 4
+        + "-" * 5
+        + "END "
+        + "RSA PRIVATE KEY"
+        + "-" * 5
+    )
     return (
         "sk" + "-" + "a1B2" * 6,
         "gh" + "p_" + "A1b2C3d4" * 3,
