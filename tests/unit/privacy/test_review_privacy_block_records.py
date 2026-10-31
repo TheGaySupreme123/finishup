@@ -45,6 +45,8 @@ from finishup.domain.events import (
     LedgerRecord,
 )
 from finishup.domain.privacy import (
+    CredentialHeuristic,
+    ForbiddenDataKind,
     PrivacyOutcome,
     PrivacyReason,
     ReceiptSecretScanStage,
@@ -62,6 +64,7 @@ from finishup.kernel.review_round import privacy_block_standing
 from finishup.mcp.summaries import (
     _check_lead_variants,  # pyright: ignore[reportPrivateUsage]
 )
+from finishup.observability.privacy import EGRESS_CREDENTIAL_PLACEHOLDER
 from finishup.ports.clock import ClockPort
 from finishup.ports.diagnostics import RuntimeCapability
 from finishup.ports.ids import IdPort
@@ -73,7 +76,7 @@ from finishup.ports.privacy import (
     PrivacyAuditPort,
     PrivacyPolicyStorePort,
 )
-from finishup.ports.semantic import Deadline
+from finishup.ports.semantic import Deadline, decode_reviewer_exchange, encode_reviewer_exchange
 from finishup.protocol.canonical import JsonValue
 from finishup.protocol.models import SemanticReason, SemanticStatus
 from finishup.protocol.redacted_values import SemanticRedactedValue
@@ -95,16 +98,48 @@ from unit.privacy.test_planted_credentials_semantic_arm import (
 )
 from unit.privacy.test_review_privacy_labels import (
     _evaluate,  # pyright: ignore[reportPrivateUsage]
-    _render,  # pyright: ignore[reportPrivateUsage]
 )
 
 # The TB4 production-planning shape: a nested YAML password followed by an indented line. The
-# value is replaced in place in the packet; the conversation's second encoding re-detects it.
+# value is replaced in place in the packet; the conversation's second encoding used to re-detect
+# FinishUP's own placeholder and refuse the whole review (#1138, #1248 P-D1).
 _NESTED_YAML = b"db:\n  password: hunter2\n  role: admin\n"
 _EXCERPT = "excerpt-evd_10000000-0000-4000-8000-000000000001"
+# A synthetic match only the reviewer-conversation scan reports, so a conversation-stage hit can
+# be placed in exactly one item (or in FinishUP's frame) without a credential-shaped literal.
+_PLANTED = b"conversation-only-match-4821"
 
 
-async def _evaluate_conversation(content: bytes) -> tuple[object, _Audit]:
+class _ConversationScanEnforcer(LocalPrivacyEnforcer):
+    """The shipped enforcer, whose exact-byte scan also reports ``_PLANTED`` as a heuristic.
+
+    Classification and minimization use the module scanner, which never sees ``_PLANTED`` as a
+    match, so the planted bytes reach the conversation like any unflagged content.
+    """
+
+    def scan_exact_bytes(
+        self,
+        data: bytes,
+        *,
+        credential_heuristic: CredentialHeuristic = CredentialHeuristic.ENFORCED,
+        marker_spans: tuple[tuple[int, int], ...] = (),
+    ) -> tuple[ForbiddenDataKind, ...]:
+        found = super().scan_exact_bytes(
+            data, credential_heuristic=credential_heuristic, marker_spans=marker_spans
+        )
+        if credential_heuristic is CredentialHeuristic.ENFORCED and _PLANTED in data:
+            return tuple(
+                sorted({*found, ForbiddenDataKind.API_CREDENTIAL}, key=lambda k: k.value.encode())
+            )
+        return found
+
+
+async def _evaluate_conversation(
+    content: bytes,
+    *,
+    enforcer: LocalPrivacyEnforcer | None = None,
+    frame_text: str = "review the packet",
+) -> tuple[object, _Audit]:
     frozen, captured, scope = _captured_case_values(content)
     case = build_semantic_case(
         case_id="cas_10000000-0000-4000-8000-000000000001",
@@ -122,7 +157,7 @@ async def _evaluate_conversation(content: bytes) -> tuple[object, _Audit]:
     audit = _Audit()
     coordinator = PrivacyCoordinator(
         cast(PrivacyPolicyStorePort, _Store()),
-        LocalPrivacyEnforcer(),
+        enforcer or LocalPrivacyEnforcer(),
         cast(PrivacyAuditPort, audit),
         cast(OutboundGatewayPort, _Gateway()),
         cast(ClockPort, _Clock()),
@@ -131,12 +166,14 @@ async def _evaluate_conversation(content: bytes) -> tuple[object, _Audit]:
             "established_passphrase", "sha256:" + "8" * 64, 1, "passphrase", 1, True
         ),
     )
+
+    def render(packet: bytes) -> bytes:
+        return encode_reviewer_exchange((("system", frame_text), ("user", packet.decode())))
+
     result = await coordinator.evaluate_semantic(
         _candidate(case),
         Deadline(datetime(2026, 10, 8, 17, 8, tzinfo=UTC), 61.0),
-        exchange=ReviewerExchangeFrame(
-            "application/vnd.finishup.reviewer-final+json", lambda packet: _render(packet)
-        ),
+        exchange=ReviewerExchangeFrame("application/vnd.finishup.reviewer-final+json", render),
     )
     return result, audit
 
@@ -150,18 +187,64 @@ def _blocked(result: object) -> tuple[SemanticRedactedValue, ...]:
     return tuple(item for item in result.redacted_values if item.disposition == "review_blocked")
 
 
+def _prepared(result: object, audit: _Audit) -> bytes:
+    # The audit fake stops at preparation: reaching it means no privacy stage refused the case.
+    assert isinstance(result, SemanticEgressBlocked)
+    assert result.reason is PrivacyReason.AUDIT_FAILED
+    assert not [item for item in result.redacted_values if item.disposition == "review_blocked"]
+    (proposal,) = audit.prepared
+    return proposal.minimized.prepared_bytes
+
+
+@pytest.mark.anyio
+async def test_the_tb4_nested_yaml_shape_reaches_the_reviewer_with_its_marker() -> None:
+    # #1248 P-D1: FinishUP's own marker never produces a hit, so the conversation goes on.
+    result, audit = await _evaluate_conversation(_NESTED_YAML)
+    conversation = _prepared(result, audit)
+    packet = json.loads(decode_reviewer_exchange(conversation)[1][1])
+    (excerpt,) = [item for item in packet["items"] if item["item_id"] == _EXCERPT]
+    marker = EGRESS_CREDENTIAL_PLACEHOLDER.decode()
+    assert f"  password: {marker}\n  role: admin\n" in excerpt["content"]
+    assert b"hunter2" not in conversation
+
+
+@pytest.mark.anyio
+async def test_a_conversation_hit_in_one_item_withholds_that_item_and_the_review_goes_on() -> None:
+    # #1248 P-D2: the hit withholds the one item it sat in, named, and nothing else.
+    content = b"notes: " + _PLANTED + b"\n"
+    result, audit = await _evaluate_conversation(content, enforcer=_ConversationScanEnforcer())
+    conversation = _prepared(result, audit)
+    assert _PLANTED not in conversation
+    assert isinstance(result, SemanticEgressBlocked)
+    assert _EXCERPT in result.withheld_item_ids
+    (withheld,) = [item for item in result.redacted_values if item.item_id == _EXCERPT]
+    assert withheld.disposition == "item_withheld"
+    (proposal,) = audit.prepared
+    assert _EXCERPT in proposal.minimized.withheld_item_ids
+    assert _EXCERPT not in proposal.minimized.included_item_ids
+    assert proposal.minimized.included_item_ids
+    # The packet the reviewer reads says the item was withheld for a credential-like value.
+    packet = json.loads(decode_reviewer_exchange(conversation)[1][1])
+    assert _EXCERPT not in {item["item_id"] for item in packet["items"]}
+    assert "never_send_heuristic" in json.dumps(packet)
+
+
 @pytest.mark.anyio
 async def test_a_conversation_refusal_names_its_stage_its_item_and_its_class() -> None:
-    result, audit = await _evaluate_conversation(_NESTED_YAML)
+    # The same item match, now also in FinishUP's frame, which must be sent as it is: withholding
+    # the item cannot clear the frame, so the whole case is refused and the item is named.
+    content = b"notes: " + _PLANTED + b"\n"
+    result, audit = await _evaluate_conversation(
+        content,
+        enforcer=_ConversationScanEnforcer(),
+        frame_text="review the packet " + _PLANTED.decode(),
+    )
     (blocked,) = _blocked(result)
     assert (blocked.item_id, blocked.stage, blocked.match_class) == (
         _EXCERPT,
         "reviewer_exchange",
         "heuristic",
     )
-    # The replaced value's line is kept: that is where the re-detected placeholder sits.
-    assert blocked.lines
-    assert b"hunter2" not in repr(result).encode()
     (receipt,) = audit.receipts
     assert receipt.counts.final_bytes == 0
     scan = receipt.secret_scan

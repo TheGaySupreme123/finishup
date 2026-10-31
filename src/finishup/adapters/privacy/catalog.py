@@ -229,6 +229,22 @@ def _mapping(value: JsonValue) -> dict[str, JsonValue]:
     return cast(dict[str, JsonValue], value)
 
 
+def _marker_spans_from_wire(value: object) -> tuple[tuple[int, int], ...]:
+    """A persisted proposal's recorded marker spans (#1248 P-D1); malformed is unreadable."""
+
+    if type(value) is not list:
+        raise ValueError("marker_spans_invalid")
+    spans: list[tuple[int, int]] = []
+    for pair in cast(list[object], value):
+        if type(pair) is not list or len(cast(list[object], pair)) != 2:
+            raise ValueError("marker_spans_invalid")
+        start, end = cast(list[object], pair)
+        if type(start) is not int or type(end) is not int:
+            raise ValueError("marker_spans_invalid")
+        spans.append((start, end))
+    return tuple(spans)
+
+
 def _strings(value: JsonValue) -> tuple[str, ...]:
     if type(value) is not list or any(type(item) is not str for item in value):
         raise ValueError("privacy_audit_row_corrupt")
@@ -2142,6 +2158,12 @@ class CatalogPrivacyAudit:
                 if request.minimized.redacted_values
                 else {}
             ),
+            # #1248 P-D1: written only when present, so older proposals keep their exact bytes.
+            **(
+                {"marker_spans": [[start, end] for start, end in request.minimized.marker_spans]}
+                if request.minimized.marker_spans
+                else {}
+            ),
         }
         proposal_bytes = canonical_encode(cast(JsonValue, proposal_value))
         proposal_commitment = _mac(self._key, _PROPOSAL_DOMAIN, proposal_bytes)
@@ -2179,6 +2201,7 @@ class CatalogPrivacyAudit:
             request.minimized.included_item_ids,
             route_identity,
             request.minimized.redacted_values,
+            request.minimized.marker_spans,
         )
         structural = canonical_encode(
             {
@@ -2620,6 +2643,7 @@ class CatalogPrivacyAudit:
                 tuple(sorted(_strings(parsed.get("included_item_ids") or []), key=str.encode)),
                 stored_route,
                 semantic_redacted_values_from_wire(parsed.get("redacted_values") or []),
+                _marker_spans_from_wire(parsed.get("marker_spans") or []),
             )
         except Exception:
             return None

@@ -28,10 +28,15 @@ from finishup.domain.privacy import (
     ProjectionProvenanceContext,
     external_review_credential_heuristic,
 )
+from finishup.observability.marker_spans import (
+    MarkerSpans,
+    encoded_string_spans,
+    packet_rows_marker_spans,
+)
 from finishup.observability.privacy import (
     heuristic_value_lines,
-    redact_encoded_heuristic_spans,
-    redact_heuristic_spans,
+    redact_encoded_heuristic_spans_marked,
+    redact_heuristic_spans_marked,
     scan_finding_is_heuristic,
     scan_for_sensitive_content,
 )
@@ -78,8 +83,10 @@ def estimated_token_count(byte_count: int) -> int:
 # The bounded Python source proof and minimum-span transform are a new scanner profile. Keep the
 # profile identity distinct so proposals and receipts cannot present the previous whole-item policy
 # as though it had used the new semantics.
-_SCANNER_REGISTRY_VERSION = "observability-sensitive-content-v3"
-_SCANNER_PROFILE_DIGEST = "sha256:70957e0aac5cefb3d012c21715049718ec1cd2c51a8c4b4489d4bc5eacfb5726"
+# v4 (#1248 P-D1): FinishUP's own markers are exempt only by the spans recorded when they were
+# written, never by their text; a resumed proposal prepared under v3 fails closed as a mismatch.
+_SCANNER_REGISTRY_VERSION = "observability-sensitive-content-v4"
+_SCANNER_PROFILE_DIGEST = "sha256:8710381761bf88c0585e3fc081cbfc7571ecf946eb1828139175eb72de251f9c"
 _STRUCTURAL_CATEGORIES = frozenset(
     {DataCategory.BOUNDED_STRUCTURAL_METADATA, DataCategory.DECLARED_FILE_TYPE}
 )
@@ -180,10 +187,15 @@ class SensitiveScan:
         )
 
 
-def scan_exact_bytes_with_confidence(data: bytes) -> SensitiveScan:
-    """Map scanner findings while preserving high-confidence versus heuristic classes."""
+def scan_exact_bytes_with_confidence(
+    data: bytes, *, marker_spans: MarkerSpans = ()
+) -> SensitiveScan:
+    """Map scanner findings while preserving high-confidence versus heuristic classes.
 
-    findings = scan_for_sensitive_content(data)
+    ``marker_spans`` are FinishUP's recorded marker spans in ``data`` (#1248 P-D1).
+    """
+
+    findings = scan_for_sensitive_content(data, marker_spans=marker_spans)
     high: set[ForbiddenDataKind] = set()
     heuristic: set[ForbiddenDataKind] = set()
     for finding in findings:
@@ -213,7 +225,10 @@ def scan_exact_bytes_with_confidence(data: bytes) -> SensitiveScan:
 
 
 def scan_exact_bytes(
-    data: bytes, *, credential_heuristic: CredentialHeuristic = CredentialHeuristic.ENFORCED
+    data: bytes,
+    *,
+    credential_heuristic: CredentialHeuristic = CredentialHeuristic.ENFORCED,
+    marker_spans: MarkerSpans = (),
 ) -> tuple[ForbiddenDataKind, ...]:
     """Map the shared scanner to the closed never-send vocabulary.
 
@@ -226,7 +241,7 @@ def scan_exact_bytes(
     scanner saturation are in that class, so they still fail closed.
     """
 
-    scan = scan_exact_bytes_with_confidence(data)
+    scan = scan_exact_bytes_with_confidence(data, marker_spans=marker_spans)
     if credential_heuristic is CredentialHeuristic.ENFORCED:
         return scan.all_findings
     if credential_heuristic is not CredentialHeuristic.DISABLED:
@@ -321,6 +336,7 @@ _MAX_PARTIAL_WITHHOLD_ROUNDS: Final = 3
 def _items_carrying_heuristic(
     included: tuple[ClassifiedContextItem, ...],
     transformed_content: dict[str, bytes],
+    transformed_spans: dict[str, MarkerSpans],
 ) -> frozenset[str]:
     """Ids of included items whose own content, as JSON-encoded in the packet, scans heuristic.
 
@@ -331,20 +347,35 @@ def _items_carrying_heuristic(
     offending: set[str] = set()
     for item in included:
         content = transformed_content.get(item.candidate.item_id, item.candidate.plaintext)
-        forms = [content]
+        spans = transformed_spans.get(item.candidate.item_id, ())
+        forms = [(content, spans)]
         try:
-            forms.append(canonical_encode(content.decode("utf-8")))
+            encoded = canonical_encode(content.decode("utf-8"))
+            forms.append((encoded, encoded_string_spans(encoded, spans)))
         except UnicodeDecodeError:
             pass
-        if any(scan_exact_bytes_with_confidence(form).all_findings for form in forms):
+        if any(
+            scan_exact_bytes_with_confidence(form, marker_spans=form_spans).all_findings
+            for form, form_spans in forms
+        ):
             offending.add(item.candidate.item_id)
     return frozenset(offending)
 
 
-def _redact_encoded_heuristic_spans(content: bytes) -> tuple[bytes, int] | None:
-    """The shared encoded-form pass, with this minimizer's own value pass (#1230)."""
+def _packet_spans(
+    packet: bytes,
+    classified: ClassifiedContext,
+    transformed_content: dict[str, bytes],
+    transformed_spans: dict[str, MarkerSpans],
+) -> MarkerSpans:
+    """The spans of every marker this minimizer wrote, in the assembled packet (#1248 P-D1)."""
 
-    return redact_encoded_heuristic_spans(content, redact=redact_heuristic_spans)
+    envelope_spans = transformed_spans.get(REVIEW_PACKET_ITEM_ID, ())
+    envelope = transformed_content.get(REVIEW_PACKET_ITEM_ID, b"") if envelope_spans else b""
+    del classified
+    return packet_rows_marker_spans(
+        packet, transformed_spans, envelope=envelope, envelope_spans=envelope_spans
+    )
 
 
 _OPAQUE_SOURCE_REF: Final = re.compile(OPAQUE_ITEM_ID_PATTERN, re.ASCII)
@@ -560,6 +591,9 @@ class LocalPrivacyEnforcer:
             )
         )
         transformed_content: dict[str, bytes] = {}
+        # #1248 P-D1: the span of every marker this minimizer writes into an item's content, in
+        # that content; they travel with the item into the packet and every later encoding.
+        transformed_spans: dict[str, MarkerSpans] = {}
         redacted_span_count = 0
         # PL2-1: the 1-based lines of each item where a value was replaced. Lines only; the
         # values and their offsets are never kept.
@@ -567,8 +601,9 @@ class LocalPrivacyEnforcer:
         for item in included:
             if not item.heuristic_findings:
                 continue
-            sanitized, span_count = redact_heuristic_spans(item.candidate.plaintext)
+            sanitized, span_count, spans = redact_heuristic_spans_marked(item.candidate.plaintext)
             transformed_content[item.candidate.item_id] = sanitized
+            transformed_spans[item.candidate.item_id] = spans
             redacted_span_count += span_count
             if span_count:
                 replaced_lines.setdefault(item.candidate.item_id, set()).update(
@@ -592,10 +627,17 @@ class LocalPrivacyEnforcer:
             # With the owner opt-out (issue #982) heuristic matches are not findings at all, so
             # there is nothing to replace or withhold here.
             for _round in range(_MAX_PARTIAL_WITHHOLD_ROUNDS if heuristic_enforced else 0):
-                surviving = scan_exact_bytes_with_confidence(prepared)
+                surviving = scan_exact_bytes_with_confidence(
+                    prepared,
+                    marker_spans=_packet_spans(
+                        prepared, classified, transformed_content, transformed_spans
+                    ),
+                )
                 if not surviving.heuristic or surviving.high_confidence:
                     break
-                offending = _items_carrying_heuristic(included, transformed_content)
+                offending = _items_carrying_heuristic(
+                    included, transformed_content, transformed_spans
+                )
                 if not offending or REVIEW_PACKET_ITEM_ID in offending:
                     break
                 # Redact the value, not the item (issue #982, owner decision B2): first replace
@@ -608,23 +650,33 @@ class LocalPrivacyEnforcer:
                     if item_id not in offending:
                         continue
                     current = transformed_content.get(item_id, item.candidate.plaintext)
+                    current_spans = transformed_spans.get(item_id, ())
                     replaced = (
                         None
                         if item_id in encoded_redacted_ids
-                        else _redact_encoded_heuristic_spans(current)
+                        else redact_encoded_heuristic_spans_marked(
+                            current,
+                            marker_spans=current_spans,
+                            redact=redact_heuristic_spans_marked,
+                        )
                     )
                     if replaced is None:
                         to_withhold.add(item_id)
                         continue
-                    sanitized, span_count = replaced
+                    sanitized, span_count, spans = replaced
                     try:
                         encoded_current = canonical_encode(current.decode("utf-8"))
                     except UnicodeDecodeError:
                         encoded_current = b""
                     replaced_lines.setdefault(item_id, set()).update(
-                        heuristic_value_lines(encoded_current, json_string=True)
+                        heuristic_value_lines(
+                            encoded_current,
+                            json_string=True,
+                            marker_spans=encoded_string_spans(encoded_current, current_spans),
+                        )
                     )
                     transformed_content[item_id] = sanitized
+                    transformed_spans[item_id] = spans
                     redacted_span_count += span_count
                     encoded_redacted_ids.add(item_id)
                 if to_withhold:
@@ -633,6 +685,7 @@ class LocalPrivacyEnforcer:
                     )
                     for item_id in to_withhold:
                         transformed_content.pop(item_id, None)
+                        transformed_spans.pop(item_id, None)
                     withheld_item_ids = tuple(
                         sorted({*withheld_item_ids, *to_withhold}, key=str.encode)
                     )
@@ -686,7 +739,12 @@ class LocalPrivacyEnforcer:
             prepared = canonical_encode(
                 cast(JsonValue, {"items": rows, "schema": "yoetz.minimized-disclosure/1"})
             )
-        prepared_scan = scan_exact_bytes_with_confidence(prepared)
+        packet_spans: MarkerSpans = (
+            _packet_spans(prepared, classified, transformed_content, transformed_spans)
+            if classified.candidate.purpose == "semantic-review"
+            else ()
+        )
+        prepared_scan = scan_exact_bytes_with_confidence(prepared, marker_spans=packet_spans)
         source_digests = tuple(
             sorted(
                 {
@@ -740,6 +798,7 @@ class LocalPrivacyEnforcer:
             heuristic_findings=prepared_scan.heuristic if heuristic_enforced else (),
             redacted_span_count=redacted_span_count,
             redacted_values=redacted_values,
+            marker_spans=packet_spans,
         )
 
     def scan_exact_bytes(
@@ -747,8 +806,11 @@ class LocalPrivacyEnforcer:
         data: bytes,
         *,
         credential_heuristic: CredentialHeuristic = CredentialHeuristic.ENFORCED,
+        marker_spans: MarkerSpans = (),
     ) -> tuple[ForbiddenDataKind, ...]:
-        return scan_exact_bytes(data, credential_heuristic=credential_heuristic)
+        return scan_exact_bytes(
+            data, credential_heuristic=credential_heuristic, marker_spans=marker_spans
+        )
 
     def scanner_identity(self) -> tuple[str, str]:
         """Return the registry/profile pair that guards prepared and rendered bytes."""

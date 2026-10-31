@@ -932,10 +932,12 @@ def _two_excerpt_semantic_candidate(clean: bytes, suspect: bytes) -> CandidateCo
     )
 
 
-def _no_op_redaction(data: bytes) -> tuple[bytes, int]:
+def _no_op_redaction(
+    data: bytes, *, marker_spans: tuple[tuple[int, int], ...] = ()
+) -> tuple[bytes, int, tuple[tuple[int, int], ...]]:
     """Simulate a redaction that leaves a heuristic in the prepared bytes."""
 
-    return data, 1
+    return data, 1, marker_spans
 
 
 def _minimize_all(candidate: CandidateContext):  # noqa: ANN202 - test helper
@@ -977,7 +979,7 @@ def test_surviving_heuristic_withholds_only_the_offending_item(
     import finishup.adapters.privacy.local_enforcer as enforcer_module
 
     # Simulate a redaction that leaves a heuristic in the prepared bytes.
-    monkeypatch.setattr(enforcer_module, "redact_heuristic_spans", _no_op_redaction)
+    monkeypatch.setattr(enforcer_module, "redact_heuristic_spans_marked", _no_op_redaction)
     minimized = _minimize_all(
         _two_excerpt_semantic_candidate(b"clean evidence", b"API_TOKEN=abcdefgh12345678\n")
     )
@@ -1002,14 +1004,20 @@ def test_surviving_heuristic_redacts_only_the_value_in_place(
     import finishup.adapters.privacy.local_enforcer as enforcer_module
     from finishup.observability.privacy import EGRESS_CREDENTIAL_PLACEHOLDER
 
-    real = enforcer_module.redact_heuristic_spans
+    real = enforcer_module.redact_heuristic_spans_marked
     calls = {"count": 0}
 
-    def first_pass_misses(data: bytes) -> tuple[bytes, int]:
+    def first_pass_misses(
+        data: bytes, *, marker_spans: tuple[tuple[int, int], ...] = ()
+    ) -> tuple[bytes, int, tuple[tuple[int, int], ...]]:
         calls["count"] += 1
-        return (data, 0) if calls["count"] == 1 else real(data)
+        return (
+            (data, 0, marker_spans)
+            if calls["count"] == 1
+            else real(data, marker_spans=marker_spans)
+        )
 
-    monkeypatch.setattr(enforcer_module, "redact_heuristic_spans", first_pass_misses)
+    monkeypatch.setattr(enforcer_module, "redact_heuristic_spans_marked", first_pass_misses)
     minimized = _minimize_all(
         _two_excerpt_semantic_candidate(
             b"clean evidence",
@@ -1032,7 +1040,7 @@ def test_heuristic_in_structural_envelope_still_fails_closed(
 ) -> None:
     import finishup.adapters.privacy.local_enforcer as enforcer_module
 
-    monkeypatch.setattr(enforcer_module, "redact_heuristic_spans", _no_op_redaction)
+    monkeypatch.setattr(enforcer_module, "redact_heuristic_spans_marked", _no_op_redaction)
     candidate = _two_excerpt_semantic_candidate(b"clean evidence", b"plain words")
     envelope = candidate.items[0]
     poisoned = replace(
@@ -1073,14 +1081,20 @@ def test_encoded_pass_reports_replaced_value_lines(monkeypatch: pytest.MonkeyPat
     import finishup.adapters.privacy.local_enforcer as enforcer_module
     from finishup.protocol.redacted_values import SemanticRedactedValue
 
-    real = enforcer_module.redact_heuristic_spans
+    real = enforcer_module.redact_heuristic_spans_marked
     calls = {"count": 0}
 
-    def first_pass_misses(data: bytes) -> tuple[bytes, int]:
+    def first_pass_misses(
+        data: bytes, *, marker_spans: tuple[tuple[int, int], ...] = ()
+    ) -> tuple[bytes, int, tuple[tuple[int, int], ...]]:
         calls["count"] += 1
-        return (data, 0) if calls["count"] == 1 else real(data)
+        return (
+            (data, 0, marker_spans)
+            if calls["count"] == 1
+            else real(data, marker_spans=marker_spans)
+        )
 
-    monkeypatch.setattr(enforcer_module, "redact_heuristic_spans", first_pass_misses)
+    monkeypatch.setattr(enforcer_module, "redact_heuristic_spans_marked", first_pass_misses)
     minimized = _minimize_all(
         _two_excerpt_semantic_candidate(
             b"clean evidence",
@@ -1098,7 +1112,7 @@ def test_withheld_item_reports_its_ref_and_matched_lines(monkeypatch: pytest.Mon
     import finishup.adapters.privacy.local_enforcer as enforcer_module
     from finishup.protocol.redacted_values import SemanticRedactedValue
 
-    monkeypatch.setattr(enforcer_module, "redact_heuristic_spans", _no_op_redaction)
+    monkeypatch.setattr(enforcer_module, "redact_heuristic_spans_marked", _no_op_redaction)
     minimized = _minimize_all(
         _two_excerpt_semantic_candidate(
             b"clean evidence", b"first line\nsecond line\nAPI_TOKEN=abcdefgh12345678\n"
@@ -1175,7 +1189,7 @@ def test_a_reviewer_exchange_can_only_fail_the_disclosure_on_its_size(
     from finishup.ports.privacy import MAX_MINIMIZED_DISCLOSURE_BYTES
 
     if redact:
-        monkeypatch.setattr(enforcer_module, "redact_heuristic_spans", _no_op_redaction)
+        monkeypatch.setattr(enforcer_module, "redact_heuristic_spans_marked", _no_op_redaction)
     minimized = _minimize_all(_two_excerpt_semantic_candidate(clean, suspect))
     if clean == suspect:
         assert len(minimized.source_item_digests) == 2  # the packet envelope and one source

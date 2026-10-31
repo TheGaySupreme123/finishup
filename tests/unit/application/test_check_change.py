@@ -72,10 +72,12 @@ def test_a_value_that_only_looks_like_a_credential_reads_as_withheld_not_as_code
     assert redacted.redacted
     assert b"password=" + EGRESS_CREDENTIAL_PLACEHOLDER + b"," in redacted.text
     assert b"config.POSTGRES_PASSWORD" not in redacted.text
-    # A concrete credential shape still reads [REDACTED]; both converge to a clean scan.
+    # A concrete credential shape still reads [REDACTED].
     assert token not in redacted.text and b"TOKEN = '[REDACTED]'" in redacted.text
-    assert scan_exact_bytes(redacted.text) == ()
-    assert _redacted(redacted) is redacted
+    # #1248 P-D1: the stored text keeps no record of where its markers were written, so a later
+    # scan judges the placeholder as a value; redacting it again writes the same bytes.
+    assert scan_exact_bytes(redacted.text) != ()
+    assert _redacted(redacted).text == redacted.text
 
 
 def test_clean_change_is_returned_unchanged() -> None:
@@ -85,10 +87,10 @@ def test_clean_change_is_returned_unchanged() -> None:
 
 
 def test_change_that_cannot_be_fully_redacted_is_withheld(monkeypatch: pytest.MonkeyPatch) -> None:
-    def never_clean(data: bytes, **_: object) -> tuple[bytes, bool]:
-        return data + b".", True
+    def never_clean(data: bytes, **_: object) -> tuple[bytes, bool, tuple[tuple[int, int], ...]]:
+        return data + b".", True, ()
 
-    monkeypatch.setattr(check_change_module, "redact_sensitive_content", never_clean)
+    monkeypatch.setattr(check_change_module, "redact_sensitive_content_marked", never_clean)
 
     with pytest.raises(ChangeCaptureUnavailable) as caught:
         _redacted(_capture(b"+token = forever-matching\n"))
@@ -1272,14 +1274,18 @@ def test_a_task_input_withheld_whole_is_disclosed_as_redacted(
 
     from finishup.ports.change_capture import TaskInputFile
 
-    original = check_change_module.redact_sensitive_content
+    original = check_change_module.redact_sensitive_content_marked
 
-    def never_clean_for_the_input(data: bytes, **options: bytes | None) -> tuple[bytes, bool]:
+    def never_clean_for_the_input(
+        data: bytes, **options: Any
+    ) -> tuple[bytes, bool, tuple[tuple[int, int], ...]]:
         if b"WITHHELD_INPUT_MARKER" in data:
-            return data + b".", True
+            return data + b".", True, ()
         return original(data, **options)
 
-    monkeypatch.setattr(check_change_module, "redact_sensitive_content", never_clean_for_the_input)
+    monkeypatch.setattr(
+        check_change_module, "redact_sensitive_content_marked", never_clean_for_the_input
+    )
     capture = CheckChangeCapture(
         base="task_start",
         text=b"diff --git a/a.py b/a.py\n+print('kept')\n",

@@ -34,6 +34,7 @@ from finishup.domain.privacy import (
     PrivacyOutcome,
     PrivacyPolicy,
     ProviderBinding,
+    marker_spans_well_formed,
 )
 from finishup.domain.reviewer_context import MAX_SIZED_EXCHANGE_BYTES
 from finishup.domain.values import (
@@ -519,12 +520,18 @@ class MinimizedDisclosure:
     # PL2-1 (issue #982): per item, the catalogued ref and the 1-based lines whose credential-like
     # values were replaced or whose item was withheld. Line numbers only, never values.
     redacted_values: tuple[SemanticRedactedValue, ...] = ()
+    # #1248 P-D1: the recorded span of every marker FinishUP wrote into the review packet, in the
+    # packet's own bytes (``prepared_bytes``, or the packet a reviewer conversation carries as its
+    # first user message). Offsets only; a scan exempts exactly these spans.
+    marker_spans: tuple[tuple[int, int], ...] = ()
 
     def __post_init__(self) -> None:
         try:
             validate_semantic_redacted_values(self.redacted_values)
         except ValueError as exc:
             raise _invalid() from exc
+        if not marker_spans_well_formed(self.marker_spans):
+            raise _invalid()
         if (
             type(self.prepared_bytes) is not bytes
             or len(self.prepared_bytes) > MAX_MINIMIZED_DISCLOSURE_BYTES
@@ -1172,8 +1179,13 @@ class PrivacyClassifierPort(Protocol):
         data: bytes,
         *,
         credential_heuristic: CredentialHeuristic = CredentialHeuristic.ENFORCED,
+        marker_spans: tuple[tuple[int, int], ...] = (),
     ) -> tuple[ForbiddenDataKind, ...]:
-        """Final exact-byte scan; ``DISABLED`` (owner opt-out, #982) reports high-confidence only."""
+        """Final exact-byte scan; ``DISABLED`` (owner opt-out, #982) reports high-confidence only.
+
+        ``marker_spans`` are FinishUP's recorded marker spans in ``data`` (#1248 P-D1): the only
+        markers the scan exempts.
+        """
         ...
 
 

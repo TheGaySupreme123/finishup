@@ -90,3 +90,31 @@ async def test_replacement_growth_finishes_the_job_as_capacity_not_network_denia
         - len(b"hunter2"),
         "semantic_excerpt_total_limit_bytes": selected,
     }
+
+
+# #1248 P1: the TB4 line shapes after a value FinishUP replaced, in the change under review. The
+# real service composes, minimizes and frames the case, so the marker reaches the reviewer
+# conversation as FinishUP wrote it, at depth 2, and must never refuse the review.
+_SHAPES = {
+    "indented_line": b"+db:\n+  password: hunter2\n+    role: admin\n",
+    "column_0_line": b"+DB_PASSWORD=hunter2\n+DB_USER=app\n",
+    "blank_line": b"+password=hunter2\n+\n+retries=3\n",
+    "crlf": b"+password=hunter2\r\n+DB_USER=app\r\n",
+    "diff_context_line": b"+password=hunter2\n unchanged_line = 1\n",
+    "diff_plus_line": b"+password=hunter2\n+retries = 3\n",
+}
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("shape", _SHAPES.values(), ids=_SHAPES.keys())
+async def test_a_withheld_value_never_refuses_the_review_whatever_line_follows_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, shape: bytes
+) -> None:
+    _composed(monkeypatch, diff=b"diff --git a/config.yml b/config.yml\n" + shape)
+    result, gateway, runtime = await _run(tmp_path, monkeypatch, _FINAL, policy=_expanded_policy())
+    assert result.status is SemanticStatus.SUCCEEDED
+    ((_, history),) = gateway.exchanges
+    assert EGRESS_CREDENTIAL_PLACEHOLDER.decode() in history[1][1]
+    assert "hunter2" not in history[1][1]
+    job = await runtime.ledger.load_semantic_job(runtime.writer_id or "", frozen_request())
+    assert job is not None and job.terminal_code is SemanticReason.SEMANTIC_COMPLETED
