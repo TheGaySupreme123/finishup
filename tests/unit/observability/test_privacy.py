@@ -544,7 +544,7 @@ def test_exact_replacement_marker_is_stable_in_nested_json(
     (
         EGRESS_CREDENTIAL_PLACEHOLDER + b"realsecret",
         EGRESS_CREDENTIAL_PLACEHOLDER + b"\\",
-        EGRESS_CREDENTIAL_PLACEHOLDER + b"\\nsecret",
+        EGRESS_CREDENTIAL_PLACEHOLDER + b"\\qsecret",
         EGRESS_CREDENTIAL_PLACEHOLDER + b'\\"secret42',
         EGRESS_CREDENTIAL_PLACEHOLDER + b'\\"}',
         b"hunter2",
@@ -588,7 +588,9 @@ def test_nested_markers_share_bounded_scans_and_decoding(
         {
             "context": "ordinary context " * 4096,
             "excerpts": [
-                {"content": "API_KEY=" + EGRESS_CREDENTIAL_PLACEHOLDER.decode() + "\n"}
+                # Last in its string: the closing quote, not a line break, follows the marker,
+                # so every occurrence needs the cached nesting proof.
+                {"content": "API_KEY=" + EGRESS_CREDENTIAL_PLACEHOLDER.decode()}
                 for _ in range(marker_count)
             ],
         }
@@ -642,9 +644,8 @@ def test_cached_marker_offsets_preserve_unicode_escapes_and_occurrence_proof(
 
 @pytest.mark.parametrize("bad_prefix", (b"\\q", b"\\ud800", b"\xff", b"\x01"))
 def test_cached_marker_framing_fails_closed_for_invalid_json_strings(bad_prefix: bytes) -> None:
-    nested = canonical_encode(
-        {"content": "password=" + EGRESS_CREDENTIAL_PLACEHOLDER.decode() + "\n"}
-    )
+    # The marker is last in its string, so its closing quote needs the nesting proof.
+    nested = canonical_encode({"content": "password=" + EGRESS_CREDENTIAL_PLACEHOLDER.decode()})
     encoded = canonical_encode({"packet": nested.decode()})
     # Invalid string bytes before the matched occurrence must invalidate the enclosing proof.
     encoded = encoded.replace(b"password", bad_prefix + b" password")
@@ -675,13 +676,17 @@ def test_json_encoded_assignment_is_still_detected_and_redacted(
     ("data", "secret"),
     (
         (b"password=Ab12\\tZZtail9", b"ZZtail9"),
-        (b"password=C:\\temp\\new", b"new"),
-        (json.dumps({"c": "password=ab\\ntail"}).encode(), b"tail"),
+        (b"password=C:\\temp\\xtail9", b"xtail9"),
+        (json.dumps({"c": "password=ab\\qtail"}).encode(), b"tail"),
         (json.dumps({"c": 'password="ab\\"cd efgh"'}).encode(), b"efgh"),
     ),
 )
 def test_encoded_escapes_never_shorten_a_redacted_value(data: bytes, secret: bytes) -> None:
-    """A literal backslash escape inside a value stays inside the redacted span (issue #976)."""
+    """A literal backslash escape inside a value stays inside the redacted span (issue #976).
+
+    Only a backslash-n or backslash-r ends an unquoted value (#1248 P-D3); see
+    ``test_literal_backslash_n_in_a_value_ends_it_so_its_tail_is_kept_by_design``.
+    """
 
     redacted, changed = redact_sensitive_content(data)
     assert changed

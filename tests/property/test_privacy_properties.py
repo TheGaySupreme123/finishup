@@ -8,19 +8,31 @@ from __future__ import annotations
 
 import hashlib
 import hmac as hmac_module
+import json
+import re
+import string
 
 import pytest
 from hypothesis import assume, given
 from hypothesis import strategies as st
 
 from finishup.observability.privacy import (
+    EGRESS_CREDENTIAL_PLACEHOLDER,
     PrivacyFenceError,
     assert_plaintext_safe,
+    prepare_persisted_plaintext,
+    redact_before_cut,
     redact_diagnostic_record,
     redact_diagnostic_value,
+    redact_encoded_heuristic_spans,
+    redact_heuristic_spans,
+    redact_high_confidence_content,
+    redact_sensitive_content,
     scan_for_sensitive_content,
+    semantic_egress_forms,
     session_id_hash,
 )
+from finishup.protocol.canonical import canonical_encode
 from finishup.protocol.ids import IdKind, validate_id
 
 _ALWAYS_OMITTED_FIELDS = (
@@ -166,3 +178,113 @@ def test_canary_absence_is_not_a_false_positive(clean: bytes) -> None:
 def test_redact_diagnostic_value_never_echoes_an_unknown_field() -> None:
     assert redact_diagnostic_value("totally_unknown_field", "super-secret-value") is None
     assert redact_diagnostic_value("message", "super-secret-value") is None
+
+
+# #1248 P2 (owner decision P-D3): values end at line breaks, and no redaction pass, raw or
+# encoded, removes a byte outside its own match. Each generated text is lines of benign settings
+# and credential-like assignments; after any pass, at any JSON escaping depth up to three, every
+# line break and every benign line is intact, and an assignment line is either untouched or keeps
+# its name and separator with exactly one fixed marker where its whole value was.
+
+_SECRET_NAMES = ("DB_PASSWORD", "api_key", "client_secret", "password", "AWS_SECRET_ACCESS_KEY")
+_BENIGN_NAMES = ("user", "host", "port", "role", "mode", "DB_NAME")
+_LINE_PREFIXES = ("", "  ", "    ", "+", "-", " ")
+_SEPARATORS = ("=", ": ", " = ")
+_MARKERS = (EGRESS_CREDENTIAL_PLACEHOLDER.decode(), "[REDACTED]")
+# Value bytes include backslashes; a backslash run before ``n``/``r`` is excluded because the
+# value deliberately ends there (the accepted P-D3 cost, covered by a unit test).
+_VALUE_ALPHABET = string.ascii_letters + string.digits + "-_./:!%^&*+~?#\\"
+_LINE_BREAK_ESCAPE = re.compile(r"\\+[nr]")
+
+
+@st.composite
+def _secret_value(draw: st.DrawFn) -> str:
+    head = draw(st.sampled_from(string.ascii_letters))
+    body = draw(st.text(alphabet=_VALUE_ALPHABET, min_size=4, max_size=40))
+    value = head + body + "9"
+    assume(_LINE_BREAK_ESCAPE.search(value) is None)
+    return value
+
+
+@st.composite
+def _setting_line(draw: st.DrawFn) -> tuple[str, str | None]:
+    """``(line, kept_prefix)``: ``kept_prefix`` is ``None`` for a benign line."""
+
+    kind = draw(st.sampled_from(("secret", "benign", "blank", "comment")))
+    if kind == "blank":
+        return "", None
+    if kind == "comment":
+        return "# note", None
+    prefix = draw(st.sampled_from(_LINE_PREFIXES))
+    separator = draw(st.sampled_from(_SEPARATORS))
+    if kind == "benign":
+        name = draw(st.sampled_from(_BENIGN_NAMES))
+        value = draw(
+            st.text(
+                alphabet=string.ascii_lowercase + string.digits + "-._/", min_size=1, max_size=12
+            )
+        )
+        return prefix + name + separator + value, None
+    name = draw(st.sampled_from(_SECRET_NAMES))
+    return prefix + name + separator + draw(_secret_value()), prefix + name + separator
+
+
+def _nest(text: str, depth: int) -> bytes:
+    data = text.encode()
+    for _ in range(depth):
+        data = canonical_encode(data.decode())
+    return data
+
+
+def _unnest(data: bytes, depth: int) -> str:
+    text = data.decode()
+    for _ in range(depth):
+        decoded = json.loads(text)
+        assert type(decoded) is str
+        text = decoded
+    return text
+
+
+def _assert_only_values_replaced(
+    lines: list[tuple[str, str | None]], ending: str, output: str
+) -> None:
+    out_lines = output.split(ending)
+    assert len(out_lines) == len(lines) + 1 and out_lines[-1] == ""
+    for (line, kept_prefix), out in zip(lines, out_lines, strict=False):
+        if kept_prefix is None:
+            assert out == line
+        else:
+            assert out == line or out in {kept_prefix + marker for marker in _MARKERS}
+
+
+@given(
+    st.lists(_setting_line(), min_size=1, max_size=8),
+    st.sampled_from(("\n", "\r\n")),
+    st.integers(min_value=0, max_value=3),
+)
+def test_no_redaction_pass_removes_bytes_past_its_match(
+    lines: list[tuple[str, str | None]], ending: str, depth: int
+) -> None:
+    text = "".join(line + ending for line, _ in lines)
+    nested = _nest(text, depth)
+
+    for redacted in (
+        redact_heuristic_spans(nested)[0],
+        redact_sensitive_content(nested)[0],
+        redact_sensitive_content(nested, heuristic_marker=EGRESS_CREDENTIAL_PLACEHOLDER)[0],
+        redact_high_confidence_content(nested)[0],
+        prepare_persisted_plaintext(nested).content,
+    ):
+        _assert_only_values_replaced(lines, ending, _unnest(redacted, depth))
+
+    if depth:
+        return
+    # The item-text passes of egress minimization and case composition.
+    encoded_pass = redact_encoded_heuristic_spans(nested)
+    cut_source = redact_before_cut(nested)
+    for output in (
+        *semantic_egress_forms(nested),
+        *(() if encoded_pass is None else (encoded_pass[0],)),
+        *(() if cut_source is None else (cut_source,)),
+    ):
+        _assert_only_values_replaced(lines, ending, output.decode())

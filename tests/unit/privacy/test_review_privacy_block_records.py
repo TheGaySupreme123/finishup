@@ -98,9 +98,11 @@ from unit.privacy.test_review_privacy_labels import (
     _render,  # pyright: ignore[reportPrivateUsage]
 )
 
-# The TB4 production-planning shape: a nested YAML password followed by an indented line. The
-# value is replaced in place in the packet; the conversation's second encoding re-detects it.
-_NESTED_YAML = b"db:\n  password: hunter2\n  role: admin\n"
+# A nested YAML password whose value is followed by a tab, then an indented line. The value is
+# replaced in place in the packet; the conversation's second encoding re-detects the placeholder
+# followed by the encoded tab. (The TB4 production-planning shape, the placeholder followed only
+# by an encoded line break, no longer re-matches since values end at line breaks, #1248 P2.)
+_NESTED_YAML = b"db:\n  password: hunter2\t\n  role: admin\n"
 _EXCERPT = "excerpt-evd_10000000-0000-4000-8000-000000000001"
 
 

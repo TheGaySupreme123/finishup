@@ -112,12 +112,43 @@ _URI_PASSWORD = re.compile(rb"[A-Za-z][A-Za-z0-9+.-]{0,31}://[^\s/:@]{1,128}:[^\
 # text it encodes. Prepared review packets are canonical JSON, so the separator may span one, and
 # the exact-marker exemption ignores trailing ones; otherwise FinishUP's own ``[REDACTED]`` marker
 # followed by an encoded newline re-matches as a fresh assignment after encoding and blocks the
-# whole packet (TB4 tb4f1, issue #976). Values stay greedy: a real value is never shortened.
+# whole packet (TB4 tb4f1, issue #976).
 _ENCODED_SPACE = rb"(?:\s|\\[nrt])"
-_UNQUOTED_VALUE_CHAR = rb"[^\s,'\";}{]"
+# Values end at line breaks (#1248, owner decision P-D3). An unquoted value ends at whitespace,
+# which covers a raw line break, and at a JSON-encoded line break at any escaping depth: the run of
+# ``w`` backslashes before ``n`` or ``r`` (``w`` is 1 in a review packet, 2 in the reviewer
+# conversation that nests the packet, 4 one level deeper). At depth ``d`` a literal backslash is
+# ``2w`` backslashes, so a run of ``k`` backslashes before ``n``/``r`` is ``k - w`` literal ones
+# and then the line break, where ``w`` is the largest power of two dividing ``k``. Those literal
+# backslashes stay value bytes at depths 1 to 6, as does every backslash run of up to 64 that does
+# not end in ``n``/``r`` (``C:<backslash>tmp``). Deeper or longer, the value conservatively ends at
+# the run. Without this an encoded value ran through the rest of the line's encoding into the
+# following lines, and the redaction that replaced the value deleted those lines with it
+# (``DB_PASSWORD=...`` then ``DB_USER=...`` lost ``DB_USER``; #1138). The accepted cost: a value
+# that itself contains a literal backslash-n or backslash-r ends there, so only its first part is
+# matched and redacted.
+_MAX_VALUE_BACKSLASH_RUN: Final = 64
+# The escape letters of a line break. Case-sensitive even inside the ``(?i)`` assignment patterns:
+# ``\N`` and ``\R`` are not JSON escapes.
+_LINE_BREAK_ESCAPE_LETTER = rb"(?-i:[nr])"
+_UNQUOTED_VALUE_CHAR = (
+    rb"(?:[^\s\\,'\";}{]"
+    # A whole backslash run that is not a line break's escape.
+    + b"|\\\\{1,%d}(?!\\\\|%s)" % (_MAX_VALUE_BACKSLASH_RUN, _LINE_BREAK_ESCAPE_LETTER)
+    # The literal backslashes before an encoded line break of width ``w``.
+    + b"".join(
+        b"|(?:\\\\{%d}){1,%d}(?=\\\\{%d}%s)"
+        % (2 * width, _MAX_VALUE_BACKSLASH_RUN // (2 * width), width, _LINE_BREAK_ESCAPE_LETTER)
+        for width in (1, 2, 4, 8, 16, 32)
+    )
+    + rb")"
+)
 # A quoted value inside an encoded JSON string: ``\"...\"``. Inside it an encoded escaped quote
-# (three backslashes and a quote) and an encoded backslash (two) are part of the value.
-_ESCAPED_QUOTED_VALUE = rb'\\"(?:\\\\\\"|\\\\\\\\|(?!\\")[^\r\n]){1,512}\\"'
+# (three backslashes and a quote) and an encoded backslash (two) are part of the value. Like the
+# raw quoted value, it never spans a line break of the text it encodes (an encoded ``\n``/``\r``).
+_ESCAPED_QUOTED_VALUE = (
+    rb'\\"(?:\\\\\\"|\\\\\\\\|(?!\\"|\\' + _LINE_BREAK_ESCAPE_LETTER + rb')[^\r\n]){1,512}\\"'
+)
 _JSON_STRING_TOKEN: Final = re.compile(rb'"(?:[^"\\]|\\.)*"')
 _JSON_STRING_ESCAPE: Final = re.compile(
     rb"\\(?:u[dD][89aAbB][0-9a-fA-F]{2}\\u[dD][c-fC-F][0-9a-fA-F]{2}|u[0-9a-fA-F]{4}|.)"
@@ -1169,6 +1200,32 @@ def assert_plaintext_safe(
     raise PrivacyFenceError(reason, surface)
 
 
+def _overlapping_finding_groups(
+    findings: tuple[ScanFinding, ...],
+) -> Iterator[tuple[ScanFinding, int, bool]]:
+    """Group findings whose spans overlap; yield each group's lead, its end, and whether it is high.
+
+    The lead is the earliest-starting, then longest, finding: its name and separator are kept.
+    The group ends where its last member ends. A later finding that starts inside an earlier one
+    but ends beyond it (a value cut short at a scan-chunk edge and found whole in the next chunk,
+    or a token running past the 512-byte assignment bound) therefore joins that replacement, so no
+    pass keeps the tail of a match, and none removes a byte outside the union of its matches.
+    """
+
+    ordered = sorted(findings, key=lambda finding: (finding.start_offset, -finding.end_offset))
+    index = 0
+    while index < len(ordered):
+        lead = ordered[index]
+        end = lead.end_offset
+        high = lead.confidence is not ScanConfidence.HEURISTIC
+        index += 1
+        while index < len(ordered) and ordered[index].start_offset < end:
+            end = max(end, ordered[index].end_offset)
+            high = high or ordered[index].confidence is not ScanConfidence.HEURISTIC
+            index += 1
+        yield lead, end, high
+
+
 def _replace_sensitive_spans(
     data: bytes,
     findings: tuple[ScanFinding, ...],
@@ -1178,38 +1235,27 @@ def _replace_sensitive_spans(
 ) -> bytes:
     """Replace each finding's span; a heuristic one with ``heuristic_marker`` when given.
 
-    A heuristic span that overlaps a high-confidence finding (``TOKEN = 'ghp_...'``: the
-    assignment and the token shape) holds a detected credential, so it keeps ``marker``.
+    Only bytes inside a match are replaced: an assignment keeps its name, separator and quotes,
+    and overlapping matches are replaced once, as their union. A heuristic span that overlaps a
+    high-confidence finding (``TOKEN = 'ghp_...'``: the assignment and the token shape) holds a
+    detected credential, so it keeps ``marker``.
     """
 
     if heuristic_marker is not None and heuristic_marker not in _EXEMPT_REPLACEMENT_MARKERS:
         # Only an exact exempt marker converges: any other text could re-match as an assignment.
         raise ValueError("redaction_marker_invalid")
-    high = tuple(
-        (finding.start_offset, finding.end_offset)
-        for finding in findings
-        if finding.confidence is not ScanConfidence.HEURISTIC
-    )
     pieces: list[bytes] = []
     cursor = 0
-    for finding in findings:
-        if finding.start_offset < cursor:
-            continue
+    for lead, group_end, group_high in _overlapping_finding_groups(findings):
         span_marker = (
-            heuristic_marker
-            if heuristic_marker is not None
-            and finding.confidence is ScanConfidence.HEURISTIC
-            and not any(
-                start < finding.end_offset and finding.start_offset < end for start, end in high
-            )
-            else marker
+            heuristic_marker if heuristic_marker is not None and not group_high else marker
         )
-        pieces.append(data[cursor : finding.start_offset])
-        raw = data[finding.start_offset : finding.end_offset]
+        pieces.append(data[cursor : lead.start_offset])
+        raw = data[lead.start_offset : lead.end_offset]
         separator = _assignment_separator(raw)
         prefix = b"" if separator is None else raw[: separator.start()].lower()
         if separator is not None and (
-            finding.confidence is ScanConfidence.HEURISTIC
+            lead.confidence is ScanConfidence.HEURISTIC
             or re.search(rb"(?:token|secret|password|passwd|api|key|auth)", prefix)
         ):
             value = raw[separator.end() :]
@@ -1231,7 +1277,7 @@ def _replace_sensitive_spans(
             )
         else:
             pieces.append(span_marker)
-        cursor = finding.end_offset
+        cursor = group_end
     pieces.append(data[cursor:])
     return b"".join(pieces)
 
