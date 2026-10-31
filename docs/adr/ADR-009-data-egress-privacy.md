@@ -1867,7 +1867,8 @@ local-sink backstops, and the egress-receipt shape keep their rules.
 
 **Scanner profile.** The 2026-10-03 amendment already requires a new scanner profile version for
 every step that changes what the scanner matches, exempts or replaces. Step P1 moved it from
-`observability-sensitive-content-v3` to `observability-sensitive-content-v4`. A resumed proposal
+`observability-sensitive-content-v3` to `observability-sensitive-content-v4`, and step P2 to
+`observability-sensitive-content-v5`. A resumed proposal
 prepared under an older profile therefore fails closed as a profile mismatch, and a new evaluation
 uses the current profile.
 
@@ -1883,8 +1884,12 @@ string by its exact offset map. Markers written at capture or composition are st
 recorded span, so they are judged as values there and the egress pass replaces each with the same
 bytes and records it. A conversation-stage hit in a reviewer read result withholds that read: its
 message is replaced by the broker's refusal for a withheld read and it is recorded as
-`item_withheld` (`reviewer-read-<call>`); the review continues. P-D3 to P-D5 are not yet
-implemented.
+`item_withheld` (`reviewer-read-<call>`); the review continues.
+
+P-D3 shipped with step P2 (#1270): an unquoted value ends at raw whitespace and at an encoded line
+break or tab at any escaping depth, an empty `KEY=` value ends at its line break, a quoted value
+never spans a line break, and every redaction pass replaces only the union of its overlapping
+matches. P-D4 and P-D5 are not yet implemented.
 
 **Hosts and surfaces.** The behaviour is service-side and identical on Codex, Claude Code and
 Cursor. The CLI, MCP, hooks, the terminal interface and the receipt renderings (JSON, markdown,

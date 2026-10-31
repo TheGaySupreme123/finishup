@@ -644,11 +644,17 @@ def test_a_recorded_marker_elsewhere_does_not_exempt_another() -> None:
     assert scan_for_sensitive_content(encoded, marker_spans=encoded_spans)
 
 
+@pytest.mark.parametrize("ending", (b"\n  role: x\n", b""))
 @pytest.mark.parametrize("marker_count", (1, 128))
 @pytest.mark.parametrize("depth", (2, 4))
-def test_many_nested_markers_never_produce_a_hit(marker_count: int, depth: int) -> None:
-    line = b"API_KEY=" + EGRESS_CREDENTIAL_PLACEHOLDER + b"\n  role: x\n"
+def test_many_nested_markers_never_produce_a_hit(
+    marker_count: int, depth: int, ending: bytes
+) -> None:
+    # With no ending the last marker is last in its string: an encoded closing quote, not a line
+    # break, follows it at every depth (#1248 P2), and its recorded span alone exempts it.
+    line = b"API_KEY=" + EGRESS_CREDENTIAL_PLACEHOLDER + (ending or b"\n")
     data = b"ordinary context " * 4096 + line * marker_count
+    data = data if ending else data[:-1]
     start = len(b"ordinary context " * 4096) + len(b"API_KEY=")
     spans = tuple(
         (start + index * len(line), start + index * len(line) + len(EGRESS_CREDENTIAL_PLACEHOLDER))
@@ -674,11 +680,14 @@ def test_marker_spans_survive_unicode_escapes_at_any_depth(ensure_ascii: bool, d
         assert bool(scan_for_sensitive_content(data, marker_spans=spans)) is hit
 
 
+@pytest.mark.parametrize("ending", (b"\n", b""))
 @pytest.mark.parametrize("bad_prefix", (b"\\q", b"\\ud800", b"\xff", b"\x01"))
-def test_marker_exemption_does_not_depend_on_valid_json_framing(bad_prefix: bytes) -> None:
+def test_marker_exemption_does_not_depend_on_valid_json_framing(
+    bad_prefix: bytes, ending: bytes
+) -> None:
     # The span is recorded, not derived from the framing, so invalid string bytes around it
-    # change nothing; a secret beside them is still found.
-    text = b"password=" + EGRESS_CREDENTIAL_PLACEHOLDER + b"\n"
+    # change nothing, even with the marker last in its string; a secret beside them is found.
+    text = b"password=" + EGRESS_CREDENTIAL_PLACEHOLDER + ending
     encoded, spans = _nested(text, _marked(text, EGRESS_CREDENTIAL_PLACEHOLDER), 2)
     encoded = encoded.replace(b"password", bad_prefix + b" password")
     spans = shift_marker_spans(spans, len(bad_prefix) + 1)
@@ -709,14 +718,18 @@ def test_json_encoded_assignment_is_still_detected_and_redacted(
 @pytest.mark.parametrize(
     ("data", "secret"),
     (
-        (b"password=Ab12\\tZZtail9", b"ZZtail9"),
-        (b"password=C:\\temp\\new", b"new"),
-        (json.dumps({"c": "password=ab\\ntail"}).encode(), b"tail"),
+        (b"password=Ab12\\vZZtail9", b"ZZtail9"),
+        (b"password=C:\\Data\\xtail9", b"xtail9"),
+        (json.dumps({"c": "password=ab\\qtail"}).encode(), b"tail"),
         (json.dumps({"c": 'password="ab\\"cd efgh"'}).encode(), b"efgh"),
     ),
 )
 def test_encoded_escapes_never_shorten_a_redacted_value(data: bytes, secret: bytes) -> None:
-    """A literal backslash escape inside a value stays inside the redacted span (issue #976)."""
+    """A literal backslash escape inside a value stays inside the redacted span (issue #976).
+
+    Only a backslash-n, backslash-r or backslash-t ends an unquoted value (#1248 P-D3); see
+    ``test_literal_backslash_n_in_a_value_ends_it_so_its_tail_is_kept_by_design``.
+    """
 
     redacted, changed = redact_sensitive_content(data)
     assert changed
