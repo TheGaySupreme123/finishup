@@ -1184,8 +1184,13 @@ def _yaml_key_line_lead(data: bytes, name_start: int) -> bytes | None:
     if _YAML_KEY_LINE_LEAD.fullmatch(lead) is not None:
         return lead
     quote = window.rfind(b'"', line_start)
-    if quote >= 0 and window[quote - 1 : quote] != b"\\":
-        # The first line of an encoded string starts after its opening quote.
+    if (
+        quote >= 0
+        and window[quote - 1 : quote] != b"\\"
+        and not window[line_start:quote].strip(b'\\"')
+    ):
+        # The first line of an encoded string starts after its opening quote(s); a quote after
+        # other text on the line (``if kind == "api_key":``) opens no line.
         lead = window[quote + 1 :]
         if _YAML_KEY_LINE_LEAD.fullmatch(lead) is not None:
             return lead
