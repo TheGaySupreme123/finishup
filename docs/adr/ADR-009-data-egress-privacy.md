@@ -1868,9 +1868,8 @@ local-sink backstops, and the egress-receipt shape keep their rules.
 **Scanner profile.** The 2026-10-03 amendment already requires a new scanner profile version for
 every step that changes what the scanner matches, exempts or replaces. Step P1 moved it from
 `observability-sensitive-content-v3` to `observability-sensitive-content-v4`, and step P2 to
-`observability-sensitive-content-v5`. A resumed proposal
-prepared under an older profile therefore fails closed as a profile mismatch, and a new evaluation
-uses the current profile.
+`observability-sensitive-content-v5`. A resumed proposal prepared under an older profile therefore
+fails closed as a profile mismatch, and a new evaluation uses the current profile.
 
 **Work order.** P1 implements P-D1 and P-D2 (#1138, #966 items 2, 3 and 5). P2 implements P-D3.
 P3 implements P-D4 (#1236, #1237, #1238, #1015, #1134). P4 implements P-D5. Records, labels,

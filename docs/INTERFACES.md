@@ -4957,10 +4957,10 @@ behaves as those paragraphs describe.
   withheld at admission, which scans its exact message.
 - **Value end (P-D3, step P2, implemented in #1270).** An unquoted value ends at a raw line
   break or an encoded `\n`/`\r` at any depth. No pass replaces bytes outside its match. Accepted
-  trade-off: a secret containing a literal `\n` is only partly redacted. As implemented: an unquoted value also ends at raw
-  whitespace and at an encoded tab (`\t`); the backslash run before an encoded `n`, `r` or `t` is
-  read by its escaping width (1, 2, 4 … backslashes), and other backslash runs of up to 64 stay
-  value bytes. After `=` the separator never spans a line break, so an empty `KEY=` value ends
+  trade-off: a secret containing a literal `\n` is only partly redacted. As implemented: an unquoted
+  value also ends at raw whitespace and at an encoded tab (`\t`); the backslash run before an
+  encoded `n`, `r` or `t` is read by its escaping width (1, 2, 4 … backslashes), and other backslash
+  runs of up to 64 stay value bytes. After `=` the separator never spans a line break, so an empty `KEY=` value ends
   there and the next line is scanned on its own; after `:` it may still span one (a YAML value
   indented on the next lines is P3's block-value detection). A quoted value never spans a line
   break of the text it encodes. Overlapping matches are replaced once, as their union, and every
@@ -4970,7 +4970,8 @@ behaves as those paragraphs describe.
   `key: |` block values are detected.
 - **Spelling (P-D5, step P4, low priority).** New content will use
   `[withheld-by-finishup:possible-credential]`. Both spellings are read permanently, and the scanner
-  profile (`observability-sensitive-content-v4` since P1, `v5` since P2) is bumped so resumed work never mixes them.
+  profile (`observability-sensitive-content-v4` since P1, `v5` since P2) is bumped so resumed work
+  never mixes them.
   Until P4, the legacy spelling is written.
 - **Unchanged.** No category is added, no ceiling is raised, and Private still sends nothing.
 A recorded span is carried into a JSON string by that string's byte-offset map, which accounts for

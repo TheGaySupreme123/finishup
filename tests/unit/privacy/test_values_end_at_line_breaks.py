@@ -31,7 +31,7 @@ from finishup.adapters.privacy.local_enforcer import (
 from finishup.application import check_change as check_change_module
 from finishup.application import semantic_case as semantic_case_module
 from finishup.domain.privacy import CredentialHeuristic
-from finishup.observability.marker_spans import container_marker_spans
+from finishup.observability.marker_spans import container_marker_spans, shift_marker_spans
 from finishup.observability.privacy import (
     EGRESS_CREDENTIAL_PLACEHOLDER,
     ScanConfidence,
@@ -39,8 +39,10 @@ from finishup.observability.privacy import (
     redact_before_cut,
     redact_encoded_heuristic_spans,
     redact_heuristic_spans,
+    redact_heuristic_spans_marked,
     redact_high_confidence_content,
     redact_sensitive_content,
+    redact_sensitive_content_marked,
     scan_for_sensitive_content,
     semantic_egress_forms,
 )
@@ -246,6 +248,49 @@ def test_a_token_running_past_the_value_bound_is_replaced_whole() -> None:
     redacted, changed = redact_sensitive_content(data)
     assert changed
     assert redacted == b"password=[REDACTED]\nnext=1\n"
+
+
+def test_overlapping_replacements_record_and_carry_marker_positions() -> None:
+    """P2's grouped replacement keeps P1's new, moved and consumed marker-span rules."""
+
+    marker = EGRESS_CREDENTIAL_PLACEHOLDER
+    kept, _, kept_spans = redact_heuristic_spans_marked(b"password=earlier9\n")
+    # The assignment's 512-byte value bound cuts through the high-confidence token. Its group
+    # also consumes an earlier marker, which must lose its old position when replaced.
+    value = b"-" * 460 + marker + b"-" * (505 - 460 - len(marker)) + _TOKEN.encode()
+    middle = b"password=" + value + b"\n"
+    fresh = b"secret=later9\n"
+    consumed_start = len(kept) + len(b"password=") + 460
+    spans = (
+        *kept_spans,
+        (consumed_start, consumed_start + len(marker)),
+        *shift_marker_spans(kept_spans, len(kept) + len(middle) + len(fresh)),
+    )
+    data = kept + middle + fresh + kept
+
+    redacted, changed, written = redact_sensitive_content_marked(
+        data, heuristic_marker=marker, marker_spans=spans
+    )
+
+    expected_lines = (
+        (b"password=", marker),
+        (b"password=", b"[REDACTED]"),
+        (b"secret=", marker),
+        (b"password=", marker),
+    )
+    expected = b"".join(head + replacement + b"\n" for head, replacement in expected_lines)
+    expected_spans: list[tuple[int, int]] = []
+    offset = 0
+    for head, replacement in expected_lines:
+        start = offset + len(head)
+        expected_spans.append((start, start + len(replacement)))
+        offset += len(head) + len(replacement) + 1
+    assert changed and redacted == expected
+    assert written == tuple(expected_spans)
+    assert scan_for_sensitive_content(redacted, marker_spans=written) == ()
+    assert redact_sensitive_content_marked(
+        redacted, heuristic_marker=marker, marker_spans=written
+    ) == (redacted, False, written)
 
 
 def _gateway_scan_is_clean(
