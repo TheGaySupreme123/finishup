@@ -305,6 +305,7 @@ def test_a_yaml_block_value_is_found_at_every_escaping_depth(
         "secret:\n  name: app-db\n  key: password\nnext: 1\n",
         # Source: the name does not open its line.
         "if password:\n    connect(" + "user" + ")\n    retry = 3\n",
+        '    if kind == "api_key":\n        connect(kind)\n        retry(kind)\n',
     ),
 )
 def test_what_is_not_a_yaml_block_value(text: str) -> None:
