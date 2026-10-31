@@ -6,7 +6,7 @@ import asyncio
 import base64
 import hashlib
 from collections import Counter
-from collections.abc import Awaitable, Callable, Iterable
+from collections.abc import Awaitable, Callable, Iterable, Mapping
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta
 from enum import StrEnum
@@ -81,6 +81,12 @@ from finishup.observability.logging import (
     record_bounded_counts_without_raising,
     record_unexpected_exception_without_raising,
 )
+from finishup.observability.marker_spans import (
+    MarkerSpans,
+    container_marker_spans,
+    encoded_string_spans,
+    packet_row_marker_spans,
+)
 from finishup.observability.privacy import redact_heuristic_spans
 from finishup.observability.semantic_context import semantic_check_request
 from finishup.ports.clock import ClockPort
@@ -113,6 +119,7 @@ from finishup.ports.semantic import (
     SemanticResultSuccess,
     SemanticResultTimeout,
     SemanticResultUnavailable,
+    decode_reviewer_exchange,
     reviewer_exchange_tokens,
     reviewer_packet_bytes,
 )
@@ -258,7 +265,8 @@ def _attributed_item_ids(
     rows: Iterable[tuple[str, str]],
     *,
     depth: int,
-    scan: Callable[[bytes], tuple[ForbiddenDataKind, ...]],
+    scan: Callable[[bytes, MarkerSpans], tuple[ForbiddenDataKind, ...]],
+    row_spans: Mapping[str, MarkerSpans] | None = None,
 ) -> tuple[str, ...]:
     """The items whose own content matches when encoded as deep as the refused bytes carry it.
 
@@ -267,14 +275,46 @@ def _attributed_item_ids(
     each item; what is refused and what is sent are decided by the whole-byte scans as before.
     """
 
-    matched: list[str] = []
+    return _bounded_item_ids(_matching_item_ids(rows, depth=depth, scan=scan, row_spans=row_spans))
+
+
+def _matching_item_ids(
+    rows: Iterable[tuple[str, str]],
+    *,
+    depth: int,
+    scan: Callable[[bytes, MarkerSpans], tuple[ForbiddenDataKind, ...]],
+    row_spans: Mapping[str, MarkerSpans] | None = None,
+) -> frozenset[str]:
+    """Every item whose own content matches at ``depth`` (unbounded: what withholding needs).
+
+    ``row_spans`` are each row's recorded marker spans in its content (#1248 P-D1), carried
+    through every encoding with the content, so the item's own markers stay exempt.
+    """
+
+    matched: set[str] = set()
     for item_id, content in rows:
-        encoded = canonical_encode(content)
-        for _ in range(depth - 1):
-            encoded = canonical_encode(encoded.decode("utf-8"))
-        if scan(encoded):
-            matched.append(item_id)
-    return _bounded_item_ids(matched)
+        spans: MarkerSpans = () if row_spans is None else row_spans.get(item_id, ())
+        encoded = content.encode("utf-8")
+        for _ in range(depth):
+            token = canonical_encode(encoded.decode("utf-8"))
+            encoded, spans = token, encoded_string_spans(token, spans)
+        if scan(encoded, spans):
+            matched.add(item_id)
+    return frozenset(matched)
+
+
+@dataclass(frozen=True, slots=True)
+class _ExchangeHit:
+    """What one reviewer-conversation scan found (#1248 P-D2), never the matched bytes.
+
+    ``item_ids`` are the packet items the matches sat in. ``withholdable`` is false when a match
+    sat anywhere withholding one item cannot clear: FinishUP's frame, the packet's structure, an
+    earlier reply or read result, or the review packet itself.
+    """
+
+    findings: tuple[ForbiddenDataKind, ...]
+    item_ids: frozenset[str]
+    withholdable: bool
 
 
 def _blocked_redacted_values(
@@ -343,32 +383,63 @@ def _current_scanner_identity(
     return cast(tuple[str, str], parts)
 
 
+def _classifier_scan(
+    classifier: PrivacyClassifierPort,
+    data: bytes,
+    credential_heuristic: CredentialHeuristic = CredentialHeuristic.ENFORCED,
+    marker_spans: MarkerSpans = (),
+) -> tuple[ForbiddenDataKind, ...]:
+    """The classifier's exact-byte scan, naming the recorded marker spans only when there are any."""
+
+    if marker_spans:
+        return classifier.scan_exact_bytes(
+            data, credential_heuristic=credential_heuristic, marker_spans=marker_spans
+        )
+    if credential_heuristic is CredentialHeuristic.ENFORCED:
+        return classifier.scan_exact_bytes(data)
+    return classifier.scan_exact_bytes(data, credential_heuristic=credential_heuristic)
+
+
 def _resume_scan_is_clean(
     classifier: PrivacyClassifierPort,
     prepared_bytes: bytes,
     credential_heuristic: CredentialHeuristic = CredentialHeuristic.ENFORCED,
+    marker_spans: MarkerSpans = (),
 ) -> tuple[ForbiddenDataKind, ...] | None:
     """Scan the exact persisted transformed bytes with the current scanner.
 
     ``None`` means the scanner boundary itself was unavailable or malformed.  It is distinct from
     an empty clean result so a resume cannot turn a broken classifier into a successful dispatch.
     ``credential_heuristic`` is the owner policy's setting; resume already requires that policy
-    to be exactly the one the proposal was prepared under (issue #982).
+    to be exactly the one the proposal was prepared under (issue #982). ``marker_spans`` are the
+    proposal's recorded marker spans in its review packet (#1248 P-D1).
     """
 
     try:
-        findings = (
-            classifier.scan_exact_bytes(prepared_bytes)
-            if credential_heuristic is CredentialHeuristic.ENFORCED
-            else classifier.scan_exact_bytes(
-                prepared_bytes, credential_heuristic=credential_heuristic
+        messages: tuple[tuple[str, str], ...] = decode_reviewer_exchange(prepared_bytes)
+    except ValueError:
+        messages = ()
+    packet = messages[1][1].encode("utf-8") if len(messages) > 1 else prepared_bytes
+    found: set[ForbiddenDataKind] = set()
+    # #1248 P-D2: a prepared reviewer conversation is rescanned as it was admitted, each
+    # message's decoded content and then its exact bytes; it is never withheld from on resume,
+    # since these are the exact bytes the owner approved: any match refuses it.
+    for data in (*(text.encode("utf-8") for _role, text in messages), prepared_bytes):
+        try:
+            findings = _classifier_scan(
+                classifier,
+                data,
+                credential_heuristic,
+                container_marker_spans(data, packet, marker_spans),
             )
-        )
-    except Exception:
-        return None
-    if type(findings) is not tuple or any(type(item) is not ForbiddenDataKind for item in findings):
-        return None
-    return findings
+        except Exception:
+            return None
+        if type(findings) is not tuple or any(
+            type(item) is not ForbiddenDataKind for item in findings
+        ):
+            return None
+        found.update(findings)
+    return tuple(sorted(found, key=lambda kind: kind.value.encode()))
 
 
 class RepositoryGrantAdmission(StrEnum):
@@ -2060,6 +2131,7 @@ class PrivacyCoordinator:
             external_review_credential_heuristic(
                 effective.policy, proposal.provider_binding, local_sink=proposal.local_sink
             ),
+            proposal.marker_spans,
         )
         if prepared_findings is None:
             return SemanticEgressBlocked(
@@ -2128,6 +2200,7 @@ class PrivacyCoordinator:
             withheld_item_ids=proposal.withheld_item_ids,
             redacted_span_count=redacted_span_count,
             redacted_values=redacted_values,
+            marker_spans=proposal.marker_spans,
         )
         authority_digest: str | None = None
         if binding.transport == "external":
@@ -2428,8 +2501,11 @@ class PrivacyCoordinator:
                     _attributed_item_ids(
                         _packet_content_rows(minimized.prepared_bytes),
                         depth=1,
-                        scan=lambda data: self._classifier.scan_exact_bytes(
-                            data, credential_heuristic=heuristic
+                        scan=lambda data, spans: _classifier_scan(
+                            self._classifier, data, heuristic, spans
+                        ),
+                        row_spans=packet_row_marker_spans(
+                            minimized.prepared_bytes, minimized.marker_spans
                         ),
                     ),
                 ),
@@ -2511,37 +2587,50 @@ class PrivacyCoordinator:
                     capacity_unit=capacity_unit,
                 )
             heuristic = external_review_credential_heuristic(effective.policy, binding)
-            exchange_findings = self._classifier.scan_exact_bytes(
-                payload, credential_heuristic=heuristic
-            )
-            if exchange_findings:
-                # #1138: the whole conversation is refused as before; the receipt and the check
-                # now name this stage, the matches' class and the packet items they sat in.
-                def exchange_scan(data: bytes) -> tuple[ForbiddenDataKind, ...]:
-                    return self._classifier.scan_exact_bytes(data, credential_heuristic=heuristic)
-
-                high = self._classifier.scan_exact_bytes(
-                    payload, credential_heuristic=CredentialHeuristic.DISABLED
+            # #1248 P-D2: each message's decoded content is scanned once, then the exact bytes
+            # the gateway's final scan will see. A hit inside one packet item withholds that item
+            # (named in the packet and in the records) and the conversation is rebuilt and
+            # scanned again; the review still runs. A hit anywhere else (FinishUP's frame, the
+            # packet's structure, an earlier reply or read result, all of which must be sent
+            # as they are), or one withholding cannot clear, refuses the whole case as before.
+            for exchange_round in range(_MAX_EXCHANGE_WITHHOLD_ROUNDS + 1):
+                exchange_hit = self._reviewer_exchange_hit(
+                    payload, packet_bytes, minimized.marker_spans, heuristic
                 )
-                return await self._complete_semantic_predispatch(
-                    candidate,
-                    effective,
-                    PrivacyOutcome.BLOCKED_FORBIDDEN_DATA,
-                    PrivacyReason.NEVER_SEND_DETECTED,
-                    decision=decision,
-                    withheld_item_ids=minimized.withheld_item_ids,
-                    redacted_span_count=minimized.redacted_span_count,
-                    redacted_values=minimized.redacted_values,
-                    scan_stage=ReceiptSecretScanStage.REVIEWER_EXCHANGE,
-                    scan_match_count=len(exchange_findings),
-                    block=_ScanBlock(
-                        ReceiptSecretScanStage.REVIEWER_EXCHANGE,
-                        "high_confidence" if high else "heuristic",
-                        _attributed_item_ids(
-                            _packet_content_rows(packet_bytes), depth=2, scan=exchange_scan
+                if exchange_hit is None:
+                    break
+                narrowed = (
+                    None
+                    if not exchange_hit.withholdable
+                    or exchange_round == _MAX_EXCHANGE_WITHHOLD_ROUNDS
+                    else self._exchange_withhold_trial(
+                        refreshed_classified, decision, minimized, exchange_hit.item_ids
+                    )
+                )
+                if narrowed is None:
+                    high = self._classifier.scan_exact_bytes(
+                        payload, credential_heuristic=CredentialHeuristic.DISABLED
+                    )
+                    return await self._complete_semantic_predispatch(
+                        candidate,
+                        effective,
+                        PrivacyOutcome.BLOCKED_FORBIDDEN_DATA,
+                        PrivacyReason.NEVER_SEND_DETECTED,
+                        decision=decision,
+                        withheld_item_ids=minimized.withheld_item_ids,
+                        redacted_span_count=minimized.redacted_span_count,
+                        redacted_values=minimized.redacted_values,
+                        scan_stage=ReceiptSecretScanStage.REVIEWER_EXCHANGE,
+                        scan_match_count=len(exchange_hit.findings),
+                        block=_ScanBlock(
+                            ReceiptSecretScanStage.REVIEWER_EXCHANGE,
+                            "high_confidence" if high else "heuristic",
+                            _bounded_item_ids(exchange_hit.item_ids),
                         ),
-                    ),
-                )
+                    )
+                decision, minimized = narrowed
+                packet_bytes = minimized.prepared_bytes
+                payload = frame.render(packet_bytes)
             minimized = replace(
                 minimized,
                 prepared_bytes=payload,
@@ -3010,6 +3099,7 @@ class PrivacyCoordinator:
                         candidate, minimized.included_item_ids or proposal.included_item_ids
                     )
                 ),
+                marker_spans=proposal.marker_spans,
             )
             if (fence := await self._semantic_dispatch_is_current()) is not True:
                 return SemanticEgressBlocked(
@@ -3137,6 +3227,7 @@ class PrivacyCoordinator:
             input_roots=self._with_exchange_roots(
                 _included_input_roots(candidate, minimized.included_item_ids)
             ),
+            marker_spans=proposal.marker_spans,
         )
         if (fence := await self._semantic_dispatch_is_current()) is not True:
             return SemanticEgressBlocked(
@@ -3483,6 +3574,109 @@ class PrivacyCoordinator:
                 break
             left_out, fitted = left_out | drops, trial
         return left_out, fitted
+
+    def _reviewer_exchange_hit(
+        self,
+        payload: bytes,
+        packet: bytes,
+        packet_spans: MarkerSpans,
+        heuristic: CredentialHeuristic,
+    ) -> _ExchangeHit | None:
+        """Scan one reviewer exchange as #1248 P-D2 decides; ``None`` when it is clean.
+
+        Each message's decoded content is scanned once, as the reviewer reads it, so a value is
+        judged in the text FinishUP wrote it into, never re-read at another escaping depth. Then
+        the exact bytes are scanned as the gateway's final scan will scan them, so nothing that
+        scan would refuse after an approval passes here. Matches in the packet's message are
+        traced to the packet items whose own content carries them. FinishUP's recorded marker
+        spans (#1248 P-D1) travel with the packet into every one of these forms.
+        """
+
+        def scan(data: bytes, spans: MarkerSpans = ()) -> tuple[ForbiddenDataKind, ...]:
+            return _classifier_scan(self._classifier, data, heuristic, spans)
+
+        rows = _packet_content_rows(packet)
+        row_spans = packet_row_marker_spans(packet, packet_spans)
+        try:
+            messages: tuple[tuple[str, str], ...] = decode_reviewer_exchange(payload)
+        except ValueError:
+            messages = ()
+        findings: set[ForbiddenDataKind] = set()
+        item_ids: set[str] = set()
+        withholdable = bool(messages)
+        for index, (_role, text) in enumerate(messages):
+            # The packet is the conversation's first user message: its decoded content is the
+            # packet's own bytes, where its recorded spans sit.
+            message = text.encode("utf-8")
+            found = scan(message, packet_spans if index == 1 and message == packet else ())
+            if not found:
+                continue
+            findings.update(found)
+            matched = (
+                _matching_item_ids(rows, depth=1, scan=scan, row_spans=row_spans)
+                if index == 1
+                else frozenset[str]()
+            )
+            item_ids.update(matched)
+            withholdable = withholdable and bool(matched)
+        exact = scan(payload, container_marker_spans(payload, packet, packet_spans))
+        if exact:
+            findings.update(exact)
+            matched = _matching_item_ids(rows, depth=2, scan=scan, row_spans=row_spans)
+            item_ids.update(matched)
+            withholdable = withholdable and bool(matched)
+        if not findings:
+            return None
+        return _ExchangeHit(
+            tuple(sorted(findings, key=lambda kind: kind.value.encode())),
+            frozenset(item_ids),
+            withholdable and bool(item_ids) and REVIEW_PACKET_ITEM_ID not in item_ids,
+        )
+
+    def _exchange_withhold_trial(
+        self,
+        classified: ClassifiedContext,
+        decision: PrivacyDecision,
+        minimized: MinimizedDisclosure,
+        withhold: frozenset[str],
+    ) -> tuple[PrivacyDecision, MinimizedDisclosure] | None:
+        """The packet with ``withhold`` withheld, minimized and scanned afresh (#1248 P-D2).
+
+        Each item is withheld exactly as one with a credential-like value is: not approved, named
+        ``item_withheld`` in the packet and the records. ``None`` when the rebuilt packet is not
+        clean or carries nothing, so the caller refuses the whole case instead.
+        """
+
+        narrowed = replace(
+            decision,
+            approved_item_ids=tuple(
+                item_id for item_id in decision.approved_item_ids if item_id not in withhold
+            ),
+        )
+        marked = replace(
+            classified,
+            items=tuple(
+                replace(
+                    item,
+                    heuristic_findings=item.heuristic_findings
+                    or (ForbiddenDataKind.API_CREDENTIAL,),
+                )
+                if item.candidate.item_id in withhold and not item.forbidden_findings
+                else item
+                for item in classified.items
+            ),
+        )
+        trial = self._classifier.minimize_and_scan(marked, narrowed)
+        if (
+            trial.forbidden_findings
+            or trial.heuristic_findings
+            or not trial.included_item_ids
+            or not withhold <= set(trial.withheld_item_ids)
+            or (trial.scanner_registry_version, trial.scanner_profile_digest)
+            != (minimized.scanner_registry_version, minimized.scanner_profile_digest)
+        ):
+            return None
+        return narrowed, trial
 
     def _capacity_fit_trial(
         self,
@@ -4233,6 +4427,9 @@ class _CapacityOverage:
 
 # Rounds of leave-out, re-minimize and re-measure; each round only removes items.
 _MAX_CAPACITY_FIT_ROUNDS: Final = 4
+# #1248 P-D2: how many times one reviewer exchange may withhold the items a conversation-stage
+# hit sat in and be scanned again before the whole case is refused.
+_MAX_EXCHANGE_WITHHOLD_ROUNDS: Final = 3
 _CAPACITY_FIT_MARGIN_BYTES: Final = 256
 
 

@@ -78,6 +78,11 @@ from finishup.ports.semantic import (
 from finishup.protocol.canonical import canonical_encode
 from finishup.protocol.ids import IdKind
 from finishup.protocol.models import SemanticStatus
+from unit.privacy.test_marker_positions import FOLLOWING
+from unit.privacy.test_marker_positions import conversation as marker_conversation
+from unit.privacy.test_marker_positions import exchange as marker_exchange
+from unit.privacy.test_marker_positions import packet_for as marker_packet
+from unit.privacy.test_marker_positions import redacted as marker_redacted
 
 _INSTALLATION = "ins_60000000-0000-4000-8000-000000000001"
 _TASK = "tsk_60000000-0000-4000-8000-000000000002"
@@ -518,7 +523,11 @@ def _authorization(
 
 
 def _case(
-    *, case_id: str, authorization: EgressAuthorization, payload: bytes
+    *,
+    case_id: str,
+    authorization: EgressAuthorization,
+    payload: bytes,
+    marker_spans: tuple[tuple[int, int], ...] = (),
 ) -> ApprovedOutboundCase:
     return ApprovedOutboundCase(
         case_id=case_id,
@@ -536,6 +545,7 @@ def _case(
         authorization_id=authorization.authorization_id,
         policy_digest=authorization.policy_digest,
         case_digest=authorization.case_digest,
+        marker_spans=marker_spans,
     )
 
 
@@ -2119,3 +2129,135 @@ def test_local_consume_and_revocation_are_linearized_by_the_mutation_fence() -> 
 
     assert revoke_was_blocked is True
     assert type(result) is SemanticResultSuccess
+
+
+# -- #1248 P1: FinishUP's own markers pass the final-body and local-sink scans -----------------
+
+
+def _dispatch_conversation(
+    payload: bytes, case_number: int, spans: tuple[tuple[int, int], ...] = ()
+) -> SemanticResult:
+    clock = _Clock()
+    audit = _FullPrivacyAudit()
+    factory = _FakeExternalFactory(_script_factory)
+    gateway = _gateway(audit=audit, clock=clock, external_factory=factory)
+    policy = _policy(external_enabled=True, local_enabled=False)
+    effective = EffectivePrivacyPolicy(policy, 1, policy.policy_digest)
+    human = _human_authority(available=True)
+
+    async def run() -> SemanticResult:
+        await _reconcile_repository(gateway, effective, human)
+        authorization = _authorization(
+            authorization_id=f"aut_60000000-0000-4000-8000-{case_number:012d}",
+            policy_digest=policy.policy_digest,
+            service_generation=human.service_generation,
+        )
+        audit.seed_authorized(authorization)
+        case = _case(
+            case_id=f"cas_60000000-0000-4000-8000-{case_number:012d}",
+            authorization=authorization,
+            payload=payload,
+            marker_spans=spans,
+        )
+        return await gateway.dispatch_external_semantic(case, authorization, _deadline(clock))
+
+    return asyncio.run(run())
+
+
+def _dispatch_local_conversation(
+    payload: bytes, spans: tuple[tuple[int, int], ...] = ()
+) -> SemanticResult:
+    clock = _Clock()
+    audit = _FullPrivacyAudit()
+    binding = _local_binding()
+    profile = LocalModelEndpointProfile(
+        profile_id="local-profile",
+        profile_version="1.0.0",
+        endpoint_profile_id=binding.endpoint_profile_id,
+        endpoint_profile_version=binding.endpoint_profile_version,
+        model=binding.model_id,
+        protocol_version="1.0.0",
+        judgment_schema_version="1.0.0",
+        timeout_seconds=30,
+        expected_service_identity="local-svc",
+        expected_owner_uid=0,
+        expected_peer_uid=0,
+        expected_socket_mode=0o600,
+        release_resource_digest=_DIGEST,
+        capability_evidence_digest=_DIGEST,
+    )
+    handle = _LocalSocketHandle(
+        1,
+        _DIGEST,
+        canonical_encode(
+            {
+                "conclusion": "no_material_discrepancy",
+                "review_summary": "No review summary recorded.",
+                "verified": [],
+                "reviewer_challenges": [],
+                "prior_finding_verdicts": [],
+            }
+        ),
+    )
+    gateway = _gateway(
+        audit=audit,
+        clock=clock,
+        local_registry=InstalledLocalModelProfileRegistry((profile,)),
+        local_resolver=_LocalResolver(handle),
+    )
+    policy = _policy(external_enabled=False, local_enabled=True)
+    effective = EffectivePrivacyPolicy(policy, 1, policy.policy_digest)
+
+    async def run() -> SemanticResult:
+        await _reconcile_repository(gateway, effective, _human_authority(available=True))
+        audit.seed_local_reserved(_PROPOSAL)
+        case = ApprovedLocalDisclosureCase(
+            case_id="cas_60000000-0000-4000-8000-000000000090",
+            request_id=_REQUEST,
+            privacy_proposal_id=_PROPOSAL,
+            payload=payload,
+            media_type="application/json",
+            included_item_ids=("item-1",),
+            approved_categories=(DataCategory.TASK_DESCRIPTION,),
+            blocked_categories=(),
+            byte_count=len(payload),
+            token_count=8,
+            sink=LocalDisclosureSink.LOCAL_MODEL,
+            binding=binding,
+            purpose="local-check",
+            policy_digest=policy.policy_digest,
+            case_digest=_DIGEST,
+            marker_spans=spans,
+        )
+        return await gateway.dispatch_local_semantic(case, _deadline(clock))
+
+    return asyncio.run(run())
+
+
+@pytest.mark.parametrize("depth", (1, 2, 3))
+@pytest.mark.parametrize("following", FOLLOWING.values(), ids=FOLLOWING.keys())
+def test_finishup_markers_pass_the_gateway_at_every_conversation_depth(
+    following: str, depth: int
+) -> None:
+    # #1138 / #1248 P-D1: end to end through ``encode_reviewer_exchange`` and the gateway; the
+    # case carries the spans FinishUP recorded, and nothing else is exempt.
+    payload, _packet, spans = marker_conversation("  password: ", following, depth)
+    assert type(_dispatch_conversation(payload, 100 + depth, spans)) is SemanticResultSuccess
+    assert type(_dispatch_local_conversation(payload, spans)) is SemanticResultSuccess
+    # The same bytes without the recorded spans: the marker is a value, and the body is refused.
+    refused = _dispatch_conversation(payload, 120 + depth)
+    assert type(refused) is SemanticResultUnavailable
+    assert type(_dispatch_local_conversation(payload)) is not SemanticResultSuccess
+
+
+@pytest.mark.parametrize("depth", (1, 2, 3))
+def test_a_real_value_beside_a_marker_still_blocks_the_final_body(depth: int) -> None:
+    content, spans = marker_redacted("config:\n  password: hunter2\n")
+    content += b"  secret_key: hunter2x\n"
+    packet, packet_spans = marker_packet(content, spans, depth)
+    payload = marker_exchange(packet)
+    result = _dispatch_conversation(payload, 110 + depth, packet_spans)
+    assert type(result) is SemanticResultUnavailable
+    assert result.provenance.failure_class is SemanticFailureClass.RESPONSE_CONTENT
+    local = _dispatch_local_conversation(payload, packet_spans)
+    assert type(local) is not SemanticResultSuccess

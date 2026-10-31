@@ -76,6 +76,7 @@ from finishup.observability.logging import (
     record_bounded_event_without_raising,
     record_classified_exception_without_raising,
 )
+from finishup.observability.marker_spans import container_marker_spans
 from finishup.observability.privacy import privacy_request_commitment
 from finishup.observability.semantic_context import report_semantic_progress
 from finishup.ports.clock import ClockPort
@@ -105,6 +106,7 @@ from finishup.ports.semantic import (
     SemanticResultTimeout,
     SemanticResultUnavailable,
     decode_reviewer_exchange,
+    reviewer_packet_bytes,
 )
 from finishup.protocol.canonical import canonical_digest, strict_json_parse
 from finishup.protocol.ids import IdKind
@@ -150,13 +152,28 @@ _SCAN = SecretScanRuleset()
 
 
 def _final_scan(
-    classifier: PrivacyClassifierPort, data: bytes, credential_heuristic: CredentialHeuristic
+    classifier: PrivacyClassifierPort,
+    data: bytes,
+    credential_heuristic: CredentialHeuristic,
+    payload: bytes | None = None,
+    marker_spans: tuple[tuple[int, int], ...] = (),
 ) -> tuple[ForbiddenDataKind, ...]:
     """Run the final exact-byte scan under the setting the case was prepared with (#982).
 
     The default keeps the historical call shape; only an owner opt-out names the setting.
+    ``marker_spans`` (#1248 P-D1) are FinishUP's recorded marker spans in the review packet that
+    ``payload`` is or carries; they are carried to wherever ``data`` holds that packet, and the
+    scan exempts exactly them.
     """
 
+    spans: tuple[tuple[int, int], ...] = ()
+    if payload is not None and marker_spans:
+        packet = reviewer_packet_bytes(payload) or payload
+        spans = container_marker_spans(data, packet, marker_spans)
+    if spans:
+        return classifier.scan_exact_bytes(
+            data, credential_heuristic=credential_heuristic, marker_spans=spans
+        )
     if credential_heuristic is CredentialHeuristic.ENFORCED:
         return classifier.scan_exact_bytes(data)
     return classifier.scan_exact_bytes(data, credential_heuristic=credential_heuristic)
@@ -711,7 +728,9 @@ class PolicyEnforcingOutboundGateway(OutboundGatewayPort):
                 case, authorization, PrivacyReason.PROVIDER_UNAVAILABLE
             )
 
-        final_findings = _final_scan(self._classifier, body, case.credential_heuristic)
+        final_findings = _final_scan(
+            self._classifier, body, case.credential_heuristic, case.payload, case.marker_spans
+        )
         if final_findings:
             return await self._preconsume_failure(
                 case,
@@ -1153,7 +1172,13 @@ class PolicyEnforcingOutboundGateway(OutboundGatewayPort):
         binding, evaluator = registry.local_model
         if case.binding != binding or case.policy_digest != registry.policy_digest:
             return _local_unavailable_result(case)
-        if _final_scan(self._classifier, case.payload, case.credential_heuristic):
+        if _final_scan(
+            self._classifier,
+            case.payload,
+            case.credential_heuristic,
+            case.payload,
+            case.marker_spans,
+        ):
             return _local_unavailable_result(
                 case, failure_class=SemanticFailureClass.RESPONSE_CONTENT
             )

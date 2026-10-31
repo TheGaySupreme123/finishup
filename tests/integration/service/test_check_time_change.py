@@ -64,6 +64,7 @@ from finishup.domain.privacy import (
     AuthorizationScopeKind,
     CandidateContext,
     ChannelPolicy,
+    CredentialHeuristic,
     DataClass,
     EgressChannel,
     PrivacyOutcome,
@@ -78,6 +79,7 @@ from finishup.domain.receipts import (
     CHECK_TIME_CHANGE_TRUNCATED_GAP,
     CHECK_TIME_CHANGE_UNAVAILABLE_GAP,
 )
+from finishup.observability.privacy import redact_heuristic_spans_marked
 from finishup.ports.change_capture import (
     CHECK_CHANGE_MEDIA_TYPE,
     CheckChangeCapture,
@@ -264,6 +266,22 @@ async def _kea_case(
     return _with_claim(frozen), runtime
 
 
+def _egress_clean(plaintext: bytes) -> bool:
+    """No concrete credential, and nothing left once egress replaces values as it records them.
+
+    #1248 P-D1: the stored change keeps no record of where capture wrote its markers, so the
+    scanner reads them as values; the egress pass replaces each one with the same bytes and
+    records it, and that result scans clean with exactly those spans.
+    """
+
+    replaced, _count, spans = redact_heuristic_spans_marked(plaintext)
+    return (
+        scan_exact_bytes(plaintext, credential_heuristic=CredentialHeuristic.DISABLED) == ()
+        and replaced == plaintext
+        and scan_exact_bytes(replaced, marker_spans=spans) == ()
+    )
+
+
 @pytest.mark.anyio
 @pytest.mark.parametrize(
     "adapter_factory", (memory_adapter, sqlite_adapter), ids=("memory", "sqlite")
@@ -314,7 +332,7 @@ async def test_shell_rewrites_and_commits_reach_the_packet_and_survive_replay(
     assert _SECRET not in text and "const fixtureToken = '[REDACTED]';" in text
     assert "config.POSTGRES_PASSWORD" not in text
     assert "const password = [withheld-by-yoetz:possible-credential];" in text
-    assert all(scan_exact_bytes(item.plaintext) == () for item in candidate.items)
+    assert all(_egress_clean(item.plaintext) for item in candidate.items)
     assert CHECK_TIME_CHANGE_REDACTED_GAP in waiting.case_content_gaps
     assert CHECK_TIME_CHANGE_BASE_UNAVAILABLE_GAP not in waiting.case_content_gaps
     # The change text itself was redacted: a reviewer's diff request is FinishUP's packet limit.
@@ -784,7 +802,7 @@ async def test_nested_repository_task_input_and_deliverables_reach_the_recorded_
     caller = cast(dict[str, object], manifest["caller_evidence"])
     assert "task-input-01" in cast(list[str], caller["item_ids"])
     assert "declared-deliverables" in cast(list[str], packet["obligation_item_ids"])
-    assert all(scan_exact_bytes(item.plaintext) == () for item in candidate.items)
+    assert all(_egress_clean(item.plaintext) for item in candidate.items)
 
 
 @pytest.mark.anyio

@@ -46,7 +46,10 @@ from finishup.observability.logging import (
     record_bounded_event_without_raising,
     record_unexpected_exception_without_raising,
 )
-from finishup.observability.privacy import EGRESS_CREDENTIAL_PLACEHOLDER, redact_sensitive_content
+from finishup.observability.privacy import (
+    EGRESS_CREDENTIAL_PLACEHOLDER,
+    redact_sensitive_content_marked,
+)
 from finishup.ports.change_capture import (
     CHECK_CHANGE_MEDIA_TYPE,
     MAX_CHECK_CHANGE_TEXT_BYTES,
@@ -356,9 +359,11 @@ def _redacted_text(text: bytes) -> tuple[bytes, bool]:
     """
 
     redacted = False
+    # #1248 P-D1: each pass exempts exactly the markers the earlier passes recorded writing.
+    spans: tuple[tuple[int, int], ...] = ()
     for _ in range(_MAX_REDACTION_PASSES):
-        replaced, detected = redact_sensitive_content(
-            text, heuristic_marker=EGRESS_CREDENTIAL_PLACEHOLDER
+        replaced, detected, spans = redact_sensitive_content_marked(
+            text, heuristic_marker=EGRESS_CREDENTIAL_PLACEHOLDER, marker_spans=spans
         )
         if not detected:
             break

@@ -1028,6 +1028,29 @@ def test_catalog_proposal_persists_redacted_value_lines_for_resume() -> None:
     asyncio.run(run())
 
 
+@pytest.mark.parametrize("spans", ((), ((3, 13), (40, 79))))
+def test_catalog_proposal_persists_recorded_marker_spans_for_resume(
+    spans: tuple[tuple[int, int], ...],
+) -> None:
+    """#1248 P-D1: the recorded spans survive the proposal round trip; absent stays absent."""
+
+    db = _database()
+    _insert_task_route(db)
+    objects = _StoredObjects()
+    audit = CatalogPrivacyAudit(db, objects, _Key(), _Clock())  # type: ignore[arg-type]
+
+    async def run() -> None:
+        request = _external_disclosure_request()
+        prepared = await audit.prepare_disclosure_proposal(
+            replace(request, minimized=replace(request.minimized, marker_spans=spans))
+        )
+        assert prepared.proposal.marker_spans == spans
+        loaded = await audit.load_disclosure_proposal(prepared.proposal.privacy_proposal_id)
+        assert loaded is not None and loaded.marker_spans == spans
+
+    asyncio.run(run())
+
+
 def test_catalog_disclosure_attempt_rejects_tampered_lookup_identity() -> None:
     db = _database()
     _insert_task_route(db)
