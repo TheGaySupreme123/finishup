@@ -24,6 +24,7 @@ from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Final, Literal, cast
 
+from finishup.adapters.privacy.local_enforcer import scan_exact_bytes_with_confidence
 from finishup.adapters.reviewer_artifacts import artifact_facts, image_attachment
 from finishup.adapters.task_input_read import (
     ReadDeadline,
@@ -200,6 +201,8 @@ class _Piece:
     category: DataCategory = DataCategory.REPOSITORY_EXCERPT
     truncation_reason: str | None = None
     image: bytes | None = None
+    # Unredacted selection for the pre-P3 policy admission. It is scanned locally, never sent.
+    admission_source: bytes | None = None
     end: int = field(init=False)
 
     def __post_init__(self) -> None:
@@ -473,6 +476,14 @@ class ReviewerBroker:
             for piece in pieces
             for data in (piece.text,) + ((piece.image,) if piece.image is not None else ())
         )
+        # Redaction must not erase the signal admission used to refuse. Keep the original
+        # selection's bounded prefix alongside the sent text for that local check, including
+        # the owner's unchanged heuristic setting. Only encoded contains provider-bound text.
+        elements += tuple(
+            (piece.category, piece.admission_source[:_TEXT_BYTES], piece.root)
+            for piece in pieces
+            if piece.admission_source is not None and piece.admission_source != piece.text
+        )
         reason = await self._admit(elements, encoded)
         if reason is not None:
             return envelope("denied", reason)
@@ -594,6 +605,10 @@ class ReviewerBroker:
     def _item(self, item: SemanticCaseItem, offset: int) -> _Piece | None:
         """One record read from ``offset`` of its redacted text; ``None`` when that cannot be."""
 
+        if item.item_id in self._case.withheld_item_ids:
+            return None
+        if scan_exact_bytes_with_confidence(item.content).high_confidence:
+            return None
         content = redact_fully(item.content)
         if content is None:
             return None
@@ -613,7 +628,18 @@ class ReviewerBroker:
         refs = tuple(r for r in (item.source_ref, *item.linked_subject_refs) if r in self._allowed)
         start, stop = _clear(content, offset, "tail"), len(content)
         root = dict(self._case.input_roots).get(item.item_id)
-        return _Piece(content, start, stop, refs, prov, item.item_id, None, root, item.category)
+        return _Piece(
+            content,
+            start,
+            stop,
+            refs,
+            prov,
+            item.item_id,
+            None,
+            root,
+            item.category,
+            admission_source=item.content[_clear(item.content, offset, "tail") :],
+        )
 
     def _packet(self, args: ReadPacketSectionArgsModel) -> _Selected:
         item = next((i for i in self._case.items if i.item_id == args.item_ref), None)
@@ -746,6 +772,12 @@ class ReviewerBroker:
             return ("text", [piece], None, 0)
         if b"\0" in data[:8000]:
             return ("unavailable", "unsupported_type")
+        if scan_exact_bytes_with_confidence(data).high_confidence:
+            return ("denied", "privacy_withheld")
+        original_starts = [0, *(m.end() for m in re.finditer(b"\n", data)), len(data)]
+        first = min(args.start_line - 1, len(original_starts) - 1)
+        last = min(first + args.line_count, len(original_starts) - 1)
+        admission_source = data[original_starts[first] : original_starts[last]]
         # The lines are cut from the whole file redacted first (#1248, P-D4), never from the file
         # itself: a read starting on a value's line would otherwise send the value without the
         # label a line above it, where no scanner of the slice sees it. Redaction keeps every
@@ -763,7 +795,17 @@ class ReviewerBroker:
             data[starts[first] : stop].decode()
         except UnicodeDecodeError:
             return ("unavailable", "unsupported_type")
-        piece = _Piece(data, starts[first], stop, refs, prov, "", args.start_line, root.input_root)
+        piece = _Piece(
+            data,
+            starts[first],
+            stop,
+            refs,
+            prov,
+            "",
+            args.start_line,
+            root.input_root,
+            admission_source=admission_source,
+        )
         return ("text", [piece], None, 0)
 
     def _pinned(self, alias: str) -> bool:
@@ -789,6 +831,12 @@ class ReviewerBroker:
             return ("unavailable", "declared_test_not_visible")
         if "sha256:" + hashlib.sha256(data).hexdigest() != digest:
             return ("unavailable", "declared_test_changed")
+        if scan_exact_bytes_with_confidence(data).high_confidence:
+            return ("denied", "privacy_withheld")
+        original_starts = [0, *(m.end() for m in re.finditer(b"\n", data)), len(data)]
+        first = min(args.start_line - 1, len(original_starts) - 1)
+        last = min(first + args.line_count, len(original_starts) - 1)
+        admission_source = data[original_starts[first] : original_starts[last]]
         # Cut from the redacted test, like every other read (#1248, P-D4).
         redacted = redact_fully(data)
         if redacted is None:
@@ -815,6 +863,7 @@ class ReviewerBroker:
             args.start_line,
             None,
             DataCategory.DECLARED_TEST_EXCERPT,
+            admission_source=admission_source,
         )
         return ("text", [piece], None, 0)
 

@@ -16,16 +16,20 @@ from __future__ import annotations
 import hashlib
 import json
 from collections.abc import Callable
+from dataclasses import replace
 from pathlib import Path
 from typing import cast
 
 import pytest
 
+from builders.privacy_policies import minimal_external_policy
+from builders.privacy_widenings import with_llm
 from finishup.adapters.privacy.local_enforcer import scan_exact_bytes_with_confidence
 from finishup.application import check_change as check_change_module
 from finishup.application import semantic_case as semantic_case_module
 from finishup.application.check_change import ChangeCaptureUnavailable
 from finishup.application.reviewer_broker import ReadRoot
+from finishup.domain.privacy import CredentialHeuristic
 from finishup.observability.privacy import (
     EGRESS_CREDENTIAL_PLACEHOLDER,
     ScanConfidence,
@@ -328,7 +332,7 @@ def _labelled_file() -> str:
         "settings:\n"
         f"  password: |\n    {_PASSWORD}\n    {_SECOND}\n"
         "  role: admin\n"
-        + "\n".join(_key_lines("OPENSSH PRIVATE KEY"))
+        + "\n".join(("key fixture", *(["ordinary line"] * 4), "end fixture"))
         + "\n"
         + f"db_token = '{_PASSWORD}'\n"
         + "done: true\n"
@@ -347,6 +351,9 @@ async def test_a_line_read_never_sends_a_value_without_its_label(
         _text("w1", "settings.yaml", start, 2),
         _FINAL,
         roots=(ReadRoot("w1", str(tmp_path.resolve())),),
+        policy=replace(
+            with_llm(minimal_external_policy()), credential_heuristic=CredentialHeuristic.DISABLED
+        ),
     )
     (result,) = _observations((await loop.run()).history)
 
@@ -368,13 +375,105 @@ async def test_a_declared_test_read_is_cut_from_the_redacted_test(tmp_path: Path
     test.write_text(content)
     digest = "sha256:" + hashlib.sha256(content.encode()).hexdigest()
     root = ReadRoot("t1", str(tmp_path.resolve()), pinned=(("dt1", str(test), digest, "clm"),))
-    loop, _broker, _model, _ = _setup(_text("t1", "dt1", 3, 2), _FINAL, roots=(root,))
+    loop, _broker, _model, _ = _setup(
+        _text("t1", "dt1", 3, 2),
+        _FINAL,
+        roots=(root,),
+        policy=replace(
+            with_llm(minimal_external_policy()), credential_heuristic=CredentialHeuristic.DISABLED
+        ),
+    )
     (result,) = _observations((await loop.run()).history)
 
     assert result["status"] == "ok"
     sent = cast(str, cast(dict[str, JsonValue], result["data"])["text"])
     assert _PASSWORD not in json.dumps(result)
     assert sent == '\n"""\n'
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("declared", (False, True))
+@pytest.mark.parametrize("start", (1, 2))
+@pytest.mark.parametrize("heuristic", tuple(CredentialHeuristic))
+@pytest.mark.parametrize("kind", ("token", "private_key"))
+async def test_a_high_confidence_file_read_stays_withheld(
+    tmp_path: Path, declared: bool, start: int, heuristic: CredentialHeuristic, kind: str
+) -> None:
+    secret = "ghp_" + "Q" * 36
+    sensitive = (
+        f"KEY = '{secret}'" if kind == "token" else "\n".join(_key_lines("OPENSSH PRIVATE KEY"))
+    )
+    content = f"ordinary line\n{sensitive}\n"
+    path = tmp_path.resolve() / "source.txt"
+    path.write_text(content)
+    root = (
+        ReadRoot(
+            "t1",
+            str(tmp_path.resolve()),
+            pinned=(
+                ("dt1", str(path), "sha256:" + hashlib.sha256(content.encode()).hexdigest(), "clm"),
+            ),
+        )
+        if declared
+        else ReadRoot("w1", str(tmp_path.resolve()))
+    )
+    loop, broker, _model, _ = _setup(
+        _text(root.alias, "dt1" if declared else path.name, start, 1),
+        _FINAL,
+        roots=(root,),
+        policy=replace(with_llm(minimal_external_policy()), credential_heuristic=heuristic),
+    )
+    (result,) = _observations((await loop.run()).history)
+    assert (result["status"], result["reason"], result["data"]) == (
+        "denied",
+        "privacy_withheld",
+        None,
+    )
+    assert result["citable_refs"] == []
+    assert broker.content_reads == 0
+    assert broker.read_usage[0]["reason"] == "privacy_withheld"
+    assert secret not in json.dumps(result)
+    assert not broker.text_by_ref
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("declared", (False, True))
+@pytest.mark.parametrize("heuristic", tuple(CredentialHeuristic))
+async def test_heuristic_read_admission_keeps_the_owner_policy(
+    tmp_path: Path, declared: bool, heuristic: CredentialHeuristic
+) -> None:
+    content = f'password: "{_PASSWORD}"\nrole: admin\n'
+    path = tmp_path.resolve() / "settings.yaml"
+    path.write_text(content)
+    root = (
+        ReadRoot(
+            "t1",
+            str(tmp_path.resolve()),
+            pinned=(
+                ("dt1", str(path), "sha256:" + hashlib.sha256(content.encode()).hexdigest(), "clm"),
+            ),
+        )
+        if declared
+        else ReadRoot("w1", str(tmp_path.resolve()))
+    )
+    loop, _broker, _model, _ = _setup(
+        _text(root.alias, "dt1" if declared else path.name, 1, 2),
+        _FINAL,
+        roots=(root,),
+        policy=replace(with_llm(minimal_external_policy()), credential_heuristic=heuristic),
+    )
+    (result,) = _observations((await loop.run()).history)
+    if heuristic is CredentialHeuristic.ENFORCED:
+        assert (result["status"], result["reason"], result["data"]) == (
+            "denied",
+            "privacy_withheld",
+            None,
+        )
+    else:
+        assert result["status"] == "ok"
+        sent = cast(dict[str, JsonValue], result["data"])["text"]
+        assert sent == f'password: "{_MARK}"\nrole: admin\n'
+    assert _PASSWORD not in json.dumps(result)
 
 
 @pytest.mark.anyio

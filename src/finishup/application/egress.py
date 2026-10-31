@@ -1572,7 +1572,10 @@ class PrivacyCoordinator:
 
         Each element is admitted as the packet's items are, and must pass unchanged; then the exact
         encoded ``envelope`` is scanned. No channel grant: the gateway admits the exchange. An
-        admitted result joins ``history``: its elements' categories and data classes, and the
+        element may also be the broker's original slice, retained only as an admission guard:
+        redacting the delivered slice must not bypass the existing heuristic refusal. Only the
+        envelope supplies delivered text; source guards never enter the conversation.
+        An admitted result joins ``history``: its elements' categories and data classes, and the
         policy they were admitted under, which every later read and exchange must still match.
         """
 
@@ -3553,7 +3556,10 @@ class PrivacyCoordinator:
                 PrivacyOutcome.BLOCKED_FORBIDDEN_DATA,
                 PrivacyReason.NEVER_SEND_DETECTED,
             )
-        if any(not item.scope_valid for item in classified.items):
+        if any(
+            not item.scope_valid and item.candidate.source_disclosure_permitted
+            for item in classified.items
+        ):
             return PrivacyDecision(
                 (),
                 tuple(
@@ -3562,6 +3568,8 @@ class PrivacyCoordinator:
                 PrivacyOutcome.CLASSIFICATION_UNCERTAIN,
                 PrivacyReason.CLASSIFICATION_UNCERTAIN,
             )
+        # A trusted producer can already have withheld one file. Its safe identity item remains
+        # in the catalog for item-level accounting, but never enters the approved content.
         approved = tuple(
             item.candidate.item_id
             for item in classified.items
@@ -3582,6 +3590,7 @@ class PrivacyCoordinator:
                 item.candidate.category
                 for item in classified.items
                 if item.candidate.item_id not in approved
+                and item.candidate.source_disclosure_permitted
             }
         )
         if not approved and classified.items:

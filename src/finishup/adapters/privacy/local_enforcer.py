@@ -550,8 +550,10 @@ class LocalPrivacyEnforcer:
                 {
                     item.candidate.item_id
                     for item in classified.items
-                    if item.scope_valid
-                    and item.heuristic_findings
+                    if (
+                        (item.scope_valid and item.heuristic_findings)
+                        or not item.candidate.source_disclosure_permitted
+                    )
                     and item.candidate.item_id not in included_id_set
                     # Left out for room (#1230), not withheld for its value.
                     and item.candidate.item_id not in decision.unselected_item_ids

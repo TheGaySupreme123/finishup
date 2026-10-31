@@ -357,8 +357,8 @@ def _redacted_text(text: bytes) -> tuple[bytes, bool]:
     The passes run on the text and on its JSON-string encoding (``redact_fully``), as case
     composition and egress do, so a value only the encoded form shows is replaced here too, before
     the #983 split could cut a part between its label and its value (#1248, P-D4). A private key
-    is replaced from BEGIN through END; one without its END cannot be redacted in full, so the
-    text is withheld (``redaction_incomplete``) and never offered partly redacted.
+    is replaced from BEGIN through END; one without its END cannot be redacted in full. The
+    caller withholds that file's section, never offering it partly redacted.
     """
 
     redacted = redact_fully(text, max_passes=_MAX_REDACTION_PASSES)
@@ -403,14 +403,42 @@ def _redacted(capture: CheckChangeCapture) -> CheckChangeCapture:
         # An input the reader already redacted (a summary that withheld a value, PR #1086 review
         # R1-04) is disclosed like one this pass redacted.
         capture = replace(capture, inputs=inputs, redacted=True)
-    text, redacted = _redacted_text(capture.text)
+    # File boundaries are structural here, before any size/line split: an unterminated key in
+    # one file cannot consume another file or turn the whole change into an unavailable read.
+    starts = [m.start() for m in re.finditer(rb"^diff --git ", capture.text, re.MULTILINE)]
+    if not starts:
+        text, redacted = _redacted_text(capture.text)
+        withheld = capture.withheld_sections
+    else:
+        prefix, redacted = _redacted_text(capture.text[: starts[0]])
+        parts = [prefix]
+        withheld_set = set(capture.withheld_sections)
+        for ordinal, start in enumerate(starts, 1):
+            end = starts[ordinal] if ordinal < len(starts) else len(capture.text)
+            section = capture.text[start:end]
+            try:
+                part, changed = _redacted_text(section)
+            except ChangeCaptureUnavailable:
+                # Keep only the safely redacted identity line, not any byte of the key/body.
+                header = section.split(b"\n", 1)[0] + b"\n"
+                part, _ = _redacted_text(header)
+                changed = True
+                withheld_set.add(ordinal)
+            parts.append(part)
+            redacted = redacted or changed
+        text = b"".join(parts)
+        withheld = tuple(sorted(withheld_set))
     if not redacted:
         return capture
-    truncated = capture.truncated
+    truncated = capture.truncated or bool(withheld)
     if len(text) > MAX_CHECK_CHANGE_TEXT_BYTES:
         text = text[:MAX_CHECK_CHANGE_TEXT_BYTES].decode("utf-8", errors="ignore").encode("utf-8")
         truncated = True
-    return replace(capture, text=text, redacted=True, truncated=truncated)
+        sections_kept = len(tuple(re.finditer(rb"^diff --git ", text, re.MULTILINE)))
+        withheld = tuple(n for n in withheld if n <= sections_kept)
+    return replace(
+        capture, text=text, redacted=True, truncated=truncated, withheld_sections=withheld
+    )
 
 
 def _workspace_relative(value: str, workspace: str) -> str:

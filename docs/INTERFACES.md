@@ -6122,6 +6122,13 @@ already redacted is stored marked `redacted`, and its approved-check receipt doc
 local and deterministic checks may read them, and are redacted only at egress (issue #982); a
 chunk or excerpt is marked `redacted` only when its bytes were actually replaced. SQLite/envelopes
 retain only encrypted object IDs, commitments, classifications, sizes, and relations.
+Reviewer reads retain their admission rules: a high-confidence secret anywhere in a file refuses
+its read (`denied/privacy_withheld`), and heuristic hits take the owner's existing policy before
+redaction. Every admitted line or offset slice is cut from redacted text. Check-time changes are
+redacted per file before any part is cut; an unterminated private key withholds only that file's
+part, recorded as `item_withheld`, while the other files remain reviewable. The encrypted change
+object's optional `withheld_sections` lists one-based diff-section ordinals, allowing recovery to
+rebuild those same item refusals. Objects without that field retain their existing encoding.
 Vault/service failure records `content_capture_unavailable` and no plaintext spool.
 Unrecognized visible events accept an opaque stable envelope plus encrypted content and
 `unsupported_event`; a session-stream file that is the wrong grammar, an untested `cli_version`,
