@@ -195,12 +195,17 @@ _ASSIGNMENT_VALUE = (
     rb"|" + _STRING_PREFIX_RE + rb"'(?:\\.|[^'\\\r\n]){1,512}'"
     rb"|" + _ESCAPED_QUOTED_VALUE + rb"|" + _UNQUOTED_VALUE_CHAR + rb"{1,512})"
 )
+# Where an assignment name may start: not inside a longer identifier, checked without consuming
+# the byte before it, so an assignment right after a closing quote (``password: "a"password:
+# "b"``) is found after the one before it; and after a JSON-encoded line break or tab at any
+# escaping depth, which is whitespace in the text it encodes, though its letter is not (#1248 P3).
+_NAME_BOUNDARY: Final = rb"(?:(?<![A-Za-z0-9_])|(?<=\\(?-i:[nrt])))"
 # Compound names such as AWS_SECRET_ACCESS_KEY and AZURE_CLIENT_SECRET keep the
 # secret token as one underscore/hyphen component, not the entire identifier.
 # The key's closing quote may be escaped to depth three (``\\\"`` closes a key of a JSON
 # document nested in a JSON string, #1015), like the quoted value after it.
 _SECRET_ASSIGNMENT = re.compile(
-    rb"(?i)(?:^|[^A-Za-z0-9_])['\"]?"
+    rb"(?i)" + _NAME_BOUNDARY + rb"['\"]?"
     rb"(?:[A-Za-z][A-Za-z0-9]{0,63}[_-])*"
     rb"(?:api[_-]?key|access[_-]?token|auth[_-]?token|password|passwd|private[_-]?key|secret)"
     rb"(?:[_-][A-Za-z][A-Za-z0-9]{0,63})*"
@@ -210,7 +215,7 @@ _SECRET_ASSIGNMENT = re.compile(
 # non-digit and be at least eight bytes so MAX_TOKEN=4096 and TOKEN_COUNT=12
 # are not treated as secrets.
 _TOKEN_ASSIGNMENT = re.compile(
-    rb"(?i)(?:^|[^A-Za-z0-9_])['\"]?"
+    rb"(?i)" + _NAME_BOUNDARY + rb"['\"]?"
     rb"(?:[A-Za-z][A-Za-z0-9]{0,63}[_-])*token"
     rb"(?:\\{0,7}['\"])?\s*" + _SEPARATOR + rb"(?="
     rb"(?:" + _STRING_PREFIX_RE + rb"\"(?:\\.|[^\"\\\r\n]){1,512}\""
@@ -227,8 +232,7 @@ _TOKEN_ASSIGNMENT = re.compile(
 # Only a quoted value is considered, and the finding span is the quoted value alone, so redaction
 # keeps the name, the annotation and the ``=``.
 _ANNOTATED_ASSIGNMENT = re.compile(
-    rb"(?i)(?:^|[^A-Za-z0-9_])"
-    rb"(?P<name>(?:[A-Za-z][A-Za-z0-9]{0,63}[_-])*"
+    rb"(?i)" + _NAME_BOUNDARY + rb"(?P<name>(?:[A-Za-z][A-Za-z0-9]{0,63}[_-])*"
     rb"(?:api[_-]?key|access[_-]?token|auth[_-]?token|password|passwd|private[_-]?key|secret|token)"
     rb"(?:[_-][A-Za-z][A-Za-z0-9]{0,63})*)"
     rb"[ \t]*:[ \t]*[A-Za-z_][A-Za-z0-9_.\[\], |]{0,64}?[ \t]*"
@@ -965,7 +969,10 @@ def _assignment_value_is_code(
         # Token.ConstKeyword``) carry their own source evidence. A bare equals assignment does
         # not, even if the RHS happens to look like an enum.
         return (
+            # The match no longer takes the byte before the name (#1248 P3), so a member's
+            # ``.`` may sit just before it.
             lhs.startswith(b".")
+            or preceding.endswith(b".")
             or declared
             or (separator.group(0).startswith(b":") and lhs_name == b"token")
         )
@@ -1381,7 +1388,7 @@ def scan_for_sensitive_content(
             name = match.group("name")
             assign = match.group("assign")
             # Judge the value exactly as the plain heuristic would judge ``name = value``.
-            synthetic = b" " + name + b" " + assign
+            synthetic = name + b" " + assign
             token_family = _TOKEN_LIKE_ASSIGNMENT_NAME.fullmatch(name) is not None or (
                 _SECRET_ASSIGNMENT.match(synthetic) is None
             )
