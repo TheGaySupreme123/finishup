@@ -1750,7 +1750,7 @@ def _chunks_with_first_limit(blob: bytes, first_limit: int, later_limit: int) ->
 
 
 def _check_time_change_offer(
-    text: bytes, selection: ReviewSelectionPolicy
+    text: bytes, selection: ReviewSelectionPolicy, *, withheld_sections: tuple[int, ...] = ()
 ) -> tuple[tuple[str, ...], tuple[int, ...]]:
     """Change parts and the original offset of each part's first change byte.
 
@@ -1761,7 +1761,18 @@ def _check_time_change_offer(
     """
 
     part_limit = _check_time_change_part_limit(selection)
-    chunks = _check_time_change_chunks(text, part_limit)
+    if withheld_sections:
+        # A refused file has its own item, never a chunk shared with an admitted file. Safe
+        # sections still take the usual redact-before-cut sizing and the unchanged ceilings.
+        bounds = _file_section_bounds(text)
+        segments = (text[: bounds[0][0]], *(text[start:end] for start, end in bounds))
+        chunks = tuple(
+            chunk
+            for segment in segments
+            for chunk in _check_time_change_chunks(segment, part_limit)
+        )
+    else:
+        chunks = _check_time_change_chunks(text, part_limit)
     if not chunks:
         return (), ()
     count = len(chunks)
@@ -8586,6 +8597,7 @@ def _build_semantic_case_once(
     check_change_links: tuple[str, ...] = ()
     check_change_admitted = 0
     check_change_cut = False
+    withheld_change_ids: set[str] = set()
     if check_time_change_unavailable:
         capture_gap_set.add(CHECK_TIME_CHANGE_UNAVAILABLE_GAP)
         if check_time_change_unavailable_reason is not None:
@@ -8604,8 +8616,16 @@ def _build_semantic_case_once(
         check_change_links = _check_time_change_links(projection, allowed)
         if check_change_links:
             check_change_parts, check_change_offsets = _check_time_change_offer(
-                change.text, selection
+                change.text, selection, withheld_sections=change.withheld_sections
             )
+            bounds = _file_section_bounds(change.text)
+            withheld_change_ids = {
+                f"{CHECK_TIME_CHANGE_ITEM_PREFIX}{index + 1:03d}"
+                for index, offset in enumerate(check_change_offsets)
+                if any(
+                    bounds[n - 1][0] <= offset < bounds[n - 1][1] for n in change.withheld_sections
+                )
+            }
     # Read-only task input files (issue #1045), linked to the statement that names them.
     task_inputs: tuple[tuple[str, bool], ...] = ()
     task_input_roots: tuple[tuple[str, str], ...] = ()
@@ -9752,6 +9772,7 @@ def _build_semantic_case_once(
         excerpt_parts=excerpt_parts,
         follow_up_supplied_item_ids=follow_up_supplied,
         input_roots=tuple(pair for pair in task_input_roots if pair[0] in carried_item_ids),
+        withheld_item_ids=frozenset(withheld_change_ids & carried_item_ids),
         # #1230: a cut excerpt that places no bytes in its source never reads as shown whole.
         unplaced_item_ids=frozenset(
             item.item_id
@@ -10787,6 +10808,7 @@ def assemble_filtered_review_packet(
             content_rows,
             omissions,
             redacted_item_ids=redacted,
+            privacy_withheld_item_ids=withheld,
             privacy_withheld_refs=withheld_excerpt_refs,
         )
         packet_obj["provider_input_manifest"] = provider_manifest
@@ -11185,6 +11207,7 @@ def _provider_bound_input_manifest(
     omissions: Sequence[JsonValue],
     *,
     redacted_item_ids: frozenset[str] | set[str] = frozenset(),
+    privacy_withheld_item_ids: frozenset[str] | set[str] = frozenset(),
     privacy_withheld_refs: frozenset[str] = frozenset(),
 ) -> dict[str, JsonValue]:
     """Project a composed input manifest onto the exact provider-bound rows.
@@ -11378,6 +11401,10 @@ def _provider_bound_input_manifest(
         if prior_dialogue_cut_refs:
             omission_reasons.add("not_selected")
         if any(item_id in redacted_item_ids for item_id in item_ids):
+            omission_reasons.add("redacted_never_send")
+        if type(raw_ids) is list and any(
+            item_id in privacy_withheld_item_ids for item_id in raw_ids if type(item_id) is str
+        ):
             omission_reasons.add("redacted_never_send")
         # Packet omission rows name a heuristic withholding ``never_send_heuristic``; the section
         # manifest's closed vocabulary (``ports/semantic.py``) records the same loss as
@@ -12587,6 +12614,7 @@ def semantic_case_to_candidate_context(
         provider_binding=provider_binding,
         subject_digest=case.case_digest,
         input_roots=dict(case.input_roots),
+        withheld_item_ids=case.withheld_item_ids,
     )
 
 
@@ -12599,6 +12627,7 @@ def review_envelope_to_candidate_context(
     provider_binding: ProviderBinding,
     subject_digest: str,
     input_roots: Mapping[str, str] | None = None,
+    withheld_item_ids: frozenset[str] = frozenset(),
 ) -> CandidateContext:
     """Offer a frozen review envelope and only its catalogued, classified content.
 
@@ -12631,6 +12660,7 @@ def review_envelope_to_candidate_context(
                 scope,
                 f"/case/{item.section}/{item.item_id}",
                 item.content,
+                source_disclosure_permitted=item.item_id not in withheld_item_ids,
                 input_root=roots.get(item.item_id),
             )
         )

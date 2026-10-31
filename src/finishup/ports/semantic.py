@@ -1526,8 +1526,14 @@ class SemanticCase:
     # their source (a cut of the source redacted in full, or a part cut again to fit its
     # disclosed size). Such an item never reads as showing its source whole.
     unplaced_item_ids: frozenset[str] = field(default=frozenset(), compare=False)
+    # Trusted capture-side refusals, rebuilt from the durable change object on recovery.
+    withheld_item_ids: frozenset[str] = field(default=frozenset(), compare=False)
 
     def __post_init__(self) -> None:
+        if type(self.withheld_item_ids) is not frozenset or any(
+            type(item_id) is not str for item_id in self.withheld_item_ids
+        ):
+            raise _invalid_case()
         if type(self.unplaced_item_ids) is not frozenset or any(
             type(item_id) is not str for item_id in self.unplaced_item_ids
         ):
