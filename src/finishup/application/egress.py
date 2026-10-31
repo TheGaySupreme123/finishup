@@ -21,6 +21,7 @@ from finishup.adapters.reviewer_artifacts import IMAGE_REVIEW_PURPOSE, read_imag
 from finishup.domain.findings import RuntimeTokenUsage, SemanticDispatchKind
 from finishup.domain.privacy import (
     MAX_SCAN_MATCH_ITEM_IDS,
+    MAX_WITHHELD_ITEM_IDS,
     REVIEW_PACKET_ITEM_ID,
     ApprovedLocalDisclosureCase,
     ApprovedLocalItem,
@@ -120,10 +121,16 @@ from finishup.ports.semantic import (
     SemanticResultTimeout,
     SemanticResultUnavailable,
     decode_reviewer_exchange,
+    encode_reviewer_exchange,
     reviewer_exchange_tokens,
     reviewer_packet_bytes,
 )
-from finishup.protocol.canonical import canonical_digest, canonical_encode, strict_json_parse
+from finishup.protocol.canonical import (
+    JsonValue,
+    canonical_digest,
+    canonical_encode,
+    strict_json_parse,
+)
 from finishup.protocol.ids import IdKind, validate_opaque_item_id
 from finishup.protocol.redacted_values import (
     MAX_SEMANTIC_REDACTED_VALUE_ITEMS,
@@ -307,14 +314,84 @@ def _matching_item_ids(
 class _ExchangeHit:
     """What one reviewer-conversation scan found (#1248 P-D2), never the matched bytes.
 
-    ``item_ids`` are the packet items the matches sat in. ``withholdable`` is false when a match
-    sat anywhere withholding one item cannot clear: FinishUP's frame, the packet's structure, an
-    earlier reply or read result, or the review packet itself.
+    ``item_ids`` are the packet items the matches sat in; ``reads`` maps the index of each
+    reviewer read result message a match sat in to that read's record id. ``withholdable`` is
+    false when a match sat anywhere withholding one item or read cannot clear: FinishUP's frame,
+    the packet's structure, an earlier reply, or the review packet itself.
     """
 
     findings: tuple[ForbiddenDataKind, ...]
     item_ids: frozenset[str]
     withholdable: bool
+    reads: tuple[tuple[int, str], ...] = ()
+
+
+# #1248 P-D2: the record id of a reviewer read withheld at the conversation stage, by its call.
+_WITHHELD_READ_ID: Final = "reviewer-read-{call}"
+
+
+def _read_result(text: str) -> tuple[int, str] | None:
+    """A reviewer read result message's ``(call_index, tool_ref)``; ``None`` for any other."""
+
+    try:
+        document = strict_json_parse(text.encode("utf-8"))
+    except ValueError:
+        return None
+    if not isinstance(document, dict):
+        return None
+    fields = cast(dict[str, object], document)
+    call, ref = fields.get("call_index"), fields.get("tool_ref")
+    if type(call) is not int or call < 0 or type(ref) is not str:
+        return None
+    return call, ref
+
+
+def _withhold_reads(payload: bytes, reads: Mapping[int, str]) -> bytes:
+    """``payload`` with each read result at ``reads``' message indexes replaced by its refusal.
+
+    The replacement is the broker's own refusal shape for a read withheld for its content
+    (``denied``/``privacy_withheld``), naming only the call, so the reviewer is told the read was
+    withheld and every later exchange replaces the same message the same way.
+    """
+
+    if not reads:
+        return payload
+    messages = list(decode_reviewer_exchange(payload))
+    for index in reads:
+        if 0 <= index < len(messages):
+            role, text = messages[index]
+            read = _read_result(text)
+            if read is None:
+                continue
+            refusal = {
+                "call_index": read[0],
+                "data": None,
+                "reason": "privacy_withheld",
+                "status": "denied",
+                "tool_ref": read[1],
+            }
+            messages[index] = (role, canonical_encode(cast(JsonValue, refusal)).decode())
+    return encode_reviewer_exchange(tuple(messages))  # pyright: ignore[reportArgumentType]
+
+
+def _with_withheld_reads(
+    minimized: MinimizedDisclosure, read_ids: Iterable[str]
+) -> MinimizedDisclosure:
+    """Record each withheld read like a withheld item (``item_withheld``), within the bounds."""
+
+    ids = set(read_ids)
+    if not ids:
+        return minimized
+    withheld = tuple(sorted({*minimized.withheld_item_ids, *ids}, key=str.encode))
+    merged = {value.item_id: value for value in minimized.redacted_values}
+    for read_id in ids:
+        merged.setdefault(read_id, SemanticRedactedValue(read_id, "item_withheld", ()))
+    values = tuple(merged[key] for key in sorted(merged, key=str.encode))
+    return replace(
+        minimized,
+        withheld_item_ids=withheld[:MAX_WITHHELD_ITEM_IDS],
+        redacted_values=values[:MAX_SEMANTIC_REDACTED_VALUE_ITEMS],
+    )
 
 
 def _blocked_redacted_values(
@@ -2593,6 +2670,8 @@ class PrivacyCoordinator:
             # scanned again; the review still runs. A hit anywhere else (FinishUP's frame, the
             # packet's structure, an earlier reply or read result, all of which must be sent
             # as they are), or one withholding cannot clear, refuses the whole case as before.
+            # A read result a hit sat in is replaced by its refusal in every later rendering.
+            withheld_reads: dict[int, str] = {}
             for exchange_round in range(_MAX_EXCHANGE_WITHHOLD_ROUNDS + 1):
                 exchange_hit = self._reviewer_exchange_hit(
                     payload, packet_bytes, minimized.marker_spans, heuristic
@@ -2603,6 +2682,8 @@ class PrivacyCoordinator:
                     None
                     if not exchange_hit.withholdable
                     or exchange_round == _MAX_EXCHANGE_WITHHOLD_ROUNDS
+                    else (decision, minimized)
+                    if not exchange_hit.item_ids
                     else self._exchange_withhold_trial(
                         refreshed_classified, decision, minimized, exchange_hit.item_ids
                     )
@@ -2629,10 +2710,11 @@ class PrivacyCoordinator:
                         ),
                     )
                 decision, minimized = narrowed
+                withheld_reads.update(exchange_hit.reads)
                 packet_bytes = minimized.prepared_bytes
-                payload = frame.render(packet_bytes)
+                payload = _withhold_reads(frame.render(packet_bytes), withheld_reads)
             minimized = replace(
-                minimized,
+                _with_withheld_reads(minimized, withheld_reads.values()),
                 prepared_bytes=payload,
                 byte_count=len(payload),
                 token_count=estimated_token_count(len(payload)),
@@ -3603,8 +3685,16 @@ class PrivacyCoordinator:
             messages = ()
         findings: set[ForbiddenDataKind] = set()
         item_ids: set[str] = set()
+        reads: dict[int, str] = {}
         withholdable = bool(messages)
-        for index, (_role, text) in enumerate(messages):
+
+        def read_at(index: int, role: str, text: str) -> str | None:
+            # A reviewer read result: a user message after the packet and catalog that carries
+            # the broker's result envelope (FinishUP's notices are plain text).
+            read = _read_result(text) if index > 2 and role == "user" else None
+            return None if read is None else _WITHHELD_READ_ID.format(call=read[0])
+
+        for index, (role, text) in enumerate(messages):
             # The packet is the conversation's first user message: its decoded content is the
             # packet's own bytes, where its recorded spans sit.
             message = text.encode("utf-8")
@@ -3612,6 +3702,9 @@ class PrivacyCoordinator:
             if not found:
                 continue
             findings.update(found)
+            if (read_id := read_at(index, role, text)) is not None:
+                reads[index] = read_id
+                continue
             matched = (
                 _matching_item_ids(rows, depth=1, scan=scan, row_spans=row_spans)
                 if index == 1
@@ -3623,14 +3716,23 @@ class PrivacyCoordinator:
         if exact:
             findings.update(exact)
             matched = _matching_item_ids(rows, depth=2, scan=scan, row_spans=row_spans)
+            # A read result sits in the conversation one JSON level deep, as its message string.
+            matched_reads = {
+                index: read_id
+                for index, (role, text) in enumerate(messages)
+                if (read_id := read_at(index, role, text)) is not None
+                and scan(canonical_encode(text))
+            }
             item_ids.update(matched)
-            withholdable = withholdable and bool(matched)
+            reads.update(matched_reads)
+            withholdable = withholdable and bool(matched or matched_reads)
         if not findings:
             return None
         return _ExchangeHit(
             tuple(sorted(findings, key=lambda kind: kind.value.encode())),
             frozenset(item_ids),
-            withholdable and bool(item_ids) and REVIEW_PACKET_ITEM_ID not in item_ids,
+            withholdable and bool(item_ids or reads) and REVIEW_PACKET_ITEM_ID not in item_ids,
+            tuple(sorted(reads.items())),
         )
 
     def _exchange_withhold_trial(

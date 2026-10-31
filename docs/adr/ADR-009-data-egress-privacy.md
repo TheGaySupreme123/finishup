@@ -1881,8 +1881,10 @@ minimization onward: the minimizer records each marker it writes, the spans trav
 (and are persisted with a prepared proposal), and every later scan carries them through each JSON
 string by its exact offset map. Markers written at capture or composition are stored without a
 recorded span, so they are judged as values there and the egress pass replaces each with the same
-bytes and records it. A reviewer read keeps its admission-time withholding, which scans the exact
-read message. P-D3 to P-D5 are not yet implemented.
+bytes and records it. A conversation-stage hit in a reviewer read result withholds that read: its
+message is replaced by the broker's refusal for a withheld read and it is recorded as
+`item_withheld` (`reviewer-read-<call>`); the review continues. P-D3 to P-D5 are not yet
+implemented.
 
 **Hosts and surfaces.** The behaviour is service-side and identical on Codex, Claude Code and
 Cursor. The CLI, MCP, hooks, the terminal interface and the receipt renderings (JSON, markdown,

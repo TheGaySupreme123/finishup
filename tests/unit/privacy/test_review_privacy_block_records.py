@@ -139,6 +139,7 @@ async def _evaluate_conversation(
     *,
     enforcer: LocalPrivacyEnforcer | None = None,
     frame_text: str = "review the packet",
+    later: tuple[tuple[str, str], ...] = (),
 ) -> tuple[object, _Audit]:
     frozen, captured, scope = _captured_case_values(content)
     case = build_semantic_case(
@@ -168,7 +169,12 @@ async def _evaluate_conversation(
     )
 
     def render(packet: bytes) -> bytes:
-        return encode_reviewer_exchange((("system", frame_text), ("user", packet.decode())))
+        return encode_reviewer_exchange(
+            cast(
+                Any,
+                (("system", frame_text), ("user", packet.decode()), ("user", "catalog"), *later),
+            )
+        )
 
     result = await coordinator.evaluate_semantic(
         _candidate(case),
@@ -244,6 +250,58 @@ async def test_a_conversation_hit_in_one_item_withholds_that_item_and_the_review
     packet = json.loads(decode_reviewer_exchange(conversation)[1][1])
     assert _EXCERPT not in {item["item_id"] for item in packet["items"]}
     assert "never_send_heuristic" in json.dumps(packet)
+
+
+def _read_result(call: int, text: str) -> str:
+    return json.dumps(
+        {
+            "call_index": call,
+            "data": {"text": text},
+            "reason": None,
+            "status": "ok",
+            "tool_ref": f"sjb_job:read:{call}",
+        },
+        separators=(",", ":"),
+        sort_keys=True,
+    )
+
+
+@pytest.mark.anyio
+async def test_a_conversation_hit_in_a_reviewer_read_withholds_that_read_and_the_review_goes_on() -> (
+    None
+):
+    # #1248 P-D2: a hit traced to a read result the conversation carries withholds that read: its
+    # message is replaced by the broker's refusal for a withheld read, it is recorded like a
+    # withheld item (``item_withheld``), and the rest of the conversation is sent.
+    action = '{"action":"read_file","args":{"path":"notes.txt"}}'
+    later = (
+        ("assistant", action),
+        ("user", _read_result(1, "notes: " + _PLANTED.decode())),
+        ("assistant", action),
+        ("user", _read_result(2, "plain notes")),
+    )
+    result, audit = await _evaluate_conversation(
+        b"clean evidence\n", enforcer=_ConversationScanEnforcer(), later=later
+    )
+    conversation = _prepared(result, audit)
+    assert _PLANTED not in conversation
+    messages = decode_reviewer_exchange(conversation)
+    assert json.loads(messages[4][1]) == {
+        "call_index": 1,
+        "data": None,
+        "reason": "privacy_withheld",
+        "status": "denied",
+        "tool_ref": "sjb_job:read:1",
+    }
+    assert messages[6][1] == later[3][1]  # the clean read is sent as it was
+    assert isinstance(result, SemanticEgressBlocked)
+    assert "reviewer-read-1" in result.withheld_item_ids
+    assert _EXCERPT not in result.withheld_item_ids
+    (withheld,) = [item for item in result.redacted_values if item.item_id == "reviewer-read-1"]
+    assert withheld.disposition == "item_withheld"
+    (proposal,) = audit.prepared
+    assert "reviewer-read-1" in proposal.minimized.withheld_item_ids
+    assert _EXCERPT in proposal.minimized.included_item_ids
 
 
 @pytest.mark.anyio

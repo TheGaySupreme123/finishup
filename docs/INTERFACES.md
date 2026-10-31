@@ -4949,9 +4949,12 @@ behaves as those paragraphs describe.
   for a match no single item explains. As implemented: after the per-message scan the exact
   conversation bytes are scanned as the gateway will scan them; a hit traced to packet items
   withholds them, and the packet is re-minimized, rebuilt and rescanned (at most 3 rounds). A hit
-  in the packet structure, the frame, an earlier reply or read result, or one no item explains
-  refuses the case with the `reviewer_exchange` records. A reviewer read is withheld at admission,
-  which scans its exact message.
+  traced to a reviewer read result withholds that read: its message is replaced by the broker's
+  refusal (`status` `denied`, `reason` `privacy_withheld`, its `call_index` and `tool_ref` only)
+  in this and every later exchange, and it is recorded as `item_withheld` with item id
+  `reviewer-read-<call_index>`. A hit in the packet structure, the frame, an earlier reply, or one
+  no item or read explains refuses the case with the `reviewer_exchange` records. A read is also
+  withheld at admission, which scans its exact message.
 - **Value end (P-D3, step P2).** An unquoted value ends at a raw line break or an encoded `\n`/`\r`
   at any depth. No pass replaces bytes outside its match. Accepted trade-off: a secret containing
   a literal `\n` is only partly redacted.
