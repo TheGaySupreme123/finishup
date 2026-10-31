@@ -11478,9 +11478,11 @@ is withheld whole), recorded as a bounded `semantic_composition/check_time_chang
   section's first line plus `\0binary` for a `Binary files ` line and `\0deleted` for a `deleted
   file mode ` line. `shown_bytes` is `check_time_change_bytes_carried(case,
   withheld_categories=)`: the change bytes (marker lines excluded) of
-  `check_time_change_parts_carried(case, withheld_categories=)`, the unbroken run of parts from the
-  first whose catalog rows `bounded_case_envelope(case)` kept, or 0 when the policy withholds
-  `repository_excerpt`. Counting bytes keeps the record exact whatever part size a planned
+  `check_time_change_parts_carried(case, withheld_categories=)`, the catalogued prefix with
+  capture-side file refusals excluded, or 0 when the policy withholds `repository_excerpt`.
+  The byte count stops at the first withheld interval; later clean intervals are reported by
+  `check_time_change_sections_carried`. A withheld file is never credited in the shown-file record.
+  Counting bytes keeps the record exact whatever part size a planned
   selection chose and when the first part was cut (issue #983).
   `check_change_shown_files(runtime, change, shown_bytes)` commits each through
   `runtime.objects.commitment_for(..., CHANGE_CAPTURE)` over the domain

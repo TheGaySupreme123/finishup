@@ -102,7 +102,16 @@ def test_change_that_cannot_be_fully_redacted_is_withheld(monkeypatch: pytest.Mo
 
 @pytest.mark.anyio
 @pytest.mark.parametrize("bad_first", (False, True))
-async def test_an_unterminated_key_withholds_only_its_files_change_part(bad_first: bool) -> None:
+@pytest.mark.parametrize("preamble", (b"", b"FinishUP check-time change: service-captured.\n"))
+async def test_an_unterminated_key_withholds_only_its_files_change_part(
+    bad_first: bool, preamble: bytes
+) -> None:
+    from finishup.application.semantic_case import (
+        check_time_change_bytes_carried,
+        check_time_change_parts_carried,
+        check_time_change_sections_carried,
+        check_time_change_shown_files,
+    )
     from unit.application.test_semantic_case import (
         _case_with_material,  # pyright: ignore[reportPrivateUsage]
     )
@@ -119,7 +128,7 @@ async def test_an_unterminated_key_withholds_only_its_files_change_part(bad_firs
     banner = b"-" * 5 + b"BEGIN " + b"OPENSSH PRIVATE KEY" + b"-" * 5
     bad = b"diff --git a/key.txt b/key.txt\n@@ -0,0 +1,2 @@\n+" + banner + b"\n+" + body + b"\n"
     good = b"diff --git a/app.py b/app.py\n@@ -1 +1 @@\n-old\n+review_this_change = 2\n"
-    raw = _capture((bad + good) if bad_first else (good + bad))
+    raw = _capture(preamble + ((bad + good) if bad_first else (good + bad)))
     raw = replace(raw, tracked_files=2)
     redacted = _redacted(raw)
     assert redacted.withheld_sections == ((1,) if bad_first else (2,))
@@ -136,8 +145,15 @@ async def test_an_unterminated_key_withholds_only_its_files_change_part(bad_firs
     case = _build(
         _case_with_material(with_evidence=False), change=replace(_change(), capture=recovered)
     )
-    withheld_id = "change-check-time-001" if bad_first else "change-check-time-002"
+    ordinal = (1 if bad_first else 2) + bool(preamble)
+    withheld_id = f"change-check-time-{ordinal:03d}"
     assert case.withheld_item_ids == {withheld_id}
+    assert check_time_change_parts_carried(case) == 1 + bool(preamble)
+    shown = check_time_change_shown_files(
+        recovered, check_time_change_bytes_carried(case), check_time_change_sections_carried(case)
+    )
+    assert len(shown) == 1 and b"app.py" in shown[0].identity
+    assert all(b"key.txt" not in row.identity for row in shown)
     _result, audit = await _evaluate(_candidate(case))
     (proposal,) = audit.prepared  # fake audit stops before any provider/dispatch
     minimized = proposal.minimized
