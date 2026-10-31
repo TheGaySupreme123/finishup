@@ -1855,7 +1855,7 @@ local-sink backstops, and the egress-receipt shape keep their rules.
 - **P-D5. The marker is renamed, at low priority.** New content uses
   `[withheld-by-finishup:possible-credential]`. Readers accept both spellings permanently, and the
   scanner profile is bumped so that resumed work never mixes them. The rule is ADR-048's (§2, §3
-  and its 2026-10-31 amendment). Implemented in step P4 (#PRNUM); before it, FinishUP wrote
+  and its 2026-10-31 amendment). Implemented in step P4 (#1274); before it, FinishUP wrote
   `[withheld-by-yoetz:possible-credential]`.
 
 **Scanner profile.** The 2026-10-03 amendment already requires a new scanner profile version for
@@ -1891,7 +1891,7 @@ with the same label; a missing END withholds the item, or only that file's check
 YAML block values are detected. Reviewer reads retain high-confidence refusals and the existing
 heuristic admission policy.
 
-P-D5 shipped with step P4 (#PRNUM): every pass writes `[withheld-by-finishup:possible-credential]`,
+P-D5 shipped with step P4 (#1274): every pass writes `[withheld-by-finishup:possible-credential]`,
 and no pass accepts the legacy spelling as the marker to write; the recorded-span check, the
 marker-plus-suffix rule, the check-time change's counts and cut views, reviewer quote proof, the
 reviewer instruction and the agent line read both. A placeholder stored without a recorded span is
