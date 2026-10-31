@@ -1,7 +1,8 @@
 """Values end at line breaks, and no redaction pass deletes past its match (#1248 P2, #1138).
 
 Owner decision P-D3: an unquoted value ends at a raw line break or at a JSON-encoded one at any
-escaping depth, and no pass, raw or encoded, removes bytes outside its own match. Before this, a
+escaping depth, and no pass, raw or encoded, removes bytes outside its own match. Under the
+2026-10-06 rule an encoded tab ends it too, exactly as a raw tab does. Before this, a
 value read from encoded text ran through the encoded newline, so the redaction that replaced it
 also deleted the lines that followed (``DB_PASSWORD=...`` then ``DB_USER=...`` lost
 ``DB_USER``). Every stage that runs these passes is exercised here: capture and persistence, the
@@ -55,6 +56,9 @@ _ENDINGS = ("\n", "\r\n")
 # What follows the assignment: a column-0 key, an indented YAML key, a diff ``+`` line, a diff
 # context line, and a blank line before the next key.
 _FOLLOWING = ("DB_USER=app", "  role: admin", "+DB_USER=app", " DB_USER=app", "")
+# What follows the value on its own line: nothing, or a tab and more text (a raw tab, a JSON
+# ``\t`` once encoded), which ends the value as whitespace does.
+_SAME_LINE = ("", "\t# rotated", "\tDB_PORT=5432")
 
 
 def _text(first: str, following: str, ending: str) -> str:
@@ -80,10 +84,11 @@ def _decode(data: bytes, depth: int) -> str:
 @pytest.mark.parametrize("depth", (0, 1, 2, 3))
 @pytest.mark.parametrize("ending", _ENDINGS)
 @pytest.mark.parametrize("following", _FOLLOWING)
+@pytest.mark.parametrize("same_line", _SAME_LINE)
 def test_db_password_keeps_its_following_line_raw_and_encoded(
-    depth: int, ending: str, following: str
+    depth: int, ending: str, following: str, same_line: str
 ) -> None:
-    text = _text(f"DB_PASSWORD={_PASSWORD}", following, ending)
+    text = _text(f"DB_PASSWORD={_PASSWORD}{same_line}", following, ending)
     encoded = _encode(text, depth)
 
     findings = scan_for_sensitive_content(encoded)
@@ -91,18 +96,22 @@ def test_db_password_keeps_its_following_line_raw_and_encoded(
     for finding in findings:
         matched = encoded[finding.start_offset : finding.end_offset]
         assert b"DB_USER" not in matched and b"role" not in matched and b"DB_HOST" not in matched
+        assert b"rotated" not in matched and b"DB_PORT" not in matched
 
     redacted, count = redact_heuristic_spans(encoded)
     assert count == 1
-    assert _decode(redacted, depth) == _text(f"DB_PASSWORD={_MARK}", following, ending)
+    assert _decode(redacted, depth) == _text(f"DB_PASSWORD={_MARK}{same_line}", following, ending)
 
 
 @pytest.mark.parametrize("ending", _ENDINGS)
 @pytest.mark.parametrize("following", _FOLLOWING)
-def test_every_egress_pass_keeps_the_following_line(ending: str, following: str) -> None:
-    raw = _text(f"DB_PASSWORD={_PASSWORD}", following, ending).encode()
-    expected_mark = _text(f"DB_PASSWORD={_MARK}", following, ending).encode()
-    expected_redacted = _text(f"DB_PASSWORD={_REDACTED}", following, ending).encode()
+@pytest.mark.parametrize("same_line", _SAME_LINE)
+def test_every_egress_pass_keeps_the_following_line(
+    ending: str, following: str, same_line: str
+) -> None:
+    raw = _text(f"DB_PASSWORD={_PASSWORD}{same_line}", following, ending).encode()
+    expected_mark = _text(f"DB_PASSWORD={_MARK}{same_line}", following, ending).encode()
+    expected_redacted = _text(f"DB_PASSWORD={_REDACTED}{same_line}", following, ending).encode()
 
     assert redact_sensitive_content(raw) == (expected_redacted, True)
     assert redact_sensitive_content(raw, heuristic_marker=EGRESS_CREDENTIAL_PLACEHOLDER) == (
@@ -128,14 +137,15 @@ def test_every_egress_pass_keeps_the_following_line(ending: str, following: str)
 @pytest.mark.parametrize("depth", (0, 1, 2, 3))
 @pytest.mark.parametrize("ending", _ENDINGS)
 @pytest.mark.parametrize("following", _FOLLOWING)
+@pytest.mark.parametrize("same_line", _SAME_LINE)
 def test_capture_redaction_keeps_the_following_line(
-    depth: int, ending: str, following: str
+    depth: int, ending: str, following: str, same_line: str
 ) -> None:
     """Capture and persistence redact only high-confidence spans, and only those bytes."""
 
-    text = _text(f"  GITHUB_TOKEN={_TOKEN}", following, ending)
+    text = _text(f"  GITHUB_TOKEN={_TOKEN}{same_line}", following, ending)
     encoded = _encode(text, depth)
-    expected = _text(f"  GITHUB_TOKEN={_REDACTED}", following, ending)
+    expected = _text(f"  GITHUB_TOKEN={_REDACTED}{same_line}", following, ending)
 
     redacted, changed = redact_high_confidence_content(encoded)
     assert changed
@@ -179,15 +189,17 @@ def test_high_confidence_detections_still_fire_beside_a_following_line(
 @pytest.mark.parametrize(
     "value",
     (
-        "C:" + "\\" + "tmp" + "\\" + "x9-pw",  # Windows-style backslashes
-        "Ab12" + "\\" + "tZZtail9",  # a literal backslash-t is not a line break
+        "C:" + "\\" + "Data" + "\\" + "x9-pw",  # Windows-style backslashes
+        "Ab12" + "\\" + "vZZtail9",  # a literal backslash-v is not a line break or tab
         "pw9" + "\\",  # a trailing literal backslash just before the line break
         "pw9" + "\\" * 2 + "q",
-        "pw9" + "\\" + "N" + "\\" + "Rx",  # not JSON escapes, whatever the scanner's case flag
+        "pw9" + "\\" + "N" + "\\" + "R" + "\\" + "Tx",  # not JSON escapes, whatever the case flag
     ),
 )
 @pytest.mark.parametrize("depth", (0, 1, 2, 3))
-def test_backslashes_that_are_not_a_line_break_stay_in_the_value(depth: int, value: str) -> None:
+def test_backslashes_that_are_not_a_line_break_or_tab_stay_in_the_value(
+    depth: int, value: str
+) -> None:
     text = _text(f"  password: {value}", "  role: admin", "\n")
     redacted, count = redact_heuristic_spans(_encode(text, depth))
     assert count == 1
@@ -195,19 +207,23 @@ def test_backslashes_that_are_not_a_line_break_stay_in_the_value(depth: int, val
 
 
 @pytest.mark.parametrize("depth", (0, 1, 2, 3))
-def test_literal_backslash_n_in_a_value_ends_it_so_its_tail_is_kept_by_design(depth: int) -> None:
+@pytest.mark.parametrize("escape", ("\\n", "\\r", "\\t"))
+def test_literal_backslash_n_in_a_value_ends_it_so_its_tail_is_kept_by_design(
+    depth: int, escape: str
+) -> None:
     """The accepted cost of P-D3: a secret containing a literal backslash-n is partly redacted.
 
-    The scanner cannot tell a literal backslash-n from an encoded line break, so the value ends
-    there; the bytes after it are not part of the match and are kept, never deleted.
+    The scanner cannot tell a literal backslash-n, backslash-r or backslash-t from an encoded line
+    break or tab, so the value ends there; the bytes after it are not part of the match and are
+    kept, never deleted.
     """
 
     value_head, value_tail = "head9", "tail9x"
-    text = _text(f"  password: {value_head}\\n{value_tail}", "  role: admin", "\n")
+    text = _text(f"  password: {value_head}{escape}{value_tail}", "  role: admin", "\n")
     redacted, count = redact_heuristic_spans(_encode(text, depth))
     assert count == 1
     assert _decode(redacted, depth) == _text(
-        f"  password: {_MARK}\\n{value_tail}", "  role: admin", "\n"
+        f"  password: {_MARK}{escape}{value_tail}", "  role: admin", "\n"
     )
 
 
@@ -238,11 +254,20 @@ def _gateway_scan_is_clean(body: bytes) -> bool:
 
 @pytest.mark.parametrize("ending", _ENDINGS)
 @pytest.mark.parametrize("following", ("DB_USER=app", "  role: admin", "+DB_USER=app"))
+@pytest.mark.parametrize("same_line", _SAME_LINE)
 @pytest.mark.parametrize("raw_pass_misses", (False, True))
 def test_minimized_item_keeps_its_following_line_through_the_reviewer_conversation(
-    monkeypatch: pytest.MonkeyPatch, ending: str, following: str, raw_pass_misses: bool
+    monkeypatch: pytest.MonkeyPatch,
+    ending: str,
+    following: str,
+    same_line: str,
+    raw_pass_misses: bool,
 ) -> None:
-    """Minimization (raw pass, then the encoded pass) and the gateway scans of the conversation."""
+    """Minimization (raw pass, then the encoded pass) and the gateway scans of the conversation.
+
+    With ``same_line`` the placeholder is followed by an encoded tab in the packet and by a
+    doubly encoded one in the reviewer conversation; neither re-matches.
+    """
 
     import finishup.adapters.privacy.local_enforcer as enforcer_module
 
@@ -257,14 +282,14 @@ def test_minimized_item_keeps_its_following_line_through_the_reviewer_conversati
             return (data, 0) if calls["count"] == 1 else real(data)
 
         monkeypatch.setattr(enforcer_module, "redact_heuristic_spans", first_pass_misses)
-    item = _text(f"DB_PASSWORD={_PASSWORD}", following, ending)
+    item = _text(f"DB_PASSWORD={_PASSWORD}{same_line}", following, ending)
     minimized = _minimize_all(_two_excerpt_semantic_candidate(b"clean evidence", item.encode()))
 
     assert minimized.forbidden_findings == () and minimized.heuristic_findings == ()
     assert minimized.withheld_item_ids == ()
     packet = minimized.prepared_bytes
     assert _PASSWORD.encode() not in packet
-    expected = _text(f"DB_PASSWORD={_MARK}", following, ending)
+    expected = _text(f"DB_PASSWORD={_MARK}{same_line}", following, ending)
     assert canonical_encode(expected)[1:-1] in packet
 
     # The reviewer conversation nests the packet one JSON level deeper; a resumed or wrapped

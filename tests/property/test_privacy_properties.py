@@ -180,21 +180,23 @@ def test_redact_diagnostic_value_never_echoes_an_unknown_field() -> None:
     assert redact_diagnostic_value("message", "super-secret-value") is None
 
 
-# #1248 P2 (owner decision P-D3): values end at line breaks, and no redaction pass, raw or
-# encoded, removes a byte outside its own match. Each generated text is lines of benign settings
-# and credential-like assignments; after any pass, at any JSON escaping depth up to three, every
-# line break and every benign line is intact, and an assignment line is either untouched or keeps
-# its name and separator with exactly one fixed marker where its whole value was.
+# #1248 P2 (owner decision P-D3): values end at line breaks, and at tabs (the 2026-10-06 rule),
+# raw or JSON-encoded, and no redaction pass removes a byte outside its own match. Each generated
+# text is lines of benign settings and credential-like assignments, some with a tab and more text
+# after the value; after any pass, at any JSON escaping depth up to three, every line break and
+# every benign line is intact, and an assignment line is either untouched or keeps its name,
+# separator and post-tab text with exactly one fixed marker where its whole value was.
 
 _SECRET_NAMES = ("DB_PASSWORD", "api_key", "client_secret", "password", "AWS_SECRET_ACCESS_KEY")
 _BENIGN_NAMES = ("user", "host", "port", "role", "mode", "DB_NAME")
 _LINE_PREFIXES = ("", "  ", "    ", "+", "-", " ")
 _SEPARATORS = ("=", ": ", " = ")
 _MARKERS = (EGRESS_CREDENTIAL_PLACEHOLDER.decode(), "[REDACTED]")
-# Value bytes include backslashes; a backslash run before ``n``/``r`` is excluded because the
-# value deliberately ends there (the accepted P-D3 cost, covered by a unit test).
+_AFTER_VALUE = ("", "\t", "\t# note", "\tport=5432")
+# Value bytes include backslashes; a backslash run before ``n``/``r``/``t`` is excluded because
+# the value deliberately ends there (the accepted P-D3 cost, covered by a unit test).
 _VALUE_ALPHABET = string.ascii_letters + string.digits + "-_./:!%^&*+~?#\\"
-_LINE_BREAK_ESCAPE = re.compile(r"\\+[nr]")
+_VALUE_END_ESCAPE = re.compile(r"\\+[nrt]")
 
 
 @st.composite
@@ -202,13 +204,13 @@ def _secret_value(draw: st.DrawFn) -> str:
     head = draw(st.sampled_from(string.ascii_letters))
     body = draw(st.text(alphabet=_VALUE_ALPHABET, min_size=4, max_size=40))
     value = head + body + "9"
-    assume(_LINE_BREAK_ESCAPE.search(value) is None)
+    assume(_VALUE_END_ESCAPE.search(value) is None)
     return value
 
 
 @st.composite
-def _setting_line(draw: st.DrawFn) -> tuple[str, str | None]:
-    """``(line, kept_prefix)``: ``kept_prefix`` is ``None`` for a benign line."""
+def _setting_line(draw: st.DrawFn) -> tuple[str, tuple[str, str] | None]:
+    """``(line, kept)``: the bytes around the value a pass may replace; ``None`` when benign."""
 
     kind = draw(st.sampled_from(("secret", "benign", "blank", "comment")))
     if kind == "blank":
@@ -226,7 +228,9 @@ def _setting_line(draw: st.DrawFn) -> tuple[str, str | None]:
         )
         return prefix + name + separator + value, None
     name = draw(st.sampled_from(_SECRET_NAMES))
-    return prefix + name + separator + draw(_secret_value()), prefix + name + separator
+    after = draw(st.sampled_from(_AFTER_VALUE))
+    head = prefix + name + separator
+    return head + draw(_secret_value()) + after, (head, after)
 
 
 def _nest(text: str, depth: int) -> bytes:
@@ -246,15 +250,16 @@ def _unnest(data: bytes, depth: int) -> str:
 
 
 def _assert_only_values_replaced(
-    lines: list[tuple[str, str | None]], ending: str, output: str
+    lines: list[tuple[str, tuple[str, str] | None]], ending: str, output: str
 ) -> None:
     out_lines = output.split(ending)
     assert len(out_lines) == len(lines) + 1 and out_lines[-1] == ""
-    for (line, kept_prefix), out in zip(lines, out_lines, strict=False):
-        if kept_prefix is None:
+    for (line, kept), out in zip(lines, out_lines, strict=False):
+        if kept is None:
             assert out == line
         else:
-            assert out == line or out in {kept_prefix + marker for marker in _MARKERS}
+            head, after = kept
+            assert out == line or out in {head + marker + after for marker in _MARKERS}
 
 
 @given(
@@ -263,7 +268,7 @@ def _assert_only_values_replaced(
     st.integers(min_value=0, max_value=3),
 )
 def test_no_redaction_pass_removes_bytes_past_its_match(
-    lines: list[tuple[str, str | None]], ending: str, depth: int
+    lines: list[tuple[str, tuple[str, str] | None]], ending: str, depth: int
 ) -> None:
     text = "".join(line + ending for line, _ in lines)
     nested = _nest(text, depth)

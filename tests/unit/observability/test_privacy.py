@@ -675,8 +675,8 @@ def test_json_encoded_assignment_is_still_detected_and_redacted(
 @pytest.mark.parametrize(
     ("data", "secret"),
     (
-        (b"password=Ab12\\tZZtail9", b"ZZtail9"),
-        (b"password=C:\\temp\\xtail9", b"xtail9"),
+        (b"password=Ab12\\vZZtail9", b"ZZtail9"),
+        (b"password=C:\\Data\\xtail9", b"xtail9"),
         (json.dumps({"c": "password=ab\\qtail"}).encode(), b"tail"),
         (json.dumps({"c": 'password="ab\\"cd efgh"'}).encode(), b"efgh"),
     ),
@@ -684,7 +684,7 @@ def test_json_encoded_assignment_is_still_detected_and_redacted(
 def test_encoded_escapes_never_shorten_a_redacted_value(data: bytes, secret: bytes) -> None:
     """A literal backslash escape inside a value stays inside the redacted span (issue #976).
 
-    Only a backslash-n or backslash-r ends an unquoted value (#1248 P-D3); see
+    Only a backslash-n, backslash-r or backslash-t ends an unquoted value (#1248 P-D3); see
     ``test_literal_backslash_n_in_a_value_ends_it_so_its_tail_is_kept_by_design``.
     """
 

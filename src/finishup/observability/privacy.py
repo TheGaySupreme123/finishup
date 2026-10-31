@@ -114,31 +114,34 @@ _URI_PASSWORD = re.compile(rb"[A-Za-z][A-Za-z0-9+.-]{0,31}://[^\s/:@]{1,128}:[^\
 # followed by an encoded newline re-matches as a fresh assignment after encoding and blocks the
 # whole packet (TB4 tb4f1, issue #976).
 _ENCODED_SPACE = rb"(?:\s|\\[nrt])"
-# Values end at line breaks (#1248, owner decision P-D3). An unquoted value ends at whitespace,
-# which covers a raw line break, and at a JSON-encoded line break at any escaping depth: the run of
-# ``w`` backslashes before ``n`` or ``r`` (``w`` is 1 in a review packet, 2 in the reviewer
+# Values end where the text they encode has whitespace (#1248, owner decision P-D3 on top of the
+# 2026-10-06 rule, ADR-009). An unquoted value ends at raw whitespace and at a JSON-encoded line
+# break or tab at any escaping depth, exactly as it ends at a raw one: the run of ``w``
+# backslashes before ``n``, ``r`` or ``t`` (``w`` is 1 in a review packet, 2 in the reviewer
 # conversation that nests the packet, 4 one level deeper). At depth ``d`` a literal backslash is
-# ``2w`` backslashes, so a run of ``k`` backslashes before ``n``/``r`` is ``k - w`` literal ones
-# and then the line break, where ``w`` is the largest power of two dividing ``k``. Those literal
-# backslashes stay value bytes at depths 1 to 6, as does every backslash run of up to 64 that does
-# not end in ``n``/``r`` (``C:<backslash>tmp``). Deeper or longer, the value conservatively ends at
+# ``2w`` backslashes, so a run of ``k`` backslashes before that letter is ``k - w`` literal ones
+# and then the escape, where ``w`` is the largest power of two dividing ``k``. Those literal
+# backslashes stay value bytes at depths 1 to 6, as does every backslash run of up to 64 that is
+# not such an escape (``C:<backslash>Data``). Deeper or longer, the value conservatively ends at
 # the run. Without this an encoded value ran through the rest of the line's encoding into the
 # following lines, and the redaction that replaced the value deleted those lines with it
 # (``DB_PASSWORD=...`` then ``DB_USER=...`` lost ``DB_USER``; #1138). The accepted cost: a value
-# that itself contains a literal backslash-n or backslash-r ends there, so only its first part is
-# matched and redacted.
+# that itself contains a literal backslash-n, backslash-r or backslash-t ends there, so only its
+# first part is matched and redacted.
 _MAX_VALUE_BACKSLASH_RUN: Final = 64
-# The escape letters of a line break. Case-sensitive even inside the ``(?i)`` assignment patterns:
-# ``\N`` and ``\R`` are not JSON escapes.
+# The escape letters that end an unquoted value: an encoded line break or tab. Case-sensitive even
+# inside the ``(?i)`` assignment patterns: ``\N``, ``\R`` and ``\T`` are not JSON escapes.
+_VALUE_END_ESCAPE_LETTER = rb"(?-i:[nrt])"
+# The escape letters of a line break, which no value spans, quoted or not.
 _LINE_BREAK_ESCAPE_LETTER = rb"(?-i:[nr])"
 _UNQUOTED_VALUE_CHAR = (
     rb"(?:[^\s\\,'\";}{]"
-    # A whole backslash run that is not a line break's escape.
-    + b"|\\\\{1,%d}(?!\\\\|%s)" % (_MAX_VALUE_BACKSLASH_RUN, _LINE_BREAK_ESCAPE_LETTER)
-    # The literal backslashes before an encoded line break of width ``w``.
+    # A whole backslash run that is not an encoded line break or tab.
+    + b"|\\\\{1,%d}(?!\\\\|%s)" % (_MAX_VALUE_BACKSLASH_RUN, _VALUE_END_ESCAPE_LETTER)
+    # The literal backslashes before an encoded line break or tab of width ``w``.
     + b"".join(
         b"|(?:\\\\{%d}){1,%d}(?=\\\\{%d}%s)"
-        % (2 * width, _MAX_VALUE_BACKSLASH_RUN // (2 * width), width, _LINE_BREAK_ESCAPE_LETTER)
+        % (2 * width, _MAX_VALUE_BACKSLASH_RUN // (2 * width), width, _VALUE_END_ESCAPE_LETTER)
         for width in (1, 2, 4, 8, 16, 32)
     )
     + rb")"
