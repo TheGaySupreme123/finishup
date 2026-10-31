@@ -2523,6 +2523,10 @@ def _visible_content_chunks(
         # Capture keeps heuristic-only matches; egress redacts them (issue #982).
         redacted, detected = redact_high_confidence_content(raw)
         if not redacted:
+            if detected:
+                # A private key without its END line withholds the whole item (#1248, P-D4); the
+                # capture says it is incomplete rather than drop the item silently.
+                truncated = True
             continue
         part_limit = remaining
         if optional_limits is not None:

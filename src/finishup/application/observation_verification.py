@@ -68,6 +68,8 @@ class CompletedApprovedCheck:
     output_object_id: str | None
     is_current: bool
     recorded_at: str
+    # The runner replaced credential bytes in (or withheld) the output it handed over (#1015).
+    output_redacted: bool = False
 
 
 class ObservationVerificationRepository(Protocol):
@@ -114,7 +116,8 @@ class ObservationVerificationRepository(Protocol):
 WorkspaceProvider = Callable[[str], LocalWorkspaceHandle]
 PolicyProvider = Callable[[str, str], tuple[ApprovedCheckApproval, ...]]
 SubjectDigestProvider = Callable[[LocalWorkspaceHandle], str]
-OutputPersister = Callable[[ObservationVerificationJob, bytes], Awaitable[str | None]]
+# ``(job, output, redacted)``: ``redacted`` is the runner's own redaction flag (#1015).
+OutputPersister = Callable[[ObservationVerificationJob, bytes, bool], Awaitable[str | None]]
 NowProvider = Callable[[], str]
 
 
@@ -385,9 +388,13 @@ class ObservationVerificationWorker:
         )
         if approval is None:
             raise RuntimeError("verification_policy_authority_missing")
-        captured: list[bytes] = []
+        captured: list[tuple[bytes, bool]] = []
+
+        def sink(output: bytes, redacted: bool) -> None:
+            captured.append((output, redacted))
+
         original_sink = getattr(self.runner, "_output_sink", None)
-        setattr(self.runner, "_output_sink", captured.append)
+        setattr(self.runner, "_output_sink", sink)
         try:
             result, _fact = await asyncio.to_thread(
                 run_bound_approved_check,
@@ -402,8 +409,9 @@ class ObservationVerificationWorker:
             setattr(self.runner, "_output_sink", original_sink)
         after = self.capture_subject_state(workspace)
         current = after == job.subject_state_digest
+        output, output_redacted = captured[-1] if captured else (b"", False)
         output_object_id = (
-            await self.persist_output(job, captured[-1]) if captured and captured[-1] else None
+            await self.persist_output(job, output, output_redacted) if output else None
         )
         recorded_at = self.now()
         if self.materialize_result is not None:
@@ -416,6 +424,7 @@ class ObservationVerificationWorker:
                     output_object_id=output_object_id,
                     is_current=current,
                     recorded_at=recorded_at,
+                    output_redacted=output_redacted,
                 )
             )
         self.repository.complete(

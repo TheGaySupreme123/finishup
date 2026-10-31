@@ -121,7 +121,7 @@ async def test_supervisor_drains_after_notify_without_inline_await() -> None:
         workspace_provider=lambda _w: object(),  # type: ignore[arg-type,return-value]
         policy_provider=lambda _w, _d: (),
         capture_subject_state=lambda _h: "sha256:" + "d" * 64,
-        persist_output=lambda _job, _content: asyncio.sleep(0, result=None),
+        persist_output=lambda _job, _content, _redacted: asyncio.sleep(0, result=None),
         service_generation=1,
         lease_owner="svc",
         now=lambda: Timestamp("2026-07-24T00:00:00.000Z").wire,
@@ -251,15 +251,15 @@ async def test_completed_approved_check_forwards_bounded_result_for_ledger_mater
         runner = kwargs["runner"]
         sink = getattr(runner, "_output_sink")
         assert callable(sink)
-        sink(b"bounded output")
+        sink(b"bounded output", True)
         return result, None
 
     monkeypatch.setattr(verification_module, "run_bound_approved_check", _run)
-    persisted: list[bytes] = []
+    persisted: list[tuple[bytes, bool]] = []
     materialized: list[CompletedApprovedCheck] = []
 
-    async def _persist(_job: ObservationVerificationJob, content: bytes) -> str:
-        persisted.append(content)
+    async def _persist(_job: ObservationVerificationJob, content: bytes, redacted: bool) -> str:
+        persisted.append((content, redacted))
         return "obj_00000000-0000-4000-8000-000000000001"
 
     async def _materialize(completed: CompletedApprovedCheck) -> None:
@@ -280,13 +280,15 @@ async def test_completed_approved_check_forwards_bounded_result_for_ledger_mater
         materialize_result=_materialize,
     )
     assert await worker.run_once() == job
-    assert persisted == [b"bounded output"]
+    # The runner's redaction flag reaches the persister and the receipt (#1015).
+    assert persisted == [(b"bounded output", True)]
     assert len(materialized) == 1
     completed = materialized[0]
     assert completed.approval_id == "focused-tests"
     assert completed.result == result
     assert completed.output_object_id == "obj_00000000-0000-4000-8000-000000000001"
     assert completed.is_current is True
+    assert completed.output_redacted is True
     assert order == ["materialize", "complete"]
 
 
@@ -457,6 +459,25 @@ async def test_approved_check_materialization_is_service_owned_and_idempotent(
     receipt_ref = ledger._state.object_refs[evidence.artifact_refs[0]]  # pyright: ignore[reportPrivateUsage]
     assert receipt_ref.metadata.kind is ObjectKind.CAPTURED_CONTENT
     assert receipt_ref.metadata.media_type == "application/vnd.yoetz.approved-check-evidence+json"
+    receipt_document = json.loads(objects._data[receipt_ref.object_id])  # pyright: ignore[reportPrivateUsage]
+    # An unredacted output's receipt keeps its earlier bytes: the flag appears only when set.
+    assert "output_redacted" not in receipt_document
+
+    # #1015: the runner's redaction flag reaches the approved-check receipt.
+    await coordinator._materialize_approved_check(  # pyright: ignore[reportPrivateUsage]
+        runtime,
+        replace(
+            completed,
+            job=replace(completed.job, job_id=completed.job.job_id + "-redacted"),
+            output_redacted=True,
+        ),
+    )
+    redacted_documents = [
+        json.loads(data)
+        for data in objects._data.values()  # pyright: ignore[reportPrivateUsage]
+        if data.startswith(b"{") and b"approved-check-evidence" in data
+    ]
+    assert any(document.get("output_redacted") is True for document in redacted_documents)
 
 
 @pytest.mark.anyio

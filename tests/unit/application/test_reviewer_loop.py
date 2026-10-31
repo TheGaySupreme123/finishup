@@ -991,7 +991,10 @@ async def test_file_reads_stay_in_scope_and_are_admitted_like_the_packet(tmp_pat
     )
     link, key, sibling = _observations((await loop.run()).history)
     assert link["reason"] == "not_recorded"
-    assert key["status"] == "denied" and key["reason"] == "privacy_withheld"
+    # The lines are cut from the file redacted first (#1248, P-D4): the key's value is replaced
+    # where it sits and the rest of the line still reads.
+    assert key["status"] == "ok"
+    assert cast(dict[str, object], key["data"])["text"] == 'KEY = "[REDACTED]"\n'
     assert "AKIA" not in json.dumps(key)
     assert sibling["reason"] == "outside_scope"
 

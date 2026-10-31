@@ -34,6 +34,7 @@ from finishup.adapters.task_input_read import (
 )
 from finishup.domain.reviewer_reads import MAX_REVIEWER_READ_ATTEMPTS, MAX_REVIEWER_READS
 from finishup.kernel.declared_checks import DECLARED_TEST_READ_BYTES
+from finishup.observability.privacy import redact_fully
 from finishup.ports.change_capture import TaskInputSnapshotSet
 from finishup.ports.semantic import (
     ReviewStepRefused,
@@ -590,7 +591,12 @@ class ReviewerBroker:
             return ("denied", "invalid_request")
         return bound[2] if bound[1] == version else ("stale", "source_changed")
 
-    def _item(self, item: SemanticCaseItem, offset: int) -> _Piece:
+    def _item(self, item: SemanticCaseItem, offset: int) -> _Piece | None:
+        """One record read from ``offset`` of its redacted text; ``None`` when that cannot be."""
+
+        content = redact_fully(item.content)
+        if content is None:
+            return None
         standing = (
             "agent_assertion"
             if item.section in _PACKET_SECTIONS["agent_account"]
@@ -605,11 +611,9 @@ class ReviewerBroker:
             "standing": standing,
         }
         refs = tuple(r for r in (item.source_ref, *item.linked_subject_refs) if r in self._allowed)
-        start, stop = _clear(item.content, offset, "tail"), len(item.content)
+        start, stop = _clear(content, offset, "tail"), len(content)
         root = dict(self._case.input_roots).get(item.item_id)
-        return _Piece(
-            item.content, start, stop, refs, prov, item.item_id, None, root, item.category
-        )
+        return _Piece(content, start, stop, refs, prov, item.item_id, None, root, item.category)
 
     def _packet(self, args: ReadPacketSectionArgsModel) -> _Selected:
         item = next((i for i in self._case.items if i.item_id == args.item_ref), None)
@@ -618,7 +622,12 @@ class ReviewerBroker:
             and item.section in _PACKET_SECTIONS[args.section]
             and args.offset < len(item.content)
         ):
-            return ("text", [self._item(item, args.offset)], None, 0)
+            piece = self._item(item, args.offset)
+            if piece is None:
+                return ("denied", "privacy_withheld")
+            if piece.start >= piece.stop:
+                return ("unavailable", "not_retained")
+            return ("text", [piece], None, 0)
         return ("unavailable", "not_retained")
 
     def _ledger(self, view: str, refs: tuple[str, ...], cursor: str | None) -> _Selected:
@@ -639,7 +648,10 @@ class ReviewerBroker:
             # storage or turn absence from this frozen selection into a claim of non-recording.
             return ("unavailable", "not_in_frozen_case")
         left = len(matched) - start - len(page)
-        return ("records", [self._item(i, 0) for i in page], (selector, version, start), left)
+        records = [piece for piece in (self._item(i, 0) for i in page) if piece is not None]
+        if not records:
+            return ("denied", "privacy_withheld")
+        return ("records", records, (selector, version, start), left)
 
     @staticmethod
     def _refused(root: ReadRoot, path: str) -> str | None:
@@ -732,6 +744,16 @@ class ReviewerBroker:
                 image=data if image is not None else None,
             )
             return ("text", [piece], None, 0)
+        if b"\0" in data[:8000]:
+            return ("unavailable", "unsupported_type")
+        # The lines are cut from the whole file redacted first (#1248, P-D4), never from the file
+        # itself: a read starting on a value's line would otherwise send the value without the
+        # label a line above it, where no scanner of the slice sees it. Redaction keeps every
+        # line break, so line numbers still name the file's lines.
+        redacted = redact_fully(data)
+        if redacted is None:
+            return ("denied", "privacy_withheld")
+        data = redacted
         starts = [0, *(m.end() for m in re.finditer(b"\n", data))]
         first, last = args.start_line - 1, args.start_line - 1 + args.line_count
         if first >= len(starts) or starts[first] >= len(data):
@@ -740,8 +762,6 @@ class ReviewerBroker:
         try:
             data[starts[first] : stop].decode()
         except UnicodeDecodeError:
-            return ("unavailable", "unsupported_type")
-        if b"\0" in data[:8000]:
             return ("unavailable", "unsupported_type")
         piece = _Piece(data, starts[first], stop, refs, prov, "", args.start_line, root.input_root)
         return ("text", [piece], None, 0)
@@ -769,6 +789,11 @@ class ReviewerBroker:
             return ("unavailable", "declared_test_not_visible")
         if "sha256:" + hashlib.sha256(data).hexdigest() != digest:
             return ("unavailable", "declared_test_changed")
+        # Cut from the redacted test, like every other read (#1248, P-D4).
+        redacted = redact_fully(data)
+        if redacted is None:
+            return ("denied", "privacy_withheld")
+        data = redacted
         starts = [0, *(m.end() for m in re.finditer(b"\n", data))]
         first, last = args.start_line - 1, args.start_line - 1 + args.line_count
         if first >= len(starts) or starts[first] >= len(data):
