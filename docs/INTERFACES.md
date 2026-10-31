@@ -6111,10 +6111,14 @@ changed-file/diff material, approved-check output, lifecycle, and readiness fact
 Hidden reasoning, system/platform/developer prompts, credentials, detected secrets, unrelated files,
 and untethered logs are excluded before storage. Every byte that reaches encrypted observation
 persistence passes `prepare_persisted_plaintext`: high-confidence secret spans (known credential
-shapes, private-key markers, URI passwords) are redacted in memory before encoding, matches persist
-only redaction metadata, and scanner failure, high-confidence finding-capacity exhaustion, or a
-canary match records `content_capture_unavailable` and stores no excerpt or approved-check output
-object. Heuristic-only assignment matches are kept as captured in the encrypted local store, where
+shapes, private keys from their BEGIN line through the END line of the same label, URI passwords)
+are redacted in memory before encoding, matches persist only redaction metadata, and scanner
+failure, high-confidence finding-capacity exhaustion, a private key BEGIN line without its END
+line, or a canary match records `content_capture_unavailable` and stores no excerpt or
+approved-check output object (#1248 P-D4). A redaction that crosses lines keeps each line break, so
+line numbers in the redacted text still name the source's lines. Approved-check output the runner
+already redacted is stored marked `redacted`, and its approved-check receipt document carries
+`output_redacted: true` (#1015). Heuristic-only assignment matches are kept as captured in the encrypted local store, where
 local and deterministic checks may read them, and are redacted only at egress (issue #982); a
 chunk or excerpt is marked `redacted` only when its bytes were actually replaced. SQLite/envelopes
 retain only encrypted object IDs, commitments, classifications, sizes, and relations.

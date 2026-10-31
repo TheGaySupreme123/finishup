@@ -5675,6 +5675,8 @@ class ObservationCoordinator:
                 "subject_state_after": completed.subject_state_after,
                 "is_current": completed.is_current,
                 "recorded_at": completed.recorded_at,
+                # Only when set, so every unredacted receipt keeps its bytes and digest (#1015).
+                **({"output_redacted": True} if completed.output_redacted else {}),
             }
         )
         receipt_bytes = canonical_encode(receipt_document)
@@ -6669,9 +6671,11 @@ class ObservationCoordinator:
         current_digest = await asyncio.to_thread(subject_digest, handle)
         repository = cast(ObservationVerificationRepository, store.verification_repository())
 
-        async def persist_output(job: ObservationVerificationJob, content: bytes) -> str | None:
+        async def persist_output(
+            job: ObservationVerificationJob, content: bytes, redacted: bool
+        ) -> str | None:
             return await self._persist_approved_check_output(
-                runtime, store, workspace, job, content
+                runtime, store, workspace, job, content, redacted=redacted
             )
 
         def now_wire() -> str:
@@ -6895,9 +6899,11 @@ class ObservationCoordinator:
 
         repository = cast(ObservationVerificationRepository, store.verification_repository())
 
-        async def persist_output(job: ObservationVerificationJob, content: bytes) -> str | None:
+        async def persist_output(
+            job: ObservationVerificationJob, content: bytes, redacted: bool
+        ) -> str | None:
             return await self._persist_approved_check_output(
-                runtime, store, workspace, job, content
+                runtime, store, workspace, job, content, redacted=redacted
             )
 
         def now_wire() -> str:
@@ -6943,8 +6949,14 @@ class ObservationCoordinator:
         workspace: str,
         job: ObservationVerificationJob,
         content: bytes,
+        *,
+        redacted: bool = False,
     ) -> str | None:
-        """Encrypt approved-check output only after the shared fail-closed scan."""
+        """Encrypt approved-check output only after the shared fail-closed scan.
+
+        ``redacted`` is the runner's flag: it replaced credential bytes before handing the output
+        over, so this scan alone would find nothing and call the output unredacted (#1015).
+        """
 
         scan = prepare_persisted_plaintext(content)
         if not scan.persist:
@@ -6964,7 +6976,7 @@ class ObservationCoordinator:
             part_index=0,
             part_count=1,
             content=scan.content,
-            redacted=scan.redacted,
+            redacted=scan.redacted or redacted,
         )
         manifest = canonical_encode(
             JsonObject(
@@ -6976,7 +6988,7 @@ class ObservationCoordinator:
                     "media_type": chunk.media_type,
                     "part_index": 0,
                     "part_count": 1,
-                    "redacted": scan.redacted,
+                    "redacted": chunk.redacted,
                     "content_b64": base64.b64encode(scan.content).decode("ascii"),
                 }
             )

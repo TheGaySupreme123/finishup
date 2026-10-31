@@ -583,6 +583,42 @@ def test_visible_heuristic_only_content_is_kept_and_not_marked_redacted(tmp_path
     assert chunks[0].content == content.encode("utf-8")
 
 
+@pytest.mark.parametrize("end", (True, False))
+def test_hook_capture_redacts_a_private_key_through_its_end_line(tmp_path: Path, end: bool) -> None:
+    """#1248 P-D4: hook capture (every host's hooks) replaces the whole key block; a block
+    without its END line withholds the item, and the capture says it is incomplete."""
+
+    store = LocalObservationStore(_state=tmp_path)
+    session = store.session_commitment("sess-key")
+    envelope = map_hook_payload_to_envelope(
+        "FutureHostEvent",
+        {"session_id": "sess-key"},
+        session_commitment=session,
+        event_ordinal=1,
+        key_material=_KEY,
+    )
+    dashes = "-" * 5
+    body = ("Zm9v" + "YmFy" + "0123") * 5
+    block = [dashes + "BEGIN " + "OPENSSH PRIVATE KEY" + dashes, body, body]
+    if end:
+        block.append(dashes + "END " + "OPENSSH PRIVATE KEY" + dashes)
+    content = "key file:\n" + "\n".join(block) + "\ndone\n"
+    chunks, truncated = observe_hooks_module._visible_content_chunks(  # pyright: ignore[reportPrivateUsage]
+        "FutureHostEvent",
+        {"visibility": "task", "visible_content": content},
+        envelope=envelope,
+        workspace_locator=None,
+    )
+    assert all(body.encode() not in chunk.content for chunk in chunks)
+    if end:
+        assert truncated is False
+        (chunk,) = chunks
+        assert chunk.redacted is True
+        assert chunk.content == b"key file:\n[REDACTED]\n\n\n\ndone\n"
+    else:
+        assert (chunks, truncated) == ((), True)
+
+
 def test_content_cap_sets_truncated_flag(tmp_path: Path) -> None:
     store = LocalObservationStore(_state=tmp_path)
     session = store.session_commitment("sess-trunc")

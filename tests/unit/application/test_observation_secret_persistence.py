@@ -1259,7 +1259,7 @@ async def test_approved_check_persistence_path_redacts_compound_secrets(
     tmp_path: Path,
 ) -> None:
     handle = open_inspect_workspace(tmp_path)
-    captured: list[bytes] = []
+    captured: list[tuple[bytes, bool]] = []
     argv = ("/bin/echo", _HIGH_SECRET.decode("ascii"), _SECRET.decode("ascii"))
     approval = ApprovedCheckApproval(
         approval_id="pytest-unit",
@@ -1271,7 +1271,7 @@ async def test_approved_check_persistence_path_redacts_compound_secrets(
     runner = ApprovedCheckRunner(
         {approval.approval_commitment: approval},
         sandbox=_ReadySandbox(),
-        output_sink=captured.append,
+        output_sink=lambda output, redacted: captured.append((output, redacted)),
     )
     runner.run(
         ApprovedCheckCommand(
@@ -1281,10 +1281,13 @@ async def test_approved_check_persistence_path_redacts_compound_secrets(
         )
     )
     assert captured
-    assert _HIGH_VALUE not in captured[0]
-    assert b"[REDACTED]" in captured[0]
+    output, runner_redacted = captured[0]
+    assert _HIGH_VALUE not in output
+    assert b"[REDACTED]" in output
+    # The runner's own redaction flag travels with the output it hands over (#1015).
+    assert runner_redacted is True
     # Heuristic-only output stays in the encrypted object; egress redacts it (issue #982).
-    assert b"wJalrXUtnFEMI" in captured[0]
+    assert b"wJalrXUtnFEMI" in output
 
     db = apsw.Connection(":memory:")
     initialize_bundle(db, {"task_id": "task_obs", "owner_generation": "1"})
@@ -1296,9 +1299,7 @@ async def test_approved_check_persistence_path_redacts_compound_secrets(
         store,
         _WORKSPACE,
         _job(),
-        # The runner's own replacement is not reported through the output sink, so the
-        # coordinator's persisted ``redacted`` flag reflects only the bytes it replaces itself.
-        captured[0] + b"\n" + _AZURE + b"\n" + _HIGH_SECRET,
+        output + b"\n" + _AZURE + b"\n" + _HIGH_SECRET,
     )
     assert object_id is not None
     assert objects.payloads
@@ -1321,6 +1322,32 @@ async def test_approved_check_persistence_path_redacts_compound_secrets(
             len(decoded),
         )
     ]
+
+
+@pytest.mark.anyio
+async def test_the_runner_redaction_flag_reaches_the_stored_output(tmp_path: Path) -> None:
+    """#1015: output the runner already redacted is stored as redacted, though the store's own
+    re-scan of it finds nothing left to replace."""
+
+    already_redacted = b"KEY=[REDACTED]\n"
+    for runner_redacted in (False, True):
+        db = apsw.Connection(":memory:")
+        initialize_bundle(db, {"task_id": "task_obs", "owner_generation": "1"})
+        store = SqliteObservationStore(db)
+        objects = _CapturingObjects()
+        coordinator = _coordinator(tmp_path, objects)
+        object_id = await coordinator._persist_approved_check_output(  # noqa: SLF001  # pyright: ignore[reportPrivateUsage]
+            SimpleNamespace(task_id=_TASK, objects=objects),  # type: ignore[arg-type]
+            store,
+            _WORKSPACE,
+            _job(),
+            already_redacted,
+            redacted=runner_redacted,
+        )
+        assert object_id is not None
+        parsed = json.loads(objects.payloads[-1])
+        assert base64.b64decode(parsed["content_b64"]) == already_redacted
+        assert parsed["redacted"] is runner_redacted
 
 
 @pytest.mark.anyio

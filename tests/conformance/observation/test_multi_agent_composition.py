@@ -270,7 +270,9 @@ async def test_two_sibling_tasks_complete_isolated_observe_check_receipt_cycles(
                 state_root=tmp_path / f"local-{index}",
             )
 
-            async def _persist(_job: ObservationVerificationJob, _content: bytes) -> str | None:
+            async def _persist(
+                _job: ObservationVerificationJob, _content: bytes, _redacted: bool
+            ) -> str | None:
                 return None
 
             async def _materialize(

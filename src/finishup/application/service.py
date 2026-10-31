@@ -841,6 +841,14 @@ def _segments(pointer: str) -> tuple[str, ...]:
     )
 
 
+def _projection_item_pointer(item_id: str, origin_ref: str) -> str:
+    """The pointer the local enforcer files an approved projection item under (egress ``_pointer``)."""
+
+    if origin_ref.startswith("/") and len(origin_ref) <= 256:
+        return origin_ref
+    return "/" + item_id.replace("~", "~0").replace("/", "~1")
+
+
 def _replace_pointer(root: JsonValue, pointer: str, replacement: JsonValue) -> JsonValue:
     # Every failure here is a bounded ValueError. This runs inside the post-commit projection
     # window, where an unexpected exception (KeyError from a missing key, IndexError or
@@ -3602,6 +3610,37 @@ class Application:
                     "reason": omission.reason,
                 },
             )
+        if type(completed) is LocalDisclosureApproved:
+            # #1015 item 3: the projection carries what the enforcer approved, not the original
+            # leaf. A leaf whose credential-like value minimization replaced is returned with that
+            # value replaced; a changed item that is not one whole leaf (a fragment or a name
+            # span) cannot be placed, so the projection fails closed rather than return the
+            # original bytes.
+            offered = {
+                _projection_item_pointer(item.item_id, item.origin_ref): item for item in items
+            }
+            for approved in completed.approved_items:
+                item = offered.get(approved.json_pointer)
+                if item is None or approved.bounded_bytes == item.plaintext:
+                    continue
+                if (
+                    not item.item_id.startswith("leaf-")
+                    or item.origin_ref in receipt_fragment_sources
+                    or (
+                        method is ControlMethod.RECEIPT
+                        and source.get("format") == "json"
+                        and (
+                            item.origin_ref == "/document"
+                            or item.origin_ref.startswith("/document/")
+                        )
+                    )
+                ):
+                    raise ControlError("privacy_projection_blocked", retryable=False)
+                try:
+                    replaced_value = strict_json_parse(approved.bounded_bytes)
+                except (TypeError, ValueError, UnicodeDecodeError) as exc:
+                    raise ControlError("privacy_projection_blocked", retryable=False) from exc
+                projected = _replace_pointer(projected, item.origin_ref, replaced_value)
         if not isinstance(projected, Mapping):
             raise TypeError("projected_control_body_invalid")
         receipt = completed.receipt
