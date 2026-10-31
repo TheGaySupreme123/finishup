@@ -463,3 +463,30 @@ def test_a_key_is_found_at_every_escaping_depth(depth: int) -> None:
 def test_a_marker_quoted_at_any_depth_is_not_a_fresh_value(depth: int) -> None:
     for marker in ("[REDACTED]", _MARK):
         assert scan_for_sensitive_content(_nested_document(marker, depth)) == ()
+
+
+# ---- assignments the name boundary used to swallow (P1 finding, #1271) -----------------------
+
+_GLUED_OR_AFTER_BREAK = (
+    # An assignment straight after the closing quote of the one before it.
+    f'password: "{_PASSWORD}"password: "{_SECOND}"\n',
+    f"api_key='{_PASSWORD}'secret='{_SECOND}'\n",
+    # An assignment opening the line after a line break or tab, which encoding turns into an
+    # escape whose letter sits right before the name.
+    f"role=admin\npassword={_PASSWORD}\n\tsecret={_SECOND}\n",
+    f'role: admin\r\napi_key: "{_PASSWORD}"\r\nclient_secret: "{_SECOND}"\r\n',
+)
+
+
+@pytest.mark.parametrize("depth", (0, 1, 2, 3))
+@pytest.mark.parametrize("text", _GLUED_OR_AFTER_BREAK)
+def test_every_assignment_is_found_after_a_quote_or_an_encoded_break(text: str, depth: int) -> None:
+    encoded = _encode(text, depth)
+
+    redacted, count = redact_heuristic_spans(encoded)
+    assert count == 2
+    decoded = _decode(redacted, depth)
+    assert _PASSWORD not in decoded and _SECOND not in decoded
+    assert decoded.count(_MARK) == 2
+    # Only the values went: names, separators, quotes and every line break are kept.
+    assert decoded.replace(_MARK, "") == text.replace(_PASSWORD, "").replace(_SECOND, "")

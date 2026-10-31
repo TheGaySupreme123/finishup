@@ -300,3 +300,59 @@ def test_no_redaction_pass_removes_bytes_past_its_match(
         *(() if cut_source is None else (cut_source,)),
     ):
         _assert_only_values_replaced(lines, ending, output.decode())
+
+
+# #1248 P3 (P1 finding, #1271): an assignment straight after the closing quote of the one before
+# it, or opening the line after a line break or tab that encoding turned into an escape, starts a
+# fresh match. Every such secret line is replaced, at every escaping depth up to three, and only
+# its values are.
+
+_QUOTES = ('"', "'")
+
+
+@st.composite
+def _secret_assignment_line(draw: st.DrawFn) -> tuple[str, str, list[str]]:
+    """``(line, kept, values)``: ``kept`` is the line with each value removed."""
+
+    prefix = draw(st.sampled_from(("", "  ", "\t", "+")))
+    count = draw(st.integers(min_value=1, max_value=3))
+    quote = draw(st.sampled_from(_QUOTES))
+    pieces: list[tuple[str, str]] = []
+    values: list[str] = []
+    for _ in range(count):
+        name = draw(st.sampled_from(_SECRET_NAMES))
+        separator = draw(st.sampled_from(_SEPARATORS))
+        value = draw(_secret_value()).replace("\\", "").replace(quote, "")
+        values.append(value)
+        if count == 1 and draw(st.booleans()):
+            pieces.append((name + separator, value))
+        else:
+            # Glued: each quoted value runs straight into the next name.
+            pieces.append((name + separator + quote, value + quote))
+    line = prefix + "".join(head + value for head, value in pieces)
+    kept = prefix + "".join(
+        head + value[len(raw) :] for (head, value), raw in zip(pieces, values, strict=True)
+    )
+    return line, kept, values
+
+
+@given(
+    st.lists(_secret_assignment_line(), min_size=1, max_size=6),
+    st.sampled_from(("\n", "\r\n")),
+    st.integers(min_value=0, max_value=3),
+)
+def test_every_secret_assignment_is_replaced_after_a_quote_or_an_encoded_break(
+    lines: list[tuple[str, str, list[str]]], ending: str, depth: int
+) -> None:
+    text = "".join(line + ending for line, _kept, _values in lines)
+    nested = _nest(text, depth)
+
+    for redacted in (
+        redact_heuristic_spans(nested)[0],
+        redact_sensitive_content(nested, heuristic_marker=EGRESS_CREDENTIAL_PLACEHOLDER)[0],
+    ):
+        out_lines = _unnest(redacted, depth).split(ending)
+        assert len(out_lines) == len(lines) + 1 and out_lines[-1] == ""
+        for (_line, kept, values), out in zip(lines, out_lines, strict=False):
+            assert out.count(_MARKERS[0]) == len(values)
+            assert out.replace(_MARKERS[0], "") == kept
