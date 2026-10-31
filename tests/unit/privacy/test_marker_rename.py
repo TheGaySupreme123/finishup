@@ -167,3 +167,12 @@ def test_the_agent_lines_name_both_spellings() -> None:
         assert line.index(NEW.decode()) < line.index(LEGACY.decode())
     values = (SemanticRedactedValue("excerpt-1", "value_replaced", (3,)),)
     assert semantic_redacted_value_agent_lines(values) == (SEMANTIC_REDACTED_VALUES_AGENT_LINE,)
+
+
+def test_the_reviewer_loop_instruction_names_both_spellings_within_its_ceiling() -> None:
+    from finishup.adapters.providers.reviewer_reply import REVIEWER_LOOP_INSTRUCTION
+
+    assert "[withheld-by-finishup:...]" in REVIEWER_LOOP_INSTRUCTION
+    assert "[withheld-by-yoetz:...]" in REVIEWER_LOOP_INSTRUCTION
+    # #1203: the loop instruction keeps its ceiling, so the minimal policy keeps its read room.
+    assert len(REVIEWER_LOOP_INSTRUCTION.encode()) <= 7639
