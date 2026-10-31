@@ -830,11 +830,12 @@ def _value_is_replacement_marker(
     """Whether an assignment's value is exactly one recorded FinishUP marker span (#1248 P-D1).
 
     ``marker_spans`` maps each recorded span's start to its end: the spans FinishUP wrote. Only a
-    recorded span is exempt, and only that span. A quoted value must close right after it. An
-    unquoted value is classified only up to its first escape (as every unquoted value is, in
-    ``_assignment_value_cannot_be_credential``), so whatever follows the span from an escape on
-    is the next encoded character, not more of this value. Any other byte after the span is a
-    suffix FinishUP never writes, and the whole value stays subject to the ordinary rules.
+    recorded span (or a run of them written back to back) is exempt, and nothing else. A quoted
+    value must close right after it. An unquoted value is classified only up to its first escape
+    (as every unquoted value is, in ``_assignment_value_cannot_be_credential``), so whatever
+    follows the span from an escape on is the next encoded character, not more of this value.
+    Any other byte after the span is a suffix FinishUP never writes, and the whole value stays
+    subject to the ordinary rules.
     """
 
     opening = (
@@ -843,6 +844,9 @@ def _value_is_replacement_marker(
     end = marker_spans.get(value_start + len(opening))
     if end is None:
         return False
+    # Recorded spans written back to back (two adjacent replacements) are one run of markers.
+    while end in marker_spans:
+        end = marker_spans[end]
     rest = value[end - value_start :]
     if opening:
         return rest == opening

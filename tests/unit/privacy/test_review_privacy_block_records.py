@@ -209,6 +209,23 @@ async def test_the_tb4_nested_yaml_shape_reaches_the_reviewer_with_its_marker() 
 
 
 @pytest.mark.anyio
+async def test_a_real_value_seen_only_in_the_conversation_withholds_its_item() -> None:
+    # The shipped scanner, no planted match: ``secret=x9`` right after a closing quote is missed
+    # at capture depth and seen once the conversation nests the packet (#1248 P2's fuzzing). The
+    # placeholder before it is FinishUP's own, recorded, and never matches; the real value
+    # withholds the one item it sits in, named, and the review still runs (P-D2).
+    result, audit = await _evaluate_conversation(
+        b'db:\n  password: "hunter2"secret=x9\n  role: admin\n'
+    )
+    conversation = _prepared(result, audit)
+    assert b"secret=x9" not in conversation and b"hunter2" not in conversation
+    assert isinstance(result, SemanticEgressBlocked)
+    assert _EXCERPT in result.withheld_item_ids
+    (withheld,) = [item for item in result.redacted_values if item.item_id == _EXCERPT]
+    assert withheld.disposition == "item_withheld"
+
+
+@pytest.mark.anyio
 async def test_a_conversation_hit_in_one_item_withholds_that_item_and_the_review_goes_on() -> None:
     # #1248 P-D2: the hit withholds the one item it sat in, named, and nothing else.
     content = b"notes: " + _PLANTED + b"\n"
