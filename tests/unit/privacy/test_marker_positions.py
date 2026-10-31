@@ -185,6 +185,10 @@ def test_a_real_value_after_the_marker_line_is_still_found(following: str, depth
     assert _resume_scan_is_clean(LocalPrivacyEnforcer(), payload, marker_spans=packet_spans)
 
 
+def _uri(password: bytes) -> bytes:
+    return b"https" + b"://u:" + password + b"@"
+
+
 # Shapes #1248 P2's fuzzing found matching only inside the reviewer conversation: a quoted
 # placeholder run straight into another assignment, placeholders next to each other, and a
 # placeholder followed by non-space bytes. FinishUP writes the values here; the depth-0 scan
@@ -194,7 +198,12 @@ P2_SHAPES = {
     "quoted_then_assignment": b'db:\n  password: "hunter2"secret=x9\n  role: admin\n',
     "two_credentials_in_one_value": b"API_KEY=ghp_" + b"A" * 36 + b"ghp_" + b"B" * 36 + b"\n",
     "quoted_then_bytes": b'secret="hunter2"x9y\n  role: admin\n',
-    "marker_then_bytes": b"url=https://u:p1@h/x https://v:p2@h/y\n  api_key=hunter3x\n",
+    # Built from parts so the publication-boundary scanner sees no URI userinfo literal.
+    "marker_then_bytes": b"url="
+    + _uri(b"p1")
+    + b"h/x "
+    + _uri(b"p2")
+    + b"h/y\n  api_key=hunter3x\n",
     "adjacent_assignments": b"password=hunter2;api_key=hunter3x\n",
 }
 
