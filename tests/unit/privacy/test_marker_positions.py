@@ -29,6 +29,7 @@ from finishup.observability.marker_spans import (
 )
 from finishup.observability.privacy import (
     EGRESS_CREDENTIAL_PLACEHOLDER,
+    redact_before_cut_marked,
     redact_heuristic_spans,
     redact_heuristic_spans_marked,
     scan_for_sensitive_content,
@@ -182,6 +183,55 @@ def test_a_real_value_after_the_marker_line_is_still_found(following: str, depth
         # Straight in a message (FinishUP's frame or a reply), nothing can be withheld.
         assert not getattr(found, "withholdable")
     assert _resume_scan_is_clean(LocalPrivacyEnforcer(), payload, marker_spans=packet_spans)
+
+
+# Shapes #1248 P2's fuzzing found matching only inside the reviewer conversation: a quoted
+# placeholder run straight into another assignment, placeholders next to each other, and a
+# placeholder followed by non-space bytes. FinishUP writes the values here; the depth-0 scan
+# cannot see ``secret=x9`` after the closing quote, and the deeper encodings can. Two markers
+# written strictly back to back are covered by the recorded-span test below.
+P2_SHAPES = {
+    "quoted_then_assignment": b'db:\n  password: "hunter2"secret=x9\n  role: admin\n',
+    "two_credentials_in_one_value": b"API_KEY=ghp_" + b"A" * 36 + b"ghp_" + b"B" * 36 + b"\n",
+    "quoted_then_bytes": b'secret="hunter2"x9y\n  role: admin\n',
+    "marker_then_bytes": b"url=https://u:p1@h/x https://v:p2@h/y\n  api_key=hunter3x\n",
+    "adjacent_assignments": b"password=hunter2;api_key=hunter3x\n",
+}
+
+
+@pytest.mark.parametrize("depth", (1, 2, 3))
+@pytest.mark.parametrize("shape", P2_SHAPES.values(), ids=P2_SHAPES.keys())
+def test_no_finding_ever_covers_a_recorded_marker(shape: bytes, depth: int) -> None:
+    marked = redact_before_cut_marked(shape)
+    assert marked is not None
+    content, spans = marked
+    assert spans
+    packet, packet_spans = packet_for(content, spans, depth)
+    payload = exchange(packet)
+    carried = container_marker_spans(payload, packet, packet_spans)
+    assert len(carried) == len(spans)
+    for data, recorded in ((packet, packet_spans), (payload, carried)):
+        for finding in scan_for_sensitive_content(data, marker_spans=recorded):
+            assert not any(
+                finding.start_offset < end and start < finding.end_offset for start, end in recorded
+            ), data[finding.start_offset : finding.end_offset]
+    found = hit(payload, packet, packet_spans)
+    if found is not None:
+        # Only real content the depth-0 scan missed: the one item it sits in is withheld, and
+        # the review runs on the rest (P-D2).
+        assert depth > 1
+        assert getattr(found, "item_ids") == frozenset({ITEM_ID})
+        assert getattr(found, "withholdable")
+
+
+def test_two_recorded_markers_back_to_back_are_one_exempt_value() -> None:
+    text = b"API_KEY=" + EGRESS_CREDENTIAL_PLACEHOLDER + b"[REDACTED]\n"
+    first = len(b"API_KEY=")
+    second = first + len(EGRESS_CREDENTIAL_PLACEHOLDER)
+    spans = ((first, second), (second, second + len(b"[REDACTED]")))
+    assert scan_for_sensitive_content(text, marker_spans=spans) == ()
+    # Only one of the two recorded: the other is a value suffix like any other.
+    assert scan_for_sensitive_content(text, marker_spans=spans[:1])
 
 
 def test_only_the_row_a_span_was_recorded_for_is_exempt() -> None:
