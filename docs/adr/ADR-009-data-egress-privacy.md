@@ -1865,7 +1865,7 @@ local-sink backstops, and the egress-receipt shape keep their rules.
 - **P-D5. The marker is renamed, at low priority.** New content uses
   `[withheld-by-finishup:possible-credential]`. Readers accept both spellings permanently, and the
   scanner profile is bumped so that resumed work never mixes them. The rule is ADR-048's (§2, §3
-  and its 2026-10-31 amendment). Implemented in step P4 (#PRNUM); before it, FinishUP wrote
+  and its 2026-10-31 amendment). Implemented in step P4 (#1274); before it, FinishUP wrote
   `[withheld-by-yoetz:possible-credential]`.
 
 **Scanner profile.** The 2026-10-03 amendment already requires a new scanner profile version for
@@ -1886,7 +1886,7 @@ minimization onward: the minimizer records each marker it writes, the spans trav
 string by its exact offset map. Markers written at capture or composition are stored without a
 recorded span, so they are judged as values there and the egress pass replaces each with the same
 bytes and records it. A reviewer read keeps its admission-time withholding, which scans the
-exact read message. P-D5 shipped with step P4 ([#PRNUM](https://github.com/TheGaySupreme123/finishup/pull/PRNUM)):
+exact read message. P-D5 shipped with step P4 ([#1274](https://github.com/TheGaySupreme123/finishup/pull/1274)):
 every pass writes `[withheld-by-finishup:possible-credential]`, and no pass accepts the legacy
 spelling as the marker to write; the recorded-span check, the marker-plus-suffix rule, the
 check-time change's counts and cut views, reviewer quote proof, the reviewer instruction and the

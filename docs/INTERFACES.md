@@ -4961,7 +4961,7 @@ behaves as those paragraphs describe.
 - **Slices (P-D4, step P3).** Line-range reads and change parts are cut from already-redacted text.
   Private keys are redacted from BEGIN through END, and an item without an END is withheld. YAML
   `key: |` block values are detected.
-- **Spelling (P-D5, step P4, implemented in #PRNUM).** New content uses
+- **Spelling (P-D5, step P4, implemented in #1274).** New content uses
   `[withheld-by-finishup:possible-credential]` (`EGRESS_CREDENTIAL_PLACEHOLDER`, 42 bytes); the
   legacy `[withheld-by-yoetz:possible-credential]` (`LEGACY_EGRESS_CREDENTIAL_PLACEHOLDER`, 39
   bytes) is a frozen ADR-048 identifier that is read permanently and never written. No redaction
