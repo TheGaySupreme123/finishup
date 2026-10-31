@@ -415,8 +415,13 @@ def test_the_credential_placeholder_is_never_asked_for() -> None:
     """L2 seam: the exact egress placeholder marks a withheld value, never a missing item."""
 
     assert (
-        "[withheld-by-yoetz:possible-credential] replaced a value FinishUP withheld because it may "
-        "be a credential." in _TEXT
+        "[withheld-by-finishup:possible-credential] replaced a value FinishUP withheld because it "
+        "may be a credential;" in _TEXT
+    )
+    # #1248 P4: content stored before the rename still carries the legacy spelling.
+    assert (
+        "content stored before a rename spells that one [withheld-by-yoetz:possible-credential], "
+        "with the same meaning." in _TEXT
     )
     assert "Never raise a finding or a missing_for_assessment item asking for that value." in _TEXT
 
@@ -428,8 +433,8 @@ def test_every_redaction_marker_a_packet_can_carry_is_explained_as_never_code() 
     for marker in (*_redaction_markers(), *_quote_markers()):
         assert marker in _TEXT, marker
     assert (
-        "The exact tokens [REDACTED] and [withheld-by-yoetz:possible-credential] are FinishUP's own "
-        "redaction markers" in _TEXT
+        "The exact tokens [REDACTED] and [withheld-by-finishup:possible-credential] are FinishUP's "
+        "own redaction markers" in _TEXT
     )
     assert "[REDACTED] replaced a credential FinishUP detected" in _TEXT
     assert (
@@ -442,7 +447,8 @@ def test_every_redaction_marker_a_packet_can_carry_is_explained_as_never_code() 
     )
     # The packet's own code for a redacted change is glossed as a packet limit.
     gloss = PACKET_GAP_GLOSSARY["check_time_change_redacted"]
-    assert "[REDACTED]" in gloss and "[withheld-by-yoetz:possible-credential]" in gloss
+    assert "[REDACTED]" in gloss and "[withheld-by-finishup:possible-credential]" in gloss
+    assert "[withheld-by-yoetz:possible-credential]" in gloss
     assert f"check_time_change_redacted: {gloss}" in _TEXT
     # Every provider path sends the same bytes (Chat Completions appends only its shape suffix).
     assert CHAT_COMPLETIONS_INSTRUCTION.startswith(SEMANTIC_REVIEW_INSTRUCTION)
@@ -451,17 +457,25 @@ def test_every_redaction_marker_a_packet_can_carry_is_explained_as_never_code() 
 def _redaction_markers() -> tuple[str, ...]:
     """The markers capture-time and egress redaction can leave in any packet item."""
 
-    from finishup.observability.privacy import EGRESS_CREDENTIAL_PLACEHOLDER
+    from finishup.observability.privacy import (
+        EGRESS_CREDENTIAL_PLACEHOLDER,
+        LEGACY_EGRESS_CREDENTIAL_PLACEHOLDER,
+    )
 
     markers = getattr(semantic_case_module, "_REDACTION_MARKERS")
     assert EGRESS_CREDENTIAL_PLACEHOLDER in markers
+    assert LEGACY_EGRESS_CREDENTIAL_PLACEHOLDER in markers
     return tuple(marker.decode("ascii") for marker in markers)
 
 
 def _quote_markers() -> tuple[str, ...]:
-    from finishup.application.review_quotes import CREDENTIAL_PLACEHOLDER, REDACTION_MARKER
+    from finishup.application.review_quotes import (
+        CREDENTIAL_PLACEHOLDER,
+        LEGACY_CREDENTIAL_PLACEHOLDER,
+        REDACTION_MARKER,
+    )
 
-    return (REDACTION_MARKER, CREDENTIAL_PLACEHOLDER)
+    return (REDACTION_MARKER, CREDENTIAL_PLACEHOLDER, LEGACY_CREDENTIAL_PLACEHOLDER)
 
 
 def test_the_reviewer_never_advises_delivering_less() -> None:

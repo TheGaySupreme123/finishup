@@ -2275,6 +2275,7 @@ def _defect(summary: str, discrepancy: str, snippet: str) -> ReviewerChallenge:
         "Redacted password aside, DB_PORT is undefined and raises NameError at startup",
         "The password is redacted; DB_PORT is undefined and raises NameError at startup",
         "Not the [withheld-by-yoetz:possible-credential] value: DB_PORT is not defined anywhere",
+        "Not the [withheld-by-finishup:possible-credential] value: DB_PORT is not defined anywhere",
     ],
 )
 @pytest.mark.parametrize("phase", ["final", "routine"])

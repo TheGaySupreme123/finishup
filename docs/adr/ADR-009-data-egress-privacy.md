@@ -1042,8 +1042,9 @@ blocked the whole packet with `never_send_detected`. Decisions:
   unchanged. *Superseded 2026-10-31 (#1248, P-D1):* markers are exempt by their recorded position,
   never by matching their text or guessing escape widths.
 - At egress, a low-confidence (heuristic) match replaces only the value, in place, with the fixed
-  placeholder `[withheld-by-yoetz:possible-credential]` (`EGRESS_CREDENTIAL_PLACEHOLDER`); the rest
-  of the line, item and file is still sent, and the scanner exempts the placeholder like
+  placeholder `[withheld-by-yoetz:possible-credential]` (`EGRESS_CREDENTIAL_PLACEHOLDER`;
+  *amended 2026-10-31, #1248 P-D5:* written as `[withheld-by-finishup:possible-credential]` since
+  step P4, with the legacy spelling still read); the rest of the line, item and file is still sent, and the scanner exempts the placeholder like
   `[REDACTED]` (issue #982, owner decision B2, 2026-10-07). The check reports the review-scoped gap
   `semantic_review_value_redacted`. The check-time change and its task inputs (ADR-031), which
   are redacted when the service reads them rather than at egress, use the same placeholder for a
@@ -1071,10 +1072,11 @@ blocked the whole packet with `never_send_detected`. Decisions:
   text (at most 64 items). No value or byte offset is kept. The entries travel on the disclosure
   proposal (resume and replay), the egress result, the check event (optional, 1.4.0), the check
   result, `status view=operation`, and the receipt document. Every human and agent rendering adds,
-  once, the fixed line "Values marked [withheld-by-yoetz:possible-credential] were withheld from the
-  external reviewer only; local checks saw them. Do not change consent, rename, hide or reshape your
-  work to clear this. If a finding stays open only because of it, verify the repair yourself and
-  respond self_verified."; the bounded MCP summaries (4,096 bytes since ADR-043), which must keep the
+  once, the fixed line "Values marked [withheld-by-finishup:possible-credential] (or, in content
+  stored earlier, [withheld-by-yoetz:possible-credential]) were withheld from the external reviewer
+  only; local checks saw them. Do not change consent, rename, hide or reshape your work to clear
+  this. If a finding stays open only because of it, verify the repair yourself and respond
+  self_verified." (both spellings since #1248 P4; before it, only the legacy one); the bounded MCP summaries (4,096 bytes since ADR-043), which must keep the
   frontier head digest, fall back to a shorter fixed form when the full line cannot fit.
 
 ## Credential-heuristic opt-out amendment (2026-10-07, issue #982)
@@ -1381,7 +1383,8 @@ selection or channel ceiling is raised, the round cap is unchanged, and Private 
   scan to recognize, so nothing is cut before the shared scanner has seen it whole. Each value a
   summary quotes (a cell, a shared string, a sheet or member name, a paragraph) is scanned whole,
   as read and as normalized, before it is capped; a flagged value is quoted only as `[REDACTED]`
-  or `[withheld-by-yoetz:possible-credential]`, whatever the owner's possible-credential opt-out
+  or `[withheld-by-finishup:possible-credential]` (`[withheld-by-yoetz:possible-credential]` before
+  #1248 P4), whatever the owner's possible-credential opt-out
   says, and the input is marked redacted so the review discloses it. The summary's byte caps drop
   whole lines, never part of one. The head and tail cuts of a long text move clear of any
   recognized credential before the text is cut, and the tail is read with 4 KiB more before it
@@ -1862,12 +1865,13 @@ local-sink backstops, and the egress-receipt shape keep their rules.
 - **P-D5. The marker is renamed, at low priority.** New content uses
   `[withheld-by-finishup:possible-credential]`. Readers accept both spellings permanently, and the
   scanner profile is bumped so that resumed work never mixes them. The rule is ADR-048's (§2, §3
-  and its 2026-10-31 amendment). Until step P4 ships, FinishUP still writes
+  and its 2026-10-31 amendment). Implemented in step P4 (#PRNUM); before it, FinishUP wrote
   `[withheld-by-yoetz:possible-credential]`.
 
 **Scanner profile.** The 2026-10-03 amendment already requires a new scanner profile version for
 every step that changes what the scanner matches, exempts or replaces. Step P1 moved it from
-`observability-sensitive-content-v3` to `observability-sensitive-content-v4`. A resumed proposal
+`observability-sensitive-content-v3` to `observability-sensitive-content-v4`, and step P4 from
+`observability-sensitive-content-v4` to `observability-sensitive-content-v5`. A resumed proposal
 prepared under an older profile therefore fails closed as a profile mismatch, and a new evaluation
 uses the current profile.
 
@@ -1881,8 +1885,15 @@ minimization onward: the minimizer records each marker it writes, the spans trav
 (and are persisted with a prepared proposal), and every later scan carries them through each JSON
 string by its exact offset map. Markers written at capture or composition are stored without a
 recorded span, so they are judged as values there and the egress pass replaces each with the same
-bytes and records it. A reviewer read keeps its admission-time withholding, which scans the exact
-read message. P-D3 to P-D5 are not yet implemented.
+bytes and records it. A reviewer read keeps its admission-time withholding, which scans the
+exact read message. P-D5 shipped with step P4 ([#PRNUM](https://github.com/TheGaySupreme123/finishup/pull/PRNUM)):
+every pass writes `[withheld-by-finishup:possible-credential]`, and no pass accepts the legacy
+spelling as the marker to write; the recorded-span check, the marker-plus-suffix rule, the
+check-time change's counts and cut views, reviewer quote proof, the reviewer instruction and the
+agent line read both. A placeholder stored without a recorded span is replaced in the spelling it
+was stored with, so content carrying the legacy spelling keeps its exact bytes in every sink and a
+new case may carry both spellings, as the amendment allows. P-D3 and P-D4 are not yet
+implemented.
 
 **Hosts and surfaces.** The behaviour is service-side and identical on Codex, Claude Code and
 Cursor. The CLI, MCP, hooks, the terminal interface and the receipt renderings (JSON, markdown,

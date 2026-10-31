@@ -147,7 +147,7 @@ ceiling; external LLM work also needs an exact granted row for the current repos
 
 Secret-shaped text that only looks like a credential (an assignment to a name such as `token`) is
 redacted in place when it would leave your machine: only the value is replaced, by
-`[withheld-by-yoetz:possible-credential]`, and the rest of the line and file is still reviewed. The
+`[withheld-by-finishup:possible-credential]`, and the rest of the line and file is still reviewed. The
 check reports `semantic_review_value_redacted`. If a value cannot be replaced safely, FinishUP withholds
 only the item that carries it and reviews the rest; the check lists the withheld items and reports
 `semantic_review_item_withheld`. Checks, receipts and `status view=operation` name each affected
@@ -185,9 +185,14 @@ anything is stored. Text that only looks like a credential is kept as captured i
 local store, so local checks see your work as it is; it is replaced only when content would leave
 your machine. The one exception is the change FinishUP reads from your repository at check time for
 review (described below): it is redacted as it is read, so a concrete credential reads
-`[REDACTED]` and a value that only looks like one reads `[withheld-by-yoetz:possible-credential]`.
+`[REDACTED]` and a value that only looks like one reads `[withheld-by-finishup:possible-credential]`.
 The reviewer is told that both markers are values FinishUP withheld, never your code, so a line such
-as `password=[withheld-by-yoetz:possible-credential]` is not reported as a broken expression.
+as `password=[withheld-by-finishup:possible-credential]` is not reported as a broken expression.
+
+Content recorded by a release from before FinishUP's rename spells that marker
+`[withheld-by-yoetz:possible-credential]`. It means exactly the same thing and is kept as it was
+stored: FinishUP reads both spellings, in checks, status and receipts, and only ever writes the new
+one.
 
 ### Turning the possible-credential filter off
 
@@ -204,7 +209,7 @@ finishup privacy credential-heuristic enable --machine-default    # restore that
 
 Turning it off means values assigned to names such as `password`, `secret`, `api_key` or
 `*_token` are sent to the external AI reviewer as written, instead of as
-`[withheld-by-yoetz:possible-credential]`. Everything that stays on your machine keeps the
+`[withheld-by-finishup:possible-credential]`. Everything that stays on your machine keeps the
 filter: what FinishUP shows your agent and what a local model reviews are filtered exactly as before.
 It never affects the never-send set: a known credential shape, a private key, a password inside a
 URL, or a scanner that cannot finish still blocks or redacts exactly as before.

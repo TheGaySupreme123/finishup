@@ -170,7 +170,8 @@ remains refused. The same seam supplies CLI, MCP, hook-triggered checks, TUI and
    inside a URL), or a heuristic span that overlaps one, reads `[REDACTED]`; a value that only
    looks like a credential (an assignment to a name such as `password` or `*_token`) reads
    `[withheld-by-yoetz:possible-credential]`, the placeholder egress already uses (ADR-009,
-   issue #982). The same bytes are withheld either way; only the marker text differs, and
+   issue #982; written `[withheld-by-finishup:possible-credential]` since #1248 P4, and a change
+   stored with the legacy spelling keeps its bytes, counts and cut views). The same bytes are withheld either way; only the marker text differs, and
    redaction still runs at capture whatever the owner's possible-credential opt-out says (owner
    decision, 2026-10-13). Task input files the read carries get the same treatment. The bare
    `[REDACTED]` had turned `password=config.POSTGRES_PASSWORD` into `password=[REDACTED]`, which a

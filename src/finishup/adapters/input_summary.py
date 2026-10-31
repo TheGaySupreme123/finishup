@@ -24,7 +24,7 @@ Every input is untrusted, so the summarizer:
   with a ``key:`` FinishUP wrote;
 - scans each quoted value whole, before it is normalized or cut, with the shared credential
   scanner, and quotes a flagged value only as ``[REDACTED]`` (a recognized credential) or
-  ``[withheld-by-yoetz:possible-credential]`` (one that only looks like a credential): a cut
+  ``[withheld-by-finishup:possible-credential]`` (one that only looks like a credential): a cut
   value could otherwise keep a fragment too short for any later scan to recognize (PR #1086
   review R1-04; ``summarize_task_input`` reports that a value was withheld);
 - caps the facts at ``MAX_INPUT_SUMMARY_BYTES`` and the quoted listing at
@@ -861,7 +861,7 @@ def _clean(text: str, limit: int) -> str:
 def _credential_marker(*values: str) -> str | None:
     """The marker that replaces a value whose complete text the scanner flags, else ``None``.
 
-    ``[REDACTED]`` for a recognized credential, ``[withheld-by-yoetz:possible-credential]`` for
+    ``[REDACTED]`` for a recognized credential, ``[withheld-by-finishup:possible-credential]`` for
     a value only the assignment heuristic flags. The owner's possible-credential opt-out does not
     apply here: the summary is FinishUP's own text, and the egress scan still decides what leaves.
     """

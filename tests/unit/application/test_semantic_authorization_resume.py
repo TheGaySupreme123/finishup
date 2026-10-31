@@ -336,6 +336,12 @@ async def test_resume_rejects_proposal_identity_mismatch(
     [
         ("unknown", "sha256:" + "0" * 64),
         ("observability-sensitive-content-v2", _SCANNER.profile_digest),
+        # #1248 P4: a proposal prepared under P1's profile, whose packet spells the placeholder
+        # the legacy way, is never resumed under v5; a new evaluation is prepared instead.
+        (
+            "observability-sensitive-content-v4",
+            "sha256:8710381761bf88c0585e3fc081cbfc7571ecf946eb1828139175eb72de251f9c",
+        ),
     ],
 )
 async def test_resume_rejects_stale_scanner_identity(
@@ -352,11 +358,25 @@ async def test_resume_rejects_stale_scanner_identity(
         proposal=proposal,
     )
 
-    result = await coordinator.resume(_REQUEST, _CASE_DIGEST, _deadline())
+    dispatched: list[object] = []
+
+    async def dispatch(self: PrivacyCoordinator, *args: object, **kwargs: object) -> object:
+        del self, kwargs
+        dispatched.append(args)
+        return object()
+
+    monkeypatch = pytest.MonkeyPatch()
+    monkeypatch.setattr(PrivacyCoordinator, "_dispatch_approved", dispatch)
+    try:
+        result = await coordinator.resume(_REQUEST, _CASE_DIGEST, _deadline())
+    finally:
+        monkeypatch.undo()
 
     assert isinstance(result, SemanticEgressBlocked)
     assert result.outcome is PrivacyOutcome.AUDIT_FAILED
     assert result.reason is PrivacyReason.AUDIT_FAILED
+    # The stale proposal's bytes are never reused.
+    assert dispatched == []
 
 
 @pytest.mark.anyio

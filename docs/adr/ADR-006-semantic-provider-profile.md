@@ -1912,7 +1912,9 @@ claiming completion was never judged for completeness. Decisions:
   carries image or binary content (images, PDF, CAD, compiled data), so a requirement judged only
   from such content is `not_assessable` and never a `missing_for_assessment` item or the reason for
   `insufficient_packet`; that the exact token `[withheld-by-yoetz:possible-credential]` marks a
-  value FinishUP withheld at egress and is never asked for; and that the reviewer never advises
+  value FinishUP withheld at egress and is never asked for (*amended 2026-10-31, #1248 P4:* the
+  token is written `[withheld-by-finishup:possible-credential]`, and the instruction explains both
+  spellings while stored content can still carry the legacy one); and that the reviewer never advises
   delivering less (emptying, deleting, moving, splitting or reshaping the deliverable) and never
   treats a packet limit as a reason for the agent to restructure its work. An admitted `fixed`
   ruling on a finding tolerates `semantic_review_refs_reduced` on that check; without one the gap

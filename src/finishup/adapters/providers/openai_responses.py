@@ -200,8 +200,9 @@ PACKET_GAP_GLOSSARY: Final[Mapping[str, str]] = MappingProxyType(
         # tb4n5: capture-time redaction of the check-time change and its task inputs.
         "check_time_change_redacted": (
             "credential-like values in the check-time change or a task input were replaced by "
-            "[REDACTED] or [withheld-by-yoetz:possible-credential] before it was stored; the "
-            "original values are unavailable and a marker is never the agent's code"
+            "[REDACTED] or [withheld-by-finishup:possible-credential] (before a rename, "
+            "[withheld-by-yoetz:possible-credential]) before it was stored; the original values "
+            "are unavailable and a marker is never the agent's code"
         ),
         "event_payload_unavailable": "a ledger event's payload could not be read",
         "evidence_content_digest_only": "an evidence record kept its digest but not its bytes",
@@ -222,7 +223,7 @@ PACKET_GAP_GLOSSARY: Final[Mapping[str, str]] = MappingProxyType(
         "redacted_event": "a ledger event was redacted at its source",
         "redacted_never_send": (
             "policy forbids sending the item or a credential-like value in it; a replaced value "
-            "reads [withheld-by-yoetz:possible-credential]"
+            "reads [withheld-by-finishup:possible-credential]"
         ),
         "redacted_object": "a stored object was redacted at its source",
         "routine_read_detail_omitted": "routine reads were summarized without per-read detail",
@@ -240,7 +241,7 @@ PACKET_GAP_GLOSSARY: Final[Mapping[str, str]] = MappingProxyType(
             "an item was left out because a credential-like value in it could not be replaced"
         ),
         "semantic_review_value_redacted": (
-            "a credential-like value was replaced by [withheld-by-yoetz:possible-credential]; "
+            "a credential-like value was replaced by [withheld-by-finishup:possible-credential]; "
             "the rest of the item was sent"
         ),
         "semantic_reference_scope_reduced": (
@@ -671,16 +672,19 @@ SEMANTIC_REVIEW_INSTRUCTION: Final = "\n\n".join(
             "FinishUP's: it is the text of the excerpt's own source (the agent's record, a task "
             "input, captured output), as that excerpt's label and source kind say.",
             # L2 seam (TB4 tb4n1) and tb4n5 live-database-cutover: both markers are FinishUP's
-            # substitutions, never the agent's code.
-            "The exact tokens [REDACTED] and [withheld-by-yoetz:possible-credential] are FinishUP's "
-            "own redaction markers, wherever they appear (the check-time change, a task input, "
-            "captured output or any other item): [REDACTED] replaced a credential FinishUP "
-            "detected, and [withheld-by-yoetz:possible-credential] replaced a value FinishUP "
-            "withheld because it may be a credential. Each stands for an original value or "
-            "expression that is unavailable to you, not text the agent wrote; the rest of the line "
-            "is the agent's real content. Never read a marker as evidence of a syntax error, an "
-            "undefined name, a missing value or missing configuration. Never raise a finding or a "
-            "missing_for_assessment item asking for that value.",
+            # substitutions, never the agent's code. #1248 P4: the placeholder is written as
+            # [withheld-by-finishup:...]; content stored earlier still carries the frozen legacy
+            # [withheld-by-yoetz:...] spelling (ADR-048), so both are explained.
+            "The exact tokens [REDACTED] and [withheld-by-finishup:possible-credential] are "
+            "FinishUP's own redaction markers, wherever they appear (the check-time change, a task "
+            "input, captured output or any other item): [REDACTED] replaced a credential FinishUP "
+            "detected, and [withheld-by-finishup:possible-credential] replaced a value FinishUP "
+            "withheld because it may be a credential; content stored before a rename spells that "
+            "one [withheld-by-yoetz:possible-credential], with the same meaning. Each stands for "
+            "an original value or expression that is unavailable to you, not text the agent wrote; "
+            "the rest of the line is the agent's real content. Never read a marker as evidence of "
+            "a syntax error, an undefined name, a missing value or missing configuration. Never "
+            "raise a finding or a missing_for_assessment item asking for that value.",
         ),
         _section(
             "Challenges and remedies",

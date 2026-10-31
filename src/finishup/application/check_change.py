@@ -351,7 +351,7 @@ def _redacted_text(text: bytes) -> tuple[bytes, bool]:
     """Redact until a pass finds nothing; ``redaction_incomplete`` past the pass bound.
 
     A concrete credential shape reads ``[REDACTED]``. A value that only looks like a credential
-    (``password=config.POSTGRES_PASSWORD``) reads ``[withheld-by-yoetz:possible-credential]``,
+    (``password=config.POSTGRES_PASSWORD``) reads ``[withheld-by-finishup:possible-credential]``,
     the self-describing marker egress uses (tb4n5 live-database-cutover): a bare ``[REDACTED]`` in
     source read as an undefined name to the reviewer. The same spans are withheld either way;
     only the marker differs, and redaction still runs at capture whatever the owner's

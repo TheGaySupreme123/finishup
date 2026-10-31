@@ -193,6 +193,7 @@ from finishup.kernel.verification_freshness import VerificationFreshness, name_f
 from finishup.legacy_names import LEGACY_PRODUCT_NAME, PRODUCT_NAME
 from finishup.observability.privacy import (
     EGRESS_CREDENTIAL_PLACEHOLDER,
+    EGRESS_CREDENTIAL_PLACEHOLDERS,
     PrivacyFenceError,
     ScanConfidence,
     redact_before_cut,
@@ -1533,8 +1534,10 @@ _BOILERPLATE_LINE: Final = re.compile(
 # The markers capture-time redaction leaves in the stored change: a concrete credential shape
 # reads ``[REDACTED]``, a value that only looks like one the self-describing placeholder (tb4n5).
 # Both are withheld spans; every count and view below treats them alike. A change stored before
-# the placeholder was used at capture holds ``[REDACTED]`` only, so its record is unchanged.
-_REDACTION_MARKERS: Final = (b"[REDACTED]", EGRESS_CREDENTIAL_PLACEHOLDER)
+# the placeholder was used at capture holds ``[REDACTED]`` only, so its record is unchanged. The
+# placeholder is read in both spellings (#1248 P4): a change stored before the rename carries the
+# legacy ``[withheld-by-yoetz:...]`` bytes and must count and cut exactly as it did.
+_REDACTION_MARKERS: Final = (b"[REDACTED]", *EGRESS_CREDENTIAL_PLACEHOLDERS)
 _CHECK_TIME_CHANGE_HUNK: Final = re.compile(rb"^@@ [^\n]*", re.MULTILINE)
 # Frozen legacy identifier (ADR-048): domain separator inside stored digests.
 _VIEW_DOMAIN: Final = b"yoetz/check-change-view/v1\x00"

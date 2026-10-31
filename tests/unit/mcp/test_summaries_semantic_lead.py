@@ -203,4 +203,5 @@ def test_receipt_and_status_summaries_carry_the_fixed_agent_line() -> None:
             "document": {},
         }
     )
+    assert "[withheld-by-finishup:possible-credential]" not in without
     assert "[withheld-by-yoetz:possible-credential]" not in without

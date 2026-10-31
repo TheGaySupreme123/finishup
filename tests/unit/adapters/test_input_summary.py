@@ -651,7 +651,7 @@ def test_shared_strings_sheet_names_paragraphs_and_members_are_scanned_whole() -
     text, withheld = summarize_task_input("book.xlsx", book, len(book))
     assert withheld
     _withheld(text)
-    assert "  [REDACTED] | [withheld-by-yoetz:possible-credential]" in text.splitlines()
+    assert "  [REDACTED] | [withheld-by-finishup:possible-credential]" in text.splitlines()
     assert "a8F3kL9qZx7Pw2Rt" not in text
 
     paragraph = "word " * 39 + _TOKEN

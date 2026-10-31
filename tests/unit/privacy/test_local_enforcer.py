@@ -285,7 +285,7 @@ def test_heuristic_only_item_is_span_redacted_without_blocking_clean_item() -> N
     assert minimized.redacted_span_count == 1
     assert b"bounded-but-suspicious-value" not in minimized.prepared_bytes
     assert (
-        base64.b64encode(b"auth_token: '[withheld-by-yoetz:possible-credential]'")
+        base64.b64encode(b"auth_token: '[withheld-by-finishup:possible-credential]'")
         in minimized.prepared_bytes
     )
 
@@ -470,9 +470,9 @@ def test_semantic_heuristic_omission_keeps_review_packet_reference_closure() -> 
     assert type(content) is str
     assert json.loads(content) == {
         "event_id": "evt_10000000-0000-4000-8000-000000000011",
-        "payload": {"auth_token": "[withheld-by-yoetz:possible-credential]"},
+        "payload": {"auth_token": "[withheld-by-finishup:possible-credential]"},
     }
-    assert packet["question_set"] == ["auth_token: [withheld-by-yoetz:possible-credential]"]
+    assert packet["question_set"] == ["auth_token: [withheld-by-finishup:possible-credential]"]
 
 
 def test_malformed_semantic_envelope_cannot_dispatch_empty_fallback() -> None:
@@ -968,7 +968,7 @@ def test_redacted_code_line_survives_packet_encoding_without_blocking(line: byte
     assert minimized.forbidden_findings == ()
     assert set(minimized.included_item_ids) == {"clean", "review-packet", "suspect"}
     assert minimized.withheld_item_ids == ()
-    assert b"[withheld-by-yoetz:possible-credential]" in minimized.prepared_bytes
+    assert b"[withheld-by-finishup:possible-credential]" in minimized.prepared_bytes
 
 
 def test_surviving_heuristic_withholds_only_the_offending_item(

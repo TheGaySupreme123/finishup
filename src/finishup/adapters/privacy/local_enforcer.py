@@ -85,8 +85,12 @@ def estimated_token_count(byte_count: int) -> int:
 # as though it had used the new semantics.
 # v4 (#1248 P-D1): FinishUP's own markers are exempt only by the spans recorded when they were
 # written, never by their text; a resumed proposal prepared under v3 fails closed as a mismatch.
-_SCANNER_REGISTRY_VERSION = "observability-sensitive-content-v4"
-_SCANNER_PROFILE_DIGEST = "sha256:8710381761bf88c0585e3fc081cbfc7571ecf946eb1828139175eb72de251f9c"
+# v5 (#1248 P-D5, P4): new content carries ``[withheld-by-finishup:possible-credential]`` and
+# readers accept the legacy ``[withheld-by-yoetz:...]`` too. A proposal prepared under v4 holds
+# only the legacy spelling; resumed under v5 it fails closed as a mismatch and a new evaluation is
+# prepared, so one resumed packet never mixes the two spellings.
+_SCANNER_REGISTRY_VERSION = "observability-sensitive-content-v5"
+_SCANNER_PROFILE_DIGEST = "sha256:ad3a39951fa83766d187677fc1fe6049de95e8560a5e40af686ea78cd347ae17"
 _STRUCTURAL_CATEGORIES = frozenset(
     {DataCategory.BOUNDED_STRUCTURAL_METADATA, DataCategory.DECLARED_FILE_TYPE}
 )

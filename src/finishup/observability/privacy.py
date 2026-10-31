@@ -28,6 +28,8 @@ __all__ = [
     "PRIVACY_REQUEST_BODY_DOMAIN",
     "SESSION_HASH_DOMAIN",
     "EGRESS_CREDENTIAL_PLACEHOLDER",
+    "EGRESS_CREDENTIAL_PLACEHOLDERS",
+    "LEGACY_EGRESS_CREDENTIAL_PLACEHOLDER",
     "DiagnosticRedactionProfile",
     "PersistenceScanResult",
     "PrivacyFenceError",
@@ -64,9 +66,25 @@ _PERSISTED_REDACTION_MARKER: Final = b"[REDACTED]"
 # and file, and is told why the value is missing. The text is fixed; it carries no source bytes.
 # It has no whitespace, so an unquoted value (``TOKEN=...``) is replaced by one scanner-exempt
 # unquoted value rather than by text whose first word would re-match as a fresh assignment.
-EGRESS_CREDENTIAL_PLACEHOLDER: Final = b"[withheld-by-yoetz:possible-credential]"
-_EXEMPT_REPLACEMENT_MARKERS: Final = frozenset(
+# #1248 P4 (owner decision P-D5, ADR-048 2026-10-31 amendment): new content is written with the
+# FinishUP spelling only.
+EGRESS_CREDENTIAL_PLACEHOLDER: Final = b"[withheld-by-finishup:possible-credential]"
+# Frozen legacy identifier (ADR-048): the spelling written before #1248 P4. Stored captures,
+# proposals and receipts keep these bytes, so every reader accepts it permanently; nothing writes
+# it again and nothing rewrites it.
+LEGACY_EGRESS_CREDENTIAL_PLACEHOLDER: Final = b"[withheld-by-yoetz:possible-credential]"
+# Both spellings, new first, for readers that recognize the placeholder in stored or sent text.
+EGRESS_CREDENTIAL_PLACEHOLDERS: Final = (
+    EGRESS_CREDENTIAL_PLACEHOLDER,
+    LEGACY_EGRESS_CREDENTIAL_PLACEHOLDER,
+)
+# The markers a redaction pass may write.
+_WRITTEN_REPLACEMENT_MARKERS: Final = frozenset(
     {_PERSISTED_REDACTION_MARKER, EGRESS_CREDENTIAL_PLACEHOLDER}
+)
+# Every marker FinishUP has ever written, in either spelling: what a reader recognizes.
+_EXEMPT_REPLACEMENT_MARKERS: Final = frozenset(
+    {_PERSISTED_REDACTION_MARKER, *EGRESS_CREDENTIAL_PLACEHOLDERS}
 )
 _MAX_CANARIES: Final = 64
 _MAX_CANARY_BYTES: Final = 4_096
@@ -897,8 +915,8 @@ def _assignment_value_cannot_be_credential(match: re.Match[bytes], *, token_fami
         if any(
             inner.startswith(marker) and inner != marker for marker in _EXEMPT_REPLACEMENT_MARKERS
         ):
-            # ``TOKEN=[withheld-by-yoetz:possible-credential]realsecret``: a marker with a suffix
-            # is not FinishUP's own replacement; the suffix may be secret material.
+            # ``TOKEN=[withheld-by-finishup:possible-credential]realsecret`` (either spelling): a
+            # marker with a suffix is not FinishUP's own replacement; the suffix may be secret.
             return False
         code_shape = (
             _UNQUOTED_CODE_CHARS.search(inner) if token_family else _SECRET_CODE_SHAPE.search(inner)
@@ -1114,8 +1132,9 @@ def _replace_sensitive_spans(
     replacement touched, moved to where it now sits.
     """
 
-    if heuristic_marker is not None and heuristic_marker not in _EXEMPT_REPLACEMENT_MARKERS:
+    if heuristic_marker is not None and heuristic_marker not in _WRITTEN_REPLACEMENT_MARKERS:
         # Only an exact exempt marker converges: any other text could re-match as an assignment.
+        # The legacy spelling is read, never written (#1248 P4).
         raise ValueError("redaction_marker_invalid")
     high = tuple(
         (finding.start_offset, finding.end_offset)
@@ -1170,6 +1189,18 @@ def _replace_sensitive_spans(
             closing_quote = (
                 opening_quote if opening_quote and value.endswith(opening_quote) else b""
             )
+            stored = value[len(opening_quote) : len(value) - len(closing_quote)]
+            escape = None if opening_quote else _ENCODED_ESCAPE.search(stored)
+            stored = stored if escape is None else stored[: escape.start()]
+            if (
+                span_marker == EGRESS_CREDENTIAL_PLACEHOLDER
+                and stored in EGRESS_CREDENTIAL_PLACEHOLDERS
+            ):
+                # #1248 P4: a placeholder stored without a recorded span (content captured or
+                # composed earlier) is replaced in the spelling it was stored with, so content
+                # carrying the legacy spelling keeps its exact bytes in every sink and replays
+                # identically. Only the spelling is kept; the span replaced is unchanged.
+                span_marker = stored
             lead = raw[: separator.end()] + string_prefix + opening_quote
             pieces.append(lead + span_marker + closing_quote)
         else:

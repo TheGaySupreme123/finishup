@@ -16,8 +16,9 @@ The tolerant match below closes those gaps without loosening what a quote proves
   is the text the reviewer read inside the encoding.
 * A redaction placeholder in the quote matches only one of FinishUP's own markers at the same
   position in the sent text: ``[REDACTED]`` or the possible-credential placeholder
-  ``[withheld-by-yoetz:possible-credential]`` (tb4n5: the check-time change carries both). A quote
-  that is nothing but a placeholder proves nothing.
+  ``[withheld-by-finishup:possible-credential]`` (tb4n5: the check-time change carries both), or
+  its legacy spelling ``[withheld-by-yoetz:possible-credential]``, which content stored before
+  #1248 P4 still carries. A quote that is nothing but a placeholder proves nothing.
 
 The admitted snippet is the exact span the quote matched, never the reviewer's spelling of it:
 verbatim sent text, or, for a JSON row, verbatim text of one of its decoded strings (the text the
@@ -32,14 +33,24 @@ import unicodedata
 from collections.abc import Iterable, Iterator
 from typing import Final, cast
 
-from finishup.observability.privacy import EGRESS_CREDENTIAL_PLACEHOLDER
+from finishup.observability.privacy import (
+    EGRESS_CREDENTIAL_PLACEHOLDER,
+    LEGACY_EGRESS_CREDENTIAL_PLACEHOLDER,
+)
 from finishup.protocol.canonical import strict_json_parse
 from finishup.protocol.models import MAX_REVIEW_TEXT_BYTES
 
-__all__ = ["CREDENTIAL_PLACEHOLDER", "REDACTION_MARKER", "prove_quote"]
+__all__ = [
+    "CREDENTIAL_PLACEHOLDER",
+    "LEGACY_CREDENTIAL_PLACEHOLDER",
+    "REDACTION_MARKER",
+    "prove_quote",
+]
 
 REDACTION_MARKER: Final = "[REDACTED]"
 CREDENTIAL_PLACEHOLDER: Final = EGRESS_CREDENTIAL_PLACEHOLDER.decode("ascii")
+# Frozen legacy identifier (ADR-048): read forever, never written (#1248 P4).
+LEGACY_CREDENTIAL_PLACEHOLDER: Final = LEGACY_EGRESS_CREDENTIAL_PLACEHOLDER.decode("ascii")
 # Placeholder spellings a reviewer uses for a withheld span. Only these are folded to FinishUP's
 # markers; each still has to line up with a real marker in the sent text.
 _PLACEHOLDER: Final = re.compile(
@@ -47,9 +58,14 @@ _PLACEHOLDER: Final = re.compile(
     r"|\[\s*withheld[^\]\n]{0,48}\]",
     re.IGNORECASE,
 )
-# Either of FinishUP's own markers, at the placeholder's position in the sent text.
+# Any of FinishUP's own markers, at the placeholder's position in the sent text.
 _MARKER_PATTERN: Final = (
-    "(?:" + re.escape(REDACTION_MARKER) + "|" + re.escape(CREDENTIAL_PLACEHOLDER) + ")"
+    "(?:"
+    + "|".join(
+        re.escape(marker)
+        for marker in (REDACTION_MARKER, CREDENTIAL_PLACEHOLDER, LEGACY_CREDENTIAL_PLACEHOLDER)
+    )
+    + ")"
 )
 _FOLD: Final = {
     "‘": "'",

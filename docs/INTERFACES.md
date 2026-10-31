@@ -58,9 +58,9 @@ released at v0.2.5 (titles, consts and `$id`s under `https://schemas.yoetz.dev/0
 `yoetz.schema-manifest/1.0.0`, the `yoetz-config` family and owning model `YoetzConfig`, marker
 files `.yoetz-*-install.json`, `.yoetz-marketplace-activation.lock`, marker keys `yoetz_version`
 and `yoetz_launcher`, crash-residue prefixes `.yoetz.*`/`.yoetz-*`, `yoetz-instance-pin.json`,
-`yoetz-release-runtime.json`, `[withheld-by-yoetz:possible-credential]` (read forever; new writes
-move to `[withheld-by-finishup:possible-credential]` with #1248 step P4, ADR-048 2026-10-31
-amendment), `_yoetz_spool_id`, the
+`yoetz-release-runtime.json`, `[withheld-by-yoetz:possible-credential]` (read forever; since
+#1248 step P4 new content is written as `[withheld-by-finishup:possible-credential]`, ADR-048
+2026-10-31 amendment), `_yoetz_spool_id`, the
 capture headers `# yoetz edit outcome:`/`# yoetz edit source:`, the nested-cell mark `yoetz`, and
 the single `checks.toml` format value `yoetz.approved-check-policy/1`. Python member names around
 frozen values may change (`McpRegistrationState.FINISHUP_OWNED = "yoetz_owned"`,
@@ -1894,8 +1894,9 @@ Five further codes describe a review that did run but could not deliver everythi
 
 - `semantic_review_context_withheld` — the review ran without categories its own profile selected;
 - `semantic_review_value_redacted` — egress privacy replaced one or more credential-like values in
-  the sent packet, in place, with `[withheld-by-yoetz:possible-credential]`; the rest of each item
-  was sent (issue #982). It weakens neither proof class;
+  the sent packet, in place, with `[withheld-by-finishup:possible-credential]` (content stored
+  before #1248 P4 may still carry the legacy `[withheld-by-yoetz:possible-credential]`, read the
+  same way); the rest of each item was sent (issue #982). It weakens neither proof class;
 - `semantic_review_item_withheld` — in-place replacement could not make an item safe to send, so
   that item alone was left out (listed in `semantic_withheld_items`). It bounds only the AI-powered
   review. Either gap comes with `semantic_redacted_values` (owner-approved PL2-1, ADR-009): at most
@@ -4917,7 +4918,7 @@ shorter than eight bytes, digit-free snake/constant identifiers, and values with
 outside opaque token material (whitespace, brackets, braces, parentheses, pipes, quotes).
 Password, secret and API-key values keep every other shape, including punctuation-heavy values
 such as `p<ss>w0rd|x` or `Summer2024...`. A marker followed by more bytes
-(`TOKEN=[withheld-by-yoetz:possible-credential]rest`) still matches. Typed declarations
+(`TOKEN=[withheld-by-finishup:possible-credential]rest`, or the legacy spelling) still matches. Typed declarations
 (`password: str = "..."`, value span only) and JSON-escaped keys (`\"password\": \"...\"`) match.
 Capture-time redaction covers only high-confidence findings; heuristic-only matches are redacted
 at egress.
@@ -4941,7 +4942,9 @@ behaves as those paragraphs describe.
   minimizer carries them into the packet (`MinimizedDisclosure.marker_spans`, packet byte offsets,
   persisted on the proposal as `marker_spans` only when present); egress, resume and the gateway
   carry them through each JSON string by its exact offset map. Markers written at capture or
-  composition have no recorded span, so egress replaces each with the same bytes and records it.
+  composition have no recorded span, so egress replaces each with the same bytes and records it;
+  since P4 a placeholder is replaced in the spelling it was stored with, so content carrying the
+  legacy spelling keeps its exact bytes in every sink.
 - **Reviewer conversation (P-D2, step P1, implemented in #1271).** Each message's decoded content is scanned once. A real
   hit withholds the one packet item or reviewer read it came from (`item_withheld`), and the review
   still runs. The whole case still fails for a high-confidence credential in material that must be
@@ -4958,10 +4961,21 @@ behaves as those paragraphs describe.
 - **Slices (P-D4, step P3).** Line-range reads and change parts are cut from already-redacted text.
   Private keys are redacted from BEGIN through END, and an item without an END is withheld. YAML
   `key: |` block values are detected.
-- **Spelling (P-D5, step P4, low priority).** New content will use
-  `[withheld-by-finishup:possible-credential]`. Both spellings are read permanently, and the scanner
-  profile (`observability-sensitive-content-v4` since P1) is bumped so resumed work never mixes them.
-  Until P4, the legacy spelling is written.
+- **Spelling (P-D5, step P4, implemented in #PRNUM).** New content uses
+  `[withheld-by-finishup:possible-credential]` (`EGRESS_CREDENTIAL_PLACEHOLDER`, 42 bytes); the
+  legacy `[withheld-by-yoetz:possible-credential]` (`LEGACY_EGRESS_CREDENTIAL_PLACEHOLDER`, 39
+  bytes) is a frozen ADR-048 identifier that is read permanently and never written. No redaction
+  pass accepts the legacy spelling as the marker to write. Every reader takes both: the recorded
+  span check (`marker_spans`), the marker-plus-suffix rule, the check-time change's redaction
+  counts and cut views (stored changes keep their counts, cuts and view commitments), reviewer
+  quote proof, the reviewer instruction and gap glossary, and the fixed agent line the check and
+  receipt renderings add (receipt markdown and text, which the terminal interface shows, the CLI
+  check text and the MCP summaries; JSON carries `semantic_redacted_values`, never a marker), which
+  names both spellings. The behaviour is service-side and identical on Codex, Claude Code and
+  Cursor. The scanner profile moved from `observability-sensitive-content-v4`
+  to `observability-sensitive-content-v5`; a proposal prepared under v4 and resumed under v5 fails
+  closed as a profile mismatch and is never dispatched, and a new evaluation is prepared. Stored
+  ledgers, captures, proposals and receipt documents are never rewritten and replay byte for byte.
 - **Unchanged.** No category is added, no ceiling is raised, and Private still sends nothing.
 A recorded span is carried into a JSON string by that string's byte-offset map, which accounts for
 escapes and UTF-8 widths, including surrogate pairs. A span that no longer covers exactly one

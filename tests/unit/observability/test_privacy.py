@@ -825,6 +825,7 @@ def test_high_confidence_detectors_are_unchanged_by_narrowing(source: bytes) -> 
         b'password = "<s3cr3tP4ss>"',
         b'password = "${MY_PASSWORD}1"',
         b'api_token = "0123456789"',
+        b"TOKEN=[withheld-by-finishup:possible-credential]realsecret",
         b"TOKEN=[withheld-by-yoetz:possible-credential]realsecret",
         b'password: str = "hunter2"',
         b'api_token: Final = "a8F3kL9qZ2xV7mN4"',
