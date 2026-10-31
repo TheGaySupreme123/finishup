@@ -3,13 +3,12 @@ from __future__ import annotations
 import hashlib
 import hmac
 import json
-import re
-from collections.abc import Iterator
 from dataclasses import dataclass
 
 import pytest
 
 import finishup.observability.privacy as privacy_module
+from finishup.observability.marker_spans import encoded_string_spans, shift_marker_spans
 from finishup.observability.privacy import (
     EGRESS_CREDENTIAL_PLACEHOLDER,
     PRIVACY_REQUEST_BODY_DOMAIN,
@@ -26,8 +25,10 @@ from finishup.observability.privacy import (
     redact_diagnostic_record,
     redact_diagnostic_value,
     redact_heuristic_spans,
+    redact_heuristic_spans_marked,
     redact_high_confidence_content,
     redact_sensitive_content,
+    redact_sensitive_content_marked,
     scan_finding_is_heuristic,
     scan_for_sensitive_content,
     session_id_hash,
@@ -261,7 +262,7 @@ def test_heuristic_json_assignment_redaction_keeps_structured_payload_valid() ->
         + secret
         + b'","config":"TOKEN=opaque.value"}}'
     )
-    redacted, count = redact_heuristic_spans(payload)
+    redacted, count, spans = redact_heuristic_spans_marked(payload)
     assert count == 2
     assert secret not in redacted
     assert json.loads(redacted) == {
@@ -273,18 +274,18 @@ def test_heuristic_json_assignment_redaction_keeps_structured_payload_valid() ->
             "config": "TOKEN=" + _PLACEHOLDER,
         },
     }
-    assert scan_for_sensitive_content(redacted) == ()
+    assert scan_for_sensitive_content(redacted, marker_spans=spans) == ()
 
 
 @pytest.mark.parametrize("value", ["bounded secret words", 'bounded\\"value'])
 def test_quoted_assignment_redaction_consumes_complete_json_string(value: str) -> None:
     payload = json.dumps({"auth_token": value}, separators=(",", ":")).encode("utf-8")
 
-    redacted, count = redact_heuristic_spans(payload)
+    redacted, count, spans = redact_heuristic_spans_marked(payload)
     assert count == 1
     assert value.encode("utf-8") not in redacted
     assert json.loads(redacted) == {"auth_token": _PLACEHOLDER}
-    assert scan_for_sensitive_content(redacted) == ()
+    assert scan_for_sensitive_content(redacted, marker_spans=spans) == ()
 
     # Issue #982: a heuristic-only match is kept as captured in the encrypted local store; the
     # egress redaction above is what keeps it from leaving the machine.
@@ -442,11 +443,14 @@ def test_a_heuristic_marker_names_only_values_that_merely_look_like_credentials(
     assert b"key=[REDACTED]\n" in redacted
     assert b"TOKEN = '[REDACTED]'\n" in redacted
     assert b"Zx81Kq0Lm2Pq9Rs7" not in redacted and b"sk-abc" not in redacted
-    # Converged: a second pass finds nothing, and the default still reads [REDACTED] alone.
-    assert redact_sensitive_content(redacted, heuristic_marker=EGRESS_CREDENTIAL_PLACEHOLDER) == (
-        redacted,
-        False,
+    # Converged: a second pass that exempts the recorded markers finds nothing, and the default
+    # still reads [REDACTED] alone.
+    _same, _detected, spans = redact_sensitive_content_marked(
+        heuristic + high + assigned, heuristic_marker=EGRESS_CREDENTIAL_PLACEHOLDER
     )
+    assert redact_sensitive_content(
+        redacted, heuristic_marker=EGRESS_CREDENTIAL_PLACEHOLDER, marker_spans=spans
+    ) == (redacted, False)
     plain, _ = redact_sensitive_content(heuristic)
     assert plain == b'self.api_key = "[REDACTED]"\n'
     with pytest.raises(ValueError, match="redaction_marker_invalid"):
@@ -503,6 +507,26 @@ def test_request_commitment_covers_final_body_only() -> None:
     assert privacy_request_commitment(body + b"!", handle) != f"hmac-sha256:{expected}"
 
 
+def _nested(
+    data: bytes, spans: tuple[tuple[int, int], ...], depth: int
+) -> tuple[bytes, tuple[tuple[int, int], ...]]:
+    """``data`` nested ``depth`` times as ``{"content": ...}``, its recorded spans carried along."""
+
+    for _ in range(depth):
+        token = canonical_encode(data.decode())
+        prefix = b'{"content":'
+        spans = shift_marker_spans(encoded_string_spans(token, spans), len(prefix))
+        data = prefix + token + b"}"
+    return data, spans
+
+
+def _marked(data: bytes, marker: bytes) -> tuple[tuple[int, int], ...]:
+    """The span of the one ``marker`` FinishUP wrote into ``data`` (test construction)."""
+
+    start = data.index(marker)
+    return ((start, start + len(marker)),)
+
+
 @pytest.mark.parametrize(
     "line",
     (
@@ -514,15 +538,16 @@ def test_redacted_line_stays_clean_after_json_encoding(line: bytes) -> None:
     """TB4 tb4f1 (issue #976): FinishUP's own marker must not re-match once JSON-escaped.
 
     The prepared review packet is canonical JSON, so ``[REDACTED]\\n`` used to read as a fresh
-    token assignment value and the egress rescan blocked the whole packet.
+    token assignment value and the egress rescan blocked the whole packet. #1248 P-D1: the marker
+    is exempt by the span recorded when it was written, carried through the encoding.
     """
 
-    redacted, count = redact_heuristic_spans(line)
+    redacted, count, spans = redact_heuristic_spans_marked(line)
     assert count == 1
-    encoded = canonical_encode({"content": redacted.decode("utf-8")})
-    assert scan_for_sensitive_content(encoded) == ()
+    encoded, encoded_spans = _nested(redacted, spans, 1)
+    assert scan_for_sensitive_content(encoded, marker_spans=encoded_spans) == ()
     # Redacting the encoded form again is a fixed point.
-    assert redact_heuristic_spans(encoded) == (encoded, 0)
+    assert redact_heuristic_spans(encoded, marker_spans=encoded_spans) == (encoded, 0)
 
 
 @pytest.mark.parametrize("depth", range(7))
@@ -531,11 +556,28 @@ def test_redacted_line_stays_clean_after_json_encoding(line: bytes) -> None:
 def test_exact_replacement_marker_is_stable_in_nested_json(
     depth: int, marker: bytes, ending: bytes
 ) -> None:
-    encoded = b"API_KEY=" + marker + ending
-    for _ in range(depth):
-        encoded = canonical_encode({"content": encoded.decode()})
-    assert scan_for_sensitive_content(encoded) == ()
-    assert redact_heuristic_spans(encoded) == (encoded, 0)
+    text = b"API_KEY=" + marker + ending
+    encoded, spans = _nested(text, _marked(text, marker), depth)
+    assert scan_for_sensitive_content(encoded, marker_spans=spans) == ()
+    assert redact_heuristic_spans(encoded, marker_spans=spans) == (encoded, 0)
+
+
+@pytest.mark.parametrize("depth", range(4))
+@pytest.mark.parametrize("marker", (b"[REDACTED]", EGRESS_CREDENTIAL_PLACEHOLDER))
+def test_a_marker_finishup_did_not_record_is_judged_like_any_value(
+    depth: int, marker: bytes
+) -> None:
+    # #1248 P-D1: no exemption is inferred from text. The same bytes without a recorded span (an
+    # agent or a file spelled the marker, or it was written before positions were recorded) are
+    # a value like any other.
+    text = b"API_KEY=" + marker + b"\n"
+    encoded, spans = _nested(text, _marked(text, marker), depth)
+    assert scan_for_sensitive_content(encoded)
+    assert scan_for_sensitive_content(encoded, marker_spans=spans) == ()
+    # A span that does not cover exactly a marker grants nothing.
+    start, end = spans[0]
+    assert scan_for_sensitive_content(encoded, marker_spans=((start, end - 1),))
+    assert scan_for_sensitive_content(encoded, marker_spans=((start - 1, end),))
 
 
 @pytest.mark.parametrize("depth", range(5))
@@ -543,112 +585,105 @@ def test_exact_replacement_marker_is_stable_in_nested_json(
     "value",
     (
         EGRESS_CREDENTIAL_PLACEHOLDER + b"realsecret",
-        EGRESS_CREDENTIAL_PLACEHOLDER + b"\\",
-        EGRESS_CREDENTIAL_PLACEHOLDER + b"\\nsecret",
-        EGRESS_CREDENTIAL_PLACEHOLDER + b'\\"secret42',
-        EGRESS_CREDENTIAL_PLACEHOLDER + b'\\"}',
+        b"[REDACTED]realsecret",
         b"hunter2",
         b"sk-" + b"a1" * 20,
     ),
 )
 def test_marker_lookalikes_and_secrets_are_not_exempted(depth: int, value: bytes) -> None:
-    encoded = b"password=" + value + b"\n"
-    for _ in range(depth):
-        encoded = canonical_encode({"content": encoded.decode()})
-    assert scan_for_sensitive_content(encoded)
+    text = b"password=" + value + b"\n"
+    spans: tuple[tuple[int, int], ...] = ()
+    for marker in (b"[REDACTED]", EGRESS_CREDENTIAL_PLACEHOLDER):
+        if value.startswith(marker):
+            spans = _marked(text, marker)
+    encoded, encoded_spans = _nested(text, spans, depth)
+    assert scan_for_sensitive_content(encoded, marker_spans=encoded_spans)
     with pytest.raises(PrivacyFenceError):
         assert_plaintext_safe(encoded, "synthetic_secret")
 
 
-def test_nested_marker_framing_keeps_unicode_offsets_and_scan_chunk_boundaries() -> None:
-    line = "é" * 32_760 + "\npassword=" + EGRESS_CREDENTIAL_PLACEHOLDER.decode() + "\n"
-    packet = canonical_encode({"content": line})
-    exchange = canonical_encode({"packet": packet.decode()})
-    assert scan_for_sensitive_content(exchange) == ()
+@pytest.mark.parametrize("depth", (0, 1))
+def test_a_quoted_marker_with_a_suffix_is_not_exempted(depth: int) -> None:
+    text = b'password="' + EGRESS_CREDENTIAL_PLACEHOLDER + b'realsecret"\n'
+    encoded, spans = _nested(text, _marked(text, EGRESS_CREDENTIAL_PLACEHOLDER), depth)
+    assert scan_for_sensitive_content(encoded, marker_spans=spans)
+    quoted = b'password="' + EGRESS_CREDENTIAL_PLACEHOLDER + b'"\n'
+    encoded, spans = _nested(quoted, _marked(quoted, EGRESS_CREDENTIAL_PLACEHOLDER), depth)
+    assert scan_for_sensitive_content(encoded, marker_spans=spans) == ()
 
 
-def test_a_clean_marker_elsewhere_does_not_exempt_a_secret_suffix() -> None:
-    packet = canonical_encode(
-        {
-            "clean": "password=" + EGRESS_CREDENTIAL_PLACEHOLDER.decode() + "\n",
-            "secret": "password=" + EGRESS_CREDENTIAL_PLACEHOLDER.decode() + '\\"secret42',
-        }
-    )
-    assert scan_for_sensitive_content(canonical_encode({"packet": packet.decode()}))
+@pytest.mark.parametrize("depth", range(5))
+@pytest.mark.parametrize(
+    "suffix", (b"\\", b"\\nsecret", b'\\"secret42', b'\\"}', b"\\r\\n+DB_USER=app")
+)
+def test_a_marker_span_is_exempt_and_what_follows_it_is_judged_as_any_value(
+    depth: int, suffix: bytes
+) -> None:
+    # #1248 P-D1: the exemption is the recorded span alone. No escape width is inferred from the
+    # backslashes after it: an unquoted value is classified only up to its first escape, as every
+    # unquoted value is, so the bytes from that escape on are not more of the marker's value.
+    text = b"password=" + EGRESS_CREDENTIAL_PLACEHOLDER + suffix + b"\n"
+    encoded, spans = _nested(text, _marked(text, EGRESS_CREDENTIAL_PLACEHOLDER), depth)
+    assert scan_for_sensitive_content(encoded, marker_spans=spans) == ()
+    assert redact_heuristic_spans(encoded, marker_spans=spans) == (encoded, 0)
+
+
+def test_nested_marker_keeps_unicode_offsets_and_scan_chunk_boundaries() -> None:
+    line = "é" * 32_760 + "\n password=" + EGRESS_CREDENTIAL_PLACEHOLDER.decode() + "\n"
+    data = line.encode()
+    exchange, spans = _nested(data, _marked(data, EGRESS_CREDENTIAL_PLACEHOLDER), 2)
+    assert scan_for_sensitive_content(exchange, marker_spans=spans) == ()
+    assert scan_for_sensitive_content(exchange)
+
+
+def test_a_recorded_marker_elsewhere_does_not_exempt_another() -> None:
+    clean = b"password=" + EGRESS_CREDENTIAL_PLACEHOLDER + b"\n"
+    spans = _marked(clean, EGRESS_CREDENTIAL_PLACEHOLDER)
+    data = clean + b" password=" + EGRESS_CREDENTIAL_PLACEHOLDER + b"\n"
+    encoded, encoded_spans = _nested(data, spans, 2)
+    assert scan_for_sensitive_content(encoded, marker_spans=encoded_spans)
 
 
 @pytest.mark.parametrize("marker_count", (1, 128))
 @pytest.mark.parametrize("depth", (2, 4))
-def test_nested_markers_share_bounded_scans_and_decoding(
-    monkeypatch: pytest.MonkeyPatch, marker_count: int, depth: int
-) -> None:
-    # A reviewer user message shares its large JSON string across all excerpt markers. Neither
-    # the number of full string scans nor the bytes decoded may grow with that marker count.
-    encoded = canonical_encode(
-        {
-            "context": "ordinary context " * 4096,
-            "excerpts": [
-                {"content": "API_KEY=" + EGRESS_CREDENTIAL_PLACEHOLDER.decode() + "\n"}
-                for _ in range(marker_count)
-            ],
-        }
+def test_many_nested_markers_never_produce_a_hit(marker_count: int, depth: int) -> None:
+    line = b"API_KEY=" + EGRESS_CREDENTIAL_PLACEHOLDER + b"\n  role: x\n"
+    data = b"ordinary context " * 4096 + line * marker_count
+    start = len(b"ordinary context " * 4096) + len(b"API_KEY=")
+    spans = tuple(
+        (start + index * len(line), start + index * len(line) + len(EGRESS_CREDENTIAL_PLACEHOLDER))
+        for index in range(marker_count)
     )
-    for _ in range(depth - 1):
-        encoded = canonical_encode({"content": encoded.decode()})
-    loads = json.loads
-    tokens: re.Pattern[bytes] = getattr(privacy_module, "_JSON_STRING_TOKEN")
-    decoded_sizes: list[int] = []
-    scanned_sizes: list[int] = []
-
-    def counted_loads(value: bytes) -> object:
-        decoded_sizes.append(len(value))
-        return loads(value)
-
-    class CountedTokens:
-        def finditer(self, value: bytes) -> Iterator[re.Match[bytes]]:
-            scanned_sizes.append(len(value))
-            return tokens.finditer(value)
-
-    monkeypatch.setattr(privacy_module.json, "loads", counted_loads)
-    monkeypatch.setattr(privacy_module, "_JSON_STRING_TOKEN", CountedTokens())
-    for scan_number in (1, 2):
-        assert scan_for_sensitive_content(encoded) == ()
-        assert len(decoded_sizes) == len(scanned_sizes) == (depth - 1) * scan_number
-        assert sum(decoded_sizes) <= len(encoded) * (depth - 1) * scan_number
-        assert sum(scanned_sizes) <= len(encoded) * (depth - 1) * scan_number
+    encoded, encoded_spans = _nested(data, spans, depth)
+    assert scan_for_sensitive_content(encoded, marker_spans=encoded_spans) == ()
 
 
 @pytest.mark.parametrize("ensure_ascii", (False, True))
 @pytest.mark.parametrize("depth", (2, 4))
-def test_cached_marker_offsets_preserve_unicode_escapes_and_occurrence_proof(
-    ensure_ascii: bool, depth: int
-) -> None:
-    marker = EGRESS_CREDENTIAL_PLACEHOLDER.decode()
+def test_marker_spans_survive_unicode_escapes_at_any_depth(ensure_ascii: bool, depth: int) -> None:
+    marker = EGRESS_CREDENTIAL_PLACEHOLDER
     # Prefix escapes have different UTF-8 widths, including a surrogate pair with ensure_ascii.
-    # Both occurrences share one decoded string but only the first has genuine JSON framing.
-    for suffix in ("", '\\"}', '\\"secret42'):
-        encoded = json.dumps(
-            {
-                "unicode": 'é€😀\\/\b\f\t\r\n"',
-                "clean": "password=" + marker + "\n",
-                "other": "password=" + marker + suffix + "\n",
-            },
-            ensure_ascii=ensure_ascii,
-        ).encode()
-        for _ in range(depth - 1):
-            encoded = json.dumps({"content": encoded.decode()}, ensure_ascii=ensure_ascii).encode()
-        assert bool(scan_for_sensitive_content(encoded)) is bool(suffix)
+    for suffix, hit in ((b"", False), (b'\\"}', False), (b"realsecret", True)):
+        data = 'é€😀\\/\b\f\t\r\n"'.encode() + b"\n password=" + marker + suffix + b"\n"
+        spans = _marked(data, marker)
+        for _ in range(depth):
+            token = json.dumps(data.decode(), ensure_ascii=ensure_ascii).encode()
+            prefix = b'{"content": '
+            spans = shift_marker_spans(encoded_string_spans(token, spans), len(prefix))
+            data = prefix + token + b"}"
+        assert bool(scan_for_sensitive_content(data, marker_spans=spans)) is hit
 
 
 @pytest.mark.parametrize("bad_prefix", (b"\\q", b"\\ud800", b"\xff", b"\x01"))
-def test_cached_marker_framing_fails_closed_for_invalid_json_strings(bad_prefix: bytes) -> None:
-    nested = canonical_encode(
-        {"content": "password=" + EGRESS_CREDENTIAL_PLACEHOLDER.decode() + "\n"}
-    )
-    encoded = canonical_encode({"packet": nested.decode()})
-    # Invalid string bytes before the matched occurrence must invalidate the enclosing proof.
+def test_marker_exemption_does_not_depend_on_valid_json_framing(bad_prefix: bytes) -> None:
+    # The span is recorded, not derived from the framing, so invalid string bytes around it
+    # change nothing; a secret beside them is still found.
+    text = b"password=" + EGRESS_CREDENTIAL_PLACEHOLDER + b"\n"
+    encoded, spans = _nested(text, _marked(text, EGRESS_CREDENTIAL_PLACEHOLDER), 2)
     encoded = encoded.replace(b"password", bad_prefix + b" password")
-    assert scan_for_sensitive_content(encoded)
+    spans = shift_marker_spans(spans, len(bad_prefix) + 1)
+    assert scan_for_sensitive_content(encoded, marker_spans=spans) == ()
+    assert scan_for_sensitive_content(encoded + b" password=hunter2\n", marker_spans=spans)
 
 
 @pytest.mark.parametrize(
@@ -813,11 +848,11 @@ def test_narrowing_never_skips_human_chosen_secret_values(data: bytes) -> None:
     findings = scan_for_sensitive_content(data)
     assert findings, data
     assert all(scan_finding_is_heuristic(finding) for finding in findings)
-    redacted, count = redact_heuristic_spans(data)
+    redacted, count, spans = redact_heuristic_spans_marked(data)
     assert count >= 1
     for secret in (b"hunter2", b"s3cr", b"realsecret", b"Summer2024", b"Password", b"Secret"):
         assert secret not in redacted, data
-    assert scan_for_sensitive_content(redacted) == ()
+    assert scan_for_sensitive_content(redacted, marker_spans=spans) == ()
 
 
 @pytest.mark.parametrize(

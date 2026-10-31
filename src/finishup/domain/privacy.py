@@ -64,6 +64,7 @@ __all__ = [
     "ConversationReview",
     "CredentialHeuristic",
     "conversation_review_widens",
+    "marker_spans_well_formed",
     "narrower_conversation_review",
     "policy_field_omitted",
     "MAX_ADMITTED_INPUT_ROOTS",
@@ -237,6 +238,22 @@ def _sorted_enums[TEnum: Enum](values: object, enum_type: type[TEnum]) -> tuple[
     if len(set(typed)) != len(typed):
         raise _invalid()
     return tuple(sorted(typed, key=lambda value: str(value.value).encode("ascii")))
+
+
+def marker_spans_well_formed(spans: object) -> bool:
+    """Ascending, non-overlapping ``(start, end)`` byte offsets (#1248 P-D1); values not checked."""
+
+    if type(spans) is not tuple:
+        return False
+    previous = 0
+    for span in cast(tuple[object, ...], spans):
+        if type(span) is not tuple or len(cast(tuple[object, ...], span)) != 2:
+            return False
+        start, end = cast(tuple[object, object], span)
+        if type(start) is not int or type(end) is not int or not previous <= start < end:
+            return False
+        previous = end
+    return True
 
 
 def _sorted_text(
@@ -2430,12 +2447,17 @@ class DisclosureProposal:
     # credential-like values, persisted with the proposal so an approved resume or a replay
     # reports them without reopening plaintext. Never values.
     redacted_values: tuple[SemanticRedactedValue, ...] = ()
+    # #1248 P-D1: FinishUP's recorded marker spans in the review packet the prepared bytes are or
+    # carry, persisted with the proposal so a resume rescans with exactly these exemptions.
+    marker_spans: tuple[tuple[int, int], ...] = ()
 
     def __post_init__(self) -> None:
         try:
             validate_semantic_redacted_values(self.redacted_values)
         except ValueError as exc:
             raise _invalid() from exc
+        if not marker_spans_well_formed(self.marker_spans):
+            raise _invalid()
         validate_id(IdKind.PRIVACY_PROPOSAL, self.privacy_proposal_id)
         validate_id(IdKind.REQUEST, self.request_id)
         validate_id(IdKind.TASK, self.task_id)
@@ -2583,8 +2605,13 @@ class ApprovedOutboundCase:
     # #1118 unit 1 (E2E-2): the outside roots the included items were read beneath; the gateway
     # refuses consume unless its current registry still admits every one.
     input_roots: tuple[str, ...] = ()
+    # #1248 P-D1: FinishUP's recorded marker spans in the review packet the payload is or carries
+    # (its first user message); the gateway's final scan exempts exactly these.
+    marker_spans: tuple[tuple[int, int], ...] = ()
 
     def __post_init__(self) -> None:
+        if not marker_spans_well_formed(self.marker_spans):
+            raise _invalid()
         validate_id(IdKind.OUTBOUND_CASE, self.case_id)
         validate_id(IdKind.REQUEST, self.request_id)
         if type(self.payload) is not bytes or len(self.payload) > MAX_EGRESS_CASE_BYTES:
@@ -2645,8 +2672,13 @@ class ApprovedLocalDisclosureCase:
     # #1118 unit 1 (E2E-2): the outside roots the included items were read beneath; the gateway
     # refuses consume unless its current registry still admits every one.
     input_roots: tuple[str, ...] = ()
+    # #1248 P-D1: FinishUP's recorded marker spans in the review packet the payload is or carries;
+    # the local-sink scan exempts exactly these.
+    marker_spans: tuple[tuple[int, int], ...] = ()
 
     def __post_init__(self) -> None:
+        if not marker_spans_well_formed(self.marker_spans):
+            raise _invalid()
         validate_id(IdKind.OUTBOUND_CASE, self.case_id)
         validate_id(IdKind.REQUEST, self.request_id)
         validate_id(IdKind.PRIVACY_PROPOSAL, self.privacy_proposal_id)

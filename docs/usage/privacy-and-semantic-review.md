@@ -155,10 +155,14 @@ item and the line numbers involved, counted within the captured excerpt rather t
 (`semantic_redacted_values`), never the value. Both limit only
 the AI-powered review; local checks still see your
 work in full, and you never need to change consent or your code to clear them. A concrete
-credential, a private key, or a scanner that cannot finish blocks the whole review. For now, a
-credential-like match found only when the packet is checked inside the reviewer conversation also
-blocks the whole review; FinishUP's own `[withheld-by-yoetz:possible-credential]` marker can
-trigger one in some layouts (for example a nested YAML password followed by an indented line). The
+credential, a private key, or a scanner that cannot finish blocks the whole review. FinishUP's own
+markers never count as a match: FinishUP records where it wrote each one and exempts exactly that
+spot, however deeply the text is later nested. Text that only spells a marker, or one stored before
+FinishUP recorded where it wrote markers, is judged like any other value. A credential-like match
+found only when the packet is checked inside the reviewer conversation withholds just the item it
+sits in (`semantic_review_item_withheld`), and the review still runs on the rest; a match in a file
+the reviewer asks to read withholds that read. The whole review is refused there only for a match in
+the packet's structure or an earlier reviewer reply, or one no single item explains. The
 refused content is not sent; an earlier exchange of the same conversation may already have been.
 The check, status and receipt say the review was blocked at the privacy boundary and name the scan
 stage (`candidate`, `prepared_case` or `reviewer_exchange`), the item (its `item_id` in

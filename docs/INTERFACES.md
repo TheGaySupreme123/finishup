@@ -4922,27 +4922,39 @@ such as `p<ss>w0rd|x` or `Summer2024...`. A marker followed by more bytes
 Capture-time redaction covers only high-confidence findings; heuristic-only matches are redacted
 at egress.
 
-The exact `[REDACTED]` and `[withheld-by-yoetz:possible-credential]` values remain exempt when a
-packet is JSON-encoded again inside a reviewer exchange (#1138). The exemption checks the
-encoding depth of whitespace escapes against the closing quote's framing; it does not strip
-arbitrary backslashes or suffixes. Marker lookalikes, concrete credentials, private-key markers
-and canaries keep their existing detection and whole-case refusal rules.
+*Superseded by #1248 step P1 (#1271):* the exact `[REDACTED]` and
+`[withheld-by-yoetz:possible-credential]` values used to stay exempt when a packet was JSON-encoded
+again inside a reviewer exchange (#1138), by checking the encoding depth of whitespace escapes
+against the closing quote's framing. That text-based exemption is removed; see P-D1 below.
 
 Approved 2026-10-31 (ADR-009 and ADR-048 amendments of that date, #1248, owner decisions P-D1 to
 P-D5). This text replaces the two paragraphs above as steps P1 to P4 land; until then the code
 behaves as those paragraphs describe.
 
-- **Marker exemption (P-D1, step P1).** FinishUP records the span of every marker it inserts
+- **Marker exemption (P-D1, step P1, implemented in #1271).** FinishUP records the span of every marker it inserts
   (`[REDACTED]` and the possible-credential placeholder in either spelling). The span travels with
   its item through every JSON encoding, and the scanner exempts exactly those spans at any escaping
   depth. No exemption is inferred from text or backslashes. A marker-shaped string FinishUP did not
   insert at that position is judged like any other value. FinishUP's own conversation text never
-  produces a hit.
-- **Reviewer conversation (P-D2, step P1).** Each message's decoded content is scanned once. A real
+  produces a hit. As implemented: `scan_for_sensitive_content(marker_spans=...)` exempts exactly the
+  given spans (each must cover one marker); every redaction pass records the spans it writes; the
+  minimizer carries them into the packet (`MinimizedDisclosure.marker_spans`, packet byte offsets,
+  persisted on the proposal as `marker_spans` only when present); egress, resume and the gateway
+  carry them through each JSON string by its exact offset map. Markers written at capture or
+  composition have no recorded span, so egress replaces each with the same bytes and records it.
+- **Reviewer conversation (P-D2, step P1, implemented in #1271).** Each message's decoded content is scanned once. A real
   hit withholds the one packet item or reviewer read it came from (`item_withheld`), and the review
   still runs. The whole case still fails for a high-confidence credential in material that must be
   sent (the review-packet envelope and conversation frame), for scanner saturation or failure, and
-  for a match no single item explains.
+  for a match no single item explains. As implemented: after the per-message scan the exact
+  conversation bytes are scanned as the gateway will scan them; a hit traced to packet items
+  withholds them, and the packet is re-minimized, rebuilt and rescanned (at most 3 rounds). A hit
+  traced to a reviewer read result withholds that read: its message is replaced by the broker's
+  refusal (`status` `denied`, `reason` `privacy_withheld`, its `call_index` and `tool_ref` only)
+  in this and every later exchange, and it is recorded as `item_withheld` with item id
+  `reviewer-read-<call_index>`. A hit in the packet structure, the frame, an earlier reply, or one
+  no item or read explains refuses the case with the `reviewer_exchange` records. A read is also
+  withheld at admission, which scans its exact message.
 - **Value end (P-D3, step P2).** An unquoted value ends at a raw line break or an encoded `\n`/`\r`
   at any depth. No pass replaces bytes outside its match. Accepted trade-off: a secret containing
   a literal `\n` is only partly redacted.
@@ -4951,13 +4963,12 @@ behaves as those paragraphs describe.
   `key: |` block values are detected.
 - **Spelling (P-D5, step P4, low priority).** New content will use
   `[withheld-by-finishup:possible-credential]`. Both spellings are read permanently, and the scanner
-  profile (today `observability-sensitive-content-v3`) is bumped so resumed work never mixes them.
+  profile (`observability-sensitive-content-v4` since P1) is bumped so resumed work never mixes them.
   Until P4, the legacy spelling is written.
 - **Unchanged.** No category is added, no ceiling is raised, and Private still sends nothing.
-Within one scan, enclosing JSON string spans and their validated decodes are cached per string.
-A byte-offset map accounts for escapes and UTF-8 widths, including surrogate pairs, so each
-occurrence still proves its own nesting without rescanning or decoding growing prefixes. The
-cache is discarded after the scan; invalid strings cannot supply an exemption.
+A recorded span is carried into a JSON string by that string's byte-offset map, which accounts for
+escapes and UTF-8 widths, including surrogate pairs. A span that no longer covers exactly one
+marker grants nothing.
 
 `PreDispatchAuditDecision` is structural-only and terminal; it permits no prepared bytes,
 authorization, or dispatch. A v0.1 content-bearing `DisclosureProposal` has one owning `task_id` and

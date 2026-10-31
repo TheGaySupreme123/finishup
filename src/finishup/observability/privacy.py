@@ -5,16 +5,21 @@ from __future__ import annotations
 import ast
 import bisect
 import hashlib
-import json
 import re
 import threading
 from collections import OrderedDict
 from collections.abc import Callable, Iterator, Mapping
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from enum import Enum
-from typing import Final
+from typing import Final, cast
 
 from finishup.domain.values import parse_rfc3339_millis, validate_commitment
+from finishup.observability.marker_spans import (
+    MarkerSpans,
+    decoded_string_spans,
+    encoded_string_spans,
+    valid_marker_spans,
+)
 from finishup.ports.keys import MacKeyHandle
 from finishup.protocol.canonical import JsonValue, canonical_encode, strict_json_parse
 from finishup.protocol.ids import IdKind, validate_id
@@ -118,10 +123,6 @@ _UNQUOTED_VALUE_CHAR = rb"[^\s,'\";}{]"
 # A quoted value inside an encoded JSON string: ``\"...\"``. Inside it an encoded escaped quote
 # (three backslashes and a quote) and an encoded backslash (two) are part of the value.
 _ESCAPED_QUOTED_VALUE = rb'\\"(?:\\\\\\"|\\\\\\\\|(?!\\")[^\r\n]){1,512}\\"'
-_JSON_STRING_TOKEN: Final = re.compile(rb'"(?:[^"\\]|\\.)*"')
-_JSON_STRING_ESCAPE: Final = re.compile(
-    rb"\\(?:u[dD][89aAbB][0-9a-fA-F]{2}\\u[dD][c-fC-F][0-9a-fA-F]{2}|u[0-9a-fA-F]{4}|.)"
-)
 # Python/JS string-literal prefixes (``b"..."``, ``r'...'``, ``f"..."``) belong to the quoted value.
 _STRING_PREFIX_RE: Final = rb"(?:[bBrRuUfF]{1,2}(?=[\"']))?"
 _STRING_PREFIX: Final = re.compile(rb"[bBrRuUfF]{1,2}(?=[\"'])")
@@ -760,74 +761,11 @@ def _assignment_separator(raw: bytes) -> re.Match[bytes] | None:
     return _ASSIGNMENT_SEPARATOR.search(raw, 0 if name is None else name.start())
 
 
-@dataclass(slots=True)
-class _JsonStringIndex:
-    """Scan-local, lazy string spans and decodes shared by all marker occurrences."""
-
-    data: bytes
-    spans: tuple[tuple[int, int], ...] | None = None
-    ends: tuple[int, ...] = ()
-    decoded: dict[int, _DecodedJsonString | None] = field(
-        default_factory=lambda: dict[int, _DecodedJsonString | None]()
-    )
-
-    def decode_at(self, offset: int) -> tuple[_JsonStringIndex, int] | None:
-        if self.spans is None:
-            self.spans = tuple(match.span() for match in _JSON_STRING_TOKEN.finditer(self.data))
-            self.ends = tuple(end for _, end in self.spans)
-        index = bisect.bisect_right(self.ends, offset)
-        if index == len(self.spans) or self.spans[index][0] >= offset:
-            return None
-        start, end = self.spans[index]
-        if index not in self.decoded:
-            self.decoded[index] = _decode_json_string(self.data[start:end])
-        decoded = self.decoded[index]
-        if decoded is None:
-            return None
-        relative = offset - start
-        escape_index = bisect.bisect_right(decoded.escape_ends, relative)
-        if escape_index < len(decoded.escape_starts) and (
-            decoded.escape_starts[escape_index] < relative
-        ):
-            return None
-        return decoded.context, relative - 1 - decoded.shrink[escape_index]
-
-
-@dataclass(frozen=True, slots=True)
-class _DecodedJsonString:
-    context: _JsonStringIndex
-    escape_starts: tuple[int, ...]
-    escape_ends: tuple[int, ...]
-    shrink: tuple[int, ...]
-
-
-def _decode_json_string(token: bytes) -> _DecodedJsonString | None:
-    try:
-        # Validate the complete string once, including UTF-8 and surrogate pairs, before any
-        # occurrence can be exempted. The escape map replaces repeated growing-prefix decodes.
-        data = json.loads(token).encode("utf-8")
-        starts: list[int] = []
-        ends: list[int] = []
-        shrink = [0]
-        for escape in _JSON_STRING_ESCAPE.finditer(token):
-            raw = escape.group()
-            size = 1
-            if raw[1:2] == b"u":
-                size = 4 if len(raw) == 12 else len(chr(int(raw[2:], 16)).encode("utf-8"))
-            starts.append(escape.start())
-            ends.append(escape.end())
-            shrink.append(shrink[-1] + len(raw) - size)
-        return _DecodedJsonString(_JsonStringIndex(data), tuple(starts), tuple(ends), tuple(shrink))
-    except (ValueError, UnicodeError):
-        return None
-
-
 def _assignment_value_is_code(
     match: re.Match[bytes],
     *,
     preceding: bytes = b"",
-    following: bytes = b"",
-    json_strings: _JsonStringIndex | None = None,
+    marker_spans: Mapping[int, int] | None = None,
     absolute_start: int | None = None,
     python_attribute_spans: tuple[tuple[int, int], ...] = (),
 ) -> bool:
@@ -838,21 +776,13 @@ def _assignment_value_is_code(
     if separator is None:
         return False
     value = _without_string_prefix(raw[separator.end() :])
-    # These are FinishUP's own bounded replacement markers. They carry no secret bytes, so allowing
-    # the scanner to classify a marker as a fresh assignment would make every structured redaction
-    # fail its final scan. Only the exact markers are exempt; any suffix remains heuristic.
-    if value.startswith(b'\\"'):
-        marker_value = value[2:-2] if value.endswith(b'\\"') else value[2:]
-    elif value.startswith((b"'", b'"')):
-        marker_value = value[1:-1] if value.endswith(value[:1]) else value[1:]
-    else:
-        marker_value = value
-    encoded_context = (
-        None
-        if json_strings is None or absolute_start is None
-        else (json_strings, absolute_start + raw.index(marker_value))
-    )
-    if _is_replacement_marker(marker_value, following=following, encoded_context=encoded_context):
+    if (
+        marker_spans
+        and absolute_start is not None
+        and _value_is_replacement_marker(
+            value, absolute_start + len(raw) - len(value), marker_spans
+        )
+    ):
         return True
     # Quoted values are literals even when their text resembles source code. Keep them in the
     # heuristic class so a value such as ``TOKEN='nextToken(parser)'`` is still withheld.
@@ -894,45 +824,34 @@ def _assignment_value_is_code(
     return False
 
 
-def _is_replacement_marker(
-    value: bytes, *, following: bytes, encoded_context: tuple[_JsonStringIndex, int] | None
+def _value_is_replacement_marker(
+    value: bytes, value_start: int, marker_spans: Mapping[int, int]
 ) -> bool:
-    """Match only a fixed marker and its JSON framing, at the rendered encoding depth.
+    """Whether an assignment's value is exactly one recorded FinishUP marker span (#1248 P-D1).
 
-    At each encoding a newline's backslashes double, while the closing quote has one fewer
-    backslash. Checking both counts keeps a literal backslash suffix (possibly secret content)
-    distinct from encoded whitespace. The assignment match is already bounded to 512 bytes.
+    ``marker_spans`` maps each recorded span's start to its end: the spans FinishUP wrote. Only a
+    recorded span (or a run of them written back to back) is exempt, and nothing else. A quoted
+    value must close right after it. An unquoted value is classified only up to its first escape
+    (as every unquoted value is, in ``_assignment_value_cannot_be_credential``), so whatever
+    follows the span from an escape on is the next encoded character, not more of this value.
+    Any other byte after the span is a suffix FinishUP never writes, and the whole value stays
+    subject to the ordinary rules.
     """
 
-    closing_slashes = len(value) - len(value.rstrip(b"\\"))
-    width = closing_slashes + 1
-    if closing_slashes and (following[:1] != b'"' or width & (width - 1)):
+    opening = (
+        b'\\"' if value.startswith(b'\\"') else value[:1] if value[:1] in (b"'", b'"') else b""
+    )
+    end = marker_spans.get(value_start + len(opening))
+    if end is None:
         return False
-    for marker in _EXEMPT_REPLACEMENT_MARKERS:
-        if not value.startswith(marker):
-            continue
-        suffix = value[len(marker) : len(value) - closing_slashes if closing_slashes else None]
-        encoded_space = b"\\" * width
-        while suffix.startswith(encoded_space) and suffix[width : width + 1] in (b"n", b"r", b"t"):
-            suffix = suffix[width + 1 :]
-        if not suffix and (not closing_slashes or _marker_has_json_framing(encoded_context, width)):
-            return True
-    return False
-
-
-def _marker_has_json_framing(context: tuple[_JsonStringIndex, int] | None, width: int) -> bool:
-    """Prove the nesting, rather than mistaking a literal escaped quote for JSON framing."""
-
-    if context is None:
-        return False
-    strings, offset = context
-    while width > 1:
-        nested = strings.decode_at(offset)
-        if nested is None:
-            return False
-        strings, offset = nested
-        width //= 2
-    return True
+    # Recorded spans written back to back (two adjacent replacements) are one run of markers.
+    while end in marker_spans:
+        end = marker_spans[end]
+    rest = value[end - value_start :]
+    if opening:
+        return rest == opening
+    escape = _ENCODED_ESCAPE.search(rest)
+    return not (rest if escape is None else rest[: escape.start()])
 
 
 def _assignment_value_cannot_be_credential(match: re.Match[bytes], *, token_family: bool) -> bool:
@@ -1020,8 +939,14 @@ def scan_for_sensitive_content(
     data: bytes,
     *,
     canaries: tuple[bytes, ...] = (),
+    marker_spans: tuple[tuple[int, int], ...] = (),
 ) -> tuple[ScanFinding, ...]:
-    """Return bounded structural findings for known plaintext-sensitive patterns."""
+    """Return bounded structural findings for known plaintext-sensitive patterns.
+
+    ``marker_spans`` are the spans in ``data`` where FinishUP recorded writing one of its own
+    replacement markers (#1248 P-D1); an assignment whose value is exactly one of them is not a
+    finding. Nothing else is exempt: a marker-shaped value without a recorded span is a value.
+    """
 
     if type(data) is not bytes:
         raise TypeError("scan_data_not_bytes")
@@ -1036,7 +961,9 @@ def scan_for_sensitive_content(
     findings: list[ScanFinding] = []
     seen: set[tuple[str, int, int]] = set()
     python_attribute_spans = _python_attribute_assignment_spans(data)
-    json_strings = _JsonStringIndex(data)
+    if type(marker_spans) is not tuple:
+        raise PrivacyFenceError("scanner_input_invalid", "sensitive_content_scan")
+    recorded = {start: end for start, end in valid_marker_spans(data, marker_spans)}
 
     for canary in canaries:
         for chunk_start, chunk in _scan_chunks(data):
@@ -1099,8 +1026,7 @@ def scan_for_sensitive_content(
                 if _assignment_value_is_code(
                     match,
                     preceding=data[max(0, absolute_start - 1024) : absolute_start],
-                    following=data[chunk_start + match.end() : chunk_start + match.end() + 1],
-                    json_strings=json_strings,
+                    marker_spans=recorded,
                     absolute_start=absolute_start,
                     python_attribute_spans=python_attribute_spans,
                 ) or _assignment_value_cannot_be_credential(
@@ -1175,11 +1101,17 @@ def _replace_sensitive_spans(
     *,
     marker: bytes = _PERSISTED_REDACTION_MARKER,
     heuristic_marker: bytes | None = None,
+    marker_spans: MarkerSpans = (),
+    written: list[tuple[int, int]] | None = None,
 ) -> bytes:
     """Replace each finding's span; a heuristic one with ``heuristic_marker`` when given.
 
     A heuristic span that overlaps a high-confidence finding (``TOKEN = 'ghp_...'``: the
     assignment and the token shape) holds a detected credential, so it keeps ``marker``.
+
+    With ``written`` (#1248 P-D1), the span of every marker in the result is recorded there: each
+    marker this pass writes, and each of ``marker_spans`` (already recorded in ``data``) that no
+    replacement touched, moved to where it now sits.
     """
 
     if heuristic_marker is not None and heuristic_marker not in _EXEMPT_REPLACEMENT_MARKERS:
@@ -1192,9 +1124,20 @@ def _replace_sensitive_spans(
     )
     pieces: list[bytes] = []
     cursor = 0
+    size = 0
+    kept = list(marker_spans)
+
+    def carry(until: int) -> None:
+        # Recorded spans wholly inside the unchanged bytes ``data[cursor:until]`` move with them.
+        while kept and kept[0][1] <= until:
+            start, end = kept.pop(0)
+            if written is not None and start >= cursor:
+                written.append((start - cursor + size, end - cursor + size))
+
     for finding in findings:
         if finding.start_offset < cursor:
             continue
+        carry(finding.start_offset)
         span_marker = (
             heuristic_marker
             if heuristic_marker is not None
@@ -1205,6 +1148,7 @@ def _replace_sensitive_spans(
             else marker
         )
         pieces.append(data[cursor : finding.start_offset])
+        size += finding.start_offset - cursor
         raw = data[finding.start_offset : finding.end_offset]
         separator = _assignment_separator(raw)
         prefix = b"" if separator is None else raw[: separator.start()].lower()
@@ -1226,12 +1170,16 @@ def _replace_sensitive_spans(
             closing_quote = (
                 opening_quote if opening_quote and value.endswith(opening_quote) else b""
             )
-            pieces.append(
-                raw[: separator.end()] + string_prefix + opening_quote + span_marker + closing_quote
-            )
+            lead = raw[: separator.end()] + string_prefix + opening_quote
+            pieces.append(lead + span_marker + closing_quote)
         else:
+            lead = b""
             pieces.append(span_marker)
+        if written is not None:
+            written.append((size + len(lead), size + len(lead) + len(span_marker)))
+        size += len(pieces[-1])
         cursor = finding.end_offset
+    carry(len(data))
     pieces.append(data[cursor:])
     return b"".join(pieces)
 
@@ -1309,7 +1257,10 @@ def prepare_persisted_plaintext(
 
 
 def redact_sensitive_content(
-    data: bytes, *, heuristic_marker: bytes | None = None
+    data: bytes,
+    *,
+    heuristic_marker: bytes | None = None,
+    marker_spans: MarkerSpans = (),
 ) -> tuple[bytes, bool]:
     """Replace every detected credential/key span without retaining the match.
 
@@ -1317,15 +1268,38 @@ def redact_sensitive_content(
     disclosed; capture and at-rest paths use ``redact_high_confidence_content``. Every span reads
     ``[REDACTED]`` unless ``heuristic_marker`` is given: then a heuristic-only span reads that
     marker instead, which must be one of FinishUP's exact replacement markers
-    (``EGRESS_CREDENTIAL_PLACEHOLDER``) so a further pass never re-matches it. The check-time
-    change uses it so a reviewer is told the value may be a credential FinishUP withheld (tb4n5),
-    never left to read ``password=[REDACTED]`` as source code.
+    (``EGRESS_CREDENTIAL_PLACEHOLDER``). The check-time change uses it so a reviewer is told the
+    value may be a credential FinishUP withheld (tb4n5), never left to read
+    ``password=[REDACTED]`` as source code. ``marker_spans`` are the markers already recorded in
+    ``data`` (#1248 P-D1); ``redact_sensitive_content_marked`` also returns the result's.
     """
 
-    findings = scan_for_sensitive_content(data)
+    replaced, detected, _spans = redact_sensitive_content_marked(
+        data, heuristic_marker=heuristic_marker, marker_spans=marker_spans
+    )
+    return replaced, detected
+
+
+def redact_sensitive_content_marked(
+    data: bytes,
+    *,
+    heuristic_marker: bytes | None = None,
+    marker_spans: MarkerSpans = (),
+) -> tuple[bytes, bool, MarkerSpans]:
+    """``redact_sensitive_content`` plus the recorded span of every marker in the result."""
+
+    findings = scan_for_sensitive_content(data, marker_spans=marker_spans)
     if not findings:
-        return data, False
-    return _replace_sensitive_spans(data, findings, heuristic_marker=heuristic_marker), True
+        return data, False, valid_marker_spans(data, marker_spans)
+    written: list[tuple[int, int]] = []
+    replaced = _replace_sensitive_spans(
+        data,
+        findings,
+        heuristic_marker=heuristic_marker,
+        marker_spans=valid_marker_spans(data, marker_spans),
+        written=written,
+    )
+    return replaced, True, valid_marker_spans(replaced, written)
 
 
 def redact_high_confidence_content(data: bytes) -> tuple[bytes, bool]:
@@ -1346,7 +1320,7 @@ def redact_high_confidence_content(data: bytes) -> tuple[bytes, bool]:
     return redacted, redacted != data
 
 
-def redact_heuristic_spans(data: bytes) -> tuple[bytes, int]:
+def redact_heuristic_spans(data: bytes, *, marker_spans: MarkerSpans = ()) -> tuple[bytes, int]:
     """Replace only low-confidence assignment spans and return the bounded span count.
 
     Heuristic findings are never evidence that a byte is safe to disclose.  This helper is for
@@ -1354,27 +1328,41 @@ def redact_heuristic_spans(data: bytes) -> tuple[bytes, int]:
     it preserves the surrounding item while ensuring the suspicious span cannot reach a local or
     external disclosure sink.  Only the value is replaced, by ``EGRESS_CREDENTIAL_PLACEHOLDER``,
     which tells the reader the value may be a credential and was withheld.  Callers still run the
-    ordinary final-body scan afterwards.
+    ordinary final-body scan afterwards. ``marker_spans`` are the markers already recorded in
+    ``data`` (#1248 P-D1); ``redact_heuristic_spans_marked`` also returns the result's.
     """
+
+    replaced, count, _spans = redact_heuristic_spans_marked(data, marker_spans=marker_spans)
+    return replaced, count
+
+
+def redact_heuristic_spans_marked(
+    data: bytes, *, marker_spans: MarkerSpans = ()
+) -> tuple[bytes, int, MarkerSpans]:
+    """``redact_heuristic_spans`` plus the recorded span of every marker in the result."""
 
     if type(data) is not bytes:
         raise TypeError("redaction_data_not_bytes")
-    findings = scan_for_sensitive_content(data)
+    recorded = valid_marker_spans(data, marker_spans)
+    findings = scan_for_sensitive_content(data, marker_spans=recorded)
     heuristic = tuple(
         finding for finding in findings if finding.confidence is ScanConfidence.HEURISTIC
     )
     if not heuristic:
-        return data, 0
-    return (
-        _replace_sensitive_spans(data, heuristic, marker=EGRESS_CREDENTIAL_PLACEHOLDER),
-        len(heuristic),
+        return data, 0, recorded
+    written: list[tuple[int, int]] = []
+    replaced = _replace_sensitive_spans(
+        data,
+        heuristic,
+        marker=EGRESS_CREDENTIAL_PLACEHOLDER,
+        marker_spans=recorded,
+        written=written,
     )
+    return replaced, len(heuristic), valid_marker_spans(replaced, written)
 
 
 def redact_encoded_heuristic_spans(
-    content: bytes,
-    *,
-    redact: Callable[[bytes], tuple[bytes, int]] = redact_heuristic_spans,
+    content: bytes, *, marker_spans: MarkerSpans = ()
 ) -> tuple[bytes, int] | None:
     """Replace heuristic values as they appear in the item's JSON-string encoding.
 
@@ -1382,8 +1370,24 @@ def redact_encoded_heuristic_spans(
     ``token = \\"...\\"`` inside an embedded JSON document). This pass redacts on the exact
     encoding the review packet carries, decodes the result back to the item's text, and returns
     it only when both forms then scan clean. ``None`` means the caller must withhold the whole
-    item. ``redact`` is the value pass the caller applies to raw text, so both passes agree. No
-    scanned bytes are retained.
+    item. No scanned bytes are retained. ``redact_encoded_heuristic_spans_marked`` also returns
+    the recorded marker spans of the result (#1248 P-D1).
+    """
+
+    marked = redact_encoded_heuristic_spans_marked(content, marker_spans=marker_spans)
+    return None if marked is None else (marked[0], marked[1])
+
+
+def redact_encoded_heuristic_spans_marked(
+    content: bytes,
+    *,
+    marker_spans: MarkerSpans = (),
+    redact: Callable[..., tuple[bytes, int, MarkerSpans]] | None = None,
+) -> tuple[bytes, int, MarkerSpans] | None:
+    """``redact_encoded_heuristic_spans`` with recorded spans carried through both encodings.
+
+    ``redact`` is the value pass the caller applies to raw text (``redact_heuristic_spans_marked``
+    by default), so both passes agree.
     """
 
     try:
@@ -1391,7 +1395,10 @@ def redact_encoded_heuristic_spans(
     except UnicodeDecodeError:
         return None
     encoded = canonical_encode(text)
-    sanitized_encoded, span_count = redact(encoded)
+    encoded_spans = encoded_string_spans(encoded, valid_marker_spans(content, marker_spans))
+    sanitized_encoded, span_count, written = (redact or redact_heuristic_spans_marked)(
+        encoded, marker_spans=encoded_spans
+    )
     if span_count == 0:
         return None
     try:
@@ -1401,9 +1408,13 @@ def redact_encoded_heuristic_spans(
     if type(decoded) is not str:
         return None
     sanitized = decoded.encode("utf-8")
-    if any(scan_for_sensitive_content(form) for form in (sanitized, canonical_encode(decoded))):
+    spans = valid_marker_spans(sanitized, decoded_string_spans(sanitized_encoded, written))
+    reencoded = canonical_encode(decoded)
+    if scan_for_sensitive_content(sanitized, marker_spans=spans) or scan_for_sensitive_content(
+        reencoded, marker_spans=encoded_string_spans(reencoded, spans)
+    ):
         return None
-    return sanitized, span_count
+    return sanitized, span_count, spans
 
 
 def semantic_egress_forms(content: bytes) -> tuple[bytes, ...]:
@@ -1420,14 +1431,14 @@ def semantic_egress_forms(content: bytes) -> tuple[bytes, ...]:
 
     if type(content) is not bytes:
         raise TypeError("redaction_data_not_bytes")
-    forms: dict[bytes, None] = {content: None}
-    replaced, span_count = redact_heuristic_spans(content)
+    forms: dict[bytes, MarkerSpans] = {content: ()}
+    replaced, span_count, spans = redact_heuristic_spans_marked(content)
     if span_count:
-        forms[replaced] = None
-    for base in tuple(forms):
-        encoded = redact_encoded_heuristic_spans(base)
+        forms[replaced] = spans
+    for base, base_spans in tuple(forms.items()):
+        encoded = redact_encoded_heuristic_spans_marked(base, marker_spans=base_spans)
         if encoded is not None:
-            forms[encoded[0]] = None
+            forms.setdefault(encoded[0], encoded[2])
     return tuple(forms)
 
 
@@ -1442,27 +1453,35 @@ def redact_before_cut(content: bytes) -> bytes | None:
     is redacted first, as egress would disclose it, and only then cut: concrete shapes read
     ``[REDACTED]``, values that only look like credentials read the egress placeholder, in the
     text and in its JSON-string encoding, pass after pass until a pass finds nothing (bounded;
-    the egress scan still checks whatever is sent). Content without a finding is returned
+    the egress scan still checks whatever is sent). Each pass exempts exactly the markers the
+    earlier passes recorded writing (#1248 P-D1). Content without a finding is returned
     unchanged, so a clean cut stays placeable in its source. ``None`` when the pass bound is
     reached while a pass still finds a value (each scan reports a bounded number of findings):
     the text cannot be redacted in full, so no cut may be taken from it (fail closed, as capture's
     ``redaction_incomplete``). Nothing is retained.
     """
 
+    marked = redact_before_cut_marked(content)
+    return None if marked is None else marked[0]
+
+
+def redact_before_cut_marked(content: bytes) -> tuple[bytes, MarkerSpans] | None:
+    """``redact_before_cut`` plus the recorded span of every marker it wrote."""
+
     if type(content) is not bytes:
         raise TypeError("redaction_data_not_bytes")
-    text = content
+    text, spans = content, cast(MarkerSpans, ())
     for _pass in range(_MAX_CUT_REDACTION_PASSES):
-        replaced, detected = redact_sensitive_content(
-            text, heuristic_marker=EGRESS_CREDENTIAL_PLACEHOLDER
+        replaced, detected, written = redact_sensitive_content_marked(
+            text, heuristic_marker=EGRESS_CREDENTIAL_PLACEHOLDER, marker_spans=spans
         )
         if detected:
-            text = replaced
+            text, spans = replaced, written
             continue
-        encoded = redact_encoded_heuristic_spans(text)
+        encoded = redact_encoded_heuristic_spans_marked(text, marker_spans=spans)
         if encoded is None:
-            return text
-        text = encoded[0]
+            return text, spans
+        text, spans = encoded[0], encoded[2]
     return None
 
 
@@ -1529,7 +1548,11 @@ def _json_string_newline_offsets(data: bytes) -> list[int]:
 
 
 def heuristic_value_lines(
-    data: bytes, *, json_string: bool = False, limit: int = 32
+    data: bytes,
+    *,
+    json_string: bool = False,
+    limit: int = 32,
+    marker_spans: MarkerSpans = (),
 ) -> tuple[int, ...]:
     """1-based lines of the values ``redact_heuristic_spans`` replaces in ``data`` (PL2-1).
 
@@ -1543,7 +1566,7 @@ def heuristic_value_lines(
         raise TypeError("redaction_data_not_bytes")
     heuristic = tuple(
         finding
-        for finding in scan_for_sensitive_content(data)
+        for finding in scan_for_sensitive_content(data, marker_spans=marker_spans)
         if finding.confidence is ScanConfidence.HEURISTIC
     )
     if not heuristic:

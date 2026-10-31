@@ -755,6 +755,7 @@ class MemoryPrivacyAudit:
             request.minimized.included_item_ids,
             route,
             request.minimized.redacted_values,
+            request.minimized.marker_spans,
         )
         lookup = _mac(self._key, _LOOKUP_DOMAIN, canonical_encode(_json(proposal)))
         reservation = PrivacyAuditReservation(

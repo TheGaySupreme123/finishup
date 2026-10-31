@@ -427,6 +427,56 @@ async def test_resume_rescans_persisted_bytes_before_dispatch() -> None:
 
 
 @pytest.mark.anyio
+@pytest.mark.parametrize("recorded", (True, False))
+async def test_resume_rescans_a_conversation_with_exactly_its_recorded_marker_spans(
+    recorded: bool,
+) -> None:
+    # #1248 P-D1 / #966 item 5: the proposal persists the spans FinishUP recorded writing its
+    # markers; a resume rescans the exact approved conversation with exactly those exemptions.
+    # Without them (bytes prepared before spans were recorded) the marker is a value, and the
+    # stale bytes are refused rather than reused.
+    from finishup.adapters.privacy.local_enforcer import LocalPrivacyEnforcer
+    from unit.privacy.test_marker_positions import conversation
+
+    payload, _packet, spans = conversation("  password: ", "\n    role: admin\n", 2)
+    proposal = replace(
+        _proposal(expires_at=_NOW + timedelta(minutes=5)),
+        prepared_bytes=payload,
+        max_bytes=len(payload),
+        marker_spans=spans if recorded else (),
+    )
+    coordinator = _coordinator(
+        "approved",
+        expires_at=_NOW + timedelta(minutes=5),
+        proposal=proposal,
+        classifier=cast(_Classifier, LocalPrivacyEnforcer()),
+    )
+    dispatched: list[tuple[bytes, tuple[tuple[int, int], ...]]] = []
+
+    async def dispatch(self: PrivacyCoordinator, *args: object, **kwargs: object) -> object:
+        del self, kwargs
+        minimized = args[3]
+        dispatched.append(
+            (getattr(minimized, "prepared_bytes"), getattr(minimized, "marker_spans"))
+        )
+        return object()
+
+    monkeypatch = pytest.MonkeyPatch()
+    monkeypatch.setattr(PrivacyCoordinator, "_dispatch_approved", dispatch)
+    try:
+        result = await coordinator.resume(_REQUEST, _CASE_DIGEST, _deadline())
+    finally:
+        monkeypatch.undo()
+
+    if recorded:
+        assert dispatched == [(payload, spans)]
+    else:
+        assert isinstance(result, SemanticEgressBlocked)
+        assert result.outcome is PrivacyOutcome.BLOCKED_FORBIDDEN_DATA
+        assert dispatched == []
+
+
+@pytest.mark.anyio
 async def test_recorded_denial_terminalizes_without_dispatch() -> None:
     coordinator = _coordinator(
         "decision_receipt_pending",
