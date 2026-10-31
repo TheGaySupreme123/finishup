@@ -114,6 +114,12 @@ _URI_PASSWORD = re.compile(rb"[A-Za-z][A-Za-z0-9+.-]{0,31}://[^\s/:@]{1,128}:[^\
 # followed by an encoded newline re-matches as a fresh assignment after encoding and blocks the
 # whole packet (TB4 tb4f1, issue #976).
 _ENCODED_SPACE = rb"(?:\s|\\[nrt])"
+# The assignment separator. After ``=`` the value starts on the same line: an empty ``KEY=`` value
+# ends at the line break, raw or encoded, so the next line is never read as its value and is
+# scanned on its own (#1248, owner decision). After ``:`` the separator may still span a line
+# break; a YAML value indented on the following lines is P3's block-value detection.
+_SAME_LINE_SPACE = rb"(?:[ \t\f\v]|\\(?-i:t))"
+_SEPARATOR = rb"(?:=" + _SAME_LINE_SPACE + rb"*|:" + _ENCODED_SPACE + rb"*)"
 # Values end where the text they encode has whitespace (#1248, owner decision P-D3 on top of the
 # 2026-10-06 rule, ADR-009). An unquoted value ends at raw whitespace and at a JSON-encoded line
 # break or tab at any escaping depth, exactly as it ends at a raw one: the run of ``w``
@@ -171,7 +177,7 @@ _SECRET_ASSIGNMENT = re.compile(
     rb"(?:[A-Za-z][A-Za-z0-9]{0,63}[_-])*"
     rb"(?:api[_-]?key|access[_-]?token|auth[_-]?token|password|passwd|private[_-]?key|secret)"
     rb"(?:[_-][A-Za-z][A-Za-z0-9]{0,63})*"
-    rb"(?:\\?['\"])?\s*[:=]" + _ENCODED_SPACE + rb"*" + _ASSIGNMENT_VALUE
+    rb"(?:\\?['\"])?\s*" + _SEPARATOR + _ASSIGNMENT_VALUE
 )
 # `*_TOKEN` only as the final identifier component. The value must contain a
 # non-digit and be at least eight bytes so MAX_TOKEN=4096 and TOKEN_COUNT=12
@@ -179,7 +185,7 @@ _SECRET_ASSIGNMENT = re.compile(
 _TOKEN_ASSIGNMENT = re.compile(
     rb"(?i)(?:^|[^A-Za-z0-9_])['\"]?"
     rb"(?:[A-Za-z][A-Za-z0-9]{0,63}[_-])*token"
-    rb"(?:\\?['\"])?\s*[:=]" + _ENCODED_SPACE + rb"*(?="
+    rb"(?:\\?['\"])?\s*" + _SEPARATOR + rb"(?="
     rb"(?:" + _STRING_PREFIX_RE + rb"\"(?:\\.|[^\"\\\r\n]){1,512}\""
     rb"|" + _STRING_PREFIX_RE + rb"'(?:\\.|[^'\\\r\n]){1,512}'"
     rb"|"

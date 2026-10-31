@@ -301,3 +301,54 @@ def test_minimized_item_keeps_its_following_line_through_the_reviewer_conversati
     for body in (packet, exchange, wrapped):
         assert not scan_exact_bytes_with_confidence(body).heuristic
         assert _gateway_scan_is_clean(body)
+
+
+# Owner decision (#1248 P2): for ``KEY=value`` an empty value ends at the line break. The next
+# line is not its value and is scanned on its own, so it is kept when clean and caught by its own
+# key or pattern when not. (YAML ``key:`` with the value indented below is P3's block detection.)
+_BASE_URL = "OPENAI_BASE_URL=" + "https://" + "api.example.com/v1"
+
+
+@pytest.mark.parametrize("depth", (0, 1, 2, 3))
+@pytest.mark.parametrize("ending", _ENDINGS)
+@pytest.mark.parametrize("separator", ("=", " = ", "=\t"))
+def test_an_empty_value_does_not_take_the_next_line(
+    depth: int, ending: str, separator: str
+) -> None:
+    text = _text(f"OPENAI_API_KEY{separator}", _BASE_URL, ending)
+    encoded = _encode(text, depth)
+
+    assert scan_for_sensitive_content(encoded) == ()
+    assert redact_heuristic_spans(encoded) == (encoded, 0)
+    assert redact_sensitive_content(encoded) == (encoded, False)
+    if depth == 0:
+        assert redact_before_cut(encoded) == encoded
+        assert semantic_egress_forms(encoded) == (encoded,)
+
+
+@pytest.mark.parametrize("depth", (0, 1, 2, 3))
+@pytest.mark.parametrize("ending", _ENDINGS)
+def test_a_secret_on_the_line_after_an_empty_value_is_still_redacted(
+    depth: int, ending: str
+) -> None:
+    secret = "sk" + "-" + "a1B2" * 6
+    text = _text("OPENAI_API_KEY=", f"API_KEY={secret}", ending)
+    encoded = _encode(text, depth)
+
+    redacted, changed = redact_sensitive_content(encoded)
+    assert changed
+    assert _decode(redacted, depth) == _text("OPENAI_API_KEY=", f"API_KEY={_REDACTED}", ending)
+    captured, _ = redact_high_confidence_content(encoded)
+    assert _decode(captured, depth) == _text("OPENAI_API_KEY=", f"API_KEY={_REDACTED}", ending)
+
+
+@pytest.mark.parametrize("ending", _ENDINGS)
+def test_a_credential_like_value_after_an_empty_value_is_caught_by_its_own_key(
+    ending: str,
+) -> None:
+    raw = _text("OPENAI_API_KEY=", f"API_KEY={_PASSWORD}", ending).encode()
+    expected = _text("OPENAI_API_KEY=", f"API_KEY={_MARK}", ending).encode()
+
+    assert redact_heuristic_spans(raw) == (expected, 1)
+    assert redact_before_cut(raw) == expected
+    assert semantic_egress_forms(raw)[1:] == (expected,)

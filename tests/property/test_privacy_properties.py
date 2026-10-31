@@ -212,9 +212,16 @@ def _secret_value(draw: st.DrawFn) -> str:
 def _setting_line(draw: st.DrawFn) -> tuple[str, tuple[str, str] | None]:
     """``(line, kept)``: the bytes around the value a pass may replace; ``None`` when benign."""
 
-    kind = draw(st.sampled_from(("secret", "benign", "blank", "comment")))
+    kind = draw(st.sampled_from(("secret", "empty", "benign", "blank", "comment")))
     if kind == "blank":
         return "", None
+    if kind == "empty":
+        # ``KEY=`` with no value: it ends at the line break, so nothing on it or after it is read
+        # as its value (#1248 owner decision; YAML ``key:`` blocks are P3's).
+        prefix = draw(st.sampled_from(_LINE_PREFIXES))
+        return prefix + draw(st.sampled_from(_SECRET_NAMES)) + draw(
+            st.sampled_from(("=", " ="))
+        ), None
     if kind == "comment":
         return "# note", None
     prefix = draw(st.sampled_from(_LINE_PREFIXES))
