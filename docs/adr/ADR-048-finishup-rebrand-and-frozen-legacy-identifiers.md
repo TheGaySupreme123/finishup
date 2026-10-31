@@ -118,7 +118,7 @@ in code is labeled `# Frozen legacy identifier (ADR-048): <why>`.
 | Actor ids | `yoetz:observation-coordinator`, `yoetz:approved-check-service`, `yoetz:tui`, `yoetz:codex-hooks`, `yoetz:<harness>-observe` | Enter recorded event authors and request bodies; a rename would mix ids within one ledger and could turn an in-flight retry into an idempotency conflict. |
 | Released schemas | the 154 schema files released at v0.2.5, including their `Yoetz ...` titles and `$id`s under `https://schemas.yoetz.dev/0.1/`; the `yoetz.schema-manifest/1.0.0` tag; the `yoetz-config` family and its `YoetzConfig` owning model | Byte-immutable under the release gate. `yoetz.dev` must stay registered and keep serving `/0.1/`. |
 | Marker and residue file names | `.yoetz-plugin-install.json`, `.yoetz-install.json`, `.yoetz-claude-marketplace-install.json`, `.yoetz-cursor-plugin-install.json`, `.yoetz-marketplace-activation.lock`, marker keys `yoetz_version`/`yoetz_launcher`, crash-residue prefixes `.yoetz.stage-` and friends, `yoetz-instance-pin.json`, `yoetz-release-runtime.json` | Status, removal and recovery find ownership through these exact names, in legacy and renamed directories alike; older runtimes and retained release snapshots read the same files. |
-| Other stored strings | `[withheld-by-yoetz:possible-credential]`, the spool key `_yoetz_spool_id`, the capture headers `# yoetz edit outcome:`/`# yoetz edit source:`, the nested-cell mark `yoetz`, the `format = "yoetz.approved-check-policy/1"` line in `checks.toml` | Written into stored content or user files and recognized again later. |
+| Other stored strings | `[withheld-by-yoetz:possible-credential]` (stays readable forever, but leaves this frozen list for new writes once #1248 P4 ships; see §3 and the 2026-10-31 amendment), the spool key `_yoetz_spool_id`, the capture headers `# yoetz edit outcome:`/`# yoetz edit source:`, the nested-cell mark `yoetz`, the `format = "yoetz.approved-check-policy/1"` line in `checks.toml` | Written into stored content or user files and recognized again later. |
 | Released consts | consent `pending-agent`/`status` 2.0.0-6.0.0 command head `yoetz`, `check-result` 1.0.0-1.2.0 continuation head `yoetz`, `receipt-document` 1.0.0-1.2.0 and `version-manifest` up to 2.2.4 `package_name` `yoetz`, `read-guidance-*` 1.0.0 `yoetz://` | Released at v0.2.5. The unreleased successors are widened in place (§3). |
 
 Recorded fixtures and evidence (`fixtures/canonical/`, `fixtures/backward-read/`, digested replay,
@@ -147,6 +147,7 @@ numeric values retain their existing default behavior.
 | Tool and skill spellings | `mcp__finishup__*`, `mcp__plugin_finishup_finishup__*`, `finishup:*`, `plugin-finishup-finishup:*`, skill `finishup`/`finishup:finishup` | the same with `yoetz` | A legacy spelling counts only beside its own server key; mixed spellings are rejected. Hook matchers cover both, for example `^mcp__(?:finishup\|yoetz)__start$`. | Permanent: recorded observations keep legacy tool names and replay reclassifies them. |
 | Guidance URIs | `finishup://guidance/...` | `yoetz://guidance/...`, including four pre-rename title anchors | `read_guidance` and `resources/read` accept the exact catalogued legacy spelling and answer in the caller's scheme; `resources/list` advertises `finishup://` only. | No expiry decided; dropping it needs its own decision. |
 | Agent text markers | `finishup-blocker:`, `finishup-assumption:`, `finishup-verification-limit:`, `finishup-no-material-work:`, `finishup:test-change:`. The Stop-time acceptance attestation (`finishup-acceptance:<obligation id>:met[:<evd_ or res_ id>]`, tb4n5 and #1079) is retired since ADR-033's 2026-10-18 amendment (owner decision D1): no hook reads the final message, and a line an agent still writes is ignored. It was never recorded, so retiring it changes no replay. `finishup-verification-limit:<obligation id>` stays a recorded decision statement | `yoetz-` / `yoetz:` spellings | Both spellings are one marker to every rule; matching stays exact, whole-line and case-sensitive. Teaching text emits only the new spelling. A `yoetz_availability` delegation block is honored like `finishup_availability`. | **Permanent**: recorded decision statements are re-parsed on every projection rebuild. |
+| Egress placeholder (*amended 2026-10-31, #1248*) | `[withheld-by-finishup:possible-credential]` | `[withheld-by-yoetz:possible-credential]` | Low priority: until #1248 step P4 ships, writers still emit only the legacy spelling. From P4 on, new content uses only the new one. The scanner exempts either spelling only at a position FinishUP recorded when it wrote the marker, never by its text. Each spelling stays exactly as stored, and nothing is rewritten. The reviewer instruction and the agent lines explain both spellings while stored content can still carry the old one. | **Permanent** reader: stored captures, proposals and receipts keep the legacy bytes. |
 | Review packet labels | `[FinishUP ...` | `[Yoetz ...` | The forged-label fence prefixes a line beginning with either name, in any ASCII case, with `(not a FinishUP label) ` (`(agent text) ` before #1108). | Permanent. |
 | Command heads | `finishup ...` in consent review/authorize commands, continuations, error details and capacity disclosures | `yoetz ...` | Released versions keep `yoetz` (consent `pending-agent/6` is tied to it). `consent prepare` and `status` emit `/7` for every operation with the head of the invoking launcher: `finishup`, or `yoetz` through the deprecated alias (§1). `/7` and the widened unreleased schemas admit `yoetz` from a pre-rename service; one projection never mixes heads (`consent_command_head_mixed`). Continuations, error details and capacity disclosures are always rendered with `finishup`. | Readers permanent. |
 | `package_name` | `finishup` in new receipts and version manifests | `yoetz` | Receipts issued before the rename keep `yoetz`, bound by their digest; the unreleased `receipt-document`/`receipt-result` 1.3.0 admit both. | Permanent. |
@@ -273,3 +274,34 @@ pre-rename pending records and the consent command head;
 `tests/conformance/surfaces/test_transitional_launcher_guidance.py` covers the transitional-launcher
 guidance. The release-workflow jobs are verified by
 inspection and static contract tests only until a dry run (#1056).
+
+## Amendment: the possible-credential placeholder (*Amended 2026-10-31, #1248*)
+
+Owner decisions P-D1 and P-D5, made in session on 2026-10-29 and recorded on
+[#1248](https://github.com/TheGaySupreme123/finishup/issues/1248), which also records the maintainer
+acknowledgement for the privacy and egress design gate. ADR-009's amendment of the same date holds
+the scanning rules. This one covers the spelling.
+
+- **§2 changes for this string only.** `[withheld-by-yoetz:possible-credential]` was frozen because
+  stored content carries it and is recognized again later. That reason still holds for reading, so
+  the legacy spelling stays readable forever. It is no longer a reason to keep writing it, because
+  P-D1 removes the text match that made the exact bytes load-bearing.
+- **Exempt by recorded position (P-D1).** FinishUP records where it inserted each marker and exempts
+  exactly those spans, at any escaping depth. It never guesses from the text or from backslashes.
+  The exemption therefore does not depend on the spelling, and the second spelling widens nothing.
+  A string that only spells either marker, but that FinishUP did not insert there, gets no
+  exemption.
+- **The dual-spelling model of §3 (P-D5).** New content uses `[withheld-by-finishup:…]`, today only
+  `[withheld-by-finishup:possible-credential]`. Readers accept both spellings permanently, and no
+  stored byte is rewritten, so old ledgers, proposals and receipts replay identically. The change
+  ships with a new scanner profile version (ADR-009, 2026-10-03 amendment). A proposal prepared
+  under the old profile and resumed under the new one fails closed as a profile mismatch, and a new
+  evaluation is prepared, so resumed work never mixes the two spellings across that change. A new
+  case may still compose content captured earlier with the legacy spelling, and the reviewer
+  instruction and agent lines explain both.
+- **Low priority.** Step P4 of #1248 implements the rename, at any point after P1. Until it ships,
+  FinishUP keeps writing `[withheld-by-yoetz:possible-credential]`. The §3 row records both
+  spellings so that the reader contract is fixed before any writer changes.
+- **Unchanged.** No data category is added, no ceiling is raised, and Private still sends nothing
+  (ADR-009). Every other §2 identifier stays frozen. The behaviour is service-side and identical on
+  Codex, Claude Code and Cursor.

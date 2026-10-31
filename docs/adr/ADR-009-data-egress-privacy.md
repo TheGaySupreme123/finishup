@@ -400,6 +400,11 @@ case → single-use authorization → bounded gateway → bound sink/provider �
    database contents, unrestricted logs/stderr/transcripts, and files outside the selected scope
    can never be placed in an approved external, local-model, or agent-context case. No profile,
    local-human click, provider trust label, plugin, or request override can weaken this set.
+   *Amended 2026-10-31 ([#1248](https://github.com/TheGaySupreme123/finishup/issues/1248), owner
+   decisions P-D1 to P-D5):* the set, its floor and every ceiling are unchanged. How a match is
+   found and bounded (markers by recorded position, item-level hits in the reviewer conversation,
+   values that end at a line break, slices cut from redacted text) is in the amendment of that date
+   at the end of this ADR.
 6. **Policy composition:** the machine policy is an installation ceiling, not a standing grant for
    every repository. The effective decision is the intersection of that ceiling with repository,
    task, and request overlays. Lower scopes may tighten immediately. External LLM admission under
@@ -995,7 +1000,8 @@ function. Bare dotted assignments such as `TOKEN=opaque.value` or `token=opaque.
 values such as `password=functionName()`, quoted lookalikes, mixed-language text, and malformed
 source remain heuristic matches. The owner-controlled privacy policy is unchanged. The deferred
 heuristic opt-out remains out of scope here; the 2026-10-07 credential-heuristic opt-out amendment
-below adds it.
+below adds it. *Amended 2026-10-31 (#1248):* marker exemption, conversation-depth hits, value
+ends and slicing follow the amendment of that date at the end of this ADR.
 
 Amendment (2026-10-07, issue #982, owner decision): keep raw data for local and deterministic
 checks, redact only at egress, and narrow the heuristic. Capture and at-rest paths (hook content,
@@ -1011,7 +1017,8 @@ real source shape (a call or subscript on a name, `|>`) or a digit-free document
 (`<your-api-key>`, `${MY_PASSWORD}`, `gw_...`), because human-chosen secrets take any punctuation
 (adversarial review, 2026-10-07). Typed declarations (`password: str = "..."`) and JSON-escaped
 keys (`\"password\": \"...\"`) are detected. Unquoted values stay greedy across encoded escapes so
-a secret containing a backslash is never shortened. The exact rules are in `docs/INTERFACES.md`. Check-time change capture (ADR-031) is egress-shaped and keeps redacting
+a secret containing a backslash is never shortened. *Superseded 2026-10-31 (#1248, P-D3):* an
+unquoted value ends at a raw or encoded line break; other backslashes stay value characters. The exact rules are in `docs/INTERFACES.md`. Check-time change capture (ADR-031) is egress-shaped and keeps redacting
 heuristic spans before storage.
 
 ## Partial withholding and encoding-stable redaction amendment (2026-10-06, issue #976)
@@ -1026,12 +1033,14 @@ blocked the whole packet with `never_send_detected`. Decisions:
   quoted value. The name/value separator is searched from the assignment name, so a JSON member's
   `:` is never read as the separator. The exact-marker exemption accepts `[REDACTED]` in any of
   these forms, so redaction is a fixed point across encoding. Real assignments in encoded text are
-  still detected and redacted.
+  still detected and redacted. *Amended 2026-10-31 (#1248, P-D3):* this rule, not the 2026-10-07
+  "greedy" sentence, decides where a value ends, at every escaping depth.
 - Precision repair (2026-10-21, #1138): the exact fixed markers also remain exempt when the
   prepared packet is nested as JSON text in the final reviewer conversation. Whitespace escape
   widths must match the closing quote's encoding depth; literal backslash tails and other suffixes
   do not gain an exemption. Concrete-secret detection, policy, consent and egress authority stay
-  unchanged.
+  unchanged. *Superseded 2026-10-31 (#1248, P-D1):* markers are exempt by their recorded position,
+  never by matching their text or guessing escape widths.
 - At egress, a low-confidence (heuristic) match replaces only the value, in place, with the fixed
   placeholder `[withheld-by-yoetz:possible-credential]` (`EGRESS_CREDENTIAL_PLACEHOLDER`); the rest
   of the line, item and file is still sent, and the scanner exempts the placeholder like
@@ -1051,6 +1060,9 @@ blocked the whole packet with `never_send_detected`. Decisions:
   Egress redaction and withholding bound only the AI-powered review: they never add
   `content_redacted` and never veto local (deterministic) proof. A high-confidence credential, scanner saturation, a heuristic in the structural
   review-packet envelope, or one no single item explains still fails the whole case closed.
+  *Amended 2026-10-31 (#1248, P-D2):* in the reviewer conversation a hit withholds the one item or
+  read it came from; only a high-confidence credential in material that must be sent, saturation
+  or a match no single item explains fails the whole case there.
 - Owner-approved PL2-1 (issue #982, 2026-10-07): "show the agent the withheld item refs and line
   numbers, never the values, plus the fixed agent line." Minimization records, per affected item,
   `semantic_redacted_values` entries `{item_id, source_ref?, disposition, lines}`: the opaque case
@@ -1693,7 +1705,10 @@ the privacy workstream's (#1248, P-D1/P-D2); this amendment fixes only the recor
   scanning each packet row's own content encoded as deeply as the refused bytes carry it (the packet
   string, or that string inside the conversation); a classification-time refusal names the items
   with a concrete finding. This only reads the scanner's answers: the whole-byte scans decide the
-  refusal exactly as before, and the refused content is not sent. An earlier exchange of the same
+  refusal exactly as before, and the refused content is not sent. *Amended 2026-10-31 (#1248,
+  P-D2):* the conversation is scanned per message, and a hit there withholds one item instead of
+  refusing the case; the `reviewer_exchange` stage and these fields stay for the refusals that
+  remain. An earlier exchange of the same
   conversation may already have been sent, so no record claims that nothing was.
 - The check carries the same facts as `review_blocked` entries in `semantic_redacted_values`, with
   `stage` and `match_class` (`review-packet` when no single item explains the match), on the check
@@ -1711,7 +1726,8 @@ the privacy workstream's (#1248, P-D1/P-D2); this amendment fixes only the recor
   itself (the policy is not in the task ledger); the next edit does. Known limit: a write made only
   through a shell command records no edit action, so it does not end the standing either.
 - The agent guidance and the usage page no longer promise that only a high-confidence credential
-  blocks the whole review: they say which matches do today. #1248 owns narrowing that.
+  blocks the whole review: they say which matches do today. #1248 owns narrowing that (amendment
+  of 2026-10-31, P-D2).
 - *Amended 2026-10-29 (#966, items 1 and 4):* a block names what stays unmet and the one safe
   continuation. Only when every `review_blocked` item is text the agent published (`claim-`,
   `obligation-`, `goal-`, `decision-`, `agent-disclosures`, `local-finding-answer-`) does the
@@ -1761,3 +1777,103 @@ although nothing could or would be sent, and it had no receipt.
   of a generic policy denial.
 - Nothing about what is sent, consent, or the decision ceremony changes. Local-model proposals keep
   their existing lifecycle.
+
+## One scanning model: marker positions, item-level hits, value ends and redacted slices (*Amended 2026-10-31, #1248*)
+
+Owner decisions P-D1 to P-D5, made in session on 2026-10-29 and recorded on
+[#1248](https://github.com/TheGaySupreme123/finishup/issues/1248), which also records the maintainer
+acknowledgement for the privacy and egress design gate. This is the approved text that steps P1 to
+P4 of #1248 implement. Until a step merges, the code keeps the behaviour the earlier amendments
+describe.
+
+**Context.** In the TB4 full-sol run FinishUP refused every AI-powered review of 10 of 315 attempts
+because of its own marker (#1138). The marker exemption guessed the escaping depth from
+backslashes, and the reviewer conversation nests the packet one JSON level deeper. That same
+investigation found more defects. An unquoted value ran on through an encoded line break. One
+redaction pass deleted bytes outside its match. And a slice cut from raw text could send a value
+without the label that made it detectable.
+
+**Unchanged ceilings.** No data category is added, and no selection, channel or excerpt ceiling is
+raised. The never-send set (decision 5) and its non-overridable floor are unchanged, and Private
+still sends nothing. Each decision changes how a match is found or bounded inside those ceilings.
+Material that every gate already admits is no longer lost to a false match, and nothing a ceiling
+excludes becomes sendable. Consent, the credential-heuristic setting (#982), the final-body and
+local-sink backstops, and the egress-receipt shape keep their rules.
+
+**Decisions.**
+
+- **P-D1. Markers are exempt by recorded position.** Whenever FinishUP inserts a marker
+  (`[REDACTED]`, the possible-credential placeholder in either spelling, ADR-048), it records the
+  span it wrote. The span travels with its item through capture, persistence, composition,
+  minimization and every JSON encoding, in the packet and in the reviewer conversation, at any
+  escaping depth. The scanner exempts exactly those spans. It never infers a marker from text: no
+  backslash counting, no escape width taken from a closing quote, no exact-text match. FinishUP's
+  own conversation text (its fixed instructions, frame and labels) never produces a hit.
+  Consequences:
+  - A value that only spells a marker, written by an agent or present in the repository, gets no
+    exemption and is judged like any other value.
+  - Bytes next to a recorded span are not exempt, so `TOKEN=<marker>rest` still matches.
+  - Content persisted before positions were recorded has markers but no recorded spans, so it
+    gets no exemption. A resulting hit is handled per item (P-D2).
+  - This replaces the escape-depth exemption of the 2026-10-21 precision repair (#1138).
+- **P-D2. Hits in the reviewer conversation are handled per item.** The conversation is scanned
+  per message: each message's decoded content is scanned once, instead of the whole doubly encoded
+  body. A real hit, heuristic or high-confidence, withholds the one packet item or reviewer read it
+  came from, and the review still runs on the rest. The item is recorded like any minimization
+  withholding (`item_withheld` in `semantic_redacted_values`, gap `semantic_review_item_withheld`).
+  Three things still fail the whole case closed:
+  - a high-confidence credential in material that must be sent;
+  - scanner saturation or failure;
+  - a match no single item explains.
+
+  Material that must be sent is the structural review-packet envelope and FinishUP's conversation
+  frame. A match no single item explains is treated the same way. Whether a part of the change
+  under review may be withheld still follows the minimization rules above; this amendment does not
+  change them. The refusal records of the 2026-10-29 amendment (#1138) stay for those refusals.
+
+  A message that loses an item is rebuilt without it. It is then scanned again through the
+  prepared-case, conversation and final-body scans before it is sent. Bytes prepared before the
+  withholding are never reused. Neither are prepared bytes whose policy, route, source state or
+  scanner profile has changed (#966 items 2, 3 and 5). The gateway's final-body scan and the
+  local-sink scan stay whole-request backstops. Classification, minimization and the prepared-case
+  scan keep their item rules.
+- **P-D3. An unquoted value ends at a line break, and no pass deletes bytes outside its match.**
+  An unquoted assignment value ends at a raw line break (LF or CR) or at an encoded one (`\n`,
+  `\r`), at any escaping depth. Other backslashes stay value characters. Every redaction pass, raw
+  or encoded, replaces exactly its matched span. The bytes before and after the span are kept,
+  including line breaks and following lines: `DB_PASSWORD=…\nDB_USER=…` keeps `DB_USER=…`.
+
+  This resolves the contradiction between the 2026-10-07 sentence (values stay greedy across
+  encoded escapes) and the 2026-10-06 rule (a value ends at an encoded whitespace escape). For line
+  breaks, the 2026-10-06 rule wins. The trade-off is accepted: a secret that contains the
+  two characters `\n` (or `\r`) is only partly redacted. The bytes after them are sent as ordinary
+  text. A high-confidence shape is still matched by its own detector, whatever the line structure.
+- **P-D4. Every slice is cut from already-redacted text.** This covers every slice that may leave
+  the machine:
+  - a reviewer line-range read;
+  - a part of the captured change;
+  - every composition cut the 2026-10-27 amendment already covers.
+
+  Each is cut from text in which every detected value is already replaced, never from raw text. So
+  a slice never carries a value without its label. A private key is redacted from its BEGIN line
+  through its END line, at capture, persistence, composition and egress. When no END follows, the
+  item or read is withheld whole. A YAML literal block value (`key: |` followed by its indented
+  lines) is detected as that key's value and redacted with it.
+- **P-D5. The marker is renamed, at low priority.** New content uses
+  `[withheld-by-finishup:possible-credential]`. Readers accept both spellings permanently, and the
+  scanner profile is bumped so that resumed work never mixes them. The rule is ADR-048's (§2, §3
+  and its 2026-10-31 amendment). Until step P4 ships, FinishUP still writes
+  `[withheld-by-yoetz:possible-credential]`.
+
+**Scanner profile.** The 2026-10-03 amendment already requires a new scanner profile version for
+every step that changes what the scanner matches, exempts or replaces. Today's version is
+`observability-sensitive-content-v3`. A resumed proposal prepared under an older profile therefore
+fails closed as a profile mismatch, and a new evaluation uses the current profile.
+
+**Work order.** P1 implements P-D1 and P-D2 (#1138, #966 items 2, 3 and 5). P2 implements P-D3.
+P3 implements P-D4 (#1236, #1237, #1238, #1015, #1134). P4 implements P-D5. Records, labels,
+recovery wording and local filtering belong to #1247 (step G10).
+
+**Hosts and surfaces.** The behaviour is service-side and identical on Codex, Claude Code and
+Cursor. The CLI, MCP, hooks, the terminal interface and the receipt renderings (JSON, markdown,
+text) read the same records.

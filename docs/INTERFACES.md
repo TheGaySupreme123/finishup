@@ -58,7 +58,9 @@ released at v0.2.5 (titles, consts and `$id`s under `https://schemas.yoetz.dev/0
 `yoetz.schema-manifest/1.0.0`, the `yoetz-config` family and owning model `YoetzConfig`, marker
 files `.yoetz-*-install.json`, `.yoetz-marketplace-activation.lock`, marker keys `yoetz_version`
 and `yoetz_launcher`, crash-residue prefixes `.yoetz.*`/`.yoetz-*`, `yoetz-instance-pin.json`,
-`yoetz-release-runtime.json`, `[withheld-by-yoetz:possible-credential]`, `_yoetz_spool_id`, the
+`yoetz-release-runtime.json`, `[withheld-by-yoetz:possible-credential]` (read forever; new writes
+move to `[withheld-by-finishup:possible-credential]` with #1248 step P4, ADR-048 2026-10-31
+amendment), `_yoetz_spool_id`, the
 capture headers `# yoetz edit outcome:`/`# yoetz edit source:`, the nested-cell mark `yoetz`, and
 the single `checks.toml` format value `yoetz.approved-check-policy/1`. Python member names around
 frozen values may change (`McpRegistrationState.FINISHUP_OWNED = "yoetz_owned"`,
@@ -4925,6 +4927,33 @@ packet is JSON-encoded again inside a reviewer exchange (#1138). The exemption c
 encoding depth of whitespace escapes against the closing quote's framing; it does not strip
 arbitrary backslashes or suffixes. Marker lookalikes, concrete credentials, private-key markers
 and canaries keep their existing detection and whole-case refusal rules.
+
+Approved 2026-10-31 (ADR-009 and ADR-048 amendments of that date, #1248, owner decisions P-D1 to
+P-D5). This text replaces the two paragraphs above as steps P1 to P4 land; until then the code
+behaves as those paragraphs describe.
+
+- **Marker exemption (P-D1, step P1).** FinishUP records the span of every marker it inserts
+  (`[REDACTED]` and the possible-credential placeholder in either spelling). The span travels with
+  its item through every JSON encoding, and the scanner exempts exactly those spans at any escaping
+  depth. No exemption is inferred from text or backslashes. A marker-shaped string FinishUP did not
+  insert at that position is judged like any other value. FinishUP's own conversation text never
+  produces a hit.
+- **Reviewer conversation (P-D2, step P1).** Each message's decoded content is scanned once. A real
+  hit withholds the one packet item or reviewer read it came from (`item_withheld`), and the review
+  still runs. The whole case still fails for a high-confidence credential in material that must be
+  sent (the review-packet envelope and conversation frame), for scanner saturation or failure, and
+  for a match no single item explains.
+- **Value end (P-D3, step P2).** An unquoted value ends at a raw line break or an encoded `\n`/`\r`
+  at any depth. No pass replaces bytes outside its match. Accepted trade-off: a secret containing
+  a literal `\n` is only partly redacted.
+- **Slices (P-D4, step P3).** Line-range reads and change parts are cut from already-redacted text.
+  Private keys are redacted from BEGIN through END, and an item without an END is withheld. YAML
+  `key: |` block values are detected.
+- **Spelling (P-D5, step P4, low priority).** New content will use
+  `[withheld-by-finishup:possible-credential]`. Both spellings are read permanently, and the scanner
+  profile (today `observability-sensitive-content-v3`) is bumped so resumed work never mixes them.
+  Until P4, the legacy spelling is written.
+- **Unchanged.** No category is added, no ceiling is raised, and Private still sends nothing.
 Within one scan, enclosing JSON string spans and their validated decodes are cached per string.
 A byte-offset map accounts for escapes and UTF-8 widths, including surrogate pairs, so each
 occurrence still proves its own nesting without rescanning or decoding growing prefixes. The
