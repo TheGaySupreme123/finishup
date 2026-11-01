@@ -29,9 +29,9 @@ def test_package_shape_is_delegation_only() -> None:
     assert package["homepage"] == "https://finishup.dev"
     assert package["repository"] == {
         "type": "git",
-        "url": "git+https://github.com/TheGaySupreme123/finishup.git",
+        "url": "git+https://github.com/orgFinishUP/finishup.git",
     }
-    assert package["bugs"] == {"url": "https://github.com/TheGaySupreme123/finishup/issues"}
+    assert package["bugs"] == {"url": "https://github.com/orgFinishUP/finishup/issues"}
     assert package["publishConfig"] == {"access": "public"}
 
 

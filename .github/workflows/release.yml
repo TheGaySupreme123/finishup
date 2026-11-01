@@ -360,7 +360,7 @@ jobs:
           if (!match || launcher.version !== match[1]) throw new Error("npm/PyPI version drift");
           if (launcher.private !== false) throw new Error("npm launcher is not public");
           if (launcher.name !== "finishup") throw new Error("unexpected npm package name");
-          if (launcher.repository?.url !== "git+https://github.com/TheGaySupreme123/finishup.git") {
+          if (launcher.repository?.url !== "git+https://github.com/orgFinishUP/finishup.git") {
             throw new Error("npm provenance repository does not match the release repository");
           }
           for (const field of ["dependencies", "devDependencies", "optionalDependencies", "scripts"]) {

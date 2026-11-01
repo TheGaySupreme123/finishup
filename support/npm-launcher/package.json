@@ -8,10 +8,10 @@
   "homepage": "https://finishup.dev",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/TheGaySupreme123/finishup.git"
+    "url": "git+https://github.com/orgFinishUP/finishup.git"
   },
   "bugs": {
-    "url": "https://github.com/TheGaySupreme123/finishup/issues"
+    "url": "https://github.com/orgFinishUP/finishup/issues"
   },
   "publishConfig": {
     "access": "public"
