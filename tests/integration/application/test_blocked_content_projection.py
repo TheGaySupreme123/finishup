@@ -14,6 +14,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from copy import deepcopy
+from dataclasses import replace
 from datetime import UTC, datetime
 from typing import cast
 
@@ -38,6 +39,7 @@ from finishup.application.service import (
 )
 from finishup.domain.events import RuntimeProfile
 from finishup.domain.privacy import (
+    ApprovedLocalItem,
     AuthorizationScope,
     AuthorizationScopeKind,
     CandidateContext,
@@ -261,9 +263,11 @@ def _frontier(value: Frontier | FrontierModel) -> JsonValue:
     return cast(JsonValue, value.model_dump(mode="json"))
 
 
-def _application() -> tuple[Application, _BlockEverything]:
+def _application(
+    privacy: _BlockEverything | None = None,
+) -> tuple[Application, _BlockEverything]:
     start_app, start_runtime, clock, catalog = start_composition()
-    privacy = _BlockEverything()
+    privacy = privacy or _BlockEverything()
     ids = start_runtime.ids
     runtime = _BlockedRuntime(clock, ids)
     app = Application(
@@ -539,3 +543,76 @@ async def test_blocked_content_projects_for_every_event_family_and_the_compact_v
 
     # Only actual status content is blocked; absent publish summaries create no policy decision.
     assert {"task_description", "obligation_text"} <= privacy.blocked_categories
+
+
+class _ApproveWithReplacements(_BlockEverything):
+    """Approve every leaf as the real enforcer does: a credential-like value is replaced."""
+
+    async def prepare_local_disclosure(
+        self, candidate: CandidateContext
+    ) -> LocalDisclosureApproved | LocalDisclosureBlocked:
+        from finishup.observability.privacy import redact_heuristic_spans
+
+        sink = candidate.local_sink
+        assert sink is not None
+        blocked = await super().prepare_local_disclosure(candidate)
+        approved = tuple(
+            sorted(
+                (
+                    ApprovedLocalItem(
+                        item.origin_ref,
+                        item.category,
+                        redact_heuristic_spans(item.plaintext)[0],
+                    )
+                    for item in candidate.items
+                ),
+                key=lambda item: item.json_pointer.encode(),
+            )
+        )
+        receipt = replace(
+            blocked.receipt,
+            approved_categories=tuple(
+                sorted({item.category for item in approved}, key=lambda value: value.value)
+            ),
+            blocked_categories=(),
+        )
+        return LocalDisclosureApproved(
+            blocked.privacy_proposal_id,
+            candidate.request_id,
+            sink,
+            candidate.purpose,
+            candidate.scope,
+            _DIGEST,
+            _WORKSPACE,
+            approved,
+            (),
+            receipt,
+        )
+
+
+async def test_the_projection_carries_the_approved_bytes_not_the_original_leaf() -> None:
+    """#1015 item 3: a leaf whose credential-like value the enforcer replaced is returned
+    replaced; the projection never falls back to the original leaf."""
+
+    app, _privacy = _application(_ApproveWithReplacements())
+    value = "Qz7" + "-pw-" + "4410x"
+    started = await app.start(
+        start_request(952, title=f"Rotate the database password={value} today")
+    )
+    status_wire: dict[str, JsonValue] = {
+        **_request_base(protocol_id("req_", 953)),
+        "session_id": started.session_id,
+        "writer_id": started.writer_id,
+        "view": "compact",
+        "limit": "10",
+    }
+    status = await app.status(StatusRequest.model_validate(status_wire))
+
+    projected = await _project(app, ControlMethod.STATUS, status_wire, status, 954)
+
+    page = cast(Mapping[str, JsonValue], projected["page"])
+    item = cast(list[Mapping[str, JsonValue]], page["items"])[0]
+    assert item["task_title"] == (
+        "Rotate the database password=[withheld-by-yoetz:possible-credential] today"
+    )
+    assert value.encode() not in canonical_encode(cast(JsonValue, dict(projected)))

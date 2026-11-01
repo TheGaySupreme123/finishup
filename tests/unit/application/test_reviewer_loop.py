@@ -991,7 +991,8 @@ async def test_file_reads_stay_in_scope_and_are_admitted_like_the_packet(tmp_pat
     )
     link, key, sibling = _observations((await loop.run()).history)
     assert link["reason"] == "not_recorded"
-    assert key["status"] == "denied" and key["reason"] == "privacy_withheld"
+    # Redact-before-cut never bypasses admission: a high-confidence source is still refused.
+    assert (key["status"], key["reason"], key["data"]) == ("denied", "privacy_withheld", None)
     assert "AKIA" not in json.dumps(key)
     assert sibling["reason"] == "outside_scope"
 

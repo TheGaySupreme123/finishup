@@ -4970,8 +4970,8 @@ behaves as those paragraphs describe.
   `key: |` block values are detected.
 - **Spelling (P-D5, step P4, low priority).** New content will use
   `[withheld-by-finishup:possible-credential]`. Both spellings are read permanently, and the scanner
-  profile (`observability-sensitive-content-v4` since P1, `v5` since P2) is bumped so resumed work
-  never mixes them.
+  profile (`observability-sensitive-content-v4` since P1, `v5` since P2, `v6` since P3) is bumped
+  so resumed work never mixes them.
   Until P4, the legacy spelling is written.
 - **Unchanged.** No category is added, no ceiling is raised, and Private still sends nothing.
 A recorded span is carried into a JSON string by that string's byte-offset map, which accounts for
@@ -6159,13 +6159,24 @@ changed-file/diff material, approved-check output, lifecycle, and readiness fact
 Hidden reasoning, system/platform/developer prompts, credentials, detected secrets, unrelated files,
 and untethered logs are excluded before storage. Every byte that reaches encrypted observation
 persistence passes `prepare_persisted_plaintext`: high-confidence secret spans (known credential
-shapes, private-key markers, URI passwords) are redacted in memory before encoding, matches persist
-only redaction metadata, and scanner failure, high-confidence finding-capacity exhaustion, or a
-canary match records `content_capture_unavailable` and stores no excerpt or approved-check output
-object. Heuristic-only assignment matches are kept as captured in the encrypted local store, where
+shapes, private keys from their BEGIN line through the END line of the same label, URI passwords)
+are redacted in memory before encoding, matches persist only redaction metadata, and scanner
+failure, high-confidence finding-capacity exhaustion, a private key BEGIN line without its END
+line, or a canary match records `content_capture_unavailable` and stores no excerpt or
+approved-check output object (#1248 P-D4). A redaction that crosses lines keeps each line break, so
+line numbers in the redacted text still name the source's lines. Approved-check output the runner
+already redacted is stored marked `redacted`, and its approved-check receipt document carries
+`output_redacted: true` (#1015). Heuristic-only assignment matches are kept as captured in the encrypted local store, where
 local and deterministic checks may read them, and are redacted only at egress (issue #982); a
 chunk or excerpt is marked `redacted` only when its bytes were actually replaced. SQLite/envelopes
 retain only encrypted object IDs, commitments, classifications, sizes, and relations.
+Reviewer reads retain their admission rules: a high-confidence secret anywhere in a file refuses
+its read (`denied/privacy_withheld`), and heuristic hits take the owner's existing policy before
+redaction. Every admitted line or offset slice is cut from redacted text. Check-time changes are
+redacted per file before any part is cut; an unterminated private key withholds only that file's
+part, recorded as `item_withheld`, while the other files remain reviewable. The encrypted change
+object's optional `withheld_sections` lists one-based diff-section ordinals, allowing recovery to
+rebuild those same item refusals. Objects without that field retain their existing encoding.
 Vault/service failure records `content_capture_unavailable` and no plaintext spool.
 Unrecognized visible events accept an opaque stable envelope plus encrypted content and
 `unsupported_event`; a session-stream file that is the wrong grammar, an untested `cli_version`,
@@ -11515,9 +11526,11 @@ is withheld whole), recorded as a bounded `semantic_composition/check_time_chang
   section's first line plus `\0binary` for a `Binary files ` line and `\0deleted` for a `deleted
   file mode ` line. `shown_bytes` is `check_time_change_bytes_carried(case,
   withheld_categories=)`: the change bytes (marker lines excluded) of
-  `check_time_change_parts_carried(case, withheld_categories=)`, the unbroken run of parts from the
-  first whose catalog rows `bounded_case_envelope(case)` kept, or 0 when the policy withholds
-  `repository_excerpt`. Counting bytes keeps the record exact whatever part size a planned
+  `check_time_change_parts_carried(case, withheld_categories=)`, the catalogued prefix with
+  capture-side file refusals excluded, or 0 when the policy withholds `repository_excerpt`.
+  The byte count stops at the first withheld interval; later clean intervals are reported by
+  `check_time_change_sections_carried`. A withheld file is never credited in the shown-file record.
+  Counting bytes keeps the record exact whatever part size a planned
   selection chose and when the first part was cut (issue #983).
   `check_change_shown_files(runtime, change, shown_bytes)` commits each through
   `runtime.objects.commitment_for(..., CHANGE_CAPTURE)` over the domain

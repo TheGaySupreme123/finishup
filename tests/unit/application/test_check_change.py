@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 import stat
 from collections.abc import Callable
+from dataclasses import replace
 from types import SimpleNamespace
 from typing import Any, Final, cast
 
@@ -17,7 +18,10 @@ from finishup.ports.change_capture import (
     ChangeCaptureUnavailable,
     CheckChangeCapture,
     CheckWorkspaceSource,
+    decode_check_change,
+    encode_check_change,
 )
+from finishup.protocol.canonical import strict_json_parse
 from synthetic_paths import LINUX_HOME
 
 _redacted = getattr(check_change_module, "_redacted")
@@ -87,14 +91,88 @@ def test_clean_change_is_returned_unchanged() -> None:
 
 
 def test_change_that_cannot_be_fully_redacted_is_withheld(monkeypatch: pytest.MonkeyPatch) -> None:
-    def never_clean(data: bytes, **_: object) -> tuple[bytes, bool, tuple[tuple[int, int], ...]]:
-        return data + b".", True, ()
+    def never_clean(data: bytes, **_: object) -> bytes | None:
+        # The pass bound is reached while a pass still finds a value.
+        return None
 
-    monkeypatch.setattr(check_change_module, "redact_sensitive_content_marked", never_clean)
+    monkeypatch.setattr(check_change_module, "redact_fully", never_clean)
 
     with pytest.raises(ChangeCaptureUnavailable) as caught:
         _redacted(_capture(b"+token = forever-matching\n"))
     assert caught.value.reason == "redaction_incomplete"
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("bad_first", (False, True))
+@pytest.mark.parametrize("preamble", (b"", b"FinishUP check-time change: service-captured.\n"))
+async def test_an_unterminated_key_withholds_only_its_files_change_part(
+    bad_first: bool, preamble: bytes
+) -> None:
+    from finishup.application.semantic_case import (
+        check_time_change_bytes_carried,
+        check_time_change_parts_carried,
+        check_time_change_sections_carried,
+        check_time_change_shown_files,
+    )
+    from unit.application.test_semantic_case import (
+        _case_with_material,  # pyright: ignore[reportPrivateUsage]
+    )
+    from unit.application.test_semantic_case_check_change import (
+        _build,  # pyright: ignore[reportPrivateUsage]
+        _change,  # pyright: ignore[reportPrivateUsage]
+    )
+    from unit.privacy.test_planted_credentials_semantic_arm import (
+        _candidate,  # pyright: ignore[reportPrivateUsage]
+        _evaluate,  # pyright: ignore[reportPrivateUsage]
+    )
+
+    body = (b"Zm9v" + b"YmFy" + b"0123") * 8
+    banner = b"-" * 5 + b"BEGIN " + b"OPENSSH PRIVATE KEY" + b"-" * 5
+    bad = b"diff --git a/key.txt b/key.txt\n@@ -0,0 +1,2 @@\n+" + banner + b"\n+" + body + b"\n"
+    good = b"diff --git a/app.py b/app.py\n@@ -1 +1 @@\n-old\n+review_this_change = 2\n"
+    raw = _capture(preamble + ((bad + good) if bad_first else (good + bad)))
+    raw = replace(raw, tracked_files=2)
+    redacted = _redacted(raw)
+    assert redacted.withheld_sections == ((1,) if bad_first else (2,))
+    assert redacted.redacted and redacted.truncated
+    assert body not in redacted.text and banner not in redacted.text
+    assert good in redacted.text
+    assert _redacted(redacted) is redacted
+    # Recovery rebuilds exactly the same per-item refusal from the stored capture, not a fresh
+    # working-tree read. Captures without refusals retain their historical encoding.
+    stored = encode_check_change(redacted)
+    recovered = decode_check_change(stored)
+    assert recovered == redacted and encode_check_change(recovered) == stored
+    assert b"withheld_sections" not in encode_check_change(_capture(good))
+    case = _build(
+        _case_with_material(with_evidence=False), change=replace(_change(), capture=recovered)
+    )
+    ordinal = (1 if bad_first else 2) + bool(preamble)
+    withheld_id = f"change-check-time-{ordinal:03d}"
+    assert case.withheld_item_ids == {withheld_id}
+    assert check_time_change_parts_carried(case) == 1 + bool(preamble)
+    shown = check_time_change_shown_files(
+        recovered, check_time_change_bytes_carried(case), check_time_change_sections_carried(case)
+    )
+    assert len(shown) == 1 and b"app.py" in shown[0].identity
+    assert all(b"key.txt" not in row.identity for row in shown)
+    _result, audit = await _evaluate(_candidate(case))
+    (proposal,) = audit.prepared  # fake audit stops before any provider/dispatch
+    minimized = proposal.minimized
+    assert minimized.withheld_item_ids == (withheld_id,)
+    assert any(
+        row.item_id == withheld_id and row.disposition == "item_withheld"
+        for row in minimized.redacted_values
+    )
+    assert b"review_this_change = 2" in minimized.prepared_bytes
+    assert body not in minimized.prepared_bytes and banner not in minimized.prepared_bytes
+    assert withheld_id not in minimized.included_item_ids
+    assert all(category.value != "repository_excerpt" for category in minimized.blocked_categories)
+    assert not minimized.forbidden_findings and not minimized.heuristic_findings
+    packet = cast(dict[str, Any], strict_json_parse(minimized.prepared_bytes))
+    manifest = packet["review_packet"]["provider_input_manifest"]
+    assert manifest["current_diff"]["status"] == "partial"
+    assert "redacted_never_send" in manifest["current_diff"]["omission_reasons"]
 
 
 @pytest.mark.anyio
@@ -1274,18 +1352,14 @@ def test_a_task_input_withheld_whole_is_disclosed_as_redacted(
 
     from finishup.ports.change_capture import TaskInputFile
 
-    original = check_change_module.redact_sensitive_content_marked
+    original = check_change_module.redact_fully
 
-    def never_clean_for_the_input(
-        data: bytes, **options: Any
-    ) -> tuple[bytes, bool, tuple[tuple[int, int], ...]]:
+    def never_clean_for_the_input(data: bytes, **options: int) -> bytes | None:
         if b"WITHHELD_INPUT_MARKER" in data:
-            return data + b".", True, ()
+            return None
         return original(data, **options)
 
-    monkeypatch.setattr(
-        check_change_module, "redact_sensitive_content_marked", never_clean_for_the_input
-    )
+    monkeypatch.setattr(check_change_module, "redact_fully", never_clean_for_the_input)
     capture = CheckChangeCapture(
         base="task_start",
         text=b"diff --git a/a.py b/a.py\n+print('kept')\n",

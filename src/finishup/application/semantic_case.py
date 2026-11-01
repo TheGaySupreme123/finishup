@@ -1285,6 +1285,8 @@ def _check_time_change_sections(
         return {}
     by_path: dict[str, list[tuple[int, int, int]]] = {}
     for ordinal, (start, end, paths) in enumerate(check_change_sections(capture), start=1):
+        if ordinal in capture.withheld_sections:
+            continue
         for path in sorted(paths):
             by_path.setdefault(path, []).append((start, end, ordinal))
     return by_path
@@ -1750,7 +1752,7 @@ def _chunks_with_first_limit(blob: bytes, first_limit: int, later_limit: int) ->
 
 
 def _check_time_change_offer(
-    text: bytes, selection: ReviewSelectionPolicy
+    text: bytes, selection: ReviewSelectionPolicy, *, withheld_sections: tuple[int, ...] = ()
 ) -> tuple[tuple[str, ...], tuple[int, ...]]:
     """Change parts and the original offset of each part's first change byte.
 
@@ -1761,7 +1763,18 @@ def _check_time_change_offer(
     """
 
     part_limit = _check_time_change_part_limit(selection)
-    chunks = _check_time_change_chunks(text, part_limit)
+    if withheld_sections:
+        # A refused file has its own item, never a chunk shared with an admitted file. Safe
+        # sections still take the usual redact-before-cut sizing and the unchanged ceilings.
+        bounds = _file_section_bounds(text)
+        segments = (text[: bounds[0][0]], *(text[start:end] for start, end in bounds))
+        chunks = tuple(
+            chunk
+            for segment in segments
+            for chunk in _check_time_change_chunks(segment, part_limit)
+        )
+    else:
+        chunks = _check_time_change_chunks(text, part_limit)
     if not chunks:
         return (), ()
     count = len(chunks)
@@ -1933,6 +1946,8 @@ def check_time_change_shown_record(
     files: list[CheckTimeChangeShownFile] = []
     representable = True
     for index, start in enumerate(starts):
+        if index + 1 in capture.withheld_sections:
+            continue
         end = starts[index + 1] if index + 1 < len(starts) else len(text)
         reached = sorted(
             (max(low, start), min(high, end))
@@ -8586,6 +8601,7 @@ def _build_semantic_case_once(
     check_change_links: tuple[str, ...] = ()
     check_change_admitted = 0
     check_change_cut = False
+    withheld_change_ids: set[str] = set()
     if check_time_change_unavailable:
         capture_gap_set.add(CHECK_TIME_CHANGE_UNAVAILABLE_GAP)
         if check_time_change_unavailable_reason is not None:
@@ -8604,8 +8620,16 @@ def _build_semantic_case_once(
         check_change_links = _check_time_change_links(projection, allowed)
         if check_change_links:
             check_change_parts, check_change_offsets = _check_time_change_offer(
-                change.text, selection
+                change.text, selection, withheld_sections=change.withheld_sections
             )
+            bounds = _file_section_bounds(change.text)
+            withheld_change_ids = {
+                f"{CHECK_TIME_CHANGE_ITEM_PREFIX}{index + 1:03d}"
+                for index, offset in enumerate(check_change_offsets)
+                if any(
+                    bounds[n - 1][0] <= offset < bounds[n - 1][1] for n in change.withheld_sections
+                )
+            }
     # Read-only task input files (issue #1045), linked to the statement that names them.
     task_inputs: tuple[tuple[str, bool], ...] = ()
     task_input_roots: tuple[tuple[str, str], ...] = ()
@@ -9752,6 +9776,7 @@ def _build_semantic_case_once(
         excerpt_parts=excerpt_parts,
         follow_up_supplied_item_ids=follow_up_supplied,
         input_roots=tuple(pair for pair in task_input_roots if pair[0] in carried_item_ids),
+        withheld_item_ids=frozenset(withheld_change_ids & carried_item_ids),
         # #1230: a cut excerpt that places no bytes in its source never reads as shown whole.
         unplaced_item_ids=frozenset(
             item.item_id
@@ -10787,6 +10812,7 @@ def assemble_filtered_review_packet(
             content_rows,
             omissions,
             redacted_item_ids=redacted,
+            privacy_withheld_item_ids=withheld,
             privacy_withheld_refs=withheld_excerpt_refs,
         )
         packet_obj["provider_input_manifest"] = provider_manifest
@@ -11185,6 +11211,7 @@ def _provider_bound_input_manifest(
     omissions: Sequence[JsonValue],
     *,
     redacted_item_ids: frozenset[str] | set[str] = frozenset(),
+    privacy_withheld_item_ids: frozenset[str] | set[str] = frozenset(),
     privacy_withheld_refs: frozenset[str] = frozenset(),
 ) -> dict[str, JsonValue]:
     """Project a composed input manifest onto the exact provider-bound rows.
@@ -11378,6 +11405,10 @@ def _provider_bound_input_manifest(
         if prior_dialogue_cut_refs:
             omission_reasons.add("not_selected")
         if any(item_id in redacted_item_ids for item_id in item_ids):
+            omission_reasons.add("redacted_never_send")
+        if type(raw_ids) is list and any(
+            item_id in privacy_withheld_item_ids for item_id in raw_ids if type(item_id) is str
+        ):
             omission_reasons.add("redacted_never_send")
         # Packet omission rows name a heuristic withholding ``never_send_heuristic``; the section
         # manifest's closed vocabulary (``ports/semantic.py``) records the same loss as
@@ -12428,39 +12459,51 @@ def semantic_case_packet_view(case: SemanticCase) -> SemanticPacketView:
 def check_time_change_parts_carried(
     case: SemanticCase, *, withheld_categories: Sequence[str] = ()
 ) -> int:
-    """How many leading check-time change parts the provider-facing envelope carries (ADR-031).
+    """How many check-time change parts the provider-facing envelope carries (ADR-031).
 
     The shown-file record must describe what the reviewer could read, not the case before
     ``bounded_case_envelope`` minimized it: a part whose catalog row bounding dropped is never
     offered for authorization, and a channel that withholds ``repository_excerpt`` receives no
-    part at all. Parts are admitted and dropped in order, so only the unbroken run from the
-    first part counts. The answer is a pure function of the frozen case and the policy's
-    withheld categories, so a recovered job derives the same count.
+    part at all. Catalogued parts are offered in order; capture-side privacy refusals are
+    excluded individually, so later clean files still count. The answer is a pure function of
+    the frozen case and the policy's withheld categories, so recovery derives the same count.
     """
 
     if type(case) is not SemanticCase:
         raise TypeError("semantic_case_invalid")
     if DataCategory.REPOSITORY_EXCERPT.value in withheld_categories:
         return 0
+    return len(_carried_change_item_ids(case))
+
+
+def _carried_change_item_ids(case: SemanticCase) -> tuple[str, ...]:
+    """The catalogued prefix's item ids, excluding capture-side file refusals."""
+
+    if type(case) is not SemanticCase:
+        raise TypeError("semantic_case_invalid")
     admitted = sum(
         item.excerpt_item_id.startswith(CHECK_TIME_CHANGE_ITEM_PREFIX)
         for item in case.packet.targeted_excerpts
     )
     if not admitted:
-        return 0
+        return ()
     catalogued = _catalog_item_ids(
         cast(Mapping[str, JsonValue], strict_json_parse(bounded_case_envelope(case)))
     )
     carried = 0
     while carried < admitted and f"{CHECK_TIME_CHANGE_ITEM_PREFIX}{carried + 1:03d}" in catalogued:
         carried += 1
-    return carried
+    return tuple(
+        item_id
+        for index in range(1, carried + 1)
+        if (item_id := f"{CHECK_TIME_CHANGE_ITEM_PREFIX}{index:03d}") not in case.withheld_item_ids
+    )
 
 
 def _carried_change_spans(case: SemanticCase, carried: int) -> tuple[tuple[int, int], ...]:
     """Original ``(start, end)`` of each carried ``change-check-time`` part that recorded one."""
 
-    wanted = {f"{CHECK_TIME_CHANGE_ITEM_PREFIX}{index:03d}" for index in range(1, carried + 1)}
+    wanted = set(_carried_change_item_ids(case)[:carried])
     spans: list[tuple[int, int]] = []
     for item_id, key in case.excerpt_parts:
         if item_id not in wanted:
@@ -12498,7 +12541,12 @@ def check_time_change_sections_carried(
     carried: list[tuple[int, int]] = []
     for item_id, key in sections:
         span = excerpt_span(key)
-        if item_id in catalogued and span is not None and span[0] == _CHECK_TIME_CHANGE_SOURCE_REF:
+        if (
+            item_id in catalogued
+            and item_id not in case.withheld_item_ids
+            and span is not None
+            and span[0] == _CHECK_TIME_CHANGE_SOURCE_REF
+        ):
             carried.append((span[1], span[2]))
     part_count = check_time_change_parts_carried(case, withheld_categories=withheld_categories)
     if part_count:
@@ -12519,15 +12567,15 @@ def check_time_change_floor_bytes_carried(case: SemanticCase) -> int:
     parts start inside the change and ``check_time_change_bytes_carried`` (the contiguous run
     from byte 0) can be 0 however much of it a narrowed case still carries. Comparing that with
     the floor refused every narrowing and returned the over-ceiling case (#1118). For a linear
-    offer both counts are the same bytes.
+    offer without withheld files both counts are the same bytes.
     """
 
-    carried = check_time_change_parts_carried(case)
+    carried_ids = _carried_change_item_ids(case)
     by_id = {item.item_id: item for item in case.items}
     return sum(
         _check_time_change_part_chunk_bytes(by_id[item_id].content)
-        for index in range(1, carried + 1)
-        if (item_id := f"{CHECK_TIME_CHANGE_ITEM_PREFIX}{index:03d}") in by_id
+        for item_id in carried_ids
+        if item_id in by_id
     )
 
 
@@ -12551,7 +12599,7 @@ def check_time_change_bytes_carried(
         return 0
     by_id = {item.item_id: item for item in case.items}
     spans = _carried_change_spans(case, carried)
-    if len(spans) != carried:
+    if len(spans) != carried and not case.withheld_item_ids:
         return sum(
             _check_time_change_part_chunk_bytes(
                 by_id[f"{CHECK_TIME_CHANGE_ITEM_PREFIX}{index:03d}"].content
@@ -12587,6 +12635,7 @@ def semantic_case_to_candidate_context(
         provider_binding=provider_binding,
         subject_digest=case.case_digest,
         input_roots=dict(case.input_roots),
+        withheld_item_ids=case.withheld_item_ids,
     )
 
 
@@ -12599,6 +12648,7 @@ def review_envelope_to_candidate_context(
     provider_binding: ProviderBinding,
     subject_digest: str,
     input_roots: Mapping[str, str] | None = None,
+    withheld_item_ids: frozenset[str] = frozenset(),
 ) -> CandidateContext:
     """Offer a frozen review envelope and only its catalogued, classified content.
 
@@ -12631,6 +12681,7 @@ def review_envelope_to_candidate_context(
                 scope,
                 f"/case/{item.section}/{item.item_id}",
                 item.content,
+                source_disclosure_permitted=item.item_id not in withheld_item_ids,
                 input_root=roots.get(item.item_id),
             )
         )
